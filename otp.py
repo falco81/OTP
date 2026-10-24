@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.109'
+__version__ = '1.0.110'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -909,6 +909,10 @@ BAD_CONFIG = []
 
 class BadSetting(ValueError):
     """A value that cannot be read as the setting it was given for."""
+
+
+class NodeMoved(BadSetting):
+    """Saved on another machine than the one meant (1.0.110)."""
 
 
 def _coerce(current, value):
@@ -10994,8 +10998,22 @@ class Daemon(object):
         except Exception:                               # noqa: BLE001
             return [node_name()]
 
-    def save_settings(self, changes, by='', node=None):
+    def save_settings(self, changes, by='', node=None, drawn_by=None):
         checked = {}
+        # The page's boxes were drawn by one node and the save reached
+        # another through the web address (1.0.110): otp1 took otp2's name
+        # from a page otp2 had drawn. What belongs to one machine is saved
+        # only on the machine the page was drawn by.
+        drawn_by = str(drawn_by or '').strip()
+        if drawn_by and drawn_by != node_name():
+            local = sorted(k for k in (changes or {}) if k in FILE_ONLY_KEYS and
+                           not (k in SECRET_KEYS and is_masked(changes[k])))
+            if local:
+                raise NodeMoved('this page was drawn by %s, but %s answers now (the web address '
+                                'moved): %s belongs to one machine, so nothing was saved - load '
+                                'the page again' % (drawn_by, node_name(), ', '.join(local)))
+            if node is None:
+                node = drawn_by
         # In a cluster a node's own settings go to that node alone (1.0.37).
         many = bool(CONFIG.get('ha_mode')) or len(self.cluster_nodes()) > 1
         node = str(node or node_name())
@@ -11015,7 +11033,16 @@ class Daemon(object):
             # (1.0.20): a copy of the database alone does not give it away.
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
+        if 'node_name' in checked:
+            taken = node_name_taken(self.store, checked['node_name'])
+            if taken:
+                raise BadSetting('node_name: %s is the name of another node (%s, answering now) - '
+                                 'two machines with one name look like one, and the other as '
+                                 'gone' % (checked['node_name'], taken.get('address') or '?'))
         file_side = {k: v for k, v in checked.items() if k in FILE_ONLY_KEYS}
+        if file_side and node != node_name() and not cluster_wide:
+            raise NodeMoved('%s belongs to the machine %s and is saved on it (its own address), '
+                            'not from %s' % (', '.join(sorted(file_side)), node, node_name()))
         db_side = {k: v for k, v in checked.items() if k not in FILE_ONLY_KEYS}
         saved_now = self.store.settings_saved()
         for k, v in db_side.items():
@@ -11141,6 +11168,8 @@ class Daemon(object):
         if lost:
             problems.append('the key that opens the tokens (%s) is missing: no code can be '
                             'checked' % sealing_key_path())
+        if name_clash_words():
+            problems.insert(0, name_clash_words())
         if not self.store.clients():
             problems.append('there is no RADIUS client yet: nobody can ask this server')
         if not self.store.realms():
@@ -16064,6 +16093,20 @@ def rb_history(store):
     return [x for x in got if isinstance(x, dict)]
 
 
+def rb_history_forget(store, at=None, file=None):
+    """One line off the list (at and file), or all of it (1.0.110). The
+    backups themselves stay where they went."""
+    with RB_LOCK:
+        runs = rb_history(store)
+        if at is None:
+            left = []
+        else:
+            left = [r for r in runs if not (abs(float(r.get('at') or 0) - float(at)) < 0.001 and
+                                           str(r.get('file') or '') == str(file or ''))]
+        store.set_meta('rbackup:runs', json.dumps(left, default=str))
+        return len(runs) - len(left)
+
+
 def rb_history_add(store, run):
     with RB_LOCK:
         runs = [run] + rb_history(store)
@@ -16369,8 +16412,83 @@ def heartbeat(store, daemon=None):
         fw_now_publish(store)
     except Exception:                                   # noqa: BLE001
         pass
+    beat['mid'] = machine_id()
+    name_clash_check(store, beat)
     store.set_meta('node:' + node_name(), json.dumps(beat))
     return beat
+
+
+# Two machines with one name (1.0.110): both wrote the same heartbeat row, so
+# the other looked gone and the web address "on both". Each row now carries
+# the machine it came from; a row from another machine, fresh, under this
+# node's name is said loudly - in the log, on every page and in --ha-status.
+NAME_CLASH = {}
+NAME_CLASH_SEEN = []
+
+
+def machine_id():
+    """This installation: the machine's id, its host name and where its state
+    is - a VM cloned with its machine-id still tells itself apart by its
+    host name."""
+    got = ''
+    for f in ('/etc/machine-id', '/var/lib/dbus/machine-id'):
+        try:
+            got = Path(f).read_text().strip()
+        except OSError:
+            continue
+        if got:
+            break
+    return hashlib.sha256(('%s|%s|%s' % (got, socket.gethostname(), STATE_DIR)).encode()
+                          ).hexdigest()[:24]
+
+
+def name_clash_check(store, beat):
+    try:
+        was = json.loads(store.get_meta('node:' + node_name()) or '{}')
+    except ValueError:
+        was = {}
+    now = time.time()
+    other = was.get('mid')
+    if other and other != beat['mid'] and now - float(was.get('at') or 0) < HEARTBEAT_S * 3:
+        # Seen twice before it is said: once is this machine's own row from
+        # before a new host name, overwritten by the beat after this one.
+        NAME_CLASH_SEEN.append(now)
+        del NAME_CLASH_SEEN[:-2]
+        if len(NAME_CLASH_SEEN) < 2:
+            return
+        first = not NAME_CLASH
+        NAME_CLASH.update(name=node_name(), address=was.get('address') or '?',
+                          host=was.get('host') or '?', at=now)
+        if first or now - NAME_CLASH.get('said', 0) > 600:
+            NAME_CLASH['said'] = now
+            log('two machines call themselves %s: this one (%s, %s) and %s (%s) - give '
+                'one of them its own name: otp --set node_name=NAME on it, then systemctl '
+                'restart otp (docs/renaming-and-readdressing.md)'
+                % (node_name(), beat.get('address'), beat.get('host'), NAME_CLASH['address'],
+                   NAME_CLASH['host']), 'error')
+    elif now - (NAME_CLASH_SEEN or [0])[-1] > HEARTBEAT_S * 4:
+        NAME_CLASH.clear()
+        del NAME_CLASH_SEEN[:]
+
+
+def name_clash_words():
+    if not NAME_CLASH or NAME_CLASH.get('name') != node_name():
+        return ''
+    return ('two machines call themselves %s: this one and %s (%s) - each node needs a name '
+            'of its own (otp --set node_name=NAME on one of them, then systemctl restart otp)'
+            % (NAME_CLASH['name'], NAME_CLASH['address'], NAME_CLASH['host']))
+
+
+def node_name_taken(store, want):
+    """Another machine, answering now, already called want? (1.0.110)"""
+    want = str(want or '').strip()
+    if not want or want == node_name():
+        return None
+    mine = machine_id()
+    for n in ha_nodes(store):
+        if n['name'] == want and n.get('alive') and n.get('mid', '') != mine:
+            return n
+    return None
 
 
 def ha_nodes(store):
@@ -18868,6 +18986,20 @@ def node_name_check(store):
     except OSError:
         before = ''
     if before and before != me:
+        # The new name is another machine's, answering now (1.0.110): carried
+        # over, this node's own settings would land on that one - and with the
+        # name put back, that one's on this one. Nothing is carried.
+        try:
+            taken = [n for n in ha_nodes(store) if n['name'] == me and n.get('alive') and
+                     n.get('mid') and n['mid'] != machine_id()]
+        except Exception:                               # noqa: BLE001
+            taken = []
+        if taken:
+            log('this node was %s and is called %s now - but %s (%s) is %s and answering: '
+                'nothing carried over; give this node its own name (otp --set node_name=%s, '
+                'then systemctl restart otp)' % (before, me, taken[0].get('address') or '?',
+                                                 taken[0].get('host') or '?', me, before), 'error')
+            return
         try:
             said = node_carry(store, before, me)
             log('this node was %s and is %s now; carried over: %s'
@@ -23059,7 +23191,10 @@ def _settings_do(h):
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
     try:
-        return h.d.save_settings(asked, by=s['name'], node=b.get('node'))
+        return h.d.save_settings(asked, by=s['name'], node=b.get('node'),
+                                 drawn_by=b.get('drawn_by'))
+    except NodeMoved as e:
+        raise ApiError(409, str(e))
     except BadSetting as e:
         raise ApiError(400, str(e))
 
@@ -25862,6 +25997,24 @@ def _rbackup_do(h):
             h.store.add_event('backups', '%s deleted the backup %s at %s' % (by, name, t['name']),
                               'warn', who=by)
             return {'message': 'deleted'}
+        if act == 'runs_forget':
+            if b.get('all'):
+                n = rb_history_forget(h.store)
+                h.store.add_event('backups', '%s cleared the list of backups sent (%d line(s)); '
+                                  'the backups stay where they went' % (by, n), who=by)
+                return {'message': 'the list is empty; the backups stay where they went',
+                        'runs': rb_history(h.store)[:40]}
+            try:
+                at = float(b.get('at'))
+            except (TypeError, ValueError):
+                raise ValueError('which line?')
+            n = rb_history_forget(h.store, at, b.get('file'))
+            if not n:
+                raise ValueError('that line is not on the list any more')
+            h.store.add_event('backups', '%s took %s off the list of backups sent; the backup '
+                              'stays where it went' % (by, b.get('file') or 'a failed backup'),
+                              who=by)
+            return {'message': 'taken off the list', 'runs': rb_history(h.store)[:40]}
         if act == 'restore':
             return _rb_restore_job(h, b, by)
     except (RbError, ValueError) as e:
@@ -27578,6 +27731,13 @@ def cli_main(argv=None):
             print(mark('%-16s %-15s %s  heard %s ago%s' % (
                 n['name'], n.get('address') or '', n.get('version') or '?',
                 human_span(n["age"]), '  (this one)' if n['me'] else '')))
+        mine = [n for n in rows if n['me']]
+        if mine and mine[0].get('mid') and mine[0]['mid'] != machine_id() and mine[0]['alive']:
+            print(pal.bad_line('another machine (%s, %s) writes as %s too: two machines call '
+                               'themselves %s - give one its own name (otp --set node_name=NAME '
+                               'on it, then systemctl restart otp)' % (
+                                   mine[0].get('address') or '?', mine[0].get('host') or '?',
+                                   node_name(), node_name())))
         if store.db.engine != 'postgres':
             print(pal.dim('  one node: a cluster needs PostgreSQL - see otp --ha-setup'))
         rep = ha_repl_state(store)
