@@ -4,6 +4,32 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.110 — 24 October 2026
+
+**Two machines with one name** (docs/renaming-and-readdressing.md)
+- Fixed: a node could take the other node's name. The settings page drawn by
+  otp2 was saved through the web address after it had moved to otp1: measured
+  against otp1, otp2's name in the box looked like a change and otp1 saved it.
+  Both then wrote one heartbeat - the other was *gone*, the web address *on both
+  nodes at once*.
+- A machine's own settings (its name, its database) are saved only on the node
+  the page was drawn by; any other node refuses them (409, nothing saved). A
+  node's own setting saved from the page goes to the node that drew it.
+- When another node answers than the one that drew the page, the settings are
+  drawn again from it, and the page says so.
+- A name another node is answering with is refused (pages and `otp --set`).
+- Every heartbeat carries the machine it came from: two machines with one name
+  are said on every page (problems), in `otp --ha-status` and in the log.
+- A restart under a new name carries nothing over when another machine is
+  answering with that name.
+- Fixed: after the web address moved, the save bar could count changes nobody
+  made (the boxes of one node measured against another's values) and save
+  them.
+
+**Backups**
+- *What was sent* can be cleared (*Clear the list*), or one line taken off it.
+  The backups themselves stay where they went; Events says who did it.
+
 ## 1.0.109 — 24 October 2026
 
 **Backups to another machine** (Settings → Backups; new: docs/remote-backups.md)
