@@ -113,6 +113,9 @@ Either node's newest backup holds the whole cluster's data.
 *Back up now* sends one at once; *Download one here* makes one and saves it on
 the computer you are sitting at. *What was sent* lists every backup with where
 it went, how long it took and what each destination said; Events has it too.
+*Clear the list* empties it, and the bin on a line takes that line off. Only the
+list changes: the backups stay at the destinations (*Backups there* deletes
+them).
 
 On the command line:
 
