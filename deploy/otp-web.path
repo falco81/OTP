@@ -1,0 +1,12 @@
+[Unit]
+Description=otp - TLS, the web address, the firewall or PostgreSQL's log, asked for on the pages
+
+[Path]
+PathExists=/var/lib/otp/web/request.json
+PathExists=/var/lib/otp/web/pglog.ask
+PathExists=/var/lib/otp/web/pgtls.ask
+PathExists=/var/lib/otp/web/fw.ask
+Unit=otp-web.service
+
+[Install]
+WantedBy=multi-user.target
