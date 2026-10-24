@@ -1179,7 +1179,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="card full"><h2>When, how many, and the password</h2><div id="sect-backup"></div></div>
     <div class="card full"><h2>Where they go <span class="right" id="rb-add-host"></span></h2>
       <div id="rb-targets"></div></div>
-    <div class="card full"><h2>What was sent</h2><div id="rb-runs"></div></div>
+    <div class="card full"><h2>What was sent <span class="right" id="rb-runs-tools"></span></h2><div id="rb-runs"></div></div>
   </div>
   <div class="ctl-pane" id="pane-texts" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Message texts</h2>
