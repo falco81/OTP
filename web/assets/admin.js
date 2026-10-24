@@ -11,7 +11,7 @@ if ($('ev-time')) timePicker('ev-time', {start: {k: 'all'}, all: true});
 ADMIN = !!(ME && ME.role === 'fulladmin');
 var TOKADMIN = !!(ME && (ME.role === 'fulladmin' || ME.role === 'tokenadmin'));
 var LIVE = true, SERIAL = STATUS ? STATUS.serial : '', PANE = 'radius';
-var SETTINGS = null, DIRTY = {};
+var SETTINGS = null, DIRTY = {}, DRAWN_NODE = '';
 var PAGE = {tokens: 0, requests: 0, codes: 0, events: 0, enrolment: 0};
 
 function roleWords(role) {
@@ -2506,6 +2506,21 @@ $('ctl-find').addEventListener('input', function () {
 function loadSettings(redraw) {
   api('settings').then(function (d) {
     SETTINGS = d;
+    /* Another node answers than the one that drew the boxes (1.0.110): the
+       web address moved. Measured against that node, its own settings looked
+       changed - otp1 took the name otp2 from a page otp2 had drawn. Drawn
+       again from the node answering now; what was typed and not saved is put
+       aside, said so. */
+    if (DRAWN_NODE && d.node && d.node !== DRAWN_NODE) {
+      var aside = Object.keys(DIRTY).length;
+      toast('this page is answered by ' + d.node + ' now, not ' + DRAWN_NODE + ' (the web address moved): the settings are drawn again from ' + d.node
+        + (aside ? '; ' + aside + ' change(s) not saved were put aside' : ''), 'warn');
+      DIRTY = {};
+      drawSettings(); markDirtyCount();
+      var hh = (location.hash || '').split('/');
+      showPane(PANE || (hh[1] || 'radius'));
+      return;
+    }
     /* Typed while this was on its way (1.0.94): kept, not wiped by a redraw;
        the boxes are measured against what is saved now instead. */
     if (redraw !== false && !Object.keys(DIRTY).length) { drawSettings(); markDirtyCount(); }
@@ -2716,6 +2731,7 @@ function smsCaBlock() {
 }
 
 function drawSettings() {
+  DRAWN_NODE = SETTINGS.node || '';
   var shown = {};
   Object.keys(SETTINGS.panes).forEach(function (pane) {
     var host = $('sect-' + pane);
@@ -3022,7 +3038,7 @@ $('set-save').onclick = function () {
   document.querySelectorAll('.set-item.refused').forEach(function (n) { n.classList.remove('refused'); });
   var chain = Promise.resolve(true);
   if (Object.keys(want).length) {
-    chain = api('settings', {settings: want}).then(function (d) {
+    chain = api('settings', {settings: want, drawn_by: DRAWN_NODE}).then(function (d) {
       toast(d.message, 'good');
       /* What was changed while the save was on its way stays changed
          (1.0.61): the redraw after it threw those away without a word. */
@@ -10047,8 +10063,23 @@ function drawRbRuns() {
   var host = $('rb-runs');
   clear(host);
   var runs = RB.runs || [];
+  /* The list can be emptied, or a line taken off (1.0.110) - the backups
+     themselves stay where they went. */
+  var tools = $('rb-runs-tools');
+  if (tools) {
+    clear(tools);
+    if (runs.length) {
+      var wipe = cmdButton('Clear the list', 'trash', 'small');
+      wipe.onclick = function () {
+        confirmThen('Clear the list of backups sent?', 'Every line goes from this list (for both nodes). <b>The backups themselves stay where they went</b> - delete them under <i>Backups there</i> on a destination. Events keeps a line saying who cleared it.', 'Clear the list', function () {
+          api('rbackup', {action: 'runs_forget', all: 1}).then(function (d) { toast(d.message, 'good'); RB.runs = d.runs || []; drawRbRuns(); }).catch(oops);
+        }, true);
+      };
+      tools.appendChild(wipe);
+    }
+  }
   if (!runs.length) { host.appendChild(el('p', 'note', 'No backup sent yet.')); return; }
-  host.appendChild(listTable(['When', 'Node', 'File', 'Size', 'Where it went', 'Who'], runs, function (r) {
+  host.appendChild(listTable(['When', 'Node', 'File', 'Size', 'Where it went', 'Who', ''], runs, function (r) {
     var tr = el('tr');
     tr.appendChild(el('td', 'muted', new Date(r.at * 1000).toLocaleString(numLang())));
     tr.appendChild(noI18n(el('td', '', r.node || '')));
@@ -10068,6 +10099,13 @@ function drawRbRuns() {
     });
     tr.appendChild(w);
     tr.appendChild(noI18n(el('td', 'muted small', r.by || '')));
+    var a = el('td', 'rowtools');
+    var del = iconButton('trash', 'Take it off the list');
+    del.onclick = function () {
+      api('rbackup', {action: 'runs_forget', at: r.at, file: r.file || ''}).then(function (d) { toast(d.message, 'good'); RB.runs = d.runs || []; drawRbRuns(); }).catch(oops);
+    };
+    a.appendChild(del);
+    tr.appendChild(a);
     return tr;
   }, 'plain'));
 }
