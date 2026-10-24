@@ -49,6 +49,43 @@ once with:
 otp --ha-renamed OLD-NAME
 ```
 
+### Two machines with one name
+
+Each node must have a name of its own. Since 1.0.110 otp refuses a name that
+another node, answering now, already has. It also refuses to save a machine's
+own setting (its name, its database) from a page another node drew: the web
+address may move between loading the page and saving it. When the save reaches
+another node than the one the page was drawn by, the page draws itself again
+from the node answering now.
+
+If two machines did end up with one name (seen in 1.0.109: the name of the
+node holding the web address was saved from a page the other node had drawn),
+then:
+
+- both write the same heartbeat, so the other node is shown as *gone*;
+- the web address is shown *on both nodes at once*;
+- every page and `otp --ha-status` say *two machines call themselves NAME*,
+  and the log says it every ten minutes.
+
+Put the right name back **on the machine that took the wrong one**, as root:
+
+```bash
+cat /var/lib/otp/node-name      # the name it had when it last started - must be its own
+otp --set node_name=otp1        # its own name
+systemctl restart otp
+otp --ha-status                 # both nodes, each with its own address
+```
+
+If `/var/lib/otp/node-name` already shows the wrong name (the service was
+restarted while it had it), write the right one into it before the restart
+(`echo otp1 > /var/lib/otp/node-name`). Otherwise the restart carries the
+other node's own settings over to this one. Since 1.0.110 nothing is carried
+over to a name another machine is answering with.
+
+The certificate of the link between the databases and the TLS state of the node
+are put right by themselves within ten minutes after the restart; *Repair* in
+the link bar does it at once.
+
 The machine's own host name (`hostnamectl set-hostname`) does not matter to
 otp once `node_name` is set. *What to call this installation* (`site_name`,
 *Settings → About*) is the cluster's name at the top of the pages, not a
@@ -201,6 +238,8 @@ Then try a sign-in through the VPN.
 | *pg_hba.conf has no line of otp's ...* | the file was written by hand: add `host DB USER NEW-ADDRESS/32 scram-sha-256` (or `hostssl`) yourself, `systemctl reload postgresql`, then save again |
 | the link bar stays at *link verify-full* | the other node's certificate does not name the address yet - it makes a new one by itself within a minute; *Repair* in the bar starts both nodes again |
 | replication says *needs a look* for long | *The errors...* on the Replication card shows PostgreSQL's own words |
+| *two machines call themselves NAME* | one node took the other's name - section 1, *Two machines with one name* |
+| *this page was drawn by X, but Y answers now* | the web address moved while the page was open: load the page again, or open the node's own address to change its own settings |
 | nothing helps | the old way still works: `otp --ha-standalone --yes` on one node, then `otp --ha-setup --ha-peer NEW` and `otp --ha-join` (operations.md, section 11) - the joining node's database is replaced with the other's |
 
 Every change is written into *Events* on the node that made it, with who did
