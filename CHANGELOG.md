@@ -4,6 +4,84 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.116 — 25 October 2026
+
+**Who is locked out** (Settings → Accounts → Locked out)
+- Also what the database counts for every node: the codes sent to a person or
+  an address ("too many codes were sent") and tokens locked after wrong codes -
+  how many of how many, the time left, *Clear* one or *Clear them all*. Written
+  into Events.
+- "too many codes were sent - wait N min" says how long is really left, not the
+  whole window.
+
+## 1.0.115 — 25 October 2026
+
+**The enrolment pages**
+- Replacing a token with a confirmation asked for: *Cancel - keep the old
+  token* right under the new one. The new token is thrown away; the old one and
+  its recovery codes stay as they were (written into Events).
+- The page says what leaving it does: nothing - the old token goes on working,
+  and the next sign-in shows the new one waiting, to confirm or throw away.
+- *I want to get my codes another way* on a line of its own, not glued to the
+  button beside it.
+
+## 1.0.114 — 25 October 2026
+
+**The enrolment pages**
+- *Your recovery codes*: the box for the code looks like every other box on the
+  page - a field with its label, half the card wide, the button to send a code
+  beside it, as tall as it.
+- The words under a token of codes by e-mail or SMS are in Czech too.
+
+## 1.0.113 — 25 October 2026
+
+**Codes by SMS** (docs/codes-by-mail-and-sms.md, "When a code does not arrive")
+- *Test the connection* under the Teltonika gateway: signs in with what is
+  saved and lists its modems - operator, network, band, signal (quality, RSSI,
+  RSRP, RSRQ, SINR), the SIM, which modem sends the codes - with how long each
+  step took. Nothing is sent. Written into Events.
+- A sign-in the Teltonika leaves unanswered ("The read operation timed out") is
+  asked again once by itself; a send is still never repeated.
+- New debug switch *...every code sent by e-mail and SMS* (on with *Debug
+  log*): every request to the SMS gateway and its answer with how long it took,
+  how long a code waited for the one before it, every line of the conversation
+  with the mail server. Passwords, the gateway's token and the messages are
+  never written.
+
+**The enrolment pages**
+- The name at the top opens *About you*: what the directory said at sign-in -
+  the name, account and UPN, e-mail, mobile and phone, department and job
+  title, the realm and the groups of it that let the person in, when the
+  account ends and when the password was set, and their token.
+- *People may look at their recovery codes again* (Settings → The enrolment
+  pages; off unless switched on): after signing in, a card shows the person's
+  recovery codes - the used ones crossed out - once they type a code from the
+  token (the app's, or one sent to them now). The directory password alone
+  never shows them. Each look is written into Events.
+
+## 1.0.112 — 24 October 2026
+
+**Who is locked out** (Settings → Accounts → Locked out; docs/operations.md, section 18)
+- Every address and name with wrong attempts still counted - signing in to
+  these pages or the enrolment pages, codes typed there, password changes, the
+  tests: locked out (with the time left, counting down) or still counting
+  (how many of how many, and when they are forgotten), which names were tried
+  from an address and from which addresses a name was tried, on which node.
+- *Clear* forgets one; *Clear them all* forgets every one, on every node. The
+  other node clears its part within five seconds. Both go into Events.
+
+**Realms**
+- The list always shows what people may choose: a realm of the app alone showed
+  no tag at all, as if it had lost it.
+
+## 1.0.111 — 24 October 2026
+
+**Backups**
+- *How to put it back* (Settings → Backups): the RESTORE.md every backup
+  carries, as a backup made now would have it - read on the page (each command
+  with a copy button) and *Download RESTORE.md*, to keep apart from the backups.
+  No secret is in it.
+
 ## 1.0.110 — 24 October 2026
 
 **Two machines with one name** (docs/renaming-and-readdressing.md)

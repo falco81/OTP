@@ -443,6 +443,8 @@ function confirmThen(title, words, buttonWords, go, danger) {
 }
 var ICONS = {
   /* An envelope: mail (1.0.20). */
+  /* An open book: a guide to read (1.0.110). */
+  book: '<path d="M12 6.5C10 5 7 4.5 3.5 5v13.5C7 18 10 18.5 12 20c2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5z"/><path d="M12 6.5V20"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
   /* A phone: a code by SMS (1.0.76). */
   phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.2"/><path d="M11 18.5h2"/>',

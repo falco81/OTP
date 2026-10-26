@@ -157,7 +157,9 @@ firewall, the certificates and the encrypted link between the databases come
 back by themselves from the database.
 
 Every backup's own `RESTORE.md` has these steps with its own names, version and
-cluster in them.
+cluster in them. *How to put it back* at the top of *Settings → Backups* shows the same
+file as a backup made now would carry it, and *Download RESTORE.md* saves it -
+keep it with the password, apart from the backups.
 
 ## Troubleshooting
 

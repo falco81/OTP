@@ -71,7 +71,62 @@ function portalApp(me) {
   $('signout').onclick = function () {
     api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); });
   };
+  if ($('mebtn')) $('mebtn').onclick = aboutMe;
   drawPortal();
+}
+
+/* "About you" (1.0.113): what the directory said about the person when they
+   signed in - their name and account, how to reach them, the groups of the
+   realm that let them in, when the account and the password end. Read only;
+   wrong here, wrong in the directory - IT puts it right there. */
+function aboutMe() {
+  var a = (ME && ME.about) || {};
+  var tok = ME && ME.token;
+  modal(ME.display || ME.name, function (body) {
+    var dl = el('dl', 'about-me');
+    var row = function (label, value, mono, words) {
+      if (value === null || value === undefined || value === '') return;
+      dl.appendChild(el('dt', '', label));
+      var dd = el('dd', mono ? 'mono' : '');
+      if (value instanceof Node) dd.appendChild(value); else dd.textContent = value;
+      if (!words) noI18n(dd);       /* what the directory holds stays as it is */
+      dl.appendChild(dd);
+    };
+    var when = function (ts) {
+      if (!ts) return '';
+      var d = new Date(ts * 1000);
+      return d.toLocaleDateString(numLang()) + ' ' + d.toLocaleTimeString(numLang(), {hour: '2-digit', minute: '2-digit'});
+    };
+    row('Full name', ME.display || '');
+    row('Signed in as', a.login || ME.name, true);
+    row('The token’s name', ME.name, true);
+    row('Account', a.sam || '', true);
+    row('UPN', a.upn || '', true);
+    row('E-mail', a.mail || '', true);
+    row('Mobile', a.mobile || '', true);
+    if (a.phone && a.phone !== a.mobile) row('Phone', a.phone, true);
+    row('Department', a.department || '');
+    row('Job title', a.title || '');
+    row('Realm', a.realm || '', true);
+    if ((a.groups || []).length) {
+      var g = el('span', 'about-groups');
+      a.groups.forEach(function (x) { g.appendChild(el('span', 'tag namepill', x)); g.appendChild(document.createTextNode(' ')); });
+      row('Groups that let you in', g);
+    }
+    row('The account ends', a.expires ? when(a.expires) : '');
+    row('Password set', a.pw_set ? when(a.pw_set) : '');
+    if (tok) {
+      var tw = el('span');
+      tw.appendChild(el('span', '', {totp: 'the app', mail: 'codes by e-mail', sms: 'codes by SMS'}[tok.kind || 'totp']));
+      if (tok.dest) tw.appendChild(noI18n(el('span', 'mono', ' · ' + tok.dest)));
+      row('Your token', tw, false, true);
+      if (tok.last_used) row('Last used', when(tok.last_used));
+    }
+    body.appendChild(dl);
+    var p = el('p', 'note small');
+    p.textContent = 'As the directory had it when you signed in. Something wrong here is wrong there too - your IT department puts it right.';
+    body.appendChild(p);
+  }, [{words: 'Close', close: true}], true);
 }
 
 function stateCard(kind, title, words) {
@@ -200,6 +255,7 @@ function drawPortal() {
       host.appendChild(reissueCard());
     }
   }
+  if (ME.codes_view && tok && tok.state === 'active' && !ME.verify && !ME.may_replace) host.appendChild(codesCard(tok));
   if (ME.help) {
     var help = el('div', 'card help');
     var inner = el('div');
@@ -208,6 +264,78 @@ function drawPortal() {
     host.appendChild(help);
   }
   explainWhatWasDrawn(host);
+}
+
+/* The recovery codes shown again (1.0.113), where the administrator allows
+   it - only after a code from the token itself: the password alone that
+   signed in here never shows a second factor. */
+function codesCard(tok) {
+  var card = el('div', 'card');
+  card.appendChild(el('h2', '', 'Your recovery codes'));
+  var lede = el('p', 'note');
+  lede.appendChild(el('span', '', 'Each works once instead of a code, for the day the phone, the mail or the signal is not there - ' + num(tok.scratch_left) + ' left.'));
+  lede.appendChild(document.createTextNode(' '));
+  lede.appendChild(el('span', '', tok.kind === 'totp' ? 'To see them, type the code your app shows now.'
+    : 'To see them, press Send me a code and type the one that comes.'));
+  card.appendChild(lede);
+  /* Laid out as the card above it (1.0.113): a box as the others, the
+     button to send a code beside it, as tall as it. */
+  var f = el('form', 'codes-ask');
+  var box = textBox('', tok.kind === 'totp' ? 'the code from the app' : (tok.kind === 'mail' ? 'the code from the mail' : 'the code from the SMS'), '');
+  box.style.fontFamily = 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+  box.inputMode = 'numeric';
+  box.autocomplete = 'one-time-code';
+  var host = box;
+  if (tok.kind !== 'totp') {
+    host = el('div', 'code-ask');
+    host.appendChild(box);
+    var send = cmdButton('Send me a code', tok.kind === 'mail' ? 'mail' : 'phone', '');
+    send.type = 'button';
+    send.onclick = function () {
+      busy(send, true);
+      api('sendold', {lang: window.OTP_LANG || ''}).then(function (d) { toast('sent to ' + d.sent_to, 'good'); box.focus(); })
+        .catch(oops).then(function () { busy(send, false); });
+    };
+    host.appendChild(send);
+  }
+  var grid = el('div', 'formgrid');
+  grid.appendChild(formField(tok.kind === 'totp' ? 'A code from your app' : 'A code we send you now', host));
+  f.appendChild(grid);
+  var go = cmdButton('Show them', 'eye', 'primary');
+  go.type = 'submit';
+  var row0 = el('div', 'btnrow');
+  row0.style.marginTop = '14px';
+  row0.appendChild(go);
+  f.appendChild(row0);
+  card.appendChild(f);
+  var out = el('div');
+  card.appendChild(out);
+  f.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!box.value.trim()) { box.focus(); return; }
+    busy(go, true);
+    api('codes', {code: box.value}).then(function (d) {
+      box.value = '';
+      f.hidden = true;
+      clear(out);
+      var codes = el('div', 'codes');
+      (d.codes || []).forEach(function (c) {
+        var x = c.used ? noI18n(el('span', 'used', c.code)) : copyOnClick(noI18n(el('span', '', c.code)), c.code, 'the recovery code was copied');
+        if (c.used) x.title = 'used';
+        codes.appendChild(x);
+      });
+      out.appendChild(codes);
+      out.appendChild(el('p', 'note small', 'Crossed out: used already. Keep them somewhere safe - not beside the phone.'));
+      var row = el('div', 'btnrow');
+      var pr = cmdButton('Print them', 'download', 'small noprint');
+      pr.onclick = function () { window.print(); };
+      var hide = cmdButton('Hide them', 'close', 'small noprint');
+      hide.onclick = function () { clear(out); f.hidden = false; };
+      row.appendChild(pr); row.appendChild(hide);
+      out.appendChild(row);
+    }).catch(function (e) { oops(e); box.select(); }).then(function () { busy(go, false); });
+  });
+  return card;
 }
 
 /** The choice of a way, and where a sent code goes. */
@@ -492,9 +620,24 @@ function showMade(made, confirm, replacing) {
     var c2 = el('div', 'card noprint');
     c2.appendChild(el('h2', '', 'Type the code your phone shows now'));
     c2.appendChild(el('p', 'note', replacing
-      ? 'Until you do, the old token goes on working and this one does not.'
+      ? 'Until you do, the old token and its recovery codes go on working and this one does not. Leaving the page changes nothing: the next time you sign in here you can confirm it or throw it away.'
       : 'Until you do, the token is not in use.'));
     c2.appendChild(confirmForm(replacing));
+    if (replacing) {
+      /* Changed one's mind (1.0.115): the new token thrown away here and
+         now, the old one - and its recovery codes - stay as they were. */
+      var keep = cmdButton('Cancel - keep the old token', 'undo', '');
+      keep.onclick = function () {
+        if (keep.disabled) return;
+        busy(keep, true);
+        api('cancel', {}).then(function (d) { ME = d.me; drawPortal(); toast('the old token stays; the new one is thrown away', 'good'); })
+          .catch(function (e) { busy(keep, false); oops(e); });
+      };
+      var r = el('div', 'btnrow');
+      r.style.marginTop = '14px';
+      r.appendChild(keep);
+      c2.appendChild(r);
+    }
     host.appendChild(c2);
   } else {
     var done = el('div', 'card');
@@ -626,6 +769,9 @@ function reissueCard() {
   if (!sent && ways.length > 1) {
     var other = el('label', 'check small');
     other.style.marginTop = '10px';
+    other.style.display = 'flex';       /* a line of its own (1.0.115), not glued to the button */
+    other.style.alignItems = 'center';
+    other.style.gap = '8px';
     var cb = el('input'); cb.type = 'checkbox';
     other.appendChild(cb);
     other.appendChild(el('span', '', 'I want to get my codes another way (e-mail or SMS)'));

@@ -2555,7 +2555,7 @@ var PANE_LAYOUT = {
        {when: 'teltonika', title: 'The Teltonika gateway', icon: 'router',
         lede: 'TRB140, RUT… on the network: sent through its own API, the way zigmon sends its texts.',
         keys: ['sms_tel_host', 'sms_tel_api', 'sms_tel_modem', 'sms_tel_https', 'sms_tel_user', 'sms_tel_password', 'sms_tel_verify'],
-        extra: smsCaBlock},
+        extra: smsTelExtra},
        {when: 'http', title: 'An HTTP gateway', icon: 'net',
         lede: 'An operator’s or a service’s HTTP API: where, how, with what key, and what it answers when a text went.',
         keys: ['sms_url', 'sms_method', 'sms_token', 'sms_ok_status', 'sms_body', 'sms_headers'], wide: {sms_url: 3, sms_token: 2, sms_ok_status: 2}},
@@ -2643,6 +2643,72 @@ function applySubs() {
         : 'The gateway’s certificate is not checked: anybody between this server and the gateway can stand in for it and read its password and every code sent. Switch the check on and read its certificate from it below.';
     }
   }
+}
+
+/* Try the gateway (1.0.113): reached, signed in, its modems and what each
+   says about the network - nothing is sent. With what is saved: changes not
+   saved yet are asked to be saved first. */
+function smsTelExtra() {
+  var f = document.createDocumentFragment();
+  var box = el('div', 'set-ca tel-test');
+  var head = el('div', 'set-ca-head');
+  var hi = el('span', 'set-sec-icon'); hi.innerHTML = iconMarkup('pulse', 15);
+  head.appendChild(hi);
+  head.appendChild(el('b', '', 'Is it talking to us?'));
+  var go = cmdButton('Test the connection', 'play', 'small admin-only');
+  go.classList.add('right');
+  head.appendChild(go);
+  box.appendChild(head);
+  box.appendChild(el('div', 'says set-sub-lede', 'Signs in to the gateway with what is saved above and asks how its modems are - operator, signal, SIM. Nothing is sent; a test SMS goes from a token’s card.'));
+  var out = el('div', 'tel-out');
+  box.appendChild(out);
+  go.onclick = function () {
+    var unsaved = Object.keys(DIRTY).filter(function (k) { return /^sms_/.test(k); });
+    if (unsaved.length) { toast('save the changes first - the test uses what is saved', 'warn'); return; }
+    busy(go, true);
+    clear(out);
+    out.appendChild(el('p', 'note', 'Asking the gateway…'));
+    api('mail', {action: 'tel_test'}).then(function (d) {
+      busy(go, false);
+      clear(out);
+      var steps = el('div', 'tel-steps');
+      (d.steps || []).forEach(function (st) {
+        var r = el('div', 'tel-step ' + (st.ok ? 'good' : 'bad'));
+        r.appendChild(el('span', 'tel-mark', st.ok ? '✓' : '✗'));
+        r.appendChild(el('b', '', st.what));
+        if (st.secs) r.appendChild(noI18n(el('span', 'muted small', ' ' + String(st.secs).replace('.', numLang() === 'cs' ? ',' : '.') + ' s')));
+        if (st.said) {
+          r.appendChild(document.createTextNode(' – '));
+          r.appendChild(el('span', 'small' + (st.ok ? ' muted' : ' bad'), st.said));
+        }
+        steps.appendChild(r);
+      });
+      out.appendChild(steps);
+      (d.modems || []).forEach(function (m) {
+        var card = el('div', 'tel-modem' + (m.sends ? ' sends' : ''));
+        var t = el('div', 'tel-modem-head');
+        t.appendChild(noI18n(el('b', 'mono', m.id || '?')));
+        if (m.sends) t.appendChild(el('span', 'tag ok', 'sends the codes'));
+        card.appendChild(t);
+        var dl = el('dl', 'tel-facts');
+        (m.fields || []).forEach(function (kv) {
+          if (kv[0] === 'id') return;
+          var one = el('div', 'tel-fact');
+          one.appendChild(el('dt', '', kv[0]));
+          one.appendChild(noI18n(el('dd', 'mono', kv[1])));
+          dl.appendChild(one);
+        });
+        card.appendChild(dl);
+        out.appendChild(card);
+      });
+      out.appendChild(el('p', 'note small ' + (d.ok ? (d.checked ? 'good' : 'warn') : 'bad'), d.ok
+        ? 'The gateway answers' + (d.checked ? ', its certificate checked' : (d.https ? ' - its certificate NOT checked' : ' - over plain HTTP')) + ' (' + num(d.took_ms) + ' ms).'
+        : 'The gateway cannot send codes like this - see the step marked ✗.'));
+    }).catch(function (e) { busy(go, false); clear(out); oops(e); });
+  };
+  f.appendChild(box);
+  f.appendChild(smsCaBlock());
+  return f;
 }
 
 /* The certificates the Teltonika gateway is checked against (1.0.89): its
@@ -3236,9 +3302,11 @@ function loadRealms() {
         }
         tr.appendChild(tk);
         var mc = el('td', '', MODE_WORDS[r.auth_mode]);
-        if ((r.methods || ['totp']).join() !== 'totp') {
+        /* Always said (1.0.112): a realm of the app alone showed no tag at
+           all and looked like one that had lost it. */
+        {
           mc.appendChild(el('br'));
-          (r.methods || []).forEach(function (m) { mc.appendChild(el('span', 'tag ' + kindTagClass(m), METHOD_WORDS[m] || m)); mc.appendChild(document.createTextNode(' ')); });
+          ((r.methods || []).length ? r.methods : ['totp']).forEach(function (m) { mc.appendChild(el('span', 'tag ' + kindTagClass(m), METHOD_WORDS[m] || m)); mc.appendChild(document.createTextNode(' ')); });
         }
         tr.appendChild(mc);
         var dc = el('td');
@@ -4030,6 +4098,7 @@ function loadUsers() {
     }));
     explainWhatWasDrawn(host);
   }).catch(oops);
+  loadLockouts();
   if (ADMIN) api('sessions').then(function (d) {
     var host = $('se-table');
     clear(host);
@@ -4054,6 +4123,113 @@ function loadUsers() {
       return tr;
     }));
   }).catch(oops);
+}
+/* Locked out (1.0.112): who has wrong attempts counted, on which node, how
+   long the lockout still runs - cleared one by one or all at once. Fetched
+   again every 10 s while the card is on the screen; the time left counts
+   down every second in between. */
+var LO = {data: null, skew: 0, fetched: 0, timer: null};
+function loadLockouts() {
+  if (!ADMIN || !$('lo-table')) return;
+  api('lockouts').then(function (d) {
+    LO.data = d;
+    LO.skew = d.now - Date.now() / 1000;
+    LO.fetched = Date.now();
+    drawLockouts();
+    if (!LO.timer) LO.timer = setInterval(loTick, 1000);
+  }).catch(function (e) { if (LO.timer) { clearInterval(LO.timer); LO.timer = null; } oops(e); });
+}
+function loTick() {
+  var card = $('lo-card');
+  if (!card || !card.offsetParent || document.hidden) { clearInterval(LO.timer); LO.timer = null; return; }
+  if (Date.now() - LO.fetched > 10000) { LO.fetched = Date.now(); loadLockouts(); return; }
+  drawLockouts();
+}
+function loNow() { return Date.now() / 1000 + LO.skew; }
+function loClear(body, words) {
+  api('lockouts', body).then(function (r) {
+    toast((words || r.message) + ((r.told || []).length ? ' - ' + r.told.join(', ') + ' clears it within a few seconds' : ''), 'good');
+    loadLockouts();
+    /* The other node clears its part at its next turn (5 s). */
+    if ((r.told || []).length) setTimeout(loadLockouts, 7000);
+  }).catch(oops);
+}
+function drawLockouts() {
+  var d = LO.data;
+  var host = $('lo-table');
+  if (!d || !host) return;
+  var now = loNow();
+  var rows = [];
+  (d.nodes || []).forEach(function (n) {
+    (n.rows || []).forEach(function (r) {
+      if (r.forgets <= now) return;
+      var x = Object.assign({}, r);
+      x.node = n.node; x.stale = !n.fresh;
+      if (x.locked && x.until <= now) x.locked = false;
+      rows.push(x);
+    });
+  });
+  rows.sort(function (a, b) { return (b.locked - a.locked) || (b.last - a.last); });
+  var tools = $('lo-tools');
+  clear(tools);
+  var locked = rows.filter(function (r) { return r.locked; }).length;
+  if (rows.length) {
+    if (locked) { var lc = el('span', 'small bad', num(locked) + ' locked out'); lc.style.marginRight = '12px'; tools.appendChild(lc); }
+    var all = cmdButton('Clear them all', 'broom', 'small');
+    all.onclick = function () {
+      confirmThen('Clear every lockout?', 'Every count of wrong attempts is forgotten' + (d.cluster ? ' on every node' : '')
+        + ' - the locked out may try again at once. Events keeps a line saying who did it.', 'Clear them all', function () {
+        loClear({action: 'clear_all'});
+      }, false);
+    };
+    tools.appendChild(all);
+  }
+  clear(host);
+  if (!rows.length) { host.appendChild(el('p', 'note good', 'Nobody is locked out, and no wrong attempt is being counted.')); return; }
+  var heads = ['State', 'Who', 'Where', 'How many', 'Tried'].concat(d.cluster ? ['Node'] : []).concat(['Last', '']);
+  host.appendChild(listTable(heads, rows, function (r) {
+    var tr = el('tr', r.locked ? 'lo-locked' : '');
+    var st = el('td');
+    if (r.locked) {
+      st.appendChild(el('span', 'tag crit', 'locked out'));
+      st.appendChild(el('div', 'small', span(r.until - now) + ' left'));
+    } else {
+      st.appendChild(el('span', 'tag load', 'counting'));
+      st.appendChild(el('div', 'small muted', 'forgotten in ' + span(r.forgets - now)));
+    }
+    tr.appendChild(st);
+    var who = el('td');
+    who.appendChild(noI18n(el('div', 'mono', r.who)));
+    who.appendChild(el('div', 'small muted', r.by === 'address' ? 'an address' : (r.by === 'token' ? 'a token' : 'a name')));
+    tr.appendChild(who);
+    tr.appendChild(el('td', 'small', r.what));
+    var w = el('td', 'num');
+    w.appendChild(noI18n(el('b', '', num(r.fails))));
+    w.appendChild(document.createTextNode(' / ' + num(r.limit)));
+    tr.appendChild(w);
+    var tried = el('td', 'small');
+    if ((r.others || []).length) {
+      tried.appendChild(el('div', 'muted', r.by === 'address' ? 'names:' : 'from:'));
+      tried.appendChild(noI18n(el('div', 'mono', r.others.slice().reverse().join(', '))));
+    } else tried.textContent = '–';
+    tr.appendChild(tried);
+    if (d.cluster) {
+      /* Counted in the database (1.0.116): the same for every node. */
+      var nd = r.node === '*' ? el('td', 'small muted', 'every node') : noI18n(el('td', 'mono small', r.node));
+      if (r.stale) { nd.appendChild(document.createTextNode(' ')); nd.appendChild(el('span', 'tag warn', 'not heard from')); }
+      tr.appendChild(nd);
+    }
+    tr.appendChild(el('td', 'muted small', ago(r.last - LO.skew)));
+    var a = el('td', 'rowtools');
+    var x = cmdButton('Clear', 'broom', 'small');
+    explain(x, 'Its count of wrong attempts is forgotten: it may try again at once.');
+    x.onclick = function () {
+      loClear({action: 'clear', node: r.node, kind: r.kind, who: r.who}, 'cleared: ' + r.who);
+    };
+    a.appendChild(x);
+    tr.appendChild(a);
+    return tr;
+  }, 'plain'));
 }
 function userDo(body) {
   /* Drawn again either way (1.0.44): a refused change stayed in its box. */
@@ -5940,7 +6116,7 @@ var NODE_GROUPS = [
   ['RADIUS and the ports', ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port']],
   ['What it calls itself', ['mail_helo', 'isemon_hostname']],
   ['Its copies of the database', ['backup_daily', 'backup_at', 'backup_keep']],
-  ['Writing down more (debug)', ['debug', 'debug_radius', 'debug_ldap', 'debug_api']]];
+  ['Writing down more (debug)', ['debug', 'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes']]];
 var NODE_NAMES = {backup_daily: 'A copy of the database every day', backup_at: 'Made at',
                   backup_keep: 'Copies kept', radius_bind: 'RADIUS listens on the address',
                   isemon_hostname: 'The name isemon files it under'};
@@ -9955,6 +10131,10 @@ function drawRbTop() {
   var back = cmdButton('Put one back…', 'undo', '');
   back.onclick = rbPutBackFile;
   acts.appendChild(back);
+  var guide = cmdButton('How to put it back', 'book', '');
+  explain(guide, 'RESTORE.md - the exact steps to bring everything back from a backup, filled in with this installation, as every backup carries it. To read now, and to keep apart from the backups.');
+  guide.onclick = rbGuide;
+  acts.appendChild(guide);
   head.appendChild(acts);
   card.appendChild(head);
   var going = el('div', 'going wide');
@@ -9964,6 +10144,116 @@ function drawRbTop() {
   card.appendChild(going);
   if (!d.tools.openssl) card.appendChild(el('p', 'note bad', 'openssl is not on this machine: backups cannot be locked (dnf install openssl).'));
   host.appendChild(card);
+}
+/* RESTORE.md on the pages (1.0.110): read here, downloaded as the file. */
+function rbGuide() {
+  api('rbackup', {action: 'restore_md'}).then(function (d) {
+    modal('How to put a backup back', function (body) {
+      var lede = el('p', 'note');
+      lede.innerHTML = 'The <code>RESTORE.md</code> every backup carries, as one made now would have it. Keep a copy apart from the backups - with the password of the backups in a vault.';
+      body.appendChild(lede);
+      var doc = noI18n(el('div', 'md-doc'));
+      doc.appendChild(mdRender(d.md));
+      body.appendChild(doc);
+    }, [{words: 'Close', close: true},
+        {words: 'Download RESTORE.md', cls: 'primary', icon: 'download', go: function () {
+          var a = el('a');
+          a.href = URL.createObjectURL(new Blob([d.md], {type: 'text/markdown;charset=utf-8'}));
+          a.download = d.name || 'RESTORE.md';
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+        }}], 'large');
+  }).catch(oops);
+}
+/* Markdown as the guides are written: headings, paragraphs, lists, tables,
+   fenced code (with a copy button), `code`, **bold**, *italic*. Built from
+   elements - nothing in the text becomes HTML. */
+function mdInline(text) {
+  var frag = document.createDocumentFragment();
+  var re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g, last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+    var t = m[0];
+    if (t.charAt(0) === '`') frag.appendChild(el('code', '', t.slice(1, -1)));
+    else if (t.slice(0, 2) === '**') frag.appendChild(el('b', '', t.slice(2, -2)));
+    else frag.appendChild(el('i', '', t.slice(1, -1)));
+    last = re.lastIndex;
+  }
+  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+  return frag;
+}
+function mdRender(md) {
+  var out = document.createDocumentFragment();
+  var lines = String(md || '').split('\n'), i = 0;
+  var para = [];
+  var flush = function () {
+    if (!para.length) return;
+    var p = el('p');
+    p.appendChild(mdInline(para.join(' ')));
+    out.appendChild(p);
+    para = [];
+  };
+  while (i < lines.length) {
+    var ln = lines[i];
+    if (/^```/.test(ln)) {
+      flush();
+      var code = [];
+      i += 1;
+      while (i < lines.length && !/^```/.test(lines[i])) { code.push(lines[i]); i += 1; }
+      i += 1;
+      var wrap = el('div', 'md-code');
+      var pre = el('pre', '', code.join('\n'));
+      wrap.appendChild(pre);
+      var cp = iconButton('copy', 'Copy');
+      (function (txt, b) {
+        b.onclick = function () {
+          (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(function () { toast('copied', 'good'); }).catch(function () { toast('select it and copy it by hand'); });
+        };
+      })(code.join('\n'), cp);
+      wrap.appendChild(cp);
+      out.appendChild(wrap);
+      continue;
+    }
+    var h = /^(#{1,4})\s+(.*)$/.exec(ln);
+    if (h) { flush(); var hn = el('h' + Math.min(6, h[1].length + 2)); hn.appendChild(mdInline(h[2])); out.appendChild(hn); i += 1; continue; }
+    if (/^\|/.test(ln)) {
+      flush();
+      var rows = [];
+      while (i < lines.length && /^\|/.test(lines[i])) { rows.push(lines[i]); i += 1; }
+      var tbl = el('table', 'md-table');
+      var tb = el('tbody');
+      rows.forEach(function (r, n) {
+        if (/^\|[\s|:-]+\|$/.test(r)) return;
+        var cells = r.replace(/^\|/, '').replace(/\|$/, '').split('|');
+        if (n === 0 && cells.every(function (c) { return !c.trim(); })) return;
+        var tr = el('tr');
+        cells.forEach(function (c) { var td = el(n === 0 && rows.length > 1 && /^\|[\s|:-]+\|$/.test(rows[1]) ? 'th' : 'td'); td.appendChild(mdInline(c.trim())); tr.appendChild(td); });
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      out.appendChild(tbl);
+      continue;
+    }
+    if (/^\s*[-*] /.test(ln)) {
+      flush();
+      var ul = el('ul');
+      var li = null;
+      while (i < lines.length && (/^\s*[-*] /.test(lines[i]) || (li && /^\s{2,}\S/.test(lines[i])))) {
+        if (/^\s*[-*] /.test(lines[i])) { li = el('li'); li._t = lines[i].replace(/^\s*[-*] /, ''); ul.appendChild(li); }
+        else li._t += ' ' + lines[i].trim();
+        i += 1;
+      }
+      Array.prototype.forEach.call(ul.children, function (x) { x.appendChild(mdInline(x._t)); });
+      out.appendChild(ul);
+      continue;
+    }
+    if (/^---+\s*$/.test(ln)) { flush(); out.appendChild(el('hr')); i += 1; continue; }
+    if (!ln.trim()) { flush(); i += 1; continue; }
+    para.push(ln.trim());
+    i += 1;
+  }
+  flush();
+  return out;
 }
 function rbWatch() {
   if (RB_POLL) return;

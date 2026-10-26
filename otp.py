@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.110'
+__version__ = '1.0.116'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -141,6 +141,7 @@ DEFAULTS = {
     'portal_reissue': 1,
     'portal_show_secret': 1,
     'portal_scratch': 1,
+    'portal_codes_view': 0,
     'portal_session_min': 15,
     'portal_help': '',
     'portal_tries': 5,
@@ -252,6 +253,7 @@ DEFAULTS = {
     'debug_radius': 1,
     'debug_ldap': 1,
     'debug_api': 0,
+    'debug_codes': 1,
 }
 
 # The settings that are a database's own address. A database cannot hold the
@@ -270,7 +272,7 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # name isemon files its lines under and the debug switches.
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
              'isemon_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
-             'debug_radius', 'debug_ldap', 'debug_api')
+             'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
 # when, whether, how many.
@@ -302,7 +304,7 @@ TUNABLE = {
     'token_names_case': ('lower', 'as-typed'),
     'portal': (0, 1), 'portal_who': ('realm_groups', 'groups', 'anyone'),
     'portal_confirm': (0, 1), 'portal_reissue': (0, 1), 'portal_show_secret': (0, 1),
-    'portal_scratch': (0, 1), 'portal_session_min': (1, 240),
+    'portal_scratch': (0, 1), 'portal_codes_view': (0, 1), 'portal_session_min': (1, 240),
     'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
@@ -314,7 +316,7 @@ TUNABLE = {
     'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
-    'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1),
+    'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
     'mail_mode': ('off', 'smtp', 'direct'), 'smtp_port': (0, 65535),
     'smtp_security': ('starttls', 'tls', 'starttls-if', 'none'),
     'db_tls': ('', 'require', 'verify-ca', 'verify-full'),
@@ -450,6 +452,7 @@ NAMES = {
     'portal_reissue': 'People may replace their own token',
     'portal_show_secret': 'Show the key as text beside the QR code',
     'portal_scratch': 'Show the recovery codes',
+    'portal_codes_view': 'People may look at their recovery codes again',
     'portal_session_min': 'An enrolment sign-in lasts (min)',
     'portal_help': 'Help text on the enrolment pages',
     'portal_tries': 'Wrong passwords on the enrolment pages before a pause',
@@ -499,6 +502,7 @@ NAMES = {
     'debug_radius': '...every RADIUS request step by step',
     'debug_ldap': '...every question asked of the directory',
     'debug_api': '...every API call',
+    'debug_codes': '...every code sent by e-mail and SMS',
 }
 
 SAYS = {
@@ -718,6 +722,7 @@ SAYS = {
                       'Somebody who lost both has to ask an administrator.',
     'portal_show_secret': 'The key written out as letters as well, for typing into an '
                           'application on a machine with no camera.',
+    'portal_codes_view': 'After signing in, a person may look at their recovery codes again - which are left and which are used - after proving they have the token: a code from the app, or one sent to them now. The directory password alone never shows them. Off: they are shown once, when the token is made.',
     'portal_scratch': 'Show the recovery codes to the person who enrolled. Off: they are '
                       'still made, and only an administrator can see new ones.',
     'portal_session_min': 'How long somebody stays signed in on the enrolment pages. Short, '
@@ -817,6 +822,7 @@ SAYS = {
     'debug_ldap': 'Every question asked of a directory and how many answers came back. Never '
                   'a password.',
     'debug_api': 'Every API call the web pages make.',
+    'debug_codes': 'Every code sent by e-mail and SMS, step by step: each request to the SMS gateway and its answer with how long it took, each line of the conversation with the mail server. Passwords, tokens and the messages themselves are never written.',
 }
 
 # Which settings sit on which page of Settings, in order. A setting the
@@ -833,7 +839,7 @@ PANES = {
                'scratch_count', 'scratch_digits', 'token_names_case'],
     'portal': ['portal', 'portal_title', 'portal_realm', 'portal_hint', 'portal_who',
                'portal_groups', 'portal_confirm', 'portal_reissue', 'portal_show_secret',
-               'portal_scratch', 'portal_session_min', 'portal_tries', 'portal_wait_min',
+               'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
     'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
                'isemon_events', 'isemon_max_bytes', 'ship_files'],
@@ -856,7 +862,7 @@ PANES = {
              'mail_from_name', 'mail_reply_to', 'mail_helo', 'mail_lang', 'mail_codes',
              'mail_retry_hours', 'mail_keep_days'],
     'about': ['site_name', 'ui_lang', 'api_port', 'debug', 'debug_radius', 'debug_ldap',
-              'debug_api'],
+              'debug_api', 'debug_codes'],
 }
 
 # A setting that only means something while another one says so. Shown
@@ -880,7 +886,7 @@ ONLY_WHEN = {
     'backup_keep': ['backup_daily', '1'], 'backup_at': ['backup_daily', '1'],
     'rbackup_at': ['rbackup', '1'], 'rbackup_every': ['rbackup', '1'],
     'rbackup_day': ['rbackup_every', 'weekly'],
-    'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'],
+    'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
     'smtp_security': ['mail_mode', 'smtp'], 'smtp_auth': ['mail_mode', 'smtp'],
     'smtp_user': ['smtp_auth', 'none-not'], 'smtp_password': ['smtp_auth', 'none-not'],
@@ -6774,6 +6780,8 @@ class Directory(object):
                      'department': first('department'), 'title': first('title'),
                      # For a code by SMS (1.0.76): what the enrolment page offers.
                      'mobile': first('mobile') or first('telephoneNumber'),
+                     'phone': first('telephoneNumber'),
+                     'pw_set': ad_time(first('pwdLastSet')),
                      'many': len(rows) > 1}
         with self.lock:
             self.cache[key] = (time.time(), entry)
@@ -8273,6 +8281,23 @@ def code_send_allowed(store, name):
     return False
 
 
+def code_send_wait_min(store, name):
+    """How many minutes until one more code may go to `name` (1.0.116) - not
+    the whole window, which the page said even when a minute was left."""
+    span = 60 * int(CONFIG.get('code_send_window_min') or 15)
+    limit = int(CONFIG.get('code_send_max') or 5)
+    try:
+        times = sorted(float(x) for x in json.loads(store.get_meta('codesent:' + norm_name(name))
+                                                    or '[]'))
+    except (ValueError, TypeError):
+        times = []
+    t = time.time()
+    times = [x for x in times if t - x < span]
+    if len(times) < limit:
+        return 1
+    return max(1, int(-(-(times[len(times) - limit] + span - t) // 60)))
+
+
 # ---- sending -------------------------------------------------------------------------
 class SmsError(RuntimeError):
     pass
@@ -8431,11 +8456,54 @@ def _tel_password():
     return (unseal_secret(pw) or '') if pw else ''
 
 
+class _TelAnswer(object):
+    """An answer already read - so that it could be written into the log."""
+
+    def __init__(self, status, body):
+        self.status, self._body = status, body
+
+    def read(self, n=-1):
+        got = self._body if n is None or n < 0 else self._body[:n]
+        self._body = b'' if n is None or n < 0 else self._body[n:]
+        return got
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _tel_hidden(words):
+    """A request or an answer as the debug log may hold it: no password,
+    no token (1.0.113)."""
+    words = re.sub(r'(?i)("(?:password|token)"\s*:\s*")[^"]*', r'\1***', words)
+    words = re.sub(r'(?i)((?:password|token)=)[^&\s]*', r'\1***', words)
+    return re.sub(r'(?i)(Bearer )\S+', r'\1***', words)
+
+
 def _tel_open(req, timeout=20.0):
+    loud = debugging('codes')
+    began = time.time()
+    if loud:
+        body = req.data.decode('utf-8', 'replace') if isinstance(req.data, bytes) else ''
+        log('sms: -> %s %s%s (waits %d s)' % (req.get_method(), _tel_hidden(req.full_url),
+                                             (' ' + _tel_hidden(body)[:300]) if body else '',
+                                             timeout), 'debug')
     try:
-        return urllib.request.urlopen(req, timeout=timeout, context=_tel_ssl()
-                                      if req.full_url.startswith('https') else None)
+        r = urllib.request.urlopen(req, timeout=timeout, context=_tel_ssl()
+                                   if req.full_url.startswith('https') else None)
+        if not loud:
+            return r
+        with r:
+            body = r.read(65536)
+            status = getattr(r, 'status', 200)
+        log('sms: <- HTTP %s in %.2f s: %s' % (status, time.time() - began, _tel_hidden(
+            body.decode('utf-8', 'replace'))[:400]), 'debug')
+        return _TelAnswer(status, body)
     except urllib.error.URLError as e:
+        if loud:
+            _tel_said_failed(e, began)
         # The certificate refused (1.0.89): nothing was sent, and the page
         # says what to do about it.
         if isinstance(getattr(e, 'reason', None), ssl.SSLCertVerificationError):
@@ -8444,6 +8512,23 @@ def _tel_open(req, timeout=20.0):
                            'by e-mail and SMS, or switch Check its certificate off'
                            % (getattr(e.reason, 'verify_message', '') or e.reason))
         raise
+    except Exception as e:                              # noqa: BLE001
+        if loud:
+            _tel_said_failed(e, began)
+        raise
+
+
+def _tel_said_failed(e, began):
+    extra = ''
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            said = e.read(400)
+            extra = ': ' + _tel_hidden(said.decode('utf-8', 'replace'))
+            e.read = (lambda b: (lambda n=-1: b))(said)         # the caller reads it too
+        except Exception:                               # noqa: BLE001
+            pass
+    log('sms: <- FAILED after %.2f s: %s %s%s' % (time.time() - began, type(e).__name__,
+                                               getattr(e, 'reason', e), extra), 'debug')
 
 
 def _tel_never_arrived(e):
@@ -8483,16 +8568,29 @@ def _tel_token(fresh=False):
         return TELTONIKA['token']
     body = json.dumps({'username': CONFIG.get('sms_tel_user') or 'admin',
                        'password': _tel_password()}).encode()
-    req = urllib.request.Request(_tel_url('/api/login'), data=body, method='POST',
-                                 headers={'Content-Type': 'application/json'})
-    try:
-        with _tel_open(req, 15) as r:
-            answer = json.loads(r.read() or b'{}')
-    except urllib.error.HTTPError as e:
-        raise SmsError('the Teltonika would not let otp in (HTTP %d) - check its user and '
-                       'password, and that the user may use the API' % e.code)
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        raise SmsError('the Teltonika could not be reached: %s' % getattr(e, 'reason', e))
+    tries = 0
+    while True:
+        tries += 1
+        req = urllib.request.Request(_tel_url('/api/login'), data=body, method='POST',
+                                     headers={'Content-Type': 'application/json'})
+        try:
+            with _tel_open(req, 15) as r:
+                answer = json.loads(r.read() or b'{}')
+            break
+        except urllib.error.HTTPError as e:
+            raise SmsError('the Teltonika would not let otp in (HTTP %d) - check its user and '
+                           'password, and that the user may use the API' % e.code)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            # Signing in is asked again once (1.0.113): a box busy with the
+            # modem leaves a login unanswered now and then, and asking again
+            # sends nothing twice.
+            if tries < 2 and not isinstance(e, ValueError):
+                log('sms: the Teltonika did not answer the sign-in (%s) - asked again'
+                    % getattr(e, 'reason', e), 'warn')
+                time.sleep(1)
+                continue
+            raise SmsError('the Teltonika could not be reached%s: %s' % (
+                ' (asked twice)' if tries > 1 else '', getattr(e, 'reason', e)))
     data = answer.get('data') or {}
     token = data.get('token') or answer.get('token') or ''
     if not token:
@@ -8548,12 +8646,27 @@ def tel_send(to, text):
     """One SMS through a Teltonika, one at a time: the box sends one message
     after another, and a second asked for at once is taken and then left
     unanswered for a minute."""
+    waited = time.time()
     with TELTONIKA_LOCK:
         gap = 2.0 - (time.time() - TELTONIKA['last'])
         if gap > 0:
             time.sleep(gap)
+        loud = debugging('codes')
+        if loud:
+            log('sms: to %s, %d characters, through the Teltonika %s (%s), after %.1f s in the '
+                'queue' % (to[:-3] + '***' if len(to) > 6 else to, len(text),
+                           CONFIG.get('sms_tel_host'), CONFIG.get('sms_tel_api') or 'rest',
+                           time.time() - waited), 'debug')
+        began = time.time()
         try:
-            return _tel_send(to, text)
+            said = _tel_send(to, text)
+            if loud:
+                log('sms: done in %.1f s - %s' % (time.time() - began, said), 'debug')
+            return said
+        except Exception as e:
+            if loud:
+                log('sms: FAILED after %.1f s - %s' % (time.time() - began, e), 'debug')
+            raise
         finally:
             TELTONIKA['last'] = time.time()
 
@@ -8641,6 +8754,98 @@ def tel_check():
     _tel_token(fresh=True)
     TELTONIKA['modem'] = None
     return 'the Teltonika let otp in; its modem is %s' % _tel_modem()
+
+
+# What a modem's status says, in the order shown (1.0.113). RutOS 7 names
+# them so; a field it does not have is left out.
+TEL_MODEM_FIELDS = (
+    ('name', 'Modem'), ('model', 'Model'), ('operator', 'Operator'),
+    ('ntype', 'Network'), ('conntype', 'Connection'), ('band', 'Band'),
+    ('state', 'State'), ('operator_state', 'Registered'), ('netstate', 'Network state'),
+    ('active_sim', 'SIM in use'), ('simstate', 'SIM'), ('pinstate', 'PIN'),
+    ('signal_quality', 'Signal quality (%)'), ('rssi', 'RSSI (dBm)'), ('rsrp', 'RSRP (dBm)'),
+    ('rsrq', 'RSRQ (dB)'), ('sinr', 'SINR (dB)'), ('temperature', 'Temperature (C)'),
+    ('volte', 'VoLTE'), ('sms_center_address', 'SMS centre'), ('imei', 'IMEI'),
+    ('version', 'Modem firmware'))
+
+
+def tel_modem_words(row):
+    out = [('id', str(row.get('id') or ''))]
+    for k, words in TEL_MODEM_FIELDS:
+        v = row.get(k)
+        if v in (None, '', [], {}):
+            continue
+        if isinstance(v, (dict, list)):
+            v = json.dumps(v)[:80]
+        out.append((words, str(v)[:80]))
+    if len(out) < 4:
+        # Another firmware, other names: what it said, plainly.
+        for k, v in list(row.items())[:12]:
+            if k != 'id' and isinstance(v, (str, int, float)) and str(v) != '':
+                out.append((str(k)[:30], str(v)[:80]))
+    return out
+
+
+def tel_test():
+    """The gateway tried, step by step, without sending anything (1.0.113):
+    reached, signed in, its modems and what each says about the network."""
+    mode = (CONFIG.get('sms_tel_api') or 'rest')
+    host = str(CONFIG.get('sms_tel_host') or '').strip()
+    out = {'ok': False, 'steps': [], 'modems': [], 'api': mode, 'host': host,
+           'https': bool(CONFIG.get('sms_tel_https')),
+           'checked': bool(CONFIG.get('sms_tel_https') and CONFIG.get('sms_tel_verify'))}
+    if not host:
+        out['steps'].append({'what': 'the address', 'ok': False, 'secs': 0,
+                             'said': 'no address of the gateway is saved'})
+        return out
+
+    def step(what, fn):
+        t = time.time()
+        try:
+            got = fn()
+        except SmsError as e:
+            out['steps'].append({'what': what, 'ok': False, 'secs': round(time.time() - t, 2),
+                                 'said': str(e)})
+            return None, False
+        out['steps'].append({'what': what, 'ok': True, 'secs': round(time.time() - t, 2),
+                             'said': got if isinstance(got, str) else ''})
+        return got, True
+
+    with TELTONIKA_LOCK:
+        if mode == 'cgi':
+            _x, ok = step('signing in (Post/Get)', tel_check)
+            out['ok'] = ok
+            return out
+        TELTONIKA['token'] = None
+        TELTONIKA['modem'] = None
+        _x, ok = step('signing in', lambda: (_tel_token(fresh=True) and 'let in as %s'
+                                            % (CONFIG.get('sms_tel_user') or 'admin')))
+        if not ok:
+            return out
+        rows, ok = step('its modems', lambda: _tel_rest('/modems/status'))
+        if not ok:
+            return out
+        if isinstance(rows, dict):
+            rows = [rows]
+        rows = [r for r in (rows or []) if isinstance(r, dict)]
+        want = str(CONFIG.get('sms_tel_modem') or '').strip()
+        chosen = want or (str(rows[0].get('id')) if rows and rows[0].get('id') else '')
+        for r in rows[:6]:
+            out['modems'].append({'id': str(r.get('id') or ''), 'sends': str(r.get('id')) == chosen,
+                                  'fields': tel_modem_words(r)})
+        out['steps'][-1]['said'] = '%d modem(s)' % len(rows)
+        if want and not any(str(r.get('id')) == want for r in rows):
+            out['steps'].append({'what': 'the modem set', 'ok': False, 'secs': 0,
+                                 'said': 'the gateway has no modem %s - it has %s' % (
+                                     want, ', '.join(str(r.get('id')) for r in rows) or 'none')})
+            return out
+        if not chosen:
+            out['steps'].append({'what': 'the modem', 'ok': False, 'secs': 0,
+                                 'said': 'the gateway named no modem'})
+            return out
+        TELTONIKA['modem'] = chosen
+        out['ok'] = True
+    return out
 
 
 def sms_send(to, text):
@@ -10882,6 +11087,10 @@ class Daemon(object):
         self.serial = 0
         self.conf_serial = store.get_meta('conf_serial', '0')
         self.login_fails = collections.defaultdict(list)
+        # What each count is (1.0.112): its limit, how long it lasts, and the
+        # names tried from an address / the addresses a name was tried from -
+        # for Settings - Accounts - Locked out.
+        self.login_info = {}
         if serve:
             self.shipper = Shipper()
             self.tokens.on_check = self.shipper.token_line
@@ -11365,6 +11574,11 @@ class Daemon(object):
                         readdress_tick(self.store, self)    # told a new address (1.0.106)
                     except Exception as e:      # noqa: BLE001
                         log('a new address of the cluster: %s' % e, 'warn')
+                try:
+                    lockouts_tick(self)         # who is locked out, for the pages (1.0.112)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('lockouts-tick', 'the list of who is locked out: %s' % e,
+                                'warn', every=600)
                 try:
                     ha_watch_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
@@ -13508,6 +13722,24 @@ class _Deadline(object):
         t.start()
         self._watchman = t
 
+    # The conversation into the log, with "Debug log" and "...every code sent"
+    # on (1.0.113): what was said each way, never a password or the message.
+    _SAFE = ('EHLO', 'HELO', 'MAIL', 'RCPT', 'DATA', 'QUIT', 'STARTTLS', 'RSET', 'NOOP')
+
+    def _print_debug(self, *args):
+        words = ' '.join(str(a) for a in args)
+        m = re.match(r"^(send|reply):\s*(b?['\"])(.*)", words, re.S)
+        if m and m.group(1) == 'send':
+            body = m.group(3)
+            head = body.split(' ', 1)[0].split('\\r')[0].upper()
+            if head.startswith('AUTH'):
+                words = 'send: AUTH %s <the credentials, not written>' % (
+                    body.split(' ')[1] if ' ' in body else '')
+            elif head not in self._SAFE:
+                words = 'send: <%d characters - the message or the credentials, not written>' \
+                    % len(body)
+        log('mail %s: %s' % (getattr(self, '_host', '') or '?', words[:300]), 'debug')
+
     def close(self):
         t = getattr(self, '_watchman', None)
         if t is not None:
@@ -13598,6 +13830,9 @@ def smtp_talk(store, host, port, security, auth, msg, to, steps, helo='', verify
 
     def step(what, ok=True, said=''):
         steps.append({'what': what, 'ok': ok, 'said': str(said or '')[:500]})
+        if debugging('codes'):
+            log('mail %s:%d: %s %s%s' % (host, port, 'ok' if ok else 'FAILED', what,
+                                         (' - %s' % str(said)[:200]) if said else ''), 'debug')
 
     # Going direct, the recipients' servers are looked up by the same DNS
     # servers that gave their MX records - A, AAAA and CNAME (1.0.23).
@@ -13621,6 +13856,8 @@ def smtp_talk(store, host, port, security, auth, msg, to, steps, helo='', verify
     try:
         if security == 'tls':
             conn = _AddrSMTPS(local_hostname=helo, timeout=timeout, context=ctx)
+            if debugging('codes'):
+                conn.set_debuglevel(1)
             conn.deadline = began + 4 * timeout
             conn.addrs = addrs
             conn._host = host           # the name its certificate is checked against
@@ -13632,6 +13869,8 @@ def smtp_talk(store, host, port, security, auth, msg, to, steps, helo='', verify
                  '%d ms' % int((time.time() - began) * 1000))
         else:
             conn = _AddrSMTP(local_hostname=helo, timeout=timeout)
+            if debugging('codes'):
+                conn.set_debuglevel(1)
             conn.deadline = began + 4 * timeout
             conn.addrs = addrs
             # The name STARTTLS checks the certificate against (1.0.96):
@@ -15883,6 +16122,36 @@ def rb_restore_md(m):
     return '\n'.join(lines)
 
 
+def rb_manifest(store, base, tokens='?'):
+    """What a backup made now is: the head of its manifest and of RESTORE.md."""
+    pw = rb_password()
+    m = {'otp': __version__, 'made': time.time(),
+         'made_words': datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z').strip(),
+         'site': CONFIG.get('site_name') or 'otp', 'node': node_name(),
+         'host': socket.getfqdn(), 'engine': store.db.engine,
+         'engine_words': ENGINE_WORDS.get(store.db.engine, store.db.engine),
+         'ha_mode': CONFIG.get('ha_mode') or '', 'ha_slot': CONFIG.get('ha_slot'),
+         'ha_peer': CONFIG.get('ha_peer') or '', 'tokens': tokens,
+         'encrypted': bool(pw), 'iter': RB_ITER if pw else 0,
+         'file': base + ('.tar.gz.enc' if pw else '.tar.gz'), 'files': {}}
+    return m
+
+
+def rb_restore_guide(store):
+    """RESTORE.md as a backup made now would carry it (1.0.110) - for reading
+    on the pages before anything is lost. No secret is in it."""
+    site = rb_slug(CONFIG.get('site_name') or 'otp')
+    node = rb_slug(node_name())
+    try:
+        tokens = int(store.db.value('SELECT COUNT(*) FROM tokens') or 0)
+    except Exception:                                   # noqa: BLE001
+        tokens = '?'
+    base = 'otp-backup-%s-%s-%s' % (site, node, datetime.now().strftime('%Y%m%d-%H%M%S'))
+    m = rb_manifest(store, base, tokens)
+    return {'md': rb_restore_md(m), 'name': 'RESTORE-%s-%s.md' % (site, node),
+            'file': m['file']}
+
+
 def rb_build(store, work, progress=None):
     """The backup, built in `work`: (path of the file to send, its name,
     manifest, RESTORE.md text)."""
@@ -15919,15 +16188,7 @@ def rb_build(store, work, progress=None):
     except Exception:                                   # noqa: BLE001
         tokens = '?'
     pw = rb_password()
-    m = {'otp': __version__, 'made': time.time(),
-         'made_words': datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z').strip(),
-         'site': CONFIG.get('site_name') or 'otp', 'node': node_name(),
-         'host': socket.getfqdn(), 'engine': store.db.engine,
-         'engine_words': ENGINE_WORDS.get(store.db.engine, store.db.engine),
-         'ha_mode': CONFIG.get('ha_mode') or '', 'ha_slot': CONFIG.get('ha_slot'),
-         'ha_peer': CONFIG.get('ha_peer') or '', 'tokens': tokens,
-         'encrypted': bool(pw), 'iter': RB_ITER if pw else 0,
-         'file': base + ('.tar.gz.enc' if pw else '.tar.gz'), 'files': {}}
+    m = rb_manifest(store, base, tokens)
     for root, _dirs, files in os.walk(inner):
         for n in sorted(files):
             p = os.path.join(root, n)
@@ -21121,6 +21382,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 limit = (ip_tries or tries) if i == 0 else (name_tries or tries * 4)
                 fails = [x for x in self.d.login_fails[key] if t - x < span]
                 self.d.login_fails[key] = fails
+                info = self.d.login_info.setdefault(key, {'others': []})
+                info.update(limit=limit, span=span, what=what, at=t)
+                other = (str(name).strip()[:120] if i == 0 else str(ip)) if name or i else ''
+                if other:
+                    if other in info['others']:
+                        info['others'].remove(other)
+                    info['others'] = (info['others'] + [other])[-6:]
                 if len(fails) >= limit:
                     raise ApiError(429, 'too many %s %s: try again in %s'
                                    % (what, 'from %s' % ip if i == 0 else 'for this name',
@@ -21138,6 +21406,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 keep_s = max(span, 6 * 3600)
                 for k in [k for k, v in fl.items() if not v or t - v[-1] > keep_s]:
                     fl.pop(k, None)
+                    self.d.login_info.pop(k, None)
                 if len(fl) > 50000:
                     # Addresses go before names (1.0.61): many addresses must
                     # not flush the count of the one name being guessed.
@@ -21146,6 +21415,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     for k in order[:len(fl) // 2]:
                         if k not in keys:
                             fl.pop(k, None)
+                            self.d.login_info.pop(k, None)
         self._held = (keys, t)
         return keys
 
@@ -21180,6 +21450,253 @@ def route(method, path):
 
 # ---- health and signing in -------------------------------------------------------
 HEALTH_SEEN = {}
+
+
+# ---- who is locked out (1.0.112) ---------------------------------------------------
+# Each node counts the wrong passwords that reach it, in memory. Every node
+# writes its list into meta when it changes, so the pages of either show both;
+# a lockout is cleared by the node that holds it - asked through meta when it
+# is the other one.
+LOCKOUT_KINDS = {
+    'admin': 'signing in to these pages',
+    'portal': 'signing in to the enrolment pages',
+    'portal-verify': 'a code typed on the enrolment pages',
+    'portal-send': 'codes sent from the enrolment pages',
+    'portal-confirm': 'confirming a token on the enrolment pages',
+    'portal-reissue': 'a new token on the enrolment pages',
+    'portal-codes': 'recovery codes shown on the enrolment pages',
+    # Kept in the database for the whole cluster (1.0.116), not in a node's
+    # memory: codes sent to a person, and a token locked by wrong codes.
+    'codes-sent': 'codes sent by e-mail or SMS',
+    'token-locked': 'the token, after wrong codes',
+    'password': 'changing a password',
+    'code-test': 'trying a code (Tokens)',
+    'radtest': 'a RADIUS test (Test)',
+    'texts-test': 'a test message (Message texts)',
+}
+LOCKOUTS_SENT = {'sig': None, 'at': 0.0}
+THROTTLE_GUARD = threading.Lock()
+
+
+def lockouts_view(d):
+    """What this node counts now: one line per address or name with a wrong
+    attempt still counted, locked or not yet."""
+    t = time.time()
+    rows = []
+    for key, fails in list(d.login_fails.items()):
+        info = d.login_info.get(key) or {}
+        span = float(info.get('span') or 0)
+        if not span:
+            continue
+        fails = [x for x in fails if t - x < span]
+        if not fails:
+            continue
+        kind, who = key
+        by_name = kind.endswith('-name')
+        base = kind[:-5] if by_name else kind
+        limit = int(info.get('limit') or 0)
+        locked = bool(limit) and len(fails) >= limit
+        rows.append({
+            'kind': kind, 'who': who, 'by': 'name' if by_name else 'address',
+            'what': LOCKOUT_KINDS.get(base, base), 'base': base,
+            'words': info.get('what') or 'wrong passwords',
+            'fails': len(fails), 'limit': limit, 'locked': locked,
+            'until': (fails[0] + span) if locked else None,
+            'forgets': fails[-1] + span, 'first': fails[0], 'last': fails[-1],
+            'others': list(info.get('others') or [])})
+    rows.sort(key=lambda r: (not r['locked'], -r['last']))
+    return rows
+
+
+def lockouts_clear(d, which=None):
+    """Forget counts: which is a list of (kind, who); None - every one."""
+    n = 0
+    with ApiHandler.THROTTLE_LOCK:
+        keys = list(d.login_fails) if which is None else \
+            [tuple(k) for k in which if tuple(k) in d.login_fails]
+        for k in keys:
+            if d.login_fails.pop(k, None):
+                n += 1
+            d.login_info.pop(k, None)
+    LOCKOUTS_SENT['sig'] = None
+    return n
+
+
+def lockouts_publish(d, force=False):
+    rows = lockouts_view(d)
+    sig = json.dumps([(r['kind'], r['who'], r['fails'], r['locked']) for r in rows])
+    now = time.time()
+    if not force and sig == LOCKOUTS_SENT['sig'] and now - LOCKOUTS_SENT['at'] < 60:
+        return rows
+    many = bool(CONFIG.get('ha_mode')) or len(d.cluster_nodes()) > 1
+    if many:
+        d.store.set_meta('lockouts:' + node_name(), json.dumps({'at': now, 'rows': rows}))
+    LOCKOUTS_SENT.update(sig=sig, at=now)
+    return rows
+
+
+def lockouts_tick(d):
+    """Asked by the other node's pages to clear something here? Then the list."""
+    key = 'lockouts:ask:' + node_name()
+    raw = d.store.get_meta(key)
+    if raw:
+        d.store.db.run('DELETE FROM meta WHERE k = ?', (key,))
+        try:
+            asks = json.loads(raw)
+        except ValueError:
+            asks = []
+        for a in asks if isinstance(asks, list) else []:
+            if not isinstance(a, dict):
+                continue
+            n = lockouts_clear(d, None if a.get('all') else [a.get('key') or []])
+            lockouts_said(d.store, a, n)
+        lockouts_publish(d, force=True)
+        return
+    lockouts_publish(d)
+
+
+def lockouts_said(store, a, n):
+    by = str(a.get('by') or '?')
+    if a.get('all'):
+        words = '%s cleared every lockout and count of wrong attempts on %s (%d)' % (
+            by, node_name(), n)
+    else:
+        k = a.get('key') or ['', '']
+        base = str(k[0])[:-5] if str(k[0]).endswith('-name') else str(k[0])
+        words = '%s cleared the count of wrong attempts of %s %s (%s) on %s' % (
+            by, 'the name' if str(k[0]).endswith('-name') else 'the address', k[1],
+            LOCKOUT_KINDS.get(base, base), node_name())
+    store.add_event('sign-ins', words, 'warn', who=by)
+
+
+def lockouts_shared(store):
+    """What the database holds for every node (1.0.116): the codes sent to a
+    person within the window, and tokens locked after wrong codes."""
+    t = time.time()
+    rows = []
+    span = 60 * int(CONFIG.get('code_send_window_min') or 15)
+    limit = int(CONFIG.get('code_send_max') or 5)
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'codesent:%'"):
+        try:
+            times = sorted(float(x) for x in json.loads(r['v'] or '[]'))
+        except (ValueError, TypeError):
+            continue
+        times = [x for x in times if t - x < span]
+        if not times:
+            continue
+        locked = len(times) >= limit
+        rows.append({'kind': 'codes-sent', 'who': str(r['k'])[9:], 'by': 'name',
+                     'what': LOCKOUT_KINDS['codes-sent'], 'base': 'codes-sent',
+                     'words': 'codes sent', 'fails': len(times), 'limit': limit,
+                     'locked': locked,
+                     'until': (times[len(times) - limit] + span) if locked else None,
+                     'forgets': times[-1] + span, 'first': times[0], 'last': times[-1],
+                     'others': []})
+    after = int(CONFIG.get('lockout_after') or 0)
+    for r in store.db.rows('SELECT name, locked_until, failures, fail_times, last_from FROM '
+                           'tokens WHERE locked_until > ?', (t,)):
+        try:
+            fails = [float(x) for x in json.loads(r['fail_times'] or '[]')]
+        except (ValueError, TypeError):
+            fails = []
+        until = float(r['locked_until'])
+        rows.append({'kind': 'token-locked', 'who': r['name'], 'by': 'token',
+                     'what': LOCKOUT_KINDS['token-locked'], 'base': 'token-locked',
+                     'words': 'wrong codes', 'fails': int(r['failures'] or 0),
+                     'limit': after, 'locked': True, 'until': until, 'forgets': until,
+                     'first': min(fails) if fails else until, 'last': max(fails) if fails
+                     else until, 'others': []})
+    rows.sort(key=lambda r: (not r['locked'], -r['last']))
+    return rows
+
+
+def lockouts_shared_clear(store, kind, who, by):
+    if kind == 'codes-sent':
+        n = store.db.run('DELETE FROM meta WHERE k = ?', ('codesent:' + who,))
+        store.add_event('sign-ins', '%s cleared the count of codes sent to %s' % (by, who),
+                        'warn', who=by)
+        return n
+    if kind == 'token-locked':
+        if not store.token(who):
+            return 0
+        store.token_write(who, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
+        store.db.run('DELETE FROM meta WHERE k = ?', ('scratchguard:' + who,))
+        store.add_event('tokens', '%s let %s try again at once' % (by, who), who=by)
+        return 1
+    return 0
+
+
+@route('GET', '/api/lockouts')
+def _lockouts(h):
+    h.me('fulladmin')
+    me = node_name()
+    out = [{'node': me, 'me': True, 'fresh': True, 'rows': lockouts_view(h.d)}]
+    now = time.time()
+    for n in h.d.cluster_nodes():
+        if n == me:
+            continue
+        try:
+            got = json.loads(h.store.get_meta('lockouts:' + n) or '{}')
+        except ValueError:
+            got = {}
+        rows = [r for r in (got.get('rows') or []) if float(r.get('forgets') or 0) > now]
+        for r in rows:
+            if r.get('locked') and float(r.get('until') or 0) <= now:
+                r['locked'] = False
+        out.append({'node': n, 'me': False, 'fresh': now - float(got.get('at') or 0) < 120,
+                    'at': got.get('at'), 'rows': rows})
+    out.append({'node': '*', 'me': False, 'fresh': True, 'shared': True,
+                'rows': lockouts_shared(h.store)})
+    return {'nodes': out, 'now': now, 'cluster': len(out) > 2}
+
+
+@route('POST', '/api/lockouts')
+def _lockouts_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = b.get('action')
+    nodes = [node_name()] + [n for n in h.d.cluster_nodes() if n != node_name()]
+    if act == 'clear' and str(b.get('kind') or '') in ('codes-sent', 'token-locked'):
+        n = lockouts_shared_clear(h.store, str(b.get('kind')), norm_name(b.get('who') or ''),
+                                  s['name'])
+        if not n:
+            raise ApiError(404, 'that is not counted any more')
+        return {'message': 'cleared', 'told': []}
+    if act == 'clear_all':
+        want = nodes
+        ask = {'all': 1, 'by': s['name']}
+        shared = lockouts_shared(h.store)
+        for r in shared:
+            lockouts_shared_clear(h.store, r['kind'], r['who'], s['name'])
+    elif act == 'clear':
+        kind, who = str(b.get('kind') or ''), str(b.get('who') or '')
+        base = kind[:-5] if kind.endswith('-name') else kind
+        if base not in LOCKOUT_KINDS or not who:
+            raise ApiError(400, 'which lockout?')
+        node = str(b.get('node') or node_name())
+        if node not in nodes:
+            raise ApiError(400, 'there is no node %s' % node)
+        want = [node]
+        ask = {'key': [kind, who], 'by': s['name']}
+    else:
+        raise ApiError(400, 'no such thing to do')
+    told = []
+    for n in want:
+        if n == node_name():
+            got = lockouts_clear(h.d, None if ask.get('all') else [ask['key']])
+            lockouts_said(h.store, ask, got)
+            lockouts_publish(h.d, force=True)
+        else:
+            # The other node clears it within five seconds.
+            with THROTTLE_GUARD:
+                try:
+                    pending = json.loads(h.store.get_meta('lockouts:ask:' + n) or '[]')
+                except ValueError:
+                    pending = []
+                pending = (pending if isinstance(pending, list) else [])[-50:] + [ask]
+                h.store.set_meta('lockouts:ask:' + n, json.dumps(pending))
+            told.append(n)
+    return {'message': 'cleared', 'told': told}
 
 
 @route('GET', '/api/health')
@@ -23436,6 +23953,18 @@ def _mail_do(h):
                               mode, 'emptied')), who=s['name'])
         return {'ca_list': got, 'message': 'the SMS gateway is checked against %d certificate(s)'
                 % len(got)}
+    if act == 'tel_test':
+        # The Teltonika tried without sending anything (1.0.113).
+        s = h.me('fulladmin')
+        began = time.time()
+        got = tel_test()
+        got['took_ms'] = int((time.time() - began) * 1000)
+        bad = [x for x in got['steps'] if not x['ok']]
+        h.store.add_event('settings', '%s tried the SMS gateway %s: %s' % (
+            s['name'], got.get('host') or '?', 'it answers' if got['ok'] else
+            (bad[0]['said'] if bad else 'it did not answer')), 'info' if got['ok'] else 'warn',
+            who=s['name'])
+        return got
     if act == 'sms_ca_fetch':
         # What the gateway shows, for the administrator to look at and trust.
         h.me('fulladmin')
@@ -24505,8 +25034,18 @@ def _portal_login(h):
         musts.append(realm['groups'])
     if who == 'groups' and dn_list(CONFIG.get('portal_groups')):
         musts.append([{'group': g} for g in dn_list(CONFIG.get('portal_groups'))])
+    let_in = []
     if musts:
         have = ad.groups_of(entry, bool(realm.get('nested', 1)))
+        # The groups of the realm that let this person in, for "About you"
+        # on the page (1.0.113).
+        for w in realm.get('groups') or []:
+            try:
+                if group_matches([w], have, ad):
+                    g = str(w.get('group') if isinstance(w, dict) else w)
+                    let_in.append(cn_of(g) or g)
+            except Exception:                           # noqa: BLE001
+                pass
         if not all(group_matches(w, have, ad) for w in musts):
             names = ', '.join(cn_of(w.get('group') or '') or w.get('group') or ''
                               for m in musts for w in m[:6])
@@ -24538,7 +25077,17 @@ def _portal_login(h):
                                  'realm': realm['name'], 'login': full,
                                  # What the page offers for a code by mail or SMS (1.0.76).
                                  'mail': entry.get('mail') or '',
-                                 'mobile': entry.get('mobile') or ''})
+                                 'mobile': entry.get('mobile') or '',
+                                 # What the page shows under the name (1.0.113).
+                                 'about': {'sam': entry.get('sam') or '',
+                                           'upn': entry.get('upn') or '',
+                                           'department': entry.get('department') or '',
+                                           'title': entry.get('title') or '',
+                                           'phone': entry.get('phone') or '',
+                                           'expires': entry.get('expires') or None,
+                                           'pw_set': entry.get('pw_set') or None,
+                                           'groups': let_in[:20],
+                                           'directory': realm.get('directory') or ''}})
     h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s'
                       % (tname, h.client_ip()), who=tname)
     return {'token': token, 'name': tname}
@@ -24636,7 +25185,11 @@ def portal_state(h, s):
     ver = data.get('verify') or {}
     if ver and float(ver.get('exp') or 0) < time.time():
         ver = {}
+    about = dict(data.get('about') or {})
+    about.update(login=data.get('login') or '', realm=data.get('realm') or '',
+                 mail=data.get('mail') or '', mobile=data.get('mobile') or '')
     return {'name': s['name'], 'display': data.get('display') or '',
+            'about': about,
             'methods': portal_methods(h, s),
             'suggest': {'mail': data.get('mail') or '', 'sms': data.get('mobile') or ''},
             'verify': {'kind': ver.get('kind'), 'dest': dest_masked(ver.get('kind'),
@@ -24649,6 +25202,8 @@ def portal_state(h, s):
             'reissue': bool(CONFIG.get('portal_reissue')),
             'show_secret': bool(CONFIG.get('portal_show_secret')),
             'show_scratch': bool(CONFIG.get('portal_scratch')),
+            'codes_view': bool(CONFIG.get('portal_codes_view')) and bool(shown) and
+            bool((shown or {}).get('scratch_kept')),
             'title': CONFIG.get('portal_title') or '', 'help': CONFIG.get('portal_help') or ''}
 
 
@@ -24735,7 +25290,7 @@ def _portal_enroll(h):
                 not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
             # Nothing sent: the address's place given back (1.0.103).
             raise ApiError(429, 'too many codes were sent - wait %d min and try again'
-                           % int(CONFIG.get('code_send_window_min') or 15))
+                           % code_send_wait_min(h.store, 'to:%s:%s' % (kind, dest.lower())))
         h.failed(key)       # a code that goes holds its place
         code = code_new()
         page_lang = str(b.get('lang') or '')
@@ -24832,7 +25387,7 @@ def _portal_sendold(h):
     """A code to where the codes go now (1.0.76): proof of the old token on
     the way to replacing it, as a code from the old phone is."""
     s = portal_me(h)
-    if not CONFIG.get('portal_reissue'):
+    if not CONFIG.get('portal_reissue') and not CONFIG.get('portal_codes_view'):
         raise ApiError(403, 'a token can only be replaced by an administrator here')
     tok = h.store.token(s['name'])
     kind = token_kind(tok)
@@ -24845,7 +25400,7 @@ def _portal_sendold(h):
         raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
     if not code_send_allowed(h.store, s['name']):
         raise ApiError(429, 'too many codes were sent - wait %d min and try again'
-                       % int(CONFIG.get('code_send_window_min') or 15))
+                       % code_send_wait_min(h.store, s['name']))
     code = code_new()
     page_lang = str(h.body().get('lang') or '')
     try:
@@ -24856,6 +25411,46 @@ def _portal_sendold(h):
     portal_data_set(h, s, old={'code': code_hash(s['name'], code),
                                'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300)})
     return {'sent_to': dest_masked(kind, tok.get('dest'))}
+
+
+@route('POST', '/api/portal/codes')
+def _portal_codes(h):
+    """The person's own recovery codes, shown again (1.0.113) - only with a
+    code from the token itself: the directory password alone must never
+    hand over a second factor."""
+    s = portal_me(h)
+    if not CONFIG.get('portal_codes_view'):
+        raise ApiError(403, 'the recovery codes are shown only when the token is made here')
+    tok = h.store.token(s['name'])
+    if not tok or tok.get('state') == 'pending':
+        raise ApiError(400, 'there is no token in use yet')
+    stop = h.d.tokens.blocked(s['name'])
+    if stop:
+        raise ApiError(403, 'not while the token is blocked: %s' % stop)
+    key = h.throttle('portal-codes', int(CONFIG.get('portal_tries') or 5),
+                     int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=30,
+                     name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
+    code = re.sub(r'\s', '', str(h.body().get('code') or ''))
+    old = (s.get('data') or {}).get('old') or {}
+    if old and float(old.get('exp') or 0) >= time.time() and \
+            hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
+        ok, said = True, 'Code sent accepted'
+        if not h.store.session_take(s['id'], 'old'):
+            ok, said = False, SAY_REUSED
+    else:
+        ok, said, _f = h.d.tokens.check(s['name'], code, how='portal', src=h.client_ip())
+    if not ok:
+        h.failed(key)
+        raise ApiError(403, 'the code was not taken: %s' % said)
+    shown = codes_open(h.store.token(s['name']))
+    if shown is None:
+        raise ApiError(409, 'the recovery codes of this token are kept only in a form that '
+                            'cannot be shown - ask the administrator for new ones')
+    h.store.add_event('enrolment', '%s looked at their recovery codes from %s'
+                      % (s['name'], h.client_ip()), 'warn', who=s['name'])
+    return {'codes': [{'code': c.get('c') if isinstance(c, dict) else str(c),
+                       'used': (c.get('used') if isinstance(c, dict) else None)}
+                      for c in shown]}
 
 
 @route('POST', '/api/portal/confirm')
@@ -25997,6 +26592,8 @@ def _rbackup_do(h):
             h.store.add_event('backups', '%s deleted the backup %s at %s' % (by, name, t['name']),
                               'warn', who=by)
             return {'message': 'deleted'}
+        if act == 'restore_md':
+            return rb_restore_guide(h.store)
         if act == 'runs_forget':
             if b.get('all'):
                 n = rb_history_forget(h.store)

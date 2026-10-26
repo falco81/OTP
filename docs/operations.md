@@ -764,6 +764,18 @@ otp --passwd admin              # asks for the new one; ends that account's sign
 otp --set-role someone --role fulladmin
 ```
 
+**"too many wrong passwords from ADDRESS: try again in N min"** - the address
+(or the name) is locked out for a while: *Settings → Accounts → Locked out*
+lists every address and name with wrong attempts still counted, on every node -
+how many of how many, which names were tried from an address, how long the
+lockout still runs - and clears one (*Clear*) or all of them (*Clear them all*),
+written into Events. The counts live in each node's memory, so
+`systemctl restart otp` forgets them as well. How many tries and how long the
+wait are: *Settings → Accounts* (`login_tries`, `login_wait_min`) and *The
+enrolment pages* (`portal_tries`, `portal_wait_min`). Behind a load balancer
+or proxy that hides the people's addresses, everybody shares one - see
+load-balancers.md.
+
 ---
 
 ## 19. Certificates and the web address

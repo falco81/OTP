@@ -98,6 +98,27 @@ echo 'User-Name = "novak@example.cz", User-Password = "123456", State = 0x6f7470
   | radclient -x otp1:1812 auth <secret>
 ```
 
+## When a code does not arrive
+
+- **Test the connection** under the Teltonika gateway (*Settings → Codes by
+  e-mail and SMS*) signs in to the gateway with what is saved and lists its
+  modems: operator, network, signal (RSSI/RSRP/RSRQ/SINR), the SIM, which modem
+  sends the codes, and how long each step took. Nothing is sent. A test SMS
+  goes from a token's card (*Send a test*).
+- **Debug log → ...every code sent by e-mail and SMS** (*Settings → About*,
+  on with *Debug log*) writes every request to the SMS gateway and its answer,
+  with how long it took, and every line of the conversation with the mail
+  server into `/var/log/otp/otp.log` (lines `sms: ...` and `mail ...`).
+  Passwords, the gateway's token and the messages themselves are never
+  written.
+- *The Teltonika could not be reached: The read operation timed out* - the
+  gateway took the connection but did not answer in time (15 s for signing
+  in, 20 s for an SMS). A sign-in is asked again once by itself. Seen often:
+  the box is busy (another program sending through it, a modem
+  re-registering) or its RutOS API is slow - the debug log shows which
+  request waited. A send that timed out is not sent again: the SMS has most
+  likely gone, and a second one would arrive twice.
+
 ## Enrolling (the enrolment pages)
 
 1. The person signs in with their directory name and password. Only who
@@ -118,6 +139,18 @@ echo 'User-Name = "novak@example.cz", User-Password = "123456", State = 0x6f7470
 An administrator can make such a token directly (Tokens → Make a token →
 *The codes come from*), change where the codes go, send a test message, or
 turn it into an app token (*The app instead*).
+
+### Recovery codes after sign-in
+
+*People may look at their recovery codes again* (*Settings → The enrolment
+pages*, off by default) adds a card under the token: the person types a code
+from the token - the app's, or one sent by mail or SMS with *Send me a code* -
+and sees their recovery codes, the used ones crossed out, to copy or print. The
+directory password alone never shows them: with it alone the second factor
+would be one click away. Each look is written into Events; wrong codes count
+towards the same pause as wrong passwords (*Settings → Accounts → Locked out*).
+Tokens whose codes were never kept sealed (brought over from totpcgi, say) cannot show them;
+the administrator makes new ones.
 
 ## Cisco ASA
 

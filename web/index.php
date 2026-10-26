@@ -63,7 +63,8 @@ if (isset($_GET['api'])) {
     $reads = ['me' => '/api/portal/me', 'info' => '/api/portal/info'];
     $writes = ['enroll' => '/api/portal/enroll', 'confirm' => '/api/portal/confirm',
                'reissue' => '/api/portal/reissue', 'cancel' => '/api/portal/cancel',
-               'verify' => '/api/portal/verify', 'sendold' => '/api/portal/sendold'];
+               'verify' => '/api/portal/verify', 'sendold' => '/api/portal/sendold',
+               'codes' => '/api/portal/codes'];
     if ($post && isset($writes[$what])) {
         otp_relay($writes[$what], 'POST', sent_json(), 60.0);
         exit;
@@ -150,7 +151,7 @@ if ($title_ours) {
   <div class="spacer"></div>
   <div class="btnrow">
     <span class="langpick" id="langpick"></span>
-    <span class="btn small mebtn" data-no-i18n><?= h($me['display'] ?: $me['name']) ?></span>
+    <button type="button" class="btn small mebtn" id="mebtn" data-no-i18n><?= h($me['display'] ?: $me['name']) ?></button>
     <button class="btn small" id="signout" data-icon="out">Sign out</button>
   </div>
 </header>

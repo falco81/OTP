@@ -281,7 +281,7 @@ if (isset($_GET['api'])) {
         'upgrade' => '/api/upgrade', 'web' => '/api/web',
         'firewall' => '/api/firewall', 'ha-history' => '/api/ha/history',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts', 'mailq-one' => '/api/mailq/one', 'software' => '/api/software',
-        'rbackup' => '/api/rbackup',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup',
@@ -293,7 +293,7 @@ if (isset($_GET['api'])) {
         'columns' => '/api/auth/columns', 'my-settings' => '/api/auth/settings',
         'ha' => '/api/ha', 'mail' => '/api/mail', 'upgrade' => '/api/upgrade', 'web' => '/api/web', 'firewall' => '/api/firewall',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts',
-        'rbackup' => '/api/rbackup',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -895,6 +895,11 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       <div id="us-table"></div>
     </div>
     <div class="card full fulladmin-only"><h2>Signed in now</h2><div id="se-table"></div></div>
+    <div class="card full fulladmin-only" id="lo-card"><h2>Locked out <span class="right" id="lo-tools"></span></h2>
+      <p class="note">Addresses and names with wrong attempts still counted, codes sent to a person, and tokens
+        locked by wrong codes - at the limit they are locked out until the time runs out. Clear one, or all of them,
+        and they may try again at once.</p>
+      <div id="lo-table"></div></div>
     <div class="card full" id="cols-card">
       <h2>Columns of the tables <span class="right" id="cols-count"></span></h2>
       <p class="note">Every table on these pages can be laid out the way you read it. Press

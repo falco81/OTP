@@ -2963,3 +2963,46 @@ td.tok-note{min-width:150px;max-width:280px;overflow-wrap:anywhere}
 #rb-top > .card{margin:0}
 .btnhelp.ro{color:var(--ok)}
 .busy-secs{font-variant-numeric:tabular-nums;opacity:.8;margin-left:2px}
+
+/* A guide in Markdown, read on the pages (1.0.110). */
+.md-doc { max-height: 62vh; overflow: auto; padding-right: 6px; line-height: 1.55; }
+.md-doc h3 { font-size: 17px; margin: 4px 0 10px; }
+.md-doc h4 { font-size: 14.5px; margin: 20px 0 8px; }
+.md-doc p { margin: 0 0 10px; }
+.md-doc ul { margin: 0 0 10px 18px; padding: 0; }
+.md-doc li { margin: 0 0 5px; }
+.md-doc code { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12.5px; background: rgba(127,127,127,.16); padding: 1px 5px; border-radius: 4px; }
+.md-doc hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0 10px; }
+.md-code { position: relative; margin: 0 0 12px; }
+.md-code pre { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12.5px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 44px 10px 12px; margin: 0; overflow-x: auto; white-space: pre; }
+.md-code > button { position: absolute; top: 6px; right: 6px; }
+.md-table { border-collapse: collapse; margin: 0 0 12px; font-size: 13px; }
+.md-table td, .md-table th { border-bottom: 1px solid var(--line); padding: 5px 12px 5px 0; text-align: left; vertical-align: top; }
+.md-table th { font-weight: 600; }
+
+/* About you on the enrolment page (1.0.113). */
+.about-me { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0 0 14px; }
+.about-me dt { color: var(--muted, #8b949e); font-size: 13px; }
+.about-me dd { margin: 0; word-break: break-word; }
+button.mebtn { cursor: pointer; }
+
+/* Trying the Teltonika (1.0.113). */
+.tel-test .set-ca-head .right { margin-left: auto; }
+.tel-out { margin-top: 10px; }
+.tel-steps { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.tel-step { font-size: 13.5px; }
+.tel-step .tel-mark { display: inline-block; width: 18px; font-weight: 700; }
+.tel-step.good .tel-mark { color: var(--ok, #3fb950); }
+.tel-step.bad .tel-mark { color: var(--crit, #f85149); }
+.tel-modem { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 0 0 10px; }
+.tel-modem.sends { border-color: rgba(63,185,80,.45); }
+.tel-modem-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.tel-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px 18px; margin: 0; }
+.tel-facts dt { font-size: 11.5px; color: var(--muted, #8b949e); text-transform: uppercase; letter-spacing: .3px; }
+.tel-facts dd { margin: 0 0 4px; font-size: 13px; }
+
+/* Recovery codes shown again (1.0.113). */
+.codes-ask { margin: 4px 0 0; }
+/* Half the card on a wide screen, as the code box in the card above it. */
+@media (min-width: 760px) { .codes-ask .formgrid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.codes .used { text-decoration: line-through; opacity: .45; }
