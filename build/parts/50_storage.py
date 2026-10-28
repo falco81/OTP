@@ -386,6 +386,8 @@ class ListQuery(object):
         else:
             items = [value] if quoted else [v for v in value.split(',') if v.strip()]
             clause = self._join('OR', [self._one(column, kind, op, v.strip()) for v in items])
+        if not clause:
+            return None                      # "name:," - nothing in it yet (1.0.139)
         if neg:
             return ('NOT COALESCE((%s), 1=0)' % clause[0], clause[1])
         return clause
@@ -556,8 +558,10 @@ class Storage(object):
         return default if got is None else got
 
     def set_meta(self, k, v):
-        with self.lock:
-            self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
+        # One statement, no lock of Python's (1.0.139): a RADIUS thread noting a
+        # client seen waited here behind a page holding the lock for a slow
+        # query on the main connection - the VPN timed out.
+        self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
 
     def settings_saved(self):
         out = {}
@@ -573,9 +577,8 @@ class Storage(object):
                 for r in self.db.rows('SELECT k, at, by_who FROM settings')}
 
     def save_setting(self, k, v, by=''):
-        with self.lock:
-            self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
-                                             'by_who': str(by or '')[:190]})
+        self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
+                                         'by_who': str(by or '')[:190]})
 
     def drop_setting(self, k):
         self.db.run('DELETE FROM settings WHERE k = ?', (k,))

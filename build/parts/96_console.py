@@ -876,7 +876,7 @@ class Console(object):
         try:
             rx = re.compile(find, re.I)
             return lambda s: rx.search(s) is not None
-        except re.error:
+        except (re.error, OverflowError, RecursionError):   # a{9999999999} too (1.0.139)
             low = find.lower()
             return lambda s: low in s.lower()
 
@@ -886,7 +886,7 @@ class Console(object):
             return coloured
         try:
             rx = re.compile(find, re.I)
-        except re.error:
+        except (re.error, OverflowError, RecursionError):
             rx = re.compile(re.escape(find), re.I)
         out = []
         for part in re.split(r'(\x1b\[[0-9;?]*[A-Za-z])', coloured):
@@ -931,7 +931,7 @@ class Console(object):
 
         def add(raw):
             for ln in raw:
-                ln = ln.expandtabs(8).replace('\r', '')
+                ln = term_safe(ln.expandtabs(8).replace('\r', ''))
                 col = (paint(ln) if paint else ln) if p.on else self._plain_text(ln)
                 lines.append((self._plain_text(col), col))
         add(first())
@@ -1145,7 +1145,9 @@ class Console(object):
             if self.confirm('Delete', 'The token of %s is deleted - its app stops working '
                             'here and a new one must be enrolled. This cannot be undone.' % name,
                             'Delete it', danger=True):
-                self.act('--delete-token', name)
+                # Asked here already: the command has no terminal to ask on
+                # and refused without --yes (1.0.139).
+                self.act('--delete-token', name, '--yes')
 
     def token_new(self):
         got = self.form('Make a token (enrol)', [
@@ -1169,6 +1171,12 @@ class Console(object):
         if not got:
             return
         extra = ['--by', got['by']] + (['--to', got['to']] if got['by'] != 'app' else [])
+        had = ((self.out('--token', got['name']) or {}).get('token') or {})
+        if had and had.get('state') != 'pending':
+            if not self.confirm('Replace', 'The token of %s in use is replaced, and stops '
+                                'working now.' % got['name'], 'Replace it', danger=True):
+                return
+            extra.append('--yes')
         self.act('--enroll', got['name'], *extra)
 
     def radtest(self, name):
@@ -1438,8 +1446,10 @@ class Console(object):
                 'Empty: only the connection and the binding are tried. A name (novak): '
                 'it is looked up, with its groups.'))
             if who is not None:
-                self.act('--directory-test', r['name'], *(['--directory-user', who]
-                                                          if who else []))
+                # --directory-user is NAME USER, and a command of its own (1.0.139).
+                self.act('--directory-test', r['name'])
+                if who:
+                    self.act('--directory-user', r['name'], who)
         elif what == 'show':
             self.details(r['name'], r, skip=('bind_pw', 'ca'))
         elif what == 'delete' and self.confirm(
@@ -1731,6 +1741,23 @@ class Console(object):
                 except Exception:                       # noqa: BLE001
                     pass
             return named[k]
+        if 0xc0 <= k < 0xf8:
+            # getch() gives UTF-8 a byte at a time (1.0.139): "ž" came as two
+            # Latin-1 letters, and a password typed here was not the one meant.
+            raw = bytearray([k])
+            src.nodelay(True)
+            try:
+                for _ in range(1 if k < 0xe0 else 2 if k < 0xf0 else 3):
+                    k2 = src.getch()
+                    if not 0x80 <= k2 < 0xc0:
+                        break
+                    raw.append(k2)
+            finally:
+                src.nodelay(False)
+            try:
+                return raw.decode('utf-8')
+            except UnicodeDecodeError:
+                return None
         if 32 <= k < 0x110000:
             try:
                 return chr(k)

@@ -557,8 +557,8 @@ class Authenticator(object):
             if re.fullmatch(r'[0-9]{4,10}', code, re.ASCII) and \
                     hmac.compare_digest(code_hash(name, code), str(chal.get('code') or '')):
                 ok, said = True, 'Code sent by %s accepted' % ('mail' if kind == 'mail' else 'SMS')
-                if chal_take(self.store, state, raw) and once_take(
-                        self.store, 'chal', name, hashlib.sha256(bytes(state)).hexdigest()):
+                if once_take(self.store, 'chal', name, hashlib.sha256(bytes(state)).hexdigest()):
+                    chal_drop(self.store, state)
                     self.tokens.used_sent(name, kind)
                     self.tokens._said(name, True, said, how, src, rid)
                 else:
@@ -567,12 +567,15 @@ class Authenticator(object):
                 # A recovery code - or a wrong code, counted as one from the
                 # phone is, towards the lockout.
                 ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
-                if ok and not chal_take(self.store, state, raw):
-                    ok, said = False, SAY_REUSED
+                if ok:
+                    chal_drop(self.store, state)
         else:
+            # The code is taken once by the token itself (its step, once_take):
+            # the question is done with, even if a second answer to it counted
+            # a try meanwhile - that refused the right code and used it up.
             ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
-            if ok and not chal_take(self.store, state, raw):
-                ok, said = False, SAY_REUSED
+            if ok:
+                chal_drop(self.store, state)
         d.otp = said
         d.step('the code for the token %s' % name, ok, said, t)
         if ok:

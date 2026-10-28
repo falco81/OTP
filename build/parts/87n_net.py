@@ -112,7 +112,7 @@ def net_current_ip(now):
     return ''
 
 
-def net_check(store, node, want):
+def net_check(store, node, want, rollback=False):
     """What the page asked for, made whole and checked against the node as it
     said it is; with the plan in words. Raises ValueError."""
     now = net_node_now(store, node)
@@ -183,8 +183,12 @@ def net_check(store, node, want):
         except ValueError:
             raise ValueError('%r is not the address of a DNS server' % x)
     host = str(want.get('hostname') or '').strip().rstrip('.').lower()
+    # The name the node has now, kept as it is, may be a short one - and going
+    # back after a trial asks for the old one again: refused, the new network
+    # stayed (1.0.139). Still a name, one part or more.
+    same = rollback or host == str(d.get('hostname') or '').strip().rstrip('.').lower()
     if not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
-                    r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$', host):
+                    r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)%s$' % ('*' if same else '+'), host):
         raise ValueError('the host name is the whole name: otp1.example.cz')
     old_ip = net_current_ip(now).split('/')[0]
     new_ip = str(a4.ip)
@@ -251,7 +255,7 @@ def net_ask(store, node, want, by, rollback=False, maint=False):
         raise ValueError('%s is changing its network already' % node)
     if power_busy(store):
         raise ValueError('a restart or a power-off is under way')
-    checked = net_check(store, node, want)
+    checked = net_check(store, node, want, rollback=rollback)
     ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
            'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
            'maint': bool(maint)}

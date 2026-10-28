@@ -1008,7 +1008,10 @@ class Tokens(object):
             except (ValueError, TypeError):
                 fails = []
             fails = [x for x in fails if t - x < span] + [t]
-            sets, args = 'fail_times = ?', [json.dumps(fails[-50:])]
+            # As many as the pause counts (1.0.139): rate_limit_tries goes to
+            # 100, and with more than 50 the pause never came.
+            keep = max(50, int(CONFIG.get('rate_limit_tries') or 0))
+            sets, args = 'fail_times = ?', [json.dumps(fails[-keep:])]
             if mins:
                 sets += ', locked_until = ?'
                 args.append(t + 60 * mins)

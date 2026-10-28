@@ -176,7 +176,7 @@ if (isset($_GET['api'])) {
             echo json_encode(['ok' => false, 'error' => 'only a full administrator may put a backup back']);
             exit;
         }
-        [$tmp, $why] = otp_take_body(8 * 1024 * 1024 * 1024);
+        [$tmp, $why] = otp_take_body(4 * 1024 * 1024 * 1024);   // as nginx and the pool take (1.0.139)
         if ($tmp === null) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => $why]);

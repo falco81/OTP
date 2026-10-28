@@ -60,6 +60,22 @@ def start_colour():
 
 
 ANSI = re.compile(r'\033\[[0-9;]*m')
+TERM_CTL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+
+
+def term_safe(text):
+    """What came from outside, safe on a terminal (1.0.139): a User-Name or a
+    reason from a packet carried escapes that cleared the screen, set the
+    title or wrote the clipboard. Colours are kept; any other control
+    character is shown as \\xNN."""
+    t = str(text)
+    out, at = [], 0
+    for m in ANSI.finditer(t):
+        out.append(TERM_CTL.sub(lambda c: '\\x%02x' % ord(c.group(0)), t[at:m.start()]))
+        out.append(m.group(0))
+        at = m.end()
+    out.append(TERM_CTL.sub(lambda c: '\\x%02x' % ord(c.group(0)), t[at:]))
+    return ''.join(out)
 
 
 def plain_len(text):
@@ -212,7 +228,7 @@ def table(rows, heads, widths=None):
     if not rows:
         return '  (none)'
     pal = TABLE_PAL
-    cells = [[tone_cell(c, pal) for c in r] for r in rows]
+    cells = [[tone_cell(term_safe(c), pal) for c in r] for r in rows]
     cols = list(zip(*([heads] + [[str(c) for c in r] for r in cells])))
     w = widths or [min(48, max(plain_len(x) for x in col)) for col in cols]
     head = '  ' + '  '.join(h.upper().ljust(w[i]) for i, h in enumerate(heads))
@@ -232,7 +248,8 @@ class ColourOut(object):
 
     def _line(self, ln):
         p = self.pal
-        if not ln.strip() or ANSI.search(ln):
+        ln = term_safe(ln)
+        if not p.on or not ln.strip() or ANSI.search(ln):
             return ln
         m = self.LINE_KV.match(ln)
         if m and not ln.lstrip().startswith(('$', '#')):
@@ -257,8 +274,10 @@ class ColourOut(object):
         return getattr(self.s, name)
 
 
-def ask_password(prompt='password', twice=True):
-    said = os.environ.get('OTP_PASSWORD')
+def ask_password(prompt='password', twice=True, env='OTP_PASSWORD'):
+    # Each secret its own variable (1.0.139): OTP_PASSWORD, set for an
+    # account, became a client's shared secret.
+    said = os.environ.get(env) if env else None
     if said:
         return said
     first = getpass.getpass('%s: ' % prompt)
@@ -431,7 +450,8 @@ def build_parser():
     g = p.add_argument_group('RADIUS')
     g.add_argument('--radtest', nargs='+', metavar='ARG', help='USER CODE [SERVER [PORT '
                    '[SECRET]]] - ask the way radtest does; the server is this one, the secret '
-                   'that of the client for 127.0.0.1, unless given')
+                   'that of the client for 127.0.0.1, unless given. CODE or SECRET as - is '
+                   'asked for (or OTP_RADTEST_PASSWORD, OTP_SECRET)')
     g.add_argument('--clients', action='store_true', help='the RADIUS clients')
     g.add_argument('--add-client', metavar='NAME', help='add (or change) a client: with '
                    '--address and --secret, and --realm for names that come without one')
@@ -465,7 +485,8 @@ def build_parser():
     g.add_argument('--hosts', metavar='H1,H2', help='its servers, in order')
     g.add_argument('--base', metavar='DN', help='where to look: DC=example,DC=local')
     g.add_argument('--bind-dn', metavar='WHO', help='the account it reads with')
-    g.add_argument('--bind-pw', metavar='PASS', help='its password (or OTP_BIND_PW)')
+    g.add_argument('--bind-pw', metavar='PASS', help='its password: - asks for it (or '
+                   'OTP_BIND_PW) - not on the command line, where ps shows it')
     g.add_argument('--tls', choices=('ldaps', 'starttls', 'none'), help='how it is reached')
     g.add_argument('--port', type=int, metavar='N', help='its port')
     g.add_argument('--no-verify', action='store_true', help='do not check its certificate')
@@ -650,9 +671,10 @@ HELP_EXAMPLES = [
     ('otp --radtest novak 123456', 'what radtest asks, from this machine'),
     ('otp --log --rejects', 'who was refused, and why'),
     ('otp --request 42', 'every step of one decision'),
-    ("otp --add-client ASA --address 192.0.2.1 --secret 'something long' --realm example.cz", ''),
+    ('otp --add-client ASA --address 192.0.2.1 --secret - --realm example.cz',
+     'the secret asked for (or OTP_SECRET)'),
     ("otp --add-directory AD --hosts dc1.example.local,dc2.example.local \\\n"
-     "    --base DC=example,DC=local --bind-dn otp@example.local --bind-pw '...'", ''),
+     "    --base DC=example,DC=local --bind-dn otp@example.local --bind-pw -", ''),
     ("otp --add-realm example.cz --suffix example.cz --directory AD --lookup upn \\\n"
      "    --groups 'VPN_USERS;VPN_ADMINS'", ''),
     ('otp --import-legacy /root/old-otp', 'everything from a totpcgi + FreeRADIUS server'),
@@ -1574,8 +1596,9 @@ def cli_main(argv=None):
     TABLE_PAL = pal
     args = parser.parse_args(argv)
     # Every line coloured (1.0.132) - not the console's own screen, nor JSON.
-    if pal.on and not args.console and not args.json and not args.daemon and \
-            not isinstance(sys.stdout, ColourOut):
+    # On a terminal always: what is printed is made safe there (1.0.139).
+    if (pal.on or sys.stdout.isatty()) and not args.console and not args.json and \
+            not args.daemon and not isinstance(sys.stdout, ColourOut):
         sys.stdout = ColourOut(sys.stdout, pal)
     if args.help:
         sys.stdout.write(parser.format_help())
@@ -2091,7 +2114,7 @@ def cli_main(argv=None):
         print(pal.dim('  %d of %d in the last %s h' % (len(rows), total, args.hours)))
         return 0
 
-    if args.request:
+    if args.request is not None:
         r = store.radius_row(args.request)
         if not r:
             raise SystemExit('there is no request %d' % args.request)
@@ -2126,7 +2149,8 @@ def cli_main(argv=None):
         return 0
 
     if args.tokens:
-        rows, total = store.tokens(q=args.search, limit=args.limit if '--limit' in sys.argv else 1000)
+        rows, total = store.tokens(q=args.search, limit=args.limit if any(
+            x == '--limit' or x.startswith('--limit=') for x in sys.argv) else 1000)
         if args.json:
             out({'rows': rows, 'total': total})
             return 0
@@ -2314,8 +2338,14 @@ def cli_main(argv=None):
             # Not on the command line, where `ps` shows it (1.0.136).
             code = os.environ.get('OTP_RADTEST_PASSWORD') or getpass.getpass('password + code: ')
         server = a[2] if len(a) > 2 else '127.0.0.1'
-        port = int(a[3]) if len(a) > 3 else int(CONFIG.get('radius_auth_port') or 1812)
+        try:
+            port = int(a[3]) if len(a) > 3 else int(CONFIG.get('radius_auth_port') or 1812)
+        except ValueError:
+            raise SystemExit('otp --radtest: the port is a number')
         secret = a[4] if len(a) > 4 else None
+        if secret == '-':
+            # As --secret - (1.0.139): not on the command line, where ps shows it.
+            secret = ask_password('the shared secret', twice=False, env='OTP_SECRET')
         if secret is None:
             local = store.client_for('127.0.0.1')
             if not local:
@@ -2382,9 +2412,9 @@ def cli_main(argv=None):
                    None)
         data = {'id': old['id'] if old else None, 'name': args.add_client,
                 'address': args.address or (old or {}).get('address'),
-                'secret': (os.environ.get('OTP_SECRET') or ask_password('the shared secret'))
+                'secret': ask_password('the shared secret', env='OTP_SECRET')
                 if args.secret == '-' else args.secret if args.secret is not None else (
-                    None if old else ask_password('the shared secret')),
+                    None if old else ask_password('the shared secret', env='OTP_SECRET')),
                 'realm': args.realm if args.realm is not None else (old or {}).get('realm', ''),
                 # A client switched off stays off when it is changed (1.0.136).
                 'require_ma': (old or {}).get('require_ma', 0),
@@ -2472,6 +2502,9 @@ def cli_main(argv=None):
         if args.ca:
             ca = Path(args.ca).read_text()
         pw = args.bind_pw if args.bind_pw is not None else os.environ.get('OTP_BIND_PW')
+        if pw == '-':
+            pw = ask_password('the password of %s' % (args.bind_dn or 'the binding account'),
+                              twice=False, env='OTP_BIND_PW')
         data = {'id': old.get('id'), 'name': args.add_directory,
                 'hosts': args.hosts or old.get('hosts'), 'base': args.base or old.get('base'),
                 'bind_dn': args.bind_dn if args.bind_dn is not None else old.get('bind_dn', ''),

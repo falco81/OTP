@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.138'
+__version__ = '1.0.139'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -1187,7 +1187,15 @@ def load_config(path=None, saved=None):
             elif not key.startswith('_'):
                 unknown.append(key)
     except FileNotFoundError:
-        pass
+        # Gone at a reload, as one unreadable (1.0.139): node_name, ha_mode,
+        # the database went back to the defaults without a word.
+        if CONFIG_LOADED[0] and Path(where) == Path(CONFIG_FILE):
+            try:
+                log('%s is not there: the settings in effect are kept until it is put back'
+                    % where, 'error')
+            except Exception:                           # noqa: BLE001
+                pass
+            return CONFIG
     except (ValueError, OSError) as e:
         # Never the defaults in its place (1.0.94): a typo in config.json
         # started the daemon on an empty SQLite of its own - every person
@@ -1533,7 +1541,7 @@ def log(words, level='info'):
     # A line of its own begins only with a time (1.0.57): a newline in what
     # is written - a User-Name, say - continues indented, so it cannot pass
     # for a line of otp's; other control characters are shown, not written.
-    words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', lambda m: '\\x%02x' % ord(m.group(0)),
+    words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', lambda m: '\\x%02x' % ord(m.group(0)),
                    str(words)).replace('\n', '\n    ')
     line = '%s %-5s %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), level, words)
     global _LOG_FILE
@@ -2342,7 +2350,9 @@ class Db(object):
             return main
         # A copy put back holds the database whole, RADIUS too (as before
         # the lanes): its writes would collide with the rows coming in.
-        if DB_RESTORING.is_set():
+        # This database's own (1.0.139): a move loading another database sent
+        # RADIUS off its lane for the whole of it.
+        if getattr(self, 'restoring', False):
             return main
         lane = self._lanes.get('radius')
         if lane is None:
@@ -3111,9 +3121,11 @@ def load_tables(db, src, keep_logs=True, say=None):
     # the tokens empty, and everybody locked out. The database is held for
     # the whole of it - a restore is not something done while people sign in.
     DB_RESTORING.set()
+    db.restoring = True
     try:
         return _load_tables_held(db, src, keep_logs, say, gzip)
     finally:
+        db.restoring = False
         DB_RESTORING.clear()
 
 
@@ -5383,6 +5395,8 @@ class ListQuery(object):
         else:
             items = [value] if quoted else [v for v in value.split(',') if v.strip()]
             clause = self._join('OR', [self._one(column, kind, op, v.strip()) for v in items])
+        if not clause:
+            return None                      # "name:," - nothing in it yet (1.0.139)
         if neg:
             return ('NOT COALESCE((%s), 1=0)' % clause[0], clause[1])
         return clause
@@ -5553,8 +5567,10 @@ class Storage(object):
         return default if got is None else got
 
     def set_meta(self, k, v):
-        with self.lock:
-            self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
+        # One statement, no lock of Python's (1.0.139): a RADIUS thread noting a
+        # client seen waited here behind a page holding the lock for a slow
+        # query on the main connection - the VPN timed out.
+        self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
 
     def settings_saved(self):
         out = {}
@@ -5570,9 +5586,8 @@ class Storage(object):
                 for r in self.db.rows('SELECT k, at, by_who FROM settings')}
 
     def save_setting(self, k, v, by=''):
-        with self.lock:
-            self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
-                                             'by_who': str(by or '')[:190]})
+        self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
+                                         'by_who': str(by or '')[:190]})
 
     def drop_setting(self, k):
         self.db.run('DELETE FROM settings WHERE k = ?', (k,))
@@ -7945,7 +7960,10 @@ class Tokens(object):
             except (ValueError, TypeError):
                 fails = []
             fails = [x for x in fails if t - x < span] + [t]
-            sets, args = 'fail_times = ?', [json.dumps(fails[-50:])]
+            # As many as the pause counts (1.0.139): rate_limit_tries goes to
+            # 100, and with more than 50 the pause never came.
+            keep = max(50, int(CONFIG.get('rate_limit_tries') or 0))
+            sets, args = 'fail_times = ?', [json.dumps(fails[-keep:])]
             if mins:
                 sets += ', locked_until = ?'
                 args.append(t + 60 * mins)
@@ -9647,6 +9665,13 @@ def chal_take(store, state, raw_was):
     return bool(store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (chal_key(state), raw_was)))
 
 
+def chal_drop(store, state):
+    """Done with, whatever it holds now: after a code taken once - the token's
+    step, a recovery code, once_take - another answer that only counted a try
+    meanwhile no longer refuses the right one (1.0.139)."""
+    store.db.run('DELETE FROM meta WHERE k = ?', (chal_key(state),))
+
+
 def chal_tidy(store):
     """Challenges past their time, and the counts of sent codes."""
     t = time.time()
@@ -10221,8 +10246,8 @@ class Authenticator(object):
             if re.fullmatch(r'[0-9]{4,10}', code, re.ASCII) and \
                     hmac.compare_digest(code_hash(name, code), str(chal.get('code') or '')):
                 ok, said = True, 'Code sent by %s accepted' % ('mail' if kind == 'mail' else 'SMS')
-                if chal_take(self.store, state, raw) and once_take(
-                        self.store, 'chal', name, hashlib.sha256(bytes(state)).hexdigest()):
+                if once_take(self.store, 'chal', name, hashlib.sha256(bytes(state)).hexdigest()):
+                    chal_drop(self.store, state)
                     self.tokens.used_sent(name, kind)
                     self.tokens._said(name, True, said, how, src, rid)
                 else:
@@ -10231,12 +10256,15 @@ class Authenticator(object):
                 # A recovery code - or a wrong code, counted as one from the
                 # phone is, towards the lockout.
                 ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
-                if ok and not chal_take(self.store, state, raw):
-                    ok, said = False, SAY_REUSED
+                if ok:
+                    chal_drop(self.store, state)
         else:
+            # The code is taken once by the token itself (its step, once_take):
+            # the question is done with, even if a second answer to it counted
+            # a try meanwhile - that refused the right code and used it up.
             ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
-            if ok and not chal_take(self.store, state, raw):
-                ok, said = False, SAY_REUSED
+            if ok:
+                chal_drop(self.store, state)
         d.otp = said
         d.step('the code for the token %s' % name, ok, said, t)
         if ok:
@@ -11027,7 +11055,7 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      'cannot be sent', 'does not decode', 'too many codes sent',
                      'has no directory', 'nowhere to send', 'too many answers at once',
                      'longer than a RADIUS packet', 'no realm takes', 'may not use the realm',
-                     'carries no')
+                     'carries no', 'already been used')
 
 
 def guard_on():
@@ -11040,6 +11068,12 @@ def guard_source(w):
     raw = str((w or {}).get('Calling-Station-Id') or '').strip()
     if not raw:
         return ''
+    # An address with its port (1.0.139): 203.0.113.5:51234 or [2001:db8::5]:51234
+    # was a new place at every connection, and never blocked.
+    m = re.match(r'^\[([^\]]+)\](?::\d+)?\Z', raw) or \
+        re.match(r'^(\d{1,3}(?:\.\d{1,3}){3}):\d+\Z', raw)
+    if m:
+        raw = m.group(1)
     try:
         a = ipaddress.ip_address(raw.split('%')[0].strip('[]'))
         if a.version == 6:
@@ -11105,13 +11139,15 @@ def guard_count(daemon, src, name):
     newly = None
     with ApiHandler.THROTTLE_LOCK:
         fails = [x for x in daemon.login_fails[key] if t - x < span] + [t]
-        daemon.login_fails[key] = fails[-1000:]
+        # Kept to the limits set (1.0.139): tries up to 10000, names up to 1000.
+        daemon.login_fails[key] = fails[-max(1000, tries):]
         info = daemon.login_info.setdefault(key, {'others': []})
         names = {n: ts for n, ts in (info.get('names') or {}).items() if t - ts < span}
         if name:
             names[name] = t
-            if len(names) > 500:
-                names = dict(sorted(names.items(), key=lambda kv: kv[1])[-500:])
+            cap = max(500, nlimit)
+            if len(names) > cap:
+                names = dict(sorted(names.items(), key=lambda kv: kv[1])[-cap:])
             others = [x for x in info.get('others') or [] if x != name]
             info['others'] = (others + [name])[-6:]
         info.update(limit=tries, span=span, what='wrong sign-ins', at=t, names=names,
@@ -13960,8 +13996,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     if kind == 'copy':
         load_tables(store.db, path)
     elif kind == 'sqlite':
-        tmp = Path(tempfile.mkstemp(prefix='otp-restore-', suffix='.json.gz',
-                                    dir=str(STATE_DIR))[1])
+        fd, tmp = tempfile.mkstemp(prefix='otp-restore-', suffix='.json.gz', dir=str(STATE_DIR))
+        os.close(fd)                    # not left open, one each time (1.0.139)
+        tmp = Path(tmp)
         try:
             _sqlite_to_copy(path, tmp)
             load_tables(store.db, tmp)
@@ -13978,7 +14015,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         cnf = _my_cnf(c)
         # The client is given the SQL itself: a gzip reader has no file
         # descriptor of its own to hand a program, so it is unpacked first.
-        raw = Path(tempfile.mkstemp(prefix='otp-sql-', dir=str(STATE_DIR))[1])
+        fd, raw = tempfile.mkstemp(prefix='otp-sql-', dir=str(STATE_DIR))
+        os.close(fd)
+        raw = Path(raw)
         try:
             with gzip.open(str(path), 'rb') as src, open(str(raw), 'wb') as dst:
                 shutil.copyfileobj(src, dst, 1 << 20)
@@ -14012,8 +14051,27 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     if re.match(r'^[0-9a-f]{64}\Z', key_hex):
         now = sealing_key()
         if not now or now.hex() != key_hex:
+            # The cluster's authority kept from before is sealed with the key
+            # going out (1.0.139): opened now, sealed again with the new one -
+            # it could not be opened after, and had to be made anew.
+            cas = None
+            for r in live_tls:
+                if r['k'] == 'hatls:ca':
+                    try:
+                        cas = (json.loads(r['v'] or 'null') or {}).get('cas')
+                        for ca in cas or []:
+                            ca['key'] = unseal_secret(ca.get('key'), bind='hatls:ca')
+                    except (ValueError, AttributeError, TypeError):
+                        cas = None
             write_replacing(sealing_key_path(), key_hex + '\n', 0o600)
             key_said = 'the key that opens the tokens came with it and is in use now'
+            if cas and all(ca.get('key') for ca in cas):
+                for ca in cas:
+                    ca['key'] = seal_secret(ca['key'], bind='hatls:ca')
+                try:
+                    store.set_meta('hatls:ca', json.dumps({'cas': cas}))
+                except Exception as e:                  # noqa: BLE001
+                    log('the authority of the cluster could not be sealed again: %s' % e, 'warn')
     else:
         # No key came with it (1.0.59): whether the tokens put back open with
         # the key in use is looked at, and said loudly when they do not.
@@ -16355,6 +16413,11 @@ def rb_checked(data, old=None):
             raise ValueError('the folder has no ; or " in it, and does not begin with -')
         if kind != 'smb' and re.search(r'(^|/)\.\.(/|$)', t['path']):
             raise ValueError('the folder has no .. in it')
+        if kind == 'scp' and re.search(r'[^A-Za-z0-9._/~+@%=,-]', t['path']):
+            # scp before OpenSSH 9 hands the far path to the shell there
+            # (1.0.139): $( ), `, |, & and spaces ran or broke.
+            raise ValueError('the folder (SCP) is letters, digits and . _ / ~ + @ % = , - '
+                             'only - use SFTP for any other')
     pw = data.get('password')
     if pw is None or is_masked(pw):
         t['password'] = old.get('password') or ''
@@ -16833,12 +16896,16 @@ class RbSsh(object):
         # A password (or the key's passphrase) through SSH_ASKPASS: never on
         # a command line, never in a file of the otp account's.
         self.env = dict(os.environ, DISPLAY=':0', SSH_ASKPASS_REQUIRE='force')
-        secret = rb_secret(t, 'password') or rb_secret(t, 'key_pass')
+        # Each prompt its own answer (1.0.139): with a password and a key that
+        # has a passphrase, the password went to the key, and the key failed.
+        pw = rb_secret(t, 'password') or rb_secret(t, 'key_pass')
+        kp = rb_secret(t, 'key_pass') or rb_secret(t, 'password')
         ask = os.path.join(self.d, 'ask')
         with open(ask, 'w') as f:
-            f.write('#!/bin/sh\nprintf "%s\\n" "$OTP_RB_SECRET"\n')
+            f.write('#!/bin/sh\ncase "$1" in\n  *assphrase*) printf "%s\\n" "$OTP_RB_KEYPASS";;\n'
+                    '  *) printf "%s\\n" "$OTP_RB_SECRET";;\nesac\n')
         os.chmod(ask, 0o700)
-        self.env.update(SSH_ASKPASS=ask, OTP_RB_SECRET=secret)
+        self.env.update(SSH_ASKPASS=ask, OTP_RB_SECRET=pw, OTP_RB_KEYPASS=kp)
         auths = ['publickey'] if key else []
         if rb_secret(t, 'password'):
             auths += ['password', 'keyboard-interactive']
@@ -17083,7 +17150,17 @@ def rb_try(t):
 
 # ---- the backup itself -----------------------------------------------------------------
 def rb_password():
-    return str(CONFIG.get('rbackup_password') or '')
+    # Sealed in config.json like the other passwords: until 1.0.139 the sealed
+    # text itself locked the backups - not the password typed, so a new
+    # machine could not open them.
+    pw = str(CONFIG.get('rbackup_password') or '')
+    return (unseal_secret(pw) or '') if pw else ''
+
+
+def rb_password_old():
+    """What locked the backups made here before 1.0.139: the sealed text."""
+    pw = str(CONFIG.get('rbackup_password') or '')
+    return pw if pw.startswith((SEALED, SEALED2)) else ''
 
 
 def rb_files_named():
@@ -17528,14 +17605,26 @@ def rb_open(path, password, work):
         if not password:
             raise RbError('the backup is locked: its password is needed')
         src = os.path.join(work, 'b.tar.gz')
-        try:
-            _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
-                      'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
-                     env={'OTP_RB_PASS': password}, what='opening it')
-        except ValueError:
-            raise RbError('the password does not open it (or the file is damaged)')
+        tries = [password]
+        if password == rb_password() and rb_password_old():
+            tries.append(rb_password_old())             # made here before 1.0.139
+        for n, pw in enumerate(tries):
+            try:
+                _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
+                          'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
+                         env={'OTP_RB_PASS': pw}, what='opening it')
+                break
+            except ValueError:
+                if n == len(tries) - 1:
+                    raise RbError('the password does not open it (or the file is damaged)')
     elif not head.startswith(b'\x1f\x8b'):
         raise RbError('that is not a backup of otp (neither locked nor a .tar.gz)')
+    elif password:
+        # Backups are always locked: an unlocked one where a password is in
+        # play was put there by somebody else - its database, its accounts,
+        # its key (1.0.139).
+        raise RbError('the backup is not locked, and backups of otp always are - it was not '
+                      'made by otp; not put in')
     out = os.path.join(work, 'x')
     os.makedirs(out, mode=0o700)
     with tarfile.open(src, 'r:gz') as tf:
@@ -17888,6 +17977,29 @@ def claim_once(store, key, value):
                              (str(value), key, str(value))))
 
 
+def sub_connection_set(store, sub, conninfo):
+    """ALTER SUBSCRIPTION ... CONNECTION, its password kept out of PostgreSQL's
+    log (1.0.136) and the text as it is - a ? in a password was taken for a
+    parameter (1.0.139). Raises ValueError, the password scrubbed."""
+    for quiet in ("SET log_statement = 'none'", "SET log_min_error_statement = 'panic'"):
+        try:
+            store.db.run(quiet)
+        except Exception:                               # noqa: BLE001
+            pass
+    try:
+        store.db.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'"
+                            % (sub, conninfo.replace("'", "''"))))
+    except Exception as e:                              # noqa: BLE001
+        raise ValueError('the subscription %s could not be changed: %s'
+                         % (sub, scrub_secret(str(e).split('\n')[0][:300])))
+    finally:
+        for back in ('RESET log_statement', 'RESET log_min_error_statement'):
+            try:
+                store.db.run(back)
+            except Exception:                           # noqa: BLE001
+                pass
+
+
 # ---- a job's progress, where both nodes can read it ------------------------------
 def job_publish(job):
     store = HA_STORE.get('store')
@@ -18152,6 +18264,11 @@ def pg_open_to(peer, db_name, db_user):
     """PostgreSQL on this machine listening beyond localhost and letting the
     other node's address in for this one database and account. Returns what
     was done, in words."""
+    # Both go into pg_hba.conf as root: a name with a space or a new line
+    # in config.json wrote a line of its own there (1.0.139).
+    for what, v in (('db_name', db_name), ('db_user', db_user)):
+        if not DB_IDENT.fullmatch(str(v or '')):
+            raise ValueError('%s is letters, digits and _ only, starting with a letter' % what)
     done = []
     listen = pg_local_admin('SHOW listen_addresses')
     if listen not in ('*', '0.0.0.0') and '*' not in listen.split(','):
@@ -21430,8 +21547,7 @@ def _hatls_off_tick(store, w, st):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
-            store.db.run("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                         % (sub, conninfo.replace("'", "''")))
+            sub_connection_set(store, sub, conninfo)
         with ONCE_PEER_LOCK:
             was, ONCE_PEER['db'] = ONCE_PEER['db'], None
         if was is not None:
@@ -21455,17 +21571,32 @@ def _hatls_off_tick(store, w, st):
         store.add_event('ha', 'TLS between the databases is off on %s' % node_name(), 'warn')
 
 
+PGTLS_LOCK = threading.Lock()
+
+
+def pgtls_send(data):
+    """A request into the root helper's pgtls.ask (1.0.139): one waiting there
+    and not yet read is not written over - the change of the addresses and the
+    link's TLS used the same file and the same temporary name, and one of
+    them waited for an answer that never came."""
+    with PGTLS_LOCK:
+        end = time.time() + 30
+        while (WEB_DIR / PGTLS_ASK).exists() and time.time() < end:
+            time.sleep(0.5)
+        tmp = WEB_DIR / ('.%s.%s' % (PGTLS_ASK, secrets.token_hex(6)))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(data))
+        os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+
+
 def _hatls_ask(st, what):
     """A request to this node's root helper, as a file in the folder it reads."""
     ask_id = secrets.token_hex(8)
     data = dict(what, id=ask_id, port=int(CONFIG.get('db_port') or 5432),
                 db=str(CONFIG.get('db_name') or 'otp'), user=str(CONFIG.get('db_user') or 'otp'),
                 peer=str(CONFIG.get('ha_peer') or ''), ca_file=str(HA_CA_FILE))
-    tmp = WEB_DIR / ('.%s.%d' % (PGTLS_ASK, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+    pgtls_send(data)
     st['asked'] = ask_id
     st['asked_at'] = time.time()
 
@@ -21789,8 +21920,7 @@ def _hatls_tick(store):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
-            store.db.run("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                         % (sub, conninfo.replace("'", "''")))
+            sub_connection_set(store, sub, conninfo)
         with ONCE_PEER_LOCK:
             was, ONCE_PEER['db'] = ONCE_PEER['db'], None
         if was is not None:
@@ -21867,11 +21997,7 @@ def _readdress_hba(old_peer, new_peer, root_now, keep_old=False, drop_old=False)
             # so the other node can still be told if it goes back; and taken
             # out once the new one is kept.
             'keep_old': bool(keep_old), 'drop_old': bool(drop_old)}
-    tmp = WEB_DIR / ('.%s.%d' % (PGTLS_ASK, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+    pgtls_send(data)
     if root_now:
         # On the command line, as root: the helper run here and now.
         helper = Path(__file__).resolve().parent / 'otp_web.py'
@@ -21926,26 +22052,11 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
                 conninfo = ha_conninfo(peer, int(CONFIG.get('ha_peer_port') or 5432),
                                        CONFIG.get('db_name'), CONFIG.get('db_user'),
                                        CONFIG.get('db_password'))
-                # Its password kept out of PostgreSQL's log (1.0.136), as
-                # CREATE SUBSCRIPTION's is.
-                for quiet in ("SET log_statement = 'none'",
-                              "SET log_min_error_statement = 'panic'"):
-                    try:
-                        store.db.run(quiet)
-                    except Exception:                   # noqa: BLE001
-                        pass
                 try:
-                    store.db.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                                        % (sub, conninfo.replace("'", "''"))))
-                except Exception as e:                  # noqa: BLE001
+                    sub_connection_set(store, sub, conninfo)
+                except ValueError as e:
                     raise ValueError('the subscription %s could not be pointed at %s: %s'
-                                     % (sub, peer, scrub_secret(str(e).split('\n')[0][:300])))
-                finally:
-                    for back in ('RESET log_statement', 'RESET log_min_error_statement'):
-                        try:
-                            store.db.run(back)
-                        except Exception:               # noqa: BLE001
-                            pass
+                                     % (sub, peer, str(e).split(': ', 1)[-1]))
                 done.append('this node takes the other\'s rows from %s now' % peer)
             with ONCE_PEER_LOCK:
                 was, ONCE_PEER['db'] = ONCE_PEER['db'], None
@@ -21984,7 +22095,12 @@ def readdress_tell(peer, mine, by, keep_old=False):
     ask = {'at': time.time(), 'by': by, 'from': node_name(), 'mine': peer, 'peer': mine,
            'keep_old': bool(keep_old)}
     told = False
-    for tls in (None, ('require', ''), ('prefer', '')):
+    # As the link is set; where its certificate names the old address, by the
+    # cluster's authority alone (1.0.139) - not unchecked, nor in the clear:
+    # whoever stood between could have written this request themselves.
+    mode, ca = ha_link_tls()
+    tries = [None] + ([('verify-ca', ca)] if mode == 'verify-full' else [])
+    for tls in tries:
         try:
             far = db_open(ha_peer_conf(timeout=5, tls=tls))
         except Exception:                               # noqa: BLE001
@@ -22180,7 +22296,7 @@ def net_current_ip(now):
     return ''
 
 
-def net_check(store, node, want):
+def net_check(store, node, want, rollback=False):
     """What the page asked for, made whole and checked against the node as it
     said it is; with the plan in words. Raises ValueError."""
     now = net_node_now(store, node)
@@ -22251,8 +22367,12 @@ def net_check(store, node, want):
         except ValueError:
             raise ValueError('%r is not the address of a DNS server' % x)
     host = str(want.get('hostname') or '').strip().rstrip('.').lower()
+    # The name the node has now, kept as it is, may be a short one - and going
+    # back after a trial asks for the old one again: refused, the new network
+    # stayed (1.0.139). Still a name, one part or more.
+    same = rollback or host == str(d.get('hostname') or '').strip().rstrip('.').lower()
     if not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
-                    r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$', host):
+                    r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)%s$' % ('*' if same else '+'), host):
         raise ValueError('the host name is the whole name: otp1.example.cz')
     old_ip = net_current_ip(now).split('/')[0]
     new_ip = str(a4.ip)
@@ -22319,7 +22439,7 @@ def net_ask(store, node, want, by, rollback=False, maint=False):
         raise ValueError('%s is changing its network already' % node)
     if power_busy(store):
         raise ValueError('a restart or a power-off is under way')
-    checked = net_check(store, node, want)
+    checked = net_check(store, node, want, rollback=rollback)
     ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
            'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
            'maint': bool(maint)}
@@ -23007,6 +23127,11 @@ def fw_trial_begin(store, by):
                  'access': access_conf(store), 'at': t, 'by': by}
     trial.update(until=t + n * 60, last_by=by, min=n)
     store.set_meta('fw:trial', json.dumps(trial))
+    # The key the put-back is claimed by made now, by this node alone (1.0.139):
+    # made by both at the moment it ran out, it came over to each as a second
+    # row with the same key, and replication stopped.
+    if store.get_meta('fw_trial_back') is None:
+        store.set_meta('fw_trial_back', '')
     return trial
 
 
@@ -23737,7 +23862,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             # NaN and Infinity are not numbers anybody means (1.0.103).
             self._body = json.loads(raw.decode('utf-8'), parse_constant=_no_constant) \
                 if raw else {}
-        except ValueError:
+        except (ValueError, RecursionError):            # [[[[... too (1.0.139)
             raise ApiError(400, 'the body is not JSON')
         if not isinstance(self._body, dict):
             raise ApiError(400, 'the body is not an object')
@@ -25253,6 +25378,32 @@ def _token_do(h):
         return _token_act(h, s, b, act, name, who)
 
 
+def token_same_person(store, name):
+    """Another name of the same person with a token in use - one RADIUS would
+    stop using once `name` has one (1.0.139): under another suffix of the
+    realm, or the same account in another realm on the same directory."""
+    if '@' not in name:
+        return ''
+    realm = store.realm_for(name)
+    if not realm:
+        return ''
+    cands = realm_names(name, realm)[1:]
+    if realm.get('lookup') == 'sam' and realm.get('directory'):
+        who = name.rpartition('@')[0]
+        here = str(realm.get('directory') or '').lower()
+        for r in store.realms():
+            if r['id'] != realm['id'] and r.get('lookup') == 'sam' and \
+                    str(r.get('directory') or '').lower() == here and \
+                    r.get('suffix') not in (None, '', '*'):
+                cands.append(Authenticator.token_name('%s@%s' % (who, r['suffix']), r))
+    for c in cands:
+        c = norm_name(c)
+        t = store.token(c) if c != name else None
+        if t and t.get('state') != 'pending':
+            return c
+    return ''
+
+
 def _token_act(h, s, b, act, name, who):
     tk = h.d.tokens
     if act in ('disable', 'enable', 'unlock', 'note', 'window', 'drop_staged') and \
@@ -25268,6 +25419,12 @@ def _token_act(h, s, b, act, name, who):
             # administrator makes new ones.
             raise ApiError(403, '%s already has a token in use: only a full administrator '
                                 'replaces it (or the person, on the enrolment pages)' % name)
+        other = token_same_person(h.store, name) if s['role'] != 'fulladmin' else ''
+        if other:
+            # The same person under another name (1.0.139): the new token
+            # would be the one RADIUS takes - a working key for somebody else.
+            raise ApiError(403, '%s is the same person as %s, who has a token in use: only a '
+                                'full administrator replaces it' % (name, other))
         display = str(b.get('display') or '').strip()
         note = b.get('note')
         if had and not str(note or '').strip():
@@ -26148,14 +26305,22 @@ def _dirs_do(h):
             msg = '%s keeps %d certificate(s)' % (one['name'], n)
         return {'message': msg, 'ca_list': after.get('ca_list') or []}
     if act == 'try':
-        h.me('fulladmin')
+        who = h.me('fulladmin')['name']
         if not CONFIG.get('admin_directory'):
             raise ApiError(400, 'no directory signs administrators in yet: choose one in '
                                 '"Sign administrators in against the directory" and save')
-        said = admin_ask_directory(h, str(b.get('user') or ''), str(b.get('password') or ''))
+        # Counted and written down (1.0.139), as a radtest is: each try is a
+        # directory password, and wrong ones lock the account there.
+        user = str(b.get('user') or '')
+        key = h.throttle('radtest', 20, 5, name='%s>%s' % (who, user[:120]), ip_tries=100)
+        said = admin_ask_directory(h, user, str(b.get('password') or ''))
         if said is None:
             raise ApiError(404, 'the directory %s is not set up' % CONFIG.get('admin_directory'))
         said.pop('entry', None)
+        if not said.get('ok'):
+            h.failed(key)
+        h.store.add_event('accounts', '%s tried the directory sign-in of %s: %s' % (
+            who, user[:120], 'it would sign in' if said.get('ok') else 'refused'), who=who)
         return {'tried': said}
     h.me('tokenadmin')
     if act not in ('check', 'groups', 'lookup'):
@@ -29510,6 +29675,12 @@ def _mfa_do(h):
     act = b.get('action')
     name = acc['name']
     data = s.get('data') or {}
+    # The account as it is now, not as it was at this sign-in (1.0.139): a
+    # sign-in kept waiting from before the second step was set up could set
+    # up its own, over the one in use.
+    if act in ('enrol_start', 'enrol_confirm') and stage == 'enrol' and \
+            mfa_stage(h.store, name) != 'enrol':
+        raise ApiError(409, 'this account has its second step set up already - sign in again')
     if act == 'enrol_start':
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
@@ -29553,7 +29724,11 @@ def _mfa_do(h):
                 h.failed(key)
                 raise ApiError(400, 'that code is not right, or no longer good - send another')
             rec['dest'] = new['dest']
-        h.store.set_meta(mfa_key(name), json.dumps(rec))
+        with MFA_LOCK:
+            if mfa_stage(h.store, name) != 'enrol':
+                raise ApiError(409, 'this account has its second step set up already - sign '
+                                    'in again')
+            h.store.set_meta(mfa_key(name), json.dumps(rec))
         _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
         h.store.add_event('accounts', '%s set up the second step of signing in: %s%s' % (
             name, MFA_KIND_WORDS.get(rec['kind']),
@@ -29894,7 +30069,7 @@ def _rbackup_upload(h):
             pass
     up = secrets.token_hex(8)
     dst = RB_UPLOADS / up
-    h.body_to_file(dst, 8 * 1024 ** 3)
+    h.body_to_file(dst, 4 * 1024 ** 3)            # as nginx takes (1.0.139)
     try:
         with open(str(dst), 'rb') as f:
             head = f.read(8)
@@ -30919,7 +31094,7 @@ class Console(object):
         try:
             rx = re.compile(find, re.I)
             return lambda s: rx.search(s) is not None
-        except re.error:
+        except (re.error, OverflowError, RecursionError):   # a{9999999999} too (1.0.139)
             low = find.lower()
             return lambda s: low in s.lower()
 
@@ -30929,7 +31104,7 @@ class Console(object):
             return coloured
         try:
             rx = re.compile(find, re.I)
-        except re.error:
+        except (re.error, OverflowError, RecursionError):
             rx = re.compile(re.escape(find), re.I)
         out = []
         for part in re.split(r'(\x1b\[[0-9;?]*[A-Za-z])', coloured):
@@ -30974,7 +31149,7 @@ class Console(object):
 
         def add(raw):
             for ln in raw:
-                ln = ln.expandtabs(8).replace('\r', '')
+                ln = term_safe(ln.expandtabs(8).replace('\r', ''))
                 col = (paint(ln) if paint else ln) if p.on else self._plain_text(ln)
                 lines.append((self._plain_text(col), col))
         add(first())
@@ -31188,7 +31363,9 @@ class Console(object):
             if self.confirm('Delete', 'The token of %s is deleted - its app stops working '
                             'here and a new one must be enrolled. This cannot be undone.' % name,
                             'Delete it', danger=True):
-                self.act('--delete-token', name)
+                # Asked here already: the command has no terminal to ask on
+                # and refused without --yes (1.0.139).
+                self.act('--delete-token', name, '--yes')
 
     def token_new(self):
         got = self.form('Make a token (enrol)', [
@@ -31212,6 +31389,12 @@ class Console(object):
         if not got:
             return
         extra = ['--by', got['by']] + (['--to', got['to']] if got['by'] != 'app' else [])
+        had = ((self.out('--token', got['name']) or {}).get('token') or {})
+        if had and had.get('state') != 'pending':
+            if not self.confirm('Replace', 'The token of %s in use is replaced, and stops '
+                                'working now.' % got['name'], 'Replace it', danger=True):
+                return
+            extra.append('--yes')
         self.act('--enroll', got['name'], *extra)
 
     def radtest(self, name):
@@ -31481,8 +31664,10 @@ class Console(object):
                 'Empty: only the connection and the binding are tried. A name (novak): '
                 'it is looked up, with its groups.'))
             if who is not None:
-                self.act('--directory-test', r['name'], *(['--directory-user', who]
-                                                          if who else []))
+                # --directory-user is NAME USER, and a command of its own (1.0.139).
+                self.act('--directory-test', r['name'])
+                if who:
+                    self.act('--directory-user', r['name'], who)
         elif what == 'show':
             self.details(r['name'], r, skip=('bind_pw', 'ca'))
         elif what == 'delete' and self.confirm(
@@ -31774,6 +31959,23 @@ class Console(object):
                 except Exception:                       # noqa: BLE001
                     pass
             return named[k]
+        if 0xc0 <= k < 0xf8:
+            # getch() gives UTF-8 a byte at a time (1.0.139): "ž" came as two
+            # Latin-1 letters, and a password typed here was not the one meant.
+            raw = bytearray([k])
+            src.nodelay(True)
+            try:
+                for _ in range(1 if k < 0xe0 else 2 if k < 0xf0 else 3):
+                    k2 = src.getch()
+                    if not 0x80 <= k2 < 0xc0:
+                        break
+                    raw.append(k2)
+            finally:
+                src.nodelay(False)
+            try:
+                return raw.decode('utf-8')
+            except UnicodeDecodeError:
+                return None
         if 32 <= k < 0x110000:
             try:
                 return chr(k)
@@ -32818,6 +33020,22 @@ def start_colour():
 
 
 ANSI = re.compile(r'\033\[[0-9;]*m')
+TERM_CTL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+
+
+def term_safe(text):
+    """What came from outside, safe on a terminal (1.0.139): a User-Name or a
+    reason from a packet carried escapes that cleared the screen, set the
+    title or wrote the clipboard. Colours are kept; any other control
+    character is shown as \\xNN."""
+    t = str(text)
+    out, at = [], 0
+    for m in ANSI.finditer(t):
+        out.append(TERM_CTL.sub(lambda c: '\\x%02x' % ord(c.group(0)), t[at:m.start()]))
+        out.append(m.group(0))
+        at = m.end()
+    out.append(TERM_CTL.sub(lambda c: '\\x%02x' % ord(c.group(0)), t[at:]))
+    return ''.join(out)
 
 
 def plain_len(text):
@@ -32970,7 +33188,7 @@ def table(rows, heads, widths=None):
     if not rows:
         return '  (none)'
     pal = TABLE_PAL
-    cells = [[tone_cell(c, pal) for c in r] for r in rows]
+    cells = [[tone_cell(term_safe(c), pal) for c in r] for r in rows]
     cols = list(zip(*([heads] + [[str(c) for c in r] for r in cells])))
     w = widths or [min(48, max(plain_len(x) for x in col)) for col in cols]
     head = '  ' + '  '.join(h.upper().ljust(w[i]) for i, h in enumerate(heads))
@@ -32990,7 +33208,8 @@ class ColourOut(object):
 
     def _line(self, ln):
         p = self.pal
-        if not ln.strip() or ANSI.search(ln):
+        ln = term_safe(ln)
+        if not p.on or not ln.strip() or ANSI.search(ln):
             return ln
         m = self.LINE_KV.match(ln)
         if m and not ln.lstrip().startswith(('$', '#')):
@@ -33015,8 +33234,10 @@ class ColourOut(object):
         return getattr(self.s, name)
 
 
-def ask_password(prompt='password', twice=True):
-    said = os.environ.get('OTP_PASSWORD')
+def ask_password(prompt='password', twice=True, env='OTP_PASSWORD'):
+    # Each secret its own variable (1.0.139): OTP_PASSWORD, set for an
+    # account, became a client's shared secret.
+    said = os.environ.get(env) if env else None
     if said:
         return said
     first = getpass.getpass('%s: ' % prompt)
@@ -33189,7 +33410,8 @@ def build_parser():
     g = p.add_argument_group('RADIUS')
     g.add_argument('--radtest', nargs='+', metavar='ARG', help='USER CODE [SERVER [PORT '
                    '[SECRET]]] - ask the way radtest does; the server is this one, the secret '
-                   'that of the client for 127.0.0.1, unless given')
+                   'that of the client for 127.0.0.1, unless given. CODE or SECRET as - is '
+                   'asked for (or OTP_RADTEST_PASSWORD, OTP_SECRET)')
     g.add_argument('--clients', action='store_true', help='the RADIUS clients')
     g.add_argument('--add-client', metavar='NAME', help='add (or change) a client: with '
                    '--address and --secret, and --realm for names that come without one')
@@ -33223,7 +33445,8 @@ def build_parser():
     g.add_argument('--hosts', metavar='H1,H2', help='its servers, in order')
     g.add_argument('--base', metavar='DN', help='where to look: DC=example,DC=local')
     g.add_argument('--bind-dn', metavar='WHO', help='the account it reads with')
-    g.add_argument('--bind-pw', metavar='PASS', help='its password (or OTP_BIND_PW)')
+    g.add_argument('--bind-pw', metavar='PASS', help='its password: - asks for it (or '
+                   'OTP_BIND_PW) - not on the command line, where ps shows it')
     g.add_argument('--tls', choices=('ldaps', 'starttls', 'none'), help='how it is reached')
     g.add_argument('--port', type=int, metavar='N', help='its port')
     g.add_argument('--no-verify', action='store_true', help='do not check its certificate')
@@ -33408,9 +33631,10 @@ HELP_EXAMPLES = [
     ('otp --radtest novak 123456', 'what radtest asks, from this machine'),
     ('otp --log --rejects', 'who was refused, and why'),
     ('otp --request 42', 'every step of one decision'),
-    ("otp --add-client ASA --address 192.0.2.1 --secret 'something long' --realm example.cz", ''),
+    ('otp --add-client ASA --address 192.0.2.1 --secret - --realm example.cz',
+     'the secret asked for (or OTP_SECRET)'),
     ("otp --add-directory AD --hosts dc1.example.local,dc2.example.local \\\n"
-     "    --base DC=example,DC=local --bind-dn otp@example.local --bind-pw '...'", ''),
+     "    --base DC=example,DC=local --bind-dn otp@example.local --bind-pw -", ''),
     ("otp --add-realm example.cz --suffix example.cz --directory AD --lookup upn \\\n"
      "    --groups 'VPN_USERS;VPN_ADMINS'", ''),
     ('otp --import-legacy /root/old-otp', 'everything from a totpcgi + FreeRADIUS server'),
@@ -34332,8 +34556,9 @@ def cli_main(argv=None):
     TABLE_PAL = pal
     args = parser.parse_args(argv)
     # Every line coloured (1.0.132) - not the console's own screen, nor JSON.
-    if pal.on and not args.console and not args.json and not args.daemon and \
-            not isinstance(sys.stdout, ColourOut):
+    # On a terminal always: what is printed is made safe there (1.0.139).
+    if (pal.on or sys.stdout.isatty()) and not args.console and not args.json and \
+            not args.daemon and not isinstance(sys.stdout, ColourOut):
         sys.stdout = ColourOut(sys.stdout, pal)
     if args.help:
         sys.stdout.write(parser.format_help())
@@ -34849,7 +35074,7 @@ def cli_main(argv=None):
         print(pal.dim('  %d of %d in the last %s h' % (len(rows), total, args.hours)))
         return 0
 
-    if args.request:
+    if args.request is not None:
         r = store.radius_row(args.request)
         if not r:
             raise SystemExit('there is no request %d' % args.request)
@@ -34884,7 +35109,8 @@ def cli_main(argv=None):
         return 0
 
     if args.tokens:
-        rows, total = store.tokens(q=args.search, limit=args.limit if '--limit' in sys.argv else 1000)
+        rows, total = store.tokens(q=args.search, limit=args.limit if any(
+            x == '--limit' or x.startswith('--limit=') for x in sys.argv) else 1000)
         if args.json:
             out({'rows': rows, 'total': total})
             return 0
@@ -35072,8 +35298,14 @@ def cli_main(argv=None):
             # Not on the command line, where `ps` shows it (1.0.136).
             code = os.environ.get('OTP_RADTEST_PASSWORD') or getpass.getpass('password + code: ')
         server = a[2] if len(a) > 2 else '127.0.0.1'
-        port = int(a[3]) if len(a) > 3 else int(CONFIG.get('radius_auth_port') or 1812)
+        try:
+            port = int(a[3]) if len(a) > 3 else int(CONFIG.get('radius_auth_port') or 1812)
+        except ValueError:
+            raise SystemExit('otp --radtest: the port is a number')
         secret = a[4] if len(a) > 4 else None
+        if secret == '-':
+            # As --secret - (1.0.139): not on the command line, where ps shows it.
+            secret = ask_password('the shared secret', twice=False, env='OTP_SECRET')
         if secret is None:
             local = store.client_for('127.0.0.1')
             if not local:
@@ -35140,9 +35372,9 @@ def cli_main(argv=None):
                    None)
         data = {'id': old['id'] if old else None, 'name': args.add_client,
                 'address': args.address or (old or {}).get('address'),
-                'secret': (os.environ.get('OTP_SECRET') or ask_password('the shared secret'))
+                'secret': ask_password('the shared secret', env='OTP_SECRET')
                 if args.secret == '-' else args.secret if args.secret is not None else (
-                    None if old else ask_password('the shared secret')),
+                    None if old else ask_password('the shared secret', env='OTP_SECRET')),
                 'realm': args.realm if args.realm is not None else (old or {}).get('realm', ''),
                 # A client switched off stays off when it is changed (1.0.136).
                 'require_ma': (old or {}).get('require_ma', 0),
@@ -35230,6 +35462,9 @@ def cli_main(argv=None):
         if args.ca:
             ca = Path(args.ca).read_text()
         pw = args.bind_pw if args.bind_pw is not None else os.environ.get('OTP_BIND_PW')
+        if pw == '-':
+            pw = ask_password('the password of %s' % (args.bind_dn or 'the binding account'),
+                              twice=False, env='OTP_BIND_PW')
         data = {'id': old.get('id'), 'name': args.add_directory,
                 'hosts': args.hosts or old.get('hosts'), 'base': args.base or old.get('base'),
                 'bind_dn': args.bind_dn if args.bind_dn is not None else old.get('bind_dn', ''),

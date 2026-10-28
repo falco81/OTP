@@ -289,7 +289,7 @@ def _rbackup_upload(h):
             pass
     up = secrets.token_hex(8)
     dst = RB_UPLOADS / up
-    h.body_to_file(dst, 8 * 1024 ** 3)
+    h.body_to_file(dst, 4 * 1024 ** 3)            # as nginx takes (1.0.139)
     try:
         with open(str(dst), 'rb') as f:
             head = f.read(8)

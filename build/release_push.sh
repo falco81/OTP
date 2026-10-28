@@ -10,6 +10,6 @@ ls release/otp-*.tar.gz | sed 's|release/otp-||; s|\.tar\.gz$||' | sort -V | hea
 git -c user.name="Claude" -c user.email="noreply@anthropic.com" commit -q -m "release: otp $V
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_018bm7haoJxKbiLKmngYgoQA"
+Claude-Session: https://claude.ai/code/session_01XtSgvua4j9gpLUBeqw2NjB"
 git push -q origin main
 git ls-tree --name-only HEAD release/

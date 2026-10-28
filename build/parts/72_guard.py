@@ -16,7 +16,7 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      'cannot be sent', 'does not decode', 'too many codes sent',
                      'has no directory', 'nowhere to send', 'too many answers at once',
                      'longer than a RADIUS packet', 'no realm takes', 'may not use the realm',
-                     'carries no')
+                     'carries no', 'already been used')
 
 
 def guard_on():
@@ -29,6 +29,12 @@ def guard_source(w):
     raw = str((w or {}).get('Calling-Station-Id') or '').strip()
     if not raw:
         return ''
+    # An address with its port (1.0.139): 203.0.113.5:51234 or [2001:db8::5]:51234
+    # was a new place at every connection, and never blocked.
+    m = re.match(r'^\[([^\]]+)\](?::\d+)?\Z', raw) or \
+        re.match(r'^(\d{1,3}(?:\.\d{1,3}){3}):\d+\Z', raw)
+    if m:
+        raw = m.group(1)
     try:
         a = ipaddress.ip_address(raw.split('%')[0].strip('[]'))
         if a.version == 6:
@@ -94,13 +100,15 @@ def guard_count(daemon, src, name):
     newly = None
     with ApiHandler.THROTTLE_LOCK:
         fails = [x for x in daemon.login_fails[key] if t - x < span] + [t]
-        daemon.login_fails[key] = fails[-1000:]
+        # Kept to the limits set (1.0.139): tries up to 10000, names up to 1000.
+        daemon.login_fails[key] = fails[-max(1000, tries):]
         info = daemon.login_info.setdefault(key, {'others': []})
         names = {n: ts for n, ts in (info.get('names') or {}).items() if t - ts < span}
         if name:
             names[name] = t
-            if len(names) > 500:
-                names = dict(sorted(names.items(), key=lambda kv: kv[1])[-500:])
+            cap = max(500, nlimit)
+            if len(names) > cap:
+                names = dict(sorted(names.items(), key=lambda kv: kv[1])[-cap:])
             others = [x for x in info.get('others') or [] if x != name]
             info['others'] = (others + [name])[-6:]
         info.update(limit=tries, span=span, what='wrong sign-ins', at=t, names=names,

@@ -379,8 +379,7 @@ def _hatls_off_tick(store, w, st):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
-            store.db.run("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                         % (sub, conninfo.replace("'", "''")))
+            sub_connection_set(store, sub, conninfo)
         with ONCE_PEER_LOCK:
             was, ONCE_PEER['db'] = ONCE_PEER['db'], None
         if was is not None:
@@ -404,17 +403,32 @@ def _hatls_off_tick(store, w, st):
         store.add_event('ha', 'TLS between the databases is off on %s' % node_name(), 'warn')
 
 
+PGTLS_LOCK = threading.Lock()
+
+
+def pgtls_send(data):
+    """A request into the root helper's pgtls.ask (1.0.139): one waiting there
+    and not yet read is not written over - the change of the addresses and the
+    link's TLS used the same file and the same temporary name, and one of
+    them waited for an answer that never came."""
+    with PGTLS_LOCK:
+        end = time.time() + 30
+        while (WEB_DIR / PGTLS_ASK).exists() and time.time() < end:
+            time.sleep(0.5)
+        tmp = WEB_DIR / ('.%s.%s' % (PGTLS_ASK, secrets.token_hex(6)))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(data))
+        os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+
+
 def _hatls_ask(st, what):
     """A request to this node's root helper, as a file in the folder it reads."""
     ask_id = secrets.token_hex(8)
     data = dict(what, id=ask_id, port=int(CONFIG.get('db_port') or 5432),
                 db=str(CONFIG.get('db_name') or 'otp'), user=str(CONFIG.get('db_user') or 'otp'),
                 peer=str(CONFIG.get('ha_peer') or ''), ca_file=str(HA_CA_FILE))
-    tmp = WEB_DIR / ('.%s.%d' % (PGTLS_ASK, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+    pgtls_send(data)
     st['asked'] = ask_id
     st['asked_at'] = time.time()
 
@@ -738,8 +752,7 @@ def _hatls_tick(store):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
-            store.db.run("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                         % (sub, conninfo.replace("'", "''")))
+            sub_connection_set(store, sub, conninfo)
         with ONCE_PEER_LOCK:
             was, ONCE_PEER['db'] = ONCE_PEER['db'], None
         if was is not None:

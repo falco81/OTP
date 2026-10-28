@@ -4,6 +4,92 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.139 — 28 October 2026
+
+**Remote backups are locked with the password you typed** (important)
+- Until now the password of the backups was used as it is kept in config.json,
+  sealed: the backups were locked with that sealed text, not with the password
+  typed on the pages. They opened only on the machine that made them; on a new
+  machine (`--restore-bundle`, the page, `openssl enc -d` as RESTORE.md says)
+  the password did not open them. Now the password typed locks them.
+- Backups made before 1.0.139 still open on the machine that made them (otp
+  tries the old way too). **Make a new remote backup after the upgrade**: only
+  that one opens anywhere with your password.
+- A backup that is not locked is no longer put back where a password is in play
+  (one set, or typed): otp never sends one unlocked, so it was put there by
+  somebody else.
+- SFTP/SCP: with both a password and a key with a passphrase, each prompt gets
+  its own answer (the password went to the key, and the key failed). The SCP
+  folder takes no characters a shell reads (use SFTP for those).
+
+**Security**
+- `otp --ha-setup`: db_name and db_user are checked before they are written
+  into pg_hba.conf as root (a value with a space or a new line in config.json
+  wrote a line of its own there).
+- A token administrator can no longer make a token for a person who has one in
+  use under another name RADIUS would then stop using (another suffix of the
+  realm, or the same account in another realm on the same directory) - a full
+  administrator's to do, as replacing a token is.
+- Administrators' second step: a sign-in left waiting from before the account
+  set its second step up can no longer set up its own over it.
+- The command line and the console: names, reasons and attributes that came in
+  a RADIUS packet are shown with their control characters as \xNN - escapes in
+  them cleared the screen, set the title or wrote the clipboard of the
+  terminal (`otp --log`, `--request`, the console's live views).
+- Telling the other node a new address: where the link's certificate names the
+  old address, the other node is reached checked by the cluster's authority -
+  no longer unchecked, nor in the clear.
+- `--add-client` without `--secret` no longer takes OTP_PASSWORD as the shared
+  secret (it is OTP_SECRET). `--radtest USER CODE SERVER PORT -` and
+  `--bind-pw -` ask for the secret instead of taking it on the command line;
+  the help shows these.
+- The directory sign-in test on the pages is counted (as a radtest is) and
+  written in the events.
+
+**RADIUS**
+- A right code is no longer refused because a second answer to the same
+  question (a retransmit, or the other node) counted a try meanwhile.
+- RADIUS no longer waits for a page saving a setting while that page waits for
+  a slow query (`client seen`, written once a minute a client).
+- Moving to another database no longer takes RADIUS off its own connection for
+  the whole move.
+- The short pause after wrong codes works with `rate_limit_tries` above 50;
+  sign-in protection works with `radius_guard_tries` above 1000 and
+  `radius_guard_names` above 500.
+- Sign-in protection: a Calling-Station-Id with a port (203.0.113.5:51234,
+  [2001:db8::5]:51234) is counted as its address - it was a new place at each
+  connection and never blocked. A code used once already (the same request
+  sent to the other node) is not counted as a guess.
+
+**High availability and the network**
+- Going back after a network trial works when the old host name is a short one
+  (it was refused, and the new network stayed).
+- The firewall trial: the row its put-back is claimed by is made when the trial
+  starts, by one node - made by both at the moment it ran out, it could stop
+  replication.
+- TLS between the databases: a password with a ? in it no longer breaks
+  switching it on or off, and the password stays out of PostgreSQL's log.
+- The change of the addresses and the TLS of the link no longer write over each
+  other's request to the root helper.
+- Putting a copy back that brings another key: the cluster's authority is
+  sealed again with that key (it could not be opened after).
+
+**Smaller**
+- The console: letters with accents typed in its windows (passwords too) come
+  out as typed; Delete on a token, replacing a token in use (asked first) and
+  "Try it (and look somebody up)" on a directory work; a filter like
+  `a{9999999999}` no longer closes it.
+- `otp --tokens --limit=N`, `otp --request 0`, a port in `--radtest` that is
+  not a number.
+- A search such as `name:,` on the pages no longer ends in an error.
+- A reload while config.json is missing keeps the settings in effect (it went
+  back to the defaults).
+- A body nested too deep is refused as not JSON, not an error.
+- Restoring no longer leaves a file open each time.
+- Putting a backup back from the page: up to 4 GB, as nginx takes.
+- Czech texts that were missing: the enrolment sign-in, the notices when the
+  daemon cannot be reached; two window titles showed &amp;.
+
 ## 1.0.138 — 28 October 2026
 
 **New versions are looked for at https://github.com/falco81/OTP/tree/main/release**

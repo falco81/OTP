@@ -162,6 +162,11 @@ def fw_trial_begin(store, by):
                  'access': access_conf(store), 'at': t, 'by': by}
     trial.update(until=t + n * 60, last_by=by, min=n)
     store.set_meta('fw:trial', json.dumps(trial))
+    # The key the put-back is claimed by made now, by this node alone (1.0.139):
+    # made by both at the moment it ran out, it came over to each as a second
+    # row with the same key, and replication stopped.
+    if store.get_meta('fw_trial_back') is None:
+        store.set_meta('fw_trial_back', '')
     return trial
 
 

@@ -526,8 +526,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     if kind == 'copy':
         load_tables(store.db, path)
     elif kind == 'sqlite':
-        tmp = Path(tempfile.mkstemp(prefix='otp-restore-', suffix='.json.gz',
-                                    dir=str(STATE_DIR))[1])
+        fd, tmp = tempfile.mkstemp(prefix='otp-restore-', suffix='.json.gz', dir=str(STATE_DIR))
+        os.close(fd)                    # not left open, one each time (1.0.139)
+        tmp = Path(tmp)
         try:
             _sqlite_to_copy(path, tmp)
             load_tables(store.db, tmp)
@@ -544,7 +545,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         cnf = _my_cnf(c)
         # The client is given the SQL itself: a gzip reader has no file
         # descriptor of its own to hand a program, so it is unpacked first.
-        raw = Path(tempfile.mkstemp(prefix='otp-sql-', dir=str(STATE_DIR))[1])
+        fd, raw = tempfile.mkstemp(prefix='otp-sql-', dir=str(STATE_DIR))
+        os.close(fd)
+        raw = Path(raw)
         try:
             with gzip.open(str(path), 'rb') as src, open(str(raw), 'wb') as dst:
                 shutil.copyfileobj(src, dst, 1 << 20)
@@ -578,8 +581,27 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     if re.match(r'^[0-9a-f]{64}\Z', key_hex):
         now = sealing_key()
         if not now or now.hex() != key_hex:
+            # The cluster's authority kept from before is sealed with the key
+            # going out (1.0.139): opened now, sealed again with the new one -
+            # it could not be opened after, and had to be made anew.
+            cas = None
+            for r in live_tls:
+                if r['k'] == 'hatls:ca':
+                    try:
+                        cas = (json.loads(r['v'] or 'null') or {}).get('cas')
+                        for ca in cas or []:
+                            ca['key'] = unseal_secret(ca.get('key'), bind='hatls:ca')
+                    except (ValueError, AttributeError, TypeError):
+                        cas = None
             write_replacing(sealing_key_path(), key_hex + '\n', 0o600)
             key_said = 'the key that opens the tokens came with it and is in use now'
+            if cas and all(ca.get('key') for ca in cas):
+                for ca in cas:
+                    ca['key'] = seal_secret(ca['key'], bind='hatls:ca')
+                try:
+                    store.set_meta('hatls:ca', json.dumps({'cas': cas}))
+                except Exception as e:                  # noqa: BLE001
+                    log('the authority of the cluster could not be sealed again: %s' % e, 'warn')
     else:
         # No key came with it (1.0.59): whether the tokens put back open with
         # the key in use is looked at, and said loudly when they do not.

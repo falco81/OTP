@@ -211,7 +211,9 @@ class Db(object):
             return main
         # A copy put back holds the database whole, RADIUS too (as before
         # the lanes): its writes would collide with the rows coming in.
-        if DB_RESTORING.is_set():
+        # This database's own (1.0.139): a move loading another database sent
+        # RADIUS off its lane for the whole of it.
+        if getattr(self, 'restoring', False):
             return main
         lane = self._lanes.get('radius')
         if lane is None:
@@ -980,9 +982,11 @@ def load_tables(db, src, keep_logs=True, say=None):
     # the tokens empty, and everybody locked out. The database is held for
     # the whole of it - a restore is not something done while people sign in.
     DB_RESTORING.set()
+    db.restoring = True
     try:
         return _load_tables_held(db, src, keep_logs, say, gzip)
     finally:
+        db.restoring = False
         DB_RESTORING.clear()
 
 

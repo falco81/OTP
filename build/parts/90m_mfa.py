@@ -169,6 +169,12 @@ def _mfa_do(h):
     act = b.get('action')
     name = acc['name']
     data = s.get('data') or {}
+    # The account as it is now, not as it was at this sign-in (1.0.139): a
+    # sign-in kept waiting from before the second step was set up could set
+    # up its own, over the one in use.
+    if act in ('enrol_start', 'enrol_confirm') and stage == 'enrol' and \
+            mfa_stage(h.store, name) != 'enrol':
+        raise ApiError(409, 'this account has its second step set up already - sign in again')
     if act == 'enrol_start':
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
@@ -212,7 +218,11 @@ def _mfa_do(h):
                 h.failed(key)
                 raise ApiError(400, 'that code is not right, or no longer good - send another')
             rec['dest'] = new['dest']
-        h.store.set_meta(mfa_key(name), json.dumps(rec))
+        with MFA_LOCK:
+            if mfa_stage(h.store, name) != 'enrol':
+                raise ApiError(409, 'this account has its second step set up already - sign '
+                                    'in again')
+            h.store.set_meta(mfa_key(name), json.dumps(rec))
         _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
         h.store.add_event('accounts', '%s set up the second step of signing in: %s%s' % (
             name, MFA_KIND_WORDS.get(rec['kind']),

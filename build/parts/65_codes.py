@@ -1231,6 +1231,13 @@ def chal_take(store, state, raw_was):
     return bool(store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (chal_key(state), raw_was)))
 
 
+def chal_drop(store, state):
+    """Done with, whatever it holds now: after a code taken once - the token's
+    step, a recovery code, once_take - another answer that only counted a try
+    meanwhile no longer refuses the right one (1.0.139)."""
+    store.db.run('DELETE FROM meta WHERE k = ?', (chal_key(state),))
+
+
 def chal_tidy(store):
     """Challenges past their time, and the counts of sent codes."""
     t = time.time()

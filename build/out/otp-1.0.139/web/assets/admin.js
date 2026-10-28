@@ -154,7 +154,7 @@ function drawTrials(s) {
         keep.onclick = function () { trialDo(t, 'keep', keep); };
         var back = cmdButton('Put the old back now', 'undo', 'small danger');
         back.onclick = function () {
-          confirmThen('Put the old back now?', t.kind === 'net' ? t.node + ' goes back to its old network and restarts.'
+          confirmThen('Put the old back now?', t.kind === 'net' ? htmlText(t.node) + ' goes back to its old network and restarts.'
             : 'The firewall and the access lists go back to what they were before the change.', 'Put it back', function () { trialDo(t, 'back', back); });
         };
         tools.appendChild(keep);
@@ -3477,7 +3477,7 @@ function editRealm(r) {
         var mv = cmdButton('Move them under @' + r.suffix, 'next', 'small');
         mv.style.marginTop = '8px';
         mv.onclick = function () {
-          rbConfirm('Move ' + num(free.length) + ' token(s) under @' + htmlText(r.suffix) + '?',
+          rbConfirm('Move ' + num(free.length) + ' token(s) under @' + r.suffix + '?',
             'Each is renamed as <i>Move</i> on a token does it: its key, recovery codes and history go with it. Nobody has to enrol again.',
             'Move them', function () {
               api('realms', {action: 'move_alias_tokens', id: r.id}).then(function (d) {
@@ -10991,7 +10991,7 @@ function rbSshBlock(body, t, f, cur) {
     P.below.appendChild(rbCopyme("mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '" + state.pub + "' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"));
   };
   mk.onclick = function () {
-    rbConfirm('Make a key for ' + htmlText((f.name && f.name.value) || t.name || 'this destination'),
+    rbConfirm('Make a key for ' + ((f.name && f.name.value) || t.name || 'this destination'),
       'A fresh ed25519 pair is made here. The private half stays on this machine and the public half is shown for you to put on the server.' + (state.has ? '<br><br><b>The key kept now is replaced</b>, so until the new public half is on the server, backups cannot sign in there.' : ''),
       'Make one', function () {
         rbNeedSaved(t.kind, cur).then(function () { return api('rbackup', {action: 'keygen', id: cur.id}); })

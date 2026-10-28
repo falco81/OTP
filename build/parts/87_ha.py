@@ -230,6 +230,29 @@ def claim_once(store, key, value):
                              (str(value), key, str(value))))
 
 
+def sub_connection_set(store, sub, conninfo):
+    """ALTER SUBSCRIPTION ... CONNECTION, its password kept out of PostgreSQL's
+    log (1.0.136) and the text as it is - a ? in a password was taken for a
+    parameter (1.0.139). Raises ValueError, the password scrubbed."""
+    for quiet in ("SET log_statement = 'none'", "SET log_min_error_statement = 'panic'"):
+        try:
+            store.db.run(quiet)
+        except Exception:                               # noqa: BLE001
+            pass
+    try:
+        store.db.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'"
+                            % (sub, conninfo.replace("'", "''"))))
+    except Exception as e:                              # noqa: BLE001
+        raise ValueError('the subscription %s could not be changed: %s'
+                         % (sub, scrub_secret(str(e).split('\n')[0][:300])))
+    finally:
+        for back in ('RESET log_statement', 'RESET log_min_error_statement'):
+            try:
+                store.db.run(back)
+            except Exception:                           # noqa: BLE001
+                pass
+
+
 # ---- a job's progress, where both nodes can read it ------------------------------
 def job_publish(job):
     store = HA_STORE.get('store')
@@ -494,6 +517,11 @@ def pg_open_to(peer, db_name, db_user):
     """PostgreSQL on this machine listening beyond localhost and letting the
     other node's address in for this one database and account. Returns what
     was done, in words."""
+    # Both go into pg_hba.conf as root: a name with a space or a new line
+    # in config.json wrote a line of its own there (1.0.139).
+    for what, v in (('db_name', db_name), ('db_user', db_user)):
+        if not DB_IDENT.fullmatch(str(v or '')):
+            raise ValueError('%s is letters, digits and _ only, starting with a letter' % what)
     done = []
     listen = pg_local_admin('SHOW listen_addresses')
     if listen not in ('*', '0.0.0.0') and '*' not in listen.split(','):

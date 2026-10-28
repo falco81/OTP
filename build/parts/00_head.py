@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.138'
+__version__ = '1.0.139'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -1187,7 +1187,15 @@ def load_config(path=None, saved=None):
             elif not key.startswith('_'):
                 unknown.append(key)
     except FileNotFoundError:
-        pass
+        # Gone at a reload, as one unreadable (1.0.139): node_name, ha_mode,
+        # the database went back to the defaults without a word.
+        if CONFIG_LOADED[0] and Path(where) == Path(CONFIG_FILE):
+            try:
+                log('%s is not there: the settings in effect are kept until it is put back'
+                    % where, 'error')
+            except Exception:                           # noqa: BLE001
+                pass
+            return CONFIG
     except (ValueError, OSError) as e:
         # Never the defaults in its place (1.0.94): a typo in config.json
         # started the daemon on an empty SQLite of its own - every person
@@ -1533,7 +1541,7 @@ def log(words, level='info'):
     # A line of its own begins only with a time (1.0.57): a newline in what
     # is written - a User-Name, say - continues indented, so it cannot pass
     # for a line of otp's; other control characters are shown, not written.
-    words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', lambda m: '\\x%02x' % ord(m.group(0)),
+    words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', lambda m: '\\x%02x' % ord(m.group(0)),
                    str(words)).replace('\n', '\n    ')
     line = '%s %-5s %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), level, words)
     global _LOG_FILE

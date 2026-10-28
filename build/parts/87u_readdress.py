@@ -37,11 +37,7 @@ def _readdress_hba(old_peer, new_peer, root_now, keep_old=False, drop_old=False)
             # so the other node can still be told if it goes back; and taken
             # out once the new one is kept.
             'keep_old': bool(keep_old), 'drop_old': bool(drop_old)}
-    tmp = WEB_DIR / ('.%s.%d' % (PGTLS_ASK, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+    pgtls_send(data)
     if root_now:
         # On the command line, as root: the helper run here and now.
         helper = Path(__file__).resolve().parent / 'otp_web.py'
@@ -96,26 +92,11 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
                 conninfo = ha_conninfo(peer, int(CONFIG.get('ha_peer_port') or 5432),
                                        CONFIG.get('db_name'), CONFIG.get('db_user'),
                                        CONFIG.get('db_password'))
-                # Its password kept out of PostgreSQL's log (1.0.136), as
-                # CREATE SUBSCRIPTION's is.
-                for quiet in ("SET log_statement = 'none'",
-                              "SET log_min_error_statement = 'panic'"):
-                    try:
-                        store.db.run(quiet)
-                    except Exception:                   # noqa: BLE001
-                        pass
                 try:
-                    store.db.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                                        % (sub, conninfo.replace("'", "''"))))
-                except Exception as e:                  # noqa: BLE001
+                    sub_connection_set(store, sub, conninfo)
+                except ValueError as e:
                     raise ValueError('the subscription %s could not be pointed at %s: %s'
-                                     % (sub, peer, scrub_secret(str(e).split('\n')[0][:300])))
-                finally:
-                    for back in ('RESET log_statement', 'RESET log_min_error_statement'):
-                        try:
-                            store.db.run(back)
-                        except Exception:               # noqa: BLE001
-                            pass
+                                     % (sub, peer, str(e).split(': ', 1)[-1]))
                 done.append('this node takes the other\'s rows from %s now' % peer)
             with ONCE_PEER_LOCK:
                 was, ONCE_PEER['db'] = ONCE_PEER['db'], None
@@ -154,7 +135,12 @@ def readdress_tell(peer, mine, by, keep_old=False):
     ask = {'at': time.time(), 'by': by, 'from': node_name(), 'mine': peer, 'peer': mine,
            'keep_old': bool(keep_old)}
     told = False
-    for tls in (None, ('require', ''), ('prefer', '')):
+    # As the link is set; where its certificate names the old address, by the
+    # cluster's authority alone (1.0.139) - not unchecked, nor in the clear:
+    # whoever stood between could have written this request themselves.
+    mode, ca = ha_link_tls()
+    tries = [None] + ([('verify-ca', ca)] if mode == 'verify-full' else [])
+    for tls in tries:
         try:
             far = db_open(ha_peer_conf(timeout=5, tls=tls))
         except Exception:                               # noqa: BLE001

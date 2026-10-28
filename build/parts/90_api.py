@@ -112,7 +112,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             # NaN and Infinity are not numbers anybody means (1.0.103).
             self._body = json.loads(raw.decode('utf-8'), parse_constant=_no_constant) \
                 if raw else {}
-        except ValueError:
+        except (ValueError, RecursionError):            # [[[[... too (1.0.139)
             raise ApiError(400, 'the body is not JSON')
         if not isinstance(self._body, dict):
             raise ApiError(400, 'the body is not an object')
@@ -1628,6 +1628,32 @@ def _token_do(h):
         return _token_act(h, s, b, act, name, who)
 
 
+def token_same_person(store, name):
+    """Another name of the same person with a token in use - one RADIUS would
+    stop using once `name` has one (1.0.139): under another suffix of the
+    realm, or the same account in another realm on the same directory."""
+    if '@' not in name:
+        return ''
+    realm = store.realm_for(name)
+    if not realm:
+        return ''
+    cands = realm_names(name, realm)[1:]
+    if realm.get('lookup') == 'sam' and realm.get('directory'):
+        who = name.rpartition('@')[0]
+        here = str(realm.get('directory') or '').lower()
+        for r in store.realms():
+            if r['id'] != realm['id'] and r.get('lookup') == 'sam' and \
+                    str(r.get('directory') or '').lower() == here and \
+                    r.get('suffix') not in (None, '', '*'):
+                cands.append(Authenticator.token_name('%s@%s' % (who, r['suffix']), r))
+    for c in cands:
+        c = norm_name(c)
+        t = store.token(c) if c != name else None
+        if t and t.get('state') != 'pending':
+            return c
+    return ''
+
+
 def _token_act(h, s, b, act, name, who):
     tk = h.d.tokens
     if act in ('disable', 'enable', 'unlock', 'note', 'window', 'drop_staged') and \
@@ -1643,6 +1669,12 @@ def _token_act(h, s, b, act, name, who):
             # administrator makes new ones.
             raise ApiError(403, '%s already has a token in use: only a full administrator '
                                 'replaces it (or the person, on the enrolment pages)' % name)
+        other = token_same_person(h.store, name) if s['role'] != 'fulladmin' else ''
+        if other:
+            # The same person under another name (1.0.139): the new token
+            # would be the one RADIUS takes - a working key for somebody else.
+            raise ApiError(403, '%s is the same person as %s, who has a token in use: only a '
+                                'full administrator replaces it' % (name, other))
         display = str(b.get('display') or '').strip()
         note = b.get('note')
         if had and not str(note or '').strip():
@@ -2523,14 +2555,22 @@ def _dirs_do(h):
             msg = '%s keeps %d certificate(s)' % (one['name'], n)
         return {'message': msg, 'ca_list': after.get('ca_list') or []}
     if act == 'try':
-        h.me('fulladmin')
+        who = h.me('fulladmin')['name']
         if not CONFIG.get('admin_directory'):
             raise ApiError(400, 'no directory signs administrators in yet: choose one in '
                                 '"Sign administrators in against the directory" and save')
-        said = admin_ask_directory(h, str(b.get('user') or ''), str(b.get('password') or ''))
+        # Counted and written down (1.0.139), as a radtest is: each try is a
+        # directory password, and wrong ones lock the account there.
+        user = str(b.get('user') or '')
+        key = h.throttle('radtest', 20, 5, name='%s>%s' % (who, user[:120]), ip_tries=100)
+        said = admin_ask_directory(h, user, str(b.get('password') or ''))
         if said is None:
             raise ApiError(404, 'the directory %s is not set up' % CONFIG.get('admin_directory'))
         said.pop('entry', None)
+        if not said.get('ok'):
+            h.failed(key)
+        h.store.add_event('accounts', '%s tried the directory sign-in of %s: %s' % (
+            who, user[:120], 'it would sign in' if said.get('ok') else 'refused'), who=who)
         return {'tried': said}
     h.me('tokenadmin')
     if act not in ('check', 'groups', 'lookup'):

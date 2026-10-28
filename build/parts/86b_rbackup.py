@@ -151,6 +151,11 @@ def rb_checked(data, old=None):
             raise ValueError('the folder has no ; or " in it, and does not begin with -')
         if kind != 'smb' and re.search(r'(^|/)\.\.(/|$)', t['path']):
             raise ValueError('the folder has no .. in it')
+        if kind == 'scp' and re.search(r'[^A-Za-z0-9._/~+@%=,-]', t['path']):
+            # scp before OpenSSH 9 hands the far path to the shell there
+            # (1.0.139): $( ), `, |, & and spaces ran or broke.
+            raise ValueError('the folder (SCP) is letters, digits and . _ / ~ + @ % = , - '
+                             'only - use SFTP for any other')
     pw = data.get('password')
     if pw is None or is_masked(pw):
         t['password'] = old.get('password') or ''
@@ -629,12 +634,16 @@ class RbSsh(object):
         # A password (or the key's passphrase) through SSH_ASKPASS: never on
         # a command line, never in a file of the otp account's.
         self.env = dict(os.environ, DISPLAY=':0', SSH_ASKPASS_REQUIRE='force')
-        secret = rb_secret(t, 'password') or rb_secret(t, 'key_pass')
+        # Each prompt its own answer (1.0.139): with a password and a key that
+        # has a passphrase, the password went to the key, and the key failed.
+        pw = rb_secret(t, 'password') or rb_secret(t, 'key_pass')
+        kp = rb_secret(t, 'key_pass') or rb_secret(t, 'password')
         ask = os.path.join(self.d, 'ask')
         with open(ask, 'w') as f:
-            f.write('#!/bin/sh\nprintf "%s\\n" "$OTP_RB_SECRET"\n')
+            f.write('#!/bin/sh\ncase "$1" in\n  *assphrase*) printf "%s\\n" "$OTP_RB_KEYPASS";;\n'
+                    '  *) printf "%s\\n" "$OTP_RB_SECRET";;\nesac\n')
         os.chmod(ask, 0o700)
-        self.env.update(SSH_ASKPASS=ask, OTP_RB_SECRET=secret)
+        self.env.update(SSH_ASKPASS=ask, OTP_RB_SECRET=pw, OTP_RB_KEYPASS=kp)
         auths = ['publickey'] if key else []
         if rb_secret(t, 'password'):
             auths += ['password', 'keyboard-interactive']
@@ -879,7 +888,17 @@ def rb_try(t):
 
 # ---- the backup itself -----------------------------------------------------------------
 def rb_password():
-    return str(CONFIG.get('rbackup_password') or '')
+    # Sealed in config.json like the other passwords: until 1.0.139 the sealed
+    # text itself locked the backups - not the password typed, so a new
+    # machine could not open them.
+    pw = str(CONFIG.get('rbackup_password') or '')
+    return (unseal_secret(pw) or '') if pw else ''
+
+
+def rb_password_old():
+    """What locked the backups made here before 1.0.139: the sealed text."""
+    pw = str(CONFIG.get('rbackup_password') or '')
+    return pw if pw.startswith((SEALED, SEALED2)) else ''
 
 
 def rb_files_named():
@@ -1324,14 +1343,26 @@ def rb_open(path, password, work):
         if not password:
             raise RbError('the backup is locked: its password is needed')
         src = os.path.join(work, 'b.tar.gz')
-        try:
-            _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
-                      'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
-                     env={'OTP_RB_PASS': password}, what='opening it')
-        except ValueError:
-            raise RbError('the password does not open it (or the file is damaged)')
+        tries = [password]
+        if password == rb_password() and rb_password_old():
+            tries.append(rb_password_old())             # made here before 1.0.139
+        for n, pw in enumerate(tries):
+            try:
+                _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
+                          'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
+                         env={'OTP_RB_PASS': pw}, what='opening it')
+                break
+            except ValueError:
+                if n == len(tries) - 1:
+                    raise RbError('the password does not open it (or the file is damaged)')
     elif not head.startswith(b'\x1f\x8b'):
         raise RbError('that is not a backup of otp (neither locked nor a .tar.gz)')
+    elif password:
+        # Backups are always locked: an unlocked one where a password is in
+        # play was put there by somebody else - its database, its accounts,
+        # its key (1.0.139).
+        raise RbError('the backup is not locked, and backups of otp always are - it was not '
+                      'made by otp; not put in')
     out = os.path.join(work, 'x')
     os.makedirs(out, mode=0o700)
     with tarfile.open(src, 'r:gz') as tf:
