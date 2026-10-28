@@ -22,17 +22,25 @@
 
 def net_back_want(now):
     """What the node has now, as a request for the network page would say it -
-    what it goes back to. None (and why) where it cannot be said so."""
+    what it goes back to. None (and why) where it cannot be said so. The root
+    helper keeps the network itself whole as well (1.0.139) and puts that back;
+    this is what the other node is told, and what is asked where nothing was
+    kept."""
     d = (now or {}).get('data') or {}
     conf = d.get('conf') or {}
-    if conf.get('ipv4_method') != 'manual' or not conf.get('ipv4_addresses'):
-        return None, 'the old network was not set by hand (%s) - it cannot be put back by ' \
-                     'itself' % (conf.get('ipv4_method') or '?')
+    live = d.get('live') or {}
+    addr = net_current_ip(now or {})
+    if not addr or '/' not in addr:
+        return None, 'what the node has now could not be read (%s) - it cannot be put back ' \
+                     'by itself' % (conf.get('ipv4_method') or '?')
     m6 = conf.get('ipv6_method')
     on6 = m6 not in (None, '', 'disabled', 'ignore')
+    manual = conf.get('ipv4_method') == 'manual'
     return {'con': d.get('con') or '',
-            'ipv4': {'addr': conf['ipv4_addresses'][0], 'gw': conf.get('ipv4_gateway') or '',
-                     'dns': list(conf.get('ipv4_dns') or []),
+            'ipv4': {'addr': addr, 'gw': conf.get('ipv4_gateway') or ('' if manual else
+                                                                       live.get('gw4') or ''),
+                     'dns': list(conf.get('ipv4_dns') or [x for x in live.get('dns') or []
+                                                          if ':' not in x][:4]),
                      'search': list(conf.get('ipv4_search') or [])},
             'ipv6': {'on': on6, 'mode': 'manual' if m6 == 'manual' else 'auto',
                      'addr': (conf.get('ipv6_addresses') or [''])[0] if m6 == 'manual' else '',
@@ -78,7 +86,8 @@ def net_go_back(daemon, job, why):
         why, (back.get('ipv4') or {}).get('addr')), job.get('pct'), ok=False,
         state='going back')
     try:
-        net_ask(store, me, back, 'otp (%s)' % why, rollback=True, maint=bool(job.get('maint')))
+        net_ask(store, me, back, 'otp (%s)' % why, rollback=True, maint=bool(job.get('maint')),
+                snap=job.get('snap') or '')
     except Exception as e:                              # noqa: BLE001
         _job_put(store, job, 'the old network could not be asked for: %s' % e, job.get('pct'),
                  ok=False, state='failed')

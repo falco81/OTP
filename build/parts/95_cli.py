@@ -976,7 +976,10 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     write_file_settings(changes)
     chown_to_service(CONFIG_FILE, 0o640)
     load_config(saved=store.settings_saved())
-    data = {'mode': 'replicated', 'key': sealing_key().hex(), 'pg_major': major, 'slot': 2,
+    # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
+    # key, and the second node wrote an empty secrets.key and could not start.
+    data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(), 'pg_major': major,
+            'slot': 2,
             'db': {'db_name': name, 'db_user': user, 'db_password': pw},
             'peer': {'name': node_name(), 'address': me, 'port': port, 'slot': 1},
             'cluster': CONFIG.get('site_name') or 'otp'}
@@ -1008,6 +1011,9 @@ def cli_ha_join_replicated(args, pal, data, ask):
     peer = data.get('peer') or {}
     db = data.get('db') or {}
     name, user, pw = db.get('db_name'), db.get('db_user'), db.get('db_password')
+    if not re.match(r'^[0-9a-f]{64}\Z', str(data.get('key') or '')):
+        raise SystemExit('otp: the bundle holds no key - make it again on the first node '
+                         '(otp --ha-bundle), with this version')
     print(pal.head('joining %s - a PostgreSQL on each node, replicating both ways'
                    % (peer.get('name') or '?')))
     node = args.node_name or ask('This node\'s name', socket.gethostname().split('.')[0])

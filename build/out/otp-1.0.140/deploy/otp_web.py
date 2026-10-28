@@ -1718,6 +1718,14 @@ NMCLI = os.environ.get('OTP_NMCLI', 'nmcli')
 HOSTNAMECTL = os.environ.get('OTP_HOSTNAMECTL', 'hostnamectl')
 HOSTS_FILE = os.environ.get('OTP_HOSTS_FILE', '/etc/hosts')
 POWER_CMD = os.environ.get('OTP_POWER_CMD', '')        # tests: a file to write instead
+# What the machine had before a change on trial (1.0.139): root's alone - the
+# otp account may write /etc/otp, and what is put back from here runs as root.
+NET_SNAP_DIR = os.environ.get('OTP_NET_SNAP_DIR', '/var/lib/otp-net')
+NET_SNAP_FILE = 'before.json'
+NET_PROFILE_DIRS = tuple(x for x in os.environ.get(
+    'OTP_NM_PROFILE_DIRS', '/etc/NetworkManager/system-connections/:'
+    '/etc/sysconfig/network-scripts/:/run/NetworkManager/system-connections/').split(':') if x)
+NET_SYSCTL6 = os.environ.get('OTP_SYSCTL6', '/etc/sysctl.d/90-otp-ipv6.conf')
 
 
 def nm_fields(con, fields):
@@ -1871,9 +1879,12 @@ def net_checked(r):
         else:
             out['gw6'] = ''
     host = str(r.get('hostname') or '').strip().rstrip('.').lower()
-    if host and (not NAME_RE.match(host) or '.' not in host):
+    # Going back may ask for a short name again - the one the machine had.
+    if host and (not NAME_RE.match(host) or ('.' not in host and not r.get('rollback'))):
         raise Refused('the host name is the whole name: otp1.example.cz')
     out['hostname'] = host
+    snap = str(r.get('snapshot') or '')
+    out['snapshot'] = snap if re.match(r'^[0-9a-f]{8,40}\Z', snap) else ''
     olds = []
     for o in (r.get('old') or [])[:8]:
         try:
@@ -1940,6 +1951,8 @@ def net_apply(n):
     before = nm_fields(n['con'], ['ipv4.method', 'ipv4.addresses', 'ipv4.gateway', 'ipv4.dns',
                                   'ipv4.dns-search', 'ipv6.method', 'ipv6.addresses',
                                   'ipv6.gateway', 'ipv6.dns'])
+    if n.get('snapshot'):
+        said.append(net_snapshot(n['con'], n['snapshot']))
     args = [NMCLI, 'connection', 'modify', n['con'],
             'ipv4.method', 'manual', 'ipv4.addresses', n['addr4'],
             'ipv4.gateway', n['gw4'], 'ipv4.dns', ','.join(n['dns4']),
@@ -1960,7 +1973,7 @@ def net_apply(n):
          'manual': ', IPv6 %s' % n.get('addr6'), 'keep': ''}[n['mode6']]))
     if n['mode6'] in ('auto', 'manual'):
         # IPv6 switched off in the kernel by an earlier hand: on again.
-        f6 = '/etc/sysctl.d/90-otp-ipv6.conf'
+        f6 = NET_SYSCTL6
         write_root(f6, '%s\nnet.ipv6.conf.all.disable_ipv6 = 0\nnet.ipv6.conf.default.'
                    'disable_ipv6 = 0\n' % MARK, 0o644)
     if n['hostname']:
@@ -1984,6 +1997,123 @@ def net_apply(n):
     return {'said': said, 'before': before}
 
 
+def _read_or_none(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def nm_props(con):
+    """Every ipv4.* and ipv6.* property of the connection, as nmcli shows it."""
+    out = {}
+    for line in run([NMCLI, '-t', '-f', 'ipv4,ipv6', 'connection', 'show', con],
+                    'nmcli connection show').splitlines():
+        k, sep, v = line.partition(':')
+        if sep and re.match(r'^ipv[46]\.[a-z0-9-]+\Z', k):
+            out[k] = v.replace('\\:', ':')
+    return out
+
+
+def net_snapshot(con, snap_id):
+    """Everything of the machine's network a change touches, kept as it is now
+    (1.0.139): the connection's profile whole - every address, route, MTU,
+    DHCP or not - its ipv4/ipv6 properties, the host name, /etc/hosts and
+    the IPv6 switch. Going back puts exactly this back."""
+    profile_path, profile = '', None
+    try:
+        got = run([NMCLI, '-t', '-g', 'GENERAL.FILENAME', 'connection', 'show', con],
+                  'nmcli connection show').strip()
+        if got.startswith(NET_PROFILE_DIRS) and '/../' not in got:
+            profile_path, profile = got, _read_or_none(got)
+    except Refused:
+        pass
+    try:
+        host = run([HOSTNAMECTL, '--static'], 'hostnamectl').strip()
+    except (Refused, OSError):
+        host = ''
+    snap = {'id': snap_id, 'at': time.time(), 'con': con, 'profile_path': profile_path,
+            'profile': profile, 'props': nm_props(con), 'hostname': host,
+            'hosts': _read_or_none(HOSTS_FILE), 'sysctl6': _read_or_none(NET_SYSCTL6)}
+    os.makedirs(NET_SNAP_DIR, mode=0o700, exist_ok=True)
+    os.chmod(NET_SNAP_DIR, 0o700)
+    write_root(os.path.join(NET_SNAP_DIR, NET_SNAP_FILE), json.dumps(snap), 0o600)
+    return 'what the machine has now kept, to go back to: %s' % (
+        'the whole profile of %s' % con if profile is not None
+        else 'the IPv4 and IPv6 settings of %s' % con)
+
+
+def net_restore(r):
+    """The network as it was before the change on trial: the profile put back
+    whole, the host name, /etc/hosts and the IPv6 switch - then a reboot."""
+    snap_id = str(r.get('snapshot') or '')
+    try:
+        with open(os.path.join(NET_SNAP_DIR, NET_SNAP_FILE)) as f:
+            snap = json.load(f)
+    except (OSError, ValueError):
+        raise Refused('nothing kept to go back to on this machine')
+    if not isinstance(snap, dict) or not snap_id or snap.get('id') != snap_id:
+        raise Refused('what is kept here is of another change (%s)' % str(
+            (snap or {}).get('id') if isinstance(snap, dict) else '?')[:20])
+    con = str(snap.get('con') or '')
+    said = []
+    path, profile = str(snap.get('profile_path') or ''), snap.get('profile')
+    done = False
+    if profile is not None and path.startswith(NET_PROFILE_DIRS) and '/../' not in path:
+        st = None
+        try:
+            st = os.stat(path)
+        except OSError:
+            pass
+        write_root(path, profile, stat.S_IMODE(st.st_mode) if st else 0o600)
+        try:
+            run([NMCLI, 'connection', 'load', path], 'nmcli connection load')
+            done = True
+            said.append('NetworkManager: the profile of %s put back as it was' % con)
+        except Refused as e:
+            said.append('the profile could not be loaded (%s) - its settings put back one by '
+                        'one' % e)
+    if not done:
+        props = snap.get('props') or {}
+        args = [NMCLI, 'connection', 'modify', con]
+        for k in sorted(props):
+            v = props[k]
+            args += [k, '' if v in ('--', None) else v]
+        try:
+            run(args, 'nmcli connection modify')
+            said.append('NetworkManager: every IPv4 and IPv6 setting of %s put back' % con)
+        except Refused:
+            keys = ('ipv4.method', 'ipv4.addresses', 'ipv4.gateway', 'ipv4.dns',
+                    'ipv4.dns-search', 'ipv4.routes', 'ipv4.ignore-auto-dns', 'ipv6.method',
+                    'ipv6.addresses', 'ipv6.gateway', 'ipv6.dns', 'ipv6.routes')
+            args = [NMCLI, 'connection', 'modify', con]
+            for k in keys:
+                if k in props:
+                    args += [k, '' if props[k] in ('--', None) else props[k]]
+            run(args, 'nmcli connection modify')
+            said.append('NetworkManager: the addresses, routes and DNS of %s put back' % con)
+    host = str(snap.get('hostname') or '')
+    if host and NAME_RE.match(host):
+        run([HOSTNAMECTL, 'set-hostname', host], 'hostnamectl set-hostname')
+        said.append('host name: %s' % host)
+    if snap.get('hosts') is not None:
+        write_root(HOSTS_FILE, snap['hosts'], 0o644)
+        said.append('%s as it was' % HOSTS_FILE)
+    if snap.get('sysctl6') is None:
+        if os.path.exists(NET_SYSCTL6):
+            os.unlink(NET_SYSCTL6)
+    else:
+        write_root(NET_SYSCTL6, snap['sysctl6'], 0o644)
+    try:
+        reboot_in = max(0, min(600, int(r.get('reboot_in') or 0)))
+    except (TypeError, ValueError):
+        reboot_in = 0
+    if reboot_in:
+        said.append(power_after('reboot', reboot_in))
+    return {'said': said}
+
+
 def net_part():
     d = web_fd()
     try:
@@ -2005,6 +2135,8 @@ def net_part():
             out['data'] = net_read()
         elif what == 'apply':
             out['data'] = net_apply(net_checked(r))
+        elif what == 'restore':
+            out['data'] = net_restore(r)
         elif what == 'power':
             how = r.get('how')
             if how not in ('reboot', 'poweroff'):
@@ -2015,7 +2147,7 @@ def net_part():
                 secs = 5
             out['data'] = {'said': [power_after(how, secs)]}
         else:
-            raise Refused('read, apply or power')
+            raise Refused('read, apply, restore or power')
         out['ok'] = True
     except Refused as e:
         out['said'] = str(e)[:400]

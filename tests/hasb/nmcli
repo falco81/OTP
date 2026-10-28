@@ -1,0 +1,57 @@
+#!/usr/bin/python3 -I
+"""A NetworkManager stand-in for the HA sandbox: one connection per node, kept
+as a keyfile-like profile in $FAKENM_DIR/profiles/<con>.nmconnection."""
+import os, sys, json
+D = os.environ.get('FAKENM_DIR', '/tmp/sb/fakenm')
+PROF = os.path.join(D, 'profiles')
+DEV = os.environ.get('FAKENM_DEV', 'eth0')
+os.makedirs(PROF, exist_ok=True)
+def path(con): return os.path.join(PROF, con.replace('/', '_') + '.nmconnection')
+def cons(): return sorted(f[:-len('.nmconnection')] for f in os.listdir(PROF) if f.endswith('.nmconnection'))
+def read(con):
+    out = {}
+    with open(path(con)) as f:
+        for line in f:
+            if '=' in line and not line.startswith(('[', '#')):
+                k, v = line.rstrip('\n').split('=', 1); out[k] = v
+    return out
+def write(con, props):
+    with open(path(con), 'w') as f:
+        f.write('[connection]\nid=%s\n' % con)
+        for k in sorted(props):
+            if k != 'id': f.write('%s=%s\n' % (k, props[k]))
+def esc(v): return v.replace(':', '\\:')
+a = sys.argv[1:]
+with open(os.path.join(D, 'calls.log'), 'a') as f: f.write(json.dumps(a) + '\n')
+t = '-t' in a
+a = [x for x in a if x != '-t']
+g = f_ = None
+if '-g' in a: i = a.index('-g'); g = a[i + 1].split(','); del a[i:i + 2]
+if '-f' in a: i = a.index('-f'); f_ = a[i + 1].split(','); del a[i:i + 2]
+if a[:1] == ['device']:
+    c = cons()[0] if cons() else ''
+    print('%s:ethernet:connected:%s' % (DEV, esc(c))); sys.exit(0)
+if a[:2] == ['connection', 'show'] and len(a) == 2:
+    print('\n'.join(cons())); sys.exit(0)
+if a[:2] == ['connection', 'show']:
+    con = a[2]
+    if con not in cons(): sys.stderr.write('Error: no such connection profile.\n'); sys.exit(10)
+    p = read(con)
+    if g:
+        for k in g:
+            if k == 'GENERAL.FILENAME': print(path(con))
+            else: print(esc(p.get(k, '')) if p.get(k, '') != '' else '')
+        sys.exit(0)
+    for k in sorted(p):
+        if f_ and k.split('.')[0] not in f_: continue
+        print('%s:%s' % (k, esc(p[k]) if p[k] != '' else '--'))
+    sys.exit(0)
+if a[:2] == ['connection', 'modify']:
+    con = a[2]; p = read(con); kv = a[3:]
+    for k, v in zip(kv[::2], kv[1::2]):
+        p[k] = v
+    write(con, p); sys.exit(0)
+if a[:2] == ['connection', 'load']:
+    if not os.path.exists(a[2]): sys.exit(1)
+    sys.exit(0)
+sys.stderr.write('fake nmcli: %r\n' % a); sys.exit(2)

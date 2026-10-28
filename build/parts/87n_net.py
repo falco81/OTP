@@ -248,7 +248,7 @@ def net_job_active(job):
         time.time() - float(job.get('moved') or job.get('at') or 0) < NET_JOB_LIVE_S
 
 
-def net_ask(store, node, want, by, rollback=False, maint=False):
+def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     """The page asks: written for the node, which does it. `rollback`: the
     old network asked back by the node itself - not put on trial again."""
     if net_job_active(_meta_json(store, 'net:job:' + node)):
@@ -258,7 +258,7 @@ def net_ask(store, node, want, by, rollback=False, maint=False):
     checked = net_check(store, node, want, rollback=rollback)
     ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
            'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
-           'maint': bool(maint)}
+           'maint': bool(maint), 'snap': str(snap or '')}
     store.set_meta('net:want:' + node, json.dumps(ask))
     store.add_event('settings', '%s asked %s for a new network: %s' % (
         by, node, '; '.join(checked['plan'])), 'warn', who=by)
@@ -339,6 +339,25 @@ def net_cert_again(store, w, by):
     return 'this node\'s own certificate made again for %s' % ', '.join(new_names[:6])
 
 
+NET_UNDO_KEYS = ('radius_bind', 'mail_helo', 'isemon_hostname')
+NET_UNDO_FILE_KEYS = ('db_host', 'ha_address')
+
+
+def net_undo_keep(store, snap):
+    """This node's own settings and certificate as they are before a change on
+    trial (1.0.139) - not in the job, which the pages read."""
+    store.set_meta('net:undo:' + node_name(), json.dumps({
+        'snap': snap, 'at': time.time(),
+        'settings': {k: CONFIG.get(k) for k in NET_UNDO_KEYS},
+        'file': {k: FILE_CONFIG.get(k) for k in NET_UNDO_FILE_KEYS if k in FILE_CONFIG},
+        'tls': store.get_meta('web:tls:' + node_name()) or ''}))
+
+
+def net_undo_get(store, snap):
+    got = _meta_json(store, 'net:undo:' + node_name()) or {}
+    return got if snap and got.get('snap') == snap else None
+
+
 def net_job_run(daemon, ask):
     store = daemon.store
     me = node_name()
@@ -352,7 +371,14 @@ def net_job_run(daemon, ask):
     if net_trial_min() and not ask.get('rollback'):
         job['back'], job['back_why'] = net_back_want(net_node_now(store, me))
         job['trial_min'] = net_trial_min() if job['back'] else 0
+        if job['trial_min']:
+            # Going back puts back exactly what is here now (1.0.139): the root
+            # helper keeps the network whole, this node its own settings and
+            # certificate - not worked out again the other way round.
+            job['snap'] = secrets.token_hex(8)
+            net_undo_keep(store, job['snap'])
     job['rollback'] = bool(ask.get('rollback'))
+    undo = net_undo_get(store, ask.get('snap')) if ask.get('rollback') else None
     # Maintenance put on by the job it goes back from: taken off by this one.
     if ask.get('maint'):
         job['maint'] = True
@@ -403,13 +429,18 @@ def net_job_run(daemon, ask):
         # 3. This node's own settings that name the old address or name.
         changes = {}
         rb = str(CONFIG.get('radius_bind') or '0.0.0.0')
-        if w['ip_changed'] and rb == w['old_ip']:
+        if undo:
+            # Back to the values it had, as they were.
+            changes = {k: v for k, v in (undo.get('settings') or {}).items()
+                       if str(CONFIG.get(k) or '') != str(v or '')}
+        elif w['ip_changed'] and rb == w['old_ip']:
             changes['radius_bind'] = w['new_ip']
         elif w['ipv6']['on'] and rb in ('0.0.0.0', ''):
             changes['radius_bind'] = '::'
         elif not w['ipv6']['on'] and rb == '::':
             changes['radius_bind'] = '0.0.0.0'
-        if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
+        if not undo and w['hostname'] and w['old_hostname'] and \
+                w['hostname'] != w['old_hostname']:
             for k in ('mail_helo', 'isemon_hostname'):
                 if str(CONFIG.get(k) or '') in (w['old_hostname'], w['old_hostname'].split('.')[0]):
                     changes[k] = w['hostname']
@@ -417,17 +448,33 @@ def net_job_run(daemon, ask):
             daemon.save_settings(changes, by=by, node=me)
             _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
                 '%s = %s' % kv for kv in sorted(changes.items())), 35)
-        if w['ip_changed'] and str(CONFIG.get('db_host') or '') == w['old_ip']:
+        if undo:
+            files = {k: v for k, v in (undo.get('file') or {}).items()
+                     if str(FILE_CONFIG.get(k) or '') != str(v or '')}
+            if files:
+                write_file_settings(files)
+                CONFIG.update(files)
+                _job_put(store, job, 'config.json as it was: %s' % ', '.join(
+                    '%s = %s' % kv for kv in sorted(files.items())), 37)
+        elif w['ip_changed'] and str(CONFIG.get('db_host') or '') == w['old_ip']:
             write_file_settings({'db_host': w['new_ip']})
             _job_put(store, job, 'db_host = %s' % w['new_ip'], 37)
-        # 4. Its own certificate.
-        try:
-            said = net_cert_again(store, w, by)
-            if said:
-                _job_put(store, job, said, 45, ok='authority' not in said)
-        except ValueError as e:
-            _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e, 45,
-                     ok=False)
+        # 4. Its own certificate - going back, the one it had.
+        if undo and undo.get('tls') is not None:
+            if (store.get_meta('web:tls:' + me) or '') != undo['tls']:
+                if undo['tls']:
+                    store.set_meta('web:tls:' + me, undo['tls'])
+                else:
+                    store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + me,))
+                _job_put(store, job, 'this node\'s certificate as it was before', 45)
+        else:
+            try:
+                said = net_cert_again(store, w, by)
+                if said:
+                    _job_put(store, job, said, 45, ok='authority' not in said)
+            except ValueError as e:
+                _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e,
+                         45, ok=False)
         # 5. Out of the way: the web address to the other node.
         if many:
             if not (maintenance_row(store) or {}).get('on'):
@@ -441,12 +488,23 @@ def net_job_run(daemon, ask):
         # 6. The network, the name - and the reboot.
         job['down_at'] = time.time()
         _job_put(store, job, 'NetworkManager, the host name and /etc/hosts', 70, state='rebooting')
-        got = net_root({'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
-                        'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
-                                 'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'],
-                                 'dns': w['ipv6']['dns']},
-                        'hostname': w['hostname'], 'old': [w['old_ip']] if w['old_ip'] else [],
-                        'old_hostname': w['old_hostname'], 'reboot_in': 8}, 90)
+        got = None
+        if ask.get('rollback') and ask.get('snap'):
+            try:
+                got = net_root({'do': 'restore', 'snapshot': ask['snap'], 'reboot_in': 8}, 90)
+            except ValueError as e:
+                _job_put(store, job, 'what was kept could not be put back (%s) - the old '
+                         'addresses are asked for instead' % e, 72, ok=False)
+        if got is None:
+            got = net_root({'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
+                            'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
+                                     'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'],
+                                     'dns': w['ipv6']['dns']},
+                            'hostname': w['hostname'],
+                            'old': [w['old_ip']] if w['old_ip'] else [],
+                            'old_hostname': w['old_hostname'], 'reboot_in': 8,
+                            'snapshot': job.get('snap') or '',
+                            'rollback': bool(ask.get('rollback'))}, 90)
         job['before'] = got.get('before') or {}
         job['down_at'] = time.time() + 8
         _job_put(store, job, '; '.join(got.get('said') or []) or 'set', 80)
@@ -505,21 +563,30 @@ def net_job_after(daemon, job):
         _job_put(store, job, '; '.join(d2 + l2), 91, ok=not l2)
     if CONFIG.get('ha_mode') == 'replicated':
         hatls_check_soon()
-        end = time.time() + 240
-        good = False
-        while time.time() < end:
-            rep = ha_repl_state(store)
-            inc = rep.get('incoming') or []
-            outg = rep.get('outgoing') or []
-            if inc and all(r.get('enabled') and r.get('running') for r in inc) and \
-                    outg and all(r.get('active') for r in outg):
-                good = True
-                break
-            time.sleep(5)
+        good = net_repl_wait(store, 240)
         _job_put(store, job, 'replication both ways: running' if good else
                  'replication is not running both ways yet - Settings → High availability '
                  'says why; the link between the databases puts itself right within minutes',
                  96, ok=good)
+    if CONFIG.get('ha_mode') == 'replicated' and (hatls_want(store) or CONFIG.get('ha_tls')) \
+            and not (hatls_want(store) or {}).get('off'):
+        # The link between the databases encrypted and checked again for the
+        # address the node has now (1.0.139) - both nodes' steps done, and this
+        # node's certificate naming every address the other reaches it by.
+        hatls_check_soon()
+        end = time.time() + 300
+        ok, said = False, ''
+        while time.time() < end:
+            ok, said = net_hatls_ok(store)
+            if ok:
+                break
+            time.sleep(5)
+        _job_put(store, job, 'the link between the databases: %s' % said, 97, ok=ok)
+        if ok and not good:
+            good = net_repl_wait(store, 120)
+            _job_put(store, job, 'replication both ways: running' if good else
+                     'replication is still not running both ways - Settings → High '
+                     'availability says why', 97, ok=good)
     if many and vip_conf(store).get('on'):
         # keepalived set up for the new address (1.0.120): asked before the
         # restart it failed - the machine did not have the address yet - and a
@@ -537,6 +604,46 @@ def net_job_after(daemon, job):
     _job_put(store, job, 'done', 100, state='done')
     store.add_event('settings', 'the network of %s is changed: %s' % (
         me, '; '.join(words)), 'warn', who=by)
+
+
+def net_repl_wait(store, secs):
+    """Replication running both ways within `secs`."""
+    end = time.time() + secs
+    while True:
+        rep = ha_repl_state(store)
+        inc = rep.get('incoming') or []
+        outg = rep.get('outgoing') or []
+        if inc and all(r.get('enabled') and r.get('running') for r in inc) and \
+                outg and all(r.get('active') for r in outg):
+            return True
+        if time.time() >= end:
+            return False
+        time.sleep(5)
+
+
+def net_hatls_ok(store):
+    """(ok, words): the link between the databases encrypted and checked, on
+    this node and the other."""
+    st = hatls_state(store)
+    if st.get('step') != 'done':
+        return False, 'this node is at the step %s%s' % (
+            st.get('step') or 'none', (' (%s)' % st['error'][:200]) if st.get('error') else '')
+    pn = hatls_peer_name(store)
+    peer = hatls_state(store, pn) if pn else {}
+    if pn and peer.get('step') != 'done':
+        return False, '%s is at the step %s' % (pn, peer.get('step') or 'none')
+    if CONFIG.get('ha_tls') != 'verify-full':
+        return False, 'the link is not set to verify-full'
+    try:
+        _end, sans = hatls_own_cert(store)
+    except Exception as e:                              # noqa: BLE001
+        return False, str(e)[:200]
+    named = set(str(v).lower() for _k, v in sans)
+    lack = [n for n in hatls_needs(store) if n.lower() not in named]
+    if lack:
+        return False, 'this node\'s certificate does not name %s yet' % ', '.join(lack)
+    return True, 'encrypted and checked (verify-full) both ways; this node\'s certificate ' \
+                 'names %s' % ', '.join(hatls_needs(store))
 
 
 def _net_thread(fn, *args):

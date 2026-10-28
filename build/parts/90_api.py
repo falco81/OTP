@@ -5157,7 +5157,7 @@ def _ha_do(h):
             if CONFIG.get('ha_mode') == 'replicated':
                 # The second node of two replicating ones - or the same one
                 # again, after it was lost or reinstalled.
-                data = {'mode': 'replicated', 'key': sealing_key().hex(),
+                data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(),
                         'pg_major': int(h.store.db.value('SHOW server_version_num')) // 10000,
                         'slot': 3 - int(CONFIG.get('ha_slot') or 1),
                         'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),

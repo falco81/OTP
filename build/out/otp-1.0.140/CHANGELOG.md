@@ -4,6 +4,31 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.140 — 28 October 2026
+
+**A network on trial goes back whole**
+- Before a new network is put in on trial, the node keeps what it has: the
+  root helper the connection's whole NetworkManager profile (every address -
+  the second ones too - routes, MTU, DHCP or set by hand), the host name,
+  /etc/hosts and the IPv6 switch; the daemon this node's own settings
+  (radius_bind, mail_helo, isemon_hostname, db_host, ha_address) and the
+  pages' certificate. Not kept in time, exactly that comes back - until now
+  only the first address, the gateway and DNS were asked for again, and the
+  certificate and settings were worked out again the other way round.
+- A network from DHCP can be put on trial and go back too.
+- Going back to a short host name (otp1) is no longer refused by the root
+  helper.
+- After the reboot - going back or not - the job checks and says, step by
+  step: replication both ways, the link between the databases encrypted and
+  checked (verify-full) on both nodes with this node's certificate naming its
+  address, and the web address (keepalived) set up again.
+
+**High availability**
+- `otp --ha-setup` on a node whose daemon never ran yet made a bundle without
+  the key that seals the tokens; the second node wrote an empty secrets.key
+  and its daemon could not start. The key is made first now, and
+  `--ha-join` refuses a bundle without one.
+
 ## 1.0.139 — 28 October 2026
 
 **Remote backups are locked with the password you typed** (important)

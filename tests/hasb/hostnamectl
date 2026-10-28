@@ -1,0 +1,7 @@
+#!/bin/sh
+F="${FAKENM_DIR:-/tmp/sb/fakenm}/hostname"
+case "$1" in
+  --static) cat "$F" ;;
+  set-hostname) printf '%s\n' "$2" > "$F" ;;
+  *) cat "$F" ;;
+esac
