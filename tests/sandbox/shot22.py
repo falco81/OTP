@@ -1,0 +1,27 @@
+import asyncio, sys
+sys.argv=['t','none']; exec(open('/tmp/claude-0/up/t_up.py').read().split("if sys.argv[1]=='upload'")[0])
+from playwright.async_api import async_playwright
+print(call('token',{'action':'enroll','name':'falco@corpnet.cz','kind':'mail','dest':'falco@corpnet.cz'}).get('message'))
+async def main():
+    async with async_playwright() as p:
+        b=await p.chromium.launch(); pg=await (await b.new_context(ignore_https_errors=True, viewport={'width':1500,'height':1000})).new_page()
+        errs=[]; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('https://127.0.0.1/admin/'); await pg.wait_for_timeout(600)
+        await pg.fill('#in-name','admin'); await pg.fill('#in-pass',PW); await pg.keyboard.press('Enter'); await pg.wait_for_timeout(2000)
+        await pg.goto('https://127.0.0.1/admin/#settings/codes'); await pg.wait_for_timeout(1500)
+        await pg.evaluate("showPane('codes')"); await pg.wait_for_timeout(800)
+        await pg.screenshot(path='/home/claude/shots/a-codes.png')
+        await pg.evaluate("showPane('realms')"); await pg.wait_for_timeout(1500)
+        await pg.screenshot(path='/home/claude/shots/a-realms.png')
+        await pg.evaluate("editRealm(REALMS.realms.filter(function(r){return r.name==='corpnet.cz'})[0])"); await pg.wait_for_timeout(800)
+        await pg.screenshot(path='/home/claude/shots/a-realm-edit.png')
+        await pg.keyboard.press('Escape'); await pg.wait_for_timeout(300)
+        await pg.goto('https://127.0.0.1/admin/#tokens'); await pg.wait_for_timeout(1500)
+        await pg.evaluate("tokenPeek('falco@corpnet.cz')"); await pg.wait_for_timeout(1500)
+        await pg.screenshot(path='/home/claude/shots/a-token.png')
+        await pg.keyboard.press('Escape'); await pg.wait_for_timeout(300)
+        await pg.evaluate("makeToken('')"); await pg.wait_for_timeout(800)
+        await pg.select_option('.modal select >> nth=0', 'sms'); await pg.wait_for_timeout(300)
+        await pg.screenshot(path='/home/claude/shots/a-make.png')
+        print('errors', errs); await b.close()
+asyncio.run(main())

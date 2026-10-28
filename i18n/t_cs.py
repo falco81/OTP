@@ -1,0 +1,26 @@
+import asyncio
+from playwright.async_api import async_playwright
+async def main():
+    async with async_playwright() as p:
+        b=await p.chromium.launch(); ctx=await b.new_context(ignore_https_errors=True,viewport={'width':1500,'height':1000})
+        pg=await ctx.new_page(); pg.on('pageerror', lambda e: print('pageerror', e))
+        await pg.goto('https://127.0.0.1/admin/'); await pg.wait_for_timeout(800)
+        await pg.fill('#in-name','admin'); await pg.fill('#in-pass','Admin-Pass-123'); await pg.click('#in-go'); await pg.wait_for_timeout(2500)
+        await pg.click('button[data-tab=tokens]'); await pg.wait_for_timeout(1500)
+        await pg.screenshot(path='/home/claude/shots/cs_tokens2.png')
+        await pg.locator('#tk-table tbody tr').nth(0).click(); await pg.wait_for_timeout(1500)
+        await pg.screenshot(path='/home/claude/shots/cs_tokpeek.png')
+        await pg.evaluate('closeModal()')
+        await pg.click('button[data-tab=codes]'); await pg.wait_for_timeout(1500)
+        await pg.locator('#cd-table tbody tr').nth(0).click(); await pg.wait_for_timeout(800)
+        await pg.screenshot(path='/home/claude/shots/cs_codepeek.png')
+        await pg.evaluate('closeModal()')
+        await pg.click('button[data-tab=settings]'); await pg.wait_for_timeout(800)
+        await pg.click('button[data-pane=dir]'); await pg.wait_for_timeout(1500)
+        await pg.screenshot(path='/home/claude/shots/cs_dir.png', full_page=True)
+        await pg.click('button[data-pane=db]'); await pg.wait_for_timeout(1500)
+        await pg.mouse.move(900,500); await pg.wait_for_timeout(600); await pg.click('#db-engine-test'); await pg.wait_for_timeout(1200)
+        await pg.locator('#db-engine-card').scroll_into_view_if_needed()
+        await pg.screenshot(path='/home/claude/shots/cs_db.png')
+        await b.close()
+asyncio.run(main())

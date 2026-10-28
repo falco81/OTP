@@ -1,0 +1,1668 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+otp - a one-time password server: RADIUS, TOTP and the enrolment of tokens,
+in one Python file.
+
+A VPN concentrator asks over RADIUS whether somebody may come in. otp answers:
+it checks the six digits against the token the person enrolled, looks the
+person up in Active Directory, holds them against the groups the realm asks
+for, and says yes or no - with the reasons written down, every one of them,
+and sent on to isemon in the very shape isemon already reads from a token
+server.
+
+Everything is here: the RADIUS server, the token arithmetic (RFC 4226 / 6238),
+the QR codes the phones scan, the one-off recovery codes, Active Directory over
+LDAP, the database, the JSON API the web pages ask and the command line. The
+web pages (PHP) only relay to the API; they hold nothing and decide nothing.
+
+    otp --status              what it is doing, in one screen
+    otp --tokens              who has a token
+    otp --enroll NAME         make one, and show the QR code in the terminal
+    otp --radtest NAME CODE   ask this server the way the VPN does
+    otp --log                 the RADIUS requests, newest first
+    otp --help                all of it
+
+With nothing at all on the command line it runs the daemon in the foreground.
+
+The Python standard library and nothing else, except the driver of a database
+server where one is chosen instead of the file on this machine.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import collections
+import contextlib
+import getpass
+import hashlib
+import heapq
+import hmac
+import html
+
+import io
+import ipaddress
+import json
+import os
+import queue
+import re
+import secrets
+
+import shutil
+import signal
+import smtplib
+import socket
+
+import sqlite3
+import ssl
+import string
+import struct
+import subprocess
+import sys
+import tempfile
+
+import threading
+import time
+import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+import zlib
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate, make_msgid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+__version__ = '1.0.138'
+
+# ---------------------------------------------------------------------------
+# Paths and defaults
+# ---------------------------------------------------------------------------
+CONFIG_FILE = Path(os.environ.get('OTP_CONFIG', '/etc/otp/config.json'))
+STATE_DIR = Path(os.environ.get('OTP_STATE', '/var/lib/otp'))
+DB_FILE = STATE_DIR / 'otp.db'
+BACKUP_DIR = STATE_DIR / 'backups'
+RUN_DIR = Path(os.environ.get('OTP_RUN', '/run/otp'))
+TOKEN_FILE = RUN_DIR / 'api-token'
+LOG_DIR = Path(os.environ.get('OTP_LOGDIR', '/var/log/otp'))
+SERVICE_USER = 'otp'
+WEB_GROUP = 'otp-web'
+
+# Who may do what on the administration pages. `tokenadmin` is the help
+# desk: it may look at everything and look after people's tokens - make one,
+# switch one off, give new recovery codes, take one away - and nothing else:
+# no setting, no RADIUS client, no realm, no account.
+ROLES_ALL = ('fulladmin', 'tokenadmin', 'readonly')
+ROLE_WORDS = {'fulladmin': 'full admin', 'tokenadmin': 'token admin',
+              'readonly': 'read only'}
+
+DEFAULTS = {
+    # --- the RADIUS server ------------------------------------------------
+    'radius_bind': '0.0.0.0',
+    'radius_auth_port': 1812,
+    'radius_acct_port': 1813,
+    'radius_status_server': 1,
+    'radius_reply_ma': 1,
+    'radius_dup_window_s': 30,
+    'radius_workers': 16,
+    'radius_unknown_log': 1,
+    'radius_reject_delay_ms': 0,
+    'radius_reject_reason': 0,
+    'radius_ma_sticky': 1,
+    # --- sign-in protection (1.0.137) ----------------------------------------
+    'radius_guard': 0,
+    'radius_guard_tries': 20,
+    'radius_guard_names': 5,
+    'radius_guard_window_min': 15,
+    'radius_guard_block_min': 30,
+    'radius_guard_trusted': '',
+    'net_confirm_min': 10,
+    'fw_confirm_min': 5,
+    # --- the tokens ---------------------------------------------------------
+    'totp_issuer': 'OTP',
+    'totp_label': '{user}',
+    'totp_digits': 6,
+    'totp_period': 30,
+    'totp_algorithm': 'SHA1',
+    'totp_window': 1,
+    'admin_show_key': 1,
+    'totp_disallow_reuse': 1,
+    # --- upgrades from the web (1.0.123) ----------------------------------
+    'upgrade_check': 1,
+    'upgrade_url': 'https://github.com/falco81/OTP/tree/main/release',
+    'rate_limit_tries': 3,
+    'lockout_after': 10,
+    'lockout_min': 15,
+    'rate_limit_s': 30,
+    'scratch_count': 5,
+    'scratch_digits': 8,
+    'token_names_case': 'lower',
+    # --- the enrolment pages -------------------------------------------------
+    'portal': 1,
+    'portal_title': '',
+    'portal_realm': '',
+    'default_realm': '',
+    'portal_hint': '',
+    'portal_who': 'realm_groups',
+    'portal_groups': '',
+    'portal_confirm': 1,
+    'portal_reissue': 1,
+    'portal_show_secret': 1,
+    'portal_scratch': 1,
+    'portal_codes_view': 0,
+    'portal_session_min': 15,
+    'portal_help': '',
+    'portal_tries': 5,
+    'portal_wait_min': 15,
+    # --- the administration pages -------------------------------------------
+    'session_hours': 12,
+    'session_idle_min': 120,
+    'login_tries': 5,
+    'login_wait_min': 15,
+    'admin_directory': '',
+    'admin_group_full': '',
+    'admin_group_token': '',
+    'admin_group_readonly': '',
+    # --- a second step for the administration (1.0.125) -------------------
+    'admin_2fa': 0,
+    'admin_2fa_app': 1,
+    'admin_2fa_mail': 1,
+    'admin_2fa_sms': 1,
+    # --- isemon ---------------------------------------------------------------
+    'isemon': 0,
+    'isemon_targets': '',
+    'isemon_hostname': '',
+    'isemon_detail': 1,
+    'isemon_events': 0,
+    'isemon_max_bytes': 1800,
+    'ship_files': 1,
+    # --- sending mail (1.0.20) ----------------------------------------------
+    'mail_mode': 'off',
+    'smtp_host': '',
+    'smtp_port': 0,
+    'smtp_security': 'starttls',
+    'smtp_auth': 'auto',
+    'smtp_user': '',
+    'smtp_password': '',
+    'smtp_verify': 1,
+    'smtp_timeout_s': 20,
+    'mail_from': '',
+    'mail_from_name': '',
+    'mail_reply_to': '',
+    'mail_helo': '',
+    'mail_direct_port': 25,
+    'mail_direct_tls': 'if-offered',
+    'mail_dns': '',
+    'mail_lang': 'cs',
+    'mail_codes': 1,
+    'mail_retry_hours': 24,
+    'mail_keep_days': 14,
+    # --- codes sent by mail or SMS (1.0.76) -------------------------------------
+    'code_digits': 6,
+    'code_ttl_s': 300,
+    'code_tries': 3,
+    'code_send_max': 5,
+    'code_send_window_min': 15,
+    'code_lang': '',
+    'code_mail_fmt': 'html',
+    'sms_mode': 'off',
+    'sms_url': '',
+    'sms_method': 'POST',
+    'sms_body': '',
+    'sms_headers': '',
+    'sms_token': '',
+    'sms_spool_dir': '/var/spool/sms/outgoing',
+    'sms_prefix': '+420',
+    'sms_ok_status': '',
+    # Teltonika (TRB140 and its kin, RutOS), as zigmon speaks to it (1.0.81).
+    'sms_tel_host': '',
+    'sms_tel_https': 1,
+    'sms_tel_verify': 0,
+    'sms_tel_user': 'admin',
+    'sms_tel_password': '',
+    'sms_tel_api': 'rest',
+    'sms_tel_modem': '',
+    'sms_plain': 1,
+    # --- keeping things -------------------------------------------------------
+    'retain_radius_days': 180,
+    'retain_otp_days': 180,
+    'retain_events_days': 365,
+    'backup_daily': 1,
+    'backup_keep': 14,
+    'backup_at': '03:30',
+    # --- backups to another machine (1.0.109) -------------------------------------
+    'rbackup': 0,
+    'rbackup_at': '04:15',
+    'rbackup_every': 'daily',
+    'rbackup_day': 7,
+    'rbackup_keep': 30,
+    'rbackup_keep_days': 0,
+    'rbackup_password': '',
+    # --- the database ---------------------------------------------------------
+    'db_engine': 'sqlite',
+    'db_host': '',
+    'db_port': 0,
+    'db_name': 'otp',
+    'db_user': 'otp',
+    'db_password': '',
+    'db_timeout_s': 10,
+    'db_tls': '',
+    'db_tls_ca': '',
+    # --- this installation ----------------------------------------------------
+    'node_name': '',
+    'ha_mode': '',
+    'ha_slot': 0,
+    'ha_peer': '',
+    'ha_peer_port': 5432,
+    'ha_address': '',
+    # The link to the other node's PostgreSQL, its own (1.0.104): set by the
+    # High availability page's button, apart from Database → TLS.
+    'ha_tls': '',
+    'ha_tls_ca': '',
+    'site_name': '',
+    'ui_lang': 'cs',
+    'api_port': 9861,
+    'debug': False,
+    'debug_radius': 1,
+    'debug_ldap': 1,
+    'debug_api': 0,
+    'debug_codes': 1,
+}
+
+# The settings that are a database's own address. A database cannot hold the
+# address of itself, so these live in config.json and are written there.
+DB_KEYS = ('db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
+           'db_timeout_s', 'db_tls', 'db_tls_ca')
+
+# ...and the name of this node of a cluster, which is this machine's own.
+FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_peer_port',
+                             'ha_address', 'ha_tls', 'ha_tls_ca')
+
+# Settings of one node of a cluster, not of the cluster (1.0.37): saved as
+# `key@node` and read only by that node; without one it takes the cluster's.
+# The address RADIUS listens on is this machine's own, and so are the port
+# the pages ask the daemon on, the name it greets mail servers with, the
+# name isemon files its lines under and the debug switches.
+NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
+             'isemon_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
+             'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes')
+# 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
+# and its copies of the database - each node keeps its own on its own disk:
+# when, whether, how many.
+
+
+def this_node_name(conf=None):
+    said = str((conf or CONFIG).get('node_name') or '').strip()
+    return said or (socket.gethostname().split('.')[0] or 'otp')
+
+
+SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
+               'rbackup_password')
+# Secrets kept in the database, sealed with the key that seals the tokens.
+SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password')
+
+# What each setting may be: a list of words, or the lowest and highest number.
+TUNABLE = {
+    'radius_auth_port': (1, 65535), 'radius_acct_port': (0, 65535),
+    'radius_status_server': (0, 1), 'radius_reply_ma': (0, 1),
+    'radius_dup_window_s': (0, 600), 'radius_workers': (1, 256),
+    'radius_unknown_log': (0, 1), 'radius_reject_delay_ms': (0, 10000),
+    'totp_digits': (6, 8), 'totp_period': (15, 120),
+    'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
+    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'totp_disallow_reuse': (0, 1),
+    'upgrade_check': (0, 1),
+    'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
+    'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
+    'radius_reject_reason': (0, 1), 'radius_ma_sticky': (0, 1),
+    'radius_guard': (0, 1), 'radius_guard_tries': (2, 10000), 'radius_guard_names': (0, 1000),
+    'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
+    'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
+    'scratch_count': (0, 20), 'scratch_digits': (6, 12),
+    'token_names_case': ('lower', 'as-typed'),
+    'portal': (0, 1), 'portal_who': ('realm_groups', 'groups', 'anyone'),
+    'portal_confirm': (0, 1), 'portal_reissue': (0, 1), 'portal_show_secret': (0, 1),
+    'portal_scratch': (0, 1), 'portal_codes_view': (0, 1), 'portal_session_min': (1, 240),
+    'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
+    'session_hours': (1, 168), 'session_idle_min': (5, 1440),
+    'login_tries': (1, 100), 'login_wait_min': (1, 1440),
+    'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
+    'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
+    'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
+    'retain_radius_days': (0, 36500), 'retain_otp_days': (0, 36500),
+    'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
+    'rbackup': (0, 1), 'rbackup_every': ('daily', 'weekly'), 'rbackup_day': (1, 7),
+    'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650),
+    'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
+    'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
+    'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
+    'mail_mode': ('off', 'smtp', 'direct'), 'smtp_port': (0, 65535),
+    'smtp_security': ('starttls', 'tls', 'starttls-if', 'none'),
+    'db_tls': ('', 'require', 'verify-ca', 'verify-full'),
+    'mail_direct_tls': ('if-offered', 'required'),
+    'smtp_auth': ('none', 'auto', 'plain', 'login', 'cram-md5', 'xoauth2'),
+    'smtp_verify': (0, 1), 'smtp_timeout_s': (3, 300), 'mail_direct_port': (1, 65535),
+    'mail_lang': ('cs', 'en'), 'mail_codes': (0, 1),
+    'mail_retry_hours': (1, 168), 'mail_keep_days': (1, 365),
+    'code_digits': (4, 10), 'code_ttl_s': (60, 1800), 'code_tries': (1, 10),
+    'code_send_max': (1, 100), 'code_send_window_min': (1, 1440), 'code_lang': ('', 'cs', 'en'),
+    'code_mail_fmt': ('html', 'text'),
+    'sms_mode': ('off', 'http', 'spool', 'teltonika'), 'sms_method': ('POST', 'GET'),
+    'sms_tel_https': (0, 1), 'sms_tel_verify': (0, 1), 'sms_tel_api': ('rest', 'cgi'),
+    'sms_plain': (0, 1),
+}
+
+CHOICE_WORDS = {
+    'mail_mode': {'off': 'off - no mail is sent',
+                  'smtp': 'through a mail server (SMTP relay)',
+                  'direct': 'straight to the recipient’s mail server (MX), no relay'},
+    'mail_direct_tls': {'if-offered': 'encrypted where the server offers it',
+                        'required': 'encrypted, or not sent at all'},
+    'smtp_security': {'starttls': 'STARTTLS - plain, then encrypted (587)',
+                      'tls': 'TLS from the start - SMTPS (465)',
+                      'starttls-if': 'STARTTLS if the server offers it',
+                      'none': 'none - plain text (25)'},
+    'smtp_auth': {'none': 'none - the server lets this machine send',
+                  'auto': 'whatever the server offers best (PLAIN, LOGIN, CRAM-MD5)',
+                  'plain': 'PLAIN', 'login': 'LOGIN', 'cram-md5': 'CRAM-MD5',
+                  'xoauth2': 'XOAUTH2 - an OAuth access token as the password'},
+    'mail_lang': {'cs': 'Čeština', 'en': 'English'},
+    'code_lang': {'': 'as the mail (Language of the mail)', 'cs': 'Čeština', 'en': 'English'},
+    'code_mail_fmt': {'html': 'HTML, as a token’s mail looks - with the plain text beside it',
+                      'text': 'plain text only'},
+    'sms_mode': {'off': 'off - no SMS is sent',
+                 'http': 'an SMS gateway with an HTTP API',
+                 'spool': 'a modem on this machine - a file into the spool of smstools / gammu',
+                 'teltonika': 'a Teltonika gateway (TRB140, RUT…) on the network - as zigmon uses it'},
+    'sms_tel_api': {'rest': 'RutOS’s own API (/api, RutOS 7 - the default)',
+                    'cgi': 'the older Post/Get SMS service (/cgi-bin/sms_send)'},
+    'sms_method': {'POST': 'POST', 'GET': 'GET'},
+    'totp_algorithm': {'SHA1': 'SHA-1 (what every phone app understands)',
+                       'SHA256': 'SHA-256', 'SHA512': 'SHA-512'},
+    'token_names_case': {'lower': 'small letters - Novak and novak are one person',
+                         'as-typed': 'exactly as written'},
+    'portal_who': {'realm_groups': 'whoever passes the realm’s group filter',
+                   'groups': 'members of the groups named below',
+                   'anyone': 'anybody the directory lets sign in'},
+    'db_engine': {'sqlite': 'a file on this machine (SQLite)', 'mariadb': 'MariaDB / MySQL',
+                  'postgres': 'PostgreSQL'},
+    'ui_lang': {'cs': 'Čeština', 'en': 'English'},
+}
+
+NAMES = {
+    'mail_mode': 'Sending mail',
+    'smtp_host': 'Mail server',
+    'smtp_port': 'Port',
+    'smtp_security': 'Encryption',
+    'smtp_auth': 'Signing in',
+    'smtp_user': 'Account',
+    'smtp_password': 'Password',
+    'smtp_verify': 'Check the server’s certificate',
+    'smtp_timeout_s': 'Wait for the server (s)',
+    'mail_from': 'From (address)',
+    'mail_from_name': 'From (name)',
+    'mail_reply_to': 'Replies to',
+    'mail_helo': 'This machine calls itself (EHLO)',
+    'mail_direct_port': 'Port of the recipients’ servers',
+    'mail_direct_tls': 'Encryption to the recipients’ servers',
+    'mail_dns': 'DNS servers for the recipients’ domains',
+    'mail_lang': 'Language of the mail',
+    'mail_codes': 'Recovery codes in the mail',
+    'mail_retry_hours': 'Try a mail not delivered for (hours)',
+    'mail_keep_days': 'Keep the list of mails sent for (days)',
+    'code_digits': 'Digits of a code sent by mail or SMS',
+    'code_ttl_s': 'A sent code is good for (seconds)',
+    'code_tries': 'Wrong codes before it has to be sent again',
+    'code_send_max': 'Codes sent to one person at most',
+    'code_send_window_min': '… in (minutes)',
+    'code_lang': 'Language of the codes and of the VPN’s question',
+    'code_mail_fmt': 'A mail with a code is',
+    'sms_mode': 'How SMS is sent',
+    'sms_url': 'The gateway’s address (URL)',
+    'sms_method': 'HTTP method',
+    'sms_body': 'What is sent (body)',
+    'sms_headers': 'Headers',
+    'sms_token': 'The gateway’s key ({token})',
+    'sms_spool_dir': 'The spool folder',
+    'sms_prefix': 'Country code for numbers written without one',
+    'sms_ok_status': 'The gateway said it was sent when the answer holds',
+    'sms_tel_host': 'The Teltonika’s address',
+    'sms_tel_https': 'Over HTTPS',
+    'sms_tel_verify': 'Check its certificate',
+    'sms_tel_user': 'Its user',
+    'sms_tel_password': 'Its password',
+    'sms_tel_api': 'Its interface',
+    'sms_tel_modem': 'Its modem',
+    'sms_plain': 'Without accents (one SMS, not two)',
+    'radius_bind': 'Listen on the address',
+    'radius_auth_port': 'Authentication port',
+    'radius_acct_port': 'Accounting port',
+    'radius_status_server': 'Answer Status-Server',
+    'radius_reply_ma': 'Sign every answer (Message-Authenticator)',
+    'radius_dup_window_s': 'A repeated request is the same one for (s)',
+    'radius_workers': 'Requests answered at once',
+    'radius_unknown_log': 'Write down requests from unknown clients',
+    'radius_reject_delay_ms': 'Wait before a refusal (ms)',
+    'totp_issuer': 'The issuer, as the phone shows it',
+    'totp_label': 'The account name, as the phone shows it',
+    'totp_digits': 'Digits in a code',
+    'totp_period': 'A code lasts (s)',
+    'totp_algorithm': 'The hash',
+    'totp_window': 'Steps of clock drift allowed',
+    'admin_show_key': 'Administrators may show a token\'s QR code and key',
+    'upgrade_check': 'Look for a new version every day',
+    'upgrade_url': 'Where new versions are looked for',
+    'totp_disallow_reuse': 'A code works only once',
+    'rate_limit_tries': 'Wrong codes before a pause',
+    'lockout_after': 'Wrong codes in a row before a lockout',
+    'lockout_min': 'Locked out for (min)',
+    'radius_reject_reason': 'Say why in a refusal',
+    'radius_ma_sticky': 'Hold a client to the Message-Authenticator',
+    'radius_guard': 'Block a place that keeps guessing',
+    'radius_guard_tries': 'Wrong sign-ins from one place before it is blocked',
+    'radius_guard_names': 'Different names refused from one place before it is blocked',
+    'radius_guard_window_min': '...counted over (min)',
+    'radius_guard_block_min': 'Blocked for (min)',
+    'radius_guard_trusted': 'Never blocked',
+    'net_confirm_min': 'A new network goes back unless kept within (min)',
+    'fw_confirm_min': 'A firewall change goes back unless kept within (min)',
+    'rate_limit_s': '...counted over (s)',
+    'scratch_count': 'Recovery codes per token',
+    'scratch_digits': 'Digits in a recovery code',
+    'token_names_case': 'Names of tokens are kept in',
+    'portal': 'The enrolment pages are open',
+    'portal_title': 'The title of the enrolment pages',
+    'portal_realm': 'Realm added to a name signed in without one',
+    'default_realm': 'The default realm',
+    'portal_hint': 'What to type as the name (shown on the sign-in)',
+    'portal_who': 'Who may enrol a token',
+    'portal_groups': 'Groups that may enrol',
+    'portal_confirm': 'A new token must be confirmed with a code',
+    'portal_reissue': 'People may replace their own token',
+    'portal_show_secret': 'Show the key as text beside the QR code',
+    'portal_scratch': 'Show the recovery codes',
+    'portal_codes_view': 'People may look at their recovery codes again',
+    'portal_session_min': 'An enrolment sign-in lasts (min)',
+    'portal_help': 'Help text on the enrolment pages',
+    'portal_tries': 'Wrong passwords on the enrolment pages before a pause',
+    'portal_wait_min': '...and the pause (min)',
+    'session_hours': 'A sign-in lasts (h)',
+    'session_idle_min': '...and may sit untouched (min)',
+    'login_tries': 'Wrong passwords before a pause',
+    'login_wait_min': '...and the pause (min)',
+    'admin_directory': 'Sign administrators in against the directory',
+    'admin_group_full': 'Group of full administrators',
+    'admin_group_token': 'Group of token administrators',
+    'admin_group_readonly': 'Group of read-only accounts',
+    'admin_2fa': 'A second step when signing in to these pages',
+    'admin_2fa_app': '...with an authenticator app',
+    'admin_2fa_mail': '...with a code by e-mail',
+    'admin_2fa_sms': '...with a code by SMS',
+    'isemon': 'Send the logs to isemon',
+    'isemon_targets': 'isemon’s syslog receivers',
+    'isemon_hostname': 'The name this machine is written under',
+    'isemon_detail': 'Send the RADIUS packets as well (radius-detail)',
+    'isemon_events': 'Send this daemon’s own events as well',
+    'isemon_max_bytes': 'Longest message (bytes)',
+    'ship_files': 'Write the same lines into files here too',
+    'retain_radius_days': 'Keep the RADIUS requests (days)',
+    'retain_otp_days': 'Keep the token checks (days)',
+    'retain_events_days': 'Keep the events (days)',
+    'backup_daily': 'A copy of the database every day',
+    'backup_keep': 'Copies kept',
+    'rbackup': 'Backups to the destinations on a schedule',
+    'rbackup_at': 'At',
+    'rbackup_every': 'How often',
+    'rbackup_day': 'On (1 Monday - 7 Sunday)',
+    'rbackup_keep': 'Backups kept at each destination',
+    'rbackup_keep_days': 'And none older than (days)',
+    'rbackup_password': 'The password of the backups',
+    'backup_at': 'At',
+    'db_engine': 'The database',
+    'db_host': 'Server',
+    'db_port': 'Port',
+    'db_name': 'Database name',
+    'db_user': 'Account',
+    'db_password': 'Password',
+    'db_timeout_s': 'Connect timeout (s)',
+    'db_tls': 'Encryption to the database server',
+    'db_tls_ca': 'Its certificate authority (file)',
+    'node_name': 'The name of this node',
+    'site_name': 'What to call this installation',
+    'ui_lang': 'Language of the pages',
+    'api_port': 'API port (localhost)',
+    'debug': 'Debug log',
+    'debug_radius': '...every RADIUS request step by step',
+    'debug_ldap': '...every question asked of the directory',
+    'debug_api': '...every API call',
+    'debug_codes': '...every code sent by e-mail and SMS',
+}
+
+SAYS = {
+    'mail_mode': 'How a token’s mail leaves this machine: through your mail server, or '
+                 'straight to the server of each recipient’s domain (its MX record) with no '
+                 'relay - which only works where port 25 may go out and the receiving side '
+                 'trusts this machine (SPF, a reverse DNS name).',
+    'smtp_host': 'The mail server’s name or address: smtp.example.cz, or a relay in your '
+                 'network. Its name is what its certificate is checked against.',
+    'smtp_port': '0 picks the usual one for the encryption: 587 for STARTTLS, 465 for TLS, '
+                 '25 for none.',
+    'smtp_security': 'STARTTLS on 587 is what most servers want; SMTPS on 465 is TLS from '
+                     'the first byte; none sends everything - the password too - in the '
+                     'clear, for a relay inside your own network only.',
+    'smtp_auth': 'How this machine signs in to the server. None where the relay lets this '
+                 'address send by itself. XOAUTH2 (Microsoft 365, Google): the password is '
+                 'an access token.',
+    'smtp_user': 'The account it signs in with - often the whole address.',
+    'smtp_password': 'Its password (or the OAuth access token for XOAUTH2). Kept in the '
+                     'database sealed with the key that seals the tokens.',
+    'smtp_verify': 'Off is for a test: a server whose certificate is not checked is one '
+                   'anybody on the path can pretend to be. A certificate signed by your own '
+                   'authority is trusted once that authority is added below.',
+    'smtp_timeout_s': 'How long to wait for the server to answer.',
+    'mail_from': 'The sender’s address. Your mail server may allow only its own '
+                 'addresses; going direct, the domain should have this machine in its SPF.',
+    'mail_from_name': 'The name beside it, as the recipient sees it. Empty: the name of '
+                      'this installation.',
+    'mail_reply_to': 'Where a reply goes - a helpdesk, say. Empty: back to the sender.',
+    'mail_helo': 'The name this machine greets the server with. Empty: its own full name. '
+                 'Going direct, it should be the name its address resolves back to.',
+    'mail_dns': 'Going direct: the DNS servers asked where each recipient’s domain takes its mail '
+                '(its MX record), separated by commas - 1.1.1.1, 8.8.8.8. Empty: the ones in '
+                '/etc/resolv.conf. Only for a machine whose own resolver will not answer that.',
+    'mail_direct_tls': 'Going direct: whether a server that offers no STARTTLS still gets the '
+                       'mail, in the clear. Required is safer - a token\'s mail holds its key, '
+                       'and anybody on the way can strip the offer - but a domain whose server '
+                       'has no TLS then gets nothing.',
+    'mail_direct_port': 'Going direct: the port of the recipients’ servers. It is 25 '
+                        'everywhere; another only to test against a server of your own.',
+    'mail_lang': 'The language a token’s mail is written in unless it is chosen when the '
+                 'token is made.',
+    'mail_retry_hours': 'A mail the receiving side did not take yet - greylisting (a first '
+                        '"try again later"), a server away, a full mailbox - waits in the '
+                        'outgoing mail and is tried again: after 1, 2, 5, 10, 15 and 30 min, '
+                        'then every hour, for this long. A code to sign in with is tried only '
+                        'while it is good (Codes by e-mail and SMS).',
+    'mail_keep_days': 'How long the outgoing mail keeps a mail that went, or that was given '
+                      'up, in its list - what it said and when. What a mail held (a QR code, '
+                      'a key, a code) is never kept once it went.',
+    'mail_codes': 'Whether the recovery codes go in the mail as well unless chosen when '
+                  'the token is made. Each signs in once in place of a code from the phone.',
+    'code_digits': 'How long a code sent by mail or SMS is - for signing in through the VPN '
+                   'and for proving an address or a number on the enrolment pages.',
+    'code_ttl_s': 'How long a sent code can be typed. A mail can take a while; 300 s is '
+                  'usual. The VPN (ASA/FTD) has to wait as long: its RADIUS timeout 30-60 s '
+                  'is for the first answer, not for typing.',
+    'code_tries': 'Wrong codes typed into the VPN\'s second window before that code is gone '
+                  'and the person has to sign in again (and gets a new one). Every wrong code '
+                  'also counts towards the token\'s lockout, as a wrong code from the phone does.',
+    'code_send_max': 'So nobody fills a mailbox or a phone with codes by signing in again and '
+                     'again: past this many in the time below, no more are sent until it '
+                     'passes.',
+    'code_send_window_min': 'The time the number above is counted over.',
+    'code_lang': 'The language of the mail or SMS with the code and of the words the VPN '
+                 'shows in its second window ("Type the code sent to…") - for a token that has '
+                 'no language of its own. A token enrolled on the enrolment pages takes the '
+                 'language of the page; an administrator changes it in the token\'s window.',
+    'code_mail_fmt': 'For a token that does not say otherwise (its window can): HTML in the '
+                     'look of a token\'s mail, the plain text always beside it - or plain text '
+                     'alone, for mail systems that strip HTML or people who want it so.',
+    'sms_mode': 'An SMS gateway with an HTTP API (most operators and services), or a GSM '
+                'modem on this machine run by smstools3 or gammu-smsd: otp writes each message '
+                'as a file into its spool folder, or a Teltonika gateway (TRB140, RUT…) on the '
+                'network through its own API, the way zigmon sends its texts. Off: SMS cannot '
+                'be chosen on the enrolment pages.',
+    'sms_url': 'Where the message is sent. {to} is the number (+420…), {to_digits} the '
+               'number without + , {text} the message, {token} the key below - each written '
+               'as an address needs it. https://sms.example.cz/api/send?to={to}&text={text}',
+    'sms_method': 'POST sends the body below; GET only the address.',
+    'sms_body': 'For POST. Starting with { it is JSON and the values are written as JSON '
+                'strings: {"to": "{to}", "text": "{text}"}; otherwise a form: to={to}&text={text}. '
+                'Empty: the address alone.',
+    'sms_headers': 'One a line, Name: value - Authorization: Bearer {token}. Content-Type is '
+                   'set by itself.',
+    'sms_token': 'The gateway\'s API key or password, kept sealed in the database and put '
+                 'where {token} is written. Never shown again.',
+    'sms_spool_dir': 'smstools3: /var/spool/sms/outgoing. A file "To: 420…" and the text is '
+                     'written there and the modem\'s daemon sends it. The service runs as '
+                     'otp: that user needs to be able to write into the folder (a group, '
+                     'chmod g+w).',
+    'sms_prefix': 'A number typed as 603 123 456 becomes +420603123456. Empty: a number has '
+                  'to be typed with its country code.',
+    'sms_tel_host': 'The gateway on the network: 192.168.1.1, or host:port. The same box zigmon '
+                    'sends its texts through can send these too.',
+    'sms_tel_https': 'A TRB serves both; HTTPS keeps its password and the codes off the wire.',
+    'sms_tel_verify': 'Checked against the certificates imported below - the gateway\'s own '
+                      '(read from it with one click) or the authority and chain that signed '
+                      'it; with none imported, against the authorities this machine trusts. '
+                      'Off: any certificate is taken.',
+    'sms_tel_user': 'An account of the gateway that may use its API (admin, or one made for '
+                    'this under System → Administration → User settings).',
+    'sms_tel_password': 'Its password, kept sealed in the database. Never shown again.',
+    'sms_tel_api': 'RutOS 7 offers its own API out of the box; the older Post/Get service has '
+                   'to be switched on by hand under Services → Mobile Utilities → SMS gateway.',
+    'sms_tel_modem': 'Which modem sends - 1-1, 3-1… Empty: the one the gateway names first.',
+    'sms_plain': 'A letter with an accent makes the whole SMS the wide alphabet, 70 '
+                 'characters a part instead of 160: the code goes in one message when the '
+                 'accents are left out (kód → kod).',
+    'sms_ok_status': 'Some gateways answer 200 to everything: a word their answer holds only '
+                     'when it was sent - "ok", "\"status\":\"sent\"". Empty: any 2xx answer.',
+    'default_realm': 'The realm a name written without one belongs to: novak is taken as '
+                     'novak@ this, on the enrolment pages and in RADIUS requests from a client '
+                     'that adds no realm of its own - and novak@this works as well. Every other '
+                     'realm still needs its @domain. Empty: a name has to be written whole.',
+    'upgrade_check': 'Once a day (and when Look now is pressed) the address below is asked for '
+                     'otp-X.Y.Z.tar.gz packages; a newer one than runs here is offered on this '
+                     'page - put in with one click, after its signature has been checked like '
+                     'any package sent by hand. Nothing is put in by itself.',
+    'upgrade_url': 'A GitHub folder (<code>https://github.com/OWNER/REPO/tree/BRANCH/FOLDER</code>), '
+                   'a web page or folder listing that links to the packages, or one package\'s '
+                   'own address. HTTPS only; a proxy is taken from https_proxy in the '
+                   'service\'s environment.',
+    'admin_show_key': 'A full administrator may open a token and show its QR code and key - '
+                      'for somebody whose phone cannot scan the page, or to set the same '
+                      'token up again. Whoever has the key can make the codes, so every look '
+                      'is written down as an event. Off: nobody sees a key after it is made.',
+    'radius_bind': 'The address the RADIUS server listens on. <code>0.0.0.0</code> is every '
+                   'IPv4 address this machine has; <code>::</code> every IPv6 one as well. '
+                   'Changed, the server starts listening on the new one at once.',
+    'radius_auth_port': 'UDP port for Access-Request. 1812 is the standard one; the old '
+                        '1645 still turns up on Cisco kit.',
+    'radius_acct_port': 'UDP port for Accounting-Request. The records are written down and '
+                        'sent to isemon with the rest; 0 does not listen for them at all.',
+    'radius_status_server': 'Answer Status-Server (RFC 5997), which is how an ASA or a '
+                            'load balancer asks whether this server is alive without signing '
+                            'anybody in.',
+    'radius_reply_ma': 'Put a Message-Authenticator on every answer. It protects the answer '
+                       'against the BlastRADIUS forgery (CVE-2024-3596) and costs nothing; '
+                       'only a client too old to know the attribute minds it.',
+    'radius_dup_window_s': 'A client that hears nothing sends the same request again, with '
+                           'the same identifier. Within this window it gets the same answer '
+                           'again rather than a second check of the code - which would '
+                           'fail, because a code works only once.',
+    'radius_workers': 'How many requests are worked on side by side. A request that waits '
+                      'for a slow domain controller does not hold up the others.',
+    'radius_unknown_log': 'A request from an address that is not one of the clients is '
+                          'dropped without an answer, as RADIUS says it must be. Switched '
+                          'on, it is also written down - once a minute per address - so '
+                          'that a VPN pointed here before it was added says so.',
+    'radius_reject_delay_ms': 'How long to wait before sending a refusal. A little slows '
+                              'down somebody guessing; 0 answers at once.',
+    'totp_issuer': 'The name above the code in the phone application - the company, usually. '
+                   'Only a token enrolled after a change carries the new one.',
+    'totp_label': 'The account name under it. <code>{user}</code> is the whole name as it '
+                  'was enrolled (<code>novak@example.cz</code>), <code>{name}</code> the part '
+                  'before the @.',
+    'totp_digits': 'Six is what everybody expects and what every application shows. Only for '
+                   'tokens made from now on: each token keeps the length it was made with, so '
+                   'imported and older ones go on working beside new ones. Microsoft '
+                   'Authenticator shows six whatever this says - with 8 its codes are refused.',
+    'totp_period': 'Thirty seconds is the standard, and Google Authenticator knows no other. '
+                   'Only for tokens made from now on; each keeps its own.',
+    'totp_algorithm': 'SHA-1 is what RFC 6238 says and what every application implements - and '
+                      'it is not weak here: the key is 160 random bits. Only for tokens made '
+                      'from now on; each keeps its own, so imported SHA-1 tokens go on working '
+                      'beside new ones. Microsoft Authenticator and Google Authenticator on '
+                      'Android ignore SHA-256 and SHA-512 and make SHA-1 codes, which are then '
+                      'refused: those two are for hardware tokens and applications that take '
+                      'them (FreeOTP, Google Authenticator on iPhone).',
+    'totp_window': 'How many periods either side of now a code is still taken in. 1 is '
+                   'thirty seconds of a phone’s clock being wrong either way; 0 takes '
+                   'only the code of this very period. A code from a neighbouring period '
+                   'is written down as such, so a phone whose clock is drifting shows up.',
+    'totp_disallow_reuse': 'Once a code has been used it is refused if it comes again - even '
+                           'inside its thirty seconds. This is what makes the code one-time; '
+                           'switched off it can be replayed by anybody who saw it.',
+    'rate_limit_tries': 'This many wrong codes for one token inside the time below, and every '
+                        'code - right ones included - is refused until it has passed. 0 '
+                        'switches it off.',
+    'lockout_after': 'Wrong codes one after another - however slowly they come - after which '
+                     'the token takes no code at all for the time below, and again after each '
+                     'further one. The pause above stops a quick guesser; this one stops a slow '
+                     'one, who would otherwise get thousands of guesses a day. A right code '
+                     'starts the count again; Forget them on the token ends it at once. 0 '
+                     'switches it off.',
+    'lockout_min': 'How long a token takes no code once it has been locked out.',
+    'radius_reject_reason': 'Off: a refusal goes back with no reason in it, and the reason is '
+                            'only in the log here. On: the reason goes back as a Reply-Message, '
+                            'which a VPN may show to whoever is signing in - telling a '
+                            'stranger whether a name has a token, or that the code was right '
+                            'and the password not.',
+    'radius_guard': 'Off: only each token counts its own wrong codes (and locks itself) - from '
+                    'one place somebody may still try every name a few times a day, or lock '
+                    'everybody\'s token on purpose. On: the place each request comes from - the '
+                    'address the person connects to the VPN from, as the VPN sends it '
+                    '(Calling-Station-Id) - is counted too. Too many refusals from one place, '
+                    'or too many different names refused from it, and it is blocked for a '
+                    'while: its requests are refused at once, nothing of them is checked, and '
+                    'nobody\'s token counts them. A request without a Calling-Station-Id is not '
+                    'counted. Each node counts what reaches it; who is counted and who is '
+                    'blocked is below, each cleared by hand.',
+    'radius_guard_tries': 'Refusals from one place within the time below after which it is '
+                          'blocked - wrong passwords, wrong codes, names nobody has. Not '
+                          'counted: refusals that are this server\'s trouble (a directory away, '
+                          'a realm not set up).',
+    'radius_guard_names': 'Different names refused from one place within the time below after '
+                          'which it is blocked - somebody trying many people\'s codes. 0: not '
+                          'counted.',
+    'radius_guard_window_min': 'The time over which the refusals of one place are counted.',
+    'radius_guard_block_min': 'How long a place is blocked. Clear it by hand below to let it '
+                              'in at once.',
+    'radius_guard_trusted': 'Addresses or networks never blocked, one or more, separated by '
+                            'spaces or commas: an office whose people all come from one '
+                            'address, a monitor that signs in now and then. Example: '
+                            '198.51.100.7 203.0.113.0/24',
+    'net_confirm_min': 'A node\'s new network (Settings - Network) is put in, the node '
+                       'restarts with it - and the old one comes back by itself unless '
+                       'somebody presses Keep it within these minutes: a typo in the gateway '
+                       'or the prefix does not leave the node unreachable. 0: kept at once, as '
+                       'before.',
+    'fw_confirm_min': 'A change of the firewall or of who may reach the pages is put in - and '
+                      'what was there before comes back by itself unless somebody presses Keep '
+                      'it within these minutes: a rule that shuts SSH, the pages or RADIUS out '
+                      'does not stay. 0: kept at once, as before.',
+    'radius_ma_sticky': 'A client that has once sent a right Message-Authenticator must send '
+                        'one with every request from then on: one that arrives without is '
+                        'dropped (BlastRADIUS, CVE-2024-3596). Remembered until the service '
+                        'restarts; Must send a Message-Authenticator on the client holds it '
+                        'always.',
+    'rate_limit_s': 'The time over which the wrong codes are counted, and which has to pass '
+                    'before the token takes codes again.',
+    'scratch_count': 'One-off codes made with each token, for the day the phone is lost. '
+                     'Each works once, in place of a code from the phone. 0 makes none.',
+    'scratch_digits': 'How long a recovery code is. Longer than a code from the phone, so '
+                      'the two are never mistaken for each other.',
+    'token_names_case': 'Whether <code>Novak@example.cz</code> and <code>novak@example.cz'
+                        '</code> are one token. Active Directory does not care, and neither '
+                        'should this, unless something else forces it to.',
+    'portal': 'The pages where people enrol their own token. Switched off they say so and '
+              'let nobody in; administrators can still enrol anybody here.',
+    'portal_title': 'The heading on every enrolment page and the title of the browser tab. Empty: One-time passwords, in the language of the page.',
+    'portal_realm': 'A name typed without an @ gets this added before it is looked up: '
+                    '<code>novak</code> becomes <code>novak@example.cz</code>. Empty: the '
+                    'name has to be typed whole.',
+    'portal_hint': 'One line under the sign-in boxes saying what to type, such as '
+                   '<code>login@example.cz</code>.',
+    'portal_who': 'Who may enrol a token. <b>The realm’s group filter</b> is the same '
+                  'test the VPN applies, so nobody can enrol a token they could never use.',
+    'portal_groups': 'With <i>members of the groups named below</i>: the groups, by name '
+                     '(<code>VPN_USERS</code>) or by whole DN, separated by semicolons or new '
+                     'lines.',
+    'portal_confirm': 'A token made on the enrolment page is not in use until the person has '
+                      'typed a code from it. Without this a QR code scanned badly - or not '
+                      'at all - is a token that locks its owner out on the next sign-in.',
+    'portal_reissue': 'Somebody who already has a token may replace it themselves, with '
+                      'their password and a code from the old one (or a recovery code). '
+                      'Somebody who lost both has to ask an administrator.',
+    'portal_show_secret': 'The key written out as letters as well, for typing into an '
+                          'application on a machine with no camera.',
+    'portal_codes_view': 'After signing in, a person may look at their recovery codes again - which are left and which are used - after proving they have the token: a code from the app, or one sent to them now. The directory password alone never shows them. Off: they are shown once, when the token is made.',
+    'portal_scratch': 'Show the recovery codes to the person who enrolled. Off: they are '
+                      'still made, and only an administrator can see new ones.',
+    'portal_session_min': 'How long somebody stays signed in on the enrolment pages. Short, '
+                          'because the page holds a key that is somebody’s second factor.',
+    'portal_help': 'Words shown on the enrolment pages under the title: where to get the '
+                   'application, whom to ring. Plain text; an empty line starts a new '
+                   'paragraph.',
+    'portal_tries': 'Wrong passwords from one address on the enrolment pages before it has '
+                    'to wait.',
+    'portal_wait_min': 'How long it waits.',
+    'session_hours': 'How long an administrator stays signed in, however busy.',
+    'session_idle_min': 'How long a sign-in may sit without anything being asked before it '
+                        'has to be done again.',
+    'login_tries': 'Wrong passwords from one address before it has to wait.',
+    'login_wait_min': 'How long it waits.',
+    'admin_directory': 'The directory (by its name under <i>Active Directory</i>) the '
+                       'administration pages sign people in against. Empty: only the '
+                       'accounts made here. Whoever signs in from it gets the role of the '
+                       'first group below they are in, and nobody in none of them gets in.',
+    'admin_group_full': 'Members may change everything. By name or by whole DN.',
+    'admin_group_token': 'Members may look at everything and look after people’s tokens.',
+    'admin_group_readonly': 'Members may look at everything and change nothing.',
+    'admin_2fa': 'After the password, every account - local or from the directory - gives a '
+                 'code too. Its own, not a VPN token: the first time, the account chooses how '
+                 'and sets it up (an authenticator app, or a code sent to an address or a phone '
+                 'it proves it has). Accounts → Reset the second step, or otp --reset-2fa NAME, '
+                 'makes it choose again. Sign-ins already open stay open.',
+    'admin_2fa_app': 'Offered when the second step is set up: a code from an app (Google or '
+                     'Microsoft Authenticator…). With nothing else on, it is offered anyway.',
+    'admin_2fa_mail': 'Offered only while mail is set up (Settings → Mail).',
+    'admin_2fa_sms': 'Offered only while sending SMS is set up (Settings → Codes by e-mail and '
+                     'SMS).',
+    'isemon': 'Send every check of a code and every RADIUS packet to isemon, as syslog, in '
+              'the very shape a totpcgi token server and its FreeRADIUS write - so isemon '
+              'reads it with what it already has (<i>Settings → The OTP logs</i>, with '
+              '<i>RADIUS detail</i> switched on).',
+    'isemon_targets': 'Where to send them: <code>host</code>, <code>host:port</code>, '
+                      'and <code>/udp</code> or <code>/tcp</code> after it - '
+                      '<code>10.1.2.3:514/tcp</code>. Several, separated by commas. UDP is the '
+                      'default; TCP does not lose a line when the network does.',
+    'isemon_hostname': 'The host name on every line, which is the folder isemon’s rsyslog '
+                       'files them under: <code>/var/log/remote/<this>/totp.cgi.log</code>. '
+                       'isemon looks in <code>/var/log/remote/otp</code> unless told otherwise, '
+                       'so <code>otp</code> needs nothing changed there. Empty: this machine’s '
+                       'own short name.',
+    'isemon_detail': 'The RADIUS packet behind every check - the person’s own address, '
+                     'the device, the tunnel group - as <code>radius-detail</code> lines. isemon '
+                     'puts them beside the check of the code.',
+    'isemon_events': 'This daemon’s own events as well (a token made, a setting '
+                     'changed), as <code>otp</code> lines. isemon does not read those; they '
+                     'are for whatever else collects the syslog.',
+    'isemon_max_bytes': 'A message longer than this is cut, with <code>...TRUNCATED</code> at '
+                        'the end. rsyslog cuts at 2048 bytes over UDP unless '
+                        '<code>$MaxMessageSize</code> says more on both machines.',
+    'ship_files': 'The very same lines go into <code>/var/log/otp/totp.cgi.log</code> and '
+                  '<code>/var/log/otp/radius-detail.log</code> as well, whether or not they are '
+                  'sent. Something on this machine can then forward them, and they are there '
+                  'to read when the network is not.',
+    'retain_radius_days': 'How long every RADIUS request is kept. 0 keeps them for ever.',
+    'retain_otp_days': 'How long every check of a code is kept. 0 keeps them for ever.',
+    'retain_events_days': 'How long the events are kept. 0 keeps them for ever.',
+    'backup_daily': 'A copy of the database once a day, into <code>/var/lib/otp/backups'
+                    '</code>, with the key that opens the tokens beside it.',
+    'backup_keep': 'How many of those copies are kept; the oldest goes first.',
+    'rbackup': 'Each node makes its backup and sends it to every destination switched on, at '
+               'the time below. Without it, only Back up now sends one.',
+    'rbackup_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'rbackup_every': 'daily, or weekly on the day below.',
+    'rbackup_day': 'The day of a weekly backup: 1 is Monday, 7 Sunday.',
+    'rbackup_keep': 'How many of this node’s backups each destination keeps; the oldest go '
+                    'first, the newest never.',
+    'rbackup_keep_days': 'Older ones are taken away too - 0: only the count above decides.',
+    'rbackup_password': 'Every backup is locked with it (AES-256, opened with otp or with openssl '
+                        'alone). Keep it apart from the backups as well - in a password vault: '
+                        'without it nobody, you included, opens them. Empty: the backups are '
+                        'not locked, and anybody with one has every token.',
+    'backup_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'db_engine': 'Where everything is kept: the tokens, the clients, the realms, the '
+                 'settings, the logs. A file on this machine needs nothing; MariaDB and '
+                 'PostgreSQL need their server and their Python driver.',
+    'db_host': 'The database server’s address.',
+    'db_port': '0 is the engine’s usual one: 3306 or 5432.',
+    'db_name': 'The database on that server. It has to exist; the tables are made in it.',
+    'db_user': 'The account this daemon signs in to the database with.',
+    'db_password': 'Its password.',
+    'db_timeout_s': 'How long to wait for the server before saying it cannot be reached.',
+    'db_tls': 'TLS to a database on another machine - and to the other node of a cluster '
+              'until Settings → High availability encrypts that link with its own setting. '
+              'Empty: as the '
+              'driver decides - encrypted where the server offers it, and nothing stops '
+              'somebody on the way from saying it does not. require: always encrypted. '
+              'verify-full: encrypted, and the server\'s certificate checked against the '
+              'authority below and the host name - the only one that stops somebody in '
+              'between. The server must have TLS switched on.',
+    'db_tls_ca': 'The file of the authority that signed the database server\'s certificate, '
+                 'for verify-ca and verify-full: /etc/otp/db-ca.pem.',
+    'node_name': 'What this server is called among the nodes of a cluster - in the list of nodes, in its events and on the pages it answers. Kept in config.json, since it belongs to this machine and not to the database both share. Empty: the machine\'s own name.',
+    'site_name': 'The name at the top of the administration pages. Empty: the machine’s '
+                 'own name.',
+    'ui_lang': 'The language every page opens in until somebody chooses another for '
+               'themselves.',
+    'api_port': 'The port on 127.0.0.1 the web pages ask this daemon on. The pages read it '
+                'from <code>/run/otp/api-port</code>, written when the daemon starts.',
+    'debug': 'Write everything into <code>/var/log/otp/otp.log</code>. Loud: for finding '
+             'something out, not for leaving on.',
+    'debug_radius': 'Every request, every step of its decision.',
+    'debug_ldap': 'Every question asked of a directory and how many answers came back. Never '
+                  'a password.',
+    'debug_api': 'Every API call the web pages make.',
+    'debug_codes': 'Every code sent by e-mail and SMS, step by step: each request to the SMS gateway and its answer with how long it took, each line of the conversation with the mail server. Passwords, tokens and the messages themselves are never written.',
+}
+
+# Which settings sit on which page of Settings, in order. A setting the
+# daemon knows and this does not name lands on "Everything else".
+PANES = {
+    'realms': ['default_realm'],
+    'guard': ['radius_guard', 'radius_guard_tries', 'radius_guard_names',
+              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted',
+              'net_confirm_min', 'fw_confirm_min'],
+    'radius': ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'radius_status_server',
+               'radius_reply_ma', 'radius_dup_window_s', 'radius_workers',
+               'radius_unknown_log', 'radius_reject_delay_ms', 'radius_reject_reason',
+               'radius_ma_sticky'],
+    'tokens': ['totp_issuer', 'totp_label', 'totp_digits', 'totp_period', 'totp_algorithm',
+               'totp_window', 'totp_disallow_reuse', 'rate_limit_tries', 'rate_limit_s',
+               'lockout_after', 'lockout_min', 'admin_show_key',
+               'scratch_count', 'scratch_digits', 'token_names_case'],
+    'portal': ['portal', 'portal_title', 'portal_realm', 'portal_hint', 'portal_who',
+               'portal_groups', 'portal_confirm', 'portal_reissue', 'portal_show_secret',
+               'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
+               'portal_help'],
+    'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
+               'isemon_events', 'isemon_max_bytes', 'ship_files'],
+    'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
+               'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms',
+               'admin_directory', 'admin_group_full', 'admin_group_token',
+               'admin_group_readonly'],
+    'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
+           'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
+           'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
+    'ha': ['node_name'],
+    'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
+               'rbackup_keep_days', 'rbackup_password'],
+    'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
+              'code_send_window_min', 'code_lang', 'code_mail_fmt', 'sms_mode', 'sms_url', 'sms_method',
+              'sms_body', 'sms_headers', 'sms_token', 'sms_spool_dir', 'sms_prefix',
+              'sms_ok_status', 'sms_tel_host', 'sms_tel_https', 'sms_tel_verify',
+              'sms_tel_user', 'sms_tel_password', 'sms_tel_api', 'sms_tel_modem', 'sms_plain'],
+    'mail': ['mail_mode', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth', 'smtp_user',
+             'smtp_password', 'smtp_verify', 'smtp_timeout_s', 'mail_direct_port', 'mail_direct_tls', 'mail_dns', 'mail_from',
+             'mail_from_name', 'mail_reply_to', 'mail_helo', 'mail_lang', 'mail_codes',
+             'mail_retry_hours', 'mail_keep_days'],
+    'upgrade': ['upgrade_check', 'upgrade_url'],
+    'about': ['site_name', 'ui_lang', 'api_port', 'debug', 'debug_radius', 'debug_ldap',
+              'debug_api', 'debug_codes'],
+}
+
+# A setting that only means something while another one says so. Shown
+# greyed out with the reason beside it, as on isemon.
+ONLY_WHEN = {
+    'radius_guard_tries': ['radius_guard', '1'], 'radius_guard_names': ['radius_guard', '1'],
+    'radius_guard_window_min': ['radius_guard', '1'],
+    'radius_guard_block_min': ['radius_guard', '1'],
+    'radius_guard_trusted': ['radius_guard', '1'],
+    'portal_title': ['portal', '1'], 'portal_realm': ['portal', '1'],
+    'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
+    'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
+    'portal_reissue': ['portal', '1'], 'portal_show_secret': ['portal', '1'],
+    'portal_scratch': ['portal', '1'], 'portal_session_min': ['portal', '1'],
+    'portal_help': ['portal', '1'], 'portal_tries': ['portal', '1'],
+    'portal_wait_min': ['portal', '1'],
+    'isemon_targets': ['isemon', '1'], 'isemon_hostname': ['isemon', '1'],
+    'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
+    'isemon_max_bytes': ['isemon', '1'],
+    'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
+    'admin_group_readonly': ['admin_directory', '*'],
+    'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
+    'admin_2fa_sms': ['admin_2fa', '1'],
+    'db_host': ['db_engine', 'sqlite-not'], 'db_port': ['db_engine', 'sqlite-not'],
+    'db_name': ['db_engine', 'sqlite-not'], 'db_user': ['db_engine', 'sqlite-not'],
+    'db_password': ['db_engine', 'sqlite-not'], 'db_timeout_s': ['db_engine', 'sqlite-not'],
+    'backup_keep': ['backup_daily', '1'], 'backup_at': ['backup_daily', '1'],
+    'rbackup_at': ['rbackup', '1'], 'rbackup_every': ['rbackup', '1'],
+    'rbackup_day': ['rbackup_every', 'weekly'],
+    'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
+    'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
+    'smtp_security': ['mail_mode', 'smtp'], 'smtp_auth': ['mail_mode', 'smtp'],
+    'smtp_user': ['smtp_auth', 'none-not'], 'smtp_password': ['smtp_auth', 'none-not'],
+    'smtp_verify': ['mail_mode', 'off-not'], 'smtp_timeout_s': ['mail_mode', 'off-not'],
+    'mail_direct_port': ['mail_mode', 'direct'], 'mail_dns': ['mail_mode', 'direct'], 'mail_direct_tls': ['mail_mode', 'direct'], 'mail_from': ['mail_mode', 'off-not'],
+    'mail_from_name': ['mail_mode', 'off-not'], 'mail_reply_to': ['mail_mode', 'off-not'],
+    'mail_helo': ['mail_mode', 'off-not'], 'mail_lang': ['mail_mode', 'off-not'],
+    'mail_codes': ['mail_mode', 'off-not'],
+    'mail_retry_hours': ['mail_mode', 'off-not'], 'mail_keep_days': ['mail_mode', 'off-not'],
+    'sms_url': ['sms_mode', 'http'], 'sms_method': ['sms_mode', 'http'],
+    'sms_body': ['sms_mode', 'http'], 'sms_headers': ['sms_mode', 'http'],
+    'sms_token': ['sms_mode', 'http'], 'sms_ok_status': ['sms_mode', 'http'],
+    'sms_spool_dir': ['sms_mode', 'spool'], 'sms_prefix': ['sms_mode', 'off-not'],
+    'sms_tel_host': ['sms_mode', 'teltonika'], 'sms_tel_https': ['sms_mode', 'teltonika'],
+    'sms_tel_verify': ['sms_mode', 'teltonika'], 'sms_tel_user': ['sms_mode', 'teltonika'],
+    'sms_tel_password': ['sms_mode', 'teltonika'], 'sms_tel_api': ['sms_mode', 'teltonika'],
+    'sms_tel_modem': ['sms_mode', 'teltonika'], 'sms_plain': ['sms_mode', 'off-not'],
+}
+
+CONFIG = dict(DEFAULTS)
+FILE_CONFIG = dict(DEFAULTS)
+FILE_KEYS = set()
+FROM_ARGV = {}
+BAD_CONFIG = []
+
+
+class BadSetting(ValueError):
+    """A value that cannot be read as the setting it was given for."""
+
+
+class NodeMoved(BadSetting):
+    """Saved on another machine than the one meant (1.0.110)."""
+
+
+def _coerce(current, value):
+    """A value made to look like the default beside it - or refused.
+
+    Refused rather than quietly replaced, as on isemon: a setting nobody can
+    read must be a setting nobody accepts, so that what runs is either what
+    was asked for or plainly said to be otherwise.
+    """
+    if isinstance(current, bool):
+        if isinstance(value, str):
+            said = value.strip().lower()
+            if said in ('1', 'true', 'yes', 'on'):
+                return True
+            if said in ('0', 'false', 'no', 'off', ''):
+                return False
+            raise BadSetting('%r is not yes or no' % value)
+        if value is None:
+            raise BadSetting('a yes-or-no setting cannot be nothing')
+        return bool(value)
+    if isinstance(current, int):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise BadSetting('a number is needed, and nothing was given')
+        if isinstance(value, bool):
+            return int(value)
+        try:
+            return int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            raise BadSetting('%r is not a number' % (value,))
+    if isinstance(current, list):
+        if isinstance(value, str):
+            return [p.strip() for p in re.split(r'[,;\n\r]', value) if p.strip()]
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        raise BadSetting('%r is not a list' % (value,))
+    if isinstance(current, str):
+        if value is None:
+            raise BadSetting('nothing was given')
+        if isinstance(value, (list, tuple)):
+            return ', '.join(str(one).strip() for one in value if str(one).strip())
+        if isinstance(value, (dict, set)):
+            raise BadSetting('%r is not something this setting can hold' % (value,))
+        if isinstance(value, bool):
+            return 'yes' if value else ''
+        return str(value)
+    return value
+
+
+# Settings of several lines (1.0.103): the rest are one line each.
+SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets',
+                'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
+
+
+def check_setting(key, value):
+    """The value as it will be kept, or BadSetting saying why not."""
+    if key not in DEFAULTS:
+        raise BadSetting('%s is not a setting this version knows' % key)
+    got = _coerce(DEFAULTS[key], value)
+    shape = TUNABLE.get(key)
+    if isinstance(shape, tuple) and shape and isinstance(shape[0], str):
+        if str(got) not in shape:
+            raise BadSetting('%s: %r is not one of %s' % (key, got, ', '.join(shape)))
+    elif isinstance(shape, tuple) and len(shape) == 2:
+        if not (shape[0] <= int(got) <= shape[1]):
+            raise BadSetting('%s must be between %d and %d' % (key, shape[0], shape[1]))
+    if key.startswith(('mail_', 'smtp_')) and isinstance(got, str) and \
+            key not in ('smtp_password',) and re.search(r'[\x00-\x1f\x7f]', got):
+        # A new line in a header (1.0.94): refused here, not a ValueError out
+        # of the mail library at the moment a token's mail goes.
+        raise BadSetting('%s: no line breaks or control characters' % key)
+    if isinstance(got, str) and key not in SECRET_KEYS:
+        # A length and no control characters for every text (1.0.103): an
+        # issuer of 3000 letters made every token's QR code fail after its key
+        # was replaced, and a name held a NUL and new lines.
+        tall = key in SETTING_TALL
+        most = 64 if key in ('totp_issuer', 'totp_label') else (20000 if tall else 500)
+        if len(got) > most:
+            raise BadSetting('%s: %d characters at most' % (key, most))
+        if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' if tall else r'[\x00-\x1f\x7f]', got):
+            raise BadSetting('%s: no line breaks or other control characters' % key)
+    if key in ('backup_at', 'rbackup_at') and \
+            not re.match(r'^([01]?\d|2[0-3]):[0-5]\d\Z', str(got).strip()):
+        raise BadSetting('%s is a time of day, written HH:MM' % key)
+    # What reaches a command line, an option file or pg_hba.conf (1.0.33):
+    # a database name like --result-file=/x was an option to mariadb-dump,
+    # and a new line in a password a line of its own in the option file.
+    if key in ('db_name', 'db_user') and str(got).strip() and \
+            not re.match(r'^[A-Za-z_][A-Za-z0-9_]{0,62}\Z', str(got).strip()):
+        raise BadSetting('%s: letters, digits and _ only, starting with a letter' % key)
+    if key in ('db_host', 'ha_address', 'ha_peer') and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9_:\[][A-Za-z0-9_.:%\[\]-]{0,252}$|^/[A-Za-z0-9/._-]{1,200}\Z',
+                         str(got).strip()):
+        raise BadSetting('%s: a host name, an address, or the path of a socket' % key)
+    if key in SECRET_KEYS and any(ord(ch) < 32 or ord(ch) == 127 for ch in str(got or '')):
+        raise BadSetting('%s: no line breaks or other control characters' % key)
+    if key == 'node_name' and str(got or '').strip() and \
+            not re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', str(got).strip()):
+        raise BadSetting('node_name: letters, digits, dots, dashes and _ - 63 at most')
+    if key == 'radius_bind':
+        try:
+            ipaddress.ip_address(str(got).strip())
+        except ValueError:
+            raise BadSetting('radius_bind: %r is not an address' % got)
+    if key == 'radius_guard_trusted':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('radius_guard_trusted: %r is not an address or a network' % one)
+    if key == 'mail_dns':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_address(one)
+            except ValueError:
+                raise BadSetting('mail_dns: %r is not the address of a DNS server' % one)
+    if key == 'isemon_targets':
+        for one in syslog_targets(str(got), strict=True):
+            pass
+    if key == 'upgrade_url' and str(got).strip() and \
+            not re.match(r'^https://[^\s]+\Z', str(got).strip()):
+        raise BadSetting('upgrade_url: an address starting https://')
+    if key == 'sms_url' and str(got).strip() and \
+            not re.match(r'^https?://[^\s]+\Z', str(got).strip()):
+        raise BadSetting('sms_url: an address starting https:// (or http://)')
+    if key == 'sms_spool_dir' and str(got).strip() and \
+            not re.match(r'^/[A-Za-z0-9/._-]{1,200}\Z', str(got).strip()):
+        raise BadSetting('sms_spool_dir: the whole path of a folder, /var/spool/sms/outgoing')
+    if key == 'sms_tel_host' and str(got).strip() and \
+            not re.match(r'^(https?://)?[A-Za-z0-9.\-\[\]:]+/?\Z', str(got).strip()):
+        raise BadSetting('sms_tel_host: an address or a name, with :port if it is not the usual one')
+    if key == 'sms_tel_modem' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9_.-]{1,20}\Z', str(got).strip()):
+        raise BadSetting('sms_tel_modem: the modem\'s id as the gateway names it, such as 1-1')
+    if key == 'sms_prefix' and str(got).strip() and not re.match(r'^\+[1-9][0-9]{0,3}\Z',
+                                                                    str(got).strip()):
+        raise BadSetting('sms_prefix: + and the country code, +420')
+    if key == 'totp_label' and '{user}' not in str(got) and '{name}' not in str(got):
+        raise BadSetting('totp_label needs {user} or {name} in it, or every token on a '
+                         'phone has the same name')
+    if key in ('isemon_hostname',) and str(got).strip() \
+            and not re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', str(got).strip()):
+        raise BadSetting('isemon_hostname: a host name has letters, digits, dots and '
+                         'dashes and nothing else')
+    return got
+
+
+CONFIG_LOADED = [False]
+
+
+def load_config(path=None, saved=None):
+    """The defaults, with config.json over them and anything saved over that."""
+    global CONFIG, FILE_CONFIG, FILE_KEYS
+    where = Path(path) if path else CONFIG_FILE
+    fresh = dict(DEFAULTS)
+    named, refused, unknown = set(), [], []
+    try:
+        with open(where, encoding='utf-8') as f:
+            given = json.load(f)
+        if not isinstance(given, dict):
+            raise ValueError('the config file is not an object')
+        for key, value in given.items():
+            if key in fresh:
+                try:
+                    fresh[key] = _coerce(fresh[key], value)
+                    named.add(key)
+                except BadSetting as bad:
+                    refused.append('%s (%s)' % (key, bad))
+            elif not key.startswith('_'):
+                unknown.append(key)
+    except FileNotFoundError:
+        pass
+    except (ValueError, OSError) as e:
+        # Never the defaults in its place (1.0.94): a typo in config.json
+        # started the daemon on an empty SQLite of its own - every person
+        # refused, a node quietly out of its cluster. A reload keeps what is
+        # in effect; a start stops, saying why.
+        if CONFIG_LOADED[0]:
+            sys.stderr.write('otp: %s could not be read (%s); the settings in effect are '
+                             'kept\n' % (where, e))
+            try:
+                log('%s could not be read (%s): the settings in effect are kept until it is '
+                    'mended' % (where, e), 'error')
+            except Exception:                           # noqa: BLE001
+                pass
+            return CONFIG
+        raise SystemExit('otp: %s could not be read: %s - mend it (it is JSON) and start '
+                         'again; nothing was started on the defaults' % (where, e))
+    CONFIG_LOADED[0] = True
+    FILE_CONFIG = dict(fresh)
+    FILE_KEYS = named
+    whole = dict(fresh)
+    if saved:
+        for key, value in saved.items():
+            if key in DEFAULTS and key not in FILE_ONLY_KEYS:
+                try:
+                    whole[key] = _coerce(DEFAULTS[key], value)
+                except BadSetting:
+                    pass
+        me = this_node_name(fresh)
+        for key in NODE_KEYS:
+            if key + '@' + me in saved:
+                try:
+                    whole[key] = _coerce(DEFAULTS[key], saved[key + '@' + me])
+                except BadSetting:
+                    pass
+    whole.update(FROM_ARGV)
+    CONFIG = whole
+    if unknown:
+        sys.stderr.write('otp: %s holds settings this version does not know: %s\n'
+                         % (where, ', '.join(sorted(unknown)[:12])))
+    BAD_CONFIG[:] = sorted(refused)
+    return CONFIG
+
+
+def service_ids():
+    """The uid and gid of the daemon's account, or None."""
+    try:
+        import pwd
+        pw = pwd.getpwnam(SERVICE_USER)
+        return pw.pw_uid, pw.pw_gid
+    except (KeyError, ImportError):
+        return None
+
+
+def write_replacing(path, text, mode=0o640, owner=None):
+    """A file written beside itself and renamed over: never half of one.
+    Its mode and owner set on the open file, not by name (1.0.101): run by
+    root in a folder the service's account can write, a name can be made a
+    link to any file of the machine between the write and the chmod."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.' + path.name + '.', dir=str(path.parent))
+    try:
+        os.fchmod(fd, mode)
+        if owner is not None and os.geteuid() == 0:
+            os.fchown(fd, owner[0], owner[1])
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def write_file_settings(changes, path=None):
+    """Change a few settings in config.json and leave the rest of it alone.
+    Only the database's own address lives there; everything else is saved
+    in the database."""
+    where = Path(path) if path else CONFIG_FILE
+    had = {}
+    try:
+        with open(where, encoding='utf-8') as f:
+            got = json.load(f)
+        if not isinstance(got, dict):
+            raise ValueError('it is not an object')
+        had = got
+    except FileNotFoundError:
+        had = {}
+    except ValueError as e:
+        raise OSError('%s is there but cannot be read (%s); put it right first - nothing '
+                      'was written to it' % (where, str(e)[:120]))
+    for key, value in changes.items():
+        if key not in DEFAULTS:
+            continue
+        if value == DEFAULTS[key]:
+            had.pop(key, None)
+        else:
+            had[key] = value
+    try:
+        was = os.stat(where)
+        mode = (was.st_mode & 0o770) or 0o640
+    except OSError:
+        mode = 0o640
+    write_replacing(where, json.dumps(had, indent=2, sort_keys=True, ensure_ascii=False)
+                    + '\n', mode)
+    return where
+
+
+# ---------------------------------------------------------------------------
+# Secrets kept in the database, sealed
+# ---------------------------------------------------------------------------
+# The tokens' keys, the RADIUS clients' shared secrets and the directories'
+# passwords are kept in the database - sealed, with a key in a file of its
+# own in the state directory, exactly as isemon seals its passwords. A copy of
+# the database alone opens none of them; the daily copy is made with the key
+# beside it, because a database of tokens without the key that opens them is
+# a database of nothing, and every person in it would have to enrol again.
+# Built from HMAC-SHA256 alone - a keystream and a tag - because the standard
+# library has no cipher and this must not need anything installed.
+SEALED = 'sealed:1:'
+
+
+def scrub_secret(text):
+    """Words that may carry a database password (a conninfo in an error, say)
+    with the password taken out, before they are logged or shown."""
+    # A quoted value whole, up to the quote a space or the end follows (so
+    # one with spaces, \' or SQL's '' inside goes too); otherwise up to the
+    # next space - taking a quote with it rather than leaving a letter of
+    # the password behind.
+    return re.sub(r"(password\s*=\s*)('.*?'(?=\s|$)|\S+)", r'\1***', str(text or ''),
+                  flags=re.I | re.S)
+
+
+def sealing_key_path():
+    return Path(STATE_DIR) / 'secrets.key'
+
+
+_KEY_CACHE = {}
+_KEY_LOCK = threading.Lock()
+
+
+def sealing_key(make=False):
+    """The key every secret in the database is sealed with. Read once and
+    kept while the file is unchanged (1.0.33) - it was read from disk for
+    every secret opened, every token in a list of thousands. Made only where
+    there is none, and then with O_EXCL, so two processes starting at once
+    cannot each make one of their own."""
+    path = sealing_key_path()
+    try:
+        st = os.stat(str(path))
+        stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+    except FileNotFoundError:
+        stamp = None
+    except OSError:
+        stamp = 'unreadable'
+    if stamp is not None and stamp != 'unreadable':
+        got = _KEY_CACHE.get(str(path))
+        if got and got[0] == stamp:
+            return got[1]
+    try:
+        key = bytes.fromhex(path.read_text(encoding='ascii').strip())
+    except FileNotFoundError:
+        key = None
+    except (OSError, ValueError):
+        key = b''
+    if key and len(key) == 32:
+        if stamp and stamp != 'unreadable':
+            _KEY_CACHE[str(path)] = (stamp, key)
+        return key
+    if not make:
+        return b''
+    if key is not None:
+        raise OSError('%s is there but cannot be read as a key - it is never replaced, '
+                      'because every token sealed with it would be lost' % path)
+    with _KEY_LOCK:
+        key = secrets.token_bytes(32)
+        # Written whole beside it, then linked into place (1.0.94): created
+        # empty first, another process starting just then read an empty
+        # key and stopped.
+        tmp = '%s.new-%d-%s' % (path, os.getpid(), secrets.token_hex(4))
+        # A name nobody made before, never through a link (1.0.101), and
+        # given to the folder's owner while it is still open.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            if os.geteuid() == 0:
+                st = os.stat(str(path.parent))
+                os.fchown(fd, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+        with os.fdopen(fd, 'w', encoding='ascii') as f:
+            f.write(key.hex() + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, str(path))
+        except FileExistsError:
+            # Made by somebody else a moment ago: theirs is the key.
+            os.unlink(tmp)
+            return sealing_key(make=False) or b''
+        os.unlink(tmp)
+        log('a new key to seal secrets with was made: %s - keep a copy of it beside every '
+            'copy of the database' % path, 'warn')
+    return key
+
+
+def _seal_stream(key, nonce, size):
+    out = bytearray()
+    block = 0
+    while len(out) < size:
+        out += hmac.new(key, b'stream' + nonce + block.to_bytes(8, 'big'),
+                        hashlib.sha256).digest()
+        block += 1
+    return bytes(out[:size])
+
+
+SEALED2 = 'sealed:2:'
+# Set once every token's secrets carry the name they belong to (1.0.33): from
+# then on a secret of a token sealed the old way, without it, is not opened.
+BIND_STRICT = {'tokens': False}
+
+
+def token_bind(name):
+    """What a token's sealed secrets are tied to: its name. Copied into
+    another token's row, they no longer open (1.0.33)."""
+    return 'token:' + str(name or '').strip().lower()
+
+
+def seal_secret(text, bind=None):
+    """Sealed with the key of this installation: a keystream from HMAC-SHA256,
+    then a tag over it. With `bind`, the tag covers that too (sealed:2:), so
+    the value opens only where it was sealed for."""
+    key = sealing_key(make=True)
+    if not key:
+        raise OSError('no key to seal with')
+    data = str(text).encode('utf-8')
+    nonce = secrets.token_bytes(16)
+    hide = hmac.new(key, b'hide', hashlib.sha256).digest()
+    sign = hmac.new(key, b'sign', hashlib.sha256).digest()
+    body = bytes(a ^ b for a, b in zip(data, _seal_stream(hide, nonce, len(data))))
+    if bind is not None:
+        tag = hmac.new(sign, b'2|' + str(bind).encode('utf-8') + b'|' + nonce + body,
+                       hashlib.sha256).digest()[:16]
+        return SEALED2 + base64.urlsafe_b64encode(nonce + body + tag).decode('ascii')
+    tag = hmac.new(sign, nonce + body, hashlib.sha256).digest()[:16]
+    return SEALED + base64.urlsafe_b64encode(nonce + body + tag).decode('ascii')
+
+
+def unseal_secret(value, bind=None):
+    """The secret back, or None where this machine's key is not the one it was
+    sealed with - or, for one bound to a place, where it is not that place. A
+    value never sealed is given back as it is."""
+    if not isinstance(value, str):
+        return value
+    if value.startswith(SEALED2):
+        v2, prefix = True, SEALED2
+    elif value.startswith(SEALED):
+        v2, prefix = False, SEALED
+    else:
+        if value and bind is not None and str(bind).startswith('token:') and \
+                BIND_STRICT.get('tokens'):
+            # A token's key that was never sealed (1.0.101): every one was
+            # sealed at start, so this one was written by somebody without
+            # the key - taken for nothing.
+            return None
+        return value
+    if not v2 and bind is not None and str(bind).startswith('token:') and \
+            BIND_STRICT.get('tokens'):
+        return None
+    if v2 and bind is None:
+        return None
+    key = sealing_key()
+    try:
+        raw = base64.urlsafe_b64decode(value[len(prefix):].encode('ascii'))
+    except (ValueError, TypeError):
+        return None
+    if not key or len(raw) < 32:
+        return None
+    nonce, body, tag = raw[:16], raw[16:-16], raw[-16:]
+    sign = hmac.new(key, b'sign', hashlib.sha256).digest()
+    signed = (b'2|' + str(bind).encode('utf-8') + b'|' if v2 else b'') + nonce + body
+    if not hmac.compare_digest(tag, hmac.new(sign, signed, hashlib.sha256).digest()[:16]):
+        return None
+    hide = hmac.new(key, b'hide', hashlib.sha256).digest()
+    try:
+        return bytes(a ^ b for a, b in zip(body, _seal_stream(hide, nonce, len(body)))
+                     ).decode('utf-8')
+    except UnicodeDecodeError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# The log this daemon writes about itself
+# ---------------------------------------------------------------------------
+_LOG_FILE = None
+_LOG_LOCK = threading.Lock()
+_LOG_TO_STDERR = True
+
+
+def log_open():
+    global _LOG_FILE
+    with _LOG_LOCK:
+        try:
+            if _LOG_FILE:
+                _LOG_FILE.close()
+        except OSError:
+            pass
+        _LOG_FILE = None
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            _LOG_FILE = open(LOG_DIR / 'otp.log', 'a', encoding='utf-8')
+        except OSError:
+            _LOG_FILE = None
+
+
+_LOG_SPARING = {}
+_LOG_CHECKED = [0.0]
+
+
+def log_sparing(key, words, level='warn', every=30):
+    """A line that can come thousands of times a second (a database gone,
+    a flood): written once per `every` seconds a key, with how many were left
+    out since (1.0.59) - a database outage under load wrote 50 MB of log."""
+    t = time.time()
+    with _LOG_LOCK:
+        at, quiet = _LOG_SPARING.get(key, (0.0, 0))
+        if t - at < every:
+            _LOG_SPARING[key] = (at, quiet + 1)
+            return
+        _LOG_SPARING[key] = (t, 0)
+        if len(_LOG_SPARING) > 1000:
+            _LOG_SPARING.clear()
+    log(words + (' (and %d more like it in the last %d s)' % (quiet, int(t - at)) if quiet else ''),
+        level)
+
+
+_UNDER_SYSTEMD = bool(os.environ.get('INVOCATION_ID'))
+
+
+def log(words, level='info'):
+    # A line of its own begins only with a time (1.0.57): a newline in what
+    # is written - a User-Name, say - continues indented, so it cannot pass
+    # for a line of otp's; other control characters are shown, not written.
+    words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', lambda m: '\\x%02x' % ord(m.group(0)),
+                   str(words)).replace('\n', '\n    ')
+    line = '%s %-5s %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), level, words)
+    global _LOG_FILE
+    with _LOG_LOCK:
+        # Rotated away from under it (1.0.94): logrotate's reload is refused
+        # to the otp account, and the lines went on into a file deleted the
+        # next day. Looked at every 10 s; a new otp.log is opened.
+        t = time.monotonic()
+        if _LOG_FILE and t - _LOG_CHECKED[0] > 10:
+            _LOG_CHECKED[0] = t
+            try:
+                if os.stat(str(LOG_DIR / 'otp.log')).st_ino != os.fstat(_LOG_FILE.fileno()).st_ino:
+                    raise FileNotFoundError
+            except OSError:
+                try:
+                    _LOG_FILE.close()
+                    _LOG_FILE = open(LOG_DIR / 'otp.log', 'a', encoding='utf-8')
+                except OSError:
+                    pass
+        if _LOG_FILE:
+            try:
+                _LOG_FILE.write(line + '\n')
+                _LOG_FILE.flush()
+            except OSError:
+                pass
+        # Under systemd, with otp.log open, only warnings and errors go to
+        # the journal as well (1.0.136): every line twice, debugging on, and
+        # a journald slow to take them held every thread that logs.
+        if _LOG_TO_STDERR and (level != 'debug' or CONFIG.get('debug')) and (
+                not _LOG_FILE or not _UNDER_SYSTEMD or level in ('warn', 'error', 'crit')):
+            try:
+                sys.stderr.write(line + '\n')
+                sys.stderr.flush()
+            except (OSError, ValueError):
+                pass
+
+
+def debugging(what):
+    return bool(CONFIG.get('debug')) and bool(CONFIG.get('debug_' + what, 1))
+
+
+def log_tail(lines=400):
+    path = LOG_DIR / 'otp.log'
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 400 * 1024))
+            got = f.read().decode('utf-8', 'replace').splitlines()
+        return got[-int(lines):]
+    except OSError as e:
+        return ['%s cannot be read: %s' % (path, e)]
+
+
+# ---------------------------------------------------------------------------
+# Small things, said once
+# ---------------------------------------------------------------------------
+def now():
+    return time.time()
+
+
+def human_span(seconds):
+    s = max(0, int(seconds or 0))
+    if s < 60:
+        return '%d s' % s
+    if s < 3600:
+        return '%d min' % (s // 60)
+    if s < 86400:
+        return '%d h %d min' % (s // 3600, (s % 3600) // 60)
+    days = s // 86400
+    return '%s %d h' % ('1 day' if days == 1 else '%d days' % days, (s % 86400) // 3600)
+
+
+def stamp(ts):
+    if not ts:
+        return '-'
+    return datetime.fromtimestamp(float(ts)).strftime('%d-%m-%Y %H:%M:%S')
+
+
+def short_host():
+    try:
+        return socket.gethostname().split('.')[0] or 'otp'
+    except OSError:
+        return 'otp'
+
+
+def dn_list(text):
+    """Group names or DNs out of one setting: split on semicolons and new
+    lines, never on commas - a DN is mostly commas."""
+    if isinstance(text, (list, tuple)):
+        pieces = list(text)
+    else:
+        pieces = re.split(r'[;\n]', str(text or ''))
+    return [p.strip() for p in pieces if str(p).strip()]
+
+
+def cn_of(dn):
+    """`CN=VPN Users,OU=Groups,...` as `VPN Users`; a plain name as itself."""
+    said = str(dn or '').strip()
+    m = re.match(r'(?i)^cn=((?:\\.|[^,])*)', said)
+    if m:
+        return re.sub(r'\\(.)', r'\1', m.group(1)).strip()
+    return said
+
+
+def password_hash(password, salt=None, rounds=310000):
+    salt = salt or secrets.token_bytes(16)
+    got = hashlib.pbkdf2_hmac('sha256', str(password).encode('utf-8'), salt, rounds)
+    return 'pbkdf2_sha256$%d$%s$%s' % (rounds, base64.b64encode(salt).decode('ascii'),
+                                       base64.b64encode(got).decode('ascii'))
+
+
+def password_ok(password, stored):
+    try:
+        kind, rounds, salt, want = str(stored or '').split('$')
+        if kind != 'pbkdf2_sha256':
+            return False
+        got = hashlib.pbkdf2_hmac('sha256', str(password).encode('utf-8'),
+                                  base64.b64decode(salt), int(rounds))
+        return hmac.compare_digest(got, base64.b64decode(want))
+    except (ValueError, TypeError):
+        return False
+
+
+def password_problem(password):
+    """Why a password for an account here will not do, or ''."""
+    p = str(password or '')
+    if len(p) < 8:
+        return 'a password needs at least eight characters'
+    if len(p) > 200:
+        return 'that password is longer than anybody types'
+    return ''

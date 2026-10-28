@@ -1,0 +1,219 @@
+ above, then press 
+ and pick them out of the directory
+        rather than typing a distinguished name by hand — that is how a role ends up pointing at
+        a group that does not exist, and nobody finds out until the first person cannot sign
+        in.
+ hands it to the
+        operating system.
+ if the database and the account are not there yet,
+        
+ in this role, or take it out of it. It is a change like any other on this page — nothing happens until you save.
+ nebo 
+ podle hodin tohoto stroje.
+ rather
+        than in the database - a database cannot hold the address of itself.
+ se stane 
+ the
+        database, which the engine uses again; only 
+ · running: 
+ · running: 0
+ · running: 0.0.0.0
+ · running: 03:30
+ · running: 1
+ · running: 10
+ · running: 12
+ · running: 120
+ · running: 127.0.0.1
+ · running: 127.0.0.1:5514
+ · running: 14
+ · running: 15
+ · running: 16
+ · running: 180
+ · running: 1800
+ · running: 1812
+ · running: 1813
+ · running: 3
+ · running: 30
+ · running: 365
+ · running: 5
+ · running: 5432
+ · running: 6
+ · running: 8
+ · running: 9861
+ · running: Aplikaci Google Authenticator si nainstalujte z obchodu Google Play nebo App Store.
+ · running: DPMO
+ · running: MOCK
+ · running: SHA1
+ · running: VPN_2FACT_USERS
+ · running: cs
+ · running: dpmo.cz
+ · running: false
+ · running: login@dpmo.cz
+ · running: lower
+ · running: optm
+ · running: optmove
+ · running: otp
+ · running: realm_groups
+ · running: set
+ · running: sqlite
+ · running: {user}
+, and only then 
+-----BEGIN CERTIFICATE-----
+. Until that last
+        step this installation carries on exactly as it is, and what is in it is never
+        touched by any of this.
+A copy goes back into any of the three engines. Put back on the server: otp --restore /var/lib/otp/backups/FILE --yes.
+A copy of everything here is made first, then every row goes into sqlite at 127.0.0.1. What is here is not touched. It refuses a database that already holds records.
+A database server is installed with settings for a machine of any size,
+        which is to say for a small one. This reads what the machine the server runs on has -
+        its memory, its processors, its disk - works the settings out for it, shows them beside
+        what is there now, and puts them in when you say so.
+A full administrator may open a token and show its QR code and key - for somebody whose phone cannot scan the page, or to set the same token up again. Whoever has the key can make the codes, so every look is written down as an event. Off: nobody sees a key after it is made.
+ASA
+ASA (192.9.212.1, @dpmo.cz)
+Administrators may show a token's QR code and key
+Aplikaci Google Authenticator si nainstalujte z obchodu Google Play nebo App Store.
+Apply what is kept, now
+Ask the directory what groups there are. Nothing is changed; it only reads.
+Carry everything across
+Carry everything across…
+Carry it across
+Changing the setting moves nothing. The order is: fill the address in,
+        
+Changing them takes an account that may: this program’s own where it has
+        that right, otherwise an administrator of that server, asked for in the popup, used for
+        that one request and stored nowhere.
+Choose the directory in 
+Class = VPN_FULL
+Class = VPN_USERS
+Copy everything that is here into that database: every token, request, setting and account. What is here is left exactly as it is.
+Copy the database as it is into the backups folder on this machine, now, rather than waiting for tonight.
+DPMO / administrator@dpmo.cz
+Each table is rebuilt and held shut while it is - the RADIUS server waits for its own table meanwhile. It needs room for a second copy of the biggest table.
+Empty it…
+English
+Export a import
+Export i s hesly
+Find the groups
+For the directory
+Forget records older than…
+Forget the RADIUS requests and the checks of a code older than an age you choose here, whatever the keep-for numbers say. Tokens, accounts and settings are not touched.
+Forget them
+Forget these lines
+Forget these requests
+Forget these…
+Forget this line
+Forget this request
+Fresh statistics for the query planner - ANALYZE, on all three. Quick, and nothing is held shut.
+Full admin
+Give it back
+Give the disk back
+Give the space back to the DISK: SQLite's VACUUM, MariaDB's OPTIMIZE TABLE, PostgreSQL's VACUUM FULL. Each holds a table shut while it works and needs room for a second copy of the biggest one. Worth doing after throwing a lot away, and not otherwise.
+Group
+Helpdesk
+ISE Admins
+ISE Watchers
+Importovat
+Importovat soubor…
+Its requests
+Its token
+Kdy, jako 
+Klienti
+Lets in
+MOCK
+Make the database and the account on that server, with rights on that one database and no other, and a password made here and shown once. It asks for an administrator of that server, uses it for this one connection and stores it nowhere.
+Message-Authenticator
+Needed only when the directory is reached over TLS (LDAPS or StartTLS) and the
+        domain controllers' certificates were signed by your own authority. Paste it, or read it
+        from the .crt / .pem file, and press 
+No certificate authority is imported for it. That is done under The certificate authority, below the list of directories.
+Nothing is imported for AD, so the domain controllers’ certificates have to be signed by an authority this machine already trusts.
+O aplikaci
+Odebrat
+Older than (days)
+Once everything is in the other database and it is the one in use, the
+        one it came from is just a spare copy. Going the other way is these same steps with the
+        file chosen instead - which is what makes it safe to try a server at all.
+Open it: switch it off, new recovery codes, try a code, the note
+Optimise it
+Pick a .crt or .pem file instead of pasting it.
+PostgreSQL
+Put 
+Put back as it was…
+Put every setting this page changed back to what it was before.
+RADIUS server
+RICH:Needed only when the directory is reached over TLS (LDAPS or StartTLS) and the domain controllers' certificates were signed by your own authority. Paste it, or read it from the .crt / .pem file, and press <b>Importovat</b>.
+Reach that server with the address above, exactly as the daemon would, and say what answered. Nothing is saved and nothing is written.
+Read a file…
+Read only
+Read the certificate and keep it. It is checked for being a certificate at all before it is stored, and what it is gets shown above.
+Read what the machine has, work the settings out and show them beside what is there now. Nothing is changed until you say so.
+Realmy
+Rows
+SHA-512
+Set it up…
+Show it
+Show the QR code and key
+Show the key of administrator@dpmo.cz
+Start using it
+Start using it…
+Table
+Take every line the filters above match out of the log. Written down as an event.
+Take every request the filters above match out of the log. Written down as an event.
+Take the stored authority away. The domain controllers' certificates then have to be signed by one this machine already trusts.
+The RADIUS requests and the checks of a code older than this are deleted now, whatever the keep-for numbers say. Tokens, accounts, settings and events are not touched.
+The certificate authority 
+The database server’s own settings
+The groups, and what each one may do
+The name they would type
+The settings above say which database to open and how to reach it, and
+        they are the only settings kept in 
+Their password
+Throw away exactly what the keep-for numbers already say is too old. It happens by itself every hour; this is the same thing, now.
+Token admin
+Tokeny
+Try a sign-in
+Try a sign-in…
+Try it
+Try one person's sign-in from here, so you find out it works before you sign out.
+Tune it for this machine…
+VPN_2FACT_USERS
+VPN_SUPPLIER_X
+What it is for
+Which one it is 
+Whoever has this QR code or key can make the codes of this token, as its owner can. Show it only to its owner; that you looked is written down as an event.
+Zda jsou 
+Zeptat se
+Zkontrolovat
+admin checked the database: nothing broken
+admin emptied MariaDB at optm@127.0.0.1:3306/optmove
+admin emptied PostgreSQL at optm@127.0.0.1:5432/optmove
+admin forgot the requests and checks older than 3650 day(s): {'radius_log': 0, 'otp_log': 0}
+admin gave the disk back: 822856 -> 208896
+admin looked at the key of the token of falco@corpnet.cz
+admin set up MariaDB at optm@127.0.0.1:3306/optmove
+admin set up PostgreSQL at optm@127.0.0.1:5432/optmove
+admin switched the database to PostgreSQL at optm@127.0.0.1:5432/optmove; the daemon starts again on it
+admin took 0 request(s) out of the RADIUS log
+admin took 1 line(s) out of the log of codes
+carry everything across
+everything was carried into MariaDB (optm@127.0.0.1:3306/optmove), by admin
+everything was carried into PostgreSQL (optm@127.0.0.1:5432/optmove), by admin
+in use: SQLite 3.45.1
+inside
+kr-olomoucky.int
+localhost
+localhost (127.0.0.1, @dpmo.cz)
+narrow this list…
+none imported
+novak, novak@example.cz or EXAMPLE\novak
+on the command line this one is 
+part of a group's name (empty: all)
+part of a group’s name (empty: all)
+portal
+set it up
+start using it
+the built-in default is 
+the config file
+the file on this machine needs no setting up
+try it

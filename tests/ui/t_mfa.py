@@ -1,0 +1,37 @@
+import sys, time, json, re, importlib.util, subprocess
+exec(open('/tmp/claude-0/up/t_up.py').read().split("if sys.argv[1]=='upload'")[0])
+spec=importlib.util.spec_from_file_location('otpm','/usr/local/lib/otp/otp.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print('on', call('settings', {'settings': {'admin_2fa': 1}}).get('message'))
+def fresh():
+    global cj, op
+    cj=http.cookiejar.CookieJar()
+    op=urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx), urllib.request.HTTPCookieProcessor(cj))
+    globals()['op']=op
+    return call('login', {'name':'admin','password':PW})
+r=fresh(); print('login', r)
+print('blocked', call('status').get('error'))
+print('who', call('whoami'))
+st=call('mfa'); print('state', st)
+r=call('mfa', {'action':'enrol_start','kind':'app'}); sec=r['secret'].replace(' ','')
+print('wrong', call('mfa', {'action':'enrol_confirm','code':'000000'}).get('error'))
+code=m.totp(m.b32_clean(sec))
+print('confirm', call('mfa', {'action':'enrol_confirm','code':code}))
+print('now ok', 'error' not in call('status'))
+r=fresh(); print('login2', r.get('mfa'))
+print('state2', call('mfa').get('stage'), call('mfa').get('kind'))
+print('replay', call('mfa', {'action':'check','code':code}).get('error'))
+nxt=m.totp(m.b32_clean(sec), when=time.time()+30)
+print('check', call('mfa', {'action':'check','code':nxt}))
+print('users', [(u['name'], u.get('mfa')) for u in call('users')['users']])
+print('reset', call('users', {'action':'mfa_reset','name':'admin'}).get('message'))
+r=fresh(); print('login3', r.get('mfa'))
+st=call('mfa'); print('methods', st.get('methods'))
+if 'mail' in st['methods']:
+    r=call('mfa', {'action':'enrol_start','kind':'mail','dest':'boss@example.cz'}); print('mail sent', r)
+    time.sleep(3)
+    out=open('/tmp/claude-0/smtpsink.out').read()
+    codes=re.findall(r'\b(\d{6})\b', out[-4000:]); print('codes seen', codes[-3:])
+    if codes:
+        print('mail confirm', call('mfa', {'action':'enrol_confirm','code':codes[-1]}))
+print('cli', subprocess.run(['python3','/usr/local/lib/otp/otp.py','--reset-2fa','admin'],capture_output=True,text=True,env=dict(__import__('os').environ, OTP_CONFIG='/etc/otp/config.json')).stdout.strip()[-200:])
+print('off', fresh() and call('settings', {'settings': {'admin_2fa': 0}}))

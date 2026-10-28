@@ -1,0 +1,15 @@
+import pexpect, time, re
+env={'OTP_CONFIG':'/etc/otp/config.json','PATH':'/home/claude/shim:/usr/local/bin:/usr/bin:/bin','TERM':'xterm','HOME':'/root','SHELL':'/bin/bash','LANG':'C.UTF-8'}
+c=pexpect.spawn('python3 /usr/local/lib/otp/otp.py --console', env=env, encoding='utf-8', timeout=30, dimensions=(40,110))
+c.logfile_read=open('/home/claude/work/tui.log','w')
+c.expect('Up/Down move'); print('screen ok')
+time.sleep(3)
+c.send('\x1b[B'); time.sleep(0.3); c.send('\x1b[A'); time.sleep(0.3)
+c.send('\r'); c.expect('One request in detail'); print('submenu ok')
+c.send('\r'); c.expect('Enter - back'); print('action ran'); c.send('\r'); c.expect('Up/Down move'); print('back to screen')
+c.send('\x1b'); time.sleep(0.5); c.expect('Live log'); print('esc back')
+c.setwinsize(24,70); time.sleep(1); c.expect('Up/Down'); print('resized')
+c.send('1'); c.send('1'); time.sleep(0.5); c.expect('The service'); print('11 typed')
+c.send('\x1b'); time.sleep(0.5)
+c.send('2'); c.expect('Only lines'); c.sendline(''); c.expect('live'); time.sleep(1); c.sendintr(); c.expect('Up/Down'); print('live log + back')
+c.send('q'); c.expect('console is closed'); c.expect(pexpect.EOF); print('quit ok')

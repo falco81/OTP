@@ -1,0 +1,23 @@
+A copy of the database once a day, into <code>/var/lib/otp/backups</code>, with the key that opens the tokens beside it.
+A message longer than this is cut, with <code>...TRUNCATED</code> at the end. rsyslog cuts at 2048 bytes over UDP unless <code>$MaxMessageSize</code> says more on both machines.
+A name typed without an @ gets this added before it is looked up: <code>novak</code> becomes <code>novak@example.cz</code>. Empty: the name has to be typed whole.
+One line under the sign-in boxes saying what to type, such as <code>login@example.cz</code>.
+Send every check of a code and every RADIUS packet to isemon, as syslog, in the very shape a totpcgi token server and its FreeRADIUS write - so isemon reads it with what it already has (<i>Settings → The OTP logs</i>, with <i>RADIUS detail</i> switched on).
+The RADIUS packet behind every check - the person’s own address, the device, the tunnel group - as <code>radius-detail</code> lines. isemon puts them beside the check of the code.
+The account name under it. <code>{user}</code> is the whole name as it was enrolled (<code>novak@example.cz</code>), <code>{name}</code> the part before the @.
+The address the RADIUS server listens on. <code>0.0.0.0</code> is every IPv4 address this machine has; <code>::</code> every IPv6 one as well. Changed, the server starts listening on the new one at once.
+The directory (by its name under <i>Active Directory</i>) the administration pages sign people in against. Empty: only the accounts made here. Whoever signs in from it gets the role of the first group below they are in, and nobody in none of them gets in.
+The host name on every line, which is the folder isemon’s rsyslog files them under: <code>/var/log/remote/&lt;this&gt;/totp.cgi.log</code>. isemon looks in <code>/var/log/remote/otp</code> unless told otherwise, so <code>otp</code> needs nothing changed there. Empty: this machine’s own short name.
+The port on 127.0.0.1 the web pages ask this daemon on. It has to be the same in <code>otp-api.php</code>.
+The very same lines go into <code>/var/log/otp/totp.cgi.log</code> and <code>/var/log/otp/radius-detail.log</code> as well, whether or not they are sent. Something on this machine can then forward them, and they are there to read when the network is not.
+This account may not change the settings. A full administrator can change that under <i>Accounts</i>.
+This daemon’s own events as well (a token made, a setting changed), as <code>otp</code> lines. isemon does not read those; they are for whatever else collects the syslog.
+What follows the @, such as example.cz. <code>*</code> takes every name no other realm does; empty takes names written without a realm.
+What goes back to the VPN with every Access-Accept: <code>Class = VPN</code>, <code>ASA-Group-Policy = GP_FULL</code>, <code>Session-Timeout = 43200</code>. Known: Reply-Message, Class, Filter-Id, Session-Timeout, Idle-Timeout, Service-Type, Framed-IP-Address, Framed-IP-Netmask, Framed-Pool, Acct-Interim-Interval, Tunnel-Type, Tunnel-Medium-Type, Tunnel-Private-Group-Id, Cisco-AVPair, ASA-Group-Policy, ASA-Tunnel-Group-Lock.
+When, as <code>HH:MM</code> on this machine’s clock.
+Where to send them: <code>host</code>, <code>host:port</code>, and <code>/udp</code> or <code>/tcp</code> after it - <code>10.1.2.3:514/tcp</code>. Several, separated by commas. UDP is the default; TCP does not lose a line when the network does.
+Whether <code>Novak@example.cz</code> and <code>novak@example.cz</code> are one token. Active Directory does not care, and neither should this, unless something else forces it to.
+Who may enrol a token. <b>The realm’s group filter</b> is the same test the VPN applies, so nobody can enrol a token they could never use.
+Who may open these pages. <b>full admin</b> may change everything; <b>token admin</b> may look at everything and look after people's tokens; <b>read only</b> may look and change nothing.
+With <i>members of the groups named below</i>: the groups, by name (<code>VPN_USERS</code>) or by whole DN, separated by semicolons or new lines.
+Write everything into <code>/var/log/otp/otp.log</code>. Loud: for finding something out, not for leaving on.

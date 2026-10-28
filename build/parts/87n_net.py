@@ -1,0 +1,777 @@
+# ---- the machine's network, its name, and switching it off (1.0.119) ------------------
+# Settings → Network: each node's IPv4 address, gateway, DNS, host name and -
+# switched on - IPv6, set from the pages of either node. Settings → Restart and
+# power off: a reboot or a power-off of one node, the other or both.
+#
+# Who does what. The page asks through whichever node answers it (the web
+# address, or a node's own address); what is asked is written into the
+# database for the node it is about - 'net:want:NODE' or 'power:plan' - and
+# that node's daemon does it, writing how far it got into a row only it
+# writes ('net:job:NODE', 'power:node:NODE'). Replication brings both to the
+# other node, so either node's pages show the progress, and a page whose node
+# restarts goes on with the other - or waits for its own to come back.
+#
+# A new address in a cluster is done in this order, so nothing is cut off:
+#   1. the other node is told the new address (ha_readdress): its pg_hba.conf,
+#      its subscription and its ha_peer move to it - it waits for this node
+#      there;
+#   2. this node's ha_address, its own settings that name the old address or
+#      name (RADIUS's address, the mail greeting, the isemon name), and its
+#      self-made certificate are made again with the new ones;
+#   3. maintenance: the web address goes to the other node;
+#   4. NetworkManager, the host name and /etc/hosts, then a reboot;
+#   5. back up: the new address checked, the link between the databases made
+#      again for it (hatls), replication both ways, keepalived and nginx
+#      rewritten from the database (web_tick) - then out of maintenance.
+NET_ASK_NAME = 'net.ask'
+NET_ANSWER_NAME = 'net.json'
+NET_READ_S = 300                # how often each node says what its network is
+NET_JOB_LIVE_S = 1800           # a job not moving for this long is over
+NET_WORK = {'busy': False, 'read_at': 0.0}
+NET_WORK_LOCK = threading.Lock()
+
+
+def boot_time():
+    """When this machine started (the kernel's btime) - a restart of the
+    service is not a reboot."""
+    fake = os.environ.get('OTP_BTIME_FILE')         # tests: a reboot without one
+    if fake:
+        try:
+            return float(Path(fake).read_text().strip() or 0)
+        except (OSError, ValueError):
+            pass
+    try:
+        with open('/proc/stat') as f:
+            for line in f:
+                if line.startswith('btime '):
+                    return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
+
+
+def net_root(data, wait=60):
+    """One request to the root helper (otp_web.py) and its answer."""
+    ask_id = secrets.token_hex(8)
+    data = dict(data, id=ask_id)
+    tmp = WEB_DIR / ('.%s.%d' % (NET_ASK_NAME, os.getpid()))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        f.write(json.dumps(data))
+    os.replace(str(tmp), str(WEB_DIR / NET_ASK_NAME))
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            got = json.loads((WEB_DIR / NET_ANSWER_NAME).read_text())
+        except (OSError, ValueError):
+            got = None
+        if isinstance(got, dict) and got.get('id') == ask_id:
+            if not got.get('ok'):
+                raise ValueError(got.get('said') or 'the root helper said no')
+            return got.get('data') or {}
+        time.sleep(0.4)
+    raise ValueError('the root helper of this node did not answer in %d s - is otp-web.path '
+                     'running?  systemctl status otp-web.path' % wait)
+
+
+def net_publish(store):
+    """This node's network as root reads it, into the database for the pages
+    of either node."""
+    data = net_root({'do': 'read'}, 30)
+    now = {'at': time.time(), 'data': data, 'boot': boot_time(),
+           'radius_bind': str(CONFIG.get('radius_bind') or '0.0.0.0'),
+           'ha_address': str(CONFIG.get('ha_address') or ''),
+           'node_name_pinned': bool(str(FILE_CONFIG.get('node_name') or '').strip())}
+    store.set_meta('net:now:' + node_name(), json.dumps(now))
+    NET_WORK['read_at'] = time.time()
+    return now
+
+
+# ---- what is asked, checked ---------------------------------------------------------
+def _net_list(v, most=4):
+    if isinstance(v, str):
+        v = re.split(r'[\s,;]+', v)
+    return [str(x).strip() for x in (v or []) if str(x).strip()][:most]
+
+
+def net_node_now(store, node):
+    return _meta_json(store, 'net:now:' + node) or {}
+
+
+def net_current_ip(now):
+    """This node's IPv4 address as NetworkManager has it (or the one on its
+    default route)."""
+    d = now.get('data') or {}
+    conf = d.get('conf') or {}
+    for a in conf.get('ipv4_addresses') or []:
+        return str(a)
+    dev = d.get('dev')
+    for a in (d.get('live') or {}).get('addrs4') or []:
+        if not dev or a.get('dev') == dev:
+            return str(a.get('addr') or '')
+    return ''
+
+
+def net_check(store, node, want):
+    """What the page asked for, made whole and checked against the node as it
+    said it is; with the plan in words. Raises ValueError."""
+    now = net_node_now(store, node)
+    d = now.get('data') or {}
+    if not d:
+        raise ValueError('%s has not said what its network is yet - press Read it again and '
+                         'wait a few seconds' % node)
+    if not d.get('nm'):
+        raise ValueError('NetworkManager (nmcli) is not on %s: its network is set by hand '
+                         'there' % node)
+    con = str(want.get('con') or d.get('con') or '')
+    if not con or con not in [x.get('con') for x in d.get('devices') or []]:
+        raise ValueError('which connection of %s? It has: %s' % (node, ', '.join(
+            '%s (%s)' % (x.get('con'), x.get('dev')) for x in d.get('devices') or []
+            if x.get('con')) or 'none'))
+    v4 = want.get('ipv4') or {}
+    try:
+        a4 = ipaddress.ip_interface(str(v4.get('addr') or '').strip())
+    except ValueError:
+        raise ValueError('the IPv4 address is an address with its prefix: 192.0.2.10/24')
+    if a4.version != 4 or '/' not in str(v4.get('addr')):
+        raise ValueError('the IPv4 address is an address with its prefix: 192.0.2.10/24')
+    if (a4.ip.is_loopback and not os.environ.get('OTP_NET_LOOPBACK_OK')) or \
+            a4.ip.is_multicast or a4.ip.is_unspecified or \
+            a4.ip == a4.network.network_address or a4.ip == a4.network.broadcast_address:
+        raise ValueError('%s cannot be the address of a machine in %s' % (a4.ip, a4.network))
+    gw = str(v4.get('gw') or '').strip()
+    if gw:
+        try:
+            g = ipaddress.ip_address(gw)
+        except ValueError:
+            raise ValueError('the gateway is one IPv4 address')
+        if g.version != 4 or g not in a4.network or g == a4.ip:
+            raise ValueError('the gateway %s is not another address in %s' % (g, a4.network))
+    dns = _net_list(v4.get('dns'))
+    for x in dns:
+        try:
+            ipaddress.ip_address(x)
+        except ValueError:
+            raise ValueError('%r is not the address of a DNS server' % x)
+    search = _net_list(v4.get('search'), 6)
+    v6 = want.get('ipv6') or {}
+    on6 = bool(v6.get('on'))
+    mode6 = 'off'
+    a6 = None
+    if on6:
+        mode6 = 'manual' if str(v6.get('mode') or 'manual') == 'manual' else 'auto'
+        if mode6 == 'manual':
+            try:
+                a6 = ipaddress.ip_interface(str(v6.get('addr') or '').strip())
+            except ValueError:
+                raise ValueError('the IPv6 address is an address with its prefix: '
+                                 '2001:db8::10/64')
+            if a6.version != 6 or a6.ip.is_link_local or '/' not in str(v6.get('addr')):
+                raise ValueError('the IPv6 address is a global one with its prefix: '
+                                 '2001:db8::10/64')
+        g6 = str(v6.get('gw') or '').strip()
+        if g6:
+            try:
+                if ipaddress.ip_address(g6).version != 6:
+                    raise ValueError
+            except ValueError:
+                raise ValueError('the IPv6 gateway is one IPv6 address')
+    dns6 = _net_list(v6.get('dns')) if on6 else []
+    for x in dns6:
+        try:
+            ipaddress.ip_address(x)
+        except ValueError:
+            raise ValueError('%r is not the address of a DNS server' % x)
+    host = str(want.get('hostname') or '').strip().rstrip('.').lower()
+    if not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+                    r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$', host):
+        raise ValueError('the host name is the whole name: otp1.example.cz')
+    old_ip = net_current_ip(now).split('/')[0]
+    new_ip = str(a4.ip)
+    many = bool(CONFIG.get('ha_mode'))
+    others = [n for n in ha_nodes(store) if n['name'] != node]
+    for n in others:
+        if str(n.get('address') or '') == new_ip:
+            raise ValueError('%s is the address of %s' % (new_ip, n['name']))
+    v = vip_conf(store)
+    if v.get('on') and many:
+        try:
+            vnet = ipaddress.ip_interface(v.get('address'))
+        except ValueError:
+            vnet = None
+        if vnet and vnet.ip == a4.ip:
+            raise ValueError('%s is the web address of the cluster' % new_ip)
+        if vnet and vnet.ip not in a4.network and not want.get('vip_elsewhere'):
+            raise ValueError('the web address %s is not in %s: the node could not hold it. '
+                             'Change the web address first (High availability), or tick that '
+                             'it is meant to be so' % (vnet.ip, a4.network))
+    plan = []
+    ip_changed = bool(old_ip) and old_ip != new_ip
+    host_old = str(d.get('hostname') or '')
+    conf = d.get('conf') or {}
+    was6 = conf.get('ipv6_method') not in (None, '', 'disabled', 'ignore')
+    if ip_changed and many and CONFIG.get('ha_mode') == 'replicated':
+        plan.append('the other node is told %s: its pg_hba.conf, its subscription and its '
+                    'ha_peer move to it' % new_ip)
+    if ip_changed:
+        plan.append('this node\'s settings that name %s - and its own certificate, where it was '
+                    'made here - are made again for %s' % (old_ip, new_ip))
+    if host and host != host_old:
+        plan.append('the host name %s → %s (the node keeps its name in otp: %s)'
+                    % (host_old or '?', host, node))
+    if on6 != was6:
+        plan.append('IPv6 %s: RADIUS listens %s' % (
+            'on' if on6 else 'off', 'on IPv4 and IPv6 (::)' if on6 else 'on IPv4 only'))
+    if many:
+        plan.append('maintenance on %s - the web address goes to the other node' % node)
+    plan.append('NetworkManager (%s): %s via %s, DNS %s%s' % (
+        con, a4, gw or 'no gateway', ', '.join(dns) or 'none',
+        '' if not on6 else ', IPv6 %s' % (a6 if a6 else 'automatic')))
+    plan.append('a reboot of %s; back up, it checks the new address%s and comes out of '
+                'maintenance by itself' % (node, ', replication and the link between the '
+                                           'databases' if many else ''))
+    return {'con': con, 'dev': next((x.get('dev') for x in d.get('devices') or []
+                                     if x.get('con') == con), ''),
+            'ipv4': {'addr': str(a4), 'gw': gw, 'dns': dns, 'search': search},
+            'ipv6': {'on': on6, 'mode': mode6, 'addr': str(a6) if a6 else '',
+                     'gw': str(v6.get('gw') or '').strip() if on6 else '', 'dns': dns6},
+            'hostname': host, 'old_ip': old_ip, 'new_ip': new_ip, 'old_hostname': host_old,
+            'ip_changed': ip_changed, 'was6': was6, 'plan': plan}
+
+
+def net_job_active(job):
+    return bool(job) and job.get('state') in ('asked', 'running', 'rebooting') and \
+        time.time() - float(job.get('moved') or job.get('at') or 0) < NET_JOB_LIVE_S
+
+
+def net_ask(store, node, want, by, rollback=False, maint=False):
+    """The page asks: written for the node, which does it. `rollback`: the
+    old network asked back by the node itself - not put on trial again."""
+    if net_job_active(_meta_json(store, 'net:job:' + node)):
+        raise ValueError('%s is changing its network already' % node)
+    if power_busy(store):
+        raise ValueError('a restart or a power-off is under way')
+    checked = net_check(store, node, want)
+    ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
+           'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
+           'maint': bool(maint)}
+    store.set_meta('net:want:' + node, json.dumps(ask))
+    store.add_event('settings', '%s asked %s for a new network: %s' % (
+        by, node, '; '.join(checked['plan'])), 'warn', who=by)
+    return ask
+
+
+# ---- the job, on the node it is about -------------------------------------------------
+def _job_put(store, job, words=None, pct=None, ok=True, state=None):
+    if words:
+        job.setdefault('steps', []).append({'at': time.time(), 'what': str(words)[:400],
+                                            'ok': bool(ok)})
+        log('network: %s' % words, 'info' if ok else 'warn')
+    if pct is not None:
+        job['pct'] = int(pct)
+    if state:
+        job['state'] = state
+    job['moved'] = time.time()
+    store.set_meta('net:job:' + node_name(), json.dumps(job))
+
+
+def _cert_names_swap(names, swap):
+    out = []
+    for n in names:
+        n = swap.get(n, n)
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
+def net_cert_again(store, w, by):
+    """This node's own certificate, made here, made again with the new
+    address and name where it named the old ones. One from an authority is
+    said, not changed."""
+    me = node_name()
+    prof = tls_profile(store, me)
+    if not prof or not prof.get('cert'):
+        return ''
+    info = prof.get('info') or {}
+    try:
+        info = cert_info(prof['cert'])
+    except ValueError:
+        pass
+    names = list(info.get('san') or [])
+    cn = info.get('cn') or ''
+    swap = {}
+    if w['ip_changed'] and w['old_ip']:
+        swap[w['old_ip']] = w['new_ip']
+    if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
+        swap[w['old_hostname']] = w['hostname']
+        swap[w['old_hostname'].split('.')[0]] = w['hostname'].split('.')[0]
+    if not any(k in names or k == cn for k in swap):
+        return ''
+    if not info.get('self_signed'):
+        return ('this node\'s certificate is from an authority and names %s - get one for %s'
+                % (', '.join(k for k in swap if k in names or k == cn),
+                   ', '.join(swap[k] for k in swap if k in names or k == cn)))
+    kind = 'rsa2048'
+    k = str(info.get('key') or '')
+    if k.startswith('EC'):
+        kind = 'ec'
+    elif '4096' in k:
+        kind = 'rsa4096'
+    elif '3072' in k:
+        kind = 'rsa3072'
+    new_names = _cert_names_swap(names, swap)
+    if w['ipv6'].get('addr'):
+        ip6 = w['ipv6']['addr'].split('/')[0]
+        if ip6 not in new_names:
+            new_names.append(ip6)
+    new_cn = swap.get(cn, cn) or w['hostname']
+    key, crt = make_selfsigned(new_cn, [x for x in new_names if x != new_cn], 825, kind)
+    got = cert_bundle(crt, key)
+    prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
+                key=seal_secret(got['key'], 'web:tls'), info=got['info'],
+                chain_info=got['chain_info'], root_info=got['root_info'],
+                verify=got['verify'], how='self-signed, made here (the network changed)')
+    tls_save(store, me, prof, by)
+    return 'this node\'s own certificate made again for %s' % ', '.join(new_names[:6])
+
+
+def net_job_run(daemon, ask):
+    store = daemon.store
+    me = node_name()
+    w = ask['want']
+    by = '%s (network)' % (ask.get('by') or 'otp')
+    job = {'id': ask['id'], 'node': me, 'state': 'running', 'at': time.time(), 'pct': 0,
+           'by': ask.get('by'), 'want': w, 'steps': [], 'boot': boot_time()}
+    many = bool(CONFIG.get('ha_mode'))
+    # On trial (1.0.137): what the node has now kept, to go back to unless the
+    # new one is kept in time.
+    if net_trial_min() and not ask.get('rollback'):
+        job['back'], job['back_why'] = net_back_want(net_node_now(store, me))
+        job['trial_min'] = net_trial_min() if job['back'] else 0
+    job['rollback'] = bool(ask.get('rollback'))
+    # Maintenance put on by the job it goes back from: taken off by this one.
+    if ask.get('maint'):
+        job['maint'] = True
+    job['keep_old'] = bool(job.get('trial_min')) and CONFIG.get('ha_mode') == 'replicated'
+    try:
+        _job_put(store, job, 'started - %s' % '; '.join(w['plan'][:2]), 3)
+        if job.get('trial_min'):
+            _job_put(store, job, 'on trial: unless it is kept within %d min of coming back up, '
+                     'the network it has now comes back by itself' % job['trial_min'], 4)
+        elif job.get('back_why'):
+            _job_put(store, job, job['back_why'], 4, ok=False)
+        # 1. The node keeps its name, whatever the machine is called.
+        if not str(FILE_CONFIG.get('node_name') or '').strip():
+            write_file_settings({'node_name': me})
+            CONFIG['node_name'] = me
+            _job_put(store, job, 'the node\'s name %s kept in config.json, whatever the host '
+                     'name' % me, 8)
+        # 2. The other node told the new address.
+        if w['ip_changed'] and CONFIG.get('ha_mode') == 'replicated':
+            _job_put(store, job, 'telling the other node %s' % w['new_ip'], 12)
+            got = ha_readdress(store, mine=w['new_ip'], by=by, daemon=daemon,
+                               keep_old=job.get('keep_old'))
+            if got.get('left'):
+                if not job.get('rollback'):
+                    raise ValueError('; '.join(got['left']))
+                # Going back from an address the other node cannot reach:
+                # told once this node is back at its old one (1.0.137).
+                job['tell_after'] = True
+                _job_put(store, job, 'the other node is told once this node is back at %s'
+                         % w['new_ip'], 25, ok=False)
+            end = time.time() + (0 if job.get('tell_after') else 90)
+            done = None
+            while time.time() < end:
+                a = _meta_json(store, 'readdress:ask') or {}
+                if a.get('from') == me and a.get('done'):
+                    done = a
+                    break
+                time.sleep(2)
+            if done and done.get('error'):
+                raise ValueError('the other node: %s' % done['error'])
+            if not job.get('tell_after'):
+                _job_put(store, job, 'the other node expects %s now%s' % (
+                    w['new_ip'], '' if done else ' (it had not said so yet - it does it by '
+                    'itself)'), 25)
+        elif w['ip_changed'] and CONFIG.get('ha_address'):
+            write_file_settings({'ha_address': w['new_ip']})
+            CONFIG['ha_address'] = w['new_ip']
+        # 3. This node's own settings that name the old address or name.
+        changes = {}
+        rb = str(CONFIG.get('radius_bind') or '0.0.0.0')
+        if w['ip_changed'] and rb == w['old_ip']:
+            changes['radius_bind'] = w['new_ip']
+        elif w['ipv6']['on'] and rb in ('0.0.0.0', ''):
+            changes['radius_bind'] = '::'
+        elif not w['ipv6']['on'] and rb == '::':
+            changes['radius_bind'] = '0.0.0.0'
+        if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
+            for k in ('mail_helo', 'isemon_hostname'):
+                if str(CONFIG.get(k) or '') in (w['old_hostname'], w['old_hostname'].split('.')[0]):
+                    changes[k] = w['hostname']
+        if changes:
+            daemon.save_settings(changes, by=by, node=me)
+            _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
+                '%s = %s' % kv for kv in sorted(changes.items())), 35)
+        if w['ip_changed'] and str(CONFIG.get('db_host') or '') == w['old_ip']:
+            write_file_settings({'db_host': w['new_ip']})
+            _job_put(store, job, 'db_host = %s' % w['new_ip'], 37)
+        # 4. Its own certificate.
+        try:
+            said = net_cert_again(store, w, by)
+            if said:
+                _job_put(store, job, said, 45, ok='authority' not in said)
+        except ValueError as e:
+            _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e, 45,
+                     ok=False)
+        # 5. Out of the way: the web address to the other node.
+        if many:
+            if not (maintenance_row(store) or {}).get('on'):
+                maintenance_set(store, True, 'the network is being changed', by)
+                job['maint'] = True
+            _job_put(store, job, 'maintenance on - the web address goes to the other node', 55)
+            v = vip_conf(store)
+            end = time.time() + 30
+            while v.get('on') and vip_here(v.get('address')) and time.time() < end:
+                time.sleep(1)
+        # 6. The network, the name - and the reboot.
+        job['down_at'] = time.time()
+        _job_put(store, job, 'NetworkManager, the host name and /etc/hosts', 70, state='rebooting')
+        got = net_root({'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
+                        'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
+                                 'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'],
+                                 'dns': w['ipv6']['dns']},
+                        'hostname': w['hostname'], 'old': [w['old_ip']] if w['old_ip'] else [],
+                        'old_hostname': w['old_hostname'], 'reboot_in': 8}, 90)
+        job['before'] = got.get('before') or {}
+        job['down_at'] = time.time() + 8
+        _job_put(store, job, '; '.join(got.get('said') or []) or 'set', 80)
+        _job_put(store, job, 'restarting %s - back in a minute or two at %s' % (
+            me, w['new_ip']), 85)
+    except Exception as e:                              # noqa: BLE001
+        job['error'] = str(e)[:400]
+        if job.get('maint'):
+            try:
+                maintenance_set(store, False, '', by)
+            except Exception:                           # noqa: BLE001
+                pass
+        _job_put(store, job, 'stopped: %s - nothing of the network was changed' % e
+                 if job.get('state') != 'rebooting' else 'stopped: %s' % e, job.get('pct'),
+                 ok=False, state='failed')
+        store.add_event('settings', 'the new network of %s was not put in: %s' % (me, e),
+                        'bad', who=by)
+
+
+def net_job_after(daemon, job):
+    """Back up after the reboot: is it what was asked, and is the cluster
+    whole again."""
+    store = daemon.store
+    me = node_name()
+    w = job.get('want') or {}
+    by = '%s (network)' % (job.get('by') or 'otp')
+    many = bool(CONFIG.get('ha_mode'))
+    _job_put(store, job, '%s is back up' % me, 88)
+    have = set(a for a in local_addresses() if not a.startswith('fe80'))
+    if w.get('new_ip') and w['new_ip'] not in have:
+        if job.get('trial_min') and job.get('back'):
+            # Not even the address: back at once, not after the trial.
+            _job_put(store, job, '%s came up without %s (it has %s)' % (
+                me, w['new_ip'], ', '.join(sorted(have)) or 'none'), 90, ok=False)
+            net_go_back(daemon, job, 'it came up without its new address')
+            return
+        _job_put(store, job, '%s came up without %s (it has %s) - look at its console; it stays '
+                 'in maintenance' % (me, w['new_ip'], ', '.join(sorted(have)) or 'none'),
+                 90, ok=False, state='failed')
+        store.add_event('settings', '%s came up without its new address %s' % (me, w['new_ip']),
+                        'bad', who=by)
+        return
+    words = ['%s is at %s' % (me, w.get('new_ip'))]
+    if w.get('ipv6', {}).get('on'):
+        six = [a for a in have if ':' in a]
+        words.append('IPv6: %s' % (', '.join(six) or 'none yet'))
+    if w.get('hostname') and socket.gethostname().split('.')[0] != w['hostname'].split('.')[0]:
+        words.append('the host name is %s, not %s' % (socket.gethostname(), w['hostname']))
+    _job_put(store, job, '; '.join(words), 90)
+    try:
+        net_publish(store)
+    except Exception:                                   # noqa: BLE001
+        pass
+    if job.get('tell_after') and CONFIG.get('ha_mode') == 'replicated':
+        d2, l2 = readdress_tell(str(CONFIG.get('ha_peer') or ''), w.get('new_ip') or '', by)
+        _job_put(store, job, '; '.join(d2 + l2), 91, ok=not l2)
+    if CONFIG.get('ha_mode') == 'replicated':
+        hatls_check_soon()
+        end = time.time() + 240
+        good = False
+        while time.time() < end:
+            rep = ha_repl_state(store)
+            inc = rep.get('incoming') or []
+            outg = rep.get('outgoing') or []
+            if inc and all(r.get('enabled') and r.get('running') for r in inc) and \
+                    outg and all(r.get('active') for r in outg):
+                good = True
+                break
+            time.sleep(5)
+        _job_put(store, job, 'replication both ways: running' if good else
+                 'replication is not running both ways yet - Settings → High availability '
+                 'says why; the link between the databases puts itself right within minutes',
+                 96, ok=good)
+    if many and vip_conf(store).get('on'):
+        # keepalived set up for the new address (1.0.120): asked before the
+        # restart it failed - the machine did not have the address yet - and a
+        # failed request is asked again only when somebody says so.
+        ok, said = net_vip_again(store)
+        _job_put(store, job, 'the web address (keepalived) set up for %s: %s' % (
+            w.get('new_ip') or me, said) if ok else 'the web address (keepalived) on this node: %s - '
+            'Settings → High availability, Try again' % said, 97, ok=ok)
+    if many and job.get('maint'):
+        maintenance_set(store, False, '', by)
+        _job_put(store, job, 'out of maintenance - the web address may come back', 98)
+    if job.get('trial_min') and job.get('back'):
+        net_trial_start(store, job, by)
+        return
+    _job_put(store, job, 'done', 100, state='done')
+    store.add_event('settings', 'the network of %s is changed: %s' % (
+        me, '; '.join(words)), 'warn', who=by)
+
+
+def _net_thread(fn, *args):
+    def go():
+        try:
+            fn(*args)
+        except Exception as e:                          # noqa: BLE001
+            log('network: %s' % e, 'warn')
+        finally:
+            with NET_WORK_LOCK:
+                NET_WORK['busy'] = False
+    with NET_WORK_LOCK:
+        if NET_WORK['busy']:
+            return False
+        NET_WORK['busy'] = True
+    threading.Thread(target=go, name='otp-net', daemon=True).start()
+    return True
+
+
+def net_tick(daemon):
+    """Every few seconds: something asked of this node, a job to finish after
+    a reboot, the network said again now and then."""
+    if HA_REBUILDING.is_set() or not WEB_DIR.is_dir():
+        return
+    store = daemon.store
+    me = node_name()
+    job = _meta_json(store, 'net:job:' + me)
+    ask = _meta_json(store, 'net:want:' + me)
+    if job and job.get('state') == 'trial':
+        net_trial_tick(daemon, job)
+        return
+    if job and job.get('state') == 'rebooting':
+        if boot_time() > float(job.get('boot') or 0) + 1:
+            _net_thread(net_job_after, daemon, job)
+        elif time.time() - float(job.get('moved') or 0) > 900:
+            _job_put(store, job, 'the machine did not restart in 15 minutes - restart it by '
+                     'hand; the network starts as set', job.get('pct'), ok=False,
+                     state='failed')
+        return
+    if ask and ask.get('node') == me and (not job or job.get('id') != ask.get('id')) and \
+            time.time() - float(ask.get('at') or 0) < 600:
+        _net_thread(net_job_run, daemon, ask)
+        return
+    if job and job.get('state') == 'running' and not NET_WORK['busy'] and \
+            time.time() - float(job.get('moved') or 0) > 300:
+        _job_put(store, job, 'it stopped half way (the service restarted?)', job.get('pct'),
+                 ok=False, state='failed')
+    if power_tick(daemon):
+        return
+    wanted = float(store.get_meta('net:read:' + me) or 0)
+    if time.time() - NET_WORK['read_at'] > NET_READ_S or wanted > NET_WORK['read_at']:
+        _net_thread(net_publish, store)
+
+
+# ---- restart and power off ------------------------------------------------------------
+POWER_LIVE_S = 1800
+
+
+def power_plan(store):
+    return _meta_json(store, 'power:plan') or {}
+
+
+def power_busy(store):
+    p = power_plan(store)
+    if not p or time.time() - float(p.get('at') or 0) > POWER_LIVE_S:
+        return False
+    for n in p.get('targets') or []:
+        row = _meta_json(store, 'power:node:' + n) or {}
+        if row.get('id') != p.get('id') or row.get('state') in ('asked', 'going'):
+            if p.get('how') == 'poweroff' and row.get('state') == 'going':
+                continue
+            return True
+    return False
+
+
+def power_ask(store, how, targets, order, by):
+    if how not in ('reboot', 'poweroff'):
+        raise ValueError('reboot or poweroff')
+    known = [node_name()] + [n['name'] for n in ha_nodes(store) if n['name'] != node_name()]
+    targets = [t for t in known if t in (targets or [])]
+    if not targets:
+        raise ValueError('which node?')
+    if order not in ('one', 'rolling', 'together'):
+        order = 'one' if len(targets) == 1 else 'rolling'
+    if how == 'poweroff' and order == 'rolling':
+        order = 'together'
+    if power_busy(store):
+        raise ValueError('a restart or a power-off is under way already')
+    for t in targets:
+        if net_job_active(_meta_json(store, 'net:job:' + t)):
+            raise ValueError('%s is changing its network' % t)
+    if order == 'rolling':
+        # The node this page is not on last: the page stays with the other
+        # while the first restarts.
+        targets.sort(key=lambda n: n == node_name())
+    plan = {'id': secrets.token_hex(6), 'how': how, 'targets': targets, 'order': order,
+            'by': by, 'at': time.time(), 'from': node_name()}
+    store.set_meta('power:plan', json.dumps(plan))
+    store.add_event('starting and stopping', '%s asked for a %s of %s%s' % (
+        by, 'restart' if how == 'reboot' else 'power-off', ', '.join(targets),
+        ' one after the other' if order == 'rolling' and len(targets) > 1 else
+        (' at once' if len(targets) > 1 else '')), 'warn', who=by)
+    return plan
+
+
+def _power_put(store, row, state, words=''):
+    row.update(state=state, moved=time.time())
+    if words:
+        row['said'] = str(words)[:300]
+    store.set_meta('power:node:' + node_name(), json.dumps(row))
+
+
+def power_go(daemon, plan):
+    store = daemon.store
+    row = {'id': plan['id'], 'how': plan['how'], 'at': time.time(), 'boot': boot_time()}
+    try:
+        many = bool(CONFIG.get('ha_mode'))
+        if many and plan.get('order') != 'together' and not (maintenance_row(store) or {}).get('on'):
+            maintenance_set(store, True, 'a %s asked by %s' % (
+                'restart' if plan['how'] == 'reboot' else 'power-off', plan.get('by')),
+                plan.get('by') or '')
+            row['maint'] = True
+            v = vip_conf(store)
+            end = time.time() + 20
+            while v.get('on') and vip_here(v.get('address')) and time.time() < end:
+                time.sleep(1)
+        row['down_at'] = time.time() + 5
+        _power_put(store, row, 'going', 'going down')
+        net_root({'do': 'power', 'how': plan['how'], 'in': 5}, 30)
+        log('starting and stopping: %s in 5 s, asked by %s' % (plan['how'], plan.get('by')),
+            'warn')
+    except Exception as e:                              # noqa: BLE001
+        if row.get('maint'):
+            try:
+                maintenance_set(store, False, '', plan.get('by') or '')
+            except Exception:                           # noqa: BLE001
+                pass
+        _power_put(store, row, 'failed', str(e))
+
+
+def power_back(daemon, row):
+    store = daemon.store
+    if row.get('maint'):
+        maintenance_set(store, False, '', 'after the restart')
+    _power_put(store, row, 'back', 'up again')
+    store.add_event('starting and stopping', '%s is up again after the restart' % node_name())
+
+
+def power_tick(daemon):
+    """This node's part of a restart or power-off: its turn, and after it."""
+    store = daemon.store
+    me = node_name()
+    plan = power_plan(store)
+    row = _meta_json(store, 'power:node:' + me) or {}
+    if row.get('state') == 'going' and row.get('how') == 'reboot':
+        if boot_time() > float(row.get('boot') or 0) + 1:
+            _net_thread(power_back, daemon, row)
+            return True
+        if time.time() - float(row.get('moved') or 0) > 900:
+            _power_put(store, row, 'failed', 'it did not restart in 15 minutes')
+        return False
+    if not plan or me not in (plan.get('targets') or []) or row.get('id') == plan.get('id'):
+        return False
+    if time.time() - float(plan.get('at') or 0) > POWER_LIVE_S:
+        return False
+    if plan.get('order') == 'rolling':
+        for t in plan['targets']:
+            if t == me:
+                break
+            other = _meta_json(store, 'power:node:' + t) or {}
+            if other.get('id') != plan['id'] or other.get('state') not in ('back', 'failed'):
+                return False                # not my turn yet
+    _net_thread(power_go, daemon, plan)
+    return True
+
+
+def power_view(store):
+    plan = power_plan(store)
+    nodes = []
+    hb = {n['name']: n for n in ha_nodes(store)}
+    names = [node_name()] + [n for n in hb if n != node_name()]
+    for n in names:
+        b = hb.get(n) or {}
+        row = _meta_json(store, 'power:node:' + n) or {}
+        nodes.append({'name': n, 'me': n == node_name(), 'alive': bool(b.get('alive', True)
+                                                                      if n == node_name() else
+                                                                      b.get('alive')),
+                      'started': b.get('started'), 'age': b.get('age'),
+                      'address': b.get('address') or '', 'version': b.get('version') or '',
+                      'row': row if row.get('id') == plan.get('id') else {}})
+    # Hidden from the page by whoever pressed Hide this (1.0.123).
+    seen = store.get_meta('power:seen') == str(plan.get('id') or '')
+    return {'plan': plan if plan and not seen and time.time() - float(plan.get('at') or 0) < POWER_LIVE_S
+            else {}, 'nodes': nodes, 'now': time.time(), 'cluster': len(nodes) > 1,
+            'busy': power_busy(store)}
+
+
+def net_vip_again(store, wait=120):
+    """This node's part of the web address asked of root again, and waited
+    for."""
+    h = web_hash(web_desired(store))
+    st = web_status()
+    if st.get('hash') == h and st.get('state') == 'done':
+        return True, 'as it was'
+    store.set_meta('web:retry:' + node_name(), repr(time.time()))
+    end = time.time() + wait
+    while time.time() < end:
+        st = web_status()
+        if st.get('hash') == h and float(st.get('at') or 0) > 0 and \
+                st.get('state') in ('done', 'failed'):
+            if st.get('state') == 'done':
+                return True, 'in place'
+            if float(store.get_meta('web:retry:' + node_name()) or 0) <= float(st.get('at') or 0):
+                said = st.get('said') or ['failed']
+                return False, ('; '.join(said) if isinstance(said, list) else str(said))[:300]
+        time.sleep(3)
+    return False, 'root had not said yet'
+
+
+def net_view(store):
+    hb = {n['name']: n for n in ha_nodes(store)}
+    names = [node_name()] + sorted(n for n in hb if n != node_name())
+    out = []
+    for n in names:
+        b = hb.get(n) or {}
+        job = _meta_json(store, 'net:job:' + n) or {}
+        # A finished change is shown until somebody hides it (1.0.120), or for
+        # 6 hours when it went through, a day when it did not.
+        if job and job.get('state') in ('done', 'failed'):
+            keep = 6 * 3600 if job.get('state') == 'done' else 86400
+            if store.get_meta('net:seen:' + n) == str(job.get('id')) or \
+                    time.time() - float(job.get('moved') or job.get('at') or 0) > keep:
+                job = {}
+        out.append({'name': n, 'me': n == node_name(),
+                    'alive': True if n == node_name() else bool(b.get('alive')),
+                    'address': b.get('address') or '', 'now': net_node_now(store, n),
+                    'job': job if job and time.time() - float(job.get('moved') or 0) < 86400
+                    else {}})
+    v = vip_conf(store)
+    return {'nodes': out, 'cluster': len(out) > 1, 'now': time.time(),
+            'vip': {'on': bool(v.get('on')), 'address': v.get('address') or '',
+                    'address6': v.get('address6') or ''} if CONFIG.get('ha_mode') else {}}

@@ -1,0 +1,832 @@
+) or by whole DN, separated by semicolons or new lines.
+) the administration pages sign people in against. Empty: only the accounts made here. Whoever signs in from it gets the role of the first group below they are in, and nobody in none of them gets in.
+, and
+, and with FreeRADIUS's own client:
+, with
+, with the key that opens the tokens beside it.
+-----BEGIN CERTIFICATE-----
+. Empty: the name has to be typed whole.
+. Known: Reply-Message, Class, Filter-Id, Session-Timeout, Idle-Timeout, Service-Type, Framed-IP-Address, Framed-IP-Netmask, Framed-Pool, Acct-Interim-Interval, Tunnel-Type, Tunnel-Medium-Type, Tunnel-Private-Group-Id, Cisco-AVPair, ASA-Group-Policy, ASA-Tunnel-Group-Lock.
+. Loud: for finding something out, not for leaving on.
+. Pick them here (all at once) and everybody keeps the token they have: the same key, the same recovery codes, the same clock drift.
+. Several, separated by commas. UDP is the default; TCP does not lose a line when the network does.
+. Sign in to go on.
+. Switch on
+. isemon looks in
+...and may sit untouched (min)
+...and the pause (min)
+...counted over (s)
+...every API call
+...every RADIUS request step by step
+...every question asked of the directory
+/var/lib/otp/otp.db
+/var/log/otp
+0 is the engine’s usual one: 3306 or 5432.
+0 ms
+0.0.0.0:1812/auth, 0.0.0.0:1813/acct
+1 ms
+1 step(s) either way
+109 in use · 0 waiting · 0 off · 1 used in 30 days
+109 in use · 108 never used
+127.0.0.1:5514/udp
+127.0.0.1:5514/udp: 14 line(s) sent
+13 s ago
+2 min ago
+3 min ago
+33 s ago
+33,6 kB
+4 in 24 hours · 3 wrong code(s)
+4 matching
+4 min
+4 min ago
+41 s ago
+45 s ago
+5 group(s) under the base
+6 digits, 30 s, SHA1
+6 in 24 hours · 5 wrong code(s)
+944,5 kB
+: the groups, by name (
+A client that hears nothing sends the same request again, with the same identifier. Within this window it gets the same answer again rather than a second check of the code - which would fail, because a code works only once.
+A code from the old token
+A code from the phone is the second key
+A code lasts (s)
+A code works only once
+A copy of the database every day
+A copy of the database once a day, into
+A copy of the database once a day, into /var/lib/otp/backups, with the key that opens the tokens beside it.
+A first password
+A member of a group that is itself a member of one below lets in. Off: only direct members, which is what the old handler did.
+A message longer than this is cut, with
+A message longer than this is cut, with ...TRUNCATED at the end. rsyslog cuts at 2048 bytes over UDP unless $MaxMessageSize says more on both machines.
+A name that comes as novak becomes novak@ this - what FreeRADIUS’s hints file did. Empty: names are taken as they come.
+A name typed without an @ gets this added before it is looked up:
+A name typed without an @ gets this added before it is looked up: novak becomes novak@example.cz. Empty: the name has to be typed whole.
+A new account
+A new client
+A new directory
+A new password
+A new phone, or a new token
+A new realm
+A new token must be confirmed with a code
+A note
+A realm is what comes after the @. It says where the person is looked up, which groups let them in, whether the password is the code alone or their directory password followed by it, and what goes back to the VPN - a Class, a group policy - for everybody, or for the members of one group.
+A repeated request is the same one for (s)
+A request from an address that is not one of the clients is dropped without an answer, as RADIUS says it must be. Switched on, it is also written down - once a minute per address - so that a VPN pointed here before it was added says so.
+A short name is
+A sign-in lasts (h)
+A token made on the enrolment page is not in use until the person has typed a code from it. Without this a QR code scanned badly - or not at all - is a token that locks its owner out on the next sign-in.
+A totpcgi server keeps a file a person -
+A user principal name (otp@example.local) or a whole DN. It needs nothing but to read.
+ACTIVE DIRECTORY
+AD
+API port (localhost)
+ASA
+ASA (192.9.212.1, @dpmo.cz)
+ASA (a test by admin)
+ASKED · CHECKED · LET IN
+About
+Access-Reject
+Account
+Accounting port
+Accounts
+Active Directory
+Add a client
+Add a directory
+Add a group
+Add a realm
+Address
+An enrolment sign-in lasts (min)
+Answer
+Answer Status-Server
+Answer Status-Server (RFC 5997), which is how an ASA or a load balancer asks whether this server is alive without signing anybody in.
+Answered in 2 ms.
+Any one of them lets in; none at all lets in anybody the directory finds. Each may add its own lines to the answer - the first group in this list that the person is in is the one whose lines are sent. A name (VPN_USERS) or a whole DN.
+Aplikaci Google Authenticator si nainstalujte z obchodu Google Play nebo App Store.
+As the client
+As the host
+Ask
+Ask it as the VPN does
+Ask this server the way the VPN does, and see every step of the answer - what radtest does, from here.
+Asking…
+At
+Attribute
+Authentication port
+Back
+Back to the first page of this list. You are on page 1 of 2.
+Base
+Bring the tokens of a totpcgi server over: its .totp files, read here, nobody has to enrol again.
+Bringing tokens over
+By
+CHECKED
+Certificate
+Change it
+Change the password
+Check it
+Check its certificate
+Checking AD
+Checking MOCK
+Checks of a code
+Class = VPN_FULL
+Class = VPN_USERS
+Click to pause or resume the live updates
+Client
+Clients
+Clock drift allowed
+Close
+Codes
+Connect timeout (s)
+Copies
+Copies kept
+DPMO / administrator@dpmo.cz
+Database
+Database name
+Debug log
+Denied by the token server: Not a valid token
+Device
+Digits in a code
+Digits in a recovery code
+Directories
+Directory
+Drop the .totp files here, or press to pick them
+End it
+Engine
+English
+Events
+Every API call the web pages make.
+Every Access-Request, as one line of time: green let in, red refused or not answered. Press a bar to open that hour.
+Every RADIUS request, let in or refused, with the reason. Click a row for every attribute that came and every step of the decision.
+Every check of a code goes to isemon as a
+Every check of a code: from the VPN, from the enrolment pages, from a test.
+Every question asked of a directory and how many answers came back. Never a password.
+Every request this server was asked, newest first. Click a row for every attribute that came, the answer, and each step of the decision with how long it took.
+Every request, every step of its decision.
+Every step of it
+Every token made or taken away, every change of a setting, every sign-in - and the daemon’s own log.
+Every token made, replaced or taken away, every change of a setting, every sign-in. Kept in the database, so it survives a restart.
+Everybody who has a token. Click a row to switch one off, give new recovery codes, test a code or take it away. A token is made by its owner on the enrolment pages, or here.
+Everybody who has a token: when it was made, when it was last used, how many recovery codes are left. Click a row to look after one.
+Everything is in one database: a file on this machine, or a MariaDB or a PostgreSQL. The keys of the tokens are sealed with a key kept beside it, in the state folder - and every copy is made with that key beside it.
+Everything that makes this installation what it is, as one file to carry to another machine.
+Everything that may ask: a VPN concentrator, a load balancer, this machine for testing. A client is an address or a range, a shared secret, and - where its names come without one - the realm added to them, which is what FreeRADIUS's hints file did.
+Export
+Export and import
+Export with the secrets
+File
+Files here
+Find a setting
+Find a setting…
+First
+For
+For a token somebody scans later, on their own: the old one (if any) is replaced at once either way.
+Forget the wrong codes
+From
+From the server itself, the same:
+From where
+Group of full administrators
+Group of read-only accounts
+Group of token administrators
+Groups
+Groups inside groups count
+Groups that may enrol
+Help text on the enrolment pages
+How
+How codes are made and checked. A token keeps what it was made with: a change here is for the tokens made after it.
+How far back the chart and the cards under it look.
+How it is reached
+How it was decided
+How long a code is, how long it lasts, how much clock drift is forgiven, how many wrong codes before a pause, recovery codes.
+How long a recovery code is. Longer than a code from the phone, so the two are never mistaken for each other.
+How long a sign-in may sit without anything being asked before it has to be done again.
+How long an administrator stays signed in, however busy.
+How long every RADIUS request is kept. 0 keeps them for ever.
+How long every check of a code is kept. 0 keeps them for ever.
+How long it waits.
+How long somebody stays signed in on the enrolment pages. Short, because the page holds a key that is somebody’s second factor.
+How long the events are kept. 0 keeps them for ever.
+How long to wait before sending a refusal. A little slows down somebody guessing; 0 answers at once.
+How long to wait for the server before saying it cannot be reached.
+How many of those copies are kept; the oldest goes first.
+How many periods either side of now a code is still taken in. 1 is thirty seconds of a phone’s clock being wrong either way; 0 takes only the code of this very period. A code from a neighbouring period is written down as such, so a phone whose clock is drifting shows up.
+How many requests are worked on side by side. A request that waits for a slow domain controller does not hold up the others.
+How many rows match the filters above, and where in them this page is. How many are shown at a time is the last box in the filter row.
+Import a file…
+In use
+In use now
+Issuer / account
+Its password
+Its password.
+Keep the RADIUS requests (days)
+Keep the events (days)
+Keep the token checks (days)
+Keep this menu open
+Key beside it
+Kind
+LDAP server(s) have gone away
+LDAPS (636)
+LDAPS, 636
+Language of the pages
+Last
+Last asked
+Last from
+Last sent
+Last signed in
+Last used
+Let in, last 24 h
+Lines of the answer, Name = value
+Listen on the address
+Longest message (bytes)
+Look a name up
+Look the person up in
+MOCK
+Made
+Made 22-10-2026 16:29:50 · last used never · 5 recovery code(s) left
+Make a copy now
+Make a new token
+Make a token
+Make a token for somebody and show its QR code here, to scan off this screen or to hand over.
+Make an account
+Make it
+MariaDB / MySQL
+May change everything.
+Members may change everything. By name or by whole DN.
+Members may look at everything and change nothing.
+Members may look at everything and look after people’s tokens.
+Message-Authenticator
+Must send a Message-Authenticator
+Name
+Names of tokens are kept in
+Needed when the domain controllers’ certificates come from an authority of your own that this machine does not already trust.
+New recovery codes
+Next
+Not a valid token
+Not in use until Sign administrators in against the directory is filled in.
+Not in use until a code from it is confirmed
+Not in use while Debug log is off.
+Not in use while The database is “a file on this machine (SQLite)”.
+Not in use while Who may enrol a token is “whoever passes the realm’s group filter”.
+Note
+Nothing asked yet.
+Nothing in this window.
+Off is for a test: a directory reached without checking its certificate is one anybody on the path can pretend to be.
+On the isemon machine
+Once a code has been used it is refused if it comes again - even inside its thirty seconds. This is what makes the code one-time; switched off it can be replayed by anybody who saw it.
+One Python file (/usr/local/lib/otp/otp.py), the standard library, and these PHP pages that ask it. On the server: otp --help.
+One line under the sign-in boxes saying what to type, such as
+One line under the sign-in boxes saying what to type, such as login@example.cz.
+One-off codes made with each token, for the day the phone is lost. Each works once, in place of a code from the phone. 0 makes none.
+Overview
+PASSWORD · CODE · IN
+Password
+People may replace their own token
+Pick from the directory…
+Pokud ztratíte telefon, volejte helpdesk na lince 1234.
+Port
+PostgreSQL
+Put a Message-Authenticator on every answer. It protects the answer against the BlastRADIUS forgery (CVE-2024-3596) and costs nothing; only a client too old to know the attribute minds it.
+Put back on the server: otp --restore /var/lib/otp/backups/FILE --yes. Moving to MariaDB or PostgreSQL: set the engine below, save, then otp --restore the latest copy into it and restart.
+Put them back
+RADIUS
+RADIUS detail
+RADIUS on 0.0.0.0:1812/auth, 0.0.0.0:1813/acct
+RADIUS requests
+RICH:<b>read the base DC=corpnet,DC=loc</b>
+RICH:<b>signed in as otp@corpnet.loc</b>
+RICH:A copy of the database once a day, into <code>/var/lib/otp/backups</code>, with the key that opens the tokens beside it.
+RICH:A message longer than this is cut, with <code>...TRUNCATED</code> at the end. rsyslog cuts at 2048 bytes over UDP unless <code>$MaxMessageSize</code> says more on both machines.
+RICH:A name typed without an @ gets this added before it is looked up: <code>novak</code> becomes <code>novak@example.cz</code>. Empty: the name has to be typed whole.
+RICH:One line under the sign-in boxes saying what to type, such as <code>login@example.cz</code>.
+RICH:Send every check of a code and every RADIUS packet to isemon, as syslog, in the very shape a totpcgi token server and its FreeRADIUS write - so isemon reads it with what it already has (<i>Settings → The OTP logs</i>, with <i>RADIUS detail</i> switched on).
+RICH:The RADIUS packet behind every check - the person’s own address, the device, the tunnel group - as <code>radius-detail</code> lines. isemon puts them beside the check of the code.
+RICH:The account name under it. <code>{user}</code> is the whole name as it was enrolled (<code>novak@example.cz</code>), <code>{name}</code> the part before the @.
+RICH:The address the RADIUS server listens on. <code>0.0.0.0</code> is every IPv4 address this machine has; <code>::</code> every IPv6 one as well. Changed, the server starts listening on the new one at once.
+RICH:The directory (by its name under <i>Active Directory</i>) the administration pages sign people in against. Empty: only the accounts made here. Whoever signs in from it gets the role of the first group below they are in, and nobody in none of them gets in.
+RICH:The host name on every line, which is the folder isemon’s rsyslog files them under: <code>/var/log/remote/&lt;this&gt;/totp.cgi.log</code>. isemon looks in <code>/var/log/remote/otp</code> unless told otherwise, so <code>otp</code> needs nothing changed there. Empty: this machine’s own short name.
+RICH:The port on 127.0.0.1 the web pages ask this daemon on. It has to be the same in <code>otp-api.php</code>.
+RICH:The very same lines go into <code>/var/log/otp/totp.cgi.log</code> and <code>/var/log/otp/radius-detail.log</code> as well, whether or not they are sent. Something on this machine can then forward them, and they are there to read when the network is not.
+RICH:This account may not change the settings. A full administrator can change that under <i>Accounts</i>.
+RICH:This daemon’s own events as well (a token made, a setting changed), as <code>otp</code> lines. isemon does not read those; they are for whatever else collects the syslog.
+RICH:What follows the @, such as example.cz. <code>*</code> takes every name no other realm does; empty takes names written without a realm.
+RICH:What goes back to the VPN with every Access-Accept: <code>Class = VPN</code>, <code>ASA-Group-Policy = GP_FULL</code>, <code>Session-Timeout = 43200</code>. Known: Reply-Message, Class, Filter-Id, Session-Timeout, Idle-Timeout, Service-Type, Framed-IP-Address, Framed-IP-Netmask, Framed-Pool, Acct-Interim-Interval, Tunnel-Type, Tunnel-Medium-Type, Tunnel-Private-Group-Id, Cisco-AVPair, ASA-Group-Policy, ASA-Tunnel-Group-Lock.
+RICH:When, as <code>HH:MM</code> on this machine’s clock.
+RICH:Where to send them: <code>host</code>, <code>host:port</code>, and <code>/udp</code> or <code>/tcp</code> after it - <code>10.1.2.3:514/tcp</code>. Several, separated by commas. UDP is the default; TCP does not lose a line when the network does.
+RICH:Whether <code>Novak@example.cz</code> and <code>novak@example.cz</code> are one token. Active Directory does not care, and neither should this, unless something else forces it to.
+RICH:Who may enrol a token. <b>The realm’s group filter</b> is the same test the VPN applies, so nobody can enrol a token they could never use.
+RICH:Who may open these pages. <b>full admin</b> may change everything; <b>token admin</b> may look at everything and look after people's tokens; <b>read only</b> may look and change nothing.
+RICH:With <i>members of the groups named below</i>: the groups, by name (<code>VPN_USERS</code>) or by whole DN, separated by semicolons or new lines.
+RICH:Write everything into <code>/var/log/otp/otp.log</code>. Loud: for finding something out, not for leaving on.
+Read it
+Reads as
+Realm added
+Realm added to a name signed in without one
+Realm added to names without one
+Realms
+Recovery codes
+Recovery codes left
+Recovery codes per token
+Refuse a request without one. Every current ASA sends it; requiring it closes the BlastRADIUS forgery for good.
+Refuse an account switched off in the directory
+Refused the most
+Refused, last 24 h
+Remove it
+Replace it
+Request
+Request 4
+Requests
+Requests answered at once
+Requests kept
+Result
+Right
+Role
+Running for
+SHA-1 (what every phone app understands)
+SHA-1 is what RFC 6238 says and what every application implements. The others are offered for hardware tokens that use them.
+SHA-256
+SHA-512
+SQLite 3.45.1
+Said
+Save
+Save the changed settings into the database. They take effect the moment they are saved - nothing restarts.
+Save the changes
+Save the note
+Secret
+Send a test line
+Send every check of a code and every RADIUS packet to isemon, as syslog, in the very shape a totpcgi token server and its FreeRADIUS write - so isemon reads it with what it already has (
+Send every check of a code and every RADIUS packet to isemon, as syslog, in the very shape a totpcgi token server and its FreeRADIUS write - so isemon reads it with what it already has (Settings → The OTP logs, with RADIUS detail switched on).
+Send the RADIUS packets as well (radius-detail)
+Send the logs to isemon
+Send this daemon’s own events as well
+Sending
+Sending every check of a code and every RADIUS packet to isemon, in the shape isemon already reads.
+Separated by commas. One that cannot be reached is passed over for the next.
+Server
+Servers
+Servers, in the order to ask them
+Set a new password
+Settings
+Settings sections
+Settings → The OTP logs
+Shared secret
+Show the key as text beside the QR code
+Show the recovery codes
+Show the recovery codes to the person who enrolled. Off: they are still made, and only an administrator can see new ones.
+Show the secret
+Sign administrators in against the directory
+Sign every answer (Message-Authenticator)
+Sign in
+Sign in to make the token for your phone, or to replace it.
+Sign out
+Signed in now
+Signing in…
+Signs in
+Since
+Six is what everybody expects and what every application shows. A token keeps the length it was made with.
+Size
+Somebody who already has a token may replace it themselves, with their password and a code from the old one (or a recovery code). Somebody who lost both has to ask an administrator.
+StartTLS (389)
+State
+Steps of clock drift allowed
+Stop it signing in
+Switch it off
+THE CODE
+THE PHONE
+THE VPN
+Take it away
+Take it out
+Takes
+Takes the names ending in @
+Test
+The Active Directory servers the realms and the sign-ins ask: how they are reached, as whom, and a check that says which step failed.
+The RADIUS packet behind every check - the person’s own address, the device, the tunnel group - as
+The RADIUS packet behind every check - the person’s own address, the device, the tunnel group - as radius-detail lines. isemon puts them beside the check of the code.
+The RADIUS server
+The RADIUS server, its clients, the realms, Active Directory, the tokens, the enrolment pages, isemon, the accounts and the database.
+The VPN concentrators and anything else that may ask: their addresses, their shared secrets, the realm added to their names.
+The account it reads with
+The account name under it.
+The account name under it. {user} is the whole name as it was enrolled (novak@example.cz), {name} the part before the @.
+The account name, as the phone shows it
+The account this daemon signs in to the database with.
+The account you are signed in as: what it may do, its password, the language of these pages.
+The address the RADIUS server listens on.
+The address the RADIUS server listens on. 0.0.0.0 is every IPv4 address this machine has; :: every IPv6 one as well. Changed, the server starts listening on the new one at once.
+The address the requests come from, or a range of them. The narrowest range that holds an address wins.
+The answer
+The answer to everybody let in
+The attribute a name without its realm is looked up by.
+The certificate authority that signed its certificate (PEM)
+The client ASA
+The clients, the realms, the directories and the settings as one file. The tokens are not in it: they move with a copy of the database and its key.
+The code alone is how the old token server worked: the VPN asks the directory password itself, somewhere else. The password followed by the code makes this the only server the VPN asks.
+The daemon's own log
+The database
+The database on that server. It has to exist; the tables are made in it.
+The database server’s address.
+The directories the realms look people up in and the enrolment pages sign people in against. Read only: nothing is ever written to a directory, and the reading account needs no right beyond reading.
+The directory (by its name under
+The directory (by its name under Active Directory) the administration pages sign people in against. Empty: only the accounts made here. Whoever signs in from it gets the role of the first group below they are in, and nobody in none of them gets in.
+The directory AD
+The enrolment pages
+The enrolment pages are open
+The groups that let in
+The hash
+The heading on every enrolment page and the title of the browser tab.
+The host name on every line, which is the folder isemon’s rsyslog files them under:
+The host name on every line, which is the folder isemon’s rsyslog files them under: /var/log/remote/&lt;this&gt;/totp.cgi.log. isemon looks in /var/log/remote/otp unless told otherwise, so otp needs nothing changed there. Empty: this machine’s own short name.
+The issuer, as the phone shows it
+The key of the tokens
+The key written out as letters as well, for typing into an application on a machine with no camera.
+The key: /var/lib/otp/secrets.key - keep it with every copy of the database, or the tokens in the copy cannot be opened.
+The language every page opens in until somebody chooses another for themselves.
+The language of these pages
+The last checks of a code
+The last page of this list. You are on page 1 of 2.
+The last requests
+The menu hides itself at the edge of the screen and slides out when you point at it. Press this to keep it open.
+The name above the code in the phone application - the company, usually. Only a token enrolled after a change carries the new one.
+The name at the top of the administration pages. Empty: the machine’s own name.
+The name this machine is written under
+The new one (8 characters at least)
+The next page of this list. You are on page 1 of 2. The filters above stay as they are.
+The one you have now
+The one-time password server on
+The page before this one. You are on page 1 of 2. The filters above stay as they are.
+The pages where people enrol their own token. Switched off they say so and let nobody in; administrators can still enrol anybody here.
+The pages where people enrol their own token: who may, what they see, what they have to prove.
+The password is
+The port on 127.0.0.1 the web pages ask this daemon on. It has to be the same in
+The port on 127.0.0.1 the web pages ask this daemon on. It has to be the same in otp-api.php.
+The realm corpnet.cz
+The realm’s group filter
+The same as on the client. Up to 128 characters.
+The shape of the day: who was let in, who was refused and why, which clients asked.
+The tail of
+The time over which the wrong codes are counted, and which has to pass before the token takes codes again.
+The title of the enrolment pages
+The tokens
+The tokens are named by
+The very same lines go into
+The very same lines go into /var/log/otp/totp.cgi.log and /var/log/otp/radius-detail.log as well, whether or not they are sent. Something on this machine can then forward them, and they are there to read when the network is not.
+The whole name as the VPN sends it, realm and all - what the realm makes of it decides the token’s name.
+The whole old server at once - its clients, the realm its hints file added, the directory and the groups of its handler, its settings and every token - is one command on this machine:
+They choose their own at the first sign-in.
+Thirty seconds is the standard, and Google Authenticator knows no other.
+This account may not change the settings. A full administrator can change that under
+This daemon’s own events as well (a token made, a setting changed), as
+This daemon’s own events as well (a token made, a setting changed), as otp lines. isemon does not read those; they are for whatever else collects the syslog.
+This installation
+This many wrong codes for one token inside the time below, and every code - right ones included - is refused until it has passed. 0 switches it off.
+Throw away the changes on this page and read the settings back from the daemon as they are.
+Tidy now
+To
+To replace your token, type your password and a code from the token you have now - or one of your recovery codes. If you have lost both, ask the administrator.
+Tokens
+Took
+Try a code
+UDP port for Access-Request. 1812 is the standard one; the old 1645 still turns up on Cisco kit.
+UDP port for Accounting-Request. The records are written down and sent to isemon with the rest; 0 does not listen for them at all.
+Valid token used
+Value
+Version, what is running, the language, the debug log.
+Wait before a refusal (ms)
+Wait for an answer (s)
+Waiting
+What
+What a name after its @ means: which directory it is looked up in, which groups let it in, what the password is and what goes back in the answer.
+What follows the @, such as example.cz.
+What goes back to the VPN with every Access-Accept:
+What is being sent
+What it is called here and in the logs.
+What the realms call it.
+What the token said about every code: these are the lines isemon reads as the token server's log (
+What this daemon has done
+What this program does
+What to call this installation
+What to type as the name (shown on the sign-in)
+What was asked
+When
+When, as
+When, as HH:MM on this machine’s clock.
+Where
+Where everything is kept: the tokens, the clients, the realms, the settings, the logs. A file on this machine needs nothing; MariaDB and PostgreSQL need their server and their Python driver.
+Where people make their own token:
+Where the RADIUS server listens, what it answers and how.
+Where to look (the base)
+Where to send them:
+Where to send them: host, host:port, and /udp or /tcp after it - 10.1.2.3:514/tcp. Several, separated by commas. UDP is the default; TCP does not lose a line when the network does.
+Whether
+Whether Novak@example.cz and novak@example.cz are one token. Active Directory does not care, and neither should this, unless something else forces it to.
+Which database everything lives in, how big it is, copies of it, and how long things are kept.
+Who
+Who asks
+Who may enrol a token
+Who may enrol a token.
+Who may enrol a token. The realm’s group filter is the same test the VPN applies, so nobody can enrol a token they could never use.
+Who may open these pages, what each of them may do, and who is signed in right now.
+Who may open these pages.
+Why
+Why they were refused
+With
+With members of the groups named below: the groups, by name (VPN_USERS) or by whole DN, separated by semicolons or new lines.
+Words shown on the enrolment pages under the title: where to get the application, whom to ring. Plain text; an empty line starts a new paragraph.
+Write down requests from unknown clients
+Write everything into
+Write everything into /var/log/otp/otp.log. Loud: for finding something out, not for leaving on.
+Write the same lines into files here too
+Wrong
+Wrong codes before a pause
+Wrong in a row
+Wrong passwords before a pause
+Wrong passwords from one address before it has to wait.
+Wrong passwords from one address on the enrolment pages before it has to wait.
+Wrong passwords on the enrolment pages before a pause
+You have a token
+You may look, but not change
+Your name is written as
+Your password
+a RADIUS packet to 127.0.0.1
+a copy of the database was made (daily): otp-20261022-162744.json.gz
+a file on this machine (SQLite)
+a name, a note…
+a name, an address, a reason…
+a name, what it said…
+a note
+a password here
+a token for falco@corpnet.cz was made on the command line
+a wrong password for admin from 127.0.0.1
+accounting
+accounts
+admin
+admin signed in from 127.0.0.1
+administrator@dpmo.cz
+after it -
+all
+and
+answering
+anybody the directory lets sign in
+anything in an event…
+are one token. Active Directory does not care, and neither should this, unless something else forces it to.
+as otp to 127.0.0.1:5514/udp · last 2 min ago
+as otp to 127.0.0.1:5514/udp · last 41 s ago
+as otp to 127.0.0.1:5514/udp · last 44 s ago
+as well, whether or not they are sent. Something on this machine can then forward them, and they are there to read when the network is not.
+asks, sent from this machine to this server as a real RADIUS packet, with the shared secret of the client for 127.0.0.1. A right code is used up by it, as it would be by the VPN.
+at the end. rsyslog cuts at 2048 bytes over UDP unless
+backups
+becomes
+brought over from /tmp/tmp.X74qN7bSLs: clients 2, directories 1, realms 1, settings 7, tokens 108
+brought over from totpcgi
+changed: isemon=1, isemon_hostname="otp", isemon_targets="127.0.0.1:5514"
+changed: portal_help="Aplikaci Google Authenticator si nainstalujte z obchodu Google Play nebo App Store.\n\nPokud ztratíte telefon, volejte helpdesk na lince 1234."
+checked
+checked when sent
+counted the groups
+debug
+drift: 1 step
+drift: 2 steps
+drift: 4 steps
+drift: 8 steps
+drift: as the setting
+drift: none
+enrolment
+every IPv6 one as well. Changed, the server starts listening on the new one at once.
+every client
+every state
+everything
+exactly as written
+example.cz
+falco@corpnet.cz signed in to the enrolment pages from 127.0.0.1
+falco@dpmo.cz
+from config.json
+full admin
+import
+in Settings → About to have it say every step of every request.
+in use
+is every IPv4 address this machine has;
+is the same test the VPN applies, so nobody can enrol a token they could never use.
+is the whole name as it was enrolled (
+isemon
+isemon reads a token server from two files under /var/log/remote/<host>/: totp.cgi.log and radius-detail.log. Its rsyslog needs a rule for both program names - deploy/isemon/11-otp.conf in this package, copied to /etc/rsyslog.d/ there - and in isemon: Settings → The OTP logs switched on, the folder of this host in it, and RADIUS detail switched on.
+isemon’s syslog receivers
+kept in /etc/otp/config.json - a database cannot hold its own address
+last 24 hours
+last 3 days
+last 6 hours
+last hour
+last month
+last week
+last year
+ldaps
+let in
+line - exactly what a totpcgi token server and its FreeRADIUS send it - so isemon reads this server with what it already has.
+line and every RADIUS packet as a
+lines. isemon does not read those; they are for whatever else collects the syslog.
+lines. isemon puts them beside the check of the code.
+live
+localhost
+localhost (127.0.0.1, @dpmo.cz)
+may change everything;
+may look and change nothing.
+may look at everything and look after people's tokens;
+members of the groups named below
+ms
+name
+needs nothing changed there. Empty: this machine’s own short name.
+never
+no
+none
+none - only the accounts made here
+not answered
+not looked up anywhere
+not set
+not used
+on
+on the command line this one is
+on this machine’s clock.
+on this server. They sign in with their directory password, scan the QR code, keep the recovery codes and prove it worked with a code.
+otp --set admin_directory=…
+otp --set admin_group_full=…
+otp --set admin_group_readonly=…
+otp --set admin_group_token=…
+otp --set api_port=…
+otp --set backup_at=…
+otp --set backup_daily=…
+otp --set backup_keep=…
+otp --set db_engine=…
+otp --set db_host=…
+otp --set db_name=…
+otp --set db_password=…
+otp --set db_port=…
+otp --set db_timeout_s=…
+otp --set db_user=…
+otp --set debug=…
+otp --set debug_api=…
+otp --set debug_ldap=…
+otp --set debug_radius=…
+otp --set isemon=…
+otp --set isemon_detail=…
+otp --set isemon_events=…
+otp --set isemon_hostname=…
+otp --set isemon_max_bytes=…
+otp --set isemon_targets=…
+otp --set login_tries=…
+otp --set login_wait_min=…
+otp --set portal=…
+otp --set portal_confirm=…
+otp --set portal_groups=…
+otp --set portal_help=…
+otp --set portal_hint=…
+otp --set portal_realm=…
+otp --set portal_reissue=…
+otp --set portal_scratch=…
+otp --set portal_session_min=…
+otp --set portal_show_secret=…
+otp --set portal_title=…
+otp --set portal_tries=…
+otp --set portal_wait_min=…
+otp --set portal_who=…
+otp --set radius_acct_port=…
+otp --set radius_auth_port=…
+otp --set radius_bind=…
+otp --set radius_dup_window_s=…
+otp --set radius_reject_delay_ms=…
+otp --set radius_reply_ma=…
+otp --set radius_status_server=…
+otp --set radius_unknown_log=…
+otp --set radius_workers=…
+otp --set rate_limit_s=…
+otp --set rate_limit_tries=…
+otp --set retain_events_days=…
+otp --set retain_otp_days=…
+otp --set retain_radius_days=…
+otp --set scratch_count=…
+otp --set scratch_digits=…
+otp --set session_hours=…
+otp --set session_idle_min=…
+otp --set ship_files=…
+otp --set site_name=…
+otp --set token_names_case=…
+otp --set totp_algorithm=…
+otp --set totp_digits=…
+otp --set totp_disallow_reuse=…
+otp --set totp_issuer=…
+otp --set totp_label=…
+otp --set totp_period=…
+otp --set totp_window=…
+otp --set ui_lang=…
+otp 1.0.0
+otp 1.0.0 started, RADIUS on 0.0.0.0:1812/auth, 0.0.0.0:1813/acct
+otp answers RADIUS itself - no FreeRADIUS - on the ports below. A request from an address that is not one of the clients is never answered.
+otp stopped
+or
+otp
+outsider@corpnet.cz may not enrol a token: in none of the groups
+packets
+page 1 of 2 · 109 row(s)
+password
+plain LDAP
+plain LDAP (389) - a test only
+plain LDAP, 389
+radius
+reach srvad1.dpmo.local:636
+reach srvad2.dpmo.local:636
+reached 127.0.0.1:3899
+read only
+read the base DC=corpnet,DC=loc
+refused
+reject
+replace a token that is here already
+right
+saved on these pages (by command line, 3 min ago)
+saved on these pages (by command line, 4 min ago)
+saved on these pages (by import, 5 min ago)
+says more on both machines.
+settings
+sign-ins
+sign-ins only
+signed in as otp@corpnet.loc
+small letters - Novak and novak are one person
+sqlite
+srvad1.dpmo.local:636
+srvad1.dpmo.local:636 could not be reached: [Errno -2] Name or service not known
+srvad2.dpmo.local:636
+srvad2.dpmo.local:636 could not be reached: [Errno -2] Name or service not known
+starting and stopping
+straight into the decision, as from a client
+switched off
+switched on).
+takes every name no other realm does; empty takes names written without a realm.
+test
+the account admin was made on the command line, as fulladmin
+the built-in default
+the built-in default is
+the built-in default is 0
+the built-in default is OTP
+the client adds @dpmo.cz to a name without a realm
+the code alone
+the code for the token falco@dpmo.cz
+the directory password alone
+the directory password, then the code
+the enrolment pages
+the last request 2 min ago
+the last request 41 s ago
+the last request 44 s ago
+the name is read as falco@dpmo.cz
+the name or the password is not right
+the part before the @, as sAMAccountName
+the part before the @.
+the part before the @: novak
+the password is the code from the phone
+the password of admin was set on the command line
+the realm is dpmo.cz
+the whole name, as userPrincipalName
+the whole name: novak@example.cz
+there
+these pages
+this account may not have a token here - ask the administrator
+token admin
+tokens
+unless told otherwise, so
+waiting for a code
+whoever passes the realm’s group filter
+with a password kept here
+wrong
+yes
+· running:
+· running: 0
+· running: 0.0.0.0
+· running: 03:30
+· running: 1
+· running: 10
+· running: 12
+· running: 120
+· running: 127.0.0.1:5514
+· running: 14
+· running: 15
+· running: 16
+· running: 180
+· running: 1800
+· running: 1812
+· running: 1813
+· running: 3
+· running: 30
+· running: 365
+· running: 5
+· running: 6
+· running: 8
+· running: 9861
+· running: Aplikaci Google Authenticator si nainstalujte z obchodu Google Play nebo App Store.
+· running: DPMO
+· running: Google Authenticator
+· running: SHA1
+· running: cs
+· running: dpmo.cz
+· running: false
+· running: login@dpmo.cz
+· running: lower
+· running: not set
+· running: otp
+· running: otp
+· running: realm_groups
+· running: sqlite
+· running: {user}
+Čeština

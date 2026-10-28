@@ -1,0 +1,129 @@
+109 se používá · 0 čeká · 0 vypnuto · 1 použito za 30 dní
+jako otp na 127.0.0.1:5514/udp · naposledy před 9 min
+Každý Access-Request na jedné časové ose: zeleně vpuštění, červeně odmítnutí nebo bez odpovědi. Kliknutím na sloupec otevřete tu hodinu.
+Proč byli odmítnuti
+Denied by the token server: Not a valid token
+LDAP server(s) have gone away
+Kdo se ptá
+ASA (a test by admin)
+109 se používá · 108 nikdy nepoužito
+Každý, kdo má token. Kliknutím na řádek ho vypnete, vydáte nové záložní kódy, otestujete kód nebo token odeberete. Token si vytvoří majitel na stránkách registrace, nebo se vytvoří zde.
+Naposledy použit
+brought over from totpcgi
+RADIUS požadavky
+Každý požadavek, který tento server dostal, nejnovější první. Klikněte na řádek pro všechny přijaté atributy, odpověď a každý krok rozhodnutí s dobou trvání.
+bez odpovědi
+Zamítnuto tokenovým serverem: Not a valid token
+Co token řekl o každém kódu: to jsou řádky, které isemon čte jako log tokenového serveru (
+Not a valid token
+Valid token used
+Zeptat se jako VPN
+radtest falco 135830 otp.example.local 1812
+        testing123
+se ptá, odesláno z tohoto stroje na tento server jako skutečný RADIUS paket se sdíleným heslem klienta pro 127.0.0.1. Správný kód se tím spotřebuje, stejně jako by ho spotřebovala VPN.
+RADIUS paket na 127.0.0.1
+rovnou do rozhodování, jako od klienta
+Jako klient
+Zeptat se
+Přímo ze serveru totéž:
+Co tento démon udělal
+Každý vytvořený, nahrazený či odebraný token, každá změna nastavení, každé přihlášení. Uchováno v databázi, takže přežije restart.
+admin se přihlásil z 127.0.0.1
+falco@corpnet.cz se přihlásil na stránky registrace z 127.0.0.1
+chybné heslo pro admin z 127.0.0.1
+command line
+changed: portal_help="Aplikaci Google Authenticator si nainstalujte z obchodu Google Play nebo App Store.\n\nPokud ztratíte telefon, volejte helpdesk na lince 1234."
+token pro falco@corpnet.cz byl vytvořen na příkazové řádce
+otp 1.0.0 spuštěn, RADIUS na 0.0.0.0:1812/auth, 0.0.0.0:1813/acct
+otp zastaven
+heslo uživatele admin bylo nastaveno na příkazové řádce
+byla vytvořena kopie databáze (daily): otp-20261022-162744.json.gz
+účet admin byl založen na příkazové řádce jako fulladmin
+Konec souboru
+v Nastavení → O aplikaci, aby vypsal každý krok každého požadavku.
+RADIUS server
+Stránky registrace
+Tato instalace
+Tento účet nesmí měnit nastavení. Plný administrátor to může změnit v sekci
+otp odpovídá na RADIUS sám – žádný FreeRADIUS – na portech níže. Na požadavek z adresy, která není klientem, se nikdy neodpoví.
+Naslouchat na adrese
+Adresa, na které RADIUS server naslouchá.
+jsou všechny IPv4 adresy tohoto stroje;
+navíc i všechny IPv6. Po změně začne server ihned naslouchat na nové.
+Port pro autentizaci
+UDP port pro Access-Request. Standardní je 1812; starý 1645 se ještě objevuje na zařízeních Cisco.
+Port pro accounting
+UDP port pro Accounting-Request. Záznamy se zapíší a pošlou do isemonu se vším ostatním; 0 na nich vůbec nenaslouchá.
+Odpovídat na Status-Server
+Odpovídat na Status-Server (RFC 5997) – tak se ASA nebo load balancer ptá, zda server žije, aniž by kohokoli přihlašoval.
+Podepisovat každou odpověď (Message-Authenticator)
+Přidat Message-Authenticator do každé odpovědi. Chrání odpověď proti padělání BlastRADIUS (CVE-2024-3596) a nic nestojí; vadí jen klientovi tak starému, že atribut nezná.
+Opakovaný požadavek je tentýž po dobu (s)
+Klient, který nedostane odpověď, pošle stejný požadavek znovu se stejným identifikátorem. V tomto okně dostane znovu tutéž odpověď místo druhé kontroly kódu – ta by selhala, protože kód platí jen jednou.
+Kolik požadavků se zpracovává souběžně. Požadavek čekající na pomalý řadič domény nezdrží ostatní.
+Zapisovat požadavky od neznámých klientů
+Požadavek z adresy, která není klientem, se zahodí bez odpovědi, jak RADIUS předepisuje. Zapnuto: navíc se zapíše – jednou za minutu za adresu – takže VPN nasměrovaná sem dřív, než byla přidána, se tím prozradí.
+Jak dlouho počkat před odesláním odmítnutí. Trocha zpomalí toho, kdo hádá; 0 odpoví ihned.
+Vše, co se smí ptát: VPN koncentrátor, load balancer, tento stroj pro testování. Klient je adresa nebo rozsah, sdílené heslo a – pokud jména přicházejí bez realmu – realm, který se k nim připojí, jak to dělal soubor hints ve FreeRADIUS.
+Přidat klienta
+Realm je to, co následuje za @. Určuje, kde se člověk vyhledá, které skupiny ho pustí, zda je heslem samotný kód, nebo heslo z adresáře a za ním kód, a co se vrací do VPN – Class, group policy – všem, nebo členům jedné skupiny.
+Přidat realm
+Adresáře, ve kterých realmy vyhledávají lidi a vůči kterým se přihlašuje na stránky registrace. Jen pro čtení: do adresáře se nikdy nic nezapisuje a čtecí účet nepotřebuje jiné právo než čtení.
+Přidat adresář
+Jak se kódy tvoří a kontrolují. Token si ponechává to, s čím vznikl: změna zde platí pro tokeny vytvořené po ní.
+Vydavatel, jak ho ukazuje telefon
+Název nad kódem v aplikaci telefonu – obvykle firma. Nový název ponese jen token registrovaný po změně.
+Název účtu, jak ho ukazuje telefon
+je celé jméno, jak bylo registrováno (
+Šest očekává každý a ukazuje každá aplikace. Token si ponechá délku, se kterou vznikl.
+Třicet sekund je standard a Google Authenticator jiný nezná.
+SHA-1 předepisuje RFC 6238 a implementuje ho každá aplikace. Ostatní jsou nabízeny pro hardwarové tokeny, které je používají.
+Povolený posun hodin v krocích
+Traceback (most recent call last):
+  File "/home/claude/i18n/shots_cs.py", line 30, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/usr/lib/python3.13/asyncio/runners.py", line 196, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.13/asyncio/runners.py", line 119, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.13/asyncio/base_events.py", line 726, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/home/claude/i18n/shots_cs.py", line 24, in main
+    await rows[0].click(); await pg.wait_for_timeout(1500)
+    ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/playwright/async_api/_generated.py", line 2132, in click
+    await self._impl_obj.click(
+    ...<9 lines>...
+    )
+  File "/usr/local/lib/python3.13/dist-packages/playwright/_impl/_element_handle.py", line 142, in click
+    await self._channel.send(
+        "click", self._frame._timeout, locals_to_params(locals())
+    )
+  File "/usr/local/lib/python3.13/dist-packages/playwright/_impl/_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/usr/local/lib/python3.13/dist-packages/playwright/_impl/_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TimeoutError: ElementHandle.click: Timeout 30000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not visible
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not visible
+    - retrying click action
+      - waiting 100ms
+    58 × waiting for element to be visible, enabled and stable
+       - element is not visible
+     - retrying click action
+       - waiting 500ms
+

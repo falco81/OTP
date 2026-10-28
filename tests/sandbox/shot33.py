@@ -1,0 +1,32 @@
+import asyncio, sys, json, time
+sys.argv=['t','none']; exec(open('/tmp/claude-0/up/t_up.py').read().split("if sys.argv[1]=='upload'")[0])
+from playwright.async_api import async_playwright
+call('settings',{'settings':{'admin_show_key':1}})
+for nm,extra in [('bk.app@corpnet.cz',{}),('bk.mail@corpnet.cz',{'kind':'mail','dest':'bk.mail@firma.cz'}),('bk.sms@corpnet.cz',{'kind':'sms','dest':'+420777999888'})]:
+    call('token',{'action':'delete','name':nm}); call('token',dict({'action':'enroll','name':nm},**extra))
+lk=call('tokens-backup',{'q':'name:bk.* OR name:falco*','passphrase':'correct-horse-battery'})
+open('/tmp/claude-0/fwt/bk.json','w').write(lk['file'])
+call('token',{'action':'delete','name':'bk.sms@corpnet.cz'})
+async def main():
+    async with async_playwright() as p:
+        b=await p.chromium.launch(); pg=await (await b.new_context(ignore_https_errors=True, viewport={'width':1920,'height':1050})).new_page()
+        errs=[]; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('https://127.0.0.1/admin/'); await pg.wait_for_timeout(600)
+        await pg.fill('#in-name','admin'); await pg.fill('#in-pass',PW); await pg.keyboard.press('Enter'); await pg.wait_for_timeout(2000)
+        await pg.goto('https://127.0.0.1/admin/#settings/import'); await pg.wait_for_timeout(1500)
+        await pg.mouse.move(1000,5)
+        await pg.screenshot(path='/home/claude/shots/bk-page.png')
+        await pg.set_input_files('#imp-files','/tmp/claude-0/fwt/bk.json'); await pg.wait_for_timeout(1500)
+        await pg.screenshot(path='/home/claude/shots/bk-pass.png')
+        await pg.locator('#modal input[type=password]').fill('correct-horse-battery'); await pg.keyboard.press('Enter'); await pg.wait_for_timeout(2500)
+        await pg.screenshot(path='/home/claude/shots/bk-pick.png')
+        await pg.locator('#modal input[type=search]').fill('kind:'); await pg.wait_for_timeout(1200)
+        await pg.screenshot(path='/home/claude/shots/bk-pick-sug.png')
+        await pg.keyboard.press('Escape'); await pg.wait_for_timeout(300); await pg.keyboard.press('Escape'); await pg.wait_for_timeout(500)
+        await pg.goto('https://127.0.0.1/admin/#settings/mailq'); await pg.wait_for_timeout(1500)
+        await pg.click('#mq-q'); await pg.wait_for_timeout(800)
+        await pg.screenshot(path='/home/claude/shots/mq-sug.png')
+        await pg.fill('#mq-q','state:'); await pg.wait_for_timeout(1000)
+        await pg.screenshot(path='/home/claude/shots/mq-sug2.png')
+        print('errors', errs); await b.close()
+asyncio.run(main())

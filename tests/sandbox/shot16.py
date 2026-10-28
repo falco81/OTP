@@ -1,0 +1,27 @@
+import asyncio, sys
+sys.argv=['t','none']; exec(open('/tmp/claude-0/up/t_up.py').read().split("if sys.argv[1]=='upload'")[0])
+from playwright.async_api import async_playwright
+def now(): d=call('art'); return d['portal']['art'], d['admin']['art'], bool(d['portal']['logo'])
+async def main():
+    async with async_playwright() as p:
+        b=await p.chromium.launch(); pg=await (await b.new_context(ignore_https_errors=True, viewport={'width':1500,'height':1100})).new_page()
+        errs=[]; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('https://127.0.0.1/admin/'); await pg.wait_for_timeout(600)
+        await pg.fill('#in-name','admin'); await pg.fill('#in-pass',PW); await pg.keyboard.press('Enter'); await pg.wait_for_timeout(2000)
+        await pg.goto('https://127.0.0.1/admin/#settings/portal'); await pg.wait_for_timeout(1500)
+        await pg.click('.art-tile:nth-child(3)'); await pg.wait_for_timeout(500)
+        print('after click, server:', now(), '| bar:', await pg.inner_text('#set-said'))
+        await pg.locator('#art-card').screenshot(path='/home/claude/shots/art-unsaved.png')
+        await pg.click('#art-slot button[data-slot=admin]'); await pg.click('.art-tile:nth-child(6)'); await pg.wait_for_timeout(300)
+        await pg.set_input_files('#art-file', '/tmp/claude-0/logo/ok.svg'); await pg.wait_for_timeout(500)
+        print('admin upload drafted, server:', now(), '| bar:', await pg.inner_text('#set-said'))
+        await pg.click('#set-save'); await pg.wait_for_timeout(2500)
+        print('after save, server:', now(), '| bar:', repr(await pg.inner_text('#set-said')))
+        await pg.click('#art-slot button[data-slot=portal]'); await pg.click('#art-reset'); await pg.wait_for_timeout(300)
+        print('reset drafted:', now(), await pg.inner_text('#set-said'))
+        await pg.click('#set-reset'); await pg.wait_for_timeout(1500)
+        print('put back:', now(), repr(await pg.inner_text('#set-said')), await pg.inner_text('.art-tile.on .art-cap'))
+        await pg.click('#art-reset'); await pg.click('#art-slot button[data-slot=admin]'); await pg.click('#art-forget'); await pg.wait_for_timeout(300)
+        await pg.click('#set-save'); await pg.wait_for_timeout(2500)
+        print('final:', now(), 'errors', errs); await b.close()
+asyncio.run(main())

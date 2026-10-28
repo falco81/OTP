@@ -1,0 +1,55 @@
+S149 = {
+ "Restoring, or bringing over": "Obnova nebo převzetí",
+ "Backing up, or taking tokens away": "Záloha nebo převod tokenů jinam",
+ "Drop a backup (.json), the .totp files or a ZIP of them here - or press to pick them": "Sem přetáhněte zálohu (.json), soubory .totp nebo jejich ZIP – nebo klikněte a vyberte je",
+ "a whole backup (.json) - every kind": "celá záloha (.json) – všechny druhy",
+ ".totp files in a ZIP - the app's tokens, for totpcgi": "soubory .totp v ZIPu – tokeny aplikace, pro totpcgi",
+ "a passphrase to lock it with (8 characters at least)": "heslo k zamčení (aspoň 8 znaků)",
+ "Make one up": "Vymyslet",
+ "Make one up - it is shown once, keep it": "Vymyslet – ukáže se jen jednou, uschovejte ho",
+ "Download": "Stáhnout",
+ "Write the passphrase down now - it is not kept anywhere, and without it the backup cannot be opened.": "Heslo si hned zapište – nikde se neukládá a bez něj zálohu neotevřete.",
+ "Back the tokens up": "Zálohovat tokeny",
+ "Download it": "Stáhnout",
+ "Locked with the passphrase.": "Zamčeno heslem.",
+ "The backup is locked": "Záloha je zamčená",
+ "That passphrase does not open it - try again.": "Tímto heslem ji otevřít nejde – zkuste znovu.",
+ "It was locked with a passphrase when it was made: that passphrase opens it.": "Při vytvoření byla zamčena heslem: otevře ji to heslo.",
+ "the passphrase": "heslo",
+ "Passphrase": "Heslo",
+ "Open it": "Otevřít",
+ "Restoring from a backup": "Obnova ze zálohy",
+ "All shown": "Všechny zobrazené",
+ "None": "Žádné",
+ "replace the tokens that are here already": "nahradit tokeny, které tu už jsou",
+ "has one": "už má",
+ "new": "nový",
+ "Here": "Tady",
+ "nothing is picked": "nic není vybráno",
+ "Restore the ones picked": "Obnovit vybrané",
+ "a name, a note, a mail address, a phone number… (kind:mail state:active name:novak*)": "jméno, poznámka, e-mail, telefon… (kind:mail state:active name:novak*)",
+ "an address, a name, what the server said… (to:*@example.cz, state:waiting, kind:code…)": "adresa, jméno, co řekl server… (to:*@example.cz, state:waiting, kind:code…)",
+ "which ones - empty: all (realm:example.cz, name:novak*, kind:mail…)": "které – prázdné: všechny (realm:example.cz, name:novak*, kind:mail…)",
+ "whom it goes to": "komu jde",
+ "waiting, sending, sent, failed or expired": "waiting, sending, sent, failed nebo expired",
+ "token, code, verify or test": "token, code, verify nebo test",
+ "the token it is about": "token, kterého se týká",
+ "what the receiving server said": "co řekl přijímající server",
+ "how many times it was tried": "kolikrát se zkoušel",
+ "who had it sent": "kdo ho nechal poslat",
+ "its subject": "jeho předmět",
+ "the node that sends it (high availability)": "uzel, který ho posílá (vysoká dostupnost)",
+}
+P149 = {
+ "{0} token(s) · made {1}": "{0} tokenů · vytvořeno {1}",
+ "{0} of {1} picked": "vybráno {0} z {1}",
+}
+R149 = {
+ "A whole backup holds every token chosen as it is: its key, its recovery codes, how its codes come and where to, its language and its state - read back here or on another otp, whose own sealing key it does not need. Lock it with a passphrase: every key in it signs its owner in. Or the tokens of the app as .totp files in a ZIP, for totpcgi. Needs <i>Settings → Tokens → Administrators may show a token's QR code and key</i>; every backup is written down in the events.": "Celá záloha drží každý vybraný token, jak je: jeho klíč, záložní kódy, jak a kam chodí kódy, jazyk a stav – obnoví se tady nebo na jiném otp, které nepotřebuje zdejší pečeticí klíč. Zamkněte ji heslem: každý klíč v ní přihlásí svého majitele. Nebo tokeny aplikace jako soubory .totp v ZIPu, pro totpcgi. Vyžaduje <i>Nastavení → Tokeny → Administrátoři smí zobrazit QR kód a klíč tokenu</i>; každá záloha se zapíše do událostí.",
+}
+R149.update({
+ "A backup of every token - of every kind: the app, codes by e-mail, codes by SMS - and its restore, all of them or the ones picked; and the files of a totpcgi server (<code>/etc/totpcgi/totp/novak@example.cz.totp</code>), read so that everybody keeps the token they have: the same key, the same recovery codes, the same clock drift.": "Záloha všech tokenů – všech druhů: aplikace, kódy e-mailem, kódy SMS – a jejich obnova, všech nebo vybraných; a soubory serveru totpcgi (<code>/etc/totpcgi/totp/novak@example.cz.totp</code>), převzaté tak, že si každý ponechá svůj token: stejný klíč, stejné záložní kódy, stejný posun hodin.",
+ "A backup made below (<code>otp-tokens-….json</code>, locked with a passphrase or not): you see what is in it and pick what is restored. Or the <code>.totp</code> files of totpcgi, or a ZIP of them. The whole old server at once - its clients, the realm its hints file added, the directory and the groups of its handler, its settings and every token - is one command on this machine: <code>otp --import-legacy /path/to/old/root</code>.": "Záloha vytvořená níže (<code>otp-tokens-….json</code>, zamčená heslem nebo ne): uvidíte, co obsahuje, a vyberete, co se obnoví. Nebo soubory <code>.totp</code> z totpcgi či jejich ZIP. Celý starý server najednou – jeho klienty, realm přidávaný souborem hints, adresář a skupiny jeho handleru, nastavení a všechny tokeny – převezme jeden příkaz na tomto stroji: <code>otp --import-legacy /path/to/old/root</code>.",
+})
+P149.update({"{0} token(s) · made {1} on {2} by {3} · otp {4}": "{0} tokenů · vytvořeno {1} na {2}, kdo: {3} · otp {4}"})
+P149.update({"made {0} on {1} by {2}": "vytvořeno {0} na uzlu {1}, vytvořil {2}", "made {0} on {1}": "vytvořeno {0} na uzlu {1}", "made {0}": "vytvořeno {0}"})

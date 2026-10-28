@@ -1,0 +1,28 @@
+import asyncio, sys
+sys.argv=['t','none']; exec(open('/tmp/claude-0/up/t_up.py').read().split("if sys.argv[1]=='upload'")[0])
+from playwright.async_api import async_playwright
+call('settings',{'settings':{'sms_mode':'teltonika','sms_tel_api':'rest'}})
+async def main():
+    async with async_playwright() as p:
+        b=await p.chromium.launch()
+        pg=await (await b.new_context(ignore_https_errors=True, viewport={'width':1400,'height':1000})).new_page()
+        errs=[]; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('https://127.0.0.1/'); await pg.wait_for_timeout(800)
+        await pg.fill('#in-name','falco@corpnet.cz'); await pg.fill('#in-pass','falco-password-1'); await pg.keyboard.press('Enter'); await pg.wait_for_timeout(2500)
+        await pg.screenshot(path='/home/claude/shots/portal1.png')
+        await pg.click('#mebtn'); await pg.wait_for_timeout(600)
+        await pg.screenshot(path='/home/claude/shots/portal-about.png')
+        await pg.keyboard.press('Escape'); await pg.wait_for_timeout(300)
+        c=call('token',{'action':'code_now','name':'falco@corpnet.cz','first':True}).get('code')
+        await pg.fill('.codes-ask input', c); await pg.click('.codes-ask button[type=submit]'); await pg.wait_for_timeout(1500)
+        await pg.screenshot(path='/home/claude/shots/portal-codes.png', full_page=True)
+        a=await (await b.new_context(ignore_https_errors=True, viewport={'width':1920,'height':1050})).new_page()
+        a.on('pageerror', lambda e: errs.append(str(e)))
+        await a.goto('https://127.0.0.1/admin/'); await a.wait_for_timeout(600)
+        await a.fill('#in-name','admin'); await a.fill('#in-pass',PW); await a.keyboard.press('Enter'); await a.wait_for_timeout(2500)
+        await a.goto('https://127.0.0.1/admin/#settings/codes'); await a.wait_for_timeout(2500)
+        await a.locator('.tel-test button').click(); await a.wait_for_timeout(1500)
+        await a.locator('.tel-test').screenshot(path='/home/claude/shots/teltest.png')
+        print('errs', errs); await b.close()
+asyncio.run(main())
+call('settings',{'settings':{'sms_mode':'spool'}})
