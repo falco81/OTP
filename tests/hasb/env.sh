@@ -8,3 +8,5 @@ export OTP_HOSTS_FILE=$S/$n/hosts OTP_POWER_CMD=$S/$n/power OTP_VIP_NO_SERVICES=
 export OTP_NET_SNAP_DIR=$S/$n/netsnap OTP_NM_PROFILE_DIRS=$S/$n/fakenm/profiles/
 export OTP_SYSCTL6=$S/$n/sysctl6.conf OTP_BTIME_FILE=$S/$n/btime
 export OTP_CHRONY_CONF=$S/$n/chrony.conf OTP_NTP_NO_SERVICE=1
+export OTP_CONSOLE_FLAG=$S/$n/console-login
+export OTP_RUN=$S/$n/run

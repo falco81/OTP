@@ -94,3 +94,24 @@ def _ntp_do(h):
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+@route('GET', '/api/console-login')
+def _console_login(h):
+    h.me('fulladmin')
+    return console_login_view(h.store)
+
+
+@route('POST', '/api/console-login')
+def _console_login_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    on = b.get('on')
+    if not isinstance(on, bool):
+        raise ApiError(400, 'on is true or false')
+    try:
+        console_login_ask(h.store, str(b.get('node') or node_name()), on, s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    return {'message': 'asked: the console at login is switched on within seconds' if on else
+            'asked: the console at login is switched off within seconds'}

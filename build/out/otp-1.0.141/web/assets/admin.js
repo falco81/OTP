@@ -5568,7 +5568,51 @@ function drawAbout() {
   var c = (s.radius || {}).counts || {};
   host.appendChild(kvTable(Object.keys(c).sort().map(function (k) { return [k, num(c[k])]; })));
   host.appendChild(el('p', 'muted small', 'One Python file (/usr/local/lib/otp/otp.py), the standard library, and these PHP pages that ask it. On the server: otp --help.'));
+  if (ADMIN) drawConsoleLogin(host);
   drawSoftware(host);
+}
+
+/* The otp console when root signs in at the console or over SSH (1.0.141):
+   a switch a node; the node's own root helper writes it. */
+function drawConsoleLogin(host) {
+  var box = el('div', 'sw-box');
+  host.appendChild(box);
+  box.appendChild(el('h3', 'sw-h', 'The console at login'));
+  box.appendChild(el('p', 'note', 'On: root signing in at the machine\'s console or over SSH lands in the otp console (otp --console); q leaves it for the shell. Off: the ordinary shell, and otp --console opens it. Commands run over SSH, scp and sftp never get it. On the server: otp --console-at-login on|off.'));
+  var list = el('div', '');
+  box.appendChild(list);
+  var tries = 0;
+  function load() {
+    api('console-login').then(function (d) {
+      clear(list);
+      var waiting = false;
+      (d.nodes || []).forEach(function (n) {
+        var row = el('div', 'kv-row');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap';
+        var sw = switchBox(!!n.on);
+        sw._input.disabled = n.on === null || n.on === undefined || n.pending;
+        var name = noI18n(el('b', '', n.name));
+        row.appendChild(sw);
+        row.appendChild(name);
+        if (n.me) row.appendChild(el('span', 'tag info', 'this one'));
+        var said = n.pending ? 'being switched…' : (n.on === null || n.on === undefined) ? 'not said yet - the node says within a minute'
+          : n.on ? 'on' : 'off';
+        row.appendChild(el('span', 'muted small', said));
+        if (n.error) row.appendChild(el('p', 'note bad', n.error));
+        if (n.pending) waiting = true;
+        sw._input.onchange = function () {
+          var on = sw._input.checked;
+          sw._input.disabled = true;
+          api('console-login', {node: n.name, on: on}).then(function (r) {
+            toast(r.message, 'good'); tries = 0; setTimeout(load, 2000);
+          }).catch(function (e) { sw._input.checked = !on; sw._input.disabled = false; oops(e); });
+        };
+        list.appendChild(row);
+      });
+      if (waiting && tries++ < 30) setTimeout(load, 2000);
+    }).catch(function (e) { clear(list); list.appendChild(el('p', 'note bad', String((e && e.message) || e))); });
+  }
+  load();
 }
 
 /* What every node runs on (1.0.99): otp, Python and its modules, the

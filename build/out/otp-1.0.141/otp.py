@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.140'
+__version__ = '1.0.141'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -12447,6 +12447,11 @@ class Daemon(object):
                     ntp_tick(self)              # the time (1.0.120)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('ntp-tick', 'the time: %s' % e, 'warn', every=600)
+                try:
+                    console_login_tick(self)    # the console at login (1.0.141)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('console-tick', 'the console at login: %s' % e, 'warn',
+                                every=600)
                 try:
                     net_tick(self)              # the network, restart, power off (1.0.119)
                 except Exception as e:          # noqa: BLE001
@@ -30332,6 +30337,27 @@ def _ntp_do(h):
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+@route('GET', '/api/console-login')
+def _console_login(h):
+    h.me('fulladmin')
+    return console_login_view(h.store)
+
+
+@route('POST', '/api/console-login')
+def _console_login_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    on = b.get('on')
+    if not isinstance(on, bool):
+        raise ApiError(400, 'on is true or false')
+    try:
+        console_login_ask(h.store, str(b.get('node') or node_name()), on, s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    return {'message': 'asked: the console at login is switched on within seconds' if on else
+            'asked: the console at login is switched off within seconds'}
 # ---- the console: otp run by its menus, on the server's own screen (1.0.130) --------
 # `otp --console` - and, with `otp --console-at-login on`, what root sees first
 # after signing in at the console or over SSH. Everything is done by the same
@@ -33068,6 +33094,69 @@ def console_at_login_set(on):
     return ('the otp console opens when root signs in at the console or over SSH (q leaves '
             'it for the shell)' if on else 'root signs in to the ordinary shell; '
             '`otp --console` opens the console')
+
+
+# ---- switched on the pages (1.0.141) ------------------------------------------------
+# Settings → About: each node's switch. The page writes 'console:want:NODE'; that
+# node's daemon has its root helper write /etc/otp-console-login, and says how
+# it is in 'console:now:NODE' - read from the file itself, so a change made with
+# otp --console-at-login shows too.
+CONSOLE_WORK = {'busy': False, 'seen': 0.0}
+
+
+def console_login_view(store):
+    nodes = [node_name()] + [n['name'] for n in ha_nodes(store) if n['name'] != node_name()]
+    out = []
+    for n in nodes:
+        now = _meta_json(store, 'console:now:' + n) or {}
+        want = _meta_json(store, 'console:want:' + n) or {}
+        out.append({'name': n, 'me': n == node_name(), 'on': now.get('on'),
+                    'at': now.get('at'), 'error': now.get('error') or '',
+                    'pending': bool(want) and want.get('id') != now.get('done')})
+    return {'nodes': out}
+
+
+def console_login_ask(store, node, on, by):
+    known = [node_name()] + [n['name'] for n in ha_nodes(store)]
+    if node not in known:
+        raise ValueError('there is no node %s' % node)
+    store.set_meta('console:want:' + node, json.dumps({
+        'id': secrets.token_hex(6), 'on': bool(on), 'by': by, 'at': time.time()}))
+    store.add_event('settings', ('%s switched on the otp console at login on %s' if on else
+                                 '%s switched off the otp console at login on %s') % (by, node),
+                    'warn', who=by)
+
+
+def console_login_tick(daemon):
+    """Every few seconds: a switch asked for this node done; how it is, said."""
+    store = daemon.store
+    me = node_name()
+    want = _meta_json(store, 'console:want:' + me) or {}
+    now = _meta_json(store, 'console:now:' + me) or {}
+    if want and want.get('id') != now.get('done') and not CONSOLE_WORK['busy']:
+        CONSOLE_WORK['busy'] = True
+
+        def go():
+            try:
+                err = ''
+                try:
+                    root_ask('console.ask', 'console.json',
+                             {'do': 'set', 'on': bool(want.get('on'))}, 60)
+                except ValueError as e:
+                    err = str(e)[:300]
+                    log('the console at login could not be switched: %s' % err, 'warn')
+                store.set_meta('console:now:' + me, json.dumps({
+                    'on': console_at_login(), 'at': time.time(), 'done': want.get('id'),
+                    'error': err}))
+            finally:
+                CONSOLE_WORK['busy'] = False
+        threading.Thread(target=go, name='otp-console-login', daemon=True).start()
+        return
+    if time.time() - CONSOLE_WORK['seen'] > 60 and not CONSOLE_WORK['busy']:
+        CONSOLE_WORK['seen'] = time.time()
+        on = console_at_login()
+        if now.get('on') != on or 'on' not in now:
+            store.set_meta('console:now:' + me, json.dumps(dict(now, on=on, at=time.time())))
 
 
 def console_main(pal):

@@ -1269,6 +1269,11 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('ntp-tick', 'the time: %s' % e, 'warn', every=600)
                 try:
+                    console_login_tick(self)    # the console at login (1.0.141)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('console-tick', 'the console at login: %s' % e, 'warn',
+                                every=600)
+                try:
                     net_tick(self)              # the network, restart, power off (1.0.119)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('net-tick', 'the network: %s' % e, 'warn', every=600)

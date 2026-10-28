@@ -2420,6 +2420,55 @@ def status_read():
     return got
 
 
+# ---- the otp console when root signs in (1.0.141) ---------------------------------
+# Asked in console.ask from the pages (Settings - About): on or off, written to
+# /etc/otp-console-login as `otp --console-at-login` writes it.
+CONSOLE_ASK = 'console.ask'
+CONSOLE_FILE = 'console.json'
+CONSOLE_FLAG = os.environ.get('OTP_CONSOLE_FLAG', '/etc/otp-console-login')
+
+
+def console_flag_set(on):
+    """Written beside it and put in its place: a link or a pipe found there is
+    replaced, never followed."""
+    tmp = '%s.%d.tmp' % (CONSOLE_FLAG, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    try:
+        os.write(fd, b'on\n' if on else b'off\n')
+        os.fchmod(fd, 0o644)
+    finally:
+        os.close(fd)
+    os.rename(tmp, CONSOLE_FLAG)
+
+
+def console_part():
+    d = web_fd()
+    try:
+        raw = read_req(CONSOLE_ASK, 4096)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(CONSOLE_ASK, d)
+        return
+    drop_ask(CONSOLE_ASK, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict):
+            raise Refused('the request is not an object')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        if r.get('do') != 'set' or not isinstance(r.get('on'), bool):
+            raise Refused('set, on or off')
+        console_flag_set(r['on'])
+        out['data'] = {'on': r['on']}
+        out['ok'] = True
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(CONSOLE_FILE, json.dumps(out))
+
+
 def serve():
     d = web_fd()
     try:
@@ -2442,6 +2491,10 @@ def serve():
         ntp_part()
     except Exception as e:                              # noqa: BLE001
         print('otp_web.py: the time: %s' % e, file=sys.stderr)
+    try:
+        console_part()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: the console at login: %s' % e, file=sys.stderr)
     try:
         os.replace('request.json', 'request.taken', src_dir_fd=d, dst_dir_fd=d)
     except FileNotFoundError:

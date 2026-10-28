@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.141 — 28 October 2026
+
+**The console at login, switched on the pages**
+- Settings → About → The console at login: a switch for each node - on, root
+  signing in at the machine's console or over SSH lands in `otp --console`;
+  off, the ordinary shell. Full administrators; the node's own root helper
+  writes /etc/otp-console-login (as `otp --console-at-login on|off` does), and
+  each node says how it is within a minute - a change made on the command line
+  shows too. Every switch is written in Events.
+
 ## 1.0.140 — 28 October 2026
 
 **A network on trial goes back whole**

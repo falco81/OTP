@@ -284,6 +284,7 @@ if (isset($_GET['api'])) {
         'firewall' => '/api/firewall', 'ha-history' => '/api/ha/history',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts', 'mailq-one' => '/api/mailq/one', 'software' => '/api/software',
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
     ];
     $writes = [
@@ -297,6 +298,7 @@ if (isset($_GET['api'])) {
         'ha' => '/api/ha', 'mail' => '/api/mail', 'upgrade' => '/api/upgrade', 'web' => '/api/web', 'firewall' => '/api/firewall',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts',
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
     ];
     if ($post) {
