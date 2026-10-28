@@ -9,8 +9,8 @@ library, and PHP pages that only relay to it.
 ## The short version
 
 ```bash
-tar xzf otp-1.0.116.tar.gz
-cd otp-1.0.116
+tar xzf otp-1.0.136.tar.gz
+cd otp-1.0.136
 sudo ./install.sh --server-name otp.example.local
 ```
 
@@ -31,7 +31,7 @@ token it has:
 
 ```bash
 mkdir /root/old-otp && cd /root/old-otp && unzip /root/otp.zip   # its etc/raddb and etc/totpcgi
-cd /root/otp-1.0.116
+cd /root/otp-1.0.136
 sudo ./install.sh --server-name otp.example.local \
      --import-legacy /root/old-otp \
      --radius-from 192.0.2.1/32 \
@@ -55,6 +55,10 @@ check afterwards.
   start it. `--python PATH` picks one, `--system-python` keeps the system's.
 - nginx and PHP-FPM 8.x for the pages. The installer puts PHP on a release
   fixed for php2shell (below).
+- chrony for the clock - codes from the app are worked out from it. install.sh
+  installs it, stops systemd-timesyncd if that runs, and enables chronyd, on a
+  fresh install and on every `--upgrade` (also one started from the pages).
+  Its own `/etc/chrony.conf` is kept; Settings → Time sets other servers.
 - UDP 1812 and 1813 open from the VPN concentrators.
 - A read-only account in Active Directory (`otp@example.local`), and LDAPS
   to the domain controllers — with the CA certificate if they use your own.

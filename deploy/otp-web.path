@@ -6,6 +6,8 @@ PathExists=/var/lib/otp/web/request.json
 PathExists=/var/lib/otp/web/pglog.ask
 PathExists=/var/lib/otp/web/pgtls.ask
 PathExists=/var/lib/otp/web/fw.ask
+PathExists=/var/lib/otp/web/net.ask
+PathExists=/var/lib/otp/web/ntp.ask
 Unit=otp-web.service
 
 [Install]

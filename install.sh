@@ -367,7 +367,7 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$NGINX_CONF" "$BIN_LINK" \
                "$UPGRADE_PATH_UNIT" "$UPGRADE_SERVICE_UNIT" "$WEB_PATH_UNIT" "$WEB_SERVICE_UNIT" \
                /etc/polkit-1/rules.d/49-otp-database.rules "$CONFIG_DIR/may-restart-database" \
-               /etc/php-fpm.d/otp.conf /etc/php/*/fpm/pool.d/otp.conf; do
+               /etc/php-fpm.d/otp.conf /etc/php/*/fpm/pool.d/otp.conf /etc/profile.d/zz-otp-console.sh /etc/otp-console-login; do
         [[ -e "$one" ]] && run rm -f "$one"
     done
     [[ -d "$LIB_DIR" ]] && run rm -rf "$LIB_DIR"
@@ -918,9 +918,13 @@ install_program() {
     # otp.py ran it on whatever python3 is first in PATH.
     if [[ -z "$DRY_RUN" ]]; then
         rm -f "$BIN_LINK"
-        printf '#!/bin/sh\n# otp, on the Python install.sh chose (%s/python)\nexec %s/python %s/otp.py "$@"\n' \
+        # Imported, not run as a script (1.0.136): its compiled form is kept,
+        # so a command no longer spends most of a second compiling otp.py;
+        # -I: nothing from the folder it is run in, nor PYTHON* settings.
+        printf '#!/bin/sh\n# otp, on the Python install.sh chose (%s/python)\nexec %s/python -I -c '"'"'import sys; sys.path.insert(0, "%s"); sys.argv[0] = "otp"; import otp; otp.entry()'"'"' "$@"\n' \
             "$LIB_DIR" "$LIB_DIR" "$LIB_DIR" > "$BIN_LINK"
         chmod 0755 "$BIN_LINK"
+        "$LIB_DIR/python" -I -m py_compile "$LIB_DIR/otp.py" 2>/dev/null || true
     else
         note "[would write] $BIN_LINK"
     fi
@@ -1139,7 +1143,22 @@ EOR
 # asked first, and the file put back as it was if it does not take it.
 nginx_upload_guard() {
     [[ -f "$NGINX_CONF" && -z "$DRY_RUN" ]] || return 0
-    grep -q 'location = /admin/upload/' "$NGINX_CONF" && return 0
+    if grep -q 'location = /admin/upload/' "$NGINX_CONF"; then
+        # A backup from another machine put back goes this way too (1.0.136):
+        # left out, it was refused at 32 MB.
+        if grep -q 'api=(db-restore|upgrade-package)(&|\$)' "$NGINX_CONF"; then
+            local bak0="$NGINX_BAK_DIR/otp.conf.before-rbackup-upload.$(date +%Y%m%d%H%M%S)"
+            mkdir -p "$NGINX_BAK_DIR"; cp -a "$NGINX_CONF" "$bak0"
+            sed -i 's/api=(db-restore|upgrade-package)(&|\$)/api=(db-restore|upgrade-package|rbackup-upload)(\&|$)/' "$NGINX_CONF"
+            if nginx -t >/dev/null 2>&1; then
+                systemctl reload nginx >/dev/null 2>&1 || true
+                good "nginx takes a backup from another machine through the guarded upload too"
+            else
+                cp -a "$bak0" "$NGINX_CONF"
+            fi
+        fi
+        return 0
+    fi
     if ! nginx -V 2>&1 | grep -q -- '--with-http_auth_request_module'; then
         note "nginx has no auth_request here: a database put back may be sent before who sends it is asked"
         return 0
@@ -1161,7 +1180,7 @@ def one(m):
     small = re.sub(r'client_max_body_size\s+\S+;', 'client_max_body_size 32m;', body)
     upload = (inner + '# Only these two, and only once nginx has asked whether a full\n' +
               inner + '# administrator signed in sends them (otp 1.0.98).\n' +
-              inner + 'if ($args !~ "(^|&)api=(db-restore|upgrade-package)(&|$)") { return 404; }\n' +
+              inner + 'if ($args !~ "(^|&)api=(db-restore|upgrade-package|rbackup-upload)(&|$)") { return 404; }\n' +
               body + inner + 'auth_request /admin-upload-who;\n' +
               inner + 'error_page 401 403 = @admin-upload-refused;\n')
     who = (inner + 'internal;\n' + inner + 'fastcgi_pass   %s;\n' % sock.group(1) +
@@ -1350,12 +1369,73 @@ install_backup_tools() {
     fi
 }
 
+# The clock (1.0.122): codes from the app are worked out from it, so chrony
+# is put in and started on a fresh install and on every upgrade, wherever it
+# is missing or stopped. Its own /etc/chrony.conf (AlmaLinux's pool) is used
+# as it is; Settings → Time sets other servers when asked.
+install_time_tools() {
+    local unit=chronyd
+    [[ "$PKG" == "apt" ]] && unit=chrony
+    if ! command -v chronyd >/dev/null && ! command -v chronyc >/dev/null; then
+        if [[ -n "$DRY_RUN" ]]; then say "would install chrony (the clock)"; return 0; fi
+        if [[ "$PKG" == "dnf" ]]; then
+            dnf install -y chrony >/dev/null 2>&1 || { warn "chrony could not be installed: dnf install chrony - codes from the app depend on the clock"; return 0; }
+        elif [[ "$PKG" == "apt" ]]; then
+            apt-get install -y chrony >/dev/null 2>&1 || { warn "chrony could not be installed: apt-get install chrony"; return 0; }
+        else
+            warn "install chrony by hand - codes from the app depend on the clock"; return 0
+        fi
+        good "chrony installed (the clock)"
+    fi
+    [[ -n "$DRY_RUN" ]] && return 0
+    # Another time daemon would fight it.
+    if systemctl is-active --quiet systemd-timesyncd 2>/dev/null; then
+        systemctl disable --now systemd-timesyncd >/dev/null 2>&1 || true
+        note "systemd-timesyncd stopped: chrony keeps the clock"
+    fi
+    if ! systemctl is-enabled --quiet "$unit" 2>/dev/null || ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+        systemctl enable --now "$unit" >/dev/null 2>&1 \
+            && good "chrony started and enabled ($unit)" \
+            || warn "chrony could not be started: systemctl enable --now $unit"
+    fi
+    timedatectl set-ntp true >/dev/null 2>&1 || true
+    if ! grep -Eq '^[[:space:]]*(server|pool|peer|sourcedir)[[:space:]]' /etc/chrony.conf /etc/chrony/chrony.conf 2>/dev/null; then
+        warn "chrony has no time server: set them in Settings → Time (or in /etc/chrony.conf)"
+    fi
+}
+
+# The otp console at login (1.0.130): root signing in at the console or over
+# SSH lands in `otp --console`; q leaves it for the shell. On unless switched
+# off (`otp --console-at-login off`), which an upgrade leaves as it is.
+install_console() {
+    if [[ -n "$DRY_RUN" ]]; then note "[would write] /etc/profile.d/zz-otp-console.sh"; return 0; fi
+    install -m 0644 "$SOURCE_DIR/deploy/otp-console-login.sh" /etc/profile.d/zz-otp-console.sh
+    # The choice is kept in /etc itself (1.0.136), where only root writes -
+    # in /etc/otp the otp account could have put a link or a pipe there for
+    # root to follow. The old file's word is carried over once, read only
+    # when it is a plain file, and the old file taken away.
+    local flag=/etc/otp-console-login old=/etc/otp/console-login word=""
+    if [[ -f "$old" && ! -L "$old" ]]; then
+        word="$(head -c 8 "$old" 2>/dev/null | tr -cd 'onf')"
+    fi
+    [[ -L "$old" || -e "$old" ]] && rm -f "$old"
+    if [[ -L "$flag" ]]; then rm -f "$flag"; fi
+    if [[ ! -f "$flag" ]]; then
+        [[ "$word" == "off" ]] || word="on"
+        printf '%s\n' "$word" > "$flag"
+        chmod 0644 "$flag"
+    fi
+    good "the otp console at login: $(head -c 4 "$flag") (otp --console-at-login on|off)"
+}
+
 migrate_from_opt
 
 if [[ -n "$DO_UPGRADE" ]]; then
     step "Upgrading otp to $VERSION"
     id "$SERVICE_USER" >/dev/null 2>&1 || fail "otp is not installed here; run this without --upgrade"
     install_backup_tools
+    install_time_tools
+    install_console
     # This node out of service while it is done (1.0.37): the balancer and
     # the VPN go to the other node first, not after a request has gone
     # unanswered. Asked for on the pages, the daemon has done it already.
@@ -1469,6 +1549,8 @@ else
     good "everything needed is already here"
 fi
 install_backup_tools
+install_time_tools
+install_console
 install_db_drivers
 install_db_restart
 install_colour
@@ -1595,7 +1677,7 @@ sys.exit(0 if any(ipaddress.ip_address("127.0.0.1") in ipaddress.ip_network(r["a
         good "there is a client for 127.0.0.1 already"
     else
         TEST_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
-        as_otp --add-client localhost --address 127.0.0.1 --secret "$TEST_SECRET" \
+        OTP_SECRET="$TEST_SECRET" as_otp --add-client localhost --address 127.0.0.1 --secret - \
             --note "for radtest and the Test page, from this machine" >/dev/null
         good "localhost (127.0.0.1), secret $TEST_SECRET"
         note "radtest NAME CODE 127.0.0.1 0 $TEST_SECRET   - or simply:  otp --radtest NAME CODE"

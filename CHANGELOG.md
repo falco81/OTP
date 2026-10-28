@@ -4,6 +4,504 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.136 — 28 October 2026
+
+A review of the whole application for bugs and security problems, with the
+VPN's sign-ins - the reason otp exists - first: nothing else may hold them up.
+Tested under load (RADIUS, the pages, backups, consoles and the command line
+at once, and the database stopped for 17 s).
+
+**RADIUS no longer waits behind anything else**
+- RADIUS has a database connection of its own (chosen once per statement,
+  never waiting for the main one while holding its own; a copy put back
+  still holds RADIUS for the whole of it). With one connection for
+  everything, a slow page held every sign-in behind it: just after a start,
+  the uncached overview of a month took 29 s under load and the VPN timed out
+  (160 of 166 requests unanswered). Now, with the same load plus the pages, a
+  backup and three command lines running together: no request unanswered,
+  p99 0.45 s.
+- A database that does not answer is tried again at most every 2 s, not by
+  every request in turn (one answer in 10 s, the queue full).
+- The command line (and so the console) no longer makes the tables, indexes
+  and triggers again on every run - on PostgreSQL that took locks every
+  RADIUS write waited behind. Only when this node's database was not made by
+  this version yet.
+- `otp` runs imported, its compiled form kept: a command takes half the time
+  (0.56 s instead of 1.2 s). The console asks for its status every 30 s, not
+  at all while a live view, a page or a shell is open, and the web address
+  every minute.
+- Junk from a client's address with no Message-Authenticator and a password
+  that cannot be read with its secret (control characters in it) is dropped
+  and noted sparingly, not written down a row each (thousands a second could
+  be sent). A password in another encoding than UTF-8 (cp1250) is still
+  refused, not left unanswered.
+- The narrowest clients of an address all switched off: the address is not
+  answered - before, a wider range answered it with its own secret and realms.
+  Of two of the same width, the one switched on answers.
+- A refusal sent late (radius_reject_delay_ms) is given to the NAS's repeats
+  once it went; before, the repeats got nothing and the NAS took the server
+  for dead.
+- An account's own entry in the directory (disabled, expired, locked) is kept
+  15 s, not a minute.
+- Codes are sent at most 8 at a time, at most 200 waiting: a mail server that
+  hung no longer kept a thread per code without end.
+- One housekeeping step breaking no longer skips the rest (backups, the time,
+  tidying) with a traceback every 5 s.
+- Under systemd only warnings and errors go to the journal as well as to
+  otp.log - every line twice, and a slow journald held every thread that logs.
+
+**Security**
+- *Export with the secrets* (the pages) is locked with a passphrase made there
+  and shown once; importing it asks for it (the command line too:
+  `--passphrase-file` or `OTP_PASSPHRASE`).
+- A backup of the tokens is always locked (a passphrase of 8 characters at
+  least).
+- Backups to other machines are never sent unlocked: without the backups'
+  password nothing is sent and *Download one made now* is refused - unlocked,
+  they hand the key of every token to whoever reads the destination.
+- The second step of the administration: an account with mail or SMS codes
+  that can no longer be sent is no longer set up anew by whoever has the
+  password - it waits for a reset (Accounts, or `otp --reset-2fa NAME`). An
+  app code used twice at once is refused the second time.
+- The enrolment pages: a code typed back checks the token again - switched
+  off, locked or confirmed meanwhile, it is not replaced.
+- A test message to a token's phone: one in 30 s, ten an hour.
+- The directory's errors (its server names, its TLS) go only to somebody
+  signed in.
+- The console's choice at login is kept in `/etc/otp-console-login`, where only
+  root writes; `/etc/otp` is the otp account's group's, which could have put a
+  link there for root to follow (a file overwritten) or a pipe (root's login
+  hanging). Written beside it and renamed; read only as a plain file.
+- Secrets off the command line, where `ps` shows them: the console's radtest,
+  a client's secret and secret settings go by the environment
+  (`--secret -`, `--set KEY=@env`, `--radtest NAME -`); install.sh's test
+  client too; an SSH key's passphrase goes to ssh-keygen through SSH_ASKPASS.
+- The replication password is kept out of PostgreSQL's log when the cluster is
+  readdressed (as it was when it is made).
+- A backup destination's folder or share with `;` or `"` in it, or one
+  beginning with `-`, and an account beginning with `-`, are refused
+  (smbclient takes `;` as the next command, ssh `-` as an option).
+- A backup put back is unpacked only when it fits on the disk.
+- `otp` is started with `python -I`: nothing from the folder it is run in.
+
+**Fixes**
+- An upgrade from the pages that hangs is stopped as a whole (install.sh and
+  what it started), install.sh's own put-back runs first; before, the deadline
+  never fired.
+- The console's radtest can answer a challenge (codes by mail or SMS).
+- A client changed on the command line or in the console stays switched off
+  if it was.
+- `otp --set` refuses `ha_*` and, without `--yes`, `db_*`, as the pages do;
+  the console says where they are changed. `KEY=@env` without its variable
+  set saves nothing.
+- A backup from another machine put back is no longer refused at 32 MB: the
+  guarded upload takes it (install.sh adds it to an nginx file that has the
+  guard).
+- install.sh no longer takes the otp account's write on /etc/otp away for a
+  moment on upgrade.
+
+## 1.0.135 — 28 October 2026
+
+**The otp console: every menu by arrows and Enter, windows instead of prompts**
+- Nothing is typed at a bare prompt any more. Every question is a window over
+  the menu: fields moved between with Up/Down (Tab), choices (app / mail /
+  SMS, a role, on / off) changed with Left/Right, passwords as stars only, the
+  help of the field under them; Enter checks everything before it is run (a
+  needed field empty, a number out of its limits, an address or e-mail that
+  is none, two passwords not the same, a missing file - it says which and the
+  window stays), Esc closes it. Deleting, switching off, putting a copy back,
+  a restart, an upgrade ask Yes / No first, No unless chosen.
+- Tokens, accounts, RADIUS clients, realms, directories and the backups kept
+  here are lists to scroll (arrows, PgUp/PgDn, Home/End, scroll bar, `/` to
+  find); Enter on one offers what can be done with it - for a token show,
+  switch off / on, unlock, new recovery codes, try a sign-in, delete; for an
+  account its password (twice, as stars), its role, off / on, reset its
+  second step, delete; a client changed or deleted; a directory tried; a
+  backup looked into or put back.
+- A command's short answer comes in a window, a long one on the scrolled
+  screen. Settings → Change one by its key opens the same window as Browse.
+  Cluster → move the web address picks the node from a list; Upgrades → from
+  the web lists what is newer, a version is picked, then the progress.
+- New accounts and passwords go to `otp --add-user` / `--passwd` through
+  OTP_PASSWORD, never on a command line.
+
+**The live views: scrolled, and what is typed is a grep**
+- The console opens on the live log, every line (Esc: the menu;
+  `OTP_CONSOLE_START=menu` opens on the menu).
+- The live log, the live RADIUS requests and the journal are a screen of
+  their own: followed at the bottom, Up/PgUp/Home scroll back (paused, the
+  new lines counted), End or Enter follow again, Left/Right along long lines,
+  a scroll bar on the right; the last 20 000 lines kept.
+- Typing filters the lines as `grep -i` does - any case, a regular
+  expression or the text as it is - the hits marked; Backspace, Ctrl+U, Esc
+  clears it and Esc again goes back. Keys typed quickly are no longer lost
+  (the terminal was flushed at each key).
+
+**Which node holds the web address, in the console's top bar**
+- The bar shows `VIP 192.0.2.10 on nodeb` (or `VIP off`), and a red line under
+  it when no node holds the address or two do. A narrow window shortens the
+  bar (the tokens first) or puts it on the line below.
+
+## 1.0.134 — 28 October 2026
+
+**The otp console: long output on a screen of its own, settings changed in a window**
+- A command's output longer than the screen opens on a screen of its own:
+  arrows, PgUp/PgDn, Home/End (and Space, j/k, g/G) scroll it, a scroll bar on
+  the right says where you are and how much there is, Esc / q / Enter go back.
+  Drawn in one write a frame, so nothing blinks; a window made bigger or
+  smaller is drawn again to its size. Colours kept; lines too long are cut at
+  the edge rather than wrapped.
+- *Settings → Browse and change*: every setting, in the groups of the pages,
+  with its value (set ones bright, defaults dim) and key; arrows, PgUp/PgDn,
+  Home/End, `/` to find (n: the next), and a scroll bar. Enter opens a window
+  with what it is (its help), what it is now and as it comes, what it may be -
+  a switch or a list chosen with the arrows, a number between its limits, a
+  text typed (a secret as stars) - checked exactly as the daemon checks it
+  before `otp --set` saves it; a wrong value says why and stays open.
+- Lines and boxes drawn as UTF-8 characters (`NCURSES_NO_UTF8_ACS`), as PuTTY
+  shows them; ASCII where the terminal is not UTF-8.
+
+**Upgrades from the web on the command line and in the console**
+- `otp --upgrade-check` looks at upgrade_url now and lists what is there.
+- `otp --upgrade-online [VERSION]` fetches the newest (or VERSION), checks its
+  signature, asks (`--yes`: does not), upgrades every node one at a time and
+  follows it: a bar for the whole and one for each node, drawn again in place
+  every second, with what each node is doing - in a cluster too.
+- `otp --upgrade-follow` follows an upgrade going on (started anywhere);
+  Ctrl+C stops the following, not the upgrade.
+- The console's *Upgrades* has all three.
+
+## 1.0.133 — 28 October 2026
+
+**The otp console, checked through**
+- The bar at the top said *THIS NODE IS IN MAINTENANCE* of a node in service:
+  it took the maintenance record (`{on: false, …}`) for a yes. It now says it
+  only when the node is, with why; another node in maintenance is named on a
+  line of its own; and a daemon not answering is said in red. The cluster
+  (nodes answering, replication) and the tokens in use are read as
+  `otp --status --json` gives them - before, they were never shown.
+- A question or a command's output starts on a clean screen - not under what
+  the last command left there.
+- *Make one (enrol)* asks how the codes come (app / mail / SMS) and where they
+  go, as `--enroll --by --to` wants; *Move the web address* asks to which node;
+  a question left empty goes back to the menu instead of running the command
+  half asked; *Settings → Look* searches the help texts as well.
+
+## 1.0.132 — 28 October 2026
+
+**The otp console: Esc everywhere, colour everywhere**
+- Esc goes back wherever the console waits: in a menu, in a question (what was
+  typed is dropped), at *Enter or Esc - back to the menu*, and in the live
+  log, the live RADIUS requests and the journal (q and Ctrl+C too). A password
+  or a secret typed is shown as stars only.
+- Every output in colour (colorama): each table's heading, and its cells by
+  what they say (active, on, accept green; off, rejected, failed red; waiting,
+  maintenance yellow; never, - and times dim; addresses magenta) - the colour
+  never shifts the columns; every other line too: "key: value", addresses and
+  times. The same for `otp ...` typed by hand on a colour terminal; JSON,
+  `--no-color`, `NO_COLOR` and anything not a terminal stay plain.
+- The live log starts from the end of the file without reading all of it.
+
+## 1.0.131 — 28 October 2026
+
+**The otp console: menus by the arrows**
+- A text screen (curses): arrows or j/k, Enter or → to choose, Esc, ← or
+  Backspace back, numbers to jump, Home/End, PgUp/PgDn, `!` a shell, `q` to
+  leave. Only what changes is written - nothing blinks - and a window made
+  bigger or smaller (PuTTY included) is drawn again to its new size. The bar
+  at the top (version, machine, the service, node, cluster, tokens,
+  maintenance, problems) is asked for every 20 s in the background. Arrows sent
+  as ESC [ A by terminals that ignore the keypad mode work too.
+- The live log in colour: the level, what it is about, addresses, accepted and
+  rejected words, warnings and errors whole.
+
+**Message texts**
+- The save bar is at the end of the editor, as at the end of any other page:
+  scrolled to the bottom it is there, and once something is changed it sticks
+  to the bottom of the editor.
+
+## 1.0.130 — 28 October 2026
+
+**The otp console** (new: docs/console.md)
+- `otp --console`: the whole of otp by its menus on the server's screen or
+  over SSH - status and checks, the live log (coloured, filtered, following
+  rotation), the live RADIUS requests, tokens, the administration's accounts
+  and their second step, settings (search, change, export), RADIUS clients,
+  realms and directories, the cluster, the web address and maintenance,
+  backups, upgrades and the service itself. Each action is the `otp …` command
+  it shows; `!` opens a shell and comes back, `q` leaves for the shell.
+  Colour with colorama, English.
+- It opens by itself when root signs in at the console or over SSH
+  (`/etc/profile.d/zz-otp-console.sh`) - never for a command run over SSH,
+  scp/sftp or a script. `otp --console-at-login on|off|status`; install.sh
+  switches it on the first time and an upgrade leaves the choice alone.
+
+**Settings, the menu on the left**
+- Opened, it is exactly as tall as shut, item for item: a pointer that opened
+  it over one item stays over that item (a longer name was wrapped onto two
+  lines and moved everything below it).
+
+**Message texts**
+- The save bar is out of the way until something is changed, as below the end
+  of any other page, and then at the bottom; the words above the editor are
+  shorter.
+
+## 1.0.129 — 28 October 2026
+
+**Message texts: only the editor scrolls**
+- The heading of the pane and the list of messages stay where they are; the
+  editor on the right is the one thing that scrolls (its own bar), and the
+  page itself does not - the save bar stays under it. On a low screen the
+  list gets a thin bar of its own when it does not fit; under 900 px wide it
+  is one column and the page scrolls, as before.
+
+## 1.0.128 — 28 October 2026
+
+**Message texts: one scroll bar**
+- The list of messages and the editor no longer scroll each on its own: the
+  page scrolls, and the list - shorter now, one line a message - stays in
+  view beside the editor. The administration's four messages are a group of
+  their own (*The administration*) under their short names.
+
+## 1.0.127 — 28 October 2026
+
+**The second step: by e-mail and SMS**
+- *Send a code* on the sign-in page sent the code and then showed nothing -
+  the page had no place for its message and stopped there. Now it says where
+  the code went, right under the button, and the box for the code appears;
+  Enter in the address box sends it.
+- The codes have their own words, not the VPN's: four new messages in
+  Settings → Message texts - *The administration: a sign-in code by mail /
+  by SMS* and *…checking an address / a number* - with their own mail
+  (band, greeting, what it is, the warning, the foot, the plain text) and SMS,
+  in the language of the sign-in page.
+
+**On the command line**
+- `otp --admin-2fa on|off|status` switches the second step for every account,
+  or says how it stands: the ways offered, who has set it up, who will at
+  their next sign-in.
+
+## 1.0.126 — 28 October 2026
+
+**The second step fits on one screen**
+- While it is asked, the sign-in page's picture and welcome line go; the ways
+  are one row (App · E-mail · SMS), the QR code is smaller, and the code and
+  its button sit side by side - as do the address or number and *Send a code*.
+
+## 1.0.125 — 28 October 2026
+
+**A second step for the administration pages** (new: docs/admin-second-step.md)
+- `admin_2fa` (Settings → Accounts, off by default): after the password every
+  account of these pages - local or from the directory - gives a code of its
+  own (not a VPN token). The ways offered: an authenticator app
+  (`admin_2fa_app`, the default), a code by e-mail (`admin_2fa_mail`, while
+  mail is set up), a code by SMS (`admin_2fa_sms`, while SMS is set up).
+- The first sign-in sets it up on the sign-in page: the app's QR code and its
+  six digits, or an address / a phone number proved by a code sent there.
+  Afterwards the code is asked each time; an app code is good once, codes sent
+  at most every 30 s and five per sign-in. Until the step is given the
+  sign-in can do nothing else, and the pages taking a file see no role.
+- Wrong codes count as wrong passwords (Accounts → Locked out); every step is
+  an event.
+- Accounts: a column *Second step* and a button to reset it (the account's
+  sign-ins end; it sets it up again at the next sign-in). On the command line
+  `otp --reset-2fa NAME`, and `otp --users` shows the column.
+
+## 1.0.124 — 28 October 2026
+
+**A password being typed is dots only**
+- Everywhere a password, a passphrase or a secret is typed (settings, the
+  directories, the clients' shared secrets, backups, the database with its
+  key, the load balancer guide…), only dots are shown while typing - not the
+  last two characters. Those show only on one that is kept, as the daemon
+  sends it (dots and its last two), after a save or when the page is opened.
+
+## 1.0.123 — 28 October 2026
+
+**Refreshing by itself never takes anything from under the person using the page**
+- A list opened, a box typed in, a switch just turned, the mouse held down on a
+  button, a help panel being read or words selected: the card it is in stays
+  exactly as it is (the same elements, never taken out of the page - a list
+  taken out closed), and everything around it is drawn new. A card whose shape
+  changed meanwhile is drawn the moment it is left. What was changed and not
+  saved goes over into a card drawn again; folds left open stay open.
+- Everywhere a pane refreshes itself: Time, Network, Restart and power off,
+  Lockouts (every second), High availability (nodes, checks, replication, the
+  addresses, each node's own settings, the web address), Certificates and TLS,
+  Firewall and access, Outgoing mail, Upgrades. Before, some stopped refreshing
+  altogether while a box had the focus; others closed an open list.
+- Overview, Log and Events wait while a box drawn in them is being used (no
+  longer only half a minute).
+
+**One save bar, at the bottom, where something is saved - and only there**
+- Shown on every pane with a setting, and on Firewall and access, High
+  availability (the web address), Time, Message texts and the enrolment pages'
+  looks; never on a pane that does things at once (Network, Restart and power
+  off, Backups' jobs, Export and import…). It no longer turned up on Network
+  now and then (its form looked like settings) and went with F5.
+- Time: the time servers are saved with the bar (was a button of their own).
+- Message texts: saved and thrown away with the bar (were buttons of their
+  own); Ctrl+S presses it.
+- High availability: *Save the new addresses* is *Change the addresses* - it
+  does it at once.
+
+**The database: downloaded with its key, and put back with it**
+- *Download* (a kept copy or dump) and *Download it* / *Download one* (made
+  now) ask: **with the key** - one `NAME.with-key.tar` holding the copy or dump
+  and the key that opens its tokens, locked with a passphrase given there (10
+  characters at least; the lock of the cluster's bundle) - or **without** it.
+  Before, a dump never had the key and a copy only while showing keys was on.
+- *Restore from this file* takes such a file: it asks for the passphrase,
+  shows what is in it, and puts back the database and its key together - as a
+  job the page follows (a big database took longer than the page waited).
+  The passphrase never goes into an address: the file is made first and
+  fetched with a ticket good for ten minutes, once.
+
+**Upgrades from the web**
+- *Settings → Upgrades → From the web*: `upgrade_url` (default
+  https://github.com/falco81/Utils/tree/main/otp - a GitHub folder, a page or
+  listing linking to packages, or one package) is looked at once a day
+  (`upgrade_check`) and on *Look now*. A newer `otp-X.Y.Z.tar.gz` is offered:
+  *Upgrade to X now* fetches it, checks its signature like a package sent by
+  hand, and upgrades the nodes one at a time; *Only fetch it* stops before.
+  Nothing is put in by itself. docs/upgrades.md.
+
+**Hide this**
+- On what is over and only says how it went: a restart or power-off (it went by
+  itself after half an hour), an upgrade, a job on the database or of the
+  cluster (the bar stayed until F5), a test mail, the SMS gateway's test, a
+  try of a backup destination.
+
+## 1.0.122 — 28 October 2026
+
+**install.sh: chrony**
+- On a fresh install and on every upgrade (also one started from the pages,
+  node by node in a cluster), chrony is installed where it is missing,
+  systemd-timesyncd is stopped if it runs, chronyd is enabled and started and
+  `timedatectl set-ntp true` is set. The machine's own /etc/chrony.conf
+  (AlmaLinux's pool) is used as it is; without any time server in it the
+  installer says so. Before, Settings → Time showed *chrony is not
+  installed* until otp was told to set the time servers.
+
+## 1.0.121 — 28 October 2026
+
+**The web address (VIP) after a node's address is changed**
+- After Settings → Network changed a node's address, keepalived on it could
+  stay *not well* (*no interface here holds …*) until *Try again* was pressed:
+  its part was asked of root before the restart, when the machine did not
+  have the new address yet, and a failed request was asked again only by hand.
+  Now:
+  - the interface for the web address is found by the web address's network
+    when none holds the node's own address (yet);
+  - the change of network asks for the web address again after the restart
+    and waits for it (a step of its own: *the web address (keepalived) set up
+    for …*) before the node comes out of maintenance;
+  - a request that failed before a restart is asked again once by itself
+    after it.
+
+## 1.0.120 — 28 October 2026
+
+**Settings → Time** (new: docs/time.md)
+- Each node's clock as chrony sees it: how far off the time servers, synchronised
+  or not, the source it follows, stratum, last correction, frequency, root
+  delay and dispersion, leap status, time zone and its own time; how far apart
+  the two nodes are; every source with its state, stratum, poll, the last eight
+  tries, when last heard and its offset. *Step it now* (chronyc makestep).
+- The time servers for the whole cluster, when otp is to set them: servers and
+  pools with iburst, prefer and NTS; the two nodes as sources for each other;
+  makestep, minsources, the networks the nodes serve the time to (opened in
+  the firewall by itself), the time zone. Each node writes them into
+  /etc/chrony.conf between marks (the file's own lines commented out, and put
+  back when otp stops setting them) and restarts chronyd.
+- A clock not synchronised, or more than a second off, is a problem on the
+  overview and in otp --status.
+
+**High availability → Each node's own settings**
+- Says where the rest of a node's own setup is: its network, IPv6 and host
+  name in Settings → Network (IPv6 on makes RADIUS listen on :: by itself),
+  its clock in Settings → Time.
+
+**Settings, the menu**
+- In groups that say what is in them: RADIUS, Tokens, Mail (Mail, Outgoing
+  mail), Access (Accounts, Certificates and TLS, Firewall and access), Server
+  (Network, Time, High availability, Restart and power off), Data (The
+  database, Backups, Export and import), Monitoring and updates (isemon,
+  Upgrades, About) - not everything under "This installation".
+
+**Settings → Network**
+- A finished change (*The network of … is changed*) has a *Hide this* button,
+  and goes by itself 6 hours after it was done (a day when it failed) - it
+  stayed for a day before.
+- *The web address is meant to be in another network* is shown only when the
+  new address is outside the web address's network, with why it matters.
+
+## 1.0.119 — 28 October 2026
+
+**Settings → Network** (new: docs/network-and-power.md)
+- Each node's IPv4 address with its prefix, gateway, DNS servers, search
+  domains and host name (FQDN), as NetworkManager has them, read on either
+  node's pages; and a form for new ones. *Check it* lists what will happen.
+- *Change it and restart* is done by the node itself, followed on the page step
+  by step with a progress bar: in a cluster the other node is told the new
+  address first (its pg_hba.conf, its subscription, its ha_peer), this node's
+  ha_address, the settings that named the old address or host name (RADIUS's
+  address, the mail greeting, the isemon name) and its own certificate where it
+  was made here are made again, maintenance moves the web address to the other
+  node, NetworkManager, the host name and /etc/hosts are set and the node
+  restarts. Back up it checks its new address, replication both ways and the
+  link between the databases (its certificate made again for the new address),
+  and comes back into service by itself. The node keeps its name in otp
+  whatever the machine is called (pinned in config.json first).
+- IPv6 (dual stack), switched on per node: by hand or automatic; RADIUS listens
+  on IPv4 and IPv6 (::), nginx answers on both, the firewall covers both.
+  Replication between the databases stays on IPv4. The web address takes an
+  IPv6 address of its own (High availability → …and its IPv6 address), moved by
+  the same VRRP instance (virtual_ipaddress_excluded) and listened on by nginx.
+- A page whose own node restarts waits for it, counting; where it was opened
+  at the node's old address or name, it goes to the new one.
+
+**Settings → Restart and power off**
+- Restart or power off this node, the other, or both: one after the other (each
+  in maintenance while it restarts - RADIUS and the pages never stop), both at
+  once, or both switched off. Each node does its own part when its turn comes,
+  so either node's pages follow it: going down, restarting, up again, with a
+  countdown; the page reloads when its own node is back.
+
+**RADIUS**
+- Listening on :: where IPv6 is switched off on the machine falls back to IPv4
+  (0.0.0.0), said in the log, rather than listening on nothing.
+
+## 1.0.118 — 28 October 2026
+
+**RADIUS**
+- The second request of a sign-in with a second window (the code typed after a
+  code by mail or SMS, or asked for from the app) shows what the first request
+  checked: *checked with the first request (ID): found CN=…; the directory
+  password; a member of CN=VPN,…*. The account, its password and its groups are
+  checked once, in the first request - for a realm's own suffix and its other
+  suffixes alike; the second carries only the code.
+
+## 1.0.117 — 25 October 2026
+
+**One person, several suffixes** (new: docs/realms-and-suffixes.md)
+- A realm takes other suffixes too: *…and also the names ending in @*
+  (`otp --add-realm NAME --aliases a.local,b.cz`). `novak@dpmo.local` is then
+  the token `novak@dpmo.cz` - in RADIUS, on the enrolment pages and in *Make a
+  token*. Looked up by UPN, the name is tried under each of the realm's
+  suffixes.
+- Tokens made under such a suffix before go on working; the realm's editor lists
+  them and *Move them under @…* renames them (key, recovery codes, history),
+  leaving any that would land on a token already there.
+- Fixed: the enrolment pages kept using a token the same account had in another
+  realm on the same directory (signed in as falco@dpmo.local, the token
+  falco@dpmo.cz), and RADIUS then refused falco@dpmo.local - *No token is
+  enrolled*. RADIUS now finds that token too, where both realms read the same
+  directory by sAMAccountName, and the decision says so.
+- Writing another realm's suffix as one of a realm's own offers to take that
+  realm in, in one step: its suffixes, its groups (after the realm's own), the
+  clients allowed it.
+- The list of realms shows the other suffixes under the one each takes.
+
 ## 1.0.116 — 25 October 2026
 
 **Who is locked out** (Settings → Accounts → Locked out)

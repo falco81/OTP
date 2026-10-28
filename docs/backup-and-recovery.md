@@ -122,11 +122,26 @@ What you add - three things:
    ```
 
    Or by hand on the pages: *Settings → The database → Download it* (a copy
-   made now), or *Download* beside a kept copy. A copy downloaded from the
-   pages holds **everything, the key included** - one file, nothing beside it
-   (from 1.0.65 for the kept ones too). Keep it as carefully as the key itself.
-   The file in `/var/lib/otp/backups/` itself does not hold the key: it is the
-   `.key` file beside it.
+   made now), *Download one* (a dump made now), or *Download* beside a kept
+   copy or dump. Each asks first (1.0.123):
+
+   - **With the key** - one file, `NAME.with-key.tar`, holding the copy or the
+     dump and the key that opens its tokens, **locked with a passphrase** you
+     give there (10 characters at least; scrypt and HMAC, the lock of the
+     cluster's bundle). The passphrase is not kept anywhere: lost, the key in
+     the file is lost with it. Keep the file and the passphrase apart.
+   - **Without the key** - the copy or the dump alone. It opens no token on
+     another machine: the key is the `.key` file beside it in
+     `/var/lib/otp/backups/` or `/var/lib/otp/dumps/` (or `secrets.key`).
+
+   Every download is an event; one with the key a warning.
+
+   ```
+   NAME.with-key.tar
+     otp-db.json          what it is: the file's name, size, sha256, node, version
+     NAME                 the copy (.json.gz) or the dump (.pgc, .sql.gz, .sqlite3)
+     secrets.key.locked   the key, locked with the passphrase
+   ```
 
 2. **Keep the key apart, once.** Copy `/var/lib/otp/secrets.key` into a
    password vault. It is 64 hexadecimal characters.
@@ -243,7 +258,10 @@ otp --restore /var/lib/otp/backups/otp-YYYYMMDD-HHMMSS.json.gz --yes
 
 On the pages: *Settings → The database → What is in it*: *Restore* beside a
 kept copy, or *Restore from this file* for one you upload. The key beside the
-copy (or inside a downloaded one) is put in place by itself.
+copy (or inside a downloaded one) is put in place by itself. A
+`….with-key.tar` sent there asks for its passphrase, and the copy or dump and
+its key are put back together - the file is kept on the server for an hour
+meanwhile, and taken away once it is back.
 
 **The database does not open:**
 
@@ -295,7 +313,9 @@ copy and its key from **off the machine** ([section 2](#2-the-backup-plan)).
    ```
 
    It says "the key that opens the tokens came with it and is in use now".
-   A downloaded copy carries the key inside: no `.key` file is needed.
+   A downloaded copy with its key (`….with-key.tar`) carries the key inside,
+   locked: *Restore from this file* on the pages asks for its passphrase, and
+   no `.key` file is needed.
 4. The node name: if the old machine had `node_name` set (see its `config.json`
    in `otp --backup-info`), set the same, so its certificate and its own
    settings, which are kept under that name, apply:

@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import shutil
 import stat
 import signal
@@ -364,18 +365,32 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None):
         say('running %s/install.sh --upgrade --yes' % info['top'])
         p = subprocess.Popen(['bash', os.path.join(src, 'install.sh'), '--upgrade', '--yes'],
                              cwd=src, env=env, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             start_new_session=True)
         # A deadline of its own (1.0.59), under systemd's and the daemon's:
         # an install.sh that hangs (a dnf lock, a slow mirror) is stopped
         # here and said failed, not killed with the status left "running".
         late = []
 
         def too_long():
-            late.append(1)
+            # The whole group (1.0.136): bash killed alone left dnf or cp
+            # running with the pipe open - the loop below never ended - and
+            # install.sh's own put-back (its EXIT trap) never ran. TERM
+            # first, so the trap runs; KILL after half a minute.
+            late.append(time.time())
             try:
-                p.kill()
+                os.killpg(p.pid, signal.SIGTERM)
             except OSError:
                 pass
+
+            def hard():
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            t = threading.Timer(30, hard)
+            t.daemon = True
+            t.start()
         dog = threading.Timer(INSTALL_LIMIT_S, too_long)
         dog.daemon = True
         dog.start()
@@ -385,8 +400,34 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None):
             raise Refused('otp-upgrade.service was stopped while install.sh ran')
         signal.signal(signal.SIGTERM, stopped)
         try:
-            for raw in p.stdout:
-                say(re.sub(r'\x1b\[[0-9;]*m', '', raw.decode('utf-8', 'replace').rstrip('\n')))
+            # Read with select (1.0.136): a read that blocks cannot be ended
+            # from another thread, and something outside the group holding
+            # the pipe kept it open. Once the deadline killed the group, at
+            # most 35 s more are waited for its last lines.
+            fd = p.stdout.fileno()
+            buf = b''
+            while True:
+                if late and time.time() - late[0] > 35:
+                    break
+                r, _w, _x = select.select([fd], [], [], 1.0)
+                if not r:
+                    if p.poll() is not None:
+                        # install.sh ended and nothing more came for a second:
+                        # done, whatever else still holds the pipe.
+                        break
+                    continue
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                while b'\n' in buf:
+                    raw, buf = buf.split(b'\n', 1)
+                    say(re.sub(r'\x1b\[[0-9;]*m', '', raw.decode('utf-8', 'replace')))
+            if buf:
+                say(re.sub(r'\x1b\[[0-9;]*m', '', buf.decode('utf-8', 'replace')))
             rc = p.wait()
         finally:
             dog.cancel()

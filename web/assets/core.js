@@ -173,6 +173,13 @@ function copyOnClick(node, text, words) {
 
 function toast(words, kind) {
   var node = $('toast');
+  /* A page without one - the sign-in page (1.0.127) - gets one. */
+  if (!node) {
+    node = el('div', 'toast');
+    node.id = 'toast';
+    node.setAttribute('role', 'status');
+    document.body.appendChild(node);
+  }
   node.textContent = words;
   node.className = 'toast show' + (kind ? ' ' + kind : '');
   clearTimeout(node._away);
@@ -751,11 +758,12 @@ function userHolds(host) {
   if (!host) return false;
   var held = false;
   var on = document.activeElement;
-  if (on && on !== document.body && host.contains(on) && !on.id
-      && (/^(INPUT|TEXTAREA|SELECT)$/.test(on.tagName) || on.isContentEditable)
+  if (on && on !== document.body && host.contains(on) && !on.id && liveControl(on)
       && !(on.closest && on.closest('.modal, #modal'))) {
-    held = true;
+    /* A list open or a box typed in holds it as long as it is (1.0.123). */
+    return true;
   }
+  if (LIVE_PRESS && LIVE_PRESS.isConnected && host.contains(LIVE_PRESS)) return true;
   if (!held && Date.now() - SELECTED_AT < 15000) {
     try {
       var sel = window.getSelection ? window.getSelection() : null;
@@ -1250,8 +1258,9 @@ var MASK_PROTO = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'va
 function maskShown(real) {
   real = String(real || '');
   if (!real || real.charAt(0) === '\u2022') return real;
-  if (real.length <= 2) return new Array(real.length + 1).join('\u2022');
-  return new Array(real.length - 1).join('\u2022') + real.slice(-2);
+  /* Being typed (1.0.124): dots only. The last two characters show only on
+     one that is kept - it comes from the daemon as dots and its last two. */
+  return new Array(real.length + 1).join('\u2022');
 }
 function maskBox(value, placeholder, cls) {
   var i = textBox('', placeholder, cls);
@@ -1960,4 +1969,348 @@ function tpQuery(id, fromName, toName) {
   if (!p || !p._range) return '';
   var r = p._range();
   return (r.from ? '&' + (fromName || 'from') + '=' + r.from : '') + (r.to ? '&' + (toName || 'to') + '=' + r.to : '');
+}
+
+/* ---- drawn again by itself, under somebody working (1.0.123) -------------
+   A part of a page that refreshes itself is drawn into a box of its own first
+   and put in by `liveFill`. When nobody is working in it, it simply replaces
+   what was there. When somebody is - a list open, a box being typed in, a
+   switch just turned, the mouse held down - the card they are in stays as it
+   is, the very same elements, never taken out of the page (a list taken out
+   closes), and everything around it is drawn new. A card whose shape has
+   changed under them waits, and is drawn the moment they leave it. What was
+   changed in a card that is not being worked in any more but was not saved
+   yet goes over into the new card. */
+var LIVE_PRESS = null;
+document.addEventListener('pointerdown', function (e) { LIVE_PRESS = e.target; }, true);
+document.addEventListener('pointerup', function () { setTimeout(function () { LIVE_PRESS = null; liveOwed(); }, 0); }, true);
+document.addEventListener('pointercancel', function () { LIVE_PRESS = null; }, true);
+document.addEventListener('focusout', function () { setTimeout(liveOwed, 0); }, true);
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Tab') setTimeout(liveOwed, 0); }, true);
+
+function liveControl(node) {
+  if (!node || node === document.body || !node.tagName) return false;
+  if (node.isContentEditable) return true;
+  if (node.tagName === 'SELECT' || node.tagName === 'TEXTAREA') return true;
+  if (node.tagName === 'INPUT') return !/^(button|submit|reset|image)$/i.test(node.type || '');
+  return false;
+}
+/** The card in `host` somebody is working in now, or null. */
+function liveWorkedIn(host) {
+  if (!host) return null;
+  var on = document.activeElement;
+  var at = null;
+  if (liveControl(on) && host.contains(on)) at = on;
+  else if (LIVE_PRESS && LIVE_PRESS.isConnected && host.contains(LIVE_PRESS)) at = LIVE_PRESS;
+  else if (Date.now() - SELECTED_AT < 15000 && liveSelectedIn(host)) at = liveSelectedIn(host);
+  else if (typeof SETHELP !== 'undefined' && SETHELP && SETHELP.style.display === 'block' && SETHELP._over
+           && SETHELP._over.isConnected && host.contains(SETHELP._over)) at = SETHELP._over;
+  if (!at) return null;
+  var unit = at.closest ? at.closest('.card, .modal-box, tr, .set-item') : null;
+  if (unit && (unit === host || !host.contains(unit))) unit = null;
+  if (!unit) {
+    unit = at;
+    while (unit.parentNode && unit.parentNode !== host) unit = unit.parentNode;
+  }
+  return unit;
+}
+function liveSelectedIn(host) {
+  try {
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (sel && !sel.isCollapsed && sel.anchorNode && host.contains(sel.anchorNode)) {
+      return sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentNode;
+    }
+  } catch (e) { /* nothing selected */ }
+  return null;
+}
+function livePath(host, node) {
+  var path = [];
+  while (node && node !== host) {
+    var p = node.parentNode;
+    if (!p) return null;
+    path.unshift(Array.prototype.indexOf.call(p.childNodes, node));
+    node = p;
+  }
+  return node === host ? path : null;
+}
+function liveAt(root, path) {
+  var n = root;
+  for (var i = 0; i < path.length; i++) {
+    n = n && n.childNodes[path[i]];
+    if (!n) return null;
+  }
+  return n;
+}
+function liveControls(root) {
+  return root && root.querySelectorAll ? Array.prototype.slice.call(root.querySelectorAll('input, select, textarea')) : [];
+}
+function liveChanged(c) {
+  if (c.tagName === 'SELECT') {
+    return Array.prototype.some.call(c.options, function (o) { return o.selected !== o.defaultSelected; });
+  }
+  if (c.type === 'checkbox' || c.type === 'radio') return c.checked !== c.defaultChecked;
+  if (c.type === 'file') return false;
+  return c.value !== c.defaultValue;
+}
+/* What was changed and not saved, over into the new elements at the same
+   place - by the controls' order, and only when the two have the same ones. */
+function liveCarry(oldRoot, newRoot) {
+  /* A fold opened stays open, one shut stays shut. */
+  if (oldRoot && oldRoot.querySelectorAll && newRoot && newRoot.querySelectorAll) {
+    var da = oldRoot.tagName === 'DETAILS' ? [oldRoot] : Array.prototype.slice.call(oldRoot.querySelectorAll('details'));
+    var db = newRoot.tagName === 'DETAILS' ? [newRoot] : Array.prototype.slice.call(newRoot.querySelectorAll('details'));
+    if (da.length && da.length === db.length) da.forEach(function (x, i) { if (db[i].open !== x.open) db[i].open = x.open; });
+  }
+  var a = liveControls(oldRoot), b = liveControls(newRoot);
+  if (!a.length || a.length !== b.length) return;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i].tagName !== b[i].tagName || (a[i].type || '') !== (b[i].type || '')) return;
+  }
+  a.forEach(function (c, i) {
+    if (!liveChanged(c)) return;
+    var n = b[i];
+    if (c.type === 'checkbox' || c.type === 'radio') {
+      if (n.checked === c.checked) return;
+      n.checked = c.checked;
+    } else {
+      if (n.value === c.value) return;
+      n.value = c.value;
+      if (n.value !== c.value) return;          // a choice the new list does not have
+    }
+    /* No events: a change can be an action (a switch that saves at once),
+       and a form that keeps a draft has drawn the same value anyway. */
+  });
+}
+/* `fresh`'s children into `host`, keeping `keep` (found at `path`) as it is. */
+function liveMerge(host, fresh, path, depth) {
+  var k = path[depth];
+  var kept = host.childNodes[k];
+  var mine = fresh.childNodes[k];
+  var before = Array.prototype.slice.call(fresh.childNodes, 0, k);
+  var after = Array.prototype.slice.call(fresh.childNodes, k + 1);
+  Array.prototype.slice.call(host.childNodes).forEach(function (c, i) {
+    if (c === kept) return;
+    var twin = i < k ? before[i] : after[i - k - 1];
+    if (twin) liveCarry(c, twin);
+    host.removeChild(c);
+  });
+  before.forEach(function (c) { host.insertBefore(c, kept); });
+  after.forEach(function (c) { host.appendChild(c); });
+  if (depth + 1 < path.length) {
+    if (mine.nodeType === 1 && kept.nodeType === 1 && mine.className !== kept.className) kept.className = mine.className;
+    liveMerge(kept, mine, path, depth + 1);
+  }
+}
+var LIVE_OWED = [];
+function liveOwed() {
+  if (!LIVE_OWED.length) return;
+  var owed = LIVE_OWED;
+  LIVE_OWED = [];
+  owed.forEach(function (o) {
+    if (o.host.isConnected && o.host._liveGen === o.gen) liveFill(o.host, o.build, true, o.after);
+  });
+}
+/** `build(box)` draws into an empty box; what it drew goes into `host`.
+    `live`: drawn by a refresh, not by something the person did - only then
+    is a card being worked in kept. `after()` runs once it is in. */
+var LIVE_DRAW = false;
+/** Draws whatever `fn` draws as a refresh - not something the person did. */
+function liveRun(fn) {
+  var was = LIVE_DRAW;
+  LIVE_DRAW = true;
+  try { return fn(); } finally { LIVE_DRAW = was; }
+}
+function liveFill(host, build, live, after) {
+  if (!host) return;
+  if (live === undefined) live = LIVE_DRAW;
+  host._liveGen = (host._liveGen || 0) + 1;
+  var box = document.createElement(host.tagName === 'TBODY' ? 'tbody' : 'div');
+  build(box);
+  var keep = live ? liveWorkedIn(host) : null;
+  if (!keep) {
+    if (live) {
+      var old = Array.prototype.slice.call(host.childNodes);
+      var neu = Array.prototype.slice.call(box.childNodes);
+      if (old.length === neu.length) old.forEach(function (c, i) { liveCarry(c, neu[i]); });
+    }
+    clear(host);
+    while (box.firstChild) host.appendChild(box.firstChild);
+  } else {
+    var path = livePath(host, keep);
+    var twin = path && liveAt(box, path);
+    if (!twin || twin.nodeType !== 1 || twin.tagName !== keep.tagName || (twin.id || '') !== (keep.id || '')) {
+      /* Its shape changed: drawn once they leave it. */
+      LIVE_OWED = LIVE_OWED.filter(function (o) { return o.host !== host; });
+      LIVE_OWED.push({host: host, build: build, gen: host._liveGen, after: after});
+      return;
+    }
+    liveMerge(host, box, path, 0);
+  }
+  if (after) after();
+}
+
+/* ---- the second step of signing in to the administration (1.0.125) -------
+   On the sign-in page, after a right password: the code of the way the
+   account set up - or, the first time, choosing a way and setting it up. */
+function mfaStep() {
+  var box = $('mfa-box');
+  if (!box) return;
+  box.hidden = false;
+  /* Room for it (1.0.126): the picture and the welcome line go while the
+     second step is asked. */
+  document.body.classList.add('mfa-on');
+  clear(box);
+  box.appendChild(el('p', 'muted', 'Checking…'));
+  api('mfa').then(function (d) { mfaDraw(box, d); }).catch(function (e) {
+    clear(box);
+    box.appendChild(el('p', 'said bad', String(e.message || e)));
+    box.appendChild(mfaOut());
+  });
+}
+var MFA_WORDS = {app: 'App', mail: 'E-mail', sms: 'SMS'};
+function mfaOut() {
+  var b = cmdButton('Sign out', 'out', 'ghost');
+  b.type = 'button';
+  b.onclick = function () { api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); }); };
+  return b;
+}
+function mfaCodeForm(box, d, action, words, after) {
+  var f = el('form', 'mfa-form');
+  var row = el('div', 'mfa-row');
+  var code = textBox('', '123456', 'mono mfa-code');
+  code.inputMode = 'numeric';
+  code.autocomplete = 'one-time-code';
+  code.maxLength = 10;
+  row.appendChild(code);
+  var go = cmdButton(words, 'check', 'primary');
+  go.type = 'submit';
+  row.appendChild(go);
+  f.appendChild(row);
+  var said = el('div', 'said');
+  f.appendChild(said);
+  f.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!code.value.trim()) { code.focus(); return; }
+    go.disabled = true;
+    said.className = 'said';
+    said.textContent = '';
+    api('mfa', {action: action, code: code.value}).then(function (r) {
+      said.className = 'said good';
+      said.textContent = r.message || 'Welcome back.';
+      setTimeout(function () { location.reload(); }, 400);
+    }).catch(function (e) {
+      go.disabled = false;
+      said.className = 'said bad';
+      said.textContent = String(e.message || e);
+      code.value = '';
+      code.focus();
+    });
+  });
+  box.appendChild(f);
+  setTimeout(function () { code.focus(); }, 30);
+  if (after) after(f);
+  return f;
+}
+function mfaDraw(box, d) {
+  clear(box);
+  var head = el('div', 'mfa-head');
+  head.appendChild(el('b', '', d.stage === 'enrol' ? 'Set up the second step' : 'The second step'));
+  head.appendChild(noI18n(el('span', 'muted small mono', ' ' + (d.name || ''))));
+  box.appendChild(head);
+  if (d.stage === 'check') {
+    if (d.kind === 'app') {
+      box.appendChild(el('p', 'lede', 'The code your authenticator app shows for these pages now.'));
+      mfaCodeForm(box, d, 'check', 'Sign in');
+    } else {
+      var p = el('p', 'lede', d.kind === 'mail' ? 'A code is sent by e-mail to ' + d.dest + '.' : 'A code is sent by SMS to ' + d.dest + '.');
+      box.appendChild(p);
+      var send = cmdButton('Send the code', 'mail', 'primary');
+      send.type = 'button';
+      var sent = el('div', 'said');
+      var form = null;
+      send.onclick = function () {
+        send.disabled = true;
+        sent.className = 'said';
+        sent.textContent = 'Sending…';
+        api('mfa', {action: 'send'}).then(function (r) {
+          sent.className = 'said good';
+          sent.textContent = 'Sent to ' + r.sent_to + ' - write the code from it below.';
+          setButtonIcon(send, 'mail', 'Send another');
+          send.classList.remove('primary');
+          setTimeout(function () { send.disabled = false; }, 30000);
+          if (!form) form = mfaCodeForm(box, d, 'check', 'Sign in');
+          else form.querySelector('input').focus();
+        }).catch(function (e) { send.disabled = false; sent.className = 'said bad'; sent.textContent = String(e.message || e); });
+      };
+      box.appendChild(send);
+      box.appendChild(sent);
+    }
+  } else {
+    box.appendChild(el('p', 'lede small', 'After the password these pages ask for a code too - choose how (the account\'s own, not a VPN token).'));
+    var seg = el('div', 'seg mfa-ways');
+    var body = el('div', 'mfa-body');
+    (d.methods || ['app']).forEach(function (k, i) {
+      var b = el('button', 'mfa-way', MFA_WORDS[k] || k);
+      b.type = 'button';
+      b.onclick = function () {
+        Array.prototype.forEach.call(seg.children, function (x) { x.classList.toggle('on', x === b); });
+        mfaWay(body, d, k);
+      };
+      seg.appendChild(b);
+      if (i === 0) setTimeout(function () { b.click(); }, 0);
+    });
+    box.appendChild(seg);
+    box.appendChild(body);
+  }
+  var foot = el('div', 'mfa-foot');
+  foot.appendChild(mfaOut());
+  box.appendChild(foot);
+}
+function mfaWay(body, d, kind) {
+  clear(body);
+  if (kind === 'app') {
+    body.appendChild(el('p', 'small muted', 'Scan it with the app (Google or Microsoft Authenticator…) and write the six digits it shows.'));
+    var pic = el('div', 'mfa-qr');
+    pic.appendChild(el('span', 'muted small', 'Making it…'));
+    body.appendChild(pic);
+    api('mfa', {action: 'enrol_start', kind: 'app'}).then(function (r) {
+      clear(pic);
+      var img = el('img');
+      img.src = r.qr;
+      img.alt = 'QR code';
+      pic.appendChild(img);
+      var key = noI18n(el('div', 'mono small mfa-key', r.secret));
+      key.title = 'Typed into the app instead of scanning';
+      pic.appendChild(key);
+      mfaCodeForm(body, d, 'enrol_confirm', 'Sign in');
+    }).catch(function (e) { clear(pic); pic.appendChild(el('p', 'said bad', String(e.message || e))); });
+    return;
+  }
+  body.appendChild(el('p', 'small muted', kind === 'mail' ? 'The address the codes go to - a code goes there now to prove it is yours.'
+    : 'The phone number with its country code - a code goes there now to prove it is yours.'));
+  var drow = el('div', 'mfa-row');
+  var dest = textBox('', kind === 'mail' ? 'novak@example.cz' : '+420 603 123 456', 'mono');
+  drow.appendChild(dest);
+  var send = cmdButton('Send a code', kind === 'mail' ? 'mail' : 'phone', '');
+  send.type = 'button';
+  drow.appendChild(send);
+  var sent = el('div', 'said');
+  var form = null;
+  send.onclick = function () {
+    if (!dest.value.trim()) { dest.focus(); return; }
+    send.disabled = true;
+    sent.className = 'said';
+    sent.textContent = 'Sending…';
+    api('mfa', {action: 'enrol_start', kind: kind, dest: dest.value}).then(function (r) {
+      sent.className = 'said good';
+      sent.textContent = 'Sent to ' + r.sent_to + ' - write the code from it below.';
+      setButtonIcon(send, kind === 'mail' ? 'mail' : 'phone', 'Send another');
+      setTimeout(function () { send.disabled = false; }, 30000);
+      if (!form) form = mfaCodeForm(body, d, 'enrol_confirm', 'Sign in');
+      else form.querySelector('input').focus();
+    }).catch(function (e) { send.disabled = false; sent.className = 'said bad'; sent.textContent = String(e.message || e); });
+  };
+  dest.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send.click(); } });
+  body.appendChild(drow);
+  body.appendChild(sent);
 }

@@ -63,9 +63,14 @@ And the real thing, from anywhere a client is allowed:
 
 - [docs/high-availability.md](docs/high-availability.md) - two servers, both answering
 - [docs/operations.md](docs/operations.md) - the runbook: installing, PostgreSQL, the cluster, a node down or lost, upgrades
+- [docs/realms-and-suffixes.md](docs/realms-and-suffixes.md) - one person, several domain suffixes (example.local and example.cz): one realm with other suffixes, one token
 - [docs/codes-by-mail-and-sms.md](docs/codes-by-mail-and-sms.md) - codes sent by e-mail or SMS after the directory password, the VPN's second window (RADIUS Challenge/Response, Cisco ASA/FTD), enrolling with them beside the app
 - [docs/backup-and-recovery.md](docs/backup-and-recovery.md) - backing up the whole installation and getting it back: a wrong change, damaged data, a lost server or cluster, installing from nothing
 - [docs/remote-backups.md](docs/remote-backups.md) - backups of everything to another machine (FTP, FTPS, SFTP, SCP, SMB, a folder), locked, on a schedule, and putting one back on a machine installed from nothing
+- [docs/network-and-power.md](docs/network-and-power.md) - each node's IP address, gateway, DNS, host name and IPv6 from the pages, and restarting or switching off one node or both
+- [docs/console.md](docs/console.md) - the otp console: menus, the live log and live RADIUS requests, at root's login
+- [docs/admin-second-step.md](docs/admin-second-step.md) - a code after the password for the administration pages: app, e-mail or SMS, reset
+- [docs/time.md](docs/time.md) - the clock of each node (chrony): how far off, its sources, the time servers for the whole cluster, the time zone
 - [docs/renaming-and-readdressing.md](docs/renaming-and-readdressing.md) - a node renamed or given a new address: putting the cluster right, from the pages or the command line
 - [docs/tls-and-vip.md](docs/tls-and-vip.md) - certificates, TLS, the web address (VIP), the firewall
 - [docs/load-balancers.md](docs/load-balancers.md) - HAProxy, nginx, Apache, F5, NetScaler, LVS, with real health checks

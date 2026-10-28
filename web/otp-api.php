@@ -123,6 +123,11 @@ function otp_call(string $path, string $method = 'GET', array|object|null $paylo
     if ($session !== '') {
         $headers[] = 'X-Otp-Session: ' . $session;
     }
+    // The language of the page (1.0.127): a code mailed from it is written in it.
+    $lang = preg_replace('/[^a-z]/', '', (string) ($_COOKIE['otp_lang'] ?? ''));
+    if (strlen($lang) === 2) {
+        $headers[] = 'X-Otp-Lang: ' . $lang;
+    }
     $token = otp_token();
     if ($token === null) {
         return [0, ''];

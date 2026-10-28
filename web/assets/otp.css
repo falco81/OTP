@@ -2400,8 +2400,10 @@ select.vip-iface{min-width:150px}
 
 /* Nothing in the menu or on a button is cut short (1.0.50): an open menu
    wraps a long name onto a second line; a button wraps its words. */
-.ctl-nav.open button[data-pane] > span,.ctl-nav.pinned button[data-pane] > span{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.3}
-.ctl-nav.open button[data-pane],.ctl-nav.pinned button[data-pane]{height:auto;min-height:36px}
+/* The menu opened is exactly as tall as shut, item for item (1.0.130): a
+   taller open item moved every one under the pointer that opened it. A name
+   too long for the rail is cut with … and said whole when pointed at. */
+.ctl-nav.open button[data-pane] > span,.ctl-nav.pinned button[data-pane] > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cert-tools > .btn{white-space:normal;text-align:center;line-height:1.25}
 .cert-h{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:10px;min-height:76px}
 .cert-h > .tag{justify-self:end;white-space:nowrap}
@@ -2892,10 +2894,16 @@ td.tok-note{min-width:150px;max-width:280px;overflow-wrap:anywhere}
 @media (max-width:760px){.hal-head{flex-wrap:wrap}.hal-nodes{margin-left:0}.hal-node{grid-template-columns:1fr}}
 
 /* The editor of message texts as two panes (1.0.109): the list stays, the editor scrolls. */
+/* One scroll bar since 1.0.129: the editor's. The heading and the list stay. */
 .tx-shell.split{align-items:stretch;min-height:0}
-.tx-shell.split > .tx-list{position:static;overflow-y:auto;max-height:100%;overscroll-behavior:contain}
+.tx-shell.split > .tx-list{position:static;overflow-y:auto;max-height:100%;scrollbar-width:thin}
 .tx-shell.split > .tx-ed{overflow-y:auto;min-height:0;max-height:100%;padding-right:6px;overscroll-behavior:contain}
 .tx-shell.split > .tx-ed > *{flex-shrink:0}
+.tx-shell .tx-list{padding:10px 8px;gap:1px}
+.tx-shell .tx-item{flex-direction:row;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px}
+.tx-shell .tx-item-t{font-size:13px;line-height:1.3}
+.tx-shell .tx-list-h{margin:9px 6px 4px}
+.tx-shell .tx-ha{margin-top:10px;padding-top:9px;font-size:12px}
 /* ---- Backups (1.0.109) ---- */
 .rb-hero{border-left:4px solid var(--line)}
 .rb-hero.good{border-left-color:var(--ok)} .rb-hero.warn{border-left-color:var(--warn)} .rb-hero.bad{border-left-color:var(--crit)}
@@ -3006,3 +3014,69 @@ button.mebtn { cursor: pointer; }
 /* Half the card on a wide screen, as the code box in the card above it. */
 @media (min-width: 760px) { .codes-ask .formgrid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 .codes .used { text-decoration: line-through; opacity: .45; }
+
+/* Network and power (1.0.119). */
+.net-nodes{margin:0 0 14px}
+.net-nodes button{display:inline-flex;gap:6px;align-items:center}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--tx-mut)}
+.dot.ok{background:var(--ok,#3fb950)}
+.dot.bad{background:var(--crit,#f85149)}
+.net-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px 22px;margin:4px 0 2px}
+.net-fact{display:flex;flex-direction:column;gap:2px;min-width:0}
+.net-fact .k{font-size:11.5px;color:var(--tx-mut);text-transform:uppercase;letter-spacing:.3px}
+.net-fact .v{font-size:13.5px;word-break:break-word}
+.net-steps{margin:8px 0 0 18px;padding:0;line-height:1.55}
+.net-steps.done{list-style:none;margin-left:0}
+.net-steps.done li{display:block;margin:0 0 6px}
+.net-steps .mark{display:inline-block;width:18px;font-weight:700}
+.net-steps li.good .mark{color:var(--ok,#3fb950)}
+.net-steps li.bad .mark{color:var(--crit,#f85149)}
+.net-plan h4{margin:16px 0 4px;font-size:13.5px}
+.net-job.failed{border-color:rgba(248,81,73,.5)}
+.net-job.done{border-color:rgba(63,185,80,.45)}
+.pw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;margin-bottom:16px}
+.pw-head{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:15px}
+.pw-node .btnrow{margin-top:14px}
+#net-host .msect{margin-top:14px}
+#net-host .net-nodes + .card{margin-top:0}
+.pw-grid .card{margin:0}
+.net-job{margin-bottom:16px}
+/* Time (1.0.120). */
+.dot.warn{background:var(--warn,#d29922)}
+.ntp-big{margin:4px 0 12px}
+.ntp-off{font-size:26px;font-weight:700;font-family:var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace)}
+.reach{display:inline-flex;gap:2px}
+.reach i{display:inline-block;width:7px;height:12px;border-radius:2px;background:var(--panel2);border:1px solid var(--line)}
+.reach i.on{background:var(--ok,#3fb950);border-color:transparent}
+.ntp-servers{display:flex;flex-direction:column;gap:8px;margin:6px 0 10px}
+.ntp-srv{display:grid;grid-template-columns:minmax(200px,2fr) minmax(160px,1fr) auto auto auto auto;gap:10px;align-items:center}
+.ntp-srv .check{white-space:nowrap}
+#ntp-host .pw-grid{margin-bottom:12px}
+#ntp-host .ntp-node .btnrow{margin-top:12px}
+.ntp-node .net-facts{grid-template-columns:repeat(3,minmax(0,1fr))}
+#ntp-host .pw-grid{grid-template-columns:repeat(auto-fill,minmax(520px,1fr))}
+#ntp-form .formgrid > .set-item:only-child{max-width:460px}
+/* 1.0.123: Hide this, and the settings under From the web */
+.hide-row{display:flex;gap:10px;align-items:center;margin-top:10px}
+#sect-upgrade{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.modal .seg + div{margin-top:10px}
+/* 1.0.125/1.0.126: the second step of signing in - compact, one screen */
+body.mfa-on .signbox > :not(.card){display:none}
+body.mfa-on .signin .card > .lede{display:none}
+body.mfa-on .signin{padding-top:24px}
+#mfa-box{display:flex;flex-direction:column;gap:10px}
+#mfa-box .mfa-head{font-size:15px}
+#mfa-box .lede{margin:0}
+.mfa-ways{display:flex;width:100%}
+.mfa-ways .mfa-way{flex:1;justify-content:center;text-align:center;padding:8px 6px !important}
+.mfa-body{display:flex;flex-direction:column;gap:8px}
+.mfa-body p{margin:0}
+.mfa-qr{display:flex;flex-direction:column;align-items:center;gap:6px}
+.mfa-qr img{width:156px;height:156px;background:#fff;border-radius:8px;padding:6px}
+.mfa-key{word-break:break-all;text-align:center;user-select:all;font-size:11.5px}
+.mfa-form{display:flex;flex-direction:column;gap:6px}
+.mfa-row{display:flex;gap:8px;align-items:stretch}
+.mfa-row input{flex:1;min-width:0}
+.mfa-row .btn{flex:0 0 auto;white-space:nowrap}
+.mfa-code{text-align:center;letter-spacing:.25em;font-size:18px !important}
+.mfa-foot{display:flex;justify-content:flex-end}

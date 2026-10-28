@@ -221,7 +221,9 @@ if (isset($_GET['api'])) {
            path: the daemon holds both folders. */
         $name = preg_replace('/[^A-Za-z0-9._-]/', '', (string) ($_GET['name'] ?? ''));
         $kind = ($_GET['kind'] ?? '') === 'dump' ? 'dump' : '';
+        $ticket = preg_replace('/[^a-f0-9]/', '', (string) ($_GET['ticket'] ?? ''));
         $bits = [];
+        if ($ticket !== '') { $bits[] = 'ticket=' . $ticket; }
         if ($name !== '') { $bits[] = 'name=' . rawurlencode($name); }
         if ($kind !== '') { $bits[] = 'kind=dump'; }
         $ask = '/api/db/download' . ($bits ? '?' . implode('&', $bits) : '');
@@ -281,7 +283,8 @@ if (isset($_GET['api'])) {
         'upgrade' => '/api/upgrade', 'web' => '/api/web',
         'firewall' => '/api/firewall', 'ha-history' => '/api/ha/history',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts', 'mailq-one' => '/api/mailq/one', 'software' => '/api/software',
-        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'mfa' => '/api/auth/mfa',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup',
@@ -293,7 +296,8 @@ if (isset($_GET['api'])) {
         'columns' => '/api/auth/columns', 'my-settings' => '/api/auth/settings',
         'ha' => '/api/ha', 'mail' => '/api/mail', 'upgrade' => '/api/upgrade', 'web' => '/api/web', 'firewall' => '/api/firewall',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts',
-        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'mfa' => '/api/auth/mfa',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -319,6 +323,10 @@ if (isset($_GET['api'])) {
 
 /* ---- the page ------------------------------------------------------------ */
 $me      = otp_whoami();
+/* Signed in with the password, the second step still to give (1.0.125): the
+   sign-in page, asking for it - nothing of the pages yet. */
+$mfa     = (is_array($me) && !empty($me['mfa'])) ? (string) $me['mfa'] : '';
+if ($mfa !== '') { $me = null; }
 $health  = otp_get('/api/health', 5.0);
 $alive   = is_array($health);
 $token_there = file_exists(OTP_TOKEN);
@@ -392,7 +400,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       <div class="offline">There is no account on this machine yet. Make one on the server:<br>
         <span class="mono">otp --add-user yourname --role fulladmin</span></div>
     <?php endif; ?>
-    <form id="signin-form" autocomplete="on">
+    <div id="mfa-box" data-stage="<?= h($mfa) ?>" hidden></div>
+    <form id="signin-form" autocomplete="on"<?= $mfa !== '' ? ' hidden' : '' ?>>
       <input type="text" id="in-name" name="username" placeholder="name" autocomplete="username"
              autocapitalize="none" spellcheck="false" required>
       <input type="password" id="in-pass" name="password" placeholder="password"
@@ -439,7 +448,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     go.disabled = true;
     var words = go.querySelector('span');
     words.textContent = 'Signing in…';
-    api('login', {name: $('in-name').value, password: $('in-pass').value}).then(function () {
+    api('login', {name: $('in-name').value, password: $('in-pass').value}).then(function (d) {
+      if (d && d.mfa) { form.hidden = true; mfaStep(); return; }
       said.className = 'said good';
       said.textContent = 'Welcome back.';
       location.reload();
@@ -452,7 +462,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       $('in-pass').focus();
     });
   });
-  $('in-name').focus();
+  if ($('mfa-box').dataset.stage) mfaStep(); else $('in-name').focus();
 }());
 </script>
 </body>
@@ -618,7 +628,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         it would be by the VPN.</p>
       <div class="formgrid">
         <div class="set-item"><label>Name</label><input type="text" id="rt-user" autocomplete="off" spellcheck="false"></div>
-        <div class="set-item"><label>Password</label><input type="text" id="rt-pass" autocomplete="off" spellcheck="false" class="mono"></div>
+        <div class="set-item"><label>Password</label><input type="password" id="rt-pass" autocomplete="new-password" spellcheck="false" class="mono"></div>
         <div class="set-item"><label>How</label>
           <select id="rt-how">
             <option value="udp">a RADIUS packet to 127.0.0.1</option>
@@ -713,18 +723,25 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="texts" data-icon="edit" title="Every word people get from this server - the mails, the SMS, what the VPN asks - in Czech and in English, edited as they will look.">Message texts</button>
     <button type="button" data-pane="portal" data-icon="people" title="The pages where people enrol their own token: who may, what they see, what they have to prove.">The enrolment pages</button>
     <button type="button" data-pane="import" data-icon="upload" title="Bring the tokens of a totpcgi server over: its .totp files, read here, nobody has to enrol again.">Bringing tokens over</button>
-    <div class="ctl-group">This installation</div>
-    <button type="button" data-pane="isemon" data-icon="pulse" title="Sending every check of a code and every RADIUS packet to isemon, in the shape isemon already reads.">isemon</button>
-    <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
-    <button type="button" data-pane="db" data-icon="db" title="Which database everything lives in, how big it is, copies of it, and how long things are kept.">The database</button>
-    <button type="button" data-pane="backup" data-icon="archive" title="Backups of everything to another machine - FTP, FTPS, SFTP, SCP, SMB or a folder - locked with a password, on a schedule, and putting one back.">Backups</button>
+    <div class="ctl-group">Mail</div>
     <button type="button" data-pane="mail" data-icon="mail" title="How a token's QR code reaches its owner by mail: a mail server, or straight to theirs.">Mail</button>
     <button type="button" data-pane="mailq" data-icon="list" title="Every mail sent - a token's QR code, a code to sign in with - and what became of it: sent, waiting for another try (greylisting, a server away), failed. Sent again or taken away by hand.">Outgoing mail <span class="nav-badge" id="mq-badge" hidden></span></button>
-    <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
+    <div class="ctl-group">Access</div>
+    <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" data-pane="web" data-icon="lock" title="The certificates of the nodes and of the cluster's web address, and how TLS is spoken.">Certificates and TLS</button>
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
-    <button type="button" class="fulladmin-only" data-pane="upgrade" data-icon="up" title="A new version, put in from here; nodes in and out of service.">Upgrades</button>
+    <div class="ctl-group">Server</div>
+    <button type="button" class="fulladmin-only" data-pane="network" data-icon="net" title="Each node's address, gateway, DNS servers, host name and IPv6 - put in by the node itself, a cluster kept whole.">Network</button>
+    <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of each node: chrony, its time servers, how far off it is - codes from the app are worked out from it.">Time</button>
+    <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
+    <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the web address moved out of the way first.">Restart and power off</button>
+    <div class="ctl-group">Data</div>
+    <button type="button" data-pane="db" data-icon="db" title="Which database everything lives in, how big it is, copies of it, and how long things are kept.">The database</button>
+    <button type="button" data-pane="backup" data-icon="archive" title="Backups of everything to another machine - FTP, FTPS, SFTP, SCP, SMB or a folder - locked with a password, on a schedule, and putting one back.">Backups</button>
     <button type="button" data-pane="carry" data-icon="download" title="Everything that makes this installation what it is, as one file to carry to another machine.">Export and import</button>
+    <div class="ctl-group">Monitoring and updates</div>
+    <button type="button" data-pane="isemon" data-icon="pulse" title="Sending every check of a code and every RADIUS packet to isemon, in the shape isemon already reads.">isemon</button>
+    <button type="button" class="fulladmin-only" data-pane="upgrade" data-icon="up" title="A new version, put in from here; nodes in and out of service.">Upgrades</button>
     <button type="button" data-pane="about" data-icon="info" title="Version, what is running, the language, the debug log.">About</button>
   </nav>
 
@@ -1172,6 +1189,28 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     </div>
   </div>
 
+  <div class="ctl-pane" id="pane-network" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Network</h2>
+      <p class="ctl-lede">Each node's address, gateway, DNS servers, host name and - switched on - IPv6.
+        A change is put in by the node itself: in a cluster the other node is told the new address
+        first, the web address moves away, the network is set and the node restarts; back up, it
+        checks its address, replication and the link between the databases, and comes back into service.</p></div>
+    <div id="net-host"></div>
+  </div>
+  <div class="ctl-pane" id="pane-time" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Time</h2>
+      <p class="ctl-lede">A code from the app is worked out from the clock: a node whose clock is off by
+        more than a few seconds refuses codes that are right. Each node keeps its clock with chrony; here
+        is how far off each one is, which servers it follows, and the time servers set for the whole cluster.</p></div>
+    <div id="ntp-host"></div>
+  </div>
+  <div class="ctl-pane" id="pane-power" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Restart and power off</h2>
+      <p class="ctl-lede">This node, the other or both, restarted or switched off from here. In a cluster the
+        web address moves to the other node first; restarted one after the other, the service never stops.
+        The page follows each node down and up again.</p></div>
+    <div id="pw-host"></div>
+  </div>
   <div class="ctl-pane" id="pane-backup" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Backups</h2>
       <p class="ctl-lede">A backup is everything: the whole database (tokens, clients, realms,
@@ -1188,11 +1227,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   </div>
   <div class="ctl-pane" id="pane-texts" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Message texts</h2>
-      <p class="ctl-lede">Every word people get from this server: the mails of a code and of a token,
-        the SMS, what the VPN's second window says - in Czech and in English. A mail is edited as
-        it will look: click into its text and write. What is in blue is filled in when it is sent
-        (the code, the name...). Saved in the database, so every node of a cluster sends the same
-        words; <i>Put back as it comes</i> makes a text exactly as it was before it was changed.</p></div>
+      <p class="ctl-lede">What people get from this server - the mails, the SMS and the VPN's second window, in Czech and English. Click into a text to write; the blue parts are filled in when it is sent.</p></div>
     <div id="tx-root"></div>
   </div>
 
@@ -1252,6 +1287,9 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         its own copies of the database (whether, when, how many - each node keeps them on its own
         disk), and the debug switches. Each node shows the value in effect on it: its own,
         marked, or the cluster's, dimmed.</p>
+      <p class="note">The machine itself - its addresses, IPv6, gateway, DNS and host name - is
+        set per node in Settings → Network; turning IPv6 on there makes RADIUS listen on
+        <code>::</code> (IPv4 and IPv6) by itself. Its clock is in Settings → Time.</p>
       <div id="ha-own"></div>
     </div>
     <div class="card full" id="ha-rep-card" hidden>
@@ -1459,6 +1497,15 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
         503, so the VPN and the load balancer leave it alone; these pages go on working.
         With a single server, maintenance means nobody can sign in to the VPN.</p>
       <div id="up-nodes"></div>
+    </div>
+    <div class="card full admin-only" id="up-web-card">
+      <h2>From the web</h2>
+      <p class="note">Where new versions are published - the address below - is looked at once a
+        day. A newer otp found there is offered here, and put in with one click: fetched, its
+        signature checked like a package sent by hand, then the nodes upgraded one at a time.
+        Nothing is put in by itself.</p>
+      <div id="up-web"></div>
+      <div id="sect-upgrade"></div>
     </div>
     <div class="card full admin-only">
       <h2>A new version</h2>

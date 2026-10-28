@@ -2414,6 +2414,9 @@ function showPane(name) {
   if (name === 'people') loadUsers();
   if (name === 'db') { loadDb(); dbLinkNote(); }
   if (name === 'backup') loadRbackup();
+  if (name === 'network') loadNet();
+  if (name === 'power') loadPower();
+  if (name === 'time') loadNtp();
   if (name === 'ha') loadHa();
   if (name === 'mail') loadMail();
   if (name === 'mailq') loadMailq(); else mailqWatch(false);
@@ -2426,9 +2429,6 @@ function showPane(name) {
   if (name === 'portal') { $('portal-url').textContent = location.protocol + '//' + location.host + '/'; loadArt(); }
   /* The save bar where there is a setting to save, and nowhere else - a page
      of clients or directories saves each one in its own window. */
-  var pane = $('pane-' + name);
-  $('save-bar').style.display = (pane && pane.querySelector('.set-item')) || Object.keys(DIRTY || {}).length
-    || Object.keys(PENDING).length || name === 'fw' ? '' : 'none';
   markDirtyCount();
 }
 document.querySelectorAll('#ctl-nav button[data-pane]').forEach(function (b) {
@@ -2704,6 +2704,7 @@ function smsTelExtra() {
       out.appendChild(el('p', 'note small ' + (d.ok ? (d.checked ? 'good' : 'warn') : 'bad'), d.ok
         ? 'The gateway answers' + (d.checked ? ', its certificate checked' : (d.https ? ' - its certificate NOT checked' : ' - over plain HTTP')) + ' (' + num(d.took_ms) + ' ms).'
         : 'The gateway cannot send codes like this - see the step marked ✗.'));
+      out.appendChild(hideBar(function () { clear(out); }));
     }).catch(function (e) { busy(go, false); clear(out); oops(e); });
   };
   f.appendChild(box);
@@ -3045,12 +3046,31 @@ function markDirty(item, s) {
    a certificate authority pasted in - wait for the same save bar:
    PENDING[key] = {save: function () -> Promise (false: not done), reset}. */
 var PENDING = {};
-function pendingSet(key, p) { PENDING[key] = p; markDirtyCount(); }
+function pendingSet(key, p) { p.pane = p.pane || PANE; PENDING[key] = p; markDirtyCount(); }
+/* The one save bar, at the bottom (1.0.123): on every pane where something
+   is saved - settings, the firewall, the web address, the time servers, the
+   message texts, the pages' looks - and on no other. A pane that does
+   something at once (Network, Restart and power off, Backups…) has its own
+   buttons for it and no save bar. */
+var SAVE_PANES = ['fw', 'ha', 'time', 'texts', 'portal'];
+function saveBarHere() {
+  if (!ADMIN || TAB !== 'settings') return false;
+  var pane = $('pane-' + PANE);
+  if (!pane) return false;
+  /* A setting of the daemon's own (data-key) - not a field that only looks
+     like one, as on Network, where nothing is saved: it is done at once. */
+  if (SAVE_PANES.indexOf(PANE) >= 0 || pane.querySelector('.set-item[data-key]')) return true;
+  return Object.keys(PENDING).some(function (k) { return PENDING[k].pane === PANE; });
+}
 function markDirtyCount() {
   var n = Object.keys(DIRTY).length + Object.keys(PENDING).length;
   $('set-said').textContent = n ? n + ' change(s) not saved yet' : '';
   $('save-bar').classList.toggle('dirty', n > 0);
-  if (n && ADMIN) $('save-bar').style.display = '';
+  /* Message texts, where only the editor scrolls (1.0.130): the bar is out of
+     the way until something is changed, as it is below the end of any other
+     page - and then at the bottom. */
+  $('save-bar').style.display = saveBarHere() ? '' : 'none';
+  saveBarPlace();
 }
 /* A question as a promise: true for the button, false for anything else. */
 function askThen(title, words, buttonWords, danger) {
@@ -3296,6 +3316,12 @@ function loadRealms() {
         var tk = el('td');
         if (r.suffix && r.suffix !== '*') tk.appendChild(noI18n(el('span', 'mono', '@' + r.suffix)));
         else tk.appendChild(el('span', '', r.suffix === '*' ? 'every name' : 'names without a realm'));
+        (r.aliases || []).forEach(function (a) {
+          tk.appendChild(el('br'));
+          var al = noI18n(el('span', 'mono small muted', '+ @' + a));
+          al.title = 'also taken: its tokens are under @' + r.suffix;
+          tk.appendChild(al);
+        });
         if (r.suffix && STATUS && STATUS.default_realm === r.suffix) {
           tk.appendChild(el('br'));
           tk.appendChild(el('span', 'tag info', 'default - also without @'));
@@ -3370,7 +3396,39 @@ function editRealm(r) {
     g1.appendChild(formField('Name', name));
     g1.appendChild(formField('Takes the names ending in @', suffix,
       'What follows the @, such as example.cz. <code>*</code> takes every name no other realm does; empty takes names written without a realm.'));
+    /* Other suffixes of the same people (1.0.117): one realm, one token per
+       person, whichever of its suffixes they sign in with. */
+    var aliases = textBox((r.aliases || []).join(', '), 'example.local, example.com', 'mono');
+    g1.appendChild(formField('…and also the names ending in @', aliases,
+      'Other suffixes of the same people - an AD with <code>example.local</code> beside <code>example.cz</code>. '
+      + '<code>novak@example.local</code> is then the token <code>novak@example.cz</code>: one token, whichever is signed in with, '
+      + 'here and on the enrolment pages. Separated by commas.'));
     s1._body.appendChild(g1);
+    if ((r.alias_tokens || []).length) {
+      var at = r.alias_tokens;
+      var free = at.filter(function (t) { return !t.clash; });
+      var box = el('div', 'note warn');
+      box.appendChild(el('div', '', num(at.length) + ' token(s) are kept under another suffix - made before it was one of this realm. They go on working as they are.'));
+      var list = noI18n(el('div', 'mono small', at.slice(0, 8).map(function (t) { return t.name + ' → ' + t.to + (t.clash ? ' ✗' : ''); }).join(', ') + (at.length > 8 ? ' …' : '')));
+      box.appendChild(list);
+      if (at.length > free.length)
+        box.appendChild(el('div', 'small', '✗: a token is there under that name already - left as it is; take one of the two away by hand.'));
+      if (free.length) {
+        var mv = cmdButton('Move them under @' + r.suffix, 'next', 'small');
+        mv.style.marginTop = '8px';
+        mv.onclick = function () {
+          rbConfirm('Move ' + num(free.length) + ' token(s) under @' + htmlText(r.suffix) + '?',
+            'Each is renamed as <i>Move</i> on a token does it: its key, recovery codes and history go with it. Nobody has to enrol again.',
+            'Move them', function () {
+              api('realms', {action: 'move_alias_tokens', id: r.id}).then(function (d) {
+                toast(d.message, 'good'); closeModal(); loadRealms();
+              }).catch(oops);
+            }, false);
+        };
+        box.appendChild(mv);
+      }
+      s1._body.appendChild(box);
+    }
     s1._body.appendChild(formField('The password is', mode,
       'The code alone is how the old token server worked: the VPN asks the directory password itself, somewhere else. The password followed by the code makes this the only server the VPN asks. '
       + 'A second window: the VPN sends the directory password alone, and this server answers with an Access-Challenge - Cisco Secure Client (ASA, FTD) and others then show a second window for the code.'));
@@ -3556,17 +3614,32 @@ function editRealm(r) {
     s4._body.appendChild(formField('Note', nt));
     secs2.appendChild(s4);
     body.appendChild(secs2);
-    MODAL_GO = function (b) {
+    var send = function (b, absorb) {
       busy(b, true);
-      api('realms', {action: 'save', realm: {id: r.id, name: name.value, suffix: suffix.value, auth_mode: mode.value,
+      api('realms', {action: 'save', absorb: absorb || [], realm: {id: r.id, name: name.value, suffix: suffix.value, aliases: aliases.value, auth_mode: mode.value,
         directory: dir.value, lookup: lookup.value, token_name: tname.value, check_disabled: dis._get(),
         methods: ['totp', 'mail', 'sms'].filter(function (m) { return mcb[m].checked; }),
         nested: nested._get(), enabled: on._get(), reply: reply.value, note: nt.value,
         groups: Array.prototype.map.call(rows.children, function (x) { return x._get(); })
           .filter(function (x) { return x.group; })}}).then(function (d) {
         toast(d.message, 'good'); closeModal(); loadRealms();
-      }).catch(oops).then(function () { busy(b, false); });
+      }).catch(function (e) {
+        /* Another suffix that is a realm of its own (1.0.117): offered to be
+           taken into this one in the same step - its suffixes, its groups,
+           the clients allowed it - rather than a dead end. */
+        var m = /^@(\S+) is the realm (.+?) - to make it a second suffix/.exec(String(e.message || ''));
+        var other = m && (REALMS.realms || []).filter(function (x) { return x.name === m[2]; })[0];
+        if (!other) { oops(e); return; }
+        var og = (other.groups || []).map(function (g) { return g.group; });
+        /* Plain sentences, each translated whole. */
+        rbConfirm('Take the realm ' + other.name + ' into this one?',
+          htmlText('@' + other.suffix + ' becomes another suffix of this realm, and the realm ' + other.name + ' goes.') + '<br><br>'
+          + (og.length ? htmlText('Its groups follow this realm’s own: ' + og.join(', ') + '.') + '<br><br>' : '')
+          + htmlText('The clients allowed it are allowed this one. Its tokens stay as they are and keep working; this realm then offers to move them under @' + suffix.value.replace(/^@/, '') + '.'),
+          'Take it in', function () { send(b, [other.name]); }, false);
+      }).then(function () { busy(b, false); });
     };
+    MODAL_GO = function (b) { send(b); };
   }, [{words: 'Close', close: true}, {words: 'Save', cls: 'primary', icon: 'save', go: function (b) { MODAL_GO(b); }}], 'large');
 }
 
@@ -4013,7 +4086,7 @@ function loadUsers() {
   api('users').then(function (d) {
     var host = $('us-table');
     clear(host);
-    host.appendChild(listTable(['Name', 'Role', 'Signs in', 'State', 'Last signed in', 'From', 'Columns', 'Note', ''], d.users, function (u) {
+    host.appendChild(listTable(['Name', 'Role', 'Signs in', 'State', 'Second step', 'Last signed in', 'From', 'Columns', 'Note', ''], d.users, function (u) {
       var tr = el('tr');
       var n = el('td'); n.appendChild(noI18n(el('span', 'mono', u.name)));
       if (u.display) n.appendChild(noI18n(el('span', 'sub', u.display)));
@@ -4021,6 +4094,15 @@ function loadUsers() {
       var r = el('td'); r.appendChild(el('span', 'tag ' + roleTone(u.role), roleWords(u.role))); tr.appendChild(r);
       tr.appendChild(el('td', 'muted', u.source === 'directory' ? 'against the directory' : 'a password here'));
       var st = el('td'); st.appendChild(el('span', 'tag ' + (u.disabled ? 'crit' : 'ok'), u.disabled ? 'off' : 'on')); tr.appendChild(st);
+      /* The second step of signing in (1.0.125): how it is given, or not yet. */
+      var mf = el('td', 'small');
+      if (u.mfa) {
+        mf.appendChild(el('span', 'tag ok', {app: 'an app', mail: 'e-mail', sms: 'SMS'}[u.mfa.kind] || u.mfa.kind));
+        if (u.mfa.dest) mf.appendChild(noI18n(el('span', 'sub mono', u.mfa.dest)));
+      } else {
+        mf.appendChild(el('span', d.mfa_on ? 'muted' : 'muted', d.mfa_on ? 'set up at the next sign-in' : '–'));
+      }
+      tr.appendChild(mf);
       tr.appendChild(u.last_in ? stampCell(u.last_in) : el('td', 'muted', 'never'));
       tr.appendChild(noI18n(el('td', 'mono small', u.last_from || '')));
       tr.appendChild(el('td', 'muted small', u.cols_tables ? num(u.cols_tables) + ' table(s) laid out' : 'as they come'));
@@ -4092,6 +4174,22 @@ function loadUsers() {
           cb.disabled = true;
         }
         tools.appendChild(cb);
+        var mr = iconButton('shield', u.mfa
+          ? 'Reset the second step: ' + u.name + ' sets it up again at the next sign-in. Their sign-ins are ended.'
+          : u.name + ' has no second step set up: nothing to reset.');
+        if (u.mfa) {
+          mr.onclick = function (ev) {
+            ev.stopPropagation();
+            confirmThen('Reset the second step of ' + u.name + '?',
+              htmlText('The way ' + u.name + ' gives the second step is taken away, and their sign-ins are ended. At the next sign-in they choose and set it up again - with the password alone, so do it only when you know it is them (a lost phone, a new one).'),
+              'Reset it', function () {
+                api('users', {action: 'mfa_reset', name: u.name}).then(function (r) { toast(r.message, 'good'); loadUsers(); }).catch(oops);
+              }, true);
+          };
+        } else {
+          mr.disabled = true;
+        }
+        tools.appendChild(mr);
       }
       tr.appendChild(tools);
       return tr;
@@ -4170,8 +4268,7 @@ function drawLockouts() {
     });
   });
   rows.sort(function (a, b) { return (b.locked - a.locked) || (b.last - a.last); });
-  var tools = $('lo-tools');
-  clear(tools);
+  liveFill($('lo-tools'), function (tools) {
   var locked = rows.filter(function (r) { return r.locked; }).length;
   if (rows.length) {
     if (locked) { var lc = el('span', 'small bad', num(locked) + ' locked out'); lc.style.marginRight = '12px'; tools.appendChild(lc); }
@@ -4184,7 +4281,8 @@ function drawLockouts() {
     };
     tools.appendChild(all);
   }
-  clear(host);
+  }, true);
+  liveFill(host, function (host) {
   if (!rows.length) { host.appendChild(el('p', 'note good', 'Nobody is locked out, and no wrong attempt is being counted.')); return; }
   var heads = ['State', 'Who', 'Where', 'How many', 'Tried'].concat(d.cluster ? ['Node'] : []).concat(['Last', '']);
   host.appendChild(listTable(heads, rows, function (r) {
@@ -4230,6 +4328,7 @@ function drawLockouts() {
     tr.appendChild(a);
     return tr;
   }, 'plain'));
+  }, true);
 }
 function userDo(body) {
   /* Drawn again either way (1.0.44): a refused change stayed in its box. */
@@ -4364,11 +4463,22 @@ function dbBusyButtons(on) {
       || ((id === 'db-restore' || id === 'dump-restore') && !b._held);
   });
 }
+/* A bar that has finished gets Hide this; one that starts again loses it. */
+function goingCloser(box) {
+  if (!box || box.querySelector('.hide-row')) return;
+  box.appendChild(hideBar(function () { box.hidden = true; }));
+}
+function goingOpen(box) {
+  if (!box) return;
+  box.hidden = false;
+  var r = box.querySelector('.hide-row');
+  if (r) r.remove();
+}
 function dbWatch(done) {
   if (DB_WATCHING) return;
   DB_WATCHING = true;     /* taken at once (1.0.57): two watchers ran when asked twice in one round trip */
   var box = $('db-going');
-  box.hidden = false;
+  goingOpen(box);
   dbBusyButtons(true);
   var step = function () {
     api('db', {action: 'job'}).then(function (d) {
@@ -4382,6 +4492,7 @@ function dbWatch(done) {
       if (j.running) { DB_WATCHING = setTimeout(step, TAB === 'settings' && PANE === 'db' ? 1000 : 5000); return; }
       DB_WATCHING = null;
       dbBusyButtons(false);
+      goingCloser($('db-going'));
       if (j.error) { toast(j.what + ' failed: ' + j.error, 'bad'); $('db-going-says').textContent = j.error; return; }
       var r = j.result || {};
       if (r.rows !== undefined) {
@@ -4526,16 +4637,11 @@ function keptTable(into, rows, opts) {
     if (ADMIN) {
       var take = cmdButton('Download', 'down', 'small');
       explain(take, dump
-        ? 'Save this dump to the machine you are sitting at. It is what the engine’s own program '
-          + 'wrote, so its own tools read it: pg_restore, or the mariadb client. The key that '
-          + 'opens the tokens is not in it: it is the .key file beside it.'
-        : 'Save this copy to the machine you are sitting at. It is the whole database as it was '
-          + 'when the copy was made, with the key that opens the tokens inside the downloaded file: '
-          + 'one file that is all of it, to be kept as safely as the key.');
-      take.onclick = function () {
-        window.location.href = '?api=db-download&name=' + encodeURIComponent(b.name)
-          + (dump ? '&kind=dump' : '');
-      };
+        ? 'Save this dump to the machine you are sitting at - with the key that opens its tokens, '
+          + 'locked with a passphrase you give, or without it.'
+        : 'Save this copy to the machine you are sitting at - with the key that opens its tokens, '
+          + 'locked with a passphrase you give, or without it.');
+      take.onclick = function () { dbDownloadAsk({name: b.name, kind: dump ? 'dump' : '', key: b.key}); };
       act.appendChild(take);
       var back = cmdButton('Restore', 'undo', 'small danger');
       explain(back, 'Put <b>this</b> one back, without downloading it and uploading it again: '
@@ -4640,6 +4746,7 @@ function askBeforeRestoring(says, what, go) {
     {words: 'No, leave it', close: true},
     {words: 'Restore it', cls: 'danger', icon: 'undo', close: true, go: function () {
       go().then(function (done) {
+        if (done && done.job) { setTimeout(function () { rbRestoreWatch('Putting the database back'); }, 50); return; }
         toast('the database was restored; what it replaced is in ' + done.safety + ' — ' + done.key, 'good');
         setTimeout(function () { window.location.reload(); }, 2500);
       }).catch(oops);
@@ -4673,6 +4780,85 @@ function dbSend(file, check) {
     });
 }
 
+/* ---- a copy or a dump with its key (1.0.123) ------------------------------
+   Downloaded with the key that opens its tokens, locked with a passphrase -
+   one file that is all of it - or without it; and the same file put back
+   with the passphrase. */
+function dbDownloadAsk(o) {
+  var what = o.kind === 'dump' ? 'dump' : 'copy';
+  modal(o.name ? 'Download ' + o.name : (what === 'dump' ? 'Download a dump made now' : 'Download a copy made now'), function (body) {
+    var seg = el('div', 'seg');
+    var withB = el('button', 'on', 'With the key'), noB = el('button', '', 'Without the key');
+    withB.type = noB.type = 'button';
+    seg.appendChild(withB); seg.appendChild(noB);
+    body.appendChild(seg);
+    var withBox = el('div');
+    withBox.appendChild(el('p', 'note', what === 'dump'
+      ? 'One file that is all of it: the dump and the key that opens its tokens, locked with the passphrase below. Put back here or on another machine (Put a dump back), the passphrase opens the key again. Lost, the key in the file is lost with it - it is not kept anywhere.'
+      : 'One file that is all of it: the copy and the key that opens its tokens, locked with the passphrase below. Put back here or on another machine (Put a copy back), the passphrase opens the key again. Lost, the key in the file is lost with it - it is not kept anywhere.'));
+    var p1 = secretBox('', '10 characters at least', 'mono');
+    var p2 = secretBox('', 'the same again', 'mono');
+    p1.id = 'dbk-p1'; p2.id = 'dbk-p2';
+    var g = el('div', 'formgrid');
+    g.appendChild(formField('Passphrase', p1));
+    g.appendChild(formField('The passphrase again', p2));
+    withBox.appendChild(g);
+    body.appendChild(withBox);
+    var noBox = el('div');
+    noBox.hidden = true;
+    noBox.appendChild(el('p', 'note warn', what === 'dump'
+      ? 'The dump alone opens no token on another machine: the key is the .key file beside it in /var/lib/otp/dumps (or /var/lib/otp/secrets.key). Keep the two together.'
+      : 'The copy alone opens no token on another machine: the key is the .key file beside it in /var/lib/otp/backups (or /var/lib/otp/secrets.key). Keep the two together.'));
+    body.appendChild(noBox);
+    body._with = true;
+    withB.onclick = function () { body._with = true; withB.classList.add('on'); noB.classList.remove('on'); withBox.hidden = false; noBox.hidden = true; };
+    noB.onclick = function () { body._with = false; noB.classList.add('on'); withB.classList.remove('on'); withBox.hidden = true; noBox.hidden = false; };
+    MODAL_BODY_DBK = body;
+  }, [
+    {words: 'Cancel', close: true},
+    {words: 'Download', cls: 'primary', icon: 'down', go: function (button) {
+      var body = MODAL_BODY_DBK;
+      if (!body._with) {
+        closeModal();
+        if (o.now) toast('it is being made; the download starts when it is ready', 'good');
+        window.location.href = '?api=db-download' + (o.name ? '&name=' + encodeURIComponent(o.name) : '') + (o.kind === 'dump' ? '&kind=dump' : '');
+        return;
+      }
+      var a = $('dbk-p1').value, b2 = $('dbk-p2').value;
+      if (a.length < 10) { toast('a passphrase of 10 characters at least', 'bad'); return; }
+      if (a !== b2) { toast('the two passphrases are not the same', 'bad'); return; }
+      busy(button, true);
+      if (o.now) toast('it is being made; the download starts when it is ready', 'good');
+      api('db', {action: 'download_ticket', name: o.name || '', kind: o.kind || '', passphrase: a}).then(function (t) {
+        closeModal();
+        window.location.href = '?api=db-download&ticket=' + encodeURIComponent(t.ticket);
+        toast(t.name + ' - keep the passphrase apart from the file', 'good');
+      }).catch(oops).then(function () { busy(button, false); });
+    }}]);
+}
+var MODAL_BODY_DBK = null;
+function dbAskPassphrase(d, fileName) {
+  modal('The key in ' + fileName, function (body) {
+    body.appendChild(el('p', 'note', 'This file holds the database and the key that opens its tokens, locked with a passphrase. Give it, and both are put back.'));
+    var p = secretBox('', '', 'mono');
+    p.id = 'dbk-open';
+    body.appendChild(formField('Passphrase', p));
+    setTimeout(function () { p.focus(); }, 50);
+  }, [
+    {words: 'Cancel', close: true},
+    {words: 'Open it', cls: 'primary', icon: 'key', go: function (button) {
+      var pass = $('dbk-open').value;
+      busy(button, true);
+      api('db', {action: 'upload_restore', upload: d.upload, passphrase: pass, check: true}).then(function (x) {
+        closeModal();
+        setTimeout(function () {
+          askBeforeRestoring(x.says, fileName + ' (with its key)', function () {
+            return api('db', {action: 'upload_restore', upload: d.upload, passphrase: pass});
+          });
+        }, 30);
+      }).catch(oops).then(function () { busy(button, false); });
+    }}]);
+}
 function dropBox(ids, empty) {
   var box = $(ids.drop);
   if (!box) return;
@@ -4704,6 +4890,7 @@ function dropBox(ids, empty) {
     if (!held) return;
     busy(go, true);
     dbSend(held, true).then(function (d) {
+      if (d.upload) { dbAskPassphrase(d, held.name); return; }
       askBeforeRestoring(d.says, held.name, function () { return dbSend(held, false); });
     }).catch(oops).then(function () { busy(go, false); });
   };
@@ -5090,10 +5277,7 @@ if ($('db-engine-test')) {
     api('db', {action: 'backup'}).then(function (x) { toast(x.message, 'good'); loadDb(); })
       .catch(oops).then(function () { busy($('db-backup'), false); });
   };
-  $('db-download').onclick = function () {
-    toast('the copy is being made; the download starts when it is ready', 'good');
-    window.location.href = '?api=db-download';
-  };
+  $('db-download').onclick = function () { dbDownloadAsk({kind: '', now: true, key: true}); };
   $('db-dump-make').onclick = function () {
     busy($('db-dump-make'), true);
     toast('dumping — this takes as long as the database is big');
@@ -5102,11 +5286,7 @@ if ($('db-engine-test')) {
       loadDb();
     }).catch(oops).then(function () { busy($('db-dump-make'), false); });
   };
-  $('db-dump-get').onclick = function () {
-    toast('the dump is being made; the download starts when it is ready. The key that opens '
-      + 'the tokens is not in a dump: keep a copy of /var/lib/otp/secrets.key with it', 'good');
-    window.location.href = '?api=db-download&kind=dump';
-  };
+  $('db-dump-get').onclick = function () { dbDownloadAsk({kind: 'dump', now: true, key: true}); };
   $('db-tidy').onclick = function () {
     busy($('db-tidy'), true);
     api('db', {action: 'tidy'}).then(function (x) { toast(x.message, 'good'); loadDb(); })
@@ -5219,9 +5399,16 @@ $('ex-plain').onclick = function () {
   api('export').then(function (d) { saveFile('otp-config-' + Date.now() + '.json', JSON.stringify(d.config, null, 2)); }).catch(oops);
 };
 $('ex-whole').onclick = function () {
-  confirmThen('Export with the secrets', 'The shared secrets of the clients, the passwords of the directories and of the mail server, the password hashes of the accounts and the private keys of the certificates go into the file, readable. Keep it somewhere safe.',
+  confirmThen('Export with the secrets', 'The shared secrets of the clients, the passwords of the directories and of the mail server, the password hashes of the accounts and the private keys of the certificates go into the file - locked with a passphrase made now and shown once. The file opens only with it.',
     'Export them', function () {
-      api('export&secrets=1').then(function (d) { saveFile('otp-config-complete-KEEP-SAFE-' + Date.now() + '.json', JSON.stringify(d.config, null, 2)); }).catch(oops);
+      /* Locked with a passphrase (1.0.136), as the cluster's bundle is. */
+      api('export&secrets=1').then(function (d) {
+        saveFile('otp-config-complete-locked-' + Date.now() + '.json', JSON.stringify(d.bundle, null, 2));
+        modal('The passphrase of the file', function (body) {
+          body.appendChild(el('p', 'note', 'The file opens only with this passphrase - it is not shown again and not kept here. Write it down apart from the file.'));
+          body.appendChild(el('p', '', '')).appendChild(copyOnClick(noI18n(el('span', 'keytext', d.passphrase)), d.passphrase, 'the passphrase was copied'));
+        }, [{words: 'Close', close: true}], 'small');
+      }).catch(oops);
     });
 };
 $('ex-load').onclick = function () { $('ex-file').click(); };
@@ -5236,15 +5423,24 @@ $('ex-file').onchange = function () {
     if (!conf || typeof conf !== 'object' || Array.isArray(conf)) { toast('the file is not JSON - is it the right file?', 'bad'); return; }
     // A file of otp --export-config holds it under "config" (1.0.62).
     if (conf && conf.config && typeof conf.config === 'object') conf = conf.config;
+    var locked = conf && conf.kind === 'otp-config-locked';
+    var phrase = null;
     modal('Import ' + f.name, function (body) {
+      if (locked) {
+        body.appendChild(el('p', 'note', 'Exported with the secrets, it is locked: the passphrase shown when it was exported opens it.'));
+        phrase = textBox('', 'the passphrase', 'mono');
+        phrase.type = 'password';
+        noI18n(phrase);
+        body.appendChild(formField('Passphrase', phrase));
+      }
       body.appendChild(el('p', 'note', 'Clients, realms, directories and accounts of the same name are replaced; the settings, the certificates, the web address, who may reach the pages, the firewall and the mail server\'s authorities in it are saved. Your own account is left as it is.'));
       body.appendChild(el('p', 'note', 'Add to what is here: anything not in the file stays. Exactly the file: clients, realms, directories and accounts not in it are taken away, and settings not in it go back to their defaults - as when a whole configuration is put back.'));
     }, [{words: 'Close', close: true},
         {words: 'Exactly the file', cls: 'danger', icon: 'upload', close: true, go: function () {
-          api('import', {config: conf, replace: true}).then(function (d) { toast(d.message, 'good'); loadSettings(); }).catch(oops);
+          api('import', {config: conf, replace: true, passphrase: phrase ? phrase.value : ''}).then(function (d) { toast(d.message, 'good'); loadSettings(); }).catch(oops);
         }},
         {words: 'Add to what is here', cls: 'primary', icon: 'upload', close: true, go: function () {
-          api('import', {config: conf}).then(function (d) { toast(d.message, 'good'); loadSettings(); }).catch(oops);
+          api('import', {config: conf, passphrase: phrase ? phrase.value : ''}).then(function (d) { toast(d.message, 'good'); loadSettings(); }).catch(oops);
         }}], 'medium');
   }).catch(oops);
 };
@@ -5676,7 +5872,7 @@ if ($('exp-go')) {
     var q = $('exp-q').value.trim(), st = $('exp-state').value;
     if ($('exp-format').value === 'backup') {
       var pass = $('exp-pass').value;
-      if (pass && pass.length < 8) { toast('a passphrase of 8 characters at least - or none', 'bad'); return; }
+      if (pass.length < 8) { toast('a passphrase of 8 characters at least: the file holds every key', 'bad'); return; }
       confirmThen('Back the tokens up', 'One file with ' + (q || st || $('exp-kind').value ? 'the tokens that match' : '<b>every</b> token')
         + ': keys, recovery codes, where codes go. ' + (pass ? 'Locked with the passphrase.' : '<b>Not locked</b> - whoever has the file can sign in as any of them.'),
         'Download it', function () {
@@ -5741,6 +5937,7 @@ function mailSteps(host, d) {
       + (d.took_ms !== undefined ? ' · ' + num(d.took_ms) + ' ms' : '')));
   }
   if ((d.steps || []).length) host.appendChild(stepsList(d.steps));
+  host.appendChild(hideBar(function () { clear(host); }));
 }
 /* The choice of how a test mail goes - there only while mail goes
    straight to the recipient's server (1.0.103). */
@@ -6173,15 +6370,14 @@ function nodeEdit(s, node, current, then) {
     nodeSave(s, node, val, function () { closeModal(); then(); }).then(function () { if (b) busy(b, false); });
   }}], true);
 }
-function drawNodeSettings(nodes) {
+function drawNodeSettings(nodes, live) {
   var card = $('ha-own-card');
   if (!card) return;
   var names = (nodes || []).map(function (n) { return n.name; });
   card.hidden = names.length < 2 && !(SETTINGS && SETTINGS.cluster);
   if (card.hidden) return;
   apiLatest('nodeset', 'settings').then(function (d) {
-    var host = $('ha-own');
-    clear(host);
+    liveFill($('ha-own'), function (host) {
     var byKey = {};
     (d.settings || []).forEach(function (s) { if (s.node_key) byKey[s.key] = s; });
     var redraw = function () { drawNodeSettings(nodes); };
@@ -6275,21 +6471,21 @@ function drawNodeSettings(nodes) {
     table.appendChild(tb);
     host.appendChild(table);
     host.appendChild(el('p', 'btnhelp', 'A value marked “its own” is that node’s alone; the others take the cluster’s. The ports, the address RADIUS listens on and the API port take effect when the node reads its settings again (within seconds); the RADIUS clients must send to the port the node listens on.'));
+    }, !!live);
   }).catch(oops);
 }
 
-function loadHa() {
-  loadVip();
+function loadHa(live) {
+  loadVip(live);
   api('ha').then(function (d) {
-    drawNodeSettings(d.nodes);
+    drawNodeSettings(d.nodes, live);
     HA = d;
     var rep = !!(d.replication && d.replication.mode === 'replicated');
     if ($('ha-lede-shared')) { $('ha-lede-shared').hidden = rep; $('ha-lede-replicated').hidden = !rep; }
     var nodes = d.nodes || [];
     var alive = nodes.filter(function (n) { return n.alive; }).length;
     $('ha-said').textContent = num(alive) + ' of ' + num(nodes.length) + ' answering · this page from ' + d.node;
-    var host = $('ha-nodes');
-    clear(host);
+    liveFill($('ha-nodes'), function (host) {
     host.appendChild(listTable(['Node', 'Address', 'Version', 'RADIUS', 'Heard from', 'State', ''], nodes, function (n) {
       var tr = el('tr');
       var nm = el('td');
@@ -6318,20 +6514,21 @@ function loadHa() {
       tr.appendChild(tools);
       return tr;
     }));
-    var ch = $('ha-checks');
-    clear(ch);
+    }, !!live);
+    liveFill($('ha-checks'), function (ch) {
     (d.checks || []).forEach(function (c) {
       var p = el('p', 'note ' + (c.ok ? 'good' : (c.warn ? 'warn' : 'bad')));
       p.appendChild(noI18n(el('b', '', c.ok ? '✓ ' : (c.warn ? '! ' : '✗ '))));
       p.appendChild(el('span', '', c.says));
       ch.appendChild(p);
     });
+    }, !!live);
     $('ha-bundle').disabled = d.engine !== 'postgres';
     /* Made two already (1.0.43): the steps folded away, a click away. */
     var made = !!d.mode;
     $('ha-make-open').hidden = !made;
     if (!made || !HA_MAKE_OPEN) $('ha-make-body').hidden = made;
-    drawHaRep(d);
+    drawHaRep(d, !!live);
     drawHaLb(d);
     explainWhatWasDrawn($('pane-ha'));
   }).catch(oops);
@@ -6484,7 +6681,7 @@ function drawHaLb(d) {
   var host = $('ha-lb');
   var open = {};
   host.querySelectorAll('details.lb-guide').forEach(function (x) { open[x.dataset.k] = x.open; });
-  if (host.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  if (host.contains(document.activeElement) && liveControl(document.activeElement)) return;
   clear(host);
   var lb = d.lb || {};
   var nodes = (d.nodes || []).map(function (n) { return {name: n.name, address: n.address || ''}; });
@@ -6503,7 +6700,8 @@ function drawHaLb(d) {
   var field = function (words, key, ph, help) {
     var f = el('label', 'lb-f');
     f.appendChild(el('span', 'lb-f-k', words));
-    var i = textBox('', '', 'mono'); i.value = v0[key]; i.placeholder = ph; i.spellcheck = false;
+    var i = key === 'secret' ? maskBox('', '', 'mono') : textBox('', '', 'mono');
+    i.value = v0[key]; i.placeholder = ph; i.spellcheck = false;
     i.oninput = function () { LB_UI[key] = i.value.trim(); lbKeep(); paint(); };
     f.appendChild(i);
     if (help) f.appendChild(el('span', 'arow-s', help));
@@ -6661,7 +6859,7 @@ if ($('ha-bundle')) {
 
 
 /* ---- the replication between the two PostgreSQLs (1.0.14) ---- */
-function drawHaRep(d) {
+function drawHaRep(d, live) {
   var r = d.replication || {};
   var card = $('ha-rep-card');
   card.hidden = r.mode !== 'replicated';
@@ -6669,7 +6867,7 @@ function drawHaRep(d) {
   $('ha-rep-said').textContent = r.healthy ? 'both directions running' : 'needs a look';
   $('ha-rep-said').className = 'right ' + (r.healthy ? 'good' : 'bad');
   var host = $('ha-rep');
-  clear(host);
+  liveFill(host, function (host) {
   /* Said plainly when the link between the databases is not checked
      (1.0.101): whoever is between the nodes reads every row going over -
      sealed keys, hashed codes, the log - and can write rows of their own. */
@@ -6713,21 +6911,22 @@ function drawHaRep(d) {
   }));
   if (r.lost) host.appendChild(el('p', 'note bad', 'The other node was away longer than what is kept for it: rebuild it from this one - on the other node, Rebuild this node from the other.'));
   if (r.trouble) host.appendChild(el('p', 'note bad', r.trouble));
+  }, live);
   var paused = (r.incoming || []).some(function (x) { return !x.enabled; });
   $('ha-pause').disabled = paused;
   $('ha-resume').disabled = !paused && r.healthy;
   if (d.job && d.job.running) haWatch();
-  drawHaAddr(d);
+  drawHaAddr(d, live);
 }
 /* The addresses of the two nodes (1.0.106): seen, checked against what this
    machine has, and changed in place - this node put right, the other told. */
-function drawHaAddr(d) {
+function drawHaAddr(d, live) {
   var a = d.readdress;
   var card = $('ha-addr-card');
   card.hidden = !a;
   if (!a) return;
   var host = $('ha-addr');
-  clear(host);
+  liveFill(host, function (host) {
   $('ha-addr-said').textContent = a.mine_here ? '' : 'this node’s address is not on this machine';
   $('ha-addr-said').className = 'right ' + (a.mine_here ? '' : 'bad');
   var grid = el('div', 'formgrid');
@@ -6750,7 +6949,7 @@ function drawHaAddr(d) {
   if (ME.role === 'fulladmin') {
     var row = el('div', 'btnrow');
     row.style.marginTop = '10px';
-    var go = cmdButton('Save the new addresses', 'save', 'primary');
+    var go = cmdButton('Change the addresses', 'save', 'primary');
     go.id = 'ha-addr-save';
     go.onclick = function () {
       confirmThen('Change the addresses of the cluster?',
@@ -6772,6 +6971,7 @@ function drawHaAddr(d) {
     row.appendChild(go);
     host.appendChild(row);
   }
+  }, live);
 }
 function haDo(act, words) {
   /* The node the page showed goes with it (1.0.94): behind a balancer the
@@ -6784,7 +6984,7 @@ var HA_MISSES = 0;
 function haWatch() {
   if (HA_WATCHING) return;
   HA_WATCHING = true;
-  $('ha-going').hidden = false;
+  goingOpen($('ha-going'));
   var step = function () {
     api('db', {action: 'job'}).then(function (d) {
       HA_MISSES = 0;
@@ -6793,6 +6993,7 @@ function haWatch() {
       $('ha-going-says').textContent = (j.what || '') + (j.says ? ' — ' + j.says : '');
       if (j.running) { HA_WATCHING = setTimeout(step, TAB === 'settings' && PANE === 'ha' ? 1000 : 5000); return; }
       HA_WATCHING = null;
+      goingCloser($('ha-going'));
       if (j.error) { toast(j.error, 'bad'); return; }
       if (j.result && j.result.rows !== undefined) toast('rebuilt from the other node: ' + num(j.result.rows) + ' row(s)', 'good');
       loadHa();
@@ -6905,7 +7106,7 @@ function upgradeAgain(ms) {
   UP.timer = setTimeout(function () {
     if (!paneLive('upgrade')) return;
     if (document.hidden) { UP.sleeping = true; return; }
-    loadUpgrade();
+    loadUpgrade(true);
   }, ms);
 }
 document.addEventListener('visibilitychange', function () {
@@ -6957,12 +7158,58 @@ function upSteady(d) {
   else if (states.length && states.every(function (x) { return x === 'done'; })) p.state = 'done';
   return d;
 }
+/* New versions on the web (1.0.123): what the address had when last asked,
+   and one click to put the newest in. */
+function drawUpWeb(d) {
+  var w = d.web || {};
+  var o = w.online || {};
+  liveFill($('up-web'), function (host) {
+    var p = el('p', 'note ' + (o.error ? 'bad' : (o.newer ? 'good' : '')));
+    if (!o.at) p.textContent = w.check ? 'Not looked at yet - within minutes, or press Look now.' : 'Not looked at: looking every day is switched off below. Look now asks once.';
+    else if (o.error) p.textContent = 'Looked ' + ago(o.at) + ': ' + o.error;
+    else if (o.newer) p.textContent = 'otp ' + o.newest.version + ' is there - this server runs ' + (o.here || d.version) + ' (looked ' + ago(o.at) + ')';
+    else if (o.newest) p.textContent = 'Nothing newer: the newest there is ' + o.newest.version + ' and this server runs ' + (o.here || d.version) + ' (looked ' + ago(o.at) + ')';
+    else p.textContent = 'No otp package there (looked ' + ago(o.at) + ')';
+    host.appendChild(p);
+    if (o.url) host.appendChild(noI18n(el('p', 'mono small muted', o.url)));
+    var row = el('div', 'btnrow');
+    var look = cmdButton('Look now', 'refresh', '');
+    look.onclick = function () {
+      busy(look, true);
+      api('upgrade', {action: 'online_look'}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
+        .catch(oops).then(function () { busy(look, false); });
+    };
+    row.appendChild(look);
+    var running = !!(d.plan && d.plan.state === 'running');
+    if (o.newer && !running) {
+      var up = cmdButton('Upgrade to ' + o.newest.version + ' now', 'play', 'primary');
+      up.onclick = function () {
+        var many = (d.nodes || []).length > 1;
+        confirmThen('Upgrade to otp ' + o.newest.version + '?', htmlText('It is fetched from ' + (o.newest.url || o.url) + ', its signature checked, and '
+          + (many ? 'the nodes are upgraded one at a time - each in maintenance while it is, so the service never stops.' : 'this server is upgraded: for a minute nobody can sign in to the VPN.')), 'Upgrade', function () {
+          busy(up, true);
+          api('upgrade', {action: 'online_get', version: o.newest.version, start: true}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
+            .catch(oops).then(function () { busy(up, false); });
+        }, false);
+      };
+      row.appendChild(up);
+      var only = cmdButton('Only fetch it', 'down', '');
+      explain(only, 'Fetched and checked, and left ready below - put in when Upgrade is pressed.');
+      only.onclick = function () {
+        busy(only, true);
+        api('upgrade', {action: 'online_get', version: o.newest.version}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
+          .catch(oops).then(function () { busy(only, false); });
+      };
+      row.appendChild(only);
+    }
+    host.appendChild(row);
+  });
+}
 function drawUpgrade(d) {
   d = upSteady(d);
   UP.last = d;
   /* The nodes. */
-  var host = $('up-nodes');
-  clear(host);
+  liveFill($('up-nodes'), function (host) {
   /* By name, so the rows keep their places whichever node answered (1.0.70). */
   var nodesSorted = (d.nodes || []).slice().sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
   host.appendChild(listTable(['Node', 'Version', 'Heard from', 'State', ''], nodesSorted, function (n) {
@@ -6989,11 +7236,12 @@ function drawUpgrade(d) {
     tr.appendChild(tools);
     return tr;
   }, 'plain'));
+  });
+  drawUpWeb(d);
   /* The package. */
-  var pk = $('up-pkg');
-  clear(pk);
   var plan = d.plan;
   var running = !!(plan && plan.state === 'running');
+  liveFill($('up-pkg'), function (pk) {
   if (d.package) {
     var p = d.package;
     var box = el('div', 'notice good');
@@ -7010,6 +7258,7 @@ function drawUpgrade(d) {
       pk.appendChild(det);
     }
   }
+  });
   $('up-forget').hidden = !d.package || running;
   $('up-start').disabled = !d.package || !d.ready || running;
   var many = (d.nodes || []).length > 1;
@@ -7024,8 +7273,7 @@ function drawUpgrade(d) {
   }
   /* The plan. */
   $('up-plan-card').hidden = !plan;
-  var ph = $('up-plan');
-  clear(ph);
+  liveFill($('up-plan'), function (ph) {
   if (plan) {
     ph.appendChild(el('p', 'note', 'To ' + plan.version + ' · started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · '
       + ({running: 'going on', done: 'done', failed: 'failed', cancelled: 'stopped'})[plan.state]));
@@ -7073,7 +7321,11 @@ function drawUpgrade(d) {
       r.appendChild(a);
       ph.appendChild(r);
     }
+    if (plan.state !== 'running') ph.appendChild(hideBar(function () {
+      return api('upgrade', {action: 'hide'}).then(function (x) { drawUpgrade(x); });
+    }));
   }
+  });
   $('up-cancel').hidden = !running;
   /* Each node's own install.sh output (1.0.70), kept as it comes - the
      answering node changes behind the web address, and the one card showed
@@ -7139,7 +7391,7 @@ var VERSION_LOADED = (function () {
   var m = sc && /[?&]v=([0-9.]+)/.exec(sc.getAttribute('src') || '');
   return m ? m[1] : '';
 }());
-function loadUpgrade() {
+function loadUpgrade(live) {
   /* A short deadline while an upgrade runs (1.0.66): the node answering may
      be restarting, or the web address moving to the other one. */
   var running = upRunning();
@@ -7150,7 +7402,7 @@ function loadUpgrade() {
     UP.misses = 0;
     if ($('up-retry')) $('up-retry').textContent = '';
     if (!VERSION_LOADED) VERSION_LOADED = d.version;
-    drawUpgrade(d);
+    if (live) liveRun(function () { drawUpgrade(d); }); else drawUpgrade(d);
   }).catch(function (e) {
     if (mine !== UP.ask) return;
     /* The node that answers these pages may be the one being restarted, or
@@ -7247,9 +7499,8 @@ function loadWeb() {
   WEB.timer = setInterval(function () {
     if (!paneLive('web')) { clearInterval(WEB.timer); return; }
     if (document.hidden) return;
-    if ($('web-certs') && $('web-certs').contains(document.activeElement)) return;
     if ($('modal') && !$('modal').hidden) return;
-    apiLatest('web', 'web').then(drawWeb).catch(function () {});
+    apiLatest('web', 'web').then(function (d) { liveRun(function () { drawWeb(d); }); }).catch(function () {});
   }, 5000);
 }
 function daysLeft(ts) { return ts ? Math.floor((ts - Date.now() / 1000) / 86400) : null; }
@@ -7695,33 +7946,32 @@ function tlsRow(words, says, control) {
 function drawWeb(d) {
   WEB.last = d;
   var host = $('web-certs');
-  clear(host);
+  liveFill(host, function (host) {
   Object.keys(d.tls).forEach(function (t) {
     if (t === 'vip' && !d.cluster) return;
     host.appendChild(certCard(d, t));
   });
-  explainWhatWasDrawn($('pane-web'));
+  }, undefined, function () { explainWhatWasDrawn($('pane-web')); });
 }
 
 /* The web address lives on the High availability pane (1.0.49), kept up to
    date there every five seconds while it is open. */
 var VIP_TIMER = null;
-function loadVip() {
+function loadVip(live) {
   if (!$('web-vip')) return;
-  apiLatest('vip', 'web').then(function (d) { WEB.last = d; drawVip(d); explainWhatWasDrawn($('ha-vip-card')); }).catch(oops);
+  apiLatest('vip', 'web').then(function (d) { WEB.last = d; if (live) liveRun(function () { drawVip(d); }); else drawVip(d); explainWhatWasDrawn($('ha-vip-card')); }).catch(oops);
   clearInterval(VIP_TIMER);
   VIP_TIMER = setInterval(function () {
     if (!paneLive('ha')) { clearInterval(VIP_TIMER); return; }
     if (document.hidden) return;
     if ($('modal') && !$('modal').hidden) return;
-    if (document.activeElement && $('web-vip').contains(document.activeElement)) return;
-    apiLatest('vip', 'web').then(function (d) { WEB.last = d; drawVip(d); explainWhatWasDrawn($('ha-vip-card')); }).catch(function () {});
+    apiLatest('vip', 'web').then(function (d) { WEB.last = d; liveRun(function () { drawVip(d); }); explainWhatWasDrawn($('ha-vip-card')); }).catch(function () {});
   }, 5000);
 }
 var VIPD = null;
 function vipFromServer(v, d) {
   var names = (d.nodes || []).map(function (n) { return n.name; });
-  return {address: v.address || '', fqdn: v.fqdn || '', vrid: String(v.vrid || 51),
+  return {address: v.address || '', address6: v.address6 || '', fqdn: v.fqdn || '', vrid: String(v.vrid || 51),
           ifaces: Object.assign({}, v.ifaces || {}), mode: v.mode === 'stays' ? 'stays' : 'back',
           prefer: v.prefer || v.prefer_now || names[0] || '', on: !!v.on};
 }
@@ -7735,10 +7985,10 @@ function vipSave() {
   if (!dr) return Promise.resolve(true);
   var was = vipFromServer(v, d);
   var steps = [];
-  if (dr.address !== was.address || dr.fqdn !== was.fqdn || String(dr.vrid) !== String(was.vrid)
+  if (dr.address !== was.address || (dr.address6 || '') !== (was.address6 || '') || dr.fqdn !== was.fqdn || String(dr.vrid) !== String(was.vrid)
       || JSON.stringify(Object.keys(dr.ifaces).sort().map(function (k) { return [k, dr.ifaces[k]]; }))
          !== JSON.stringify(Object.keys(was.ifaces).sort().map(function (k) { return [k, was.ifaces[k]]; }))) {
-    steps.push(function () { return api('web', {action: 'vip_save', address: dr.address, fqdn: dr.fqdn, vrid: Number(dr.vrid || 51), ifaces: dr.ifaces}); });
+    steps.push(function () { return api('web', {action: 'vip_save', address: dr.address, address6: dr.address6 || '', fqdn: dr.fqdn, vrid: Number(dr.vrid || 51), ifaces: dr.ifaces}); });
   }
   if (dr.mode !== was.mode || (dr.mode === 'back' && dr.prefer !== was.prefer)) {
     steps.push(function () { return api('web', {action: 'vip_mode', mode: dr.mode, prefer: dr.prefer}); });
@@ -7768,7 +8018,7 @@ function vipSave() {
 }
 function drawVip(d) {
   var host = $('web-vip');
-  clear(host);
+  liveFill(host, function (host) {
   if (!d.cluster) {
     host.appendChild(el('p', 'note', 'The web address is for a cluster of two: make this node one of two first (High availability).'));
     return;
@@ -7876,6 +8126,10 @@ function drawVip(d) {
   g.appendChild(formField('The address, with its prefix', addr, 'A third address in the nodes\' network - not either node\'s.'));
   g.appendChild(formField('Its name', fqdn, 'What people type. With a certificate of its own (Settings → Certificates and TLS), it is answered with that one.'));
   g.appendChild(formField('VRRP id', vrid, '1 to 255; one no other VRRP (keepalived, a router) on that network uses.'));
+  /* Dual stack (1.0.119): an IPv6 address moved with it. */
+  var addr6 = textBox(dr.address6 || '', '2001:db8::10/64', 'mono');
+  addr6.oninput = function () { dr.address6 = addr6.value.trim(); vipDirty(); };
+  g.appendChild(formField('…and its IPv6 address (optional)', addr6, 'With IPv6 on in Settings → Network: moved with the IPv4 one by the same VRRP; nginx answers on it too. Empty: IPv4 only.'));
   host.appendChild(g);
   /* On or off: a switch, kept with the rest until saved. */
   var onrow = el('label', 'fw-master vip-onoff');
@@ -7886,6 +8140,7 @@ function drawVip(d) {
   onrow.appendChild(el('span', '', dr.on ? 'the web address is on' : 'the web address is off'));
   host.appendChild(onrow);
   host.appendChild(el('p', 'muted small', 'Each node needs keepalived (put in by itself from AlmaLinux\'s own repository), VRRP (IP protocol 112) let in from the other node, and the address in the same network as its own - docs/tls-and-vip.md says what to open in a firewall.'));
+  });
 }
 
 
@@ -7944,10 +8199,8 @@ function loadFw() {
   FW.timer = setInterval(function () {
     if (!paneLive('fw')) { clearInterval(FW.timer); return; }
     if (document.hidden) return;
-    if ($('fw-body') && $('fw-body').contains(document.activeElement)) return;
     if ($('modal') && !$('modal').hidden) return;
-    if (document.activeElement && document.activeElement.closest && document.activeElement.closest('#fw-access')) return;
-    apiLatest('fw', 'firewall').then(drawFw).catch(function () {});
+    apiLatest('fw', 'firewall').then(function (d) { liveRun(function () { drawFw(d); }); }).catch(function () {});
   }, 5000);
 }
 function fwFam(f) {
@@ -7987,8 +8240,7 @@ function drawFw(d) {
   }
   drawFwAccess(d);
   /* The switch: otp looks after its rules, or leaves the firewall alone. */
-  var master = $('fw-master');
-  clear(master);
+  liveFill($('fw-master'), function (master) {
   var sw = switchBox(d.conf.on);
   sw.classList.add('big');
   sw._input.disabled = !d.may;
@@ -7997,12 +8249,13 @@ function drawFw(d) {
   lab.appendChild(sw);
   lab.appendChild(el('span', '', d.conf.on ? 'otp looks after its rules' : 'otp leaves the firewall alone'));
   master.appendChild(lab);
+  });
   $('fw-lede').textContent = d.conf.on
     ? 'In INPUT first: the chain OTP-IN - the other node of the cluster, your own rules in their order, then what otp\'s functions need. What it does not let in goes on to the rules that were there before.'
     : 'Off: nothing is changed in the firewall. Turned on, what otp\'s functions need is let in by itself, and the rules of your own with it.';
   /* The nodes, each with what its root says. */
   var nodes = $('fw-nodes');
-  clear(nodes);
+  liveFill(nodes, function (nodes) {
   d.nodes.forEach(function (n) {
     var b = el('button', 'fw-node' + (n.name === FW.node ? ' on' : ''));
     b.type = 'button';
@@ -8026,6 +8279,7 @@ function drawFw(d) {
     b.onclick = function () { FW.node = n.name; drawFw(FW.last); };
     nodes.appendChild(b);
   });
+  });
   nodes.hidden = d.nodes.length < 2;
   drawFwBody(d);
   explainWhatWasDrawn($('pane-fw'));
@@ -8033,8 +8287,7 @@ function drawFw(d) {
 
 function drawFwAccess(d) {
   var host = $('fw-access');
-  if (host.contains(document.activeElement)) return;
-  clear(host);
+  liveFill(host, function (host) {
   var st = {};
   var rows = el('div', 'fw-acc');
   var me = d.nodes.filter(function (n) { return n.name === FW.node; })[0] || d.nodes[0] || {};
@@ -8090,11 +8343,12 @@ function drawFwAccess(d) {
   foot.appendChild(always);
   if (d.access.from_nginx && !FW.draft.access_changed) foot.appendChild(el('span', 'tag dim', 'as install.sh wrote it - not set here yet'));
   host.appendChild(foot);
+  });
 }
 
 function drawFwBody(d) {
   var body = $('fw-body');
-  clear(body);
+  liveFill(body, function (body) {
   var n = d.nodes.filter(function (x) { return x.name === FW.node; })[0] || {};
   var fw = n.fw || {};
   if (fw.backend === 'firewalld') {
@@ -8245,6 +8499,7 @@ function drawFwBody(d) {
   if (FW.otherOpen) other.open = true;
   other.ontoggle = function () { FW.otherOpen = other.open; };
   body.appendChild(other);
+  });
 }
 
 function fwMove(i, dir) {
@@ -8875,7 +9130,7 @@ function mailqWatch(on) {
   /* Drawn again every 10 s while it is looked at - what waits moves by itself. */
   if (on) MQ.timer = setInterval(function () {
     if (PANE !== 'mailq' || TAB !== 'settings' || document.hidden) { mailqWatch(false); return; }
-    if (!document.querySelector('.modal:not([hidden])') && !userHolds($('mq-table'))) loadMailq(true);
+    if (!document.querySelector('.modal:not([hidden])')) loadMailq(true);
   }, 10000);
 }
 function mailqStateTag(st) {
@@ -8903,8 +9158,7 @@ function loadMailq(quiet) {
     });
     $('mq-said').textContent = (d.mode === 'off' ? 'Sending mail is switched off (Settings → Mail): nothing is sent or tried again. · ' : '')
       + 'A mail not taken is tried again for ' + d.retry_hours + ' h (a code to sign in with only while it is good); the list keeps what went or failed for ' + d.keep_days + ' days.';
-    var host = $('mq-table');
-    clear(host);
+    liveFill($('mq-table'), function (host) {
     var cluster = STATUS && STATUS.cluster;
     var heads = ['Made', 'To', 'What', 'State', {words: 'Tries', cls: 'num'}, 'Next try / went', 'What it said'];
     if (cluster) heads.push('Node');
@@ -8959,6 +9213,7 @@ function loadMailq(quiet) {
       tr.classList.add('tappable');
       return tr;
     }, 'rows'));
+    }, !!quiet);
     pager('mq-pager', MQ.page, MQ.per, d.total, function (p) { MQ.page = p; loadMailq(); });
     explainWhatWasDrawn($('pane-mailq'));
   }).catch(oops);
@@ -9139,7 +9394,7 @@ function txEditable(ed, f, doc) {
       if (f.kind !== 'line') ed._doc.execCommand('insertLineBreak');
     }
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && /^[biu]$/i.test(e.key) && f.kind !== 'rich') e.preventDefault();
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); txSave(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('set-save').click(); }
   });
   ed.addEventListener('paste', function (e) {
     e.preventDefault();
@@ -9206,16 +9461,21 @@ function txResetField(f) {
 function drawTexts() {
   var host = $('tx-root');
   if (!host || !TX.data) return;
+  saveBarHome();
   clear(host);
   TX.eds = {};
   TX.active = null;
   TX.range = null;
+  /* One scroll, the page's (1.0.128): the list is short enough to stay in
+     view beside the editor, which runs down the page - no scroll bars of
+     their own. */
   var shell = el('div', 'tx-shell');
   txFitShell(shell);
-  /* The messages, by how they go. */
+  /* The messages, by whom they are for, then by how they go. */
   var list = el('div', 'tx-list card');
-  TX_KINDS.forEach(function (k) {
-    var ms = TX.data.messages.filter(function (m) { return m.kind === k[0]; });
+  var isAdmin = function (m) { return /^admin_/.test(m.id); };
+  TX_KINDS.concat([['admin', 'The administration', 'shield']]).forEach(function (k) {
+    var ms = TX.data.messages.filter(function (m) { return k[0] === 'admin' ? isAdmin(m) : (m.kind === k[0] && !isAdmin(m)); });
     if (!ms.length) return;
     var hd = el('div', 'tx-list-h');
     hd.innerHTML = iconMarkup(k[2], 14);
@@ -9224,11 +9484,11 @@ function drawTexts() {
     ms.forEach(function (m) {
       var b = el('button', 'tx-item' + (m.id === TX.id ? ' on' : ''));
       b.type = 'button';
-      b.appendChild(el('span', 'tx-item-t', m.title));
+      b.appendChild(el('span', 'tx-item-t', m.short || m.title));
       var st = el('span', 'tx-item-s');
       var ch = TX.data.langs.filter(function (l) { return (m.saved[l].changed || []).length; });
-      if (ch.length) ch.forEach(function (l) { st.appendChild(noI18n(el('span', 'tag warn', l.toUpperCase()))); });
-      else st.appendChild(el('span', 'muted', 'as it comes'));
+      ch.forEach(function (l) { st.appendChild(noI18n(el('span', 'tag warn', l.toUpperCase()))); });
+      if (ch.length) b.title = 'Changed here - not as it comes';
       b.appendChild(st);
       b.onclick = function () { if (m.id !== TX.id) txLeave(function () { TX.id = m.id; drawTexts(); }); };
       list.appendChild(b);
@@ -9283,14 +9543,6 @@ function txDrawEditor(host) {
     back.id = 'tx-reset';
     back.onclick = txResetAll;
     bar.appendChild(back);
-    var drop = cmdButton('Throw away the changes', 'close', '');
-    drop.id = 'tx-drop';
-    drop.onclick = function () { TX.dirty = {}; drawTexts(); };
-    bar.appendChild(drop);
-    var save = cmdButton('Save', 'save', 'primary');
-    save.id = 'tx-save';
-    save.onclick = txSave;
-    bar.appendChild(save);
   }
   head.appendChild(bar);
   host.appendChild(head);
@@ -9316,8 +9568,10 @@ function txBarState() {
         + ' · ' + num(sv.changed.length) + ' text(s) not as they come';
     } else { s.className = 'tx-said small muted'; s.textContent = 'As it comes with otp'; }
   }
-  if ($('tx-save')) $('tx-save').disabled = !n;
-  if ($('tx-drop')) $('tx-drop').hidden = !n;
+  /* Saved with the bar at the bottom (1.0.123), as everything else. */
+  if (n && TX.data.may_change) {
+    if (!PENDING.texts) pendingSet('texts', {pane: 'texts', save: txSave, reset: function () { TX.dirty = {}; drawTexts(); }});
+  } else if (PENDING.texts) { delete PENDING.texts; markDirtyCount(); }
   if ($('tx-reset')) $('tx-reset').disabled = !(m.saved[TX.lang].changed || []).length && !n;
 }
 
@@ -9638,24 +9892,22 @@ function txDrawPrompts(host, m) {
 /* ---- saved, put back, looked at, sent ------------------------------------ */
 function txSave() {
   var m = txMsg();
-  if (!txDirtyCount() || !TX.data.may_change) return;
-  var b = $('tx-save');
-  busy(b, true);
-  api('texts', {action: 'save', id: m.id, lang: TX.lang, fields: TX.dirty, was_at: m.saved[TX.lang].at || null}).then(function (d) {
+  if (!txDirtyCount() || !TX.data.may_change) return Promise.resolve(true);
+  return api('texts', {action: 'save', id: m.id, lang: TX.lang, fields: TX.dirty, was_at: m.saved[TX.lang].at || null}).then(function (d) {
     TX.dirty = {};
     txPutState(d.state);
     toast(d.message, 'good');
     drawTexts();
+    return true;
   }).catch(function (e) {
-    busy(b, false);
     if (e.status === 409) {
       modalOver(function () {
         confirmThen('Changed meanwhile', htmlText(e.message) + '<br><br>' + htmlText(txT('Load them again - what was written here is then lost - or copy it out first.')),
-          'Load them again', function () { TX.dirty = {}; loadTexts(); }, false);
+          'Load them again', function () { TX.dirty = {}; delete PENDING.texts; markDirtyCount(); loadTexts(); }, false);
       });
-      return;
+      return false;
     }
-    oops(e);
+    throw e;
   });
 }
 function txPutState(st) {
@@ -9934,7 +10186,7 @@ function haLinkBar(d) {
     box.appendChild(list);
   }
   clearTimeout(HA_LINK_POLL);
-  if (running) HA_LINK_POLL = setTimeout(function () { if (TAB === 'settings' && PANE === 'ha') loadHa(); }, 3000);
+  if (running) HA_LINK_POLL = setTimeout(function () { if (TAB === 'settings' && PANE === 'ha') loadHa(true); }, 3000);
   return box;
 }
 
@@ -9969,18 +10221,47 @@ function dbLinkNote() {
   }).catch(function () { /* nothing to add */ });
 }
 
-/* The list of messages stays where it is; only the editor beside it scrolls
-   (1.0.109): the shell is as tall as what is left of the window, each column
-   scrolling on its own. Narrow screens keep one column and the page's scroll. */
+/* The heading and the list of messages stay where they are; only the editor
+   scrolls (1.0.109, one scroll bar since 1.0.129): the shell is as tall as
+   what is left of the pane above the save bar, so the page itself never
+   scrolls. Narrow screens keep one column and the page's scroll. */
+/* The save bar where the page scrolls (1.0.131): at the end of the pane - or,
+   on Message texts, where only the editor scrolls, at the end of the editor.
+   Either way it is below the last thing until something is changed, and
+   then sticks to the bottom. Moved back home before the editor is drawn
+   again, or it would go with it. */
+var SAVE_BAR_HOME = null;
+function saveBarHome() {
+  var bar = $('save-bar');
+  if (!bar) return;
+  if (!SAVE_BAR_HOME) SAVE_BAR_HOME = {parent: bar.parentNode, next: bar.nextSibling};
+  if (bar.parentNode !== SAVE_BAR_HOME.parent) {
+    SAVE_BAR_HOME.parent.insertBefore(bar, SAVE_BAR_HOME.next && SAVE_BAR_HOME.next.parentNode === SAVE_BAR_HOME.parent ? SAVE_BAR_HOME.next : null);
+    bar.classList.remove('in-editor');
+  }
+}
+function saveBarPlace() {
+  var bar = $('save-bar');
+  if (!bar) return;
+  var ed = PANE === 'texts' && TAB === 'settings' ? document.querySelector('.tx-shell.split > .tx-ed') : null;
+  if (!ed) { saveBarHome(); return; }
+  if (!SAVE_BAR_HOME) SAVE_BAR_HOME = {parent: bar.parentNode, next: bar.nextSibling};
+  if (bar.parentNode !== ed || ed.lastChild !== bar) { ed.appendChild(bar); bar.classList.add('in-editor'); }
+}
+var TX_FIT = null;
 function txFitShell(shell) {
   var fit = function () {
-    if (!shell.isConnected) { window.removeEventListener('resize', fit); return; }
+    if (!shell.isConnected) { window.removeEventListener('resize', fit); if (TX_FIT === fit) TX_FIT = null; return; }
     if (window.innerWidth < 900) { shell.style.height = ''; shell.classList.remove('split'); return; }
     var main = shell.closest('.ctl-main');
-    var h = window.innerHeight - Math.max(80, shell.getBoundingClientRect().top + (main ? main.scrollTop : 0)) - 18;
-    shell.style.height = Math.max(420, h) + 'px';
+    if (!main) return;
+    main.scrollTop = 0;
+    var h = main.getBoundingClientRect().bottom - shell.getBoundingClientRect().top - 14;
+    shell.style.height = Math.max(380, Math.floor(h)) + 'px';
     shell.classList.add('split');
+    saveBarPlace();
   };
+  TX_FIT = fit;
   setTimeout(fit, 0);
   window.addEventListener('resize', fit);
 }
@@ -10836,6 +11117,7 @@ function rbTry(t, data, button, inEditor) {
         }
       }
       host.appendChild(box);
+      if (inEditor) host.appendChild(hideBar(function () { clear(host); }));
     };
     var host = inEditor ? $('rb-try-out') : null;
     if (host) show(host);
@@ -10910,8 +11192,8 @@ function rbPutBackConfirm(what) {
         }).catch(oops);
       }}], 'medium');
 }
-function rbRestoreWatch() {
-  modal('Putting the backup back', function (body) {
+function rbRestoreWatch(title) {
+  modal(title || 'Putting the backup back', function (body) {
     var bar = el('div', 'going wide');
     bar.innerHTML = '<div class="bar"><span id="rbr-fill"></span></div><div class="says" id="rbr-says"></div>';
     body.appendChild(bar);
@@ -10925,8 +11207,15 @@ function rbRestoreWatch() {
       if (!j.what && !j.result && !j.error) { setTimeout(step, 1000); return; }
       if (j.error) { if ($('rbr-says')) $('rbr-says').textContent = j.error; toast('putting it back failed: ' + j.error, 'bad'); return; }
       var r = j.result || {};
-      if ($('rbr-says')) $('rbr-says').textContent = 'Put back. ' + ((r.said || []).join(' · ')) + (r.safety ? ' · what was here is kept as ' + r.safety : '');
-      toast('the backup is back', 'good');
+      if ($('rbr-says')) {
+        var said = $('rbr-says');
+        clear(said);
+        said.appendChild(el('div', '', 'Put back.'));
+        (r.said || []).concat(r.key ? [r.key] : []).forEach(function (x) { said.appendChild(el('div', 'small', x)); });
+        if (r.safety) said.appendChild(el('div', 'small muted', 'What was here is kept as ' + r.safety));
+      }
+      toast(title ? 'the database is back' : 'the backup is back', 'good');
+      if (title) setTimeout(function () { location.reload(); }, 4000);
     }).catch(function (e) {
       /* Who was signed in is what the backup says now: the sign-in page. */
       if (/signed in|401/i.test(String(e && e.message || e))) {
@@ -10969,4 +11258,746 @@ function busyCount(button) {
   button.appendChild(tag);
   var tick = setInterval(function () { tag.textContent = ' · ' + Math.round((Date.now() - began) / 1000) + ' s'; }, 500);
   return function () { clearInterval(tick); tag.remove(); busy(button, false); };
+}
+
+/* ---- Settings → Network (1.0.119) ---------------------------------------------
+   Each node's network as it says it is, a form for the new one, and the change
+   followed step by step - through whichever node answers the page. */
+var NET = {d: null, node: '', poll: null, fails: 0, failSince: 0, watch: '', redirect: null};
+function loadNet() {
+  api('net').then(function (d) {
+    NET.d = d; NET.fails = 0;
+    if (!NET.node || !d.nodes.some(function (n) { return n.name === NET.node; })) NET.node = (d.nodes[0] || {}).name;
+    drawNet();
+    netPollFor();
+  }).catch(oops);
+}
+function netJobActive(j) { return j && ['asked', 'running', 'rebooting'].indexOf(j.state) >= 0; }
+function netPollFor() {
+  var busy = NET.d && NET.d.nodes.some(function (n) { return netJobActive(n.job); });
+  if ((busy || NET.watch) && !NET.poll) NET.poll = setInterval(netPoll, 2000);
+  if (!busy && !NET.watch && NET.poll) { clearInterval(NET.poll); NET.poll = null; }
+}
+function netPoll() {
+  if (TAB !== 'settings' || PANE !== 'network') { clearInterval(NET.poll); NET.poll = null; return; }
+  api('net').then(function (d) {
+    NET.d = d; NET.fails = 0; NET.failSince = 0;
+    var n = d.nodes.filter(function (x) { return x.name === NET.watch; })[0];
+    if (NET.watch && n && n.job && ['done', 'failed'].indexOf(n.job.state) >= 0) {
+      toast(n.job.state === 'done' ? 'the network of ' + n.name + ' is changed' : 'the network of ' + n.name + ' was not changed', n.job.state === 'done' ? 'good' : 'bad');
+      NET.watch = '';
+    }
+    drawNet(true);
+    netPollFor();
+  }).catch(function () {
+    /* The page's own node restarting: it does not answer for a while. */
+    NET.fails += 1;
+    if (!NET.failSince) NET.failSince = Date.now();
+    drawNetAway();
+  });
+}
+function netNodeOf(name) { return ((NET.d && NET.d.nodes) || []).filter(function (n) { return n.name === name; })[0]; }
+function drawNet(live) {
+  var real = $('net-host');
+  if (!real || !NET.d) return;
+  liveFill(real, function (host) {
+  var d = NET.d;
+  if (d.cluster) {
+    var seg = el('div', 'seg net-nodes');
+    d.nodes.forEach(function (n) {
+      var b = el('button', n.name === NET.node ? 'on' : '');
+      b.type = 'button';
+      b.appendChild(el('span', 'dot ' + (n.alive ? 'ok' : 'bad')));
+      b.appendChild(noI18n(el('span', '', ' ' + n.name)));
+      if (n.me) b.appendChild(el('span', 'tag info', 'this page'));
+      b.onclick = function () { NET.node = n.name; drawNet(); };
+      seg.appendChild(b);
+    });
+    host.appendChild(seg);
+  }
+  var n = netNodeOf(NET.node);
+  if (!n) return;
+  if (n.job && n.job.state && (netJobActive(n.job) || NET.watch === n.name || Date.now() / 1000 - (n.job.moved || 0) < 900))
+    host.appendChild(netProgressCard(n));
+  host.appendChild(netNowCard(n));
+  if (!netJobActive(n.job)) host.appendChild(netFormCard(n));
+  }, live, function () { explainWhatWasDrawn(real); });
+}
+function netFacts(rows) {
+  var dl = el('div', 'net-facts');
+  rows.forEach(function (r) {
+    if (r[1] === undefined) return;
+    var one = el('div', 'net-fact');
+    one.appendChild(el('span', 'k', r[0]));
+    var v = el('span', 'v' + (r[2] ? ' mono' : ''));
+    if (r[1] instanceof Node) v.appendChild(r[1]); else v.textContent = r[1] === '' || r[1] === null ? '–' : String(r[1]);
+    if (r[2]) noI18n(v);
+    one.appendChild(v);
+    dl.appendChild(one);
+  });
+  return dl;
+}
+function netNowCard(n) {
+  var card = el('div', 'card full');
+  var h = el('h2', '', 'As it is now');
+  var right = el('span', 'right');
+  var re = cmdButton('Read it again', 'refresh', 'small');
+  re.onclick = function () {
+    busy(re, true);
+    api('net', {action: 'read', node: n.name}).then(function (d) { NET.d = d; setTimeout(loadNet, n.me ? 0 : 6000); toast(n.me ? 'read' : n.name + ' says it again within a few seconds', 'good'); })
+      .catch(oops).then(function () { busy(re, false); });
+  };
+  right.appendChild(re);
+  h.appendChild(right);
+  card.appendChild(h);
+  var now = n.now || {};
+  var data = now.data || {};
+  if (!data.devices && !data.live) {
+    card.appendChild(el('p', 'note', n.alive ? n.name + ' has not said what its network is yet - Read it again.' : n.name + ' is not answering.'));
+    return card;
+  }
+  var conf = data.conf || {};
+  var live = data.live || {};
+  var v6 = (live.addrs6 || []).map(function (a) { return a.addr; });
+  card.appendChild(netFacts([
+    ['Host name', data.hostname || '', true],
+    ['Connection', (data.con || '–') + (data.dev ? ' (' + data.dev + ')' : ''), true],
+    ['IPv4 address', (conf.ipv4_addresses || []).join(', ') || (live.addrs4 || []).map(function (a) { return a.addr; }).join(', '), true],
+    ['Gateway', conf.ipv4_gateway || live.gw4 || '', true],
+    ['DNS servers', ((conf.ipv4_dns || []).concat(conf.ipv6_dns || [])).join(', ') || (live.dns || []).join(', '), true],
+    ['Search domains', (conf.ipv4_search || []).join(', '), true],
+    ['IPv6', conf.ipv6_method === 'disabled' || conf.ipv6_method === 'ignore' || !conf.ipv6_method ? 'off' : (conf.ipv6_method === 'manual' ? 'on, set by hand' : 'on, automatic')],
+    ['IPv6 addresses', v6.join(', '), true],
+    ['RADIUS listens on', now.radius_bind === '::' ? ':: (IPv4 and IPv6)' : (now.radius_bind || '0.0.0.0'), true],
+    ['Read', now.at ? ago(now.at) : '']
+  ]));
+  if (!data.nm) card.appendChild(el('p', 'note warn', 'NetworkManager (nmcli) is not on ' + n.name + ': its network can only be set by hand there.'));
+  return card;
+}
+function netFormCard(n) {
+  var card = el('div', 'card full');
+  card.appendChild(el('h2', '', 'New settings for ' + n.name));
+  var data = (n.now || {}).data || {};
+  var conf = data.conf || {};
+  var live = data.live || {};
+  if (!data.nm) { card.appendChild(el('p', 'note', 'Nothing can be set from here without NetworkManager.')); return card; }
+  var on6was = !(conf.ipv6_method === 'disabled' || conf.ipv6_method === 'ignore' || !conf.ipv6_method);
+  var host = textBox(data.hostname || '', 'otp1.example.cz', 'mono');
+  var a4 = textBox((conf.ipv4_addresses || [])[0] || ((live.addrs4 || [])[0] || {}).addr || '', '192.0.2.10/24', 'mono');
+  var gw = textBox(conf.ipv4_gateway || live.gw4 || '', '192.0.2.1', 'mono');
+  var dns = textBox((conf.ipv4_dns || live.dns || []).filter(function (x) { return x.indexOf(':') < 0; }).join(', '), '192.0.2.53, 192.0.2.54', 'mono');
+  var search = textBox((conf.ipv4_search || []).join(', '), 'example.cz', 'mono');
+  var s6 = switchBox(on6was);
+  var mode6 = selectBox([['manual', 'set by hand'], ['auto', 'automatic (SLAAC / DHCPv6)']], conf.ipv6_method === 'auto' ? 'auto' : 'manual');
+  var a6 = textBox((conf.ipv6_addresses || [])[0] || '', '2001:db8::10/64', 'mono');
+  var gw6 = textBox(conf.ipv6_gateway || '', '2001:db8::1', 'mono');
+  var dns6 = textBox((conf.ipv6_dns || []).join(', '), '2001:db8::53', 'mono');
+  var cons = (data.devices || []).filter(function (x) { return x.con; });
+  var con = selectBox(cons.map(function (x) { return [x.con, x.con + ' (' + x.dev + ')']; }), data.con);
+  var g1 = el('div', 'formgrid');
+  g1.appendChild(formField('Host name (FQDN)', host, 'The machine\'s whole name. The node keeps its name in otp (' + n.name + ') whatever the machine is called.'));
+  if (cons.length > 1) g1.appendChild(formField('Connection', con));
+  card.appendChild(g1);
+  var s1 = msect('IPv4', '');
+  var g2 = el('div', 'formgrid');
+  g2.appendChild(formField('Address with its prefix', a4, 'e.g. 192.0.2.10/24 - /24 is the mask 255.255.255.0.'));
+  g2.appendChild(formField('Gateway', gw));
+  g2.appendChild(formField('DNS servers', dns, 'Separated by commas.'));
+  g2.appendChild(formField('Search domains', search));
+  s1._body.appendChild(g2);
+  card.appendChild(s1);
+  var s2 = msect('IPv6 (dual stack)', 'Switched on, the node takes IPv6 beside IPv4: RADIUS listens on both, nginx answers on both, the firewall is set for both. Replication between the databases stays on IPv4. The web address takes an IPv6 address of its own on High availability.');
+  var r6 = el('div', 'formgrid');
+  r6.appendChild(formField('IPv6', s6));
+  var g6 = el('div', 'formgrid');
+  g6.appendChild(formField('How', mode6));
+  g6.appendChild(formField('Address with its prefix', a6, 'e.g. 2001:db8::10/64'));
+  g6.appendChild(formField('Gateway', gw6));
+  g6.appendChild(formField('DNS servers', dns6));
+  s2._body.appendChild(r6);
+  s2._body.appendChild(g6);
+  card.appendChild(s2);
+  var paint6 = function () {
+    g6.hidden = !s6._get();
+    var manual = mode6.value === 'manual';
+    a6.closest('.set-item').hidden = !manual;
+    gw6.closest('.set-item').hidden = !manual;
+  };
+  s6._input.addEventListener('change', paint6);
+  mode6.addEventListener('change', paint6);
+  /* Shown only when the new address is outside the web address's network
+     (1.0.120): the node could not hold it there - on purpose only while a
+     whole cluster moves to another network, one node at a time. */
+  var elsewhere = null;
+  var vnet = null;
+  if (NET.d.cluster && NET.d.vip && NET.d.vip.on) {
+    elsewhere = el('div', 'note warn net-elsewhere');
+    var lab = el('label', 'check small');
+    var cb = el('input'); cb.type = 'checkbox';
+    lab.appendChild(cb);
+    lab.appendChild(el('span', '', 'The web address (' + NET.d.vip.address + ') is meant to be in another network than the new address'));
+    elsewhere.appendChild(el('div', 'small', 'The new address is not in the network of the web address: keepalived could not put the web address on this node. Tick it only while the whole cluster moves to another network - this node now, the other next, the web address last (High availability).'));
+    elsewhere.appendChild(lab);
+    elsewhere._get = function () { return cb.checked && !elsewhere.hidden; };
+    elsewhere.hidden = true;
+    card.appendChild(elsewhere);
+    vnet = NET.d.vip.address;
+    var paintVip = function () {
+      elsewhere.hidden = !ipOutside(a4.value.trim(), vnet);
+    };
+    a4.addEventListener('input', paintVip);
+    setTimeout(paintVip, 0);
+  }
+  var want = function () {
+    return {con: con.value || data.con, hostname: host.value.trim(),
+            ipv4: {addr: a4.value.trim(), gw: gw.value.trim(), dns: dns.value, search: search.value},
+            ipv6: {on: !!s6._get(), mode: mode6.value, addr: a6.value.trim(), gw: gw6.value.trim(), dns: dns6.value},
+            vip_elsewhere: elsewhere ? elsewhere._get() : false};
+  };
+  var planBox = el('div', 'net-plan');
+  var row = el('div', 'btnrow');
+  row.style.marginTop = '14px';
+  var check = cmdButton('Check it', 'check', '');
+  var go = cmdButton('Change it and restart ' + n.name, 'power', 'primary');
+  check.onclick = function () {
+    busy(check, true);
+    api('net', {action: 'plan', node: n.name, want: want()}).then(function (d) {
+      clear(planBox);
+      planBox.appendChild(el('h4', '', 'What happens'));
+      var ol = el('ol', 'net-steps');
+      d.plan.forEach(function (p) { ol.appendChild(el('li', '', p)); });
+      planBox.appendChild(ol);
+    }).catch(function (e) { clear(planBox); planBox.appendChild(el('p', 'note bad', String(e.message || e))); })
+      .then(function () { busy(check, false); });
+  };
+  go.onclick = function () {
+    var w = want();
+    api('net', {action: 'plan', node: n.name, want: w}).then(function (d) {
+      var words = '<ol class="net-steps">' + d.plan.map(function (p) { return '<li>' + htmlText(p) + '</li>'; }).join('') + '</ol>'
+        + (n.me && !NET.d.cluster ? '<p class="note">' + htmlText('The page loses its server for a minute or two; it follows it to its new address.') + '</p>' : '');
+      confirmThen('Change the network of ' + n.name + ' and restart it?', words, 'Change it and restart', function () {
+        api('net', {action: 'apply', node: n.name, want: w}).then(function (r) {
+          toast(r.message, 'good');
+          NET.watch = n.name;
+          NET.target = {node: n.name, old: (a4.defaultValue || '').split('/')[0], ip: w.ipv4.addr.split('/')[0], host: w.hostname, oldHost: data.hostname || '', me: n.me};
+          loadNet();
+        }).catch(oops);
+      });
+    }).catch(oops);
+  };
+  row.appendChild(check);
+  row.appendChild(go);
+  card.appendChild(row);
+  card.appendChild(planBox);
+  setTimeout(paint6, 0);
+  return card;
+}
+/* Is the address (with its prefix) outside the network of the web address?
+   IPv4 only - the web address and the nodes speak VRRP over IPv4. */
+function ipOutside(addr, vip) {
+  var p = function (t) {
+    var m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:\/(\d+))?$/.exec(String(t || '').trim());
+    if (!m) return null;
+    return {n: ((+m[1] << 24) >>> 0) + (+m[2] << 16) + (+m[3] << 8) + (+m[4]), len: m[5] === undefined ? 32 : +m[5]};
+  };
+  var a = p(addr), v = p(vip);
+  if (!a || !v) return false;
+  var mask = v.len === 0 ? 0 : (0xffffffff << (32 - v.len)) >>> 0;
+  return ((a.n & mask) >>> 0) !== ((v.n & mask) >>> 0);
+}
+function netProgressCard(n) {
+  var j = n.job;
+  var card = el('div', 'card full net-job ' + (j.state || ''));
+  card.appendChild(el('h2', '', j.state === 'done' ? 'The network of ' + n.name + ' is changed'
+    : (j.state === 'failed' ? 'The network of ' + n.name + ' was not changed' : 'Changing the network of ' + n.name)));
+  var bar = el('div', 'going wide');
+  bar.innerHTML = '<div class="bar"><span></span></div>';
+  bar.querySelector('span').style.width = Math.max(3, Math.min(100, j.pct || 0)) + '%';
+  card.appendChild(bar);
+  if (j.state === 'rebooting') {
+    var since = Math.max(0, NET.d.now - (j.down_at || j.moved || NET.d.now));
+    var p = el('p', 'note', 'Restarting: ' + span(since) + ' so far - a restart takes a minute or two.');
+    card.appendChild(p);
+  }
+  var ol = el('ol', 'net-steps done');
+  (j.steps || []).forEach(function (s) {
+    var li = el('li', s.ok ? 'good' : 'bad');
+    li.appendChild(el('span', 'mark', s.ok ? '✓' : '✗'));
+    li.appendChild(el('span', '', s.what));
+    li.appendChild(el('span', 'muted small', ' ' + clockWords(new Date(s.at * 1000))));
+    ol.appendChild(li);
+  });
+  card.appendChild(ol);
+  if (j.state === 'done' || j.state === 'failed') {
+    var row = el('div', 'actions');
+    var hide = hideButton(function () {
+      return api('net', {action: 'hide', node: n.name}).then(function (d) { NET.d = d; drawNet(); });
+    });
+    row.appendChild(hide);
+    row.appendChild(el('span', 'muted small', j.state === 'done'
+      ? 'Hidden by itself 6 hours after it was done.' : 'Hidden by itself after a day.'));
+    card.appendChild(row);
+  }
+  return card;
+}
+/* "Hide this" on what is over and only says how it went (1.0.123): a
+   change of network, a restart, an upgrade, a job on the database, a test
+   mail. `go` hides it - a promise when the server is told. */
+function hideButton(go) {
+  var b = cmdButton('Hide this', 'close', 'small');
+  b.classList.add('hide-this');
+  b.onclick = function (e) {
+    if (e) e.stopPropagation();
+    busy(b, true);
+    Promise.resolve(go()).catch(oops).then(function () { busy(b, false); });
+  };
+  return b;
+}
+function hideBar(go, words) {
+  var row = el('div', 'actions hide-row');
+  row.appendChild(hideButton(go));
+  if (words) row.appendChild(el('span', 'muted small', words));
+  return row;
+}
+function drawNetAway() {
+  /* The page's node does not answer: it is the one restarting. Counted down,
+     and taken to its new address when it changed. */
+  var host = $('net-host');
+  if (!host) return;
+  var t = NET.target || {};
+  var away = Math.round((Date.now() - NET.failSince) / 1000);
+  var box = $('net-away');
+  if (!box) {
+    box = el('div', 'card full net-job');
+    box.id = 'net-away';
+    host.insertBefore(box, host.firstChild);
+  }
+  clear(box);
+  box.appendChild(el('h2', '', 'This page\'s server is restarting'));
+  var bar = el('div', 'going wide');
+  bar.innerHTML = '<div class="bar"><span></span></div>';
+  bar.querySelector('span').style.width = Math.min(100, Math.round(away / 150 * 100)) + '%';
+  box.appendChild(bar);
+  box.appendChild(el('p', 'note', 'Not answering for ' + span(away) + '. The page asks again every two seconds.'));
+  var newHost = '';
+  if (t.me && t.ip && t.old && t.ip !== t.old && location.hostname === t.old) newHost = t.ip;
+  if (t.me && t.host && t.oldHost && t.host !== t.oldHost && location.hostname.toLowerCase() === t.oldHost.toLowerCase()) newHost = t.host;
+  if (newHost) {
+    var url = location.protocol + '//' + (newHost.indexOf(':') >= 0 ? '[' + newHost + ']' : newHost) + (location.port ? ':' + location.port : '') + '/admin/#settings/network';
+    var p = el('p', 'note');
+    p.appendChild(document.createTextNode('It comes back at its new address: '));
+    var a = noI18n(el('a', 'mono', url)); a.href = url;
+    p.appendChild(a);
+    box.appendChild(p);
+    if (away > 150 && !NET.redirect) { NET.redirect = setTimeout(function () { location.href = url; }, 500); }
+  }
+}
+
+/* ---- Settings → Restart and power off (1.0.119) ------------------------------- */
+var PW = {d: null, poll: null, failSince: 0, mine: false, reload: false};
+function loadPower() {
+  api('power').then(function (d) { PW.d = d; PW.failSince = 0; drawPower(); pwPollFor(); }).catch(oops);
+}
+function pwPollFor() {
+  var live = PW.d && PW.d.plan && PW.d.plan.id && !pwAllDone(PW.d);
+  if (live && !PW.poll) PW.poll = setInterval(pwPoll, 2000);
+  if (!live && PW.poll) { clearInterval(PW.poll); PW.poll = null; }
+}
+function pwPoll() {
+  if (TAB !== 'settings' || PANE !== 'power') { clearInterval(PW.poll); PW.poll = null; return; }
+  api('power').then(function (d) {
+    var wasAway = !!PW.failSince;
+    PW.d = d; PW.failSince = 0;
+    drawPower(true);
+    if (pwAllDone(d)) {
+      clearInterval(PW.poll); PW.poll = null;
+      toast(d.plan.how === 'reboot' ? 'every node is up again' : 'switched off', 'good');
+      if (wasAway || PW.reload) setTimeout(function () { location.reload(); }, 2500);
+    }
+  }).catch(function () { if (!PW.failSince) PW.failSince = Date.now(); drawPowerAway(); });
+}
+function pwStateOf(d, n) {
+  var r = n.row || {};
+  var plan = d.plan || {};
+  if (!r.state) return {k: 'wait', w: plan.order === 'rolling' ? 'waits its turn' : 'asked'};
+  if (r.state === 'failed') return {k: 'bad', w: 'failed: ' + (r.said || '')};
+  if (r.state === 'back') return {k: 'ok', w: 'up again'};
+  if (r.state === 'going') {
+    if (plan.how === 'poweroff') return n.alive && (d.now - (r.down_at || 0)) < 20 ? {k: 'going', w: 'switching off'} : {k: 'ok', w: 'switched off'};
+    if (n.alive && (n.started || 0) > (r.down_at || 0)) return {k: 'going', w: 'starting'};
+    if (n.alive && d.now < (r.down_at || 0) + 15) return {k: 'going', w: 'going down'};
+    return {k: 'going', w: 'restarting'};
+  }
+  return {k: 'wait', w: r.state};
+}
+function pwAllDone(d) {
+  if (!d.plan || !d.plan.id) return true;
+  return d.nodes.filter(function (n) { return (d.plan.targets || []).indexOf(n.name) >= 0; })
+    .every(function (n) { var s = pwStateOf(d, n); return s.k === 'ok' || s.k === 'bad'; });
+}
+function drawPower(live) {
+  var real = $('pw-host');
+  if (!real || !PW.d) return;
+  liveFill(real, function (host) {
+  var d = PW.d;
+  if (d.plan && d.plan.id) host.appendChild(pwProgress(d));
+  var grid = el('div', 'pw-grid');
+  d.nodes.forEach(function (n) {
+    var c = el('div', 'card pw-node');
+    var h = el('div', 'pw-head');
+    h.appendChild(el('span', 'dot ' + (n.alive ? 'ok' : 'bad')));
+    h.appendChild(noI18n(el('b', '', n.name)));
+    if (n.me) h.appendChild(el('span', 'tag info', 'this page'));
+    c.appendChild(h);
+    c.appendChild(netFacts([
+      ['State', n.alive ? 'answering' : 'not answering'],
+      ['Address', n.address || '', true],
+      ['Running for', n.started ? span(d.now - n.started) : ''],
+      ['Version', n.version || '', true]
+    ]));
+    var row = el('div', 'btnrow');
+    var rb = cmdButton('Restart', 'refresh', '');
+    var off = cmdButton('Power off', 'power', 'danger');
+    rb.disabled = off.disabled = !!d.busy || !n.alive;
+    rb.onclick = function () { pwAsk('reboot', [n.name], 'one', n); };
+    off.onclick = function () { pwAsk('poweroff', [n.name], 'one', n); };
+    row.appendChild(rb); row.appendChild(off);
+    c.appendChild(row);
+    grid.appendChild(c);
+  });
+  host.appendChild(grid);
+  if (d.cluster) {
+    var both = el('div', 'card full');
+    both.appendChild(el('h2', '', 'Both nodes'));
+    var all = d.nodes.map(function (n) { return n.name; });
+    var row2 = el('div', 'btnrow');
+    var r1 = cmdButton('Restart one after the other', 'refresh', 'primary');
+    explain(r1, 'The other node first, then this one - each in maintenance while it restarts, so the web address and the service never stop.');
+    var r2 = cmdButton('Restart both at once', 'refresh', '');
+    var r3 = cmdButton('Power off both', 'power', 'danger');
+    [r1, r2, r3].forEach(function (b) { b.disabled = !!d.busy; });
+    r1.onclick = function () { pwAsk('reboot', all, 'rolling'); };
+    r2.onclick = function () { pwAsk('reboot', all, 'together'); };
+    r3.onclick = function () { pwAsk('poweroff', all, 'together'); };
+    row2.appendChild(r1); row2.appendChild(r2); row2.appendChild(r3);
+    both.appendChild(row2);
+    host.appendChild(both);
+  }
+  }, live, function () { explainWhatWasDrawn(real); });
+}
+function pwAsk(how, targets, order, n) {
+  var d = PW.d;
+  var who = targets.join(', ');
+  var words;
+  if (how === 'poweroff') words = targets.length > 1 ? 'Both nodes are switched off. Nothing answers - RADIUS, the pages - until somebody switches them on again at the machines.'
+    : (d.cluster ? n.name + ' is switched off; the web address moves to the other node, which goes on answering alone. It has to be switched on again at the machine.' : 'The server is switched off. Nothing answers until somebody switches it on again at the machine.');
+  else if (order === 'rolling') words = 'One after the other: each goes into maintenance, the web address moves to the other node, it restarts and comes back into service - then the next. RADIUS and the pages go on answering all the time.';
+  else if (targets.length > 1) words = 'Both restart at the same moment: for a minute or two nothing answers - RADIUS, the pages, the web address.';
+  else words = d.cluster ? n.name + ' goes into maintenance, the web address moves to the other node, and it restarts; back up, it comes back into service by itself.' : 'The server restarts: for a minute or two nothing answers.';
+  confirmThen((how === 'reboot' ? 'Restart ' : 'Power off ') + who + '?', htmlText(words), how === 'reboot' ? 'Restart' : 'Power off', function () {
+    api('power', {how: how, targets: targets, order: order}).then(function (r) {
+      toast(r.message, 'good');
+      PW.reload = targets.indexOf(((d.nodes.filter(function (x) { return x.me; })[0]) || {}).name) >= 0;
+      loadPower();
+    }).catch(oops);
+  }, how === 'poweroff');
+}
+function pwProgress(d) {
+  var plan = d.plan;
+  var card = el('div', 'card full net-job');
+  var done = pwAllDone(d);
+  card.appendChild(el('h2', '', (plan.how === 'reboot' ? 'Restart' : 'Power-off') + (done ? ' - done' : ' under way')));
+  var ol = el('ol', 'net-steps done');
+  d.nodes.filter(function (n) { return (plan.targets || []).indexOf(n.name) >= 0; })
+    .sort(function (a, b) { return plan.targets.indexOf(a.name) - plan.targets.indexOf(b.name); })
+    .forEach(function (n) {
+      var st = pwStateOf(d, n);
+      var li = el('li', st.k === 'ok' ? 'good' : (st.k === 'bad' ? 'bad' : ''));
+      li.appendChild(el('span', 'mark', st.k === 'ok' ? '✓' : (st.k === 'bad' ? '✗' : '…')));
+      li.appendChild(noI18n(el('b', '', n.name + ' ')));
+      li.appendChild(el('span', '', st.w));
+      var r = n.row || {};
+      if (st.k === 'going' && r.down_at) {
+        var t = Math.max(0, d.now - r.down_at);
+        var bar = el('div', 'going wide');
+        bar.innerHTML = '<div class="bar"><span></span></div>';
+        bar.querySelector('span').style.width = Math.min(100, Math.round(t / 120 * 100)) + '%';
+        li.appendChild(el('span', 'muted small', ' ' + span(t)));
+        li.appendChild(bar);
+      }
+      ol.appendChild(li);
+    });
+  card.appendChild(ol);
+  if (done) card.appendChild(hideBar(function () {
+    return api('power', {action: 'hide'}).then(function (x) { PW.d = x; drawPower(); });
+  }, 'Hidden by itself half an hour after it began.'));
+  return card;
+}
+function drawPowerAway() {
+  var host = $('pw-host');
+  if (!host) return;
+  var box = $('pw-away');
+  if (!box) { box = el('div', 'card full net-job'); box.id = 'pw-away'; host.insertBefore(box, host.firstChild); }
+  clear(box);
+  var away = Math.round((Date.now() - PW.failSince) / 1000);
+  box.appendChild(el('h2', '', 'This page\'s server is restarting'));
+  var bar = el('div', 'going wide');
+  bar.innerHTML = '<div class="bar"><span></span></div>';
+  bar.querySelector('span').style.width = Math.min(100, Math.round(away / 120 * 100)) + '%';
+  box.appendChild(bar);
+  box.appendChild(el('p', 'note', 'Not answering for ' + span(away) + ' - asked again every two seconds; the page comes back by itself.'));
+}
+
+/* ---- Settings → Time (1.0.120) -------------------------------------------------
+   Each node's clock as chrony sees it, its sources, and the time servers for the
+   whole cluster. */
+var NTP = {d: null, poll: null, draft: null, node: ''};
+function loadNtp() {
+  api('ntp').then(function (d) {
+    NTP.d = d;
+    if (!NTP.node) NTP.node = (d.nodes[0] || {}).name;
+    drawNtp();
+    if (!NTP.poll) NTP.poll = setInterval(function () {
+      if (TAB !== 'settings' || PANE !== 'time') { clearInterval(NTP.poll); NTP.poll = null; return; }
+      api('ntp').then(function (x) { NTP.d = x; drawNtp(true); }).catch(function () {});
+    }, 10000);
+  }).catch(oops);
+}
+function ntpMs(s) {
+  if (s === undefined || s === null || isNaN(s)) return '–';
+  var ms = s * 1000;
+  var a = Math.abs(ms);
+  return (ms >= 0 ? '+' : '−') + (a >= 1000 ? (a / 1000).toFixed(2) + ' s' : (a >= 10 ? a.toFixed(1) : a.toFixed(3)) + ' ms');
+}
+function ntpHealth(n) {
+  var d = (n.now || {}).data || {};
+  var t = d.tracking || {};
+  if (!d.time) return {k: 'bad', w: n.alive ? 'not read yet' : 'not answering'};
+  if (!d.chrony) return {k: d.ntpsynchronized === 'yes' ? 'ok' : 'bad', w: d.ntpsynchronized === 'yes' ? 'synchronised (not chrony)' : 'chrony is not installed'};
+  if (t.leap === 'Not synchronised' || !t.stratum) return {k: 'bad', w: 'not synchronised'};
+  var off = Math.abs(t.offset || 0);
+  if (off > 1) return {k: 'bad', w: 'synchronised, but off'};
+  if (off > 0.1) return {k: 'warn', w: 'synchronised'};
+  return {k: 'ok', w: 'synchronised'};
+}
+function drawNtp(quiet) {
+  var real = $('ntp-host');
+  if (!real || !NTP.d) return;
+  /* What the server has, until something is changed here. */
+  if (!NTP.draft || !PENDING.ntp) NTP.draft = JSON.parse(JSON.stringify(NTP.d.conf));
+  liveFill(real, function (host) {
+  var d = NTP.d;
+  var grid = el('div', 'pw-grid');
+  d.nodes.forEach(function (n) {
+    var nd = (n.now || {}).data || {};
+    var t = nd.tracking || {};
+    var h = ntpHealth(n);
+    var c = el('div', 'card ntp-node');
+    var head = el('div', 'pw-head');
+    head.appendChild(el('span', 'dot ' + (h.k === 'ok' ? 'ok' : (h.k === 'warn' ? 'warn' : 'bad'))));
+    head.appendChild(noI18n(el('b', '', n.name)));
+    if (n.me) head.appendChild(el('span', 'tag info', 'this page'));
+    head.appendChild(el('span', 'tag ' + (h.k === 'ok' ? 'ok' : (h.k === 'warn' ? 'warn' : 'crit')), h.w));
+    c.appendChild(head);
+    var big = el('div', 'ntp-big');
+    big.appendChild(noI18n(el('span', 'ntp-off', ntpMs(t.offset))));
+    big.appendChild(el('span', 'muted small', ' off the time servers'));
+    c.appendChild(big);
+    var clock = '';
+    if (nd.time) {
+      var dt = new Date((nd.time + (d.now - (n.now.at || d.now))) * 1000);
+      clock = dt.toLocaleString(numLang());
+    }
+    c.appendChild(netFacts([
+      ['Follows', t.ref || t.ref_id || '', true],
+      ['Stratum', t.stratum !== undefined ? String(t.stratum) : '', true],
+      ['Last correction', ntpMs(t.last_offset), true],
+      ['Frequency', t.freq !== undefined ? t.freq.toFixed(3) + ' ppm' : '', true],
+      ['Root delay / dispersion', t.root_delay !== undefined ? ntpMs(t.root_delay).replace('+', '') + ' / ' + ntpMs(t.root_disp).replace('+', '') : '', true],
+      ['Leap status', t.leap || ''],
+      ['Time zone', nd.timezone || '', true],
+      ['Its time', clock],
+      ['Read', n.now && n.now.at ? ago(n.now.at) : '']
+    ]));
+    var ap = n.applied || {};
+    if (ap.at) {
+      var st = el('p', 'small ' + (ap.ok ? 'muted' : 'bad'));
+      st.textContent = (ap.ok ? 'Time servers set ' : 'Time servers NOT set ') + ago(ap.at) + (ap.said ? ': ' + ap.said : '');
+      c.appendChild(st);
+    }
+    var row = el('div', 'btnrow');
+    var re = cmdButton('Read it again', 'refresh', 'small');
+    re.onclick = function () { api('ntp', {action: 'read', node: n.name}).then(function (r) { toast(r.message, 'good'); setTimeout(loadNtp, 4000); }).catch(oops); };
+    var sy = cmdButton('Step it now', 'clock', 'small');
+    explain(sy, 'The clock set to the time servers at once (chronyc makestep), not slewed slowly - for a clock that is far off.');
+    sy.onclick = function () {
+      confirmThen('Step the clock of ' + n.name + ' now?', htmlText('The clock jumps to the time servers\' time at once. Codes and logs written in that moment may look out of order.'), 'Step it', function () {
+        api('ntp', {action: 'sync', node: n.name}).then(function (r) { toast(r.message, 'good'); setTimeout(loadNtp, 6000); }).catch(oops);
+      }, false);
+    };
+    row.appendChild(re); row.appendChild(sy);
+    c.appendChild(row);
+    grid.appendChild(c);
+  });
+  host.appendChild(grid);
+  if (d.cluster && d.nodes.length > 1) {
+    var a = ((d.nodes[0].now || {}).data || {}).tracking || {};
+    var b = ((d.nodes[1].now || {}).data || {}).tracking || {};
+    if (a.offset !== undefined && b.offset !== undefined) {
+      var diff = Math.abs(a.offset - b.offset);
+      host.appendChild(el('p', 'note ' + (diff > 1 ? 'bad' : (diff > 0.1 ? 'warn' : 'good')), 'Between the two nodes: ' + ntpMs(diff).replace('+', '') + (diff > 1 ? ' - codes right on one node may be refused on the other' : '')));
+    }
+  }
+  /* Sources, per node. */
+  var sc = el('div', 'card full');
+  var sh = el('h2', '', 'Where the time comes from');
+  sc.appendChild(sh);
+  if (d.cluster) {
+    var seg = el('div', 'seg');
+    d.nodes.forEach(function (n) {
+      var bt = el('button', n.name === NTP.node ? 'on' : '', n.name);
+      bt.type = 'button';
+      noI18n(bt);
+      bt.onclick = function () { NTP.node = n.name; drawNtp(false); };
+      seg.appendChild(bt);
+    });
+    sc.appendChild(seg);
+  }
+  var sn = d.nodes.filter(function (x) { return x.name === NTP.node; })[0] || d.nodes[0];
+  var srcs = (((sn || {}).now || {}).data || {}).sources || [];
+  var STATES = {'*': ['ok', 'followed'], '+': ['ok', 'combined'], '-': ['', 'not combined'], '?': ['crit', 'unreachable'],
+                'x': ['crit', 'false ticker'], '~': ['warn', 'too variable']};
+  if (!srcs.length) sc.appendChild(el('p', 'note', 'No source - chrony has none, or is not installed.'));
+  else sc.appendChild(listTable(['State', 'Source', 'Stratum', 'Asked every', 'Reached', 'Last heard', 'Offset'], srcs, function (s) {
+    var tr = el('tr');
+    var stt = STATES[s.state] || ['', s.state];
+    var td = el('td');
+    td.appendChild(el('span', 'tag ' + stt[0], stt[1]));
+    if (s.mode === '=') td.appendChild(el('span', 'muted small', ' peer'));
+    tr.appendChild(td);
+    tr.appendChild(noI18n(el('td', 'mono', s.name)));
+    tr.appendChild(el('td', 'num', String(s.stratum)));
+    tr.appendChild(el('td', 'num', span(Math.pow(2, s.poll || 0))));
+    var r = el('td');
+    var bits = el('span', 'reach');
+    for (var i = 7; i >= 0; i--) bits.appendChild(el('i', (s.reach >> i) & 1 ? 'on' : ''));
+    bits.title = (s.reach || 0).toString(2).padStart(8, '0') + ' - the last 8 tries';
+    r.appendChild(bits);
+    tr.appendChild(r);
+    tr.appendChild(el('td', 'muted', s.last_rx === null || s.last_rx === undefined ? '–' : span(s.last_rx) + ' ago'));
+    tr.appendChild(noI18n(el('td', 'num mono', ntpMs(s.offset) + ' ± ' + ntpMs(s.error).replace('+', ''))));
+    return tr;
+  }, 'plain'));
+  var own = (((sn || {}).now || {}).data || {}).own || [];
+  if (own.length && !(((sn || {}).now || {}).data || {}).managed) {
+    sc.appendChild(el('p', 'muted small', 'Its own /etc/chrony.conf: '));
+    sc.appendChild(noI18n(el('pre', 'mono small', own.join('\n'))));
+  }
+  host.appendChild(sc);
+  host.appendChild(ntpForm());
+  }, !!quiet, function () { explainWhatWasDrawn(real); });
+}
+function ntpForm() {
+  var d = NTP.d;
+  var dr = NTP.draft;
+  var card = el('div', 'card full');
+  card.id = 'ntp-form';
+  /* Anything changed here waits for the save bar at the bottom. */
+  ['input', 'change'].forEach(function (ev) { card.addEventListener(ev, function () { ntpDirty(); }); });
+  card.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('button')) ntpDirty(); });
+  card.appendChild(el('h2', '', 'The time servers'));
+  var on = switchBox(dr.manage);
+  var g0 = el('div', 'formgrid');
+  g0.appendChild(formField('otp sets the time servers', on, 'Off: each machine keeps its own /etc/chrony.conf (AlmaLinux\'s pool, or what you set by hand) - shown and checked here, not changed. On: the servers below, the same on every node; the file\'s own server and pool lines are commented out, and put back when switched off again.'));
+  card.appendChild(g0);
+  var body = el('div');
+  card.appendChild(body);
+  var draw = function () {
+    clear(body);
+    body.hidden = !dr.manage;
+    var list = el('div', 'ntp-servers');
+    (dr.servers || []).forEach(function (s, i) {
+      var row = el('div', 'ntp-srv');
+      var hostIn = textBox(s.host, 'ntp.example.cz', 'mono');
+      hostIn.oninput = function () { s.host = hostIn.value.trim(); };
+      var kind = selectBox([['server', 'one server'], ['pool', 'a pool (several addresses)']], s.pool ? 'pool' : 'server');
+      kind.onchange = function () { s.pool = kind.value === 'pool'; };
+      row.appendChild(hostIn); row.appendChild(kind);
+      [['iburst', 'iburst', 'Four quick questions at the start: synchronised in seconds, not minutes.'],
+       ['prefer', 'preferred', 'Followed before the others when it is good.'],
+       ['nts', 'NTS', 'Network Time Security: the server proves who it is (time.cloudflare.com, ptbtime1.ptb.de, nts.netnod.se…). Needs TCP 4460 out.']].forEach(function (o) {
+        var l = el('label', 'check small');
+        var cb = el('input'); cb.type = 'checkbox'; cb.checked = !!s[o[0]];
+        cb.onchange = function () { s[o[0]] = cb.checked; };
+        l.appendChild(cb); l.appendChild(el('span', '', o[1]));
+        explain(l, o[2]);
+        row.appendChild(l);
+      });
+      var x = iconButton('trash', 'Take it away');
+      x.onclick = function () { dr.servers.splice(i, 1); draw(); };
+      row.appendChild(x);
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+    var adds = el('div', 'btnrow');
+    var add = cmdButton('Add a server', 'add', 'small');
+    add.onclick = function () { dr.servers.push({host: '', pool: false, iburst: true, prefer: false, nts: false}); draw(); };
+    adds.appendChild(add);
+    [['cz.pool.ntp.org', true, false], ['pool.ntp.org', true, false], ['time.cloudflare.com', false, true], ['tik.cesnet.cz', false, false], ['tak.cesnet.cz', false, false]].forEach(function (p) {
+      var b = cmdButton('+ ' + p[0], '', 'small');
+      noI18n(b);
+      b.onclick = function () {
+        if (dr.servers.some(function (s) { return s.host === p[0]; })) return;
+        dr.servers.push({host: p[0], pool: p[1], iburst: true, prefer: false, nts: p[2]}); draw();
+      };
+      adds.appendChild(b);
+    });
+    body.appendChild(adds);
+    var g = el('div', 'formgrid');
+    g.style.marginTop = '14px';
+    if (d.cluster) {
+      var peers = switchBox(dr.peers);
+      peers._input.onchange = function () { dr.peers = !!peers._get(); };
+      g.appendChild(formField('The nodes take each other too', peers, 'Each node is one more source for the other: if the servers above are out of reach, the two nodes at least keep one time - which is what codes need.'));
+    }
+    var stepS = textBox(String((dr.makestep || [1, 3])[0]), '1', 'mono');
+    stepS.oninput = function () { dr.makestep = [stepS.value, (dr.makestep || [1, 3])[1]]; };
+    var stepN = textBox(String((dr.makestep || [1, 3])[1]), '3', 'mono');
+    stepN.oninput = function () { dr.makestep = [(dr.makestep || [1, 3])[0], stepN.value]; };
+    g.appendChild(formField('Step when off by more than (s)', stepS, 'Further off than this, the clock jumps to the right time instead of being slowed or sped up gently.'));
+    g.appendChild(formField('…in the first updates', stepN, 'How many updates after chronyd starts may step it: 3 is after a boot; -1 any time.'));
+    var mins = textBox(String(dr.minsources || 1), '1', 'mono');
+    mins.oninput = function () { dr.minsources = mins.value; };
+    g.appendChild(formField('Sources that have to agree', mins, 'The clock is set only when at least this many sources agree. 1 with one server; 2 or 3 with several.'));
+    var allow = textBox((dr.allow || []).join(', '), '192.0.2.0/24', 'mono');
+    allow.oninput = function () { dr.allow = allow.value; };
+    g.appendChild(formField('Serve the time to', allow, 'Networks that may ask these nodes for the time (UDP 123) - for the VPN concentrators, say. Empty: nobody. The firewall opens it by itself.'));
+    body.appendChild(g);
+  };
+  on._input.onchange = function () { dr.manage = !!on._get(); draw(); };
+  draw();
+  var zones = d.zones || [];
+  var tz = selectBox([['', '- as each machine has it -']].concat(zones.map(function (z) { return [z, z]; })), dr.timezone || '');
+  tz.onchange = function () { dr.timezone = tz.value; };
+  var g2 = el('div', 'formgrid');
+  g2.style.marginTop = '14px';
+  g2.appendChild(formField('Time zone', tz, 'Of the machines: the logs and the times on these pages. Codes do not depend on it.'));
+  card.appendChild(g2);
+  card.appendChild(el('p', 'muted small', 'Saved with the bar at the bottom; each node then puts them in by itself within seconds.'));
+  return card;
+}
+function ntpDirty() {
+  pendingSet('ntp', {pane: 'time', save: ntpSave, reset: function () {
+    NTP.draft = JSON.parse(JSON.stringify(NTP.d.conf)); drawNtp(false);
+  }});
+}
+function ntpSave() {
+  var dr = NTP.draft;
+  if (!dr) return Promise.resolve(true);
+  var c = {manage: dr.manage, servers: (dr.servers || []).filter(function (s) { return s.host; }), peers: dr.peers,
+           allow: dr.allow, step_s: (dr.makestep || [1, 3])[0], step_n: (dr.makestep || [1, 3])[1],
+           minsources: dr.minsources, timezone: dr.timezone};
+  return api('ntp', {action: 'save', conf: c}).then(function (r) {
+    toast(r.message, 'good'); NTP.draft = null; setTimeout(loadNtp, 5000); return true;
+  });
 }

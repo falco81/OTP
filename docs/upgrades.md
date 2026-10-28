@@ -78,6 +78,41 @@ maintenance already stays in it. In a cluster, upgrade one node, check it
 `otp --upgrade-status` shows the same on the command line, and
 `otp --upgrade-cancel` stops it.
 
+### From the web (1.0.123)
+
+*Settings → Upgrades → From the web* looks once a day (and when *Look now*
+is pressed) at `upgrade_url` for `otp-X.Y.Z.tar.gz` packages:
+
+| `upgrade_url` | how it is read |
+|---|---|
+| `https://github.com/OWNER/REPO/tree/BRANCH/FOLDER` (the default: `https://github.com/falco81/Utils/tree/main/otp`) | GitHub's API lists the folder; the packages come from `raw.githubusercontent.com`. When the API refuses (60 questions an hour without an account), the folder's own page is read for the names. |
+| a web page or a folder listing (nginx, Apache autoindex) | every link to an `otp-X.Y.Z.tar.gz` |
+| one package's address | that package |
+
+HTTPS only. A proxy, if the server needs one, comes from `https_proxy` in the
+service's environment (`systemctl edit otp`: `Environment=https_proxy=…`).
+The node needs to reach the address (and `api.github.com`,
+`raw.githubusercontent.com` for GitHub) - Settings → Firewall and access lets
+everything out.
+
+The newest one newer than what runs here is offered: **Upgrade to X now**
+fetches it, checks it exactly as a package sent by hand (below - the signature
+of a release key this server trusts, every file in it), keeps it in the
+database and begins the upgrade; **Only fetch it** stops before the upgrade.
+Nothing is ever put in by itself. `upgrade_check` off stops the daily look;
+*Look now* still asks.
+
+*Hide this* takes a finished upgrade off the page.
+
+On the command line (and in `otp --console` → Upgrades):
+
+```bash
+otp --upgrade-check              # what is at upgrade_url, and whether it is newer
+otp --upgrade-online             # the newest: fetched, checked, every node upgraded
+otp --upgrade-online 1.0.140 --yes
+otp --upgrade-follow             # follow one going on, with its progress bars
+```
+
 ### What makes it safe
 
 The service runs as `otp`, which may not write a byte of the program. The

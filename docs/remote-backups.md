@@ -40,8 +40,10 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
 The password is kept in the database, sealed - so it is inside every backup
 too, which helps nobody who does not have it. **Keep it in a password vault,
 apart from the backups.** *Make a strong one* makes a random one and shows it
-once. Without a password the backups are not locked: anybody with one has
-every token, and the page says so in red.
+once. **Without a password nothing is sent** (1.0.136): an unlocked backup
+would hand the key of every token to whoever can read the destination, so a
+scheduled or a by-hand run stops with "the backups have no password", and
+*Download one made now* is refused too.
 
 ## Where they go
 

@@ -711,7 +711,23 @@ otp --import-config /root/otp-config.json --yes           # added to what is her
 otp --import-config /root/otp-config.json --yes --replace # exactly the file
 ```
 
-The same on the pages: *Settings → Export and import*. In it: the settings
+Secrets kept off the command line, where `ps` would show them (1.0.136):
+
+```bash
+OTP_SECRET='…' otp --add-client ASA --address 192.0.2.1 --secret -   # or asked
+OTP_VALUE_SMTP_PASSWORD='…' otp --set smtp_password=@env
+OTP_RADTEST_PASSWORD='…' otp --radtest novak@example.cz -              # or asked
+```
+
+`otp --set` refuses what the pages refuse: `ha_*` (the cluster has its own
+steps) and, without `--yes`, `db_*` - a database named that way opens empty at
+the next restart; `--yes` only to point at the same data somewhere new.
+
+On the pages (*Settings → Export and import*) *Export with the secrets* gives
+a file **locked with a passphrase** made there and shown once (1.0.136) - the
+file leaves the machine with every secret in it. Importing it asks for the
+passphrase; on the command line `otp --import-config FILE --yes` asks for it
+too (or reads `--passphrase-file FILE`, or `OTP_PASSPHRASE`). In it: the settings
 (each node's own too), the RADIUS clients, the realms, the directories, the
 accounts of the pages, the certificates and keys of the pages and the web
 address, the web address, who may reach which page, the firewall and the mail
