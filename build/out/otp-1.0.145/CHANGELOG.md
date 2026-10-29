@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.145 — 29 October 2026
+
+**Going back: the list of versions tidied**
+- Each version one row - the version and *yes* on the left, *What changed* and
+  *Go back to X* side by side on the right; on a narrow screen the buttons go
+  below as a whole instead of being squeezed.
+- The versions it may not go back to are folded below, the reasons said once
+  there, each version with a short word (*below 1.0.139*; the whole reason when
+  the pointer rests on it) - a long reason no longer stretches every row.
+
 ## 1.0.144 — 29 October 2026
 
 **Going back to an older version: switched on in Settings, with what changed**

@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.144'
+__version__ = '1.0.145'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -20031,8 +20031,20 @@ def downgrade_list(store):
         out.append(dict(p, why=downgrade_why_not(store, p['version'])))
     out.sort(key=lambda p: _ver_tuple(p['version']), reverse=True)
     floor, by = downgrade_db_floor(store)
+    root = downgrade_root_floor()
+    # A few words a version for the list (1.0.145) - the reasons in full once.
+    lowest = max([floor] + ([root] if root else []), key=_ver_tuple)
+    for p in out:
+        if not p['why']:
+            p['short'] = ''
+        elif _ver_tuple(p['version']) < _ver_tuple(lowest):
+            p['short'] = 'below %s' % lowest
+        elif root is None:
+            p['short'] = 'this machine cannot go back yet'
+        else:
+            p['short'] = p['why'][0][:80]
     return {'url': url, 'here': __version__, 'versions': out, 'floor': floor,
-            'floor_by': by, 'root_floor': downgrade_root_floor()}
+            'floor_by': by, 'root_floor': root, 'lowest': lowest}
 
 
 def downgrade_take(store, path, info, by):

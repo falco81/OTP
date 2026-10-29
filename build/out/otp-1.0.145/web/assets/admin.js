@@ -7430,20 +7430,26 @@ function drawUpDown(d) {
     api('upgrade', {action: 'downgrade_list'}).then(function (x) {
       var g = x.downgrade || {};
       clear(list);
-      list.appendChild(el('p', 'note small', 'At ' + (g.url || '?') + ' - this server runs ' + (g.here || '') + '; it may go back to ' + (g.floor || '?') + ' or newer.'));
+      var at = el('p', 'note small', 'At ' + (g.url || '?') + ' - this server runs ' + (g.here || '') + '; it may go back to ' + (g.lowest || g.floor || '?') + ' or newer.');
+      at.style.marginTop = '10px';
+      list.appendChild(at);
       var vs = g.versions || [];
       if (!vs.length) { list.appendChild(el('p', 'note', 'No version older than this one is there.')); return; }
       var running = !!((UP.last || {}).plan && UP.last.plan.state === 'running');
-      list.appendChild(listTable(['Version', 'Can it go back to it', ''], vs, function (v) {
-        var ok = !(v.why || []).length;
-        var said = el('span', ok ? 'tag ok' : 'small bad', ok ? 'yes' : (v.why || []).join('; '));
-        var cell = el('span', '');
+      var good = vs.filter(function (v) { return !(v.why || []).length; });
+      var bad = vs.filter(function (v) { return (v.why || []).length; });
+      /* One row a version, the buttons side by side (1.0.145): the reasons a
+         version is refused are said once, folded below - not in every row. */
+      var acts = function (v, ok) {
+        var cell = el('div', '');
+        cell.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-left:auto';
         var notes = cmdButton('What changed', 'list', 'small');
+        notes.style.whiteSpace = 'nowrap';
         notes.onclick = function () { upDownChangelog(v.version); };
         cell.appendChild(notes);
         if (ok && !running) {
           var go = cmdButton('Go back to ' + v.version, 'undo', 'small danger');
-          go.style.marginLeft = '8px';
+          go.style.whiteSpace = 'nowrap';
           go.onclick = function () {
             upDownConfirm(v.version, function () {
               busy(go, true);
@@ -7453,10 +7459,50 @@ function drawUpDown(d) {
           };
           cell.appendChild(go);
         }
-        var tr = el('tr');
-        [noI18n(el('b', '', v.version)), said, cell].forEach(function (x) { var td = el('td'); td.appendChild(x); tr.appendChild(td); });
-        return tr;
-      }));
+        return cell;
+      };
+      /* Rows of their own, not a table (1.0.145): the version and its state on
+         the left, the buttons on the right - on a narrow screen the buttons go
+         below as a whole, never squeezed into a column. */
+      var nowrap = function (node) {
+        node.style.whiteSpace = 'nowrap';
+        Array.prototype.forEach.call(node.querySelectorAll('span'), function (x) { x.style.whiteSpace = 'nowrap'; });
+        return node;
+      };
+      var rows = function (items, ok) {
+        var box = el('div', 'dg-rows');
+        items.forEach(function (v) {
+          var r = el('div', 'dg-row');
+          r.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;padding:8px 10px;border-bottom:1px solid var(--line)';
+          var left = el('div', '');
+          left.style.cssText = 'display:flex;align-items:center;gap:10px;min-width:9em';
+          left.appendChild(noI18n(el('b', '', v.version)));
+          var tag = nowrap(el('span', ok ? 'tag ok' : 'tag warn', ok ? 'yes' : (v.short || 'no')));
+          if (!ok) explain(tag, (v.why || []).join('\n'));
+          left.appendChild(tag);
+          r.appendChild(left);
+          var right = acts(v, ok);
+          Array.prototype.forEach.call(right.children, nowrap);
+          r.appendChild(right);
+          box.appendChild(r);
+        });
+        return box;
+      };
+      if (good.length) list.appendChild(rows(good, true));
+      else list.appendChild(el('p', 'note', 'No version at the address may be gone back to.'));
+      if (bad.length) {
+        var det = el('details', 'fold');
+        det.style.marginTop = '12px';
+        det.appendChild(el('summary', '', bad.length + ' older version(s) it may not go back to' + (g.lowest ? ' - below ' + g.lowest : '')));
+        var reasons = [];
+        bad.forEach(function (v) { (v.why || []).forEach(function (w) { if (reasons.indexOf(w) < 0) reasons.push(w); }); });
+        var why = el('ul', 'note small');
+        why.style.margin = '8px 0';
+        reasons.forEach(function (w) { why.appendChild(el('li', 'bad', w)); });
+        det.appendChild(why);
+        det.appendChild(rows(bad, false));
+        list.appendChild(det);
+      }
     }).catch(function (e) { clear(list); list.appendChild(el('p', 'note bad', String((e && e.message) || e))); })
       .then(function () { busy(show, false); });
   };
