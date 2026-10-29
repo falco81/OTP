@@ -282,6 +282,11 @@
      row of them looking like a staircase. */
   .card + .card{margin-top:14px}
   .grid > .card + .card{margin-top:0}
+  /* A card after a block of cards drawn into a holder of their own, and the
+     first card in such a holder after a card (1.0.151): they touched. */
+  .ctl-pane > div:not(.card):not(.ctl-head):not(.grid):not(:empty) + .card,
+  .ctl-pane > .card + div:not(.card):not(.grid) > .card:first-child,
+  .ctl-pane > div:not(.card):not(.ctl-head):not(.grid):not(:empty) + div:not(.card):not(.grid) > .card:first-child{margin-top:14px}
   p.note{color:var(--tx-dim);font-size:13px;margin:0 0 14px;max-width:940px}
   p.note b{color:var(--tx);font-weight:600}
   .btnhelp{color:var(--tx-mut);font-size:12.5px;margin:6px 0 4px}
