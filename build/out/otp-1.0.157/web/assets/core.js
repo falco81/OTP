@@ -1178,6 +1178,93 @@ function api(what, body, wait) {
 }
 
 /** Every `title` already drawn, given the page's own panel instead. */
+/* No browser tooltip anywhere (1.0.157): whatever gets a title - drawn now or
+   later, by any part of the pages - says it in the page's own panel instead,
+   and a picture's <title> becomes its aria-label. A title put on after
+   explain() had run, or on something drawn later without explainWhatWasDrawn,
+   showed the browser's white box - beside the page's own one, too. */
+function nativeTipsAway(root) {
+  if (!root || !root.querySelectorAll) return;
+  var one = function (el) {
+    if (!el.getAttribute || el.tagName === 'IFRAME') return;       /* an iframe's title is for screen readers */
+    var said = el.getAttribute('title');
+    if (!said) return;
+    if (el.closest && el.closest('.sethelp')) return;
+    if (el.dataset && el.dataset.explains) {
+      el.removeAttribute('title');
+      el._explainHtml = '<div>' + richText(said) + '</div>';
+      return;
+    }
+    explain(el, said);
+  };
+  if (root.nodeType === 1) one(root);
+  Array.prototype.forEach.call(root.querySelectorAll('[title]'), one);
+  Array.prototype.forEach.call(root.querySelectorAll('svg title'), function (t) {
+    var svg = t.closest('svg');
+    if (svg && !svg.getAttribute('aria-label')) svg.setAttribute('aria-label', (t.textContent || '').trim());
+    if (svg && svg.getAttribute('aria-labelledby') === t.id) svg.removeAttribute('aria-labelledby');
+    t.parentNode.removeChild(t);
+  });
+}
+/* Long explaining paragraphs - a pane's lede, a card's note - in three lines
+   (1.0.157): a click opens the rest in place, and the whole is in the page's
+   panel on the pointer. Never a warning or an error, nor one with a link or a
+   button in it, nor anything in a dialog: those are read whole. */
+var FOLD_SEEN = null;
+function longWordsFolded(root) {
+  if (!root || !root.querySelectorAll || !document.body.classList.contains('fold-words')) return;
+  var list = [];
+  if (root.matches && root.matches('p.note, .ctl-lede')) list.push(root);
+  Array.prototype.push.apply(list, root.querySelectorAll('p.note, .ctl-lede'));
+  list.forEach(function (p) {
+    if (p._folded || p.closest('.modal, .sethelp, .says') ||
+        /(^|\s)(bad|warn|good|err|ok)(\s|$)/.test(p.className) ||
+        p.querySelector('a, button, input, select, textarea')) return;
+    p._folded = true;
+    p.classList.add('fold');
+    var mark = function () {
+      if (!p.isConnected) return;
+      if (!p.clientHeight || p.classList.contains('open')) return;
+      var cut = p.scrollHeight > p.clientHeight + 2;
+      p.classList.toggle('cut', cut);
+      if (cut && !p.dataset.explains) {
+        explain(p, p.textContent);
+        p._explainHtml = '<div>' + p.innerHTML + '</div>';
+      }
+    };
+    p.addEventListener('click', function () { p.classList.toggle('open'); });
+    /* Measured when it is seen and whenever its size changes - a pane drawn
+       hidden has nothing to measure yet, and the page's language makes a
+       text longer or shorter. */
+    if (typeof ResizeObserver === 'function') {
+      if (!FOLD_SEEN) FOLD_SEEN = new ResizeObserver(function (rows) {
+        rows.forEach(function (r) { if (r.target._foldMark) r.target._foldMark(); });
+      });
+      p._foldMark = mark;
+      FOLD_SEEN.observe(p);
+    } else {
+      setTimeout(mark, 60);
+      setTimeout(mark, 800);
+    }
+  });
+}
+(function () {
+  if (typeof MutationObserver !== 'function' || typeof document === 'undefined') return;
+  var go = function () {
+    nativeTipsAway(document.body);
+    longWordsFolded(document.body);
+    new MutationObserver(function (list) {
+      list.forEach(function (m) {
+        if (m.type === 'attributes') { if (m.target.getAttribute('title')) nativeTipsAway(m.target); return; }
+        Array.prototype.forEach.call(m.addedNodes, function (n) {
+          if (n.nodeType === 1) { nativeTipsAway(n); longWordsFolded(n); }
+        });
+      });
+    }).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['title']});
+  };
+  if (document.body) go(); else document.addEventListener('DOMContentLoaded', go);
+})();
+
 function explainWhatWasDrawn(where) {
   var host = where || document;
   Array.prototype.forEach.call(host.querySelectorAll('[title]'), function (one) {
