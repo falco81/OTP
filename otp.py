@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.149'
+__version__ = '1.0.150'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -930,8 +930,10 @@ SAYS = {
 PANES = {
     'realms': ['default_realm'],
     'guard': ['radius_guard', 'radius_guard_tries', 'radius_guard_names',
-              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted',
-              'net_confirm_min', 'fw_confirm_min'],
+              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted'],
+    # Where the change they take back is made (1.0.150), not under sign-ins.
+    'network': ['net_confirm_min'],
+    'fw': ['fw_confirm_min'],
     'radius': ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'radius_status_server',
                'radius_reply_ma', 'radius_dup_window_s', 'radius_workers',
                'radius_unknown_log', 'radius_reject_delay_ms', 'radius_reject_reason',
@@ -2371,6 +2373,7 @@ class Db(object):
     # them. A lane whose connection cannot be made falls back to the main one
     # for a minute.
     LANE_RETRY_S = 60
+    RADIUS_LANES = 4
 
     def _lane(self):
         """The lane of this thread's statement: the one pinned for the call it
@@ -2392,10 +2395,18 @@ class Db(object):
         # RADIUS off its lane for the whole of it.
         if getattr(self, 'restoring', False):
             return main
-        lane = self._lanes.get('radius')
+        # A few connections for RADIUS on a database server (1.0.150): one,
+        # every sign-in waited for the one before it there - about 125 a
+        # second, and one row held by a lock stopped them all. Each RADIUS
+        # thread keeps to one of them. SQLite writes one at a time anyway.
+        key = 'radius'
+        if self.engine != 'sqlite' and self.RADIUS_LANES > 1:
+            tail = threading.current_thread().name.rsplit('-', 1)[-1]
+            key = 'radius%d' % ((int(tail) if tail.isdigit() else 0) % self.RADIUS_LANES)
+        lane = self._lanes.get(key)
         if lane is None:
             with self._lanes_lock:
-                lane = self._lanes.setdefault('radius', _Lane())
+                lane = self._lanes.setdefault(key, _Lane())
         if lane.conn is None and time.time() < lane.failed_until:
             return main
         return lane
@@ -2499,7 +2510,7 @@ class Db(object):
     RADIUS_SQLITE_BUSY_S = 3
 
     def _connect(self):
-        quick = self._lanes.get('radius') is not None and self._lane() is self._lanes.get('radius')
+        quick = self._lane() is not self._lanes['main']
         stmt_s = min(self.statement_s or self.RADIUS_STATEMENT_S, self.RADIUS_STATEMENT_S) \
             if quick else self.statement_s
         lock_s = self.RADIUS_LOCK_S if quick else self.LOCK_S
@@ -3138,9 +3149,14 @@ def machine_info():
     return out
 
 
-def dump_tables(db, out, tables=None):
+DAEMON_DB = [None]       # the daemon's own database, once it runs (1.0.150)
+
+
+def dump_tables(db, out, tables=None, child=False):
     """Every row of every table, as JSON a line, gzipped. The first line says
     what it is; each table starts with a line naming it."""
+    if not child and tables is None and db is DAEMON_DB[0]:
+        return _dump_tables_child(out)
     import gzip
     # A file already open may be given (1.0.101): root writing into a
     # folder the service's account can write opens it itself, never by name.
@@ -3168,6 +3184,30 @@ def dump_tables(db, out, tables=None):
                     f.write(json.dumps(r, default=str) + '\n')
                 if not rows or table in ('meta', 'settings'):
                     break
+    return out
+
+
+def _dump_tables_child(out):
+    """dump_tables of the daemon's database by `otp --dump-copy`, a process of
+    its own (1.0.150): in the daemon, the minutes of a big copy held Python's
+    one lock against RADIUS - a third fewer sign-ins answered meanwhile."""
+    opened = not hasattr(out, 'write')
+    f = open(str(out), 'wb') if opened else out
+    try:
+        try:
+            f.flush()
+        except (OSError, ValueError):
+            pass
+        env = dict(os.environ)
+        r = subprocess.run([sys.executable, '-I', os.path.abspath(__file__), '--dump-copy'],
+                           stdout=f.fileno(), stderr=subprocess.PIPE, env=env,
+                           timeout=6 * 3600)
+        if r.returncode != 0:
+            raise DbError('the copy could not be made: %s'
+                          % r.stderr.decode('utf-8', 'replace').strip()[-300:])
+    finally:
+        if opened:
+            f.close()
     return out
 
 
@@ -13473,9 +13513,19 @@ def db_give_back(store, progress):
     """Give the room deleted rows left back to the disk: VACUUM, OPTIMIZE
     TABLE, VACUUM FULL. Each holds a table shut while it works."""
     own = db_own(store)
+    # In a cluster this node rests meanwhile (1.0.150): the tables are held
+    # shut, and RADIUS waited on them - the other node answers. Alone, the
+    # page says first that sign-ins wait for it.
+    rest = bool(CONFIG.get('ha_mode')) and any(n.get('alive') and not n.get('me')
+                                               for n in ha_nodes(store))
+    if rest:
+        RESTORE_WHY[0] = 'the database gives its room back'
+        RESTORE_RUNNING.set()
     try:
         return _db_give_back(own or store.db, progress)
     finally:
+        if rest:
+            RESTORE_RUNNING.clear()
         if own:
             own.close()
 
@@ -14458,6 +14508,7 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
             path = tmpname
         # This node answers nothing while it is done (1.0.149): the VPN asks
         # the other node, as in maintenance.
+        RESTORE_WHY[0] = 'a backup is being put back'
         RESTORE_RUNNING.set()
         try:
             return _db_file_restore(store, path, by, key_file, from_name, kind)
@@ -19648,6 +19699,7 @@ UPGRADE_DRAIN_S = int(os.environ.get('OTP_UPGRADE_DRAIN_S', '20'))
 UPGRADE_TIMEOUT_S = 30 * 60
 MAINT_CACHE = {'at': 0.0, 'row': None}
 RESTORE_RUNNING = threading.Event()
+RESTORE_WHY = ['']
 
 
 def _meta_json(store, k):
@@ -19703,8 +19755,10 @@ def maintenance_now(store):
         return {'on': True, 'why': 'rebuilt from the other node'}
     if RESTORE_RUNNING.is_set():
         # A backup put back (1.0.149): RADIUS waited for the whole of it with
-        # the database held, or met tables being made again and refused.
-        return {'on': True, 'why': 'a backup is being put back'}
+        # the database held, or met tables being made again and refused. Room
+        # given back in a cluster too (1.0.150): VACUUM FULL holds each table
+        # shut - the other node answers meanwhile.
+        return {'on': True, 'why': RESTORE_WHY[0] or 'a backup is being put back'}
     now = time.time()
     if now - MAINT_CACHE['at'] > 2:
         MAINT_CACHE['at'] = now
@@ -35000,6 +35054,8 @@ def build_parser():
                    'pages\' export) put in (--yes); with --replace, what is not in the file '
                    'is taken away and settings not in it go back to their defaults')
     g.add_argument('--backup', action='store_true', help='a copy of the database, now')
+    # The daemon's copies made by a process of their own (1.0.150), not shown.
+    g.add_argument('--dump-copy', action='store_true', help=argparse.SUPPRESS)
     g.add_argument('--restore', metavar='FILE', help='put a copy back (--yes); without --yes, '
                    'what is in it and where it was made')
     g.add_argument('--restore-bundle', metavar='FILE', help='put back a backup sent to a '
@@ -36159,6 +36215,8 @@ def cli_main(argv=None):
                              'suffix'))
     if args.daemon:
         return run_daemon()
+    if args.dump_copy:
+        return cli_dump_copy()
     if not acted and args.json:
         # --json alone (1.0.103): the state as JSON, asked by a script - never
         # the daemon in the foreground because stdin is not a terminal.
@@ -37608,6 +37666,24 @@ def daemon_lock():
     _DAEMON_LOCK = fd
 
 
+def cli_dump_copy():
+    """The daemon's copy of every table, written to stdout (1.0.150): made in
+    this process, its work no longer took the daemon's own time from RADIUS
+    - a copy of a big database is minutes of Python."""
+    load_config(saved=None)
+    try:
+        db = open_db()
+    except DbError as e:
+        sys.stderr.write('otp: %s\n' % e)
+        return 1
+    try:
+        dump_tables(db, sys.stdout.buffer, child=True)
+        sys.stdout.buffer.flush()
+    finally:
+        db.close()
+    return 0
+
+
 def run_daemon():
     become_service_user()
     load_config()
@@ -37616,6 +37692,7 @@ def run_daemon():
     try:
         db = open_db()
         store = Storage(db)
+        DAEMON_DB[0] = db
     except Exception as e:
         log('the database %s could not be opened: %s' % (CONFIG.get('db_engine'), e), 'error')
         raise SystemExit(1)

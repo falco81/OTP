@@ -5418,8 +5418,9 @@ if ($('db-engine-test')) {
     }).catch(oops).then(function () { busy($('db-check'), false); });
   };
   $('db-optimize').onclick = function () {
-    confirmThen('Give the disk back', 'Each table is rebuilt and held shut while it is — the RADIUS server '
-      + 'waits for its own table meanwhile. It needs room for a second copy of the biggest table. Worth '
+    confirmThen('Give the disk back', 'Each table is rebuilt and held shut while it is. In a cluster this node '
+      + 'answers no RADIUS meanwhile and the other node signs everybody in; alone, sign-ins wait for it - do it '
+      + 'when few sign in. It needs room for a second copy of the biggest table. Worth '
       + 'doing after throwing a lot away, and not otherwise.', 'Give it back',
       function () { api('db', {action: 'give_back'}).then(function () { dbWatch(); }).catch(oops); }, false);
   };
