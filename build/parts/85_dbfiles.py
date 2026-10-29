@@ -236,6 +236,7 @@ def make_dump(store, label='daily', folder=None):
     engine = store.db.engine
     folder = Path(folder) if folder else DUMP_DIR
     folder.mkdir(parents=True, exist_ok=True)
+    backup_room_check(store, folder)            # never the disk filled (1.0.149)
     info = dump_info(engine)
     kind = engine if info['ready'] else 'copy'
     name = 'otp-%s-%s-%s%s' % (engine if kind != 'copy' else 'copy', _stamp(),
@@ -486,7 +487,13 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
                 held.append(Path(kname))
                 key_file = kname
             path = tmpname
-        return _db_file_restore(store, path, by, key_file, from_name, kind)
+        # This node answers nothing while it is done (1.0.149): the VPN asks
+        # the other node, as in maintenance.
+        RESTORE_RUNNING.set()
+        try:
+            return _db_file_restore(store, path, by, key_file, from_name, kind)
+        finally:
+            RESTORE_RUNNING.clear()
     finally:
         for x in held:
             try:

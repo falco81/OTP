@@ -1200,7 +1200,20 @@ nginx_upload_guard() {
         return 0
     fi
     if ! nginx -V 2>&1 | grep -q -- '--with-http_auth_request_module'; then
-        note "nginx has no auth_request here: a database put back may be sent before who sends it is asked"
+        # Without the question first, nobody may send 4 GB (1.0.149): nginx
+        # wrote whatever anybody on the allow list sent to its disk - the
+        # database's disk - before the page could refuse it.
+        if grep -q 'client_max_body_size 4g;' "$NGINX_CONF"; then
+            local bak1="$NGINX_BAK_DIR/otp.conf.before-upload-limit.$(date +%Y%m%d%H%M%S)"
+            mkdir -p "$NGINX_BAK_DIR"; cp -a "$NGINX_CONF" "$bak1"
+            sed -i 's/client_max_body_size 4g;/client_max_body_size 32m;/' "$NGINX_CONF"
+            if nginx -t >/dev/null 2>&1; then
+                systemctl reload nginx >/dev/null 2>&1 || true
+            else
+                cp -a "$bak1" "$NGINX_CONF"
+            fi
+        fi
+        note "nginx has no auth_request here: files over 32 MB (a database put back, a package) are not taken by the pages - put them in with otp --restore / --upgrade on the server"
         return 0
     fi
     local bak="$NGINX_BAK_DIR/otp.conf.before-upload-guard.$(date +%Y%m%d%H%M%S)"

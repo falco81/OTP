@@ -379,7 +379,8 @@ class Authenticator(object):
                         # each such request is counted towards the token's
                         # recovery codes instead: past a day's few, they are
                         # not taken for a while. Codes from the app go on.
-                        scratch_guard_note(self.store, d.token_name)
+                        scratch_guard_note(self.store, d.token_name,
+                                           getattr(REQUEST_PLACE, 'v', ''))
                     return d.refuse('the directory refused the password: %s' % e
                                     if not isinstance(e, LdapUnreachable)
                                     else 'LDAP server(s) have gone away')
@@ -764,13 +765,21 @@ class RadiusServer(object):
             # Older than any NAS waits (1.0.57): after a stall the queue held
             # minutes of requests whose NAS had long given up, each with its
             # directory binds and its code used up, ahead of the new ones.
-            if time.time() - arrived > int(CONFIG.get('radius_stale_s') or 15):
+            # 10 s (1.0.149): past what a VPN waits for an answer before it asks
+            # again or asks the other node - 15 s worked on requests long given
+            # up behind a slow directory, each using its code up.
+            if time.time() - arrived > int(CONFIG.get('radius_stale_s') or 10):
                 self.counts['stale'] += 1
                 with self.unknown_lock:
                     self.quiet['too old to answer'] += 1
                 continue
             try:
                 self.handle(kind, sock, data, peer, arrived)
+            except DbError as e:
+                # Not answered, as any request while the database is away.
+                self.counts['no_database'] += 1
+                log_sparing('radius-db', 'RADIUS requests go unanswered: %s'
+                            % str(e).split('\n')[0][:200], 'error')
             except Exception as e:
                 # Sparingly (1.0.59): a packet that breaks it once breaks it
                 # every time it is sent, by anybody using the NAS's address.
@@ -1022,8 +1031,13 @@ class RadiusServer(object):
                 if r['k'].split(':', 2)[-1] == want[1:]:
                     self.ma_seen.add((cid, ip))
                     return True
-        except Exception:                               # noqa: BLE001
-            pass
+        except Exception as e:                          # noqa: BLE001
+            # Not known is not "it never signed" (1.0.149): the database not
+            # answering let an unsigned request past the rule that a client
+            # which signs must always sign. Asked again next time, and this
+            # request is not answered.
+            self.ma_asked.pop((cid, ip), None)
+            raise DbError('whether %s signs its requests could not be read: %s' % (ip, e))
         return False
 
     def status(self, pkt, client, ip, port, secret):
@@ -1077,6 +1091,11 @@ class RadiusServer(object):
         except Exception as e:                          # noqa: BLE001
             log_sparing('radius-guard', 'the sign-in protection: %s' % e, 'warn')
             src, blocked = '', None
+        # Where the person is, for the recovery codes' guard (1.0.149).
+        try:
+            REQUEST_PLACE.v = guard_source(w)
+        except Exception:                               # noqa: BLE001
+            REQUEST_PLACE.v = ''
         try:
             if blocked:
                 d = Decision()
@@ -1101,6 +1120,15 @@ class RadiusServer(object):
                         'reached (%s)' % str(e).split('\n')[0][:200], 'error')
             return None
         except Exception as e:
+            if db_trouble(e):
+                # The database there but not answering - locked, full, a
+                # statement or a lock that ran out (1.0.149): as when it is
+                # gone, no answer. A refusal refused everybody with a right
+                # code, and the VPN never asked the other node.
+                self.counts['no_database'] += 1
+                log_sparing('radius-db', 'RADIUS requests go unanswered: the database is not '
+                            'answering (%s)' % str(e).split('\n')[0][:200], 'error')
+                return None
             # Whatever went wrong inside, the VPN gets an answer - a refusal
             # with the reason written down - rather than silence and a retry.
             log_sparing('radius-decide:%s' % type(e).__name__,

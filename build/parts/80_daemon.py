@@ -604,10 +604,37 @@ def import_legacy(store, root, by='import', replace=False, say=print):
 # ---------------------------------------------------------------------------
 # Copies of the database
 # ---------------------------------------------------------------------------
+BACKUP_ROOM_MIN = 128 << 20
+
+
+def backup_room_check(store, folder=None):
+    """Room left for a copy without filling the disk (1.0.149): a full disk
+    under a SQLite database refused every sign-in until space was freed.
+    What the copy may take - the database file itself at most - and 128 MB
+    more must stay free."""
+    try:
+        free = shutil.disk_usage(str(folder or BACKUP_DIR)).free
+    except OSError:
+        return
+    size = 0
+    if store.db.engine == 'sqlite':
+        try:
+            size = os.path.getsize(str(store.db.path))
+        except (OSError, TypeError):
+            size = 0
+    need = size + BACKUP_ROOM_MIN
+    if free < need:
+        raise ValueError('there is no room for a copy in %s: %d MB free, %d MB needed so that '
+                         'the disk is not filled under the database - take old copies away, '
+                         'or give the disk more room' % (folder or BACKUP_DIR, free >> 20,
+                                                         need >> 20))
+
+
 def make_backup(store, why='by hand'):
     """A copy of everything into the backups folder - and the key that opens
     the tokens beside it, because one without the other is nothing."""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backup_room_check(store)
     stamp_ = datetime.now().strftime('%Y%m%d-%H%M%S')
     # A name of its own (two in one second overwrote each other) and written
     # under another until it is whole (1.0.59): a half file counted as a

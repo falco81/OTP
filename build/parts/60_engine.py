@@ -79,6 +79,30 @@ class Directory(object):
     DEAD_S = 30
     DEAD_LOCK = threading.Lock()
 
+    # How many RADIUS workers one directory may hold at once (1.0.149): half
+    # of them. A directory answering in seconds took every worker, and the
+    # realms of the code alone - which never ask it - went unanswered too.
+    BUSY = {}
+    BUSY_LOCK = threading.Lock()
+
+    @contextlib.contextmanager
+    def held(self):
+        if not threading.current_thread().name.startswith('radius'):
+            yield                       # the pages and the command line: not counted
+            return
+        most = max(2, int(CONFIG.get('radius_workers') or 16) // 2)
+        with self.BUSY_LOCK:
+            n = self.BUSY.get(self.name.lower(), 0)
+            if n >= most:
+                raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
+                                      'this one is not added to them' % (self.name, n))
+            self.BUSY[self.name.lower()] = n + 1
+        try:
+            yield
+        finally:
+            with self.BUSY_LOCK:
+                self.BUSY[self.name.lower()] = max(0, self.BUSY.get(self.name.lower(), 1) - 1)
+
     def _order(self):
         """The servers in the order to ask them: the one that answered last
         first, those that did not answer lately last - and when none has,
@@ -141,6 +165,7 @@ class Directory(object):
                         break
                 self.last_good = host
                 self._up(host)
+                one.otp_host = host
                 return one
             except (LdapError, OSError, ValueError) as e:
                 # Unreachable, timed out, the line dropped, StartTLS hung
@@ -156,6 +181,35 @@ class Directory(object):
             raise refused
         raise LdapUnreachable('no server of %s could be reached (%s)'
                               % (self.name, '; '.join(tried) or 'none is set'))
+
+    def asked(self, do):
+        """do(link) on the first server that answers - and on the next when
+        the search itself is not answered (1.0.149): a server that took the
+        connection and the reading account's bind but then left its searches
+        unanswered was never passed over, the other server never asked, and
+        every RADIUS worker waited on it in turn."""
+        with self.held():
+            return self._asked(do)
+
+    def _asked(self, do):
+        last = None
+        for _ in range(max(1, len(self.hosts))):
+            link = self.link()
+            host = getattr(link, 'otp_host', None)
+            try:
+                return do(link)
+            except (LdapError, OSError) as e:
+                if isinstance(e, LdapError) and not (isinstance(e, LdapUnreachable) or
+                                                     e.code in LDAP_TRY_ANOTHER):
+                    raise
+                last = e
+                if host:
+                    self._down(host)
+                    if self.last_good == host:
+                        self.last_good = None
+            finally:
+                link.close()
+        raise last if isinstance(last, LdapUnreachable) else LdapUnreachable(str(last))
 
     def find_user(self, name, how='upn'):
         """The entry of one account, or None. `how` is upn (the whole
@@ -177,13 +231,10 @@ class Directory(object):
         else:
             want = ldap_equal('userPrincipalName', said)
         flt = ldap_and(ldap_equal('objectClass', 'user'), want)
-        link = self.link()
-        try:
-            # Three, not two (1.0.101): a computer's account among them is
-            # dropped below, and must not hide a second person of the name.
-            rows = link.search(self.base, flt, USER_ATTRS, scope=2, limit=3)
-        finally:
-            link.close()
+        # Three, not two (1.0.101): a computer's account among them is
+        # dropped below, and must not hide a second person of the name.
+        rows = self.asked(lambda link: link.search(self.base, flt, USER_ATTRS, scope=2,
+                                                   limit=3))
         entry = None
         # A computer's account is not a person's (1.0.101): objectClass=user
         # takes them in on AD, and anybody in the domain may make up to ten
@@ -241,14 +292,12 @@ class Directory(object):
             got = self.cache.get(key)
             if got and time.time() - got[0] < self.CACHE_S:
                 return got[1]
-        link = self.link()
-        link.PAGES_MOST = 20            # a sign-in's groups, not a census (1.0.59)
-        try:
-            rows = link.search(self.base, ldap_and(ldap_equal('objectClass', 'group'),
+        def do(link):
+            link.PAGES_MOST = 20        # a sign-in's groups, not a census (1.0.59)
+            return link.search(self.base, ldap_and(ldap_equal('objectClass', 'group'),
                                                    ldap_in_chain('member', entry['dn'])),
                                ('cn',), scope=2, limit=5000, paged=True)
-        finally:
-            link.close()
+        rows = self.asked(do)
         out = [(r['dn'], (r['attrs'].get('cn') or [cn_of(r['dn'])])[0]) for r in rows]
         with self.lock:
             self.cache[key] = (time.time(), out)
@@ -273,15 +322,13 @@ class Directory(object):
         dcs = [p for p in re.split(r'(?<!\\),', str(self.base or '')) if
                p.strip().lower().startswith('dc=')]
         where = ','.join(p.strip() for p in dcs) or self.base
-        link = self.link()
-        link.PAGES_MOST = 5
-        try:
-            rows = link.search(where, ldap_and(
+        def do(link):
+            link.PAGES_MOST = 5
+            return link.search(where, ldap_and(
                 ldap_equal('objectClass', 'group'),
                 ldap_or(ldap_equal('sAMAccountName', said), ldap_equal('cn', said))),
                 ('cn', 'sAMAccountName'), scope=2, limit=50, paged=True)
-        finally:
-            link.close()
+        rows = self.asked(do)
 
         def first(r, a):
             for k, v in r['attrs'].items():
@@ -314,6 +361,10 @@ class Directory(object):
             # Cut at a NUL somewhere on the way, a password is empty - and an
             # empty one binds anonymously (1.0.101).
             raise LdapError('the password holds a control character')
+        with self.held():
+            return self._password_ok(entry, password)
+
+    def _password_ok(self, entry, password):
         tried = []
         order = self._order()
         if not order:
@@ -476,8 +527,16 @@ def lockout_said(store, name, n, mins):
         pass
 
 
-SCRATCH_GUARD_MOST = 20          # a day's refused tries before recovery codes rest (1.0.101)
+SCRATCH_GUARD_MOST = 20          # a day's refused tries from one place (1.0.101, 1.0.149)
+SCRATCH_GUARD_ALL = 100          # ... and from everywhere together (1.0.149)
 SCRATCH_GUARD_S = 86400
+# One place's count, in this node's memory (1.0.149): a stranger who knew only
+# a name sent 20 wrong passwords and the person's recovery codes were not
+# taken for a day - just when the phone was lost. Now one place rests alone;
+# all of them together only at five times as many.
+SCRATCH_PLACES = {}
+SCRATCH_PLACES_LOCK = threading.Lock()
+REQUEST_PLACE = threading.local()
 
 
 def scratch_guard_times(store, name):
@@ -486,23 +545,53 @@ def scratch_guard_times(store, name):
             if time.time() - x < SCRATCH_GUARD_S]
 
 
-def scratch_guard_note(store, name):
+def _scratch_place(name, place, add=False):
+    k = (norm_name(name), str(place or '')[:64])
+    t = time.time()
+    with SCRATCH_PLACES_LOCK:
+        if len(SCRATCH_PLACES) > 20000:
+            SCRATCH_PLACES.clear()
+        got = [x for x in SCRATCH_PLACES.get(k, []) if t - x < SCRATCH_GUARD_S]
+        if add:
+            got = (got + [t])[-SCRATCH_GUARD_MOST * 2:]
+        if got:
+            SCRATCH_PLACES[k] = got
+        else:
+            SCRATCH_PLACES.pop(k, None)
+        return len(got)
+
+
+def scratch_guard_clear(name):
+    n = norm_name(name)
+    with SCRATCH_PLACES_LOCK:
+        for k in [k for k in SCRATCH_PLACES if k[0] == n]:
+            del SCRATCH_PLACES[k]
+
+
+def scratch_guard_note(store, name, place=''):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
+    here = _scratch_place(name, place, add=True)
     before = len(scratch_guard_times(store, name))
-    node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_MOST * 2)
+    node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_ALL * 2)
     times = scratch_guard_times(store, name)
     # Said once, as the count goes past it (1.0.147): two nodes at once went
     # from 19 to 21, and "exactly 20" was never seen.
-    if before < SCRATCH_GUARD_MOST <= len(times):
-        store.add_event('tokens', 'the recovery codes of %s are not taken for a day: %d '
+    if before < SCRATCH_GUARD_ALL <= len(times) or here == SCRATCH_GUARD_MOST:
+        store.add_event('tokens', 'the recovery codes of %s are not taken for a day%s: %d '
                         'requests in a day had a wrong password or a wrong recovery code - '
                         'somebody may be guessing them (Unlock it on the token gives them back)'
-                        % (norm_name(name), SCRATCH_GUARD_MOST), 'warn', who='otp')
+                        % (norm_name(name), '' if len(times) >= SCRATCH_GUARD_ALL else
+                           ' from %s' % (place or 'one place'),
+                           len(times) if len(times) >= SCRATCH_GUARD_ALL else here),
+                        'warn', who='otp')
 
 
-def scratch_guarded(store, name):
-    return len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_MOST
+def scratch_guarded(store, name, place=None):
+    if place is None:
+        place = getattr(REQUEST_PLACE, 'v', '') or ''
+    return _scratch_place(name, place) >= SCRATCH_GUARD_MOST or \
+        len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_ALL
 
 
 def entry_unusable(entry, locked=True):
@@ -1065,7 +1154,10 @@ class Tokens(object):
         if tries and len(fails) >= tries:
             return False, SAY_RATE, facts
         secret = unseal_secret(tok.get('secret') or '', token_bind(name))
-        if not secret:
+        # Only a token of the app needs its key (1.0.149): one by mail or SMS
+        # put back from a backup has none, and its recovery codes were
+        # refused as "cannot be opened".
+        if not secret and token_kind(tok) == 'totp':
             return False, SAY_LOST, facts
         digits = int(tok.get('digits') or 6)
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other

@@ -766,7 +766,7 @@ def vip_watch(daemon):
             os.chmod(str(tmp), 0o640)
             os.replace(str(tmp), str(VIP_STATE))
         except Exception as e:                          # noqa: BLE001
-            log('the web address: %s' % e, 'warn')
+            log_sparing('vip-watch:' + str(e)[:80], 'the web address: %s' % e, 'warn', 600)
             daemon.stop_flag.wait(10)
 
 

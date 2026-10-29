@@ -140,9 +140,48 @@ def write_root(path, text, mode):
         raise
 
 
+def pg_file_put(path, text, mode, uid=None, gid=None):
+    """A file in a folder of PostgreSQL's, replaced whole (1.0.149): written
+    to a new file of an unguessable name, its mode and owner set on the open
+    file, then renamed over - never a name followed, which whoever runs as
+    postgres could have made a link to a file of root's."""
+    folder = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(prefix='.otp-', dir=folder)
+    try:
+        os.fchmod(fd, mode)
+        if uid is not None:
+            os.fchown(fd, uid, gid if gid is not None else -1)
+        with os.fdopen(fd, 'w') as f:
+            fd = None
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def pg_file_read(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'r') as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise Refused('%s is not a plain file' % path)
+        return f.read()
+
+
+def pg_file_copy(src, dst):
+    """src copied to dst the same way; its owner and mode kept."""
+    st = os.lstat(src)
+    pg_file_put(dst, pg_file_read(src), stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
+
+
 # ---- what a request may hold ---------------------------------------------------------
-NAME_RE = re.compile(r'^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
-                     r'(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+NAME_RE = re.compile(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
+                     r'(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z')
 IFACE_RE = re.compile(r'^[A-Za-z0-9_.:-]{1,15}\Z')
 NODE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')
 CERT_RE = re.compile(r'^(\s*-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----)+\s*\Z')
@@ -1473,20 +1512,7 @@ def pgtls_server(r):
         pass
     for name, text, mode in (('otp-ha.key', r['key'], 0o600), ('otp-ha.crt', r['cert'], 0o644)):
         path = os.path.join(data, name)
-        fd, tmp = tempfile.mkstemp(prefix='.otp-', dir=data)
-        try:
-            with os.fdopen(fd, 'w') as f:
-                f.write(text)
-            os.chmod(tmp, mode)
-            if uid is not None:
-                os.chown(tmp, uid, gid if gid is not None else -1)
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        pg_file_put(path, text, mode, uid, gid)
     os.makedirs(os.path.dirname(HA_CA_FILE), mode=0o755, exist_ok=True)
     os.chmod(os.path.dirname(HA_CA_FILE), 0o755)
     write_root(HA_CA_FILE, r['trust'], 0o644)
@@ -1527,8 +1553,7 @@ def pgtls_hba(r):
     hba = pg_sql(r['port'], 'SHOW hba_file')
     if not hba.startswith('/') or not os.path.isfile(hba):
         raise Refused('pg_hba.conf was not found (%s)' % hba[:100])
-    with open(hba) as f:
-        text = f.read()
+    text = pg_file_read(hba)        # not through a link (1.0.149)
     lines, changed, have_ssl = text.split('\n'), 0, False
     for i, line in enumerate(lines):
         f = line.split()
@@ -1543,17 +1568,16 @@ def pgtls_hba(r):
             return {'said': 'pg_hba.conf already takes the other node over TLS only'}
         raise Refused('pg_hba.conf has no line of otp\'s for %s (%s %s): it was written by '
                       'hand - change host to hostssl there yourself' % (net, r['db'], r['user']))
-    st = os.stat(hba)
-    shutil.copy2(hba, hba + '.otp-before-tls')
-    write_root(hba, '\n'.join(lines), stat.S_IMODE(st.st_mode))
-    os.chown(hba, st.st_uid, st.st_gid)
+    st = os.lstat(hba)
+    pg_file_copy(hba, hba + '.otp-before-tls')
+    pg_file_put(hba, '\n'.join(lines), stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
     try:
         pg_sql(r['port'], 'SELECT pg_reload_conf()')
         bad = pg_sql(r['port'], 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL')
         if bad not in ('', '0'):
             raise Refused('PostgreSQL does not read pg_hba.conf as written')
     except Refused:
-        shutil.copy2(hba + '.otp-before-tls', hba)
+        pg_file_copy(hba + '.otp-before-tls', hba)
         pg_sql(r['port'], 'SELECT pg_reload_conf()')
         raise
     return {'said': 'the other node (%s) is let into the database over TLS only (hostssl)'
@@ -1569,8 +1593,7 @@ def pgtls_peer(r):
     hba = pg_sql(r['port'], 'SHOW hba_file')
     if not hba.startswith('/') or not os.path.isfile(hba):
         raise Refused('pg_hba.conf was not found (%s)' % hba[:100])
-    with open(hba) as f:
-        text = f.read()
+    text = pg_file_read(hba)        # not through a link (1.0.149)
     lines, moved, there = text.split('\n'), 0, False
 
     def ours(f):
@@ -1609,17 +1632,16 @@ def pgtls_peer(r):
     new_text = '\n'.join(lines)
     if new_text == text:
         return {'said': 'pg_hba.conf already lets %s in' % r['peer']}
-    st = os.stat(hba)
-    shutil.copy2(hba, hba + '.otp-before-readdress')
-    write_root(hba, new_text, stat.S_IMODE(st.st_mode))
-    os.chown(hba, st.st_uid, st.st_gid)
+    st = os.lstat(hba)
+    pg_file_copy(hba, hba + '.otp-before-readdress')
+    pg_file_put(hba, new_text, stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
     try:
         pg_sql(r['port'], 'SELECT pg_reload_conf()')
         bad = pg_sql(r['port'], 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL')
         if bad not in ('', '0'):
             raise Refused('PostgreSQL does not read pg_hba.conf as written')
     except Refused:
-        shutil.copy2(hba + '.otp-before-readdress', hba)
+        pg_file_copy(hba + '.otp-before-readdress', hba)
         pg_sql(r['port'], 'SELECT pg_reload_conf()')
         raise
     return {'said': 'pg_hba.conf lets the other node in from %s%s' % (
@@ -1636,8 +1658,7 @@ def pgtls_hba_off(r):
     hba = pg_sql(r['port'], 'SHOW hba_file')
     if not hba.startswith('/') or not os.path.isfile(hba):
         raise Refused('pg_hba.conf was not found (%s)' % hba[:100])
-    with open(hba) as f:
-        text = f.read()
+    text = pg_file_read(hba)        # not through a link (1.0.149)
     lines, changed = text.split('\n'), 0
     for i, line in enumerate(lines):
         f = line.split()
@@ -1647,10 +1668,9 @@ def pgtls_hba_off(r):
             changed += 1
     if not changed:
         return {'said': 'pg_hba.conf already lets the other node in without TLS'}
-    st = os.stat(hba)
-    shutil.copy2(hba, hba + '.otp-before-tls-off')
-    write_root(hba, '\n'.join(lines), stat.S_IMODE(st.st_mode))
-    os.chown(hba, st.st_uid, st.st_gid)
+    st = os.lstat(hba)
+    pg_file_copy(hba, hba + '.otp-before-tls-off')
+    pg_file_put(hba, '\n'.join(lines), stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid)
     pg_sql(r['port'], 'SELECT pg_reload_conf()')
     return {'said': 'the other node (%s) is let in with or without TLS again' % r['peer']}
 

@@ -157,6 +157,14 @@ def rb_checked(data, old=None):
             raise ValueError('the folder (SCP) is letters, digits and . _ / ~ + @ % = , - '
                              'only - use SFTP for any other')
     pw = data.get('password')
+    # The saved password goes only to the server it was saved for (1.0.149):
+    # with another server typed in, Try it sent it there - to whoever the
+    # administrator chose. Typed again for a new one.
+    moved = bool(old) and (old.get('kind') != kind or
+                           str(old.get('host') or '').lower() != str(t.get('host') or '').lower() or
+                           int(old.get('port') or 0) != int(t.get('port') or 0))
+    if (pw is None or is_masked(pw)) and moved and old.get('password'):
+        raise ValueError('the server changed: type the password again')
     if pw is None or is_masked(pw):
         t['password'] = old.get('password') or ''
     else:
@@ -1322,9 +1330,60 @@ def rb_due(store, last_day):
     return today if today != last_day else None
 
 
+RB_NOW_LIVE_S = 900
+
+
+def rb_now_ask_others(store, by):
+    """Back up now on the other nodes too (1.0.149), as the schedule does: each
+    node makes its own. Asked in a row of the asking node's own per node
+    asked - 'rbackup:now:NODE@@ASKER' - so only one node ever writes it."""
+    if not CONFIG.get('ha_mode'):
+        return []
+    asked = []
+    ident = secrets.token_hex(6)
+    for n in ha_nodes(store):
+        if n.get('me') or not n.get('alive'):
+            continue
+        store.set_meta(node_key('rbackup:now', n['name']),
+                       json.dumps({'id': ident, 'at': time.time(), 'by': by,
+                                   'from': node_name()}))
+        asked.append(n['name'])
+    return asked
+
+
+def rb_now_asked(daemon):
+    """A Back up now asked of this node by another; started once each."""
+    store = daemon.store
+    done_k = 'rbackup:nowdone:' + node_name()
+    try:
+        done = set(json.loads(store.get_meta(done_k) or '[]'))
+    except ValueError:
+        done = set()
+    for r in node_key_rows(store, 'rbackup:now', node_name()):
+        try:
+            ask = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        ident = str(ask.get('id') or '')
+        if not ident or ident in done or time.time() - float(ask.get('at') or 0) > RB_NOW_LIVE_S:
+            continue
+        if RB_JOB['running']:
+            return                      # asked again at the next tick
+        store.set_meta(done_k, json.dumps(sorted(done | {ident})[-20:]))
+        rb_job_start(store, '%s (Back up now on %s)' % (ask.get('by') or 'otp',
+                                                        ask.get('from') or '?'))
+        return
+
+
 def rb_tick(daemon):
     """Once a minute from the daemon's loop: the scheduled backup, this node's."""
     store = daemon.store
+    if CONFIG.get('ha_mode'):
+        try:
+            rb_now_asked(daemon)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('rb-now:' + str(e)[:60], 'Back up now asked by the other node: %s'
+                        % e, 'warn', 600)
     day = rb_due(store, getattr(daemon, '_rb_day', ''))
     if not day or RB_JOB['running']:
         return

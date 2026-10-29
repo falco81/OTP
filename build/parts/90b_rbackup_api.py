@@ -176,7 +176,13 @@ def _rbackup_do(h):
         if act == 'run':
             only = [str(x) for x in (b.get('ids') or [])] or None
             job = rb_job_start(h.store, by, only)
-            return {'message': 'the backup is being made', 'job': job}
+            # Every node's, as the schedule makes them (1.0.149): in a cluster
+            # Back up now made only the backup of the node the page was on.
+            others = rb_now_ask_others(h.store, by) if not only else []
+            return {'message': 'the backup is being made' + (
+                ' here; %s make%s theirs within a minute' % (
+                    ', '.join(others), 's' if len(others) == 1 else '') if others else ''),
+                'job': job, 'others': others}
         if act == 'job':
             return {'job': dict(RB_JOB)}
         if act == 'list':

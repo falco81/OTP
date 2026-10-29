@@ -1367,15 +1367,24 @@ class Storage(object):
             # As the directory is called (1.0.146): typed in another case it
             # was kept so, and a rename of the directory left the realm behind.
             directory = self.directory(directory)['name']
-        if token_name == 'bare':
+        def plain_names(tn, sfx):
+            # A realm whose tokens are kept under the name alone: bare, or
+            # whole with no suffix to add - * or none (1.0.149): a bare a.cz
+            # and a * of another directory both kept "falco", and one falco
+            # signed in as the other.
+            return tn == 'bare' or str(sfx or '') in ('', '*')
+        if plain_names(token_name, suffix):
             # Names without their realm are one person's only within one
             # directory (1.0.101): novak@a in one and novak@b in another
             # shared the token "novak", and the second could enrol it, or
             # sign in to the first realm with it.
             for r in self.realms():
-                if r.get('token_name') == 'bare' and str(r.get('name')).lower() != \
+                if plain_names(r.get('token_name'), r.get('suffix')) and \
+                        str(r.get('name')).lower() != \
                         str(data.get('name') or '').strip().lower() and \
-                        str(r.get('directory') or '').lower() != directory.lower():
+                        str(r.get('directory') or '').lower() != directory.lower() and \
+                        (token_name == 'bare' and r.get('token_name') == 'bare' or
+                         (directory and r.get('directory'))):
                     raise ValueError('the realm %s already keeps its tokens under the name '
                                      'alone, with the directory %s: names alone are one '
                                      'person\'s only within one directory - keep this '
@@ -1988,17 +1997,24 @@ class Storage(object):
         """Rows older than `cut`, deleted in batches (1.0.33), with a breath
         between them (1.0.57) so RADIUS requests waiting on the database get
         their turn."""
-        gone = 0
-        for _ in range(100000):
+        # 1000 at a time and a fifth of a second between (1.0.149): 5000 with
+        # 0.02 s left RADIUS a quarter of its pace for the whole of it.
+        gone, batch = 0, 1000
+        for _ in range(1000000):
             if self.db.engine == 'mariadb':
-                n = self.db.run('DELETE FROM %s WHERE ts < ? LIMIT 5000' % table, (cut,))
+                n = self.db.run('DELETE FROM %s WHERE ts < ? LIMIT %d' % (table, batch), (cut,))
             else:
                 n = self.db.run('DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE '
-                                'ts < ? LIMIT 5000)' % (table, table), (cut,))
+                                'ts < ? LIMIT %d)' % (table, table, batch), (cut,))
             gone += int(n or 0)
-            if not n or n < 5000:
+            if not n or n < batch:
                 break
-            time.sleep(0.02)
+            time.sleep(0.2)
+        if gone and self.db.engine == 'sqlite':
+            try:
+                self.db.run(RawSql('PRAGMA wal_checkpoint(TRUNCATE)'))
+            except Exception:                           # noqa: BLE001
+                pass
         return gone
 
     def counts(self):

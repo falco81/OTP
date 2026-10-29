@@ -757,9 +757,22 @@ class Console(object):
         path = LOG_DIR / 'otp.log'
         st = {'f': None, 'ino': None}
 
+        def opened():
+            # Not through a link, nor stuck on a FIFO (1.0.149): the folder is
+            # the otp account's, and this is root's console.
+            fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                import stat as _st
+                if not _st.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError('not a plain file')
+            except OSError:
+                os.close(fd)
+                raise
+            return os.fdopen(fd, 'r', encoding='utf-8', errors='replace')
+
         def first():
             try:
-                f = open(str(path), 'r', encoding='utf-8', errors='replace')
+                f = opened()
             except OSError as e:
                 return [self.pal.bad_line('%s cannot be read: %s' % (path, e))]
             st['f'] = f
@@ -789,7 +802,7 @@ class Console(object):
                 try:
                     if os.stat(str(path)).st_ino != st['ino']:      # rotated
                         f.close()
-                        st['f'] = open(str(path), 'r', encoding='utf-8', errors='replace')
+                        st['f'] = opened()
                         st['ino'] = os.fstat(st['f'].fileno()).st_ino
                 except OSError:
                     pass
@@ -2651,10 +2664,25 @@ class Console(object):
                 return
             folder = path
             if path.endswith('.tar.gz'):
-                folder = tempfile.mkdtemp(prefix='otp-up-')
-                subprocess.call(['tar', '-xzf', path, '-C', folder])
-                inner = [x for x in os.listdir(folder) if x.startswith('otp-')]
-                folder = os.path.join(folder, inner[0]) if inner else folder
+                # A package goes through root's own helper (1.0.149): copied out
+                # of reach, its signature checked before anything of it is
+                # unpacked or run - a package in /var/lib/otp/upgrade is the otp
+                # account's to change, and was unpacked and run as it was.
+                helper = str(UPGRADE_HELPER)
+                if not os.path.isfile(helper):
+                    self.note('Upgrade', '%s is not installed - upgrade once with install.sh '
+                              '--upgrade from a package you checked' % helper, 'bad')
+                    return
+                if not self.confirm('Upgrade', 'This node is upgraded with %s once its '
+                                    'signature is checked.' % path, 'Upgrade'):
+                    return
+
+                def run_signed():
+                    self.clear_screen()
+                    subprocess.call(['/usr/bin/python3', '-I', helper, '--run', path])
+                    self.pause()
+                self.live(run_signed)
+                return
             script = os.path.join(folder, 'install.sh')
             if not os.path.isfile(script):
                 self.note('Upgrade', 'there is no install.sh in %s' % folder, 'bad')
@@ -2674,7 +2702,22 @@ class Console(object):
                                                   path if path.endswith('.tar.gz') else
                                                   'otp-%s.tar.gz' % m.group(1)), 'warn')
                 return
-            if self.confirm('Upgrade', 'This node is upgraded with %s.' % script, 'Upgrade'):
+            # A folder carries no signature (1.0.149): said so, and only one of
+            # root's own - nobody else may have changed what root runs.
+            try:
+                st = os.lstat(folder)
+                owned = st.st_uid == 0 and not st.st_mode & 0o022 and \
+                    os.lstat(script).st_uid == 0 and not os.lstat(script).st_mode & 0o022
+            except OSError:
+                owned = False
+            if not owned:
+                self.note('Upgrade', '%s is not root\'s alone - another account could have '
+                          'changed what would be run as root. Use the signed package '
+                          '(otp-X.Y.Z.tar.gz).' % folder, 'bad')
+                return
+            if self.confirm('Upgrade', 'This node is upgraded with %s. A folder is not '
+                            'checked for a signature - only one you unpacked yourself from a '
+                            'signed package.' % script, 'Upgrade unchecked'):
                 def go():
                     self.clear_screen()
                     subprocess.call(['bash', script, '--upgrade'])

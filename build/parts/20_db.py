@@ -16,6 +16,27 @@ class DbError(Exception):
     pass
 
 
+# The database's own trouble, not the request's (1.0.149): locked, full, out of
+# space, a statement or a lock wait that ran out, a server shutting down.
+DB_TROUBLE_KINDS = ('OperationalError', 'QueryCanceled', 'QueryCanceledError', 'LockNotAvailable',
+                    'DiskFull', 'AdminShutdown', 'CannotConnectNow', 'SerializationFailure',
+                    'DeadlockDetected', 'InterfaceError', 'InternalError', 'OutOfMemory',
+                    'TooManyConnections', 'ConnectionFailure', 'ConnectionException')
+DB_TROUBLE_WORDS = ('database is locked', 'disk is full', 'disk i/o error', 'no space left')
+
+
+def db_trouble(e):
+    if isinstance(e, DbError):
+        return True
+    names = {c.__name__ for c in type(e).__mro__}
+    said = str(e).lower()
+    if 'out of range' in said:
+        return False                # a value too big: the request's, said as such
+    return bool(names & set(DB_TROUBLE_KINDS)) and (
+        type(e).__module__.split('.')[0] in ('sqlite3', 'psycopg2', 'pymysql', 'MySQLdb') or
+        any(w in said for w in DB_TROUBLE_WORDS))
+
+
 SCHEMA_VERSION = 1
 
 SCHEMA = [
@@ -314,16 +335,33 @@ class Db(object):
                 lane.down_said = str(e)
                 raise
 
+    # RADIUS's own lane waits less (1.0.149): a VPN gives up on an answer in
+    # 5 to 15 s; a statement there that waited 120 s held every sign-in behind
+    # it. Past these it is no answer, and the VPN asks the other node.
+    RADIUS_STATEMENT_S = 5
+    RADIUS_LOCK_S = 2
+    RADIUS_SQLITE_BUSY_S = 3
+
     def _connect(self):
+        quick = self._lanes.get('radius') is not None and self._lane() is self._lanes.get('radius')
+        stmt_s = min(self.statement_s or self.RADIUS_STATEMENT_S, self.RADIUS_STATEMENT_S) \
+            if quick else self.statement_s
+        lock_s = self.RADIUS_LOCK_S if quick else self.LOCK_S
         with self.lock:
             if self.engine == 'sqlite':
                 self.path.parent.mkdir(parents=True, exist_ok=True)
+                # RADIUS's lane waits 3 s for the file (1.0.149), not 30: past
+                # that, no answer, and the VPN asks the other node.
                 conn = sqlite3.connect(str(self.path), check_same_thread=False,
-                                       isolation_level=None, timeout=30)
+                                       isolation_level=None,
+                                       timeout=self.RADIUS_SQLITE_BUSY_S if quick else 30)
                 conn.row_factory = sqlite3.Row
                 try:
                     conn.execute('PRAGMA journal_mode=WAL')
                     conn.execute('PRAGMA synchronous=NORMAL')
+                    # The log of the file shrunk back after a big write (1.0.149):
+                    # it stayed at its largest - 1.3 GB beside a 1 GB database.
+                    conn.execute('PRAGMA journal_size_limit=67108864')
                 except sqlite3.Error:
                     pass
                 self.conn = conn
@@ -342,14 +380,15 @@ class Db(object):
                         connect_timeout=self.timeout,
                         # A line that drops without a word no longer holds
                         # every request behind the lock for hours (1.0.57).
-                        read_timeout=max(30, self.statement_s + 10) if self.statement_s else 300,
+                        read_timeout=(stmt_s + 4) if quick else (
+                            max(30, self.statement_s + 10) if self.statement_s else 300),
                         write_timeout=60,
                         cursorclass=pymysql.cursors.DictCursor,
                         **db_tls_args('mariadb', self.tls, self.tls_ca))
                 except Exception as e:
                     raise DbError('MariaDB at %s could not be reached: %s' % (self.where(), e))
-                for sql in ('SET SESSION innodb_lock_wait_timeout = %d' % self.LOCK_S,
-                            'SET SESSION max_statement_time = %d' % self.statement_s):
+                for sql in ('SET SESSION innodb_lock_wait_timeout = %d' % lock_s,
+                            'SET SESSION max_statement_time = %d' % stmt_s):
                     try:
                         with self.conn.cursor() as cur:
                             cur.execute(sql)
@@ -375,9 +414,9 @@ class Db(object):
                         keepalives_count=3,
                         # ...and a line that drops while a statement is out:
                         # given up after 30 s, not the kernel's 15 min.
-                        tcp_user_timeout=30000,
+                        tcp_user_timeout=10000 if quick else 30000,
                         options='-c lock_timeout=%d -c statement_timeout=%d' % (
-                            self.LOCK_S * 1000, self.statement_s * 1000),
+                            lock_s * 1000, stmt_s * 1000),
                         **db_tls_args('postgres', self.tls, self.tls_ca))
                     self.conn.autocommit = True
                     self.conn.set_client_encoding('UTF8')
@@ -439,7 +478,10 @@ class Db(object):
                                        'broken pipe', 'connection reset', 'not connected',
                                        'interfaceerror', 'cursor already closed',
                                        'connection has been closed',
-                                       'connection is closed', 'ssl connection has been closed'))
+                                       'connection is closed', 'ssl connection has been closed',
+                                       # tcp_user_timeout ran out (1.0.149): the line dropped
+                                       'could not receive data', 'connection timed out',
+                                       'server closed the connection'))
 
     def query(self, sql, args=(), fetch=True):
         # While this node is rebuilt from the other, nothing but the rebuild

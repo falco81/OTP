@@ -194,7 +194,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path != '/api/health':
             want = api_token()
             given = str(self.headers.get('X-Otp-Token') or '')
-            if not want or not hmac.compare_digest(want, given):
+            # As bytes (1.0.149): a token with a letter beyond ASCII raised
+            # TypeError there, and the connection was dropped with a trace.
+            if not want or not hmac.compare_digest(want.encode('utf-8'),
+                                                   given.encode('utf-8', 'replace')):
                 return self.send_json({'ok': False, 'error': 'not this API’s token'}, 403)
         fn = ROUTES.get((method, path))
         if not fn:
@@ -273,10 +276,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             return False
         try:
             # Only a look: an error must not keep a session alive. (1.0.36)
-            return bool(self.store.session_get(
-                token, 'admin', int(CONFIG.get('session_idle_min') or 120) * 60, touch=False) or
-                self.store.session_get(
-                token, 'portal', int(CONFIG.get('portal_session_min') or 15) * 60, touch=False))
+            # An administrator past the second step only (1.0.149): a portal
+            # user, or a password without its code, was told the directory's
+            # and the database's addresses with every error.
+            s = self.store.session_get(
+                token, 'admin', int(CONFIG.get('session_idle_min') or 120) * 60, touch=False)
+            return bool(s) and not mfa_pending(s)
         except Exception:                               # noqa: BLE001
             return False
 
@@ -533,6 +538,12 @@ def lockouts_view(d):
             until = float(info.get('blocked_until') or 0)
             blocked = until > t
             if not fails and not blocked:
+                # Forgotten once nothing of it counts (1.0.149): every new
+                # place stayed for good - 50 000 /64s were 45 MB, and the
+                # list published every few seconds 18 MB.
+                if t - float(info.get('at') or 0) > span and t - until > span:
+                    d.login_fails.pop(key, None)
+                    d.login_info.pop(key, None)
                 continue
             names = [n for n, ts in (info.get('names') or {}).items() if t - ts < span]
             last = max(fails[-1] if fails else 0, float(info.get('blocked_at') or 0))
@@ -579,8 +590,15 @@ def lockouts_clear(d, which=None):
     return n
 
 
+LOCKOUTS_PUBLISHED_MOST = 500
+
+
 def lockouts_publish(d, force=False):
     rows = lockouts_view(d)
+    if len(rows) > LOCKOUTS_PUBLISHED_MOST:
+        # The locked ones and the busiest (1.0.149), not every place.
+        rows = sorted(rows, key=lambda r: (not r.get('locked'), -int(r.get('fails') or 0)))[
+            :LOCKOUTS_PUBLISHED_MOST]
     sig = json.dumps([(r['kind'], r['who'], r['fails'], r['locked']) for r in rows])
     now = time.time()
     if not force and sig == LOCKOUTS_SENT['sig'] and now - LOCKOUTS_SENT['at'] < 60:
@@ -681,9 +699,13 @@ def lockouts_shared_clear(store, kind, who, by):
             return 0
         store.token_write(who, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         node_key_drop(store, 'scratchguard', who)
+        scratch_guard_clear(who)
         store.add_event('tokens', '%s let %s try again at once' % (by, who), who=by)
         return 1
     return 0
+
+
+RADTEST_NAME_TRIES = 5
 
 
 @route('GET', '/api/lockouts')
@@ -890,11 +912,50 @@ def admin_from_directory(h, name, password):
             return None
         h.store.set_account(name, role=role, display=entry.get('display') or '',
                             dn=entry['dn'], group_list=groups)
+    elif CONFIG.get('ha_mode') == 'replicated' and not ha_lead(h.store):
+        # Made by one node of the two only (1.0.149): a first sign-in on both
+        # at once - or while replication was stopped - put the name in twice,
+        # and replication stopped on it for good. The other node's database
+        # gets it; replication brings it here.
+        dir_account_far(h.store, name, role, said, entry, groups)
     else:
         h.store.add_account(name, role, None, source='directory',
                             note='signed in from %s' % said['directory'],
                             display=entry.get('display') or '', dn=entry['dn'], groups=groups)
     return h.store.account(name)
+
+
+def dir_account_far(store, name, role, said, entry, groups):
+    if not ACCOUNT_NAME_RE.match(name) or role not in ROLES_ALL:
+        raise ApiError(401, 'the name or the password is not right')
+    row = {'name': name, 'role': role, 'pw': '', 'source': 'directory', 'disabled': 0,
+           'must_change': 0, 'note': ('signed in from %s' % said['directory'])[:400],
+           'created': time.time(), 'last_in': None, 'last_from': '', 'prefs': '{}',
+           'display': entry.get('display') or '', 'dn': entry['dn'], 'group_list': groups}
+    mode, ca = ha_link_tls()
+    done = False
+    for tls in [None] + ([('verify-ca', ca)] if mode == 'verify-full' else []):
+        try:
+            far = db_open(ha_peer_conf(timeout=5, tls=tls))
+        except Exception:                               # noqa: BLE001
+            continue
+        try:
+            if not far.row('SELECT id FROM accounts WHERE LOWER(name) = ?', (name.lower(),)):
+                far.insert('accounts', row)
+            done = True
+            break
+        except Exception:                               # noqa: BLE001
+            continue
+        finally:
+            far.close()
+    if done:
+        for _ in range(40):
+            if store.account(name):
+                return
+            time.sleep(0.25)
+    raise ApiError(503, 'the first sign-in of %s is made on the other node of the cluster, '
+                        'which could not be reached or has not passed it on yet - try again in '
+                        'a minute, or sign in there' % name)
 
 
 @route('POST', '/api/auth/login')
@@ -1991,6 +2052,7 @@ def _token_act(h, s, b, act, name, who):
     if act == 'unlock':
         h.store.token_write(name, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         node_key_drop(h.store, 'scratchguard', name)
+        scratch_guard_clear(name)
         h.store.add_event('tokens', '%s let %s try again at once' % (who, name), who=who)
         return {'message': 'the wrong codes are forgotten'}
     if act == 'rename':
@@ -2067,7 +2129,7 @@ def _token_act(h, s, b, act, name, who):
     if act == 'test':
         # Counted per administrator and token (1.0.57): a dry test counts
         # nothing on the token, and so could be asked without end.
-        h.throttle('code-test', 10, 5, name='%s>%s' % (who, name))
+        h.throttle('code-test', 10, 5, name='%s>%s' % (who, name), name_tries=10)
         ok, said, facts = tk.check(name, str(b.get('code') or ''), how='test',
                                    src=h.client_ip(), dry=not b.get('use'))
         if not ok:
@@ -2597,7 +2659,10 @@ def _dirs_do(h):
         # Counted and written down (1.0.139), as a radtest is: each try is a
         # directory password, and wrong ones lock the account there.
         user = str(b.get('user') or '')
-        key = h.throttle('radtest', 20, 5, name='%s>%s' % (who, user[:120]), ip_tries=100)
+        # A person's password tried 5 times in 15 minutes at most (1.0.149):
+        # 80 in 5 was a guessing tool for anybody's directory password.
+        key = h.throttle('radtest', 20, 15, name='%s>%s' % (who, user[:120]), ip_tries=100,
+                         name_tries=RADTEST_NAME_TRIES)
         said = admin_ask_directory(h, user, str(b.get('password') or ''))
         if said is None:
             raise ApiError(404, 'the directory %s is not set up' % CONFIG.get('admin_directory'))
@@ -2639,8 +2704,8 @@ def _radtest(h):
         # Asked on another node of the cluster (1.0.45): through the
         # database both open, the password sealed with the key both have.
         # Counted here too (1.0.94): it tries a directory password as well.
-        rkey = h.throttle('radtest', 20, 5, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
-                      ip_tries=100)
+        rkey = h.throttle('radtest', 20, 15, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
+                      ip_tries=100, name_tries=RADTEST_NAME_TRIES)
         got = radtest_elsewhere(h.store, node, s['name'], h.client_ip(), b)
         if not (isinstance(got, dict) and got.get('result') in ('accept', 'challenge')):
             h.failed(rkey)
@@ -2650,8 +2715,8 @@ def _radtest(h):
         h.me('fulladmin')
     # Counted per administrator and person tried (1.0.57): each test tries a
     # directory password, and nothing else limited how many.
-    rkey = h.throttle('radtest', 20, 5, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
-                      ip_tries=100)
+    rkey = h.throttle('radtest', 20, 15, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
+                      ip_tries=100, name_tries=RADTEST_NAME_TRIES)
     got = radtest_do(h.store, h.d, s['name'], h.client_ip(), b)
     # The first step of a mail or SMS token is a challenge, not a wrong
     # password (1.0.103): counted as one here (not on the other node), it
@@ -2696,6 +2761,12 @@ def radtest_do(store, daemon, by, src, b):
                 'user': d.user, 'realm': d.realm, 'how': 'direct', 'node': node_name(),
                 'state': bytes(d.state).hex() if d.state else '', 'message': d.message}
     secret = str(b.get('secret') or '')
+    server = str(b.get('server') or '127.0.0.1')
+    if not secret and server not in ('127.0.0.1', '::1', 'localhost'):
+        # The localhost client's secret only to this machine (1.0.149): sent
+        # to a server anybody typed, it could be cracked from the packet there.
+        raise ApiError(400, 'give the secret of that server - the one of this machine\'s own '
+                       'client is only used for 127.0.0.1')
     if not secret:
         local = store.client_for('127.0.0.1')
         if not local:
@@ -2703,7 +2774,6 @@ def radtest_do(store, daemon, by, src, b):
                            'one (the installer makes "localhost"), or give the secret')
         secret = local['_secret']
     port = int(b.get('port') or CONFIG.get('radius_auth_port') or 1812)
-    server = str(b.get('server') or '127.0.0.1')
     code, words, took = radius_ask(server, port, secret, user, password,
                                    extra=[('State', '0x' + state)] if state else ())
     got_state = next((v for k, v in words if k == 'State'), '')
@@ -2912,9 +2982,20 @@ def _settings_do(h):
         raise ApiError(400, 'the database is changed on Settings - The database with its own '
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
+    was_2fa = bool(CONFIG.get('admin_2fa'))
     try:
-        return h.d.save_settings(asked, by=s['name'], node=b.get('node'),
-                                 drawn_by=b.get('drawn_by'))
+        got = h.d.save_settings(asked, by=s['name'], node=b.get('node'),
+                                drawn_by=b.get('drawn_by'))
+        if not was_2fa and CONFIG.get('admin_2fa'):
+            # The second step for those signed in already too (1.0.149): their
+            # sessions, opened with the password alone, stayed whole for hours.
+            # The one saving it stays - it is how it was switched on.
+            gone = h.store.db.run('DELETE FROM sessions WHERE kind = ? AND id <> ?',
+                                  ('admin', int(s.get('id') or 0)))
+            if gone:
+                h.store.add_event('accounts', 'the second step was switched on: %d other '
+                                  'sign-in(s) to the pages ended' % gone, 'warn', who=s['name'])
+        return got
     except NodeMoved as e:
         raise ApiError(409, str(e))
     except BadSetting as e:

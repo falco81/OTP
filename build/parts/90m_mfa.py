@@ -138,10 +138,17 @@ def _mfa_send(h, s, kind, dest, field):
 
 
 def _mfa_done(h, s, how):
-    h.store.session_merge(s['id'], {'mfa': None, 'mfa_new': None, 'mfa_code': None,
-                                    'mfa_sent_at': None, 'mfa_sent': None})
+    """The second step given: a sign-in of its own from here on (1.0.149) - the
+    one the password alone opened is ended, not made whole: whoever had seen
+    its cookie had the pages once the code was given."""
+    data = {k: v for k, v in (s.get('data') or {}).items()
+            if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent')}
+    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
+    h.store.session_drop(s['id'])
     h.store.add_event('sign-ins', '%s gave the second step (%s) from %s' % (
         s['name'], how, h.client_ip()), who=s['name'])
+    return token
 
 
 @route('GET', '/api/auth/mfa')
@@ -223,12 +230,12 @@ def _mfa_do(h):
                 raise ApiError(409, 'this account has its second step set up already - sign '
                                     'in again')
             h.store.set_meta(mfa_key(name), json.dumps(rec))
-        _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
+        token = _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
         h.store.add_event('accounts', '%s set up the second step of signing in: %s%s' % (
             name, MFA_KIND_WORDS.get(rec['kind']),
             ' (%s)' % dest_masked(rec['kind'], rec.get('dest')) if rec.get('dest') else ''),
             who=name)
-        return {'message': 'the second step is set up', 'done': True}
+        return {'message': 'the second step is set up', 'done': True, 'token': token}
     if act == 'send':
         if stage != 'check':
             raise ApiError(409, 'set the second step up first')
@@ -269,6 +276,6 @@ def _mfa_do(h):
                     not h.store.session_take(s['id'], 'mfa_code'):
                 h.failed(key)
                 raise ApiError(400, 'that code is not right, or no longer good - send another')
-        _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
-        return {'message': 'signed in', 'done': True}
+        token = _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
+        return {'message': 'signed in', 'done': True, 'token': token}
     raise ApiError(400, 'no such thing to do')

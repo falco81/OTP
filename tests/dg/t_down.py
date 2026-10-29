@@ -16,6 +16,12 @@ st = otp.Storage(otp.open_db()); st.db.make_tables(); otp.sealing_key(make=True)
 otp.UPGRADE_DIR.mkdir(exist_ok=True)
 R = []
 def ok(w, c): R.append(bool(c)); print('ok  ' if c else 'FAIL', w)
+# The floor of this version checked as it is, then the old releases used as
+# packages to go back to with a floor of 1.0.139 as they had it (1.0.149
+# raised it: nothing released before may be gone back to from it).
+ok('this version does not go back below itself: %s' % otp.DOWNGRADE_FLOOR,
+   otp.DOWNGRADE_FLOOR == V or otp._ver_tuple(otp.DOWNGRADE_FLOOR) >= (1, 0, 149))
+otp.DOWNGRADE_FLOOR = '1.0.139'
 otp.downgrade_floor_note(st)
 print('  db floor', otp.downgrade_db_floor(st), 'root floor', otp.downgrade_root_floor())
 w = otp.downgrade_why_not(st, '1.0.142')

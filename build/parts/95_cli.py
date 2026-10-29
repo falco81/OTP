@@ -1445,36 +1445,81 @@ def cli_stage_files(args):
     if not ids:
         return
     import atexit
-    holder = {'dir': None}
+    import stat
 
-    def folder():
-        if holder['dir'] is None:
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            d = tempfile.mkdtemp(prefix='.otp-cli-', dir=str(STATE_DIR))
-            os.chown(d, ids[0], ids[1])
-            holder['dir'] = d
-            atexit.register(shutil.rmtree, d, True)
-        return holder['dir']
+    def reachable(path):
+        """A file the otp account can get at by itself (1.0.149): any step of
+        its path that account's, or under its own folders. Not copied by
+        root - the otp account opens it, and a link it planted there leads
+        only where it may go anyway (/etc/shadow was copied to it)."""
+        p = os.path.abspath(str(path))
+        try:
+            real = os.path.realpath(p)
+        except OSError:
+            real = p
+        for own in (STATE_DIR, LOG_DIR, RUN_DIR, CONFIG_FILE.parent):
+            o = os.path.realpath(str(own))
+            if real == o or real.startswith(o + os.sep) or p.startswith(o + os.sep):
+                return True
+        cur = p
+        while True:
+            try:
+                if os.lstat(cur).st_uid == ids[0]:
+                    return True
+            except OSError:
+                pass
+            up = os.path.dirname(cur)
+            if up == cur:
+                return False
+            cur = up
+
+    def copy_in(src, dst):
+        """One file copied by its descriptors, never by name: not through a
+        link at either end, into a new file only."""
+        fi = os.open(str(src), os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fi).st_mode):
+                raise OSError('%s is not a plain file' % src)
+            fo = os.open(str(dst), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                while True:
+                    chunk = os.read(fi, 1 << 20)
+                    if not chunk:
+                        break
+                    view = memoryview(chunk)
+                    while view:
+                        view = view[os.write(fo, view):]
+                os.fchown(fo, ids[0], ids[1])
+            finally:
+                os.close(fo)
+        finally:
+            os.close(fi)
 
     def stage(path, with_key=False):
         src = Path(path)
-        if not src.exists():
-            return path             # said by the command itself
-        dst = Path(folder()) / src.name
+        if not src.exists() or reachable(src):
+            return path             # said by the command itself / its own to open
+        if src.is_symlink():
+            src = Path(os.path.realpath(str(src)))   # a link of root's own, followed
+        # A folder of root's for each file, 0700 while it is filled, the otp
+        # account's only once it is (1.0.149): handed over before the copy,
+        # a link put in it in between had root write wherever it led.
+        d = tempfile.mkdtemp(prefix='.otp-cli-', dir=str(STATE_DIR))
+        atexit.register(shutil.rmtree, d, True)
+        dst = Path(d) / src.name
         if src.is_dir():
             shutil.copytree(str(src), str(dst), symlinks=False)
+            for root, dirs, files in os.walk(str(dst)):
+                for n in dirs + files:
+                    os.lchown(os.path.join(root, n), ids[0], ids[1])
+            os.lchown(str(dst), ids[0], ids[1])
         else:
-            shutil.copy2(str(src), str(dst))
+            copy_in(src, dst)
             if with_key:
                 k = _key_beside(src)
                 if k is not None and Path(k).is_file():
-                    shutil.copy2(str(k), str(dst.parent / Path(k).name))
-        for root, dirs, files in os.walk(str(dst)) if dst.is_dir() else [(str(dst.parent), [],
-                                                                            [dst.name])]:
-            for n in dirs + files:
-                os.lchown(os.path.join(root, n), ids[0], ids[1])
-        if dst.is_dir():
-            os.lchown(str(dst), ids[0], ids[1])
+                    copy_in(k, Path(d) / Path(k).name)
+        os.chown(d, ids[0], ids[1])
         return str(dst)
     try:
         if getattr(args, 'restore', None):
@@ -2383,6 +2428,7 @@ def cli_main(argv=None):
         store.token_write(norm_name(args.unlock), {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         # Its recovery codes given back too, as on the pages (1.0.103).
         node_key_drop(store, 'scratchguard', args.unlock)
+        scratch_guard_clear(args.unlock)
         store.add_event('tokens', 'the command line let %s try again at once'
                         % norm_name(args.unlock), who='command line')
         print(pal.ok_line('the wrong codes of %s are forgotten' % norm_name(args.unlock)))

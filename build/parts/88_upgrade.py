@@ -30,6 +30,7 @@ UPGRADE_PIECE = 40000                       # base64 characters in one meta row
 UPGRADE_DRAIN_S = int(os.environ.get('OTP_UPGRADE_DRAIN_S', '20'))
 UPGRADE_TIMEOUT_S = 30 * 60
 MAINT_CACHE = {'at': 0.0, 'row': None}
+RESTORE_RUNNING = threading.Event()
 
 
 def _meta_json(store, k):
@@ -83,6 +84,10 @@ def maintenance_now(store):
     every RADIUS packet."""
     if HA_REBUILDING.is_set():
         return {'on': True, 'why': 'rebuilt from the other node'}
+    if RESTORE_RUNNING.is_set():
+        # A backup put back (1.0.149): RADIUS waited for the whole of it with
+        # the database held, or met tables being made again and refused.
+        return {'on': True, 'why': 'a backup is being put back'}
     now = time.time()
     if now - MAINT_CACHE['at'] > 2:
         MAINT_CACHE['at'] = now
