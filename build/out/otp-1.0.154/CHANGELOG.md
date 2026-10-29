@@ -4,6 +4,21 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.154 — 29 October 2026
+
+**Letters of other languages in names: off unless switched on**
+- Settings → The tokens → *Letters of other languages in names*
+  (`names_any_letters`), off by default. Off, the names of people, tokens and
+  accounts take letters without accents, digits and the letters of Czech and
+  Slovak; a name with any other letter (Cyrillic, Greek, Polish ł, German ß or
+  ö...) is refused - at the VPN before anything is asked, on the enrolment
+  pages (said plainly), when a token or an account is made, and when an
+  administrator from the directory signs in. On: letters of any language.
+  A name that only looks like another (a Cyrillic а for a Latin a) is one way
+  to pass for somebody.
+- Upgrading: a token or an account whose name has such letters stops
+  signing in until the setting is switched on.
+
 ## 1.0.153 — 29 October 2026
 
 **Active Directory with Czech (or any) diacritics - checked, and two fixes**

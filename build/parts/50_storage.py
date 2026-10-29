@@ -801,6 +801,9 @@ class Storage(object):
         name = str(name or '').strip()
         if not ACCOUNT_NAME_RE.match(name):
             raise ValueError('a name has letters, digits, dots, dashes, @ and nothing else')
+        bad = name_letters_problem(name)
+        if bad:
+            raise ValueError(bad)
         if role not in ROLES_ALL:
             raise ValueError('the role is one of %s' % ', '.join(ROLES_ALL))
         if self.account(name):
@@ -1762,6 +1765,10 @@ class Storage(object):
             if old:
                 self.db.update('tokens', old['id'], fields)
                 return old['id']
+            # A new one only with letters this server takes (1.0.154).
+            bad = name_letters_problem(name)
+            if bad:
+                raise ValueError(bad)
             row = {'name': name, 'state': 'active', 'last_step': 0, 'failures': 0,
                    'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
                    'created': time.time(), 'window_steps': -1}

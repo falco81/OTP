@@ -893,6 +893,12 @@ def admin_from_directory(h, name, password):
                           'role here holds them (from %s)' % (said['name'], h.client_ip()), 'warn')
         raise ApiError(401, 'the name or the password is not right')
     name, role, entry = said['name'], said['role'], said['entry']
+    bad = name_letters_problem(name)
+    if bad:
+        # Said as a wrong password is, and written down (1.0.154).
+        h.store.add_event('sign-ins', 'the directory signed %s in, refused here: %s'
+                          % (name, bad), 'warn')
+        raise ApiError(401, 'the name or the password is not right')
     # One person, one account, whatever way the name was typed (1.0.101):
     # novak, novak@corp.cz and CORP\novak are the same entry in the
     # directory - found by its DN. Kept under their typed name, each
@@ -4436,6 +4442,12 @@ def _portal_login(h):
                      int(CONFIG.get('portal_wait_min') or 15), name=name)
     full = Authenticator.full_name(name, CONFIG.get('portal_realm') or
                                    CONFIG.get('default_realm') or '')
+    if full and name_letters_problem(full):
+        # Letters of another language, switched off (1.0.154): said plainly -
+        # it is no password that is wrong.
+        h.failed(key)
+        raise ApiError(400, 'that name has letters of another language, which this server '
+                            'does not take - ask the administrator')
     realm = h.store.realm_for(full) if full else None
     if not any(r.get('directory') for r in h.store.realms()):
         # Nobody can enrol yet - and the one trying is most likely the

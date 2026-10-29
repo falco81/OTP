@@ -3,7 +3,7 @@
 # administrators' groups, the enrolment portal and the pages' API.
 # Usage: python3 t_cz.py VERSION   (starts its own mock AD and daemon)
 import os, sys, json, time, subprocess, urllib.request, tempfile, base64, atexit
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.153'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.154'
 V = '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 D = tempfile.mkdtemp(prefix='otp-cz-'); run = D + '/run'; os.makedirs(run)
@@ -36,6 +36,16 @@ st.client_save({'name': 'asa', 'address': '127.0.0.1', 'secret': 'tajné-heslo-�
 st.add_account('local', 'fulladmin', 'Local-Admin-Pass-153!', must_change=0)
 tk = otp.Tokens(st)
 KEYS = {}
+try:
+    tk.enroll('łukasz@corpnet.cz', 'test'); ok_refused = False
+except ValueError as e:
+    ok_refused = 'another language' in str(e)
+otp.CONFIG['names_any_letters'] = 1          # made here for the test; the daemon starts with it off
+for n in ('łukasz@corpnet.cz', 'иван@corpnet.cz'):
+    g = tk.enroll(n, 'test'); KEYS[n] = g['secret']
+    tk.check(n, otp.totp(base64.b32decode(g['secret'] + '=' * (-len(g['secret']) % 8)),
+                         time.time()), how='test')
+otp.CONFIG['names_any_letters'] = 0
 for n in ('jcermak@corpnet.cz', 'žofie@corpnet.cz', 'pnovak@corpnet.cz', 'ostastny@corpnet.cz',
           'cizi@corpnet.cz', 'jcermak', 'ostastny'):
     g = tk.enroll(n, 'test'); KEYS[n] = g['secret']
@@ -84,6 +94,7 @@ def radius(user, pw):
     return {2: 'accept', 3: 'reject', 11: 'challenge'}.get(c, c), words
 
 
+ok('a token for łukasz (Polish ł) is refused while other languages are off', ok_refused)
 time.sleep(31)          # the codes of the enrolment step used: the next step
 r, w = radius('jcermak@corpnet.cz', 'Heslo-Žluťoučký-1' + code('jcermak@corpnet.cz'))
 ok('RADIUS: Jiří Čermák in "Uživatelé VPN" (OU=Uživatelé,OU=Česká Lípa) accepted: %s %s' % (r, w), r == 'accept')
@@ -104,6 +115,10 @@ ok('RADIUS: the group given by its DN in lower case (uživatelé vpn, ou=skupiny
 r, w = radius('ostastny@dn.test', 'Heslo-Vnořený-4' + code('ostastny'))
 ok('RADIUS: ... and nested through it: %s' % r, r == 'accept')
 
+r, w = radius('łukasz@corpnet.cz', 'Haslo-Łódź-6' + code('łukasz@corpnet.cz'))
+ok('RADIUS, other languages off: łukasz refused: %s' % r, r == 'reject')
+r, w = radius('иван@corpnet.cz', 'Пароль-7' + code('иван@corpnet.cz'))
+ok('RADIUS, other languages off: иван (Cyrillic) refused: %s' % r, r == 'reject')
 _, a = call('/api/auth/login', {'name': 'local', 'password': 'Local-Admin-Pass-153!'}); S = a['token']
 c, x = call('/api/settings', {'settings': {'admin_directory': 'Domena', 'admin_group_full': 'Správci OTP',
                                            'admin_group_readonly': 'CN=Čtenáři,OU=Skupiny – VPN,DC=corpnet,DC=loc',
@@ -127,6 +142,22 @@ ok('pages: Cizí Člověk, in neither, refused: %s' % c, c == 401)
 c, role = admin('žofie@corpnet.cz', 'Heslo-Ďábel-2')
 ok('pages: žofie (diacritics in the login name) in "Správci OTP" signs in: %s %s' % (c, role), c == 200 and role == 'fulladmin')
 
+c, role = admin('łukasz', 'Haslo-Łódź-6')
+ok('pages, other languages off: łukasz in "Správci OTP" refused: %s' % c, c == 401)
+c, x = call('/api/portal/login', {'name': 'иван', 'password': 'Пароль-7'})
+ok('portal, other languages off: иван told so: %s %s' % (c, x.get('error')), c == 400 and 'another language' in str(x.get('error')))
+c, x = call('/api/users', {'action': 'add', 'name': 'jürgen', 'role': 'readonly', 'password': 'A-Long-Pass-Word-9!'}, S)
+ok('pages, other languages off: a local account "jürgen" refused: %s %s' % (c, x.get('error', '')[:60]), c == 400)
+c, x = call('/api/settings', {'settings': {'names_any_letters': 1}}, S)
+ok('other languages switched on: %s' % c, c == 200)
+STEP[0] = 0          # the off attempts were refused before their code was looked at
+r, w = radius('łukasz@corpnet.cz', 'Haslo-Łódź-6' + code('łukasz@corpnet.cz'))
+ok('RADIUS, other languages on: łukasz accepted: %s' % r, r == 'accept')
+r, w = radius('иван@corpnet.cz', 'Пароль-7' + code('иван@corpnet.cz'))
+ok('RADIUS, other languages on: иван accepted: %s' % r, r == 'accept')
+c, role = admin('łukasz', 'Haslo-Łódź-6')
+ok('pages, other languages on: łukasz signs in as %s' % role, c == 200 and role == 'fulladmin')
+_, a = call('/api/auth/login', {'name': 'local', 'password': 'Local-Admin-Pass-153!'}); S = a['token']
 c, x = call('/api/tokens?q=' + urllib.parse.quote('čermák'), None, S)
 ok('pages: the tokens list answers a search with diacritics: %s' % c, c == 200)
 c, x = call('/api/directories', {'action': 'people', 'directory': 'Domena', 'like': 'Řeh'}, S)

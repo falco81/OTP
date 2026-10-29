@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.153'
+__version__ = '1.0.154'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -149,6 +149,7 @@ DEFAULTS = {
     'scratch_count': 5,
     'scratch_digits': 8,
     'token_names_case': 'lower',
+    'names_any_letters': 0,
     # --- the enrolment pages -------------------------------------------------
     'portal': 1,
     'portal_title': '',
@@ -331,6 +332,7 @@ TUNABLE = {
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
+    'names_any_letters': (0, 1),
     'portal': (0, 1), 'portal_who': ('realm_groups', 'groups', 'anyone'),
     'portal_confirm': (0, 1), 'portal_reissue': (0, 1), 'portal_show_secret': (0, 1),
     'portal_scratch': (0, 1), 'portal_codes_view': (0, 1), 'portal_session_min': (1, 240),
@@ -482,6 +484,7 @@ NAMES = {
     'scratch_count': 'Recovery codes per token',
     'scratch_digits': 'Digits in a recovery code',
     'token_names_case': 'Names of tokens are kept in',
+    'names_any_letters': 'Letters of other languages in names',
     'portal': 'The enrolment pages are open',
     'portal_title': 'The title of the enrolment pages',
     'portal_realm': 'Realm added to a name signed in without one',
@@ -791,6 +794,14 @@ SAYS = {
     'token_names_case': 'Whether <code>Novak@example.cz</code> and <code>novak@example.cz'
                         '</code> are one token. Active Directory does not care, and neither '
                         'should this, unless something else forces it to.',
+    'names_any_letters': 'Off: the names of people, tokens and accounts take letters without '
+                         'accents, digits and the letters of Czech and Slovak (á č ď é ě í ľ ĺ ň ó ô '
+                         'ŕ ř š ť ú ů ý ž ä) - a name with any other letter (Cyrillic, Greek, '
+                         'Polish ł, German ß, ö...) is refused: at the VPN, on the enrolment pages, '
+                         'when a token or an account is made and when an administrator from the '
+                         'directory signs in. On: letters of any language. A name that only '
+                         'looks like another one (a Cyrillic а for a Latin a) is one way to pass '
+                         'for somebody; switch it on only where such names are really used.',
     'portal': 'The pages where people enrol their own token. Switched off they say so and '
               'let nobody in; administrators can still enrol anybody here.',
     'portal_title': 'The heading on every enrolment page and the title of the browser tab. Empty: One-time passwords, in the language of the page.',
@@ -941,7 +952,7 @@ PANES = {
     'tokens': ['totp_issuer', 'totp_label', 'totp_digits', 'totp_period', 'totp_algorithm',
                'totp_window', 'totp_disallow_reuse', 'rate_limit_tries', 'rate_limit_s',
                'lockout_after', 'lockout_min', 'admin_show_key',
-               'scratch_count', 'scratch_digits', 'token_names_case'],
+               'scratch_count', 'scratch_digits', 'token_names_case', 'names_any_letters'],
     'portal': ['portal', 'portal_title', 'portal_realm', 'portal_hint', 'portal_who',
                'portal_groups', 'portal_confirm', 'portal_reissue', 'portal_show_secret',
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
@@ -1645,6 +1656,26 @@ def short_host():
         return socket.gethostname().split('.')[0] or 'otp'
     except OSError:
         return 'otp'
+
+
+# The letters a name takes while names_any_letters is off (1.0.154): those
+# without accents, and Czech's and Slovak's.
+NAME_LETTERS_HOME = set('áäčďéěíĺľňóôŕřšťúůýž' + 'áäčďéěíĺľňóôŕřšťúůýž'.upper())
+
+
+def name_letters_problem(name):
+    """'' when the name's letters are ones this server takes, else what is
+    wrong with it, in words."""
+    if CONFIG.get('names_any_letters'):
+        return ''
+    import unicodedata
+    said = unicodedata.normalize('NFC', str(name or ''))
+    odd = sorted({c for c in said if ord(c) > 127 and c not in NAME_LETTERS_HOME})
+    if not odd:
+        return ''
+    return ('the name %s has letters of another language (%s) - only Czech and Slovak ones are '
+            'taken (Settings - The tokens - Letters of other languages in names)'
+            % (said[:60], ' '.join(odd[:8])))
 
 
 def dn_list(text):
@@ -5909,6 +5940,9 @@ class Storage(object):
         name = str(name or '').strip()
         if not ACCOUNT_NAME_RE.match(name):
             raise ValueError('a name has letters, digits, dots, dashes, @ and nothing else')
+        bad = name_letters_problem(name)
+        if bad:
+            raise ValueError(bad)
         if role not in ROLES_ALL:
             raise ValueError('the role is one of %s' % ', '.join(ROLES_ALL))
         if self.account(name):
@@ -6870,6 +6904,10 @@ class Storage(object):
             if old:
                 self.db.update('tokens', old['id'], fields)
                 return old['id']
+            # A new one only with letters this server takes (1.0.154).
+            bad = name_letters_problem(name)
+            if bad:
+                raise ValueError(bad)
             row = {'name': name, 'state': 'active', 'last_step': 0, 'failures': 0,
                    'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
                    'created': time.time(), 'window_steps': -1}
@@ -10283,6 +10321,12 @@ class Authenticator(object):
         if not d.user:
             d.step('a name', False, 'the request carries no User-Name, or only a realm')
             return d.refuse('the request carries no User-Name')
+        bad = name_letters_problem(d.user)
+        if bad:
+            # Letters of another language, switched off (1.0.154): refused
+            # before anything is asked - no directory, no token.
+            d.step('a name', False, bad)
+            return d.refuse('the name has letters this server does not take')
         if d.user != str(user):
             d.step('the name is read as %s' % d.user, True,
                    'the client adds @%s to a name without a realm' % client_realm
@@ -25868,6 +25912,12 @@ def admin_from_directory(h, name, password):
                           'role here holds them (from %s)' % (said['name'], h.client_ip()), 'warn')
         raise ApiError(401, 'the name or the password is not right')
     name, role, entry = said['name'], said['role'], said['entry']
+    bad = name_letters_problem(name)
+    if bad:
+        # Said as a wrong password is, and written down (1.0.154).
+        h.store.add_event('sign-ins', 'the directory signed %s in, refused here: %s'
+                          % (name, bad), 'warn')
+        raise ApiError(401, 'the name or the password is not right')
     # One person, one account, whatever way the name was typed (1.0.101):
     # novak, novak@corp.cz and CORP\novak are the same entry in the
     # directory - found by its DN. Kept under their typed name, each
@@ -29411,6 +29461,12 @@ def _portal_login(h):
                      int(CONFIG.get('portal_wait_min') or 15), name=name)
     full = Authenticator.full_name(name, CONFIG.get('portal_realm') or
                                    CONFIG.get('default_realm') or '')
+    if full and name_letters_problem(full):
+        # Letters of another language, switched off (1.0.154): said plainly -
+        # it is no password that is wrong.
+        h.failed(key)
+        raise ApiError(400, 'that name has letters of another language, which this server '
+                            'does not take - ask the administrator')
     realm = h.store.realm_for(full) if full else None
     if not any(r.get('directory') for r in h.store.realms()):
         # Nobody can enrol yet - and the one trying is most likely the

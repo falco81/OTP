@@ -195,6 +195,12 @@ class Authenticator(object):
         if not d.user:
             d.step('a name', False, 'the request carries no User-Name, or only a realm')
             return d.refuse('the request carries no User-Name')
+        bad = name_letters_problem(d.user)
+        if bad:
+            # Letters of another language, switched off (1.0.154): refused
+            # before anything is asked - no directory, no token.
+            d.step('a name', False, bad)
+            return d.refuse('the name has letters this server does not take')
         if d.user != str(user):
             d.step('the name is read as %s' % d.user, True,
                    'the client adds @%s to a name without a realm' % client_realm
