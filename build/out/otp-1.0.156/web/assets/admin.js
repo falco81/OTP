@@ -2895,6 +2895,16 @@ function drawSettings() {
 /* Name, control, then the words, each in its own row of the grid, so every
    box on a row starts at the same height even where one name takes two
    lines (1.0.20). */
+/* What a setting does, in three lines at most (1.0.156): a click opens the
+   rest in place; the whole is on the name and its (i) as well. */
+function saysClamped(words) {
+  var box = saysBlock(words);
+  box.classList.add('clamp');
+  box.addEventListener('click', function () { box.classList.toggle('open'); });
+  /* Marked once drawn, so only a text that is cut looks like one. */
+  setTimeout(function () { if (box.scrollHeight > box.clientHeight + 2) box.classList.add('cut'); }, 0);
+  return box;
+}
 function settingItem(s) {
   var item = settingItemBare(s);
   var tail = el('div', 'set-tail');
@@ -2949,7 +2959,7 @@ function settingItemBare(s) {
     input._input.id = 'set-' + s.key + '-sw';
     label.setAttribute('for', input._input.id);
     item.appendChild(input);
-    if (s.says) item.appendChild(saysBlock(s.says));
+    if (s.says) item.appendChild(saysClamped(s.short || s.says));   /* the whole on the (i) (1.0.156) */
     return item;
   }
   if (s.choices && s.choices.some(function (c) {
@@ -2999,7 +3009,7 @@ function settingItemBare(s) {
     pickRow.appendChild(pickGo);
     item.appendChild(pickRow);
   }
-  if (s.says) item.appendChild(saysBlock(s.says));
+  if (s.says) item.appendChild(saysClamped(s.short || s.says));   /* the whole on the (i) (1.0.156) */
   return item;
 }
 

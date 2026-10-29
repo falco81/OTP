@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.155'
+__version__ = '1.0.156'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -943,6 +943,14 @@ SAYS = {
                   'a password.',
     'debug_api': 'Every API call the web pages make.',
     'debug_codes': 'Every code sent by e-mail and SMS, step by step: each request to the SMS gateway and its answer with how long it took, each line of the conversation with the mail server. Passwords, tokens and the messages themselves are never written.',
+}
+
+# A line under the box where the whole of SAYS is long (1.0.156): the whole is
+# shown when the pointer rests on the name or its (i).
+SAYS_SHORT = {
+    'names_czsk_letters': 'á č ď é ě í ľ ň ó ř š ť ú ů ý ž in sign-in names. Off: letters '
+                          'without accents only.',
+    'names_any_letters': 'Cyrillic, Greek, ł, ß, ö... in sign-in names - and the Czech ones too.',
 }
 
 # Which settings sit on which page of Settings, in order. A setting the

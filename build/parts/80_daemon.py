@@ -1146,6 +1146,7 @@ class Daemon(object):
             source = 'saved' if key in saved else ('file' if key in FILE_KEYS else 'default')
             one = {'key': key, 'value': value, 'default': DEFAULTS[key],
                    'name': NAMES.get(key, key), 'says': SAYS.get(key, ''),
+                   'short': SAYS_SHORT.get(key, ''),
                    'secret': key in SECRET_KEYS, 'source': source,
                    'source_says': {'saved': 'saved on these pages',
                                    'file': 'from config.json',
