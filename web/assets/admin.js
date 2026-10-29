@@ -116,11 +116,70 @@ function paintHeader(s) {
     pr.appendChild(document.createTextNode(p));
   });
   pr.hidden = !(s.problems && s.problems.length);
+  drawTrials(s);
   $('updated-at').textContent = clockWords(new Date());
   $('tabn-tokens').textContent = s.tokens ? num(s.tokens.all) : '';
   var rej = s.day ? s.day.reject : 0;
   $('tabn-requests').textContent = rej ? num(rej) : '';
   $('tabn-requests').classList.toggle('hot', rej > 0);
+}
+
+/* A change on trial (1.0.137): a node's new network, or the firewall - kept
+   with a press, or it goes back by itself when its time runs out. On every
+   page, with the time left counting down. */
+var TRIALS = {list: [], skew: 0, timer: null};
+function drawTrials(s) {
+  TRIALS.list = (s && s.trials) || [];
+  TRIALS.skew = s && s.now ? s.now - Date.now() / 1000 : 0;
+  var host = $('trials');
+  if (!host) return;
+  if (!TRIALS.list.length) { host.hidden = true; clear(host); if (TRIALS.timer) { clearInterval(TRIALS.timer); TRIALS.timer = null; } return; }
+  host.hidden = false;
+  liveFill(host, function (host) {
+    TRIALS.list.forEach(function (t) {
+      var row = el('div', 'trial');
+      var words = el('div', 'trial-words');
+      words.appendChild(el('b', '', t.kind === 'net' ? 'The new network of ' + t.node + ' waits to be kept' : 'The change of the firewall and access waits to be kept'));
+      var left = el('span', 'trial-left mono');
+      left.dataset.until = t.until;
+      words.appendChild(document.createTextNode(' - '));
+      words.appendChild(left);
+      words.appendChild(el('div', 'small', t.kind === 'net'
+        ? 'Not kept, ' + t.node + ' goes back to its old network by itself and restarts. Keep it once you have checked that the node answers at its new address.'
+        : 'Not kept, the rules and the access lists as they were before come back by itself. Keep it once you have checked that SSH, the pages and RADIUS still answer.'));
+      row.appendChild(words);
+      var tools = el('div', 'trial-tools');
+      if (ADMIN) {
+        var keep = cmdButton('Keep it', 'check', 'small primary');
+        keep.onclick = function () { trialDo(t, 'keep', keep); };
+        var back = cmdButton('Put the old back now', 'undo', 'small danger');
+        back.onclick = function () {
+          confirmThen('Put the old back now?', t.kind === 'net' ? htmlText(t.node) + ' goes back to its old network and restarts.'
+            : 'The firewall and the access lists go back to what they were before the change.', 'Put it back', function () { trialDo(t, 'back', back); });
+        };
+        tools.appendChild(keep);
+        tools.appendChild(back);
+      }
+      row.appendChild(tools);
+      host.appendChild(row);
+    });
+  }, true);
+  trialCount();
+  if (!TRIALS.timer) TRIALS.timer = setInterval(trialCount, 1000);
+}
+function trialCount() {
+  var now = Date.now() / 1000 + TRIALS.skew;
+  document.querySelectorAll('#trials .trial-left').forEach(function (x) {
+    var left = parseFloat(x.dataset.until) - now;
+    x.textContent = left > 0 ? Math.floor(left / 60) + ':' + ('0' + Math.floor(left % 60)).slice(-2) + ' left' : 'going back now';
+  });
+}
+function trialDo(t, action, button) {
+  busy(button, true);
+  api('trial', {kind: t.kind, node: t.node, action: action}).then(function (d) {
+    toast(d.message, 'good');
+    setTimeout(function () { api('status').then(paintHeader).catch(function () {}); }, 1500);
+  }).catch(oops).then(function () { busy(button, false); });
 }
 
 var REDRAW_OWED = false;
@@ -187,7 +246,7 @@ function showMe() {
       : (ME.role === 'tokenadmin' ? 'Look at every page and look after people’s tokens: make, replace, switch off, take away. No setting and no account.'
          : 'Look at every page. Nothing can be changed from this account; how your own tables are laid out is yours to change.')));
     body.appendChild(may);
-    if (ME.source === 'directory') {
+    if (ME.source === 'directory' && TOKADMIN) {     /* whois is a token administrator's (1.0.146) */
       var dsec = el('div', 'me-sec');
       dsec.appendChild(el('h3', '', 'In the directory'));
       var dbody = el('div', 'muted', 'asking the directory…');
@@ -1333,9 +1392,12 @@ function tokenPeek(name) {
         + dayWords(new Date(t.locked_until * 1000)) + ' ' + clockWords(new Date(t.locked_until * 1000)) + '.'
         : num(t.failures || 0) + ' now.';
       ac.add('Wrong codes in a row', lockWords, [un]);
-      var win = selectBox([['-1', 'as the setting'], ['0', 'none'], ['1', '1 step'],
-                           ['2', '2 steps'], ['4', '4 steps'], ['8', '8 steps']],
-                          String(t.window_steps === null ? -1 : t.window_steps));
+      var winOpts = [['-1', 'as the setting'], ['0', 'none'], ['1', '1 step'],
+                     ['2', '2 steps'], ['4', '4 steps'], ['8', '8 steps']];
+      var winNow = String(t.window_steps === null || t.window_steps === undefined ? -1 : t.window_steps);
+      /* One brought from elsewhere (totpcgi: 3) shown as it is (1.0.146), not blank. */
+      if (!winOpts.some(function (o) { return o[0] === winNow; })) winOpts.push([winNow, winNow + ' steps']);
+      var win = selectBox(winOpts, winNow);
       win.style.width = '160px';
       win.onchange = function () { tokenDo(name, 'window', {window: Number(win.value)}); };
       if (!sent) ac.add('Clock drift allowed', 'How far the phone’s clock may be off, in steps of ' + t.period + ' s.', [win]);
@@ -2409,6 +2471,7 @@ function showPane(name) {
   document.querySelectorAll('.ctl-pane').forEach(function (p) { p.hidden = p.id !== 'pane-' + name; });
   writeHash();
   if (name === 'clients') loadClients();
+  if (name === 'guard') loadLockouts();
   if (name === 'realms') loadRealms();
   if (name === 'dir') loadDirs();
   if (name === 'people') loadUsers();
@@ -3134,6 +3197,7 @@ $('set-save').onclick = function () {
       });
       if (Object.keys(left).length) { DIRTY = left; markDirtyCount(); loadSettings(false); }
       else loadSettings();
+      if (paneLive('upgrade')) loadUpgrade();      /* the card to go back shown or not (1.0.144) */
       tick();
       return true;
     }).catch(function (e) {
@@ -3417,7 +3481,7 @@ function editRealm(r) {
         var mv = cmdButton('Move them under @' + r.suffix, 'next', 'small');
         mv.style.marginTop = '8px';
         mv.onclick = function () {
-          rbConfirm('Move ' + num(free.length) + ' token(s) under @' + htmlText(r.suffix) + '?',
+          rbConfirm('Move ' + num(free.length) + ' token(s) under @' + r.suffix + '?',
             'Each is renamed as <i>Move</i> on a token does it: its key, recovery codes and history go with it. Nobody has to enrol again.',
             'Move them', function () {
               api('realms', {action: 'move_alias_tokens', id: r.id}).then(function (d) {
@@ -4227,8 +4291,14 @@ function loadUsers() {
    again every 10 s while the card is on the screen; the time left counts
    down every second in between. */
 var LO = {data: null, skew: 0, fetched: 0, timer: null};
+/* Two views of the same counts (1.0.137): Accounts - every kind; Sign-in
+   protection - the VPN's places and the locked tokens, with a filter. */
+var LO_VIEWS = [
+  {table: 'lo-table', tools: 'lo-tools', card: 'lo-card', kinds: null},
+  {table: 'gd-table', tools: 'gd-tools', card: 'gd-card', kinds: ['radius-src', 'token-locked', 'codes-sent'], find: 'gd-find'}
+];
 function loadLockouts() {
-  if (!ADMIN || !$('lo-table')) return;
+  if (!ADMIN || !LO_VIEWS.some(function (v) { return $(v.table); })) return;
   api('lockouts').then(function (d) {
     LO.data = d;
     LO.skew = d.now - Date.now() / 1000;
@@ -4238,8 +4308,8 @@ function loadLockouts() {
   }).catch(function (e) { if (LO.timer) { clearInterval(LO.timer); LO.timer = null; } oops(e); });
 }
 function loTick() {
-  var card = $('lo-card');
-  if (!card || !card.offsetParent || document.hidden) { clearInterval(LO.timer); LO.timer = null; return; }
+  var seen = LO_VIEWS.some(function (v) { var c = $(v.card); return c && c.offsetParent; });
+  if (!seen || document.hidden) { clearInterval(LO.timer); LO.timer = null; return; }
   if (Date.now() - LO.fetched > 10000) { LO.fetched = Date.now(); loadLockouts(); return; }
   drawLockouts();
 }
@@ -4253,14 +4323,29 @@ function loClear(body, words) {
   }).catch(oops);
 }
 function drawLockouts() {
+  LO_VIEWS.forEach(function (v) { if ($(v.table)) drawLockoutsIn(v); });
+}
+/* How far a count has got towards its limit (1.0.137): a bar that fills. */
+function loBar(n, limit, locked) {
+  var bar = el('div', 'lo-bar' + (locked ? ' full' : ''));
+  var fill = el('i');
+  fill.style.width = (limit ? Math.min(100, Math.round(100 * n / limit)) : 0) + '%';
+  bar.appendChild(fill);
+  return bar;
+}
+function drawLockoutsIn(v) {
   var d = LO.data;
-  var host = $('lo-table');
+  var host = $(v.table);
   if (!d || !host) return;
   var now = loNow();
   var rows = [];
+  var find = v.find && $(v.find) ? $(v.find).value.trim().toLowerCase() : '';
   (d.nodes || []).forEach(function (n) {
     (n.rows || []).forEach(function (r) {
       if (r.forgets <= now) return;
+      if (v.kinds && v.kinds.indexOf(r.kind) < 0) return;
+      if (find && (String(r.who).toLowerCase().indexOf(find) < 0)
+          && !(r.others || []).some(function (o) { return String(o).toLowerCase().indexOf(find) >= 0; })) return;
       var x = Object.assign({}, r);
       x.node = n.node; x.stale = !n.fresh;
       if (x.locked && x.until <= now) x.locked = false;
@@ -4268,29 +4353,48 @@ function drawLockouts() {
     });
   });
   rows.sort(function (a, b) { return (b.locked - a.locked) || (b.last - a.last); });
-  liveFill($('lo-tools'), function (tools) {
+  liveFill($(v.tools), function (tools) {
   var locked = rows.filter(function (r) { return r.locked; }).length;
   if (rows.length) {
     if (locked) { var lc = el('span', 'small bad', num(locked) + ' locked out'); lc.style.marginRight = '12px'; tools.appendChild(lc); }
-    var all = cmdButton('Clear them all', 'broom', 'small');
-    all.onclick = function () {
-      confirmThen('Clear every lockout?', 'Every count of wrong attempts is forgotten' + (d.cluster ? ' on every node' : '')
-        + ' - the locked out may try again at once. Events keeps a line saying who did it.', 'Clear them all', function () {
-        loClear({action: 'clear_all'});
-      }, false);
-    };
-    tools.appendChild(all);
+    if (!v.kinds) {
+      var all = cmdButton('Clear them all', 'broom', 'small');
+      all.onclick = function () {
+        confirmThen('Clear every lockout?', 'Every count of wrong attempts is forgotten' + (d.cluster ? ' on every node' : '')
+          + ' - the locked out may try again at once. Events keeps a line saying who did it.', 'Clear them all', function () {
+          loClear({action: 'clear_all'});
+        }, false);
+      };
+      tools.appendChild(all);
+    } else {
+      var these = cmdButton(find ? 'Clear these (' + num(rows.length) + ')' : 'Clear them all', 'broom', 'small');
+      these.onclick = function () {
+        var list = rows.slice();
+        confirmThen(find ? 'Clear these?' : 'Clear them all?', (find ? 'The ' + num(list.length) + ' shown' : 'Every place and token shown')
+          + ' may try again at once. Events keeps a line saying who did it.', 'Clear them', function () {
+          Promise.all(list.map(function (r) {
+            return api('lockouts', {action: 'clear', node: r.node, kind: r.kind, who: r.who}).catch(function () { return null; });
+          })).then(function () { toast('cleared: ' + num(list.length), 'good'); loadLockouts(); setTimeout(loadLockouts, 7000); });
+        }, false);
+      };
+      tools.appendChild(these);
+    }
   }
   }, true);
   liveFill(host, function (host) {
-  if (!rows.length) { host.appendChild(el('p', 'note good', 'Nobody is locked out, and no wrong attempt is being counted.')); return; }
+  if (!rows.length) {
+    host.appendChild(el('p', 'note good', find ? 'Nothing counted for "' + find + '".'
+      : (v.kinds ? 'No place is counted or blocked, and no token is locked.' : 'Nobody is locked out, and no wrong attempt is being counted.')));
+    return;
+  }
   var heads = ['State', 'Who', 'Where', 'How many', 'Tried'].concat(d.cluster ? ['Node'] : []).concat(['Last', '']);
   host.appendChild(listTable(heads, rows, function (r) {
     var tr = el('tr', r.locked ? 'lo-locked' : '');
     var st = el('td');
     if (r.locked) {
-      st.appendChild(el('span', 'tag crit', 'locked out'));
+      st.appendChild(el('span', 'tag crit', r.by === 'place' ? 'blocked' : 'locked out'));
       st.appendChild(el('div', 'small', span(r.until - now) + ' left'));
+      if (r.why) st.appendChild(el('div', 'small muted', r.why));
     } else {
       st.appendChild(el('span', 'tag load', 'counting'));
       st.appendChild(el('div', 'small muted', 'forgotten in ' + span(r.forgets - now)));
@@ -4298,16 +4402,26 @@ function drawLockouts() {
     tr.appendChild(st);
     var who = el('td');
     who.appendChild(noI18n(el('div', 'mono', r.who)));
-    who.appendChild(el('div', 'small muted', r.by === 'address' ? 'an address' : (r.by === 'token' ? 'a token' : 'a name')));
+    who.appendChild(el('div', 'small muted', r.by === 'address' ? 'an address' : (r.by === 'token' ? 'a token'
+      : (r.by === 'place' ? 'a place (Calling-Station-Id)' : 'a name'))));
     tr.appendChild(who);
     tr.appendChild(el('td', 'small', r.what));
-    var w = el('td', 'num');
-    w.appendChild(noI18n(el('b', '', num(r.fails))));
-    w.appendChild(document.createTextNode(' / ' + num(r.limit)));
+    var w = el('td', 'num lo-count');
+    var line = el('div');
+    line.appendChild(noI18n(el('b', '', num(r.fails))));
+    line.appendChild(document.createTextNode(' / ' + num(r.limit)));
+    w.appendChild(line);
+    w.appendChild(loBar(r.fails, r.limit, r.locked));
+    if (r.by === 'place' && r.names_limit) {
+      var nl = el('div', 'small muted');
+      nl.appendChild(document.createTextNode(num(r.names) + ' / ' + num(r.names_limit) + ' names'));
+      w.appendChild(nl);
+      w.appendChild(loBar(r.names, r.names_limit, false));
+    }
     tr.appendChild(w);
     var tried = el('td', 'small');
     if ((r.others || []).length) {
-      tried.appendChild(el('div', 'muted', r.by === 'address' ? 'names:' : 'from:'));
+      tried.appendChild(el('div', 'muted', r.by === 'address' || r.by === 'place' ? 'names:' : 'from:'));
       tried.appendChild(noI18n(el('div', 'mono', r.others.slice().reverse().join(', '))));
     } else tried.textContent = '–';
     tr.appendChild(tried);
@@ -4330,6 +4444,7 @@ function drawLockouts() {
   }, 'plain'));
   }, true);
 }
+if ($('gd-find')) $('gd-find').addEventListener('input', function () { drawLockouts(); });
 function userDo(body) {
   /* Drawn again either way (1.0.44): a refused change stayed in its box. */
   api('users', body).then(function (d) { toast(d.message, 'good'); loadUsers(); })
@@ -4389,7 +4504,7 @@ function loadDb() {
     dumpCard(d);
     drawTune(d);
     drawErasable(d.erasable || {});
-    if (d.job && d.job.running) dbWatch();
+    if (d.job && d.job.running && ADMIN) dbWatch();     /* its progress is a full administrator's (1.0.146) */
     explainWhatWasDrawn($('pane-db'));
   }).catch(oops);
 }
@@ -5457,7 +5572,51 @@ function drawAbout() {
   var c = (s.radius || {}).counts || {};
   host.appendChild(kvTable(Object.keys(c).sort().map(function (k) { return [k, num(c[k])]; })));
   host.appendChild(el('p', 'muted small', 'One Python file (/usr/local/lib/otp/otp.py), the standard library, and these PHP pages that ask it. On the server: otp --help.'));
+  if (ADMIN) drawConsoleLogin(host);
   drawSoftware(host);
+}
+
+/* The otp console when root signs in at the console or over SSH (1.0.141):
+   a switch a node; the node's own root helper writes it. */
+function drawConsoleLogin(host) {
+  var box = el('div', 'sw-box');
+  host.appendChild(box);
+  box.appendChild(el('h3', 'sw-h', 'The console at login'));
+  box.appendChild(el('p', 'note', 'On: root signing in at the machine\'s console or over SSH lands in the otp console (otp --console); q leaves it for the shell. Off: the ordinary shell, and otp --console opens it. Commands run over SSH, scp and sftp never get it. On the server: otp --console-at-login on|off.'));
+  var list = el('div', '');
+  box.appendChild(list);
+  var tries = 0;
+  function load() {
+    api('console-login').then(function (d) {
+      clear(list);
+      var waiting = false;
+      (d.nodes || []).forEach(function (n) {
+        var row = el('div', 'kv-row');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap';
+        var sw = switchBox(!!n.on);
+        sw._input.disabled = n.on === null || n.on === undefined || n.pending;
+        var name = noI18n(el('b', '', n.name));
+        row.appendChild(sw);
+        row.appendChild(name);
+        if (n.me) row.appendChild(el('span', 'tag info', 'this one'));
+        var said = n.pending ? 'being switched…' : (n.on === null || n.on === undefined) ? 'not said yet - the node says within a minute'
+          : n.on ? 'on' : 'off';
+        row.appendChild(el('span', 'muted small', said));
+        if (n.error) row.appendChild(el('p', 'note bad', n.error));
+        if (n.pending) waiting = true;
+        sw._input.onchange = function () {
+          var on = sw._input.checked;
+          sw._input.disabled = true;
+          api('console-login', {node: n.name, on: on}).then(function (r) {
+            toast(r.message, 'good'); tries = 0; setTimeout(load, 2000);
+          }).catch(function (e) { sw._input.checked = !on; sw._input.disabled = false; oops(e); });
+        };
+        list.appendChild(row);
+      });
+      if (waiting && tries++ < 30) setTimeout(load, 2000);
+    }).catch(function (e) { clear(list); list.appendChild(el('p', 'note bad', String((e && e.message) || e))); });
+  }
+  load();
 }
 
 /* What every node runs on (1.0.99): otp, Python and its modules, the
@@ -7171,6 +7330,11 @@ function drawUpWeb(d) {
     else if (o.newest) p.textContent = 'Nothing newer: the newest there is ' + o.newest.version + ' and this server runs ' + (o.here || d.version) + ' (looked ' + ago(o.at) + ')';
     else p.textContent = 'No otp package there (looked ' + ago(o.at) + ')';
     host.appendChild(p);
+    /* One chain above (1.0.146): the line for several newer versions sat in
+       the middle of it and every case below it said the wrong thing. */
+    if (o.at && !o.error && o.newer && (o.newer_list || []).length > 1) {
+      host.appendChild(el('p', 'note', num(o.newer_list.length) + ' versions there are newer than this one - choose which to go to; the newest is chosen.'));
+    }
     if (o.url) host.appendChild(noI18n(el('p', 'mono small muted', o.url)));
     var row = el('div', 'btnrow');
     var look = cmdButton('Look now', 'refresh', '');
@@ -7182,13 +7346,34 @@ function drawUpWeb(d) {
     row.appendChild(look);
     var running = !!(d.plan && d.plan.state === 'running');
     if (o.newer && !running) {
-      var up = cmdButton('Upgrade to ' + o.newest.version + ' now', 'play', 'primary');
+      /* More than one newer there (1.0.142): which one, the newest chosen. */
+      var list = (o.newer_list || []).filter(function (x) { return x && x.version; });
+      var pick = list[0] && list[0].version === o.newest.version ? list[0] : o.newest;
+      var choose = null;
+      if (list.length > 1) {
+        choose = selectBox(list.map(function (x, i) {
+          return [x.version, x.version + (i === 0 ? ' (the newest)' : '')];
+        }), pick.version);
+        explain(choose, 'The versions there newer than the one this server runs. The newest is chosen; any of them can be put in instead.');
+        row.appendChild(choose);
+      }
+      var up = cmdButton('Upgrade to ' + pick.version + ' now', 'play', 'primary');
+      var chosen = function () {
+        var v = choose ? choose.value : o.newest.version;
+        return list.filter(function (x) { return x.version === v; })[0] || o.newest;
+      };
+      if (choose) {
+        choose.onchange = function () {
+          setButtonIcon(up, 'play', 'Upgrade to ' + chosen().version + ' now');
+        };
+      }
       up.onclick = function () {
         var many = (d.nodes || []).length > 1;
-        confirmThen('Upgrade to otp ' + o.newest.version + '?', htmlText('It is fetched from ' + (o.newest.url || o.url) + ', its signature checked, and '
+        var c = chosen();
+        confirmThen('Upgrade to otp ' + c.version + '?', htmlText('It is fetched from ' + (c.url || o.url) + ', its signature checked, and '
           + (many ? 'the nodes are upgraded one at a time - each in maintenance while it is, so the service never stops.' : 'this server is upgraded: for a minute nobody can sign in to the VPN.')), 'Upgrade', function () {
           busy(up, true);
-          api('upgrade', {action: 'online_get', version: o.newest.version, start: true}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
+          api('upgrade', {action: 'online_get', version: c.version, start: true}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
             .catch(oops).then(function () { busy(up, false); });
         }, false);
       };
@@ -7197,13 +7382,134 @@ function drawUpWeb(d) {
       explain(only, 'Fetched and checked, and left ready below - put in when Upgrade is pressed.');
       only.onclick = function () {
         busy(only, true);
-        api('upgrade', {action: 'online_get', version: o.newest.version}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
+        api('upgrade', {action: 'online_get', version: chosen().version}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
           .catch(oops).then(function () { busy(only, false); });
       };
       row.appendChild(only);
     }
     host.appendChild(row);
   });
+}
+/* Going back to an older version (1.0.143): asked for on purpose, in a card
+   of its own - the versions at upgrade_url older than this one, each with what
+   stands in its way; the database is checked against the one chosen. */
+function upDownConfirm(version, go) {
+  var d = UP.last || {};
+  var many = (d.nodes || []).filter(function (n) { return n.alive; }).length > 1;
+  confirmThen('Go back to otp ' + version + '?', htmlText('The version running now is replaced by the older ' + version + (many
+    ? ' on every node, one at a time - each in maintenance while it is, so the service never stops.'
+    : ' - for a minute nobody can sign in to the VPN.') + ' The database stays as it is. What came in the newer versions is gone until you upgrade again.'),
+    'Go back', go, true);
+}
+function upDownChangelog(version) {
+  api('upgrade', {action: 'downgrade_changelog', version: version}).then(function (x) {
+    var c = x.changelog || {};
+    modal('What changed in ' + version, function (body) {
+      if (c.from === 'package') body.appendChild(el('p', 'note small', 'Read from the package at the address - it is checked only when it is chosen.'));
+      body.appendChild(c.entry ? noI18n(el('pre', 'lines', c.entry)) : el('p', 'note', 'The package says nothing about this version.'));
+      if ((c.lost || []).length) {
+        var det = el('details', 'fold');
+        det.appendChild(el('summary', '', 'What going back gives up: ' + c.lost.length + ' newer version(s), up to ' + c.here));
+        c.lost.forEach(function (one) { det.appendChild(noI18n(el('pre', 'lines', one.text))); });
+        body.appendChild(det);
+      }
+    }, [{words: 'Close', close: true}], 'medium');
+  }).catch(oops);
+}
+function drawUpDown(d) {
+  var card = $('up-down-card');
+  /* Offered only when switched on (1.0.144): Settings → Upgrades. */
+  if (card) card.hidden = !(d && d.downgrade_on);
+  var host = $('up-down');
+  if (!host || host._made || !(d && d.downgrade_on)) return;
+  host._made = true;
+  var row = el('div', 'btnrow');
+  var show = cmdButton('Show the versions to go back to', 'list', '');
+  row.appendChild(show);
+  host.appendChild(row);
+  var list = el('div', '');
+  host.appendChild(list);
+  show.onclick = function () {
+    busy(show, true);
+    api('upgrade', {action: 'downgrade_list'}).then(function (x) {
+      var g = x.downgrade || {};
+      clear(list);
+      var at = el('p', 'note small', 'At ' + (g.url || '?') + ' - this server runs ' + (g.here || '') + '; it may go back to ' + (g.lowest || g.floor || '?') + ' or newer.');
+      at.style.marginTop = '10px';
+      list.appendChild(at);
+      var vs = g.versions || [];
+      if (!vs.length) { list.appendChild(el('p', 'note', 'No version older than this one is there.')); return; }
+      var running = !!((UP.last || {}).plan && UP.last.plan.state === 'running');
+      var good = vs.filter(function (v) { return !(v.why || []).length; });
+      var bad = vs.filter(function (v) { return (v.why || []).length; });
+      /* One row a version, the buttons side by side (1.0.145): the reasons a
+         version is refused are said once, folded below - not in every row. */
+      var acts = function (v, ok) {
+        var cell = el('div', '');
+        cell.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-left:auto';
+        var notes = cmdButton('What changed', 'list', 'small');
+        notes.style.whiteSpace = 'nowrap';
+        notes.onclick = function () { upDownChangelog(v.version); };
+        cell.appendChild(notes);
+        if (ok && !running) {
+          var go = cmdButton('Go back to ' + v.version, 'undo', 'small danger');
+          go.style.whiteSpace = 'nowrap';
+          go.onclick = function () {
+            upDownConfirm(v.version, function () {
+              busy(go, true);
+              api('upgrade', {action: 'downgrade_get', version: v.version, start: true}).then(function (r) { toast(r.message, 'good'); drawUpgrade(r); })
+                .catch(oops).then(function () { busy(go, false); });
+            });
+          };
+          cell.appendChild(go);
+        }
+        return cell;
+      };
+      /* Rows of their own, not a table (1.0.145): the version and its state on
+         the left, the buttons on the right - on a narrow screen the buttons go
+         below as a whole, never squeezed into a column. */
+      var nowrap = function (node) {
+        node.style.whiteSpace = 'nowrap';
+        Array.prototype.forEach.call(node.querySelectorAll('span'), function (x) { x.style.whiteSpace = 'nowrap'; });
+        return node;
+      };
+      var rows = function (items, ok) {
+        var box = el('div', 'dg-rows');
+        items.forEach(function (v) {
+          var r = el('div', 'dg-row');
+          r.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;padding:8px 10px;border-bottom:1px solid var(--line)';
+          var left = el('div', '');
+          left.style.cssText = 'display:flex;align-items:center;gap:10px;min-width:9em';
+          left.appendChild(noI18n(el('b', '', v.version)));
+          var tag = nowrap(el('span', ok ? 'tag ok' : 'tag warn', ok ? 'yes' : (v.short || 'no')));
+          if (!ok) explain(tag, (v.why || []).join('\n'));
+          left.appendChild(tag);
+          r.appendChild(left);
+          var right = acts(v, ok);
+          Array.prototype.forEach.call(right.children, nowrap);
+          r.appendChild(right);
+          box.appendChild(r);
+        });
+        return box;
+      };
+      if (good.length) list.appendChild(rows(good, true));
+      else list.appendChild(el('p', 'note', 'No version at the address may be gone back to.'));
+      if (bad.length) {
+        var det = el('details', 'fold');
+        det.style.marginTop = '12px';
+        det.appendChild(el('summary', '', bad.length + ' older version(s) it may not go back to' + (g.lowest ? ' - below ' + g.lowest : '')));
+        var reasons = [];
+        bad.forEach(function (v) { (v.why || []).forEach(function (w) { if (reasons.indexOf(w) < 0) reasons.push(w); }); });
+        var why = el('ul', 'note small');
+        why.style.margin = '8px 0';
+        reasons.forEach(function (w) { why.appendChild(el('li', 'bad', w)); });
+        det.appendChild(why);
+        det.appendChild(rows(bad, false));
+        list.appendChild(det);
+      }
+    }).catch(function (e) { clear(list); list.appendChild(el('p', 'note bad', String((e && e.message) || e))); })
+      .then(function () { busy(show, false); });
+  };
 }
 function drawUpgrade(d) {
   d = upSteady(d);
@@ -7246,7 +7552,8 @@ function drawUpgrade(d) {
     var p = d.package;
     var box = el('div', 'notice good');
     box.style.marginTop = '12px';
-    box.appendChild(el('b', '', 'otp ' + p.version));
+    if (p.downgrade) box.className = 'notice warn';
+    box.appendChild(el('b', '', 'otp ' + p.version + (p.downgrade ? ' - older: ready to go back to' : '')));
     box.appendChild(el('div', 'small', 'signed by ' + (p.signed_by || '?') + ' · ' + bytes(p.bytes) + ' · sent by ' + (p.by || '?') + ' · ' + ago(p.at)));
     pk.appendChild(box);
     if (p.changelog) {
@@ -7262,7 +7569,12 @@ function drawUpgrade(d) {
   $('up-forget').hidden = !d.package || running;
   $('up-start').disabled = !d.package || !d.ready || running;
   var many = (d.nodes || []).length > 1;
-  setButtonIcon($('up-start'), 'play', many ? 'Upgrade every node, one at a time' : 'Upgrade this server');
+  var down = !!(d.package && d.package.downgrade);
+  setButtonIcon($('up-start'), down ? 'undo' : 'play', down ? (many ? 'Go back on every node, one at a time' : 'Go back on this server')
+    : (many ? 'Upgrade every node, one at a time' : 'Upgrade this server'));
+  $('up-start').classList.toggle('danger', down);
+  $('up-start').classList.toggle('primary', !down);
+  drawUpDown(d);
   var rd = $('up-ready');
   clear(rd);
   if (d.package && !d.ready && !running) {
@@ -7275,7 +7587,7 @@ function drawUpgrade(d) {
   $('up-plan-card').hidden = !plan;
   liveFill($('up-plan'), function (ph) {
   if (plan) {
-    ph.appendChild(el('p', 'note', 'To ' + plan.version + ' · started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · '
+    ph.appendChild(el('p', 'note', (plan.downgrade ? 'Going back to ' : 'To ') + plan.version + ' · started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · '
       + ({running: 'going on', done: 'done', failed: 'failed', cancelled: 'stopped'})[plan.state]));
     /* How far, as bars (1.0.67): the whole and each node. */
     var steps = plan.steps || [];
@@ -7469,6 +7781,9 @@ if ($('up-drop')) {
       var p = d.package || {};
       var names = (d.nodes || []).filter(function (n) { return n.alive; }).map(function (n) { return n.name; });
       var many = names.length > 1;
+      if (p.downgrade) { upDownConfirm(p.version, function () {
+        api('upgrade', {action: 'start'}).then(function (r) { toast(r.message, 'good'); drawUpgrade(r); }).catch(oops);
+      }); return; }
       confirmThen(many ? 'Upgrade every node to ' + p.version : 'Upgrade this server to ' + p.version,
         many ? 'One node at a time: it is taken out of service, upgraded, checked and brought back, and only then the next one. The VPN and the load balancer use the other node meanwhile.'
              : 'This server is the only one: while it is put in and restarted - a minute or two - nobody can sign in to the VPN, and these pages stop answering for a moment.',
@@ -8194,6 +8509,13 @@ function fwSave() {
   return ask.then(function (yes) { return yes ? go() : false; });
 }
 function loadFw() {
+  if (!TOKADMIN) {
+    /* The map of the network is not for every reader (1.0.57); said here once,
+       not refused every five seconds (1.0.146). */
+    var lede = $('fw-lede');
+    if (lede) lede.textContent = 'The firewall and who may reach the pages are shown to administrators only.';
+    return;
+  }
   apiLatest('fw', 'firewall').then(drawFw).catch(oops);     /* the newest only (1.0.61) */
   clearInterval(FW.timer);
   FW.timer = setInterval(function () {
@@ -10880,7 +11202,7 @@ function rbSshBlock(body, t, f, cur) {
     P.below.appendChild(rbCopyme("mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '" + state.pub + "' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"));
   };
   mk.onclick = function () {
-    rbConfirm('Make a key for ' + htmlText((f.name && f.name.value) || t.name || 'this destination'),
+    rbConfirm('Make a key for ' + ((f.name && f.name.value) || t.name || 'this destination'),
       'A fresh ed25519 pair is made here. The private half stays on this machine and the public half is shown for you to put on the server.' + (state.has ? '<br><br><b>The key kept now is replaced</b>, so until the new public half is on the server, backups cannot sign in there.' : ''),
       'Make one', function () {
         rbNeedSaved(t.kind, cur).then(function () { return api('rbackup', {action: 'keygen', id: cur.id}); })
@@ -11383,7 +11705,8 @@ function netFormCard(n) {
   if (!data.nm) { card.appendChild(el('p', 'note', 'Nothing can be set from here without NetworkManager.')); return card; }
   var on6was = !(conf.ipv6_method === 'disabled' || conf.ipv6_method === 'ignore' || !conf.ipv6_method);
   var host = textBox(data.hostname || '', 'otp1.example.cz', 'mono');
-  var a4 = textBox((conf.ipv4_addresses || [])[0] || ((live.addrs4 || [])[0] || {}).addr || '', '192.0.2.10/24', 'mono');
+  var a4Was = (conf.ipv4_addresses || [])[0] || ((live.addrs4 || [])[0] || {}).addr || '';
+  var a4 = textBox(a4Was, '192.0.2.10/24', 'mono');
   var gw = textBox(conf.ipv4_gateway || live.gw4 || '', '192.0.2.1', 'mono');
   var dns = textBox((conf.ipv4_dns || live.dns || []).filter(function (x) { return x.indexOf(':') < 0; }).join(', '), '192.0.2.53, 192.0.2.54', 'mono');
   var search = textBox((conf.ipv4_search || []).join(', '), 'example.cz', 'mono');
@@ -11479,7 +11802,7 @@ function netFormCard(n) {
         api('net', {action: 'apply', node: n.name, want: w}).then(function (r) {
           toast(r.message, 'good');
           NET.watch = n.name;
-          NET.target = {node: n.name, old: (a4.defaultValue || '').split('/')[0], ip: w.ipv4.addr.split('/')[0], host: w.hostname, oldHost: data.hostname || '', me: n.me};
+          NET.target = {node: n.name, old: (a4Was || '').split('/')[0],   /* what the box was filled with (1.0.146) - its defaultValue was always '' */ ip: w.ipv4.addr.split('/')[0], host: w.hostname, oldHost: data.hostname || '', me: n.me};
           loadNet();
         }).catch(oops);
       });
@@ -11970,7 +12293,9 @@ function ntpForm() {
     mins.oninput = function () { dr.minsources = mins.value; };
     g.appendChild(formField('Sources that have to agree', mins, 'The clock is set only when at least this many sources agree. 1 with one server; 2 or 3 with several.'));
     var allow = textBox((dr.allow || []).join(', '), '192.0.2.0/24', 'mono');
-    allow.oninput = function () { dr.allow = allow.value; };
+    /* A list, as it came (1.0.146): kept as the typed text, the next drawing
+       of the pane broke on .join and it stopped refreshing. */
+    allow.oninput = function () { dr.allow = allow.value.split(/[\s,;]+/).filter(Boolean); };
     g.appendChild(formField('Serve the time to', allow, 'Networks that may ask these nodes for the time (UDP 123) - for the VPN concentrators, say. Empty: nobody. The firewall opens it by itself.'));
     body.appendChild(g);
   };

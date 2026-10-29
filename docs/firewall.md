@@ -103,3 +103,9 @@ iptables -S OTP-IN; ip6tables -S OTP-IN
 grep -n otp /etc/sysconfig/iptables
 otp --web-status                  # what root did last, node by node
 ```
+
+## On trial (1.0.137)
+
+A change of the firewall or of who may reach the pages goes back by itself
+unless kept within `fw_confirm_min` minutes (5): the banner on every page, or
+`otp --change-keep fw`. See [sign-in-protection.md](sign-in-protection.md).

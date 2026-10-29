@@ -112,3 +112,9 @@ otp --console-at-login status
 
 The choice is `/etc/otp-console-login` (`on` / `off`); an upgrade leaves it as
 it is. `install.sh --uninstall` takes the profile script away.
+
+On the pages (1.0.141): **Settings → About → The console at login**, a switch
+for each node of the cluster (full administrators). The node's own root helper
+writes `/etc/otp-console-login`; each node says within a minute how the file is,
+so a change made with `otp --console-at-login` shows there too. Every switch is
+in Events.

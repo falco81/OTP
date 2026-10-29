@@ -3080,3 +3080,17 @@ body.mfa-on .signin{padding-top:24px}
 .mfa-row .btn{flex:0 0 auto;white-space:nowrap}
 .mfa-code{text-align:center;letter-spacing:.25em;font-size:18px !important}
 .mfa-foot{display:flex;justify-content:flex-end}
+
+/* How far a count has got towards its limit (1.0.137). */
+.lo-bar { height: 5px; border-radius: 3px; background: var(--line, rgba(127,127,127,.25)); margin-top: 4px; min-width: 70px; overflow: hidden; }
+.lo-bar > i { display: block; height: 100%; background: var(--warn, #d9a400); border-radius: 3px; transition: width .4s ease; }
+.lo-bar.full > i { background: var(--crit, #d64545); }
+.lo-count { min-width: 90px; }
+
+/* A change on trial (1.0.137). */
+.trials { margin: 8px 16px 0; display: flex; flex-direction: column; gap: 8px; }
+.trial { display: flex; gap: 14px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  border: 1px solid var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 10px 14px; }
+.trial-words { flex: 1 1 360px; }
+.trial-left { color: var(--warn); font-weight: 600; }
+.trial-tools { display: flex; gap: 8px; flex-wrap: wrap; }

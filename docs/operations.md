@@ -130,14 +130,16 @@ What lives where:
 
    ```bash
    otp --add-directory AD --hosts dc1.example.local,dc2.example.local \
-       --base DC=example,DC=local --bind-dn otp@example.local --bind-pw '...' \
+       --base DC=example,DC=local --bind-dn otp@example.local --bind-pw - \
        --tls ldaps --ca /root/example-root-ca.pem
    otp --directory-test AD
    otp --add-realm example.cz --suffix example.cz --directory AD --lookup upn \
        --groups 'VPN_USERS' --mode otp
-   otp --add-client ASA --address 198.51.100.1 --secret 'a long shared secret' \
-       --realm example.cz
+   otp --add-client ASA --address 198.51.100.1 --secret - --realm example.cz
    ```
+
+   `-` asks for the password and the secret, so they never stand on the command
+   line where `ps` shows them (or give them in OTP_BIND_PW and OTP_SECRET).
 
 6. Enrol a token for yourself (`otp --enroll you@example.cz`, or on the
    enrolment pages) and test: `otp --radtest you@example.cz 123456`, then

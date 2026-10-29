@@ -85,7 +85,7 @@ is pressed) at `upgrade_url` for `otp-X.Y.Z.tar.gz` packages:
 
 | `upgrade_url` | how it is read |
 |---|---|
-| `https://github.com/OWNER/REPO/tree/BRANCH/FOLDER` (the default: `https://github.com/falco81/Utils/tree/main/otp`) | GitHub's API lists the folder; the packages come from `raw.githubusercontent.com`. When the API refuses (60 questions an hour without an account), the folder's own page is read for the names. |
+| `https://github.com/OWNER/REPO/tree/BRANCH/FOLDER` (the default: `https://github.com/falco81/OTP/tree/main/release`, which keeps the last ten versions) | GitHub's API lists the folder; the packages come from `raw.githubusercontent.com`. When the API refuses (60 questions an hour without an account), the folder's own page is read for the names. |
 | a web page or a folder listing (nginx, Apache autoindex) | every link to an `otp-X.Y.Z.tar.gz` |
 | one package's address | that package |
 
@@ -99,6 +99,10 @@ The newest one newer than what runs here is offered: **Upgrade to X now**
 fetches it, checks it exactly as a package sent by hand (below - the signature
 of a release key this server trusts, every file in it), keeps it in the
 database and begins the upgrade; **Only fetch it** stops before the upgrade.
+With more than one version there newer than this one (1.0.142), a list beside
+the buttons lets you choose which to go to - the newest is chosen, and the
+buttons follow the choice; with only one, the page is as before. An older one
+than what runs here is never offered, nor taken.
 Nothing is ever put in by itself. `upgrade_check` off stops the daily look;
 *Look now* still asks.
 
@@ -140,6 +144,59 @@ A package that was changed, or signed by a key the server does not know, is
 refused - put it in on the command line if you trust it. The first version
 with this (1.0.37) has to be put in on the command line once: that installs the
 units and the key.
+
+## Going back to an older version (1.0.143)
+
+Only to a version it is safe to go back to, and never by putting a database
+back: the tables stay as they are - whatever their size - and the older
+program runs on them. Every column a newer version added is one an older one
+leaves alone (they are all added NULL).
+
+**How far back.** Each version says the oldest one it may go back to
+(`DOWNGRADE_FLOOR` in otp.py): one that reads what it writes into the
+database and config.json the same, and has every security fix that matters.
+Going back is refused below the highest of these
+
+- of any version that ran on this database, on any node - each node keeps its
+  own in the database (`downgrade:floor:NODE`), so a version that ran once
+  still counts after going back from it;
+- of any version installed on this machine - install.sh keeps it in
+  `/usr/local/lib/otp/downgrade-floor`, root's alone. The otp account cannot
+  lower it, so nobody who has only the pages (or the otp account) can take the
+  server back to a version with a hole a later one fixed. An older version's
+  install.sh leaves it as it is.
+
+**The package against the database.** Fetched or given, the older package is
+checked like an upgrade's (signed, every file) and then against this
+database: a column the database has as NOT NULL with no default that the
+older version does not know would make every row it writes there fail - such
+a version is refused, naming the column.
+
+**Then** it goes the road of an upgrade: one node at a time, each in
+maintenance while it is done, checked and brought back. Root's helper puts an
+older version in only when going back is asked for as such, and never below
+its floor file.
+
+- The pages, once *Settings → Upgrades → Offer going back to an older
+  version* (`upgrade_downgrade`, off by default) is on: *Going back to an older
+  version* - *Show the versions to go back to* lists the older versions at
+  `upgrade_url`, each with what stands in its way and *What changed* (what
+  came in it, and folded what going back to it gives up); *Go back to X*
+  (asked twice). Off, the pages offer nothing of it and the API refuses it.
+- The command line:
+
+  ```bash
+  otp --downgrade-check                  # the older versions there, and which are safe
+  otp --downgrade 1.0.140                # from upgrade_url, every node, followed here
+  otp --downgrade /root/otp-1.0.140.tar.gz
+  ```
+
+- The console: *Upgrades → Go back to an older version (only a safe one)*.
+  *Upgrade this node from a package file* refuses an older package and points
+  here.
+
+What came in the newer versions is gone until you upgrade again; settings
+that only a newer version knows stay in the database and are used again then.
 
 ## A cluster: what goes where
 

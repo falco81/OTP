@@ -77,7 +77,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.136'
+__version__ = '1.0.146'
+# The oldest version this one may go back to (1.0.143): one that reads what
+# this one writes into the database and config.json the same, and has every
+# security fix that matters. Raised whenever a version writes something an
+# older one would misread, or fixes a hole an older one has. install.sh keeps
+# the highest of these in a file of root's (downgrade-floor); each node keeps
+# its own in the database.
+DOWNGRADE_FLOOR = '1.0.139'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -113,6 +120,15 @@ DEFAULTS = {
     'radius_reject_delay_ms': 0,
     'radius_reject_reason': 0,
     'radius_ma_sticky': 1,
+    # --- sign-in protection (1.0.137) ----------------------------------------
+    'radius_guard': 0,
+    'radius_guard_tries': 20,
+    'radius_guard_names': 5,
+    'radius_guard_window_min': 15,
+    'radius_guard_block_min': 30,
+    'radius_guard_trusted': '',
+    'net_confirm_min': 10,
+    'fw_confirm_min': 5,
     # --- the tokens ---------------------------------------------------------
     'totp_issuer': 'OTP',
     'totp_label': '{user}',
@@ -124,7 +140,8 @@ DEFAULTS = {
     'totp_disallow_reuse': 1,
     # --- upgrades from the web (1.0.123) ----------------------------------
     'upgrade_check': 1,
-    'upgrade_url': 'https://github.com/falco81/Utils/tree/main/otp',
+    'upgrade_downgrade': 0,
+    'upgrade_url': 'https://github.com/falco81/OTP/tree/main/release',
     'rate_limit_tries': 3,
     'lockout_after': 10,
     'lockout_min': 15,
@@ -305,10 +322,13 @@ TUNABLE = {
     'totp_digits': (6, 8), 'totp_period': (15, 120),
     'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
     'totp_window': (0, 10), 'admin_show_key': (0, 1), 'totp_disallow_reuse': (0, 1),
-    'upgrade_check': (0, 1),
+    'upgrade_check': (0, 1), 'upgrade_downgrade': (0, 1),
     'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
     'radius_reject_reason': (0, 1), 'radius_ma_sticky': (0, 1),
+    'radius_guard': (0, 1), 'radius_guard_tries': (2, 10000), 'radius_guard_names': (0, 1000),
+    'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
+    'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
     'portal': (0, 1), 'portal_who': ('realm_groups', 'groups', 'anyone'),
@@ -442,6 +462,7 @@ NAMES = {
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
     'upgrade_check': 'Look for a new version every day',
+    'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
     'totp_disallow_reuse': 'A code works only once',
     'rate_limit_tries': 'Wrong codes before a pause',
@@ -449,6 +470,14 @@ NAMES = {
     'lockout_min': 'Locked out for (min)',
     'radius_reject_reason': 'Say why in a refusal',
     'radius_ma_sticky': 'Hold a client to the Message-Authenticator',
+    'radius_guard': 'Block a place that keeps guessing',
+    'radius_guard_tries': 'Wrong sign-ins from one place before it is blocked',
+    'radius_guard_names': 'Different names refused from one place before it is blocked',
+    'radius_guard_window_min': '...counted over (min)',
+    'radius_guard_block_min': 'Blocked for (min)',
+    'radius_guard_trusted': 'Never blocked',
+    'net_confirm_min': 'A new network goes back unless kept within (min)',
+    'fw_confirm_min': 'A firewall change goes back unless kept within (min)',
     'rate_limit_s': '...counted over (s)',
     'scratch_count': 'Recovery codes per token',
     'scratch_digits': 'Digits in a recovery code',
@@ -638,6 +667,10 @@ SAYS = {
                      'otp-X.Y.Z.tar.gz packages; a newer one than runs here is offered on this '
                      'page - put in with one click, after its signature has been checked like '
                      'any package sent by hand. Nothing is put in by itself.',
+    'upgrade_downgrade': 'Off: nothing on these pages offers going back to an older version. '
+                         'On: Settings → Upgrades shows <i>Going back to an older version</i> - '
+                         'only the versions it is safe to go back to, each with what changed in '
+                         'it. On the server, root can always: otp --downgrade.',
     'upgrade_url': 'A GitHub folder (<code>https://github.com/OWNER/REPO/tree/BRANCH/FOLDER</code>), '
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
@@ -711,6 +744,39 @@ SAYS = {
                             'which a VPN may show to whoever is signing in - telling a '
                             'stranger whether a name has a token, or that the code was right '
                             'and the password not.',
+    'radius_guard': 'Off: only each token counts its own wrong codes (and locks itself) - from '
+                    'one place somebody may still try every name a few times a day, or lock '
+                    'everybody\'s token on purpose. On: the place each request comes from - the '
+                    'address the person connects to the VPN from, as the VPN sends it '
+                    '(Calling-Station-Id) - is counted too. Too many refusals from one place, '
+                    'or too many different names refused from it, and it is blocked for a '
+                    'while: its requests are refused at once, nothing of them is checked, and '
+                    'nobody\'s token counts them. A request without a Calling-Station-Id is not '
+                    'counted. Each node counts what reaches it; who is counted and who is '
+                    'blocked is below, each cleared by hand.',
+    'radius_guard_tries': 'Refusals from one place within the time below after which it is '
+                          'blocked - wrong passwords, wrong codes, names nobody has. Not '
+                          'counted: refusals that are this server\'s trouble (a directory away, '
+                          'a realm not set up).',
+    'radius_guard_names': 'Different names refused from one place within the time below after '
+                          'which it is blocked - somebody trying many people\'s codes. 0: not '
+                          'counted.',
+    'radius_guard_window_min': 'The time over which the refusals of one place are counted.',
+    'radius_guard_block_min': 'How long a place is blocked. Clear it by hand below to let it '
+                              'in at once.',
+    'radius_guard_trusted': 'Addresses or networks never blocked, one or more, separated by '
+                            'spaces or commas: an office whose people all come from one '
+                            'address, a monitor that signs in now and then. Example: '
+                            '198.51.100.7 203.0.113.0/24',
+    'net_confirm_min': 'A node\'s new network (Settings - Network) is put in, the node '
+                       'restarts with it - and the old one comes back by itself unless '
+                       'somebody presses Keep it within these minutes: a typo in the gateway '
+                       'or the prefix does not leave the node unreachable. 0: kept at once, as '
+                       'before.',
+    'fw_confirm_min': 'A change of the firewall or of who may reach the pages is put in - and '
+                      'what was there before comes back by itself unless somebody presses Keep '
+                      'it within these minutes: a rule that shuts SSH, the pages or RADIUS out '
+                      'does not stay. 0: kept at once, as before.',
     'radius_ma_sticky': 'A client that has once sent a right Message-Authenticator must send '
                         'one with every request from then on: one that arrives without is '
                         'dropped (BlastRADIUS, CVE-2024-3596). Remembered until the service '
@@ -863,6 +929,9 @@ SAYS = {
 # daemon knows and this does not name lands on "Everything else".
 PANES = {
     'realms': ['default_realm'],
+    'guard': ['radius_guard', 'radius_guard_tries', 'radius_guard_names',
+              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted',
+              'net_confirm_min', 'fw_confirm_min'],
     'radius': ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'radius_status_server',
                'radius_reply_ma', 'radius_dup_window_s', 'radius_workers',
                'radius_unknown_log', 'radius_reject_delay_ms', 'radius_reject_reason',
@@ -896,7 +965,7 @@ PANES = {
              'smtp_password', 'smtp_verify', 'smtp_timeout_s', 'mail_direct_port', 'mail_direct_tls', 'mail_dns', 'mail_from',
              'mail_from_name', 'mail_reply_to', 'mail_helo', 'mail_lang', 'mail_codes',
              'mail_retry_hours', 'mail_keep_days'],
-    'upgrade': ['upgrade_check', 'upgrade_url'],
+    'upgrade': ['upgrade_check', 'upgrade_url', 'upgrade_downgrade'],
     'about': ['site_name', 'ui_lang', 'api_port', 'debug', 'debug_radius', 'debug_ldap',
               'debug_api', 'debug_codes'],
 }
@@ -904,6 +973,10 @@ PANES = {
 # A setting that only means something while another one says so. Shown
 # greyed out with the reason beside it, as on isemon.
 ONLY_WHEN = {
+    'radius_guard_tries': ['radius_guard', '1'], 'radius_guard_names': ['radius_guard', '1'],
+    'radius_guard_window_min': ['radius_guard', '1'],
+    'radius_guard_block_min': ['radius_guard', '1'],
+    'radius_guard_trusted': ['radius_guard', '1'],
     'portal_title': ['portal', '1'], 'portal_realm': ['portal', '1'],
     'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
     'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
@@ -1060,6 +1133,12 @@ def check_setting(key, value):
             ipaddress.ip_address(str(got).strip())
         except ValueError:
             raise BadSetting('radius_bind: %r is not an address' % got)
+    if key == 'radius_guard_trusted':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('radius_guard_trusted: %r is not an address or a network' % one)
     if key == 'mail_dns':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
@@ -1121,7 +1200,15 @@ def load_config(path=None, saved=None):
             elif not key.startswith('_'):
                 unknown.append(key)
     except FileNotFoundError:
-        pass
+        # Gone at a reload, as one unreadable (1.0.139): node_name, ha_mode,
+        # the database went back to the defaults without a word.
+        if CONFIG_LOADED[0] and Path(where) == Path(CONFIG_FILE):
+            try:
+                log('%s is not there: the settings in effect are kept until it is put back'
+                    % where, 'error')
+            except Exception:                           # noqa: BLE001
+                pass
+            return CONFIG
     except (ValueError, OSError) as e:
         # Never the defaults in its place (1.0.94): a typo in config.json
         # started the daemon on an empty SQLite of its own - every person
@@ -1467,8 +1554,12 @@ def log(words, level='info'):
     # A line of its own begins only with a time (1.0.57): a newline in what
     # is written - a User-Name, say - continues indented, so it cannot pass
     # for a line of otp's; other control characters are shown, not written.
-    words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', lambda m: '\\x%02x' % ord(m.group(0)),
-                   str(words)).replace('\n', '\n    ')
+    words = str(words)
+    if len(words) > 20000:
+        # A line, not megabytes (1.0.146): a name typed at the sign-in went in whole.
+        words = words[:20000] + ' ... (%d characters more)' % (len(words) - 20000)
+    words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', lambda m: '\\x%02x' % ord(m.group(0)),
+                   words).replace('\n', '\n    ')
     line = '%s %-5s %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), level, words)
     global _LOG_FILE
     with _LOG_LOCK:
@@ -2276,7 +2367,9 @@ class Db(object):
             return main
         # A copy put back holds the database whole, RADIUS too (as before
         # the lanes): its writes would collide with the rows coming in.
-        if DB_RESTORING.is_set():
+        # This database's own (1.0.139): a move loading another database sent
+        # RADIUS off its lane for the whole of it.
+        if getattr(self, 'restoring', False):
             return main
         lane = self._lanes.get('radius')
         if lane is None:
@@ -3045,9 +3138,11 @@ def load_tables(db, src, keep_logs=True, say=None):
     # the tokens empty, and everybody locked out. The database is held for
     # the whole of it - a restore is not something done while people sign in.
     DB_RESTORING.set()
+    db.restoring = True
     try:
         return _load_tables_held(db, src, keep_logs, say, gzip)
     finally:
+        db.restoring = False
         DB_RESTORING.clear()
 
 
@@ -5317,6 +5412,8 @@ class ListQuery(object):
         else:
             items = [value] if quoted else [v for v in value.split(',') if v.strip()]
             clause = self._join('OR', [self._one(column, kind, op, v.strip()) for v in items])
+        if not clause:
+            return None                      # "name:," - nothing in it yet (1.0.139)
         if neg:
             return ('NOT COALESCE((%s), 1=0)' % clause[0], clause[1])
         return clause
@@ -5429,6 +5526,18 @@ def list_position(v):
 ACCOUNT_NAME_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._@\\-]{0,120}\Z')
 
 
+def _yes(data, key, default):
+    """A yes/no field of a form: 1 or 0, its default where it is missing or null
+    (1.0.146: null raised a TypeError - an error 500 for a typed request)."""
+    v = data.get(key)
+    if v is None or v == '':
+        return int(default)
+    try:
+        return int(bool(int(v)))
+    except (TypeError, ValueError):
+        raise ValueError('%s is 0 or 1' % key)
+
+
 class Storage(object):
     """Everything this daemon keeps, over whichever database it is."""
 
@@ -5487,8 +5596,10 @@ class Storage(object):
         return default if got is None else got
 
     def set_meta(self, k, v):
-        with self.lock:
-            self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
+        # One statement, no lock of Python's (1.0.139): a RADIUS thread noting a
+        # client seen waited here behind a page holding the lock for a slow
+        # query on the main connection - the VPN timed out.
+        self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
 
     def settings_saved(self):
         out = {}
@@ -5504,9 +5615,8 @@ class Storage(object):
                 for r in self.db.rows('SELECT k, at, by_who FROM settings')}
 
     def save_setting(self, k, v, by=''):
-        with self.lock:
-            self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
-                                             'by_who': str(by or '')[:190]})
+        self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
+                                         'by_who': str(by or '')[:190]})
 
     def drop_setting(self, k):
         self.db.run('DELETE FROM settings WHERE k = ?', (k,))
@@ -5723,6 +5833,9 @@ class Storage(object):
             bad = password_problem(password)
             if bad:
                 raise ValueError(bad)
+        # A second step left by an account of this name taken away before
+        # (1.0.146) is not this one's: somebody else's phone would answer it.
+        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
         return self.db.insert('accounts', {
             'name': name, 'role': role, 'pw': password_hash(password) if password else '',
             'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
@@ -5750,6 +5863,9 @@ class Storage(object):
         self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
         self.db.run('DELETE FROM sessions WHERE kind = ? AND LOWER(name) = ?',
                     ('admin', one['name'].lower()))
+        # Its second step with it (1.0.146): a new account of the same name
+        # took it over - the old owner's authenticator signing it in.
+        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + one['name'].lower(),))
 
     # ---- how somebody laid out the tables (as on isemon, 1.10.146 on) -------
     COLS_MOST_TABLES = 300
@@ -6092,13 +6208,17 @@ class Storage(object):
             old = self.db.row('SELECT * FROM clients WHERE id = ?', (int(ident),)) if ident else None
         except (TypeError, ValueError):
             raise ValueError('the id of a client is a number')
+        if ident and not old:
+            # Taken away meanwhile (1.0.146): saved from a form opened before,
+            # it came back - without its secret.
+            raise ValueError('that client was taken away meanwhile - open it again')
         clash = self.db.row('SELECT id FROM clients WHERE LOWER(name) = ?', (name.lower(),))
         if clash and (not old or clash['id'] != old['id']):
             raise ValueError('there is a client called %s already' % name)
         row = {'name': name, 'address': str(net) if net.num_addresses > 1 else
                str(net.network_address),
                'realm': str(data.get('realm') or '').strip().lstrip('@')[:190],
-               'require_ma': int(bool(int(data.get('require_ma') or 0))),
+               'require_ma': _yes(data, 'require_ma', 0),
                'enabled': int(bool(int(data.get('enabled', 1) if data.get('enabled')
                                        is not None else 1))),
                'note': str(data.get('note') or '')[:400],
@@ -6269,6 +6389,10 @@ class Storage(object):
         directory = str(data.get('directory') or '').strip()
         if directory and not self.directory(directory):
             raise ValueError('there is no directory called %s' % directory)
+        if directory:
+            # As the directory is called (1.0.146): typed in another case it
+            # was kept so, and a rename of the directory left the realm behind.
+            directory = self.directory(directory)['name']
         if token_name == 'bare':
             # Names without their realm are one person's only within one
             # directory (1.0.101): novak@a in one and novak@b in another
@@ -6309,6 +6433,8 @@ class Storage(object):
             raise ValueError('the answer for everybody in the realm: %s' % e)
         ident = data.get('id')
         old = self.db.row('SELECT * FROM realms WHERE id = ?', (int(ident),)) if ident else None
+        if ident and not old:
+            raise ValueError('that realm was taken away meanwhile - open it again')
         for other in self.realms():
             if old and other['id'] == old['id']:
                 continue
@@ -6359,10 +6485,10 @@ class Storage(object):
             taken.append(other)
         row = {'name': name, 'suffix': suffix, 'directory': directory, 'lookup': lookup,
                'auth_mode': mode, 'group_list': json.dumps(groups),
-               'check_disabled': int(bool(int(data.get('check_disabled', 1)))),
-               'nested': int(bool(int(data.get('nested', 1)))),
+               'check_disabled': _yes(data, 'check_disabled', 1),
+               'nested': _yes(data, 'nested', 1),
                'reply': str(data.get('reply') or '').strip(),
-               'enabled': int(bool(int(data.get('enabled', 1)))),
+               'enabled': _yes(data, 'enabled', 1),
                'position': list_position(data.get('position')),
                'note': str(data.get('note') or '')[:400], 'token_name': token_name,
                'methods': ','.join(methods), 'aliases': ','.join(aliases)}
@@ -6382,8 +6508,30 @@ class Storage(object):
             self._realms = None
         return ident
 
-    def realm_drop(self, ident):
+    def clients_only_realm(self, name):
+        """The clients that take this realm and no other."""
+        out = []
+        for c in self.db.rows("SELECT id, name, realms FROM clients WHERE COALESCE(realms, '') <> ''"):
+            names = [x.strip().lower() for x in re.split(r'[,;\n]+', c['realms'] or '')
+                     if x.strip()]
+            if names and all(x == str(name).lower() for x in names):
+                out.append(c)
+        return out
+
+    def realm_drop(self, ident, force=False):
+        """A realm taken away. A client that took only this one would take every
+        realm once it was out of its list (1.0.146) - refused; `force` (a
+        configuration put back whole) switches such a client off instead."""
         one = self.db.row('SELECT name FROM realms WHERE id = ?', (int(ident),))
+        only = self.clients_only_realm(one['name']) if one else []
+        if only and not force:
+            raise ValueError('the client(s) %s take only this realm - without it they would '
+                             'take every realm; change them first' % ', '.join(
+                                 c['name'] for c in only))
+        for c in only:
+            self.db.update('clients', c['id'], {'enabled': 0})
+            log('the client %s took only the realm %s, which was taken away: switched off'
+                % (c['name'], one['name']), 'warn')
         self.db.run('DELETE FROM realms WHERE id = ?', (int(ident),))
         self._realms = None
         if one:
@@ -6432,7 +6580,7 @@ class Storage(object):
         pem = str(pem or '').strip()
         row = self.db.row('SELECT ca FROM directories WHERE id = ?', (int(ident),))
         have = split_certificates((row or {}).get('ca') or '')
-        if mode in ('add', 'set') and pem:
+        if mode == 'add' or (mode == 'set' and pem):
             new = split_certificates(pem)
             if not new or not all(describe_certificate(b) for b in new):
                 raise ValueError('that is not a certificate this can read: a PEM certificate '
@@ -6449,8 +6597,10 @@ class Storage(object):
             if len(keep) == len(have):
                 raise ValueError('that certificate is not among the ones kept')
             have = keep
-        else:
+        elif mode in ('set', 'clear'):
             have = []
+        else:
+            raise ValueError('add, set, drop or clear?')
         pem = '\n'.join(have)
         with self.lock:
             self.db.run('UPDATE directories SET ca = ? WHERE id = ?', (pem, int(ident)))
@@ -6492,17 +6642,19 @@ class Storage(object):
         ident = data.get('id')
         old = self.db.row('SELECT * FROM directories WHERE id = ?',
                           (int(ident),)) if ident else None
+        if ident and not old:
+            raise ValueError('that directory was taken away meanwhile - open it again')
         clash = self.db.row('SELECT id FROM directories WHERE LOWER(name) = ?', (name.lower(),))
         if clash and (not old or clash['id'] != old['id']):
             raise ValueError('there is a directory called %s already' % name)
         row = {'name': name, 'hosts': ', '.join(clean), 'port': port, 'tls': tls,
-               'verify': int(bool(int(data.get('verify', 1)))), 'base': base,
-               'weak': int(bool(int(data.get('weak') or 0))),
+               'verify': _yes(data, 'verify', 1), 'base': base,
+               'weak': _yes(data, 'weak', 0),
                'bind_dn': str(data.get('bind_dn') or '').strip(),
                'user_attr': str(data.get('user_attr') or 'sAMAccountName').strip(),
-               'nested': int(bool(int(data.get('nested', 1)))),
+               'nested': _yes(data, 'nested', 1),
                'timeout_s': max(2, min(60, int(data.get('timeout_s') or 10))),
-               'enabled': int(bool(int(data.get('enabled', 1)))),
+               'enabled': _yes(data, 'enabled', 1),
                'note': str(data.get('note') or '')[:400]}
         if 'ca' in data:
             row['ca'] = ca
@@ -6512,9 +6664,15 @@ class Storage(object):
         with self.lock:
             if old:
                 if old['name'] != name:
-                    self.db.run('UPDATE realms SET directory = ? WHERE directory = ?',
-                                (name, old['name']))
+                    self.db.run('UPDATE realms SET directory = ? WHERE LOWER(directory) = ?',
+                                (name, old['name'].lower()))
                     self._realms = None
+                    # The one administrators sign in against too (1.0.146):
+                    # left on the old name, every directory administrator was
+                    # signed out and could not sign in again.
+                    if str(CONFIG.get('admin_directory') or '').lower() == old['name'].lower():
+                        self.save_setting('admin_directory', name, by)
+                        CONFIG['admin_directory'] = name
                 self.db.update('directories', old['id'], row)
                 ident = old['id']
             else:
@@ -6531,6 +6689,9 @@ class Storage(object):
             if used:
                 raise ValueError('the realm(s) %s look people up in it; change them first'
                                  % ', '.join(used))
+            if str(CONFIG.get('admin_directory') or '').lower() == one['name'].lower():
+                raise ValueError('administrators sign in against it (Settings → Accounts); '
+                                 'choose another directory for them first')
         self.db.run('DELETE FROM directories WHERE id = ?', (int(ident),))
         self._dirs = None
 
@@ -7352,30 +7513,16 @@ SCRATCH_GUARD_S = 86400
 
 
 def scratch_guard_times(store, name):
-    try:
-        got = [float(x) for x in json.loads(store.get_meta('scratchguard:' + norm_name(name))
-                                            or '[]')]
-    except (ValueError, TypeError):
-        got = []
-    return [x for x in got if time.time() - x < SCRATCH_GUARD_S]
+    # Every node's row (1.0.146), see node_key.
+    return [x for x in node_key_times(store, 'scratchguard', name)
+            if time.time() - x < SCRATCH_GUARD_S]
 
 
 def scratch_guard_note(store, name):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
-    k = 'scratchguard:' + norm_name(name)
-    for _round in range(8):
-        raw = store.get_meta(k)
-        times = scratch_guard_times(store, name)[-(SCRATCH_GUARD_MOST * 2):] + [time.time()]
-        new = json.dumps(times)
-        if raw is None:
-            try:
-                store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, new))
-                break
-            except Exception:                           # noqa: BLE001
-                continue
-        if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
-            break
+    node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_MOST * 2)
+    times = scratch_guard_times(store, name)
     if len(times) == SCRATCH_GUARD_MOST:
         store.add_event('tokens', 'the recovery codes of %s are not taken for a day: %d '
                         'requests in a day had a wrong password or a wrong recovery code - '
@@ -7879,7 +8026,10 @@ class Tokens(object):
             except (ValueError, TypeError):
                 fails = []
             fails = [x for x in fails if t - x < span] + [t]
-            sets, args = 'fail_times = ?', [json.dumps(fails[-50:])]
+            # As many as the pause counts (1.0.139): rate_limit_tries goes to
+            # 100, and with more than 50 the pause never came.
+            keep = max(50, int(CONFIG.get('rate_limit_tries') or 0))
+            sets, args = 'fail_times = ?', [json.dumps(fails[-keep:])]
             if mins:
                 sets += ', locked_until = ?'
                 args.append(t + 60 * mins)
@@ -8577,7 +8727,13 @@ def phone_checked(dest):
         pre = str(CONFIG.get('sms_prefix') or '').strip()
         if not pre:
             raise ValueError('write the number with its country code: +420 603 123 456')
-        raw = pre + raw.lstrip('0')
+        digits = raw.lstrip('0')
+        # 420603123456 written without its + (1.0.146): not +420420603123456.
+        if pre.lstrip('+') and digits.startswith(pre.lstrip('+')) and \
+                len(digits) - len(pre.lstrip('+')) >= 8:
+            raw = '+' + digits
+        else:
+            raw = pre + digits
     if not re.match(r'^\+[1-9][0-9]{7,14}\Z', raw):
         raise ValueError('that is not a phone number - write it as +420 603 123 456')
     return raw
@@ -8644,32 +8800,86 @@ def realm_methods(realm):
 
 
 # ---- how many were sent ------------------------------------------------------------
-def code_send_allowed(store, name):
-    """Whether one more code may be sent to `name` now; counted in the
-    database so both nodes count together. Written only over what was read
-    (1.0.94): requests at once each read "four sent" and all sent one."""
-    k = 'codesent:' + norm_name(name)
+# Rows counted for a person by every node (1.0.146): each node writes a key of
+# its own - 'codesent:NAME@@NODE' - and reads them all. One key for both made
+# by both at once (its first INSERT on each node) came over to the other as a
+# second row with the same key, and replication stopped for good.
+NODE_KEY_SEP = '@@'
+
+
+def node_key(prefix, name):
+    return '%s:%s%s%s' % (prefix, norm_name(name), NODE_KEY_SEP, node_name())
+
+
+def node_key_rows(store, prefix, name):
+    """Every node's row for `name` (and one written before 1.0.146)."""
+    n = norm_name(name)
+    return store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
+                         ('%s:%s' % (prefix, n),
+                          '%s:%s%s%%' % (prefix, n.replace('!', '!!').replace('%', '!%')
+                                         .replace('_', '!_'), NODE_KEY_SEP)))
+
+
+def node_key_name(prefix, k):
+    """The name a key is counted for, its node taken off."""
+    return str(k)[len(prefix) + 1:].split(NODE_KEY_SEP, 1)[0]
+
+
+def node_key_times(store, prefix, name):
+    """The times in every node's row for `name`."""
+    out = []
+    for r in node_key_rows(store, prefix, name):
+        try:
+            out += [float(x) for x in json.loads(r['v'] or '[]')]
+        except (ValueError, TypeError):
+            continue
+    return sorted(out)
+
+
+def node_key_add(store, prefix, name, keep, most=None):
+    """`time.time()` added to this node's own row for `name`, written only over
+    what was read; the times older than `keep` seconds dropped. True once
+    written."""
+    k = node_key(prefix, name)
     for _ in range(8):
         t = time.time()
-        span = 60 * int(CONFIG.get('code_send_window_min') or 15)
         raw = store.get_meta(k)
         try:
             times = [float(x) for x in json.loads(raw or '[]')]
         except (ValueError, TypeError):
             times = []
-        times = [x for x in times if t - x < span]
-        if len(times) >= int(CONFIG.get('code_send_max') or 5):
-            return False
-        new = json.dumps(times + [t])
+        times = [x for x in times if t - x < keep] + [t]
+        if most:
+            times = times[-most:]
+        new = json.dumps(times)
         if raw is None:
             try:
                 store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, new))
                 return True
             except Exception:                           # noqa: BLE001
-                continue                # written by another meanwhile: read again
+                continue
         if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
             return True
     return False
+
+
+def node_key_drop(store, prefix, name):
+    n = 0
+    for r in node_key_rows(store, prefix, name):
+        n += store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],)) or 0
+    return n
+
+
+def code_send_allowed(store, name):
+    """Whether one more code may be sent to `name` now; counted in the
+    database so both nodes count together - each in a row of its own
+    (1.0.146), written only over what was read (1.0.94)."""
+    span = 60 * int(CONFIG.get('code_send_window_min') or 15)
+    t = time.time()
+    times = [x for x in node_key_times(store, 'codesent', name) if t - x < span]
+    if len(times) >= int(CONFIG.get('code_send_max') or 5):
+        return False
+    return node_key_add(store, 'codesent', name, span)
 
 
 def code_send_wait_min(store, name):
@@ -8678,8 +8888,7 @@ def code_send_wait_min(store, name):
     span = 60 * int(CONFIG.get('code_send_window_min') or 15)
     limit = int(CONFIG.get('code_send_max') or 5)
     try:
-        times = sorted(float(x) for x in json.loads(store.get_meta('codesent:' + norm_name(name))
-                                                    or '[]'))
+        times = node_key_times(store, 'codesent', name)
     except (ValueError, TypeError):
         times = []
     t = time.time()
@@ -8742,7 +8951,7 @@ def sms_ca_set(store, pem, mode='add', fingerprint=''):
     and taken out by itself, as the mail server's."""
     pem = str(pem or '').strip()
     have = split_certificates(sms_ca_pem(store))
-    if mode == 'add' and pem:
+    if mode == 'add':
         new = split_certificates(pem)
         if not new or not all(describe_certificate(b) for b in new):
             raise ValueError('that is not a certificate this can read: a PEM certificate '
@@ -8756,8 +8965,10 @@ def sms_ca_set(store, pem, mode='add', fingerprint=''):
         if len(keep) == len(have):
             raise ValueError('that certificate is not among the ones kept')
         have = keep
-    else:
+    elif mode == 'clear':
         have = []
+    else:
+        raise ValueError('add, drop or clear?')
     store.set_meta(SMS_CA_META, '\n'.join(have))
     return describe_certificates('\n'.join(have))
 
@@ -8865,9 +9076,18 @@ class _TelAnswer(object):
         return False
 
 
+_TEL_TEXT = threading.local()     # the text being sent, kept out of the debug log
+
+
 def _tel_hidden(words):
     """A request or an answer as the debug log may hold it: no password,
-    no token (1.0.113)."""
+    no token (1.0.113), and not the text with its live code (1.0.146)."""
+    text = getattr(_TEL_TEXT, 'v', '') or ''
+    if text:
+        for form in {text, urllib.parse.quote(text, safe=''), urllib.parse.quote_plus(text),
+                     json.dumps(text)[1:-1], json.dumps(text, ensure_ascii=False)[1:-1]}:
+            if form:
+                words = words.replace(form, '<the text, %d characters>' % len(text))
     words = re.sub(r'(?i)("(?:password|token)"\s*:\s*")[^"]*', r'\1***', words)
     words = re.sub(r'(?i)((?:password|token)=)[^&\s]*', r'\1***', words)
     return re.sub(r'(?i)(Bearer )\S+', r'\1***', words)
@@ -9049,6 +9269,7 @@ def tel_send(to, text):
                            CONFIG.get('sms_tel_host'), CONFIG.get('sms_tel_api') or 'rest',
                            time.time() - waited), 'debug')
         began = time.time()
+        _TEL_TEXT.v = text
         try:
             said = _tel_send(to, text)
             if loud:
@@ -9059,6 +9280,7 @@ def tel_send(to, text):
                 log('sms: FAILED after %.1f s - %s' % (time.time() - began, e), 'debug')
             raise
         finally:
+            _TEL_TEXT.v = ''
             TELTONIKA['last'] = time.time()
 
 
@@ -9579,6 +9801,13 @@ def chal_put(store, state, raw_was, data):
 def chal_take(store, state, raw_was):
     """Used up: of two nodes taking the same answer at once, only one wins."""
     return bool(store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (chal_key(state), raw_was)))
+
+
+def chal_drop(store, state):
+    """Done with, whatever it holds now: after a code taken once - the token's
+    step, a recovery code, once_take - another answer that only counted a try
+    meanwhile no longer refuses the right one (1.0.139)."""
+    store.db.run('DELETE FROM meta WHERE k = ?', (chal_key(state),))
 
 
 def chal_tidy(store):
@@ -10155,8 +10384,8 @@ class Authenticator(object):
             if re.fullmatch(r'[0-9]{4,10}', code, re.ASCII) and \
                     hmac.compare_digest(code_hash(name, code), str(chal.get('code') or '')):
                 ok, said = True, 'Code sent by %s accepted' % ('mail' if kind == 'mail' else 'SMS')
-                if chal_take(self.store, state, raw) and once_take(
-                        self.store, 'chal', name, hashlib.sha256(bytes(state)).hexdigest()):
+                if once_take(self.store, 'chal', name, hashlib.sha256(bytes(state)).hexdigest()):
+                    chal_drop(self.store, state)
                     self.tokens.used_sent(name, kind)
                     self.tokens._said(name, True, said, how, src, rid)
                 else:
@@ -10165,12 +10394,15 @@ class Authenticator(object):
                 # A recovery code - or a wrong code, counted as one from the
                 # phone is, towards the lockout.
                 ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
-                if ok and not chal_take(self.store, state, raw):
-                    ok, said = False, SAY_REUSED
+                if ok:
+                    chal_drop(self.store, state)
         else:
+            # The code is taken once by the token itself (its step, once_take):
+            # the question is done with, even if a second answer to it counted
+            # a try meanwhile - that refused the right code and used it up.
             ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
-            if ok and not chal_take(self.store, state, raw):
-                ok, said = False, SAY_REUSED
+            if ok:
+                chal_drop(self.store, state)
         d.otp = said
         d.step('the code for the token %s' % name, ok, said, t)
         if ok:
@@ -10659,8 +10891,28 @@ class RadiusServer(object):
         words = pkt.words()
         w = dict(words)
         state = pkt.get(24)
+        # Sign-in protection (1.0.137): a place blocked for guessing is
+        # refused at once - nothing of it checked, nothing counted against a
+        # token.
+        # Never in the way of an answer: whatever goes wrong in it, the
+        # request is decided as it would be without it.
         try:
-            if state is not None and bytes(state).startswith(CHAL_PREFIX):
+            src = guard_source(w) if guard_on() else ''
+            if src and guard_trusted(src):
+                src = ''
+            blocked = guard_blocked(self.d, src) if src else None
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('radius-guard', 'the sign-in protection: %s' % e, 'warn')
+            src, blocked = '', None
+        try:
+            if blocked:
+                d = Decision()
+                d.user = str(user or '')[:190]
+                d.step('sign-in protection', False, '%s is blocked for %s more: %s' % (
+                    src, guard_left(blocked[0]), blocked[1]))
+                d.refuse('Denied by the token server: too many wrong sign-ins from %s - '
+                         'blocked for a while' % src)
+            elif state is not None and bytes(state).startswith(CHAL_PREFIX):
                 # The code from the second window (1.0.76).
                 d = self.d.auth.answer(user, password, bytes(state), client.get('realm') or '',
                                        src=ip, rid=rid, chap=chap, client=client)
@@ -10684,6 +10936,11 @@ class RadiusServer(object):
             d.user = str(user or '')
             d.step('the decision', False, 'it could not be made: %s' % e)
             d.refuse('the token server could not decide: %s' % str(e)[:120])
+        if src and not blocked and guard_is_guess(d):
+            try:
+                guard_count(self.d, src, d.user or user)
+            except Exception as e:                      # noqa: BLE001
+                log_sparing('radius-guard', 'the sign-in protection: %s' % e, 'warn')
         pairs = []
         for name, value in d.reply:
             try:
@@ -10918,6 +11175,152 @@ class RadiusServer(object):
     def state(self):
         return {'listening': self.bound, 'trouble': self.trouble, 'counts': dict(self.counts),
                 'queued': self.jobs.qsize()}
+# ---- RADIUS: guessing from one place held back (1.0.137) -----------------------------
+# Every token counts its own wrong codes and locks itself (lockout_after), and
+# that is all there was: from one place - one address behind the VPN - a
+# guesser could try every user's code a few times a day, or lock every token
+# out on purpose. Switched on (radius_guard), the place each request comes
+# from is counted too: the Calling-Station-Id the VPN sends (the address the
+# person connects from; a MAC address on Wi-Fi). Too many refusals from one
+# place in the window - or too many different names refused from it - and the
+# place is blocked for a while: its requests are refused at once, nothing of
+# them checked, so they neither guess further nor count against anybody's
+# token. Counted in each node's memory, as the pages' sign-ins are, and shown
+# with them (Settings - Sign-in protection), each cleared by hand or all.
+GUARD_KIND = 'radius-src'
+# Refusals that are this server's trouble, not somebody's guess: never counted.
+GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not set up',
+                     'cannot be sent', 'does not decode', 'too many codes sent',
+                     'has no directory', 'nowhere to send', 'too many answers at once',
+                     'longer than a RADIUS packet', 'no realm takes', 'may not use the realm',
+                     'carries no', 'already been used', 'could not be asked')
+
+
+def guard_on():
+    return bool(CONFIG.get('radius_guard'))
+
+
+def guard_source(w):
+    """Where a request comes from, as the VPN says it: an address (IPv6 by its
+    /64 - one machine's to choose from), or what else it sends (a MAC)."""
+    raw = str((w or {}).get('Calling-Station-Id') or '').strip()
+    if not raw:
+        return ''
+    # An address with its port (1.0.139): 203.0.113.5:51234 or [2001:db8::5]:51234
+    # was a new place at every connection, and never blocked.
+    m = re.match(r'^\[([^\]]+)\](?::\d+)?\Z', raw) or \
+        re.match(r'^(\d{1,3}(?:\.\d{1,3}){3}):\d+\Z', raw)
+    if m:
+        raw = m.group(1)
+    try:
+        a = ipaddress.ip_address(raw.split('%')[0].strip('[]'))
+        if a.version == 6:
+            if a.ipv4_mapped:
+                return str(a.ipv4_mapped)
+            return str(ipaddress.ip_network('%s/64' % a, strict=False))
+        return str(a)
+    except ValueError:
+        return re.sub(r'[^0-9A-Za-z:._-]', '', raw).lower()[:64]
+
+
+def guard_trusted(src):
+    """A place never blocked: radius_guard_trusted (an office behind one
+    address, a monitor that signs in)."""
+    raw = str(CONFIG.get('radius_guard_trusted') or '')
+    if not raw.strip() or not src:
+        return False
+    try:
+        a = ipaddress.ip_network(src, strict=False)
+    except ValueError:
+        return src in [x.strip().lower() for x in re.split(r'[\s,;]+', raw) if x.strip()]
+    for x in re.split(r'[\s,;]+', raw):
+        if not x.strip():
+            continue
+        try:
+            net = ipaddress.ip_network(x.strip(), strict=False)
+        except ValueError:
+            continue
+        if net.version != a.version:
+            continue
+        if a.prefixlen >= net.prefixlen and a.subnet_of(net):
+            return True
+        # One IPv6 address (1.0.146): requests are told apart by their /64
+        # only, so the /64 it is in is the one trusted.
+        if a.version == 6 and a.prefixlen == 64 and net.overlaps(a):
+            return True
+    return False
+
+
+def guard_blocked(daemon, src):
+    """(until, why) while the place is blocked, else None."""
+    if not src:
+        return None
+    info = daemon.login_info.get((GUARD_KIND, src))
+    if not info:
+        return None
+    until = float(info.get('blocked_until') or 0)
+    if until > time.time():
+        return until, info.get('blocked_why') or 'too many wrong sign-ins'
+    return None
+
+
+def guard_is_guess(d):
+    if d.result != 'reject':
+        return False
+    reason = str(d.reason or '')
+    return not any(w in reason for w in GUARD_NOT_GUESSES)
+
+
+def guard_count(daemon, src, name):
+    """One refusal from `src` for `name`: counted; blocked at the limit."""
+    t = time.time()
+    tries = int(CONFIG.get('radius_guard_tries') or 20)
+    nlimit = int(CONFIG.get('radius_guard_names') or 0)
+    span = 60 * int(CONFIG.get('radius_guard_window_min') or 15)
+    block = 60 * int(CONFIG.get('radius_guard_block_min') or 30)
+    key = (GUARD_KIND, src)
+    name = str(name or '').strip().lower()[:120]
+    newly = None
+    with ApiHandler.THROTTLE_LOCK:
+        fails = [x for x in daemon.login_fails[key] if t - x < span] + [t]
+        # Kept to the limits set (1.0.139): tries up to 10000, names up to 1000.
+        daemon.login_fails[key] = fails[-max(1000, tries):]
+        info = daemon.login_info.setdefault(key, {'others': []})
+        names = {n: ts for n, ts in (info.get('names') or {}).items() if t - ts < span}
+        if name:
+            names[name] = t
+            cap = max(500, nlimit)
+            if len(names) > cap:
+                names = dict(sorted(names.items(), key=lambda kv: kv[1])[-cap:])
+            others = [x for x in info.get('others') or [] if x != name]
+            info['others'] = (others + [name])[-6:]
+        info.update(limit=tries, span=span, what='wrong sign-ins', at=t, names=names,
+                    names_limit=nlimit, guard=True)
+        if float(info.get('blocked_until') or 0) <= t:
+            why = None
+            if len(fails) >= tries:
+                why = '%d wrong sign-ins in %d min' % (len(fails), span // 60)
+            elif nlimit and len(names) >= nlimit:
+                why = '%d different names refused in %d min' % (len(names), span // 60)
+            if why:
+                info['blocked_until'] = t + block
+                info['blocked_why'] = why
+                info['blocked_at'] = t
+                newly = why
+    if newly:
+        try:
+            daemon.store.add_event('radius', '%s is blocked for %d min - %s; the names: %s'
+                                   % (src, block // 60, newly, ', '.join(
+                                       (daemon.login_info.get(key) or {}).get('others') or [])),
+                                   'warn')
+        except Exception:                               # noqa: BLE001
+            pass
+        LOCKOUTS_SENT['sig'] = None
+
+
+def guard_left(until):
+    left = max(0, int(until - time.time()))
+    return '%d min' % ((left + 59) // 60) if left >= 60 else '%d s' % left
 
 
 # ---------------------------------------------------------------------------
@@ -10957,10 +11360,26 @@ def parse_totp_file(text):
 TOKEN_WINDOW_MOST = 20     # the most the pages allow (1.0.101)
 
 
+TOKEN_NAME_RE = re.compile(r'^[^\s@,;=\x00-\x1f\x7f]+(@[A-Za-z0-9.-]+)?\Z')
+
+
+def token_name_problem(name):
+    """Why `name` is not a token's name, or '' - the rule of a new token's and a
+    rename's, for the imports too (1.0.146): a file '.totp' made a token with no
+    name, which no page could open or take away."""
+    if not name or len(name) > 180 or not TOKEN_NAME_RE.match(name):
+        return ('%r is not a name: a name, or a name@realm - no spaces, commas, semicolons '
+                'or =, 180 characters at most' % str(name)[:60])
+    return ''
+
+
 def import_totp(store, name, text, by='import', replace=False):
     """One person's token, from the old server's file. Returns what happened."""
     secret, opts, codes = parse_totp_file(text)
     name = norm_name(name)
+    bad = token_name_problem(name)
+    if bad:
+        return 'not taken: %s' % bad
     if store.token(name) and not replace:
         return 'kept (there is a token for %s already)' % name
     window = -1
@@ -10981,6 +11400,9 @@ def import_totp(store, name, text, by='import', replace=False):
         'activated': time.time(), 'failures': 0, 'fail_times': '[]', 'locked_until': None,
         'pending_secret': None, 'pending_scratch': None, 'pending_at': None, 'pending_by': None,
         'issuer': str(CONFIG.get('totp_issuer') or ''), 'label': name,
+        # An app's key now (1.0.146): put over a token whose codes came by
+        # mail or SMS, it stayed one - sending to the old address.
+        'kind': '', 'dest': '',
         'note': 'brought over from totpcgi' + ('' if 'TOTP_AUTH' in opts else
                                                ' (the file was not marked TOTP_AUTH)')})
     try:
@@ -11074,8 +11496,9 @@ def token_restore(store, t, by='restore', replace=False):
     if not isinstance(t, dict):
         raise ValueError('not a token')
     name = norm_name(t.get('name'))
-    if not name or len(name) > 190:
-        raise ValueError('no name')
+    bad = token_name_problem(name)
+    if bad:
+        raise ValueError(bad)
     kind = str(t.get('kind') or 'totp')
     if kind not in ('totp', 'mail', 'sms'):
         raise ValueError('a kind this version does not know: %s' % kind)
@@ -11134,6 +11557,34 @@ def token_restore(store, t, by='restore', replace=False):
         {'totp': 'the app', 'mail': 'codes by mail', 'sms': 'codes by SMS'}[kind], len(left))
 
 
+STALE_WORK = ('otp-rbackup-', 'otp-putback-', 'otp-download-', 'otp-dl-', 'otp-peek-',
+              'otp-fetch-')
+
+
+def stale_work_away(older=6 * 3600):
+    """What a backup, a download or a putting back left in the state folder
+    when the program stopped in the middle of it (1.0.146) - a copy of the
+    database, unlocked, for nobody. Hours old only: the command line may be
+    at one just now."""
+    try:
+        items = list(STATE_DIR.iterdir())
+    except OSError:
+        return
+    for p in items:
+        if not p.name.startswith(STALE_WORK):
+            continue
+        try:
+            if time.time() - p.lstat().st_mtime < older:
+                continue
+            if p.is_dir() and not p.is_symlink():
+                shutil.rmtree(str(p), ignore_errors=True)
+            else:
+                p.unlink()
+            log('left from before, taken away: %s' % p.name, 'info')
+        except OSError:
+            pass
+
+
 def _legacy_root(root):
     root = Path(root)
     for cand in (root, root / 'otp', root / 'otp' / 'otp'):
@@ -11142,15 +11593,73 @@ def _legacy_root(root):
     raise ValueError('%s holds no etc/raddb or etc/totpcgi' % root)
 
 
+def _conf_no_comments(text):
+    """FreeRADIUS text without its # comments - a # inside quotes kept (1.0.146):
+    secret = "has#hash" is a secret, not "has"."""
+    out, quote = [], ''
+    for line in str(text or '').splitlines():
+        keep, i = [], 0
+        while i < len(line):
+            ch = line[i]
+            if quote:
+                keep.append(ch)
+                if ch == '\\' and i + 1 < len(line):
+                    keep.append(line[i + 1])
+                    i += 1
+                elif ch == quote:
+                    quote = ''
+            elif ch in '"\'':
+                quote = ch
+                keep.append(ch)
+            elif ch == '#':
+                break
+            else:
+                keep.append(ch)
+            i += 1
+        quote = ''                      # a quote never runs over a line
+        out.append(''.join(keep))
+    return '\n'.join(out)
+
+
 def parse_clients_conf(text):
-    """FreeRADIUS clients.conf as [{name, address, secret, shortname}]."""
+    """FreeRADIUS clients.conf as [{name, address, secret, shortname}]. Only
+    what is set at the top of a client block counts: a block inside it
+    (limit { ... }) is passed over (1.0.146) - it used to end the client
+    there and leave its secret behind."""
     out = []
-    body = re.sub(r'#[^\n]*', '', str(text or ''))
-    for m in re.finditer(r'client\s+(\S+)\s*\{([^}]*)\}', body):
-        key, inside = m.group(1), m.group(2)
-        vals = dict((a.strip().lower(), b.strip().strip('"'))
-                    for a, b in re.findall(r'^\s*([A-Za-z_]+)\s*=\s*(.+?)\s*$', inside, re.M))
-        addr = vals.get('ipaddr') or vals.get('ipv4addr') or key
+    body = _conf_no_comments(text)
+    for m in re.finditer(r'(?m)^\s*client\s+(\S+)\s*\{', body):
+        key, depth, i, top = m.group(1), 1, m.end(), []
+        quote = ''
+        while i < len(body) and depth:
+            ch, was = body[i], depth
+            if quote:
+                if ch == '\\':
+                    if depth == 1:
+                        top.append(body[i:i + 2])
+                    i += 2
+                    continue
+                if ch == quote or ch == '\n':
+                    quote = ''
+            elif ch in '"\'':
+                quote = ch
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if not depth:
+                    break
+            if depth == 1 and was == 1:
+                top.append(ch)
+            i += 1
+        inside = ''.join(top)
+        vals = {}
+        for a, b in re.findall(r'^\s*([A-Za-z_0-9]+)\s*=\s*(.+?)\s*$', inside, re.M):
+            b = b.strip()
+            if len(b) >= 2 and b[0] == b[-1] and b[0] in '"\'':
+                b = b[1:-1].replace('\\' + b[0], b[0])
+            vals[a.strip().lower()] = b
+        addr = vals.get('ipaddr') or vals.get('ipv4addr') or vals.get('ipv6addr') or key
         out.append({'name': vals.get('shortname') or key, 'address': addr,
                     'secret': vals.get('secret', ''),
                     'require_ma': 1 if vals.get('require_message_authenticator') == 'yes'
@@ -11179,7 +11688,7 @@ def parse_handler_yaml(text):
     got = {'hosts': [], 'groups': []}
     in_list = None
     for raw in str(text or '').splitlines():
-        line = raw.split('#', 1)[0].rstrip() if not raw.strip().startswith("- '") else raw
+        line = _conf_no_comments(raw).rstrip()
         if not line.strip():
             continue
         m = re.match(r'^(\w+)\s*:\s*(.*)\Z', line.strip())
@@ -11325,10 +11834,16 @@ def import_legacy(store, root, by='import', replace=False, say=print):
                 say('client %s: %s is the address of the client %s here already, left out'
                     % (name, plain, same['name']))
                 continue
-            store.client_save({'id': old['id'] if old else None, 'name': name,
-                               'address': plain, 'secret': c['secret'], 'realm': realm,
-                               'require_ma': c['require_ma'], 'enabled': 1,
-                               'note': 'brought over from clients.conf'}, by)
+            try:
+                store.client_save({'id': old['id'] if old else None, 'name': name,
+                                   'address': plain, 'secret': c['secret'], 'realm': realm,
+                                   'require_ma': c['require_ma'], 'enabled': 1,
+                                   'note': 'brought over from clients.conf'}, by)
+            except ValueError as e:
+                # One client this cannot take (no secret, a name it refuses)
+                # leaves the others to come over (1.0.146).
+                say('client %s: left out - %s' % (name, e))
+                continue
             done['clients'] += 1
             say('client %s: %s%s' % (name, plain, (', names get @' + realm) if realm else ''))
     # ---- the settings ----------------------------------------------------------
@@ -11951,6 +12466,10 @@ class Daemon(object):
                 problems.append(ntp_problem())
         except Exception:                               # noqa: BLE001
             pass
+        try:
+            trials = trials_view(self.store)
+        except Exception:                               # noqa: BLE001
+            trials = []
         if not self.store.clients():
             problems.append('there is no RADIUS client yet: nobody can ask this server')
         if not self.store.realms():
@@ -11980,6 +12499,7 @@ class Daemon(object):
             'replication': self._repl_summary(),
             'db': self._db_summary(),
             'upgrade': self._upgrade_summary(),
+            'trials': trials,
         }
 
     def _repl_summary(self):
@@ -12032,6 +12552,11 @@ class Daemon(object):
     # ---- running -------------------------------------------------------------------
     def run(self):
         log('otp %s starting: the database is %s' % (__version__, self.store.db.where()))
+        try:
+            downgrade_floor_note(self.store)        # how far back it may go (1.0.143)
+        except Exception as e:                      # noqa: BLE001
+            log('the floor for going back could not be written: %s' % e, 'warn')
+        stale_work_away()
         if not sealing_key():
             # A database that already holds sealed secrets gets no new key in
             # place of a missing one (1.0.33): the secrets would stay lost, and
@@ -12162,6 +12687,11 @@ class Daemon(object):
                         log_sparing('hatls-tick', 'the link between the databases: %s' % e,
                                     'warn', every=600)
                     try:
+                        readdress_dropold_tick(self.store)  # a new address kept (1.0.137)
+                    except Exception as e:      # noqa: BLE001
+                        log_sparing('dropold-tick', 'the other node\'s old address: %s' % e,
+                                    'warn', every=600)
+                    try:
                         readdress_tick(self.store, self)    # told a new address (1.0.106)
                     except Exception as e:      # noqa: BLE001
                         log('a new address of the cluster: %s' % e, 'warn')
@@ -12170,9 +12700,19 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('online-tick', 'a new version: %s' % e, 'warn', every=3600)
                 try:
+                    fw_trial_tick(self.store)   # a firewall change not kept (1.0.137)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('fw-trial-tick', 'the firewall on trial: %s' % e, 'warn',
+                                every=600)
+                try:
                     ntp_tick(self)              # the time (1.0.120)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('ntp-tick', 'the time: %s' % e, 'warn', every=600)
+                try:
+                    console_login_tick(self)    # the console at login (1.0.141)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('console-tick', 'the console at login: %s' % e, 'warn',
+                                every=600)
                 try:
                     net_tick(self)              # the network, restart, power off (1.0.119)
                 except Exception as e:          # noqa: BLE001
@@ -13722,8 +14262,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     if kind == 'copy':
         load_tables(store.db, path)
     elif kind == 'sqlite':
-        tmp = Path(tempfile.mkstemp(prefix='otp-restore-', suffix='.json.gz',
-                                    dir=str(STATE_DIR))[1])
+        fd, tmp = tempfile.mkstemp(prefix='otp-restore-', suffix='.json.gz', dir=str(STATE_DIR))
+        os.close(fd)                    # not left open, one each time (1.0.139)
+        tmp = Path(tmp)
         try:
             _sqlite_to_copy(path, tmp)
             load_tables(store.db, tmp)
@@ -13740,7 +14281,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         cnf = _my_cnf(c)
         # The client is given the SQL itself: a gzip reader has no file
         # descriptor of its own to hand a program, so it is unpacked first.
-        raw = Path(tempfile.mkstemp(prefix='otp-sql-', dir=str(STATE_DIR))[1])
+        fd, raw = tempfile.mkstemp(prefix='otp-sql-', dir=str(STATE_DIR))
+        os.close(fd)
+        raw = Path(raw)
         try:
             with gzip.open(str(path), 'rb') as src, open(str(raw), 'wb') as dst:
                 shutil.copyfileobj(src, dst, 1 << 20)
@@ -13774,8 +14317,27 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     if re.match(r'^[0-9a-f]{64}\Z', key_hex):
         now = sealing_key()
         if not now or now.hex() != key_hex:
+            # The cluster's authority kept from before is sealed with the key
+            # going out (1.0.139): opened now, sealed again with the new one -
+            # it could not be opened after, and had to be made anew.
+            cas = None
+            for r in live_tls:
+                if r['k'] == 'hatls:ca':
+                    try:
+                        cas = (json.loads(r['v'] or 'null') or {}).get('cas')
+                        for ca in cas or []:
+                            ca['key'] = unseal_secret(ca.get('key'), bind='hatls:ca')
+                    except (ValueError, AttributeError, TypeError):
+                        cas = None
             write_replacing(sealing_key_path(), key_hex + '\n', 0o600)
             key_said = 'the key that opens the tokens came with it and is in use now'
+            if cas and all(ca.get('key') for ca in cas):
+                for ca in cas:
+                    ca['key'] = seal_secret(ca['key'], bind='hatls:ca')
+                try:
+                    store.set_meta('hatls:ca', json.dumps({'cas': cas}))
+                except Exception as e:                  # noqa: BLE001
+                    log('the authority of the cluster could not be sealed again: %s' % e, 'warn')
     else:
         # No key came with it (1.0.59): whether the tokens put back open with
         # the key in use is looked at, and said loudly when they do not.
@@ -14173,7 +14735,8 @@ def mail_ca_set(store, pem, mode='add', fingerprint=''):
     by itself - the same as a directory's."""
     pem = str(pem or '').strip()
     have = split_certificates(mail_ca_pem(store))
-    if mode == 'add' and pem:
+    if mode == 'add':
+        # Nothing sent is not "empty the list" (1.0.146): only 'clear' empties it.
         new = split_certificates(pem)
         if not new or not all(describe_certificate(b) for b in new):
             raise ValueError('that is not a certificate this can read: a PEM certificate '
@@ -14187,8 +14750,10 @@ def mail_ca_set(store, pem, mode='add', fingerprint=''):
         if len(keep) == len(have):
             raise ValueError('that certificate is not among the ones kept')
         have = keep
-    else:
+    elif mode == 'clear':
         have = []
+    else:
+        raise ValueError('add, drop or clear?')
     store.set_meta(MAIL_CA_META, '\n'.join(have))
     return describe_certificates('\n'.join(have))
 
@@ -16117,6 +16682,11 @@ def rb_checked(data, old=None):
             raise ValueError('the folder has no ; or " in it, and does not begin with -')
         if kind != 'smb' and re.search(r'(^|/)\.\.(/|$)', t['path']):
             raise ValueError('the folder has no .. in it')
+        if kind == 'scp' and re.search(r'[^A-Za-z0-9._/~+@%=,-]', t['path']):
+            # scp before OpenSSH 9 hands the far path to the shell there
+            # (1.0.139): $( ), `, |, & and spaces ran or broke.
+            raise ValueError('the folder (SCP) is letters, digits and . _ / ~ + @ % = , - '
+                             'only - use SFTP for any other')
     pw = data.get('password')
     if pw is None or is_masked(pw):
         t['password'] = old.get('password') or ''
@@ -16595,12 +17165,16 @@ class RbSsh(object):
         # A password (or the key's passphrase) through SSH_ASKPASS: never on
         # a command line, never in a file of the otp account's.
         self.env = dict(os.environ, DISPLAY=':0', SSH_ASKPASS_REQUIRE='force')
-        secret = rb_secret(t, 'password') or rb_secret(t, 'key_pass')
+        # Each prompt its own answer (1.0.139): with a password and a key that
+        # has a passphrase, the password went to the key, and the key failed.
+        pw = rb_secret(t, 'password') or rb_secret(t, 'key_pass')
+        kp = rb_secret(t, 'key_pass') or rb_secret(t, 'password')
         ask = os.path.join(self.d, 'ask')
         with open(ask, 'w') as f:
-            f.write('#!/bin/sh\nprintf "%s\\n" "$OTP_RB_SECRET"\n')
+            f.write('#!/bin/sh\ncase "$1" in\n  *assphrase*) printf "%s\\n" "$OTP_RB_KEYPASS";;\n'
+                    '  *) printf "%s\\n" "$OTP_RB_SECRET";;\nesac\n')
         os.chmod(ask, 0o700)
-        self.env.update(SSH_ASKPASS=ask, OTP_RB_SECRET=secret)
+        self.env.update(SSH_ASKPASS=ask, OTP_RB_SECRET=pw, OTP_RB_KEYPASS=kp)
         auths = ['publickey'] if key else []
         if rb_secret(t, 'password'):
             auths += ['password', 'keyboard-interactive']
@@ -16612,7 +17186,11 @@ class RbSsh(object):
             # sftp -b asks ssh for batch mode, which takes no password; the
             # first value given wins, and this comes first.
             self.opts += ['-o', 'BatchMode=no']
-        self.dest = '%s@%s' % (t.get('user') or 'root', t['host'])
+        host = str(t['host']).strip('[]')
+        self.dest = '%s@%s' % (t.get('user') or 'root', host)
+        # scp and sftp read user@host:path - an IPv6 address in brackets
+        # there (1.0.146), ssh takes it bare.
+        self.rdest = '%s@[%s]' % (t.get('user') or 'root', host) if ':' in host else self.dest
         self.dir = (t.get('path') or '').rstrip('/') or '.'
         # Signed in and the folder made, at once - the errors said here.
         if t['kind'] == 'sftp':
@@ -16652,7 +17230,7 @@ class RbSsh(object):
         with open(batch, 'w') as f:
             f.write('\n'.join(cmds) + '\n')
         return self._run(['sftp'] + self.opts + ['-P', str(int(self.t['port'])), '-b', batch,
-                                                 self.dest], 'sftp', timeout=timeout)
+                                                 self.rdest], 'sftp', timeout=timeout)
 
     def put(self, local, name):
         name = rb_safe_name(name)
@@ -16661,7 +17239,7 @@ class RbSsh(object):
                         '-rm "%s"' % name, 'rename ".%s.part" "%s"' % (name, name)])
         else:
             self._run(['scp'] + self.opts + ['-P', str(int(self.t['port'])), '-q', local,
-                                             '%s:%s/.%s.part' % (self.dest, self.dir, name)],
+                                             '%s:%s/.%s.part' % (self.rdest, self.dir, name)],
                       'scp')
             self._ssh('mv -f -- %s %s' % (shlex_quote('%s/.%s.part' % (self.dir, name)),
                                           shlex_quote('%s/%s' % (self.dir, name))))
@@ -16672,7 +17250,7 @@ class RbSsh(object):
             self._sftp(['cd "%s"' % self.dir, 'get "%s" "%s"' % (name, local)])
         else:
             self._run(['scp'] + self.opts + ['-P', str(int(self.t['port'])), '-q',
-                                             '%s:%s/%s' % (self.dest, self.dir, name), local],
+                                             '%s:%s/%s' % (self.rdest, self.dir, name), local],
                       'scp')
 
     def list(self):
@@ -16845,7 +17423,17 @@ def rb_try(t):
 
 # ---- the backup itself -----------------------------------------------------------------
 def rb_password():
-    return str(CONFIG.get('rbackup_password') or '')
+    # Sealed in config.json like the other passwords: until 1.0.139 the sealed
+    # text itself locked the backups - not the password typed, so a new
+    # machine could not open them.
+    pw = str(CONFIG.get('rbackup_password') or '')
+    return (unseal_secret(pw) or '') if pw else ''
+
+
+def rb_password_old():
+    """What locked the backups made here before 1.0.139: the sealed text."""
+    pw = str(CONFIG.get('rbackup_password') or '')
+    return pw if pw.startswith((SEALED, SEALED2)) else ''
 
 
 def rb_files_named():
@@ -17271,8 +17859,11 @@ def rb_tick(daemon):
     day = rb_due(store, getattr(daemon, '_rb_day', ''))
     if not day or RB_JOB['running']:
         return
+    # Marked done only once the database said whether it is this run's
+    # (1.0.146): the database away just then left the day without a backup.
+    claimed = claim_once(store, 'rbackup_day:' + node_name(), day)
     daemon._rb_day = day
-    if not claim_once(store, 'rbackup_day:' + node_name(), day):
+    if not claimed:
         return
     if not any(t.get('enabled') for t in rb_targets(store)):
         return
@@ -17290,14 +17881,26 @@ def rb_open(path, password, work):
         if not password:
             raise RbError('the backup is locked: its password is needed')
         src = os.path.join(work, 'b.tar.gz')
-        try:
-            _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
-                      'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
-                     env={'OTP_RB_PASS': password}, what='opening it')
-        except ValueError:
-            raise RbError('the password does not open it (or the file is damaged)')
+        tries = [password]
+        if password == rb_password() and rb_password_old():
+            tries.append(rb_password_old())             # made here before 1.0.139
+        for n, pw in enumerate(tries):
+            try:
+                _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
+                          'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
+                         env={'OTP_RB_PASS': pw}, what='opening it')
+                break
+            except ValueError:
+                if n == len(tries) - 1:
+                    raise RbError('the password does not open it (or the file is damaged)')
     elif not head.startswith(b'\x1f\x8b'):
         raise RbError('that is not a backup of otp (neither locked nor a .tar.gz)')
+    elif password:
+        # Backups are always locked: an unlocked one where a password is in
+        # play was put there by somebody else - its database, its accounts,
+        # its key (1.0.139).
+        raise RbError('the backup is not locked, and backups of otp always are - it was not '
+                      'made by otp; not put in')
     out = os.path.join(work, 'x')
     os.makedirs(out, mode=0o700)
     with tarfile.open(src, 'r:gz') as tf:
@@ -17650,6 +18253,29 @@ def claim_once(store, key, value):
                              (str(value), key, str(value))))
 
 
+def sub_connection_set(store, sub, conninfo):
+    """ALTER SUBSCRIPTION ... CONNECTION, its password kept out of PostgreSQL's
+    log (1.0.136) and the text as it is - a ? in a password was taken for a
+    parameter (1.0.139). Raises ValueError, the password scrubbed."""
+    for quiet in ("SET log_statement = 'none'", "SET log_min_error_statement = 'panic'"):
+        try:
+            store.db.run(quiet)
+        except Exception:                               # noqa: BLE001
+            pass
+    try:
+        store.db.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'"
+                            % (sub, conninfo.replace("'", "''"))))
+    except Exception as e:                              # noqa: BLE001
+        raise ValueError('the subscription %s could not be changed: %s'
+                         % (sub, scrub_secret(str(e).split('\n')[0][:300])))
+    finally:
+        for back in ('RESET log_statement', 'RESET log_min_error_statement'):
+            try:
+                store.db.run(back)
+            except Exception:                           # noqa: BLE001
+                pass
+
+
 # ---- a job's progress, where both nodes can read it ------------------------------
 def job_publish(job):
     store = HA_STORE.get('store')
@@ -17914,6 +18540,11 @@ def pg_open_to(peer, db_name, db_user):
     """PostgreSQL on this machine listening beyond localhost and letting the
     other node's address in for this one database and account. Returns what
     was done, in words."""
+    # Both go into pg_hba.conf as root: a name with a space or a new line
+    # in config.json wrote a line of its own there (1.0.139).
+    for what, v in (('db_name', db_name), ('db_user', db_user)):
+        if not DB_IDENT.fullmatch(str(v or '')):
+            raise ValueError('%s is letters, digits and _ only, starting with a letter' % what)
     done = []
     listen = pg_local_admin('SHOW listen_addresses')
     if listen not in ('*', '0.0.0.0') and '*' not in listen.split(','):
@@ -18876,11 +19507,18 @@ def upgrade_plan(store):
     return plan
 
 
-def upgrade_checks(store, meta):
-    """What must be so before an upgrade starts - (ok, [why not])."""
+def upgrade_checks(store, meta, pages=False):
+    """What must be so before an upgrade starts - (ok, [why not]). A package
+    to go back to (1.0.143) is looked at again as it was when it was taken."""
     why = []
     if not meta:
         return False, ['no package has been sent yet']
+    down = bool(meta.get('downgrade'))
+    if down:
+        why += downgrade_why_not(store, meta['version'])
+        if pages and not CONFIG.get('upgrade_downgrade'):
+            # Switched off since it was fetched (1.0.146): not started from the pages.
+            why.append('going back to an older version is switched off (Settings → Upgrades)')
     nodes = upgrade_nodes_now(store)
     for n in ha_nodes(store):
         if not n.get('alive'):
@@ -18889,7 +19527,7 @@ def upgrade_checks(store, meta):
     for n in nodes:
         have = str(n.get('version') or '')
         try:
-            if have and tuple(int(x) for x in have.split('.')) > \
+            if have and not down and tuple(int(x) for x in have.split('.')) > \
                     tuple(int(x) for x in meta['version'].split('.')):
                 why.append('%s runs %s, newer than %s' % (n['name'], have, meta['version']))
         except ValueError:
@@ -18905,9 +19543,9 @@ def upgrade_checks(store, meta):
     return not why, why
 
 
-def upgrade_start(store, by):
+def upgrade_start(store, by, pages=False):
     meta = _meta_json(store, 'upgrade:pkg')
-    ok, why = upgrade_checks(store, meta)
+    ok, why = upgrade_checks(store, meta, pages)
     if not ok:
         raise ValueError('; '.join(why))
     names = [n['name'] for n in upgrade_nodes_now(store)]
@@ -18925,10 +19563,11 @@ def upgrade_start(store, by):
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)',
                          (k, json.dumps({'state': 'none'})))
     plan = {'id': ident, 'version': meta['version'], 'sha': meta['sha'], 'order': order,
-            'by': by, 'at': time.time(), 'from': me}
+            'by': by, 'at': time.time(), 'from': me, 'downgrade': bool(meta.get('downgrade'))}
     store.set_meta('upgrade:plan', json.dumps(plan))
-    store.add_event('starting and stopping', '%s started the upgrade to %s: %s, one at a '
-                    'time' % (by, meta['version'], ', '.join(order)), 'warn', who=by)
+    store.add_event('starting and stopping', '%s started %s %s: %s, one at a time' % (
+        by, 'going back to' if plan['downgrade'] else 'the upgrade to', meta['version'],
+        ', '.join(order)), 'warn', who=by)
     return upgrade_plan(store)
 
 
@@ -19058,7 +19697,8 @@ def upgrade_tick(daemon):
                                  'was started with')
             path = upgrade_package_file(store, meta)
             req = {'id': plan['id'], 'file': path.name, 'sha': plan['sha'],
-                   'version': plan['version'], 'by': plan.get('by'), 'at': now}
+                   'version': plan['version'], 'by': plan.get('by'), 'at': now,
+                   'downgrade': bool(plan.get('downgrade'))}
             tmp = UPGRADE_DIR / 'request.part'
             try:
                 tmp.unlink()
@@ -19242,7 +19882,8 @@ def ha_refresh_tables(store):
 # Settings → Upgrades → upgrade_url is asked once a day (upgrade_check) and when
 # Look now is pressed, for otp-X.Y.Z.tar.gz: a GitHub folder through GitHub's
 # API, any other page by the links in it, or one package's own address. The
-# newest one newer than what runs here is offered; one click fetches it, and it
+# newest one newer than what runs here is offered (any newer one there can be
+# chosen instead, 1.0.142); one click fetches it, and it
 # goes the road of a package sent by hand - its signature checked, kept in the
 # database for every node, and the upgrade begun. Nothing is put in by itself.
 ONLINE_PKG_RE = re.compile(r'(?:^|/)(otp-(\d+)\.(\d+)\.(\d+)\.tar\.gz)(?:\?|#|$)')
@@ -19269,6 +19910,16 @@ def _online_get(url, limit=4 * 1024 * 1024, accept='*/*', timeout=30):
 
 def _online_ver(m):
     return tuple(int(x) for x in m.group(2, 3, 4))
+
+
+# Where the releases were before 1.0.138: a value saved as it was the default
+# then is taken as the new place.
+ONLINE_URL_OLD = 'https://github.com/falco81/Utils/tree/main/otp'
+
+
+def online_url():
+    url = str(CONFIG.get('upgrade_url') or '').strip()
+    return DEFAULTS['upgrade_url'] if url.rstrip('/') == ONLINE_URL_OLD else url
 
 
 def online_list(url):
@@ -19356,7 +20007,7 @@ def _ver_tuple(v):
 
 def online_look(store, by=''):
     """Asks the address now; what it found goes into meta 'upgrade:online'."""
-    url = str(CONFIG.get('upgrade_url') or '').strip()
+    url = online_url()
     row = {'at': time.time(), 'url': url, 'by': by, 'node': node_name(), 'here': __version__}
     try:
         got = online_list(url)
@@ -19377,7 +20028,7 @@ def online_look(store, by=''):
 
 def online_tick(daemon):
     """Once a day, from whichever node it falls to first."""
-    if not CONFIG.get('upgrade_check') or not str(CONFIG.get('upgrade_url') or '').strip():
+    if not CONFIG.get('upgrade_check') or not online_url():
         return
     if time.time() - float(ONLINE_WORK['at'] or 0) < 300:
         return
@@ -19385,7 +20036,7 @@ def online_tick(daemon):
     store = daemon.store
     last = _meta_json(store, 'upgrade:online') or {}
     # Asked again once the address changed, or a day after the last look.
-    if last.get('url') == str(CONFIG.get('upgrade_url') or '').strip() and \
+    if last.get('url') == online_url() and \
             time.time() - float(last.get('at') or 0) < ONLINE_EVERY_S:
         return
     with ONLINE_LOCK:
@@ -19409,19 +20060,29 @@ def online_view(store):
         n = row.get('newest') or {}
         row['newer'] = bool(n and _ver_tuple(n.get('version')) > _ver_tuple(__version__))
         row['here'] = __version__
-    return {'online': row, 'url': str(CONFIG.get('upgrade_url') or ''),
+        # Every version there newer than this one, newest first (1.0.142): with
+        # more than one the page lets you choose which to go to.
+        row['newer_list'] = sorted(
+            (p for p in row.get('packages') or []
+             if _ver_tuple(p.get('version')) > _ver_tuple(__version__)),
+            key=lambda p: _ver_tuple(p.get('version')), reverse=True)
+    return {'online': row, 'url': online_url(),
             'check': bool(CONFIG.get('upgrade_check'))}
 
 
-def online_fetch(store, version, by):
+def online_fetch(store, version, by, older=False):
     """The package of `version` fetched from where it was found, checked and
-    kept as one sent by hand would be: its meta."""
-    pk = [p for p in online_list(str(CONFIG.get('upgrade_url') or '').strip())
+    kept as one sent by hand would be: its meta. `older`: one to go back to
+    (1.0.143), kept only if downgrade_take finds nothing in its way."""
+    pk = [p for p in online_list(online_url())
           if p['version'] == str(version)]
     if not pk:
-        raise ValueError('otp %s is not at %s any more' % (version, CONFIG.get('upgrade_url')))
+        raise ValueError('otp %s is not at %s any more' % (version, online_url()))
     pk = pk[0]
-    if _ver_tuple(pk['version']) <= _ver_tuple(__version__):
+    if older and _ver_tuple(pk['version']) >= _ver_tuple(__version__):
+        raise ValueError('otp %s is not older than %s, which runs here' % (pk['version'],
+                                                                           __version__))
+    if not older and _ver_tuple(pk['version']) <= _ver_tuple(__version__):
         raise ValueError('otp %s is not newer than %s, which runs here' % (pk['version'], __version__))
     UPGRADE_DIR.mkdir(mode=0o750, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='online-', suffix='.tar.gz', dir=str(UPGRADE_DIR))
@@ -19436,6 +20097,10 @@ def online_fetch(store, version, by):
             store.add_event('starting and stopping', 'otp %s from %s was refused: %s'
                             % (version, final, e), 'warn', who=by)
             raise ValueError('the package from %s was refused: %s' % (final, e))
+        if older:
+            if not info.get('older') and _ver_tuple(info['version']) >= _ver_tuple(__version__):
+                raise ValueError('%s is not older than %s' % (info['version'], __version__))
+            return downgrade_take(store, tmp, info, by)
         if info.get('older'):
             raise ValueError('%s is older than %s, which runs here' % (info['version'],
                                                                          info.get('installed')))
@@ -19449,6 +20114,273 @@ def online_fetch(store, version, by):
             tmp.unlink()
         except OSError:
             pass
+
+# ---- going back to an older version (1.0.143) ---------------------------------------
+# Never by putting a database back: the tables stay as they are - every column
+# a newer version added is one an older one leaves alone (they are all added
+# NULL) - and the older program runs on them. That is safe only for a version
+# that reads what the newer ones wrote, so each version says how far back it
+# may go (DOWNGRADE_FLOOR), and going back is refused below the highest floor
+#   * of any version that ran on this database (each node keeps its own in
+#     'downgrade:floor:NODE' - one writer a row, as replication wants), and
+#   * of any version installed on this machine (install.sh keeps it in
+#     /usr/local/lib/otp/downgrade-floor, root's alone: the otp account cannot
+#     lower it, so it cannot take the server back to a version with a hole);
+# and the package itself is looked at before anything is put in: a column the
+# database has as NOT NULL with no default that the older version does not
+# know would make every row it writes there fail. Then it goes the road of an
+# upgrade - one node at a time, each in maintenance while it is done.
+DOWNGRADE_FLOOR_FILE = UPGRADE_HELPER.parent / 'downgrade-floor'
+
+
+def downgrade_floor_note(store):
+    """This node's floor in the database: the highest of what it had and what
+    this version says."""
+    k = 'downgrade:floor:' + node_name()
+    had = _meta_json(store, k) or {}
+    if had and _ver_tuple(had.get('floor')) >= _ver_tuple(DOWNGRADE_FLOOR):
+        return
+    store.set_meta(k, json.dumps({'floor': DOWNGRADE_FLOOR, 'version': __version__,
+                                  'at': time.time()}))
+
+
+def downgrade_db_floor(store):
+    """(floor, set by): the highest floor of any version that ran on this
+    database, on any node."""
+    best, by = DOWNGRADE_FLOOR, '%s (%s)' % (__version__, node_name())
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'downgrade:floor:%'"):
+        try:
+            got = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if isinstance(got, dict) and _ver_tuple(got.get('floor')) > _ver_tuple(best):
+            best, by = str(got['floor']), '%s (%s)' % (got.get('version'),
+                                                      r['k'][len('downgrade:floor:'):])
+    return best, by
+
+
+def downgrade_root_floor():
+    """The floor root keeps, or None where no version that knows it was ever
+    installed here."""
+    try:
+        text = DOWNGRADE_FLOOR_FILE.read_text().strip()
+    except OSError:
+        return None
+    return text if re.match(r'^\d+\.\d+\.\d+\Z', text) else None
+
+
+def downgrade_why_not(store, version):
+    """What stands in the way of going back to `version` - before the package
+    is fetched: [] when nothing does."""
+    why = []
+    v = _ver_tuple(version)
+    if v >= _ver_tuple(__version__):
+        why.append('%s is not older than %s, which runs here - that is an upgrade'
+                   % (version, __version__))
+        return why
+    floor, by = downgrade_db_floor(store)
+    if v < _ver_tuple(floor):
+        why.append('older than %s: otp %s, which ran on this database, wrote what older '
+                   'versions do not read the same (or have holes it fixed)' % (floor, by))
+    root = downgrade_root_floor()
+    if root is None:
+        why.append('this machine was never upgraded on the command line to a version that '
+                   'can go back (install.sh --upgrade once)')
+    elif v < _ver_tuple(root):
+        why.append('older than %s, the oldest the versions installed on this machine allow'
+                   % root)
+    return why
+
+
+def downgrade_live_strict(db):
+    """{table: [column]} - the columns of this database that are NOT NULL and
+    have no default: a row written without one of them fails."""
+    out = {}
+    if db.engine == 'sqlite':
+        for t in TABLES:
+            for r in db.rows('PRAGMA table_info(%s)' % t):
+                if r['notnull'] and r['dflt_value'] is None and not r['pk']:
+                    out.setdefault(t, []).append(str(r['name']).lower())
+        return out
+    if db.engine == 'postgres':
+        rows = db.rows("SELECT table_name AS t, column_name AS c FROM information_schema.columns "
+                       "WHERE table_schema = current_schema() AND is_nullable = 'NO' "
+                       "AND column_default IS NULL")
+    else:
+        rows = db.rows("SELECT table_name AS t, column_name AS c FROM information_schema.columns "
+                       "WHERE table_schema = DATABASE() AND is_nullable = 'NO' "
+                       "AND column_default IS NULL AND extra NOT LIKE '%auto_increment%'")
+    for r in rows:
+        t, c = str(r['t']).lower(), str(r['c']).lower()
+        if t in TABLES and c != 'id':
+            out.setdefault(t, []).append(c)
+    return out
+
+
+# Run in a process of its own, on the package's own otp.py: its tables as it
+# makes them, made in a database in memory and read back.
+_DOWNGRADE_SCHEMA_PY = r'''
+import json, sqlite3, sys
+sys.path.insert(0, sys.argv[1])
+sys.argv = ['otp']
+import otp
+c = sqlite3.connect(':memory:')
+out = {}
+for name, ddl in otp.SCHEMA:
+    c.execute(ddl.format(**otp.TYPES['sqlite']))
+    out[name] = [str(r[1]).lower() for r in c.execute('PRAGMA table_info(%s)' % name)]
+print(json.dumps({'version': otp.__version__, 'tables': out}))
+'''
+
+
+def downgrade_package_schema(path):
+    """The tables and columns the package's version knows, read off its own
+    otp.py (the package checked and signed first)."""
+    work = Path(tempfile.mkdtemp(prefix='otp-down-', dir=str(UPGRADE_DIR)))
+    try:
+        with tarfile.open(str(path), 'r:gz') as tf:
+            member = next((m for m in tf.getmembers()
+                           if re.match(r'^otp-[0-9.]+/otp\.py\Z', m.name) and m.isfile()), None)
+            if member is None:
+                raise ValueError('the package has no otp.py')
+            with tf.extractfile(member) as src, open(str(work / 'otp.py'), 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8',
+               'OTP_STATE': str(work), 'OTP_CONFIG': str(work / 'none.json'),
+               'OTP_LOGDIR': str(work), 'OTP_RUN': str(work)}
+        try:
+            r = subprocess.run([sys.executable, '-I', '-c', _DOWNGRADE_SCHEMA_PY, str(work)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+                               env=env, cwd=str(work))
+        except subprocess.TimeoutExpired:
+            raise ValueError('the tables of the package could not be read in 2 minutes')
+        try:
+            return json.loads(r.stdout.decode('utf-8', 'replace').strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            raise ValueError('the tables of the package could not be read: %s'
+                             % r.stderr.decode('utf-8', 'replace').strip()[-300:])
+    finally:
+        shutil.rmtree(str(work), ignore_errors=True)
+
+
+def downgrade_schema_why(store, path):
+    """What in this database the package's version could not live with: []
+    when nothing."""
+    got = downgrade_package_schema(path)
+    knows = got.get('tables') or {}
+    why = []
+    for t, cols in sorted(downgrade_live_strict(store.db).items()):
+        if t not in knows:
+            continue                    # a table it never writes
+        lack = [c for c in cols if c not in knows[t]]
+        if lack:
+            why.append('the table %s has %s, which otp %s does not know and every row needs'
+                       % (t, ', '.join(lack), got.get('version')))
+    return why
+
+
+def downgrade_list(store):
+    """The older versions at upgrade_url, each with what stands in its way."""
+    url = online_url()
+    if not url:
+        raise ValueError('no upgrade_url is set (Settings → Upgrades)')
+    out = []
+    for p in online_list(url):
+        if _ver_tuple(p['version']) >= _ver_tuple(__version__):
+            continue
+        out.append(dict(p, why=downgrade_why_not(store, p['version'])))
+    out.sort(key=lambda p: _ver_tuple(p['version']), reverse=True)
+    floor, by = downgrade_db_floor(store)
+    root = downgrade_root_floor()
+    # A few words a version for the list (1.0.145) - the reasons in full once.
+    lowest = max([floor] + ([root] if root else []), key=_ver_tuple)
+    for p in out:
+        if not p['why']:
+            p['short'] = ''
+        elif _ver_tuple(p['version']) < _ver_tuple(lowest):
+            p['short'] = 'below %s' % lowest
+        elif root is None:
+            p['short'] = 'this machine cannot go back yet'
+        else:
+            p['short'] = p['why'][0][:80]
+    return {'url': url, 'here': __version__, 'versions': out, 'floor': floor,
+            'floor_by': by, 'root_floor': root, 'lowest': lowest}
+
+
+def downgrade_take(store, path, info, by):
+    """A checked package of an older version kept for going back: refused
+    when anything stands in its way. Its meta."""
+    why = downgrade_why_not(store, info['version'])
+    if not why:
+        why = downgrade_schema_why(store, path)
+    if why:
+        store.add_event('starting and stopping', 'going back to otp %s was refused: %s'
+                        % (info['version'], '; '.join(why)), 'warn', who=by)
+        raise ValueError('otp %s cannot be gone back to: %s' % (info['version'], '; '.join(why)))
+    meta = upgrade_store_package(store, path, info, by)
+    meta['downgrade'] = True
+    store.set_meta('upgrade:pkg', json.dumps(meta))
+    store.add_event('starting and stopping', '%s made otp %s ready to go back to (signed by %s; '
+                    'the database checked for it)' % (by, meta['version'], meta.get('signed_by')),
+                    'warn', who=by)
+    return meta
+
+
+def downgrade_fetch(store, version, by):
+    """The older package from upgrade_url, checked, and kept for going back."""
+    why = downgrade_why_not(store, version)
+    if why:
+        raise ValueError('otp %s cannot be gone back to: %s' % (version, '; '.join(why)))
+    return online_fetch(store, version, by, older=True)
+
+
+def downgrade_file(store, path, by):
+    """An older package from a file (the command line), checked and kept."""
+    info = upgrade_inspect(path)
+    if not info.get('older'):
+        raise ValueError('otp %s is not older than %s, which runs here - that is an upgrade'
+                         % (info['version'], info.get('installed') or __version__))
+    return downgrade_take(store, path, info, by)
+
+
+def changelog_sections(text):
+    """{version: its section of CHANGELOG.md, heading and all}."""
+    out = {}
+    for m in re.finditer(r'^## (\d+\.\d+\.\d+)\b.*?(?=^## |\Z)', text or '', re.M | re.S):
+        out[m.group(1)] = m.group(0).strip()[:20000]
+    return out
+
+
+def downgrade_changelog(version):
+    """What came in `version`, and what going back to it from here gives up -
+    the sections of the versions after it, up to this one (1.0.144). From the
+    CHANGELOG.md installed beside otp.py; where that does not have it, from
+    the package at upgrade_url (read, not yet checked)."""
+    version = str(version or '')
+    if not re.match(r'^\d+\.\d+\.\d+\Z', version):
+        raise ValueError('which version?')
+    try:
+        here = changelog_sections((Path(__file__).resolve().parent / 'CHANGELOG.md')
+                                  .read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        here = {}
+    lost = [{'version': v, 'text': here[v]} for v in sorted(
+        here, key=_ver_tuple, reverse=True)
+        if _ver_tuple(version) < _ver_tuple(v) <= _ver_tuple(__version__)]
+    entry, src = here.get(version), 'here'
+    if entry is None:
+        src = 'package'
+        pk = next((p for p in online_list(online_url()) if p['version'] == version), None)
+        if not pk:
+            raise ValueError('otp %s is not at %s' % (version, online_url()))
+        data, _ct, _final = _online_get(pk['url'], limit=UPGRADE_MOST, timeout=120)
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tf:
+            m = next((x for x in tf.getmembers() if x.isfile() and
+                      x.name == 'otp-%s/CHANGELOG.md' % version), None)
+            text = tf.extractfile(m).read(4 << 20).decode('utf-8', 'replace') if m else ''
+        entry = changelog_sections(text).get(version) or ''
+    return {'version': version, 'here': __version__, 'entry': entry, 'from': src,
+            'lost': lost}
 
 
 # ---------------------------------------------------------------------------
@@ -20593,6 +21525,11 @@ def fw_rule_checked(b, store):
 
 
 def fw_set(store, by, **changes):
+    # On trial (1.0.137): what is there now kept, to come back unless kept.
+    try:
+        fw_trial_begin(store, by)
+    except Exception as e:                              # noqa: BLE001
+        log('the firewall change could not be put on trial: %s' % e, 'warn')
     c = fw_conf(store)
     c.update(changes)
     c.update(set=True, at=time.time(), by=by)
@@ -21177,8 +22114,7 @@ def _hatls_off_tick(store, w, st):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
-            store.db.run("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                         % (sub, conninfo.replace("'", "''")))
+            sub_connection_set(store, sub, conninfo)
         with ONCE_PEER_LOCK:
             was, ONCE_PEER['db'] = ONCE_PEER['db'], None
         if was is not None:
@@ -21202,17 +22138,32 @@ def _hatls_off_tick(store, w, st):
         store.add_event('ha', 'TLS between the databases is off on %s' % node_name(), 'warn')
 
 
+PGTLS_LOCK = threading.Lock()
+
+
+def pgtls_send(data):
+    """A request into the root helper's pgtls.ask (1.0.139): one waiting there
+    and not yet read is not written over - the change of the addresses and the
+    link's TLS used the same file and the same temporary name, and one of
+    them waited for an answer that never came."""
+    with PGTLS_LOCK:
+        end = time.time() + 30
+        while (WEB_DIR / PGTLS_ASK).exists() and time.time() < end:
+            time.sleep(0.5)
+        tmp = WEB_DIR / ('.%s.%s' % (PGTLS_ASK, secrets.token_hex(6)))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(data))
+        os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+
+
 def _hatls_ask(st, what):
     """A request to this node's root helper, as a file in the folder it reads."""
     ask_id = secrets.token_hex(8)
     data = dict(what, id=ask_id, port=int(CONFIG.get('db_port') or 5432),
                 db=str(CONFIG.get('db_name') or 'otp'), user=str(CONFIG.get('db_user') or 'otp'),
                 peer=str(CONFIG.get('ha_peer') or ''), ca_file=str(HA_CA_FILE))
-    tmp = WEB_DIR / ('.%s.%d' % (PGTLS_ASK, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+    pgtls_send(data)
     st['asked'] = ask_id
     st['asked_at'] = time.time()
 
@@ -21536,8 +22487,7 @@ def _hatls_tick(store):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
-            store.db.run("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                         % (sub, conninfo.replace("'", "''")))
+            sub_connection_set(store, sub, conninfo)
         with ONCE_PEER_LOCK:
             was, ONCE_PEER['db'] = ONCE_PEER['db'], None
         if was is not None:
@@ -21603,18 +22553,18 @@ def _readdress_ip(text, what):
         raise ValueError('%s is one plain address (192.0.2.10), not %r' % (what, text[:60]))
 
 
-def _readdress_hba(old_peer, new_peer, root_now):
+def _readdress_hba(old_peer, new_peer, root_now, keep_old=False, drop_old=False):
     """This node's pg_hba.conf: the other node's line moved to its new
     address (host or hostssl kept), by the root helper."""
     ask_id = secrets.token_hex(8)
     data = {'id': ask_id, 'do': 'peer', 'port': int(CONFIG.get('db_port') or 5432),
             'db': str(CONFIG.get('db_name') or 'otp'), 'user': str(CONFIG.get('db_user') or 'otp'),
-            'peer': new_peer, 'old_peer': old_peer, 'ca_file': str(HA_CA_FILE)}
-    tmp = WEB_DIR / ('.%s.%d' % (PGTLS_ASK, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+            'peer': new_peer, 'old_peer': old_peer, 'ca_file': str(HA_CA_FILE),
+            # On trial (1.0.137): the old address let in beside the new one,
+            # so the other node can still be told if it goes back; and taken
+            # out once the new one is kept.
+            'keep_old': bool(keep_old), 'drop_old': bool(drop_old)}
+    pgtls_send(data)
     if root_now:
         # On the command line, as root: the helper run here and now.
         helper = Path(__file__).resolve().parent / 'otp_web.py'
@@ -21637,7 +22587,8 @@ def _readdress_hba(old_peer, new_peer, root_now):
                      'running?  systemctl status otp-web.path')
 
 
-def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daemon=None):
+def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daemon=None,
+                 keep_old=False):
     """This node told its own new address (`mine`, as the other node reaches
     it) and/or the other node's (`peer`). Returns what was done and what is
     left, in words."""
@@ -21659,7 +22610,7 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
     done, left = [], []
     with READDRESS_LOCK:
         if peer:
-            done.append(_readdress_hba(had_peer, peer, root_now))
+            done.append(_readdress_hba(had_peer, peer, root_now, keep_old=keep_old))
             write_file_settings({'ha_peer': peer})
             CONFIG['ha_peer'] = peer
             done.append('ha_peer = %s (was %s)' % (peer, had_peer))
@@ -21668,26 +22619,11 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
                 conninfo = ha_conninfo(peer, int(CONFIG.get('ha_peer_port') or 5432),
                                        CONFIG.get('db_name'), CONFIG.get('db_user'),
                                        CONFIG.get('db_password'))
-                # Its password kept out of PostgreSQL's log (1.0.136), as
-                # CREATE SUBSCRIPTION's is.
-                for quiet in ("SET log_statement = 'none'",
-                              "SET log_min_error_statement = 'panic'"):
-                    try:
-                        store.db.run(quiet)
-                    except Exception:                   # noqa: BLE001
-                        pass
                 try:
-                    store.db.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'"
-                                        % (sub, conninfo.replace("'", "''"))))
-                except Exception as e:                  # noqa: BLE001
+                    sub_connection_set(store, sub, conninfo)
+                except ValueError as e:
                     raise ValueError('the subscription %s could not be pointed at %s: %s'
-                                     % (sub, peer, scrub_secret(str(e).split('\n')[0][:300])))
-                finally:
-                    for back in ('RESET log_statement', 'RESET log_min_error_statement'):
-                        try:
-                            store.db.run(back)
-                        except Exception:               # noqa: BLE001
-                            pass
+                                     % (sub, peer, str(e).split(': ', 1)[-1]))
                 done.append('this node takes the other\'s rows from %s now' % peer)
             with ONCE_PEER_LOCK:
                 was, ONCE_PEER['db'] = ONCE_PEER['db'], None
@@ -21703,33 +22639,9 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
         # The other node told, straight into its database: it is reached at
         # its address as this node now has it.
         if tell:
-            ask = {'at': time.time(), 'by': by, 'from': node_name(),
-                   'mine': peer or had_peer, 'peer': mine or had_mine}
-            told = False
-            for tls in (None, ('require', ''), ('prefer', '')):
-                try:
-                    far = db_open(ha_peer_conf(timeout=5, tls=tls))
-                except Exception:                       # noqa: BLE001
-                    continue
-                try:
-                    far.run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE '
-                            'SET v = EXCLUDED.v', ('readdress:ask', json.dumps(ask)))
-                    told = True
-                    break
-                except Exception:                       # noqa: BLE001
-                    continue
-                finally:
-                    far.close()
-            if told:
-                done.append('the other node was told and puts its side right by itself '
-                            '(within seconds)')
-            else:
-                left.append('the other node could not be reached at %s to be told: do the same '
-                            'there - its pages (Settings → High availability → The addresses of '
-                            'the two nodes) or  otp --ha-readdress%s%s  on it'
-                            % (peer or had_peer,
-                               ' --ha-address %s' % (peer or had_peer),
-                               ' --ha-peer %s' % (mine or had_mine)))
+            d2, l2 = readdress_tell(peer or had_peer, mine or had_mine, by, keep_old)
+            done += d2
+            left += l2
     hatls_check_soon()
     store.add_event('settings', '%s: the addresses of the cluster changed on %s - %s%s' % (
         by or 'command line', node_name(), '; '.join(done),
@@ -21741,6 +22653,43 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
         except Exception:                               # noqa: BLE001
             pass
     return {'message': '; '.join(done + left), 'done': done, 'left': left}
+
+
+def readdress_tell(peer, mine, by, keep_old=False):
+    """The other node (at `peer`) told this node is at `mine`, straight into
+    its database. (done, left) in words."""
+    done, left = [], []
+    ask = {'at': time.time(), 'by': by, 'from': node_name(), 'mine': peer, 'peer': mine,
+           'keep_old': bool(keep_old)}
+    told = False
+    # As the link is set; where its certificate names the old address, by the
+    # cluster's authority alone (1.0.139) - not unchecked, nor in the clear:
+    # whoever stood between could have written this request themselves.
+    mode, ca = ha_link_tls()
+    tries = [None] + ([('verify-ca', ca)] if mode == 'verify-full' else [])
+    for tls in tries:
+        try:
+            far = db_open(ha_peer_conf(timeout=5, tls=tls))
+        except Exception:                               # noqa: BLE001
+            continue
+        try:
+            far.run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE '
+                    'SET v = EXCLUDED.v', ('readdress:ask', json.dumps(ask)))
+            told = True
+            break
+        except Exception:                               # noqa: BLE001
+            continue
+        finally:
+            far.close()
+    if told:
+        done.append('the other node was told and puts its side right by itself '
+                    '(within seconds)')
+    else:
+        left.append('the other node could not be reached at %s to be told: do the same '
+                    'there - its pages (Settings → High availability → The addresses of '
+                    'the two nodes) or  otp --ha-readdress --ha-address %s --ha-peer %s  on it'
+                    % (peer, peer, mine))
+    return done, left
 
 
 def readdress_tick(store, daemon=None):
@@ -21757,7 +22706,7 @@ def readdress_tick(store, daemon=None):
     try:
         got = ha_readdress(store, ask.get('mine') or '', ask.get('peer') or '',
                            by='%s (told by %s)' % (ask.get('by') or 'otp', ask.get('from')),
-                           tell=False, daemon=daemon)
+                           tell=False, daemon=daemon, keep_old=bool(ask.get('keep_old')))
         ask.update(done=time.time(), said=got['message'])
     except Exception as e:                              # noqa: BLE001
         ask.update(done=time.time(), error=str(e)[:300])
@@ -21852,26 +22801,32 @@ def boot_time():
     return 0.0
 
 
+NET_ROOT_LOCK = threading.Lock()
+
+
 def net_root(data, wait=60):
-    """One request to the root helper (otp_web.py) and its answer."""
-    ask_id = secrets.token_hex(8)
-    data = dict(data, id=ask_id)
-    tmp = WEB_DIR / ('.%s.%d' % (NET_ASK_NAME, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / NET_ASK_NAME))
-    end = time.time() + wait
-    while time.time() < end:
-        try:
-            got = json.loads((WEB_DIR / NET_ANSWER_NAME).read_text())
-        except (OSError, ValueError):
-            got = None
-        if isinstance(got, dict) and got.get('id') == ask_id:
-            if not got.get('ok'):
-                raise ValueError(got.get('said') or 'the root helper said no')
-            return got.get('data') or {}
-        time.sleep(0.4)
+    """One request to the root helper (otp_web.py) and its answer - one at a
+    time (1.0.146): "Read it again" on the pages during a job wrote over the
+    job's request, or took its answer, and the job waited for nothing."""
+    with NET_ROOT_LOCK:
+        ask_id = secrets.token_hex(8)
+        data = dict(data, id=ask_id)
+        tmp = WEB_DIR / ('.%s.%s' % (NET_ASK_NAME, secrets.token_hex(6)))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(data))
+        os.replace(str(tmp), str(WEB_DIR / NET_ASK_NAME))
+        end = time.time() + wait
+        while time.time() < end:
+            try:
+                got = json.loads((WEB_DIR / NET_ANSWER_NAME).read_text())
+            except (OSError, ValueError):
+                got = None
+            if isinstance(got, dict) and got.get('id') == ask_id:
+                if not got.get('ok'):
+                    raise ValueError(got.get('said') or 'the root helper said no')
+                return got.get('data') or {}
+            time.sleep(0.4)
     raise ValueError('the root helper of this node did not answer in %d s - is otp-web.path '
                      'running?  systemctl status otp-web.path' % wait)
 
@@ -21914,7 +22869,7 @@ def net_current_ip(now):
     return ''
 
 
-def net_check(store, node, want):
+def net_check(store, node, want, rollback=False):
     """What the page asked for, made whole and checked against the node as it
     said it is; with the plan in words. Raises ValueError."""
     now = net_node_now(store, node)
@@ -21985,8 +22940,12 @@ def net_check(store, node, want):
         except ValueError:
             raise ValueError('%r is not the address of a DNS server' % x)
     host = str(want.get('hostname') or '').strip().rstrip('.').lower()
+    # The name the node has now, kept as it is, may be a short one - and going
+    # back after a trial asks for the old one again: refused, the new network
+    # stayed (1.0.139). Still a name, one part or more.
+    same = rollback or host == str(d.get('hostname') or '').strip().rstrip('.').lower()
     if not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
-                    r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$', host):
+                    r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)%s$' % ('*' if same else '+'), host):
         raise ValueError('the host name is the whole name: otp1.example.cz')
     old_ip = net_current_ip(now).split('/')[0]
     new_ip = str(a4.ip)
@@ -22046,15 +23005,17 @@ def net_job_active(job):
         time.time() - float(job.get('moved') or job.get('at') or 0) < NET_JOB_LIVE_S
 
 
-def net_ask(store, node, want, by):
-    """The page asks: written for the node, which does it."""
+def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
+    """The page asks: written for the node, which does it. `rollback`: the
+    old network asked back by the node itself - not put on trial again."""
     if net_job_active(_meta_json(store, 'net:job:' + node)):
         raise ValueError('%s is changing its network already' % node)
     if power_busy(store):
         raise ValueError('a restart or a power-off is under way')
-    checked = net_check(store, node, want)
+    checked = net_check(store, node, want, rollback=rollback)
     ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
-           'at': time.time(), 'from': node_name()}
+           'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
+           'maint': bool(maint), 'snap': str(snap or '')}
     store.set_meta('net:want:' + node, json.dumps(ask))
     store.add_event('settings', '%s asked %s for a new network: %s' % (
         by, node, '; '.join(checked['plan'])), 'warn', who=by)
@@ -22135,6 +23096,45 @@ def net_cert_again(store, w, by):
     return 'this node\'s own certificate made again for %s' % ', '.join(new_names[:6])
 
 
+NET_UNDO_KEYS = ('radius_bind', 'mail_helo', 'isemon_hostname')
+NET_UNDO_FILE_KEYS = ('db_host', 'ha_address')
+
+
+def net_undo_keep(store, snap):
+    """This node's own settings and certificate as they are before a change on
+    trial (1.0.139) - not in the job, which the pages read."""
+    store.set_meta('net:undo:' + node_name(), json.dumps({
+        'snap': snap, 'at': time.time(),
+        'settings': {k: CONFIG.get(k) for k in NET_UNDO_KEYS},
+        'file': {k: FILE_CONFIG.get(k) for k in NET_UNDO_FILE_KEYS if k in FILE_CONFIG},
+        'tls': store.get_meta('web:tls:' + node_name()) or ''}))
+
+
+def net_undo_get(store, snap):
+    got = _meta_json(store, 'net:undo:' + node_name()) or {}
+    return got if snap and got.get('snap') == snap else None
+
+
+def net_job_undo_told(daemon, job, by):
+    """A job stopped before the network changed, after the other node was told
+    the new address (1.0.146): its pg_hba.conf, its subscription and its
+    ha_peer - and this node's ha_address - moved back to the address the node
+    still has. Left, the cluster pointed at an address that never came."""
+    w = job.get('want') or {}
+    if not job.get('told') or not w.get('ip_changed') or not w.get('old_ip'):
+        return
+    store = daemon.store
+    try:
+        got = ha_readdress(store, mine=w['old_ip'], by='%s (put back)' % by, daemon=daemon)
+        _job_put(store, job, 'the other node told the address again: %s' % (
+            got.get('message') or w['old_ip']), job.get('pct'), ok=not got.get('left'))
+    except Exception as e:                              # noqa: BLE001
+        _job_put(store, job, 'the other node could not be told the address again (%s): '
+                 'Settings → High availability → The addresses of the two nodes' % e,
+                 job.get('pct'), ok=False)
+    job['told'] = False
+
+
 def net_job_run(daemon, ask):
     store = daemon.store
     me = node_name()
@@ -22143,8 +23143,30 @@ def net_job_run(daemon, ask):
     job = {'id': ask['id'], 'node': me, 'state': 'running', 'at': time.time(), 'pct': 0,
            'by': ask.get('by'), 'want': w, 'steps': [], 'boot': boot_time()}
     many = bool(CONFIG.get('ha_mode'))
+    # On trial (1.0.137): what the node has now kept, to go back to unless the
+    # new one is kept in time.
+    if net_trial_min() and not ask.get('rollback'):
+        job['back'], job['back_why'] = net_back_want(net_node_now(store, me))
+        job['trial_min'] = net_trial_min() if job['back'] else 0
+        if job['trial_min']:
+            # Going back puts back exactly what is here now (1.0.139): the root
+            # helper keeps the network whole, this node its own settings and
+            # certificate - not worked out again the other way round.
+            job['snap'] = secrets.token_hex(8)
+            net_undo_keep(store, job['snap'])
+    job['rollback'] = bool(ask.get('rollback'))
+    undo = net_undo_get(store, ask.get('snap')) if ask.get('rollback') else None
+    # Maintenance put on by the job it goes back from: taken off by this one.
+    if ask.get('maint'):
+        job['maint'] = True
+    job['keep_old'] = bool(job.get('trial_min')) and CONFIG.get('ha_mode') == 'replicated'
     try:
         _job_put(store, job, 'started - %s' % '; '.join(w['plan'][:2]), 3)
+        if job.get('trial_min'):
+            _job_put(store, job, 'on trial: unless it is kept within %d min of coming back up, '
+                     'the network it has now comes back by itself' % job['trial_min'], 4)
+        elif job.get('back_why'):
+            _job_put(store, job, job['back_why'], 4, ok=False)
         # 1. The node keeps its name, whatever the machine is called.
         if not str(FILE_CONFIG.get('node_name') or '').strip():
             write_file_settings({'node_name': me})
@@ -22154,35 +23176,54 @@ def net_job_run(daemon, ask):
         # 2. The other node told the new address.
         if w['ip_changed'] and CONFIG.get('ha_mode') == 'replicated':
             _job_put(store, job, 'telling the other node %s' % w['new_ip'], 12)
-            got = ha_readdress(store, mine=w['new_ip'], by=by, daemon=daemon)
+            # From here the other node (and ha_address) may have the new one:
+            # stopped before the network changed, they are told back (1.0.146).
+            job['told'] = True
+            asked_at = time.time()
+            got = ha_readdress(store, mine=w['new_ip'], by=by, daemon=daemon,
+                               keep_old=job.get('keep_old'))
             if got.get('left'):
-                raise ValueError('; '.join(got['left']))
-            end = time.time() + 90
+                if not job.get('rollback'):
+                    raise ValueError('; '.join(got['left']))
+                # Going back from an address the other node cannot reach:
+                # told once this node is back at its old one (1.0.137).
+                job['tell_after'] = True
+                _job_put(store, job, 'the other node is told once this node is back at %s'
+                         % w['new_ip'], 25, ok=False)
+            end = time.time() + (0 if job.get('tell_after') else 90)
             done = None
             while time.time() < end:
                 a = _meta_json(store, 'readdress:ask') or {}
-                if a.get('from') == me and a.get('done'):
+                # This job's request, not one answered before (1.0.146).
+                if a.get('from') == me and a.get('done') and \
+                        float(a.get('at') or 0) >= asked_at - 1:
                     done = a
                     break
                 time.sleep(2)
             if done and done.get('error'):
                 raise ValueError('the other node: %s' % done['error'])
-            _job_put(store, job, 'the other node expects %s now%s' % (
-                w['new_ip'], '' if done else ' (it had not said so yet - it does it by itself)'),
-                25)
+            if not job.get('tell_after'):
+                _job_put(store, job, 'the other node expects %s now%s' % (
+                    w['new_ip'], '' if done else ' (it had not said so yet - it does it by '
+                    'itself)'), 25)
         elif w['ip_changed'] and CONFIG.get('ha_address'):
             write_file_settings({'ha_address': w['new_ip']})
             CONFIG['ha_address'] = w['new_ip']
         # 3. This node's own settings that name the old address or name.
         changes = {}
         rb = str(CONFIG.get('radius_bind') or '0.0.0.0')
-        if w['ip_changed'] and rb == w['old_ip']:
+        if undo:
+            # Back to the values it had, as they were.
+            changes = {k: v for k, v in (undo.get('settings') or {}).items()
+                       if str(CONFIG.get(k) or '') != str(v or '')}
+        elif w['ip_changed'] and rb == w['old_ip']:
             changes['radius_bind'] = w['new_ip']
         elif w['ipv6']['on'] and rb in ('0.0.0.0', ''):
             changes['radius_bind'] = '::'
         elif not w['ipv6']['on'] and rb == '::':
             changes['radius_bind'] = '0.0.0.0'
-        if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
+        if not undo and w['hostname'] and w['old_hostname'] and \
+                w['hostname'] != w['old_hostname']:
             for k in ('mail_helo', 'isemon_hostname'):
                 if str(CONFIG.get(k) or '') in (w['old_hostname'], w['old_hostname'].split('.')[0]):
                     changes[k] = w['hostname']
@@ -22190,17 +23231,33 @@ def net_job_run(daemon, ask):
             daemon.save_settings(changes, by=by, node=me)
             _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
                 '%s = %s' % kv for kv in sorted(changes.items())), 35)
-        if w['ip_changed'] and str(CONFIG.get('db_host') or '') == w['old_ip']:
+        if undo:
+            files = {k: v for k, v in (undo.get('file') or {}).items()
+                     if str(FILE_CONFIG.get(k) or '') != str(v or '')}
+            if files:
+                write_file_settings(files)
+                CONFIG.update(files)
+                _job_put(store, job, 'config.json as it was: %s' % ', '.join(
+                    '%s = %s' % kv for kv in sorted(files.items())), 37)
+        elif w['ip_changed'] and str(CONFIG.get('db_host') or '') == w['old_ip']:
             write_file_settings({'db_host': w['new_ip']})
             _job_put(store, job, 'db_host = %s' % w['new_ip'], 37)
-        # 4. Its own certificate.
-        try:
-            said = net_cert_again(store, w, by)
-            if said:
-                _job_put(store, job, said, 45, ok='authority' not in said)
-        except ValueError as e:
-            _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e, 45,
-                     ok=False)
+        # 4. Its own certificate - going back, the one it had.
+        if undo and undo.get('tls') is not None:
+            if (store.get_meta('web:tls:' + me) or '') != undo['tls']:
+                if undo['tls']:
+                    store.set_meta('web:tls:' + me, undo['tls'])
+                else:
+                    store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + me,))
+                _job_put(store, job, 'this node\'s certificate as it was before', 45)
+        else:
+            try:
+                said = net_cert_again(store, w, by)
+                if said:
+                    _job_put(store, job, said, 45, ok='authority' not in said)
+            except ValueError as e:
+                _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e,
+                         45, ok=False)
         # 5. Out of the way: the web address to the other node.
         if many:
             if not (maintenance_row(store) or {}).get('on'):
@@ -22214,12 +23271,23 @@ def net_job_run(daemon, ask):
         # 6. The network, the name - and the reboot.
         job['down_at'] = time.time()
         _job_put(store, job, 'NetworkManager, the host name and /etc/hosts', 70, state='rebooting')
-        got = net_root({'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
-                        'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
-                                 'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'],
-                                 'dns': w['ipv6']['dns']},
-                        'hostname': w['hostname'], 'old': [w['old_ip']] if w['old_ip'] else [],
-                        'old_hostname': w['old_hostname'], 'reboot_in': 8}, 90)
+        got = None
+        if ask.get('rollback') and ask.get('snap'):
+            try:
+                got = net_root({'do': 'restore', 'snapshot': ask['snap'], 'reboot_in': 8}, 90)
+            except ValueError as e:
+                _job_put(store, job, 'what was kept could not be put back (%s) - the old '
+                         'addresses are asked for instead' % e, 72, ok=False)
+        if got is None:
+            got = net_root({'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
+                            'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
+                                     'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'],
+                                     'dns': w['ipv6']['dns']},
+                            'hostname': w['hostname'],
+                            'old': [w['old_ip']] if w['old_ip'] else [],
+                            'old_hostname': w['old_hostname'], 'reboot_in': 8,
+                            'snapshot': job.get('snap') or '',
+                            'rollback': bool(ask.get('rollback'))}, 90)
         job['before'] = got.get('before') or {}
         job['down_at'] = time.time() + 8
         _job_put(store, job, '; '.join(got.get('said') or []) or 'set', 80)
@@ -22227,6 +23295,13 @@ def net_job_run(daemon, ask):
             me, w['new_ip']), 85)
     except Exception as e:                              # noqa: BLE001
         job['error'] = str(e)[:400]
+        if job.get('state') == 'rebooting' and 'did not answer' in str(e):
+            # Root may still put it in and restart (1.0.146): waited for, and
+            # checked after the restart as any other - not left failed.
+            _job_put(store, job, 'root did not answer in time - it may still put the network '
+                     'in and restart; waiting for that', job.get('pct'), ok=False)
+            return
+        net_job_undo_told(daemon, job, by)
         if job.get('maint'):
             try:
                 maintenance_set(store, False, '', by)
@@ -22250,6 +23325,12 @@ def net_job_after(daemon, job):
     _job_put(store, job, '%s is back up' % me, 88)
     have = set(a for a in local_addresses() if not a.startswith('fe80'))
     if w.get('new_ip') and w['new_ip'] not in have:
+        if job.get('trial_min') and job.get('back'):
+            # Not even the address: back at once, not after the trial.
+            _job_put(store, job, '%s came up without %s (it has %s)' % (
+                me, w['new_ip'], ', '.join(sorted(have)) or 'none'), 90, ok=False)
+            net_go_back(daemon, job, 'it came up without its new address')
+            return
         _job_put(store, job, '%s came up without %s (it has %s) - look at its console; it stays '
                  'in maintenance' % (me, w['new_ip'], ', '.join(sorted(have)) or 'none'),
                  90, ok=False, state='failed')
@@ -22267,23 +23348,35 @@ def net_job_after(daemon, job):
         net_publish(store)
     except Exception:                                   # noqa: BLE001
         pass
+    if job.get('tell_after') and CONFIG.get('ha_mode') == 'replicated':
+        d2, l2 = readdress_tell(str(CONFIG.get('ha_peer') or ''), w.get('new_ip') or '', by)
+        _job_put(store, job, '; '.join(d2 + l2), 91, ok=not l2)
     if CONFIG.get('ha_mode') == 'replicated':
         hatls_check_soon()
-        end = time.time() + 240
-        good = False
-        while time.time() < end:
-            rep = ha_repl_state(store)
-            inc = rep.get('incoming') or []
-            outg = rep.get('outgoing') or []
-            if inc and all(r.get('enabled') and r.get('running') for r in inc) and \
-                    outg and all(r.get('active') for r in outg):
-                good = True
-                break
-            time.sleep(5)
+        good = net_repl_wait(store, 240)
         _job_put(store, job, 'replication both ways: running' if good else
                  'replication is not running both ways yet - Settings → High availability '
                  'says why; the link between the databases puts itself right within minutes',
                  96, ok=good)
+    if CONFIG.get('ha_mode') == 'replicated' and (hatls_want(store) or CONFIG.get('ha_tls')) \
+            and not (hatls_want(store) or {}).get('off'):
+        # The link between the databases encrypted and checked again for the
+        # address the node has now (1.0.139) - both nodes' steps done, and this
+        # node's certificate naming every address the other reaches it by.
+        hatls_check_soon()
+        end = time.time() + 300
+        ok, said = False, ''
+        while time.time() < end:
+            ok, said = net_hatls_ok(store)
+            if ok:
+                break
+            time.sleep(5)
+        _job_put(store, job, 'the link between the databases: %s' % said, 97, ok=ok)
+        if ok and not good:
+            good = net_repl_wait(store, 120)
+            _job_put(store, job, 'replication both ways: running' if good else
+                     'replication is still not running both ways - Settings → High '
+                     'availability says why', 97, ok=good)
     if many and vip_conf(store).get('on'):
         # keepalived set up for the new address (1.0.120): asked before the
         # restart it failed - the machine did not have the address yet - and a
@@ -22295,9 +23388,52 @@ def net_job_after(daemon, job):
     if many and job.get('maint'):
         maintenance_set(store, False, '', by)
         _job_put(store, job, 'out of maintenance - the web address may come back', 98)
+    if job.get('trial_min') and job.get('back'):
+        net_trial_start(store, job, by)
+        return
     _job_put(store, job, 'done', 100, state='done')
     store.add_event('settings', 'the network of %s is changed: %s' % (
         me, '; '.join(words)), 'warn', who=by)
+
+
+def net_repl_wait(store, secs):
+    """Replication running both ways within `secs`."""
+    end = time.time() + secs
+    while True:
+        rep = ha_repl_state(store)
+        inc = rep.get('incoming') or []
+        outg = rep.get('outgoing') or []
+        if inc and all(r.get('enabled') and r.get('running') for r in inc) and \
+                outg and all(r.get('active') for r in outg):
+            return True
+        if time.time() >= end:
+            return False
+        time.sleep(5)
+
+
+def net_hatls_ok(store):
+    """(ok, words): the link between the databases encrypted and checked, on
+    this node and the other."""
+    st = hatls_state(store)
+    if st.get('step') != 'done':
+        return False, 'this node is at the step %s%s' % (
+            st.get('step') or 'none', (' (%s)' % st['error'][:200]) if st.get('error') else '')
+    pn = hatls_peer_name(store)
+    peer = hatls_state(store, pn) if pn else {}
+    if pn and peer.get('step') != 'done':
+        return False, '%s is at the step %s' % (pn, peer.get('step') or 'none')
+    if CONFIG.get('ha_tls') != 'verify-full':
+        return False, 'the link is not set to verify-full'
+    try:
+        _end, sans = hatls_own_cert(store)
+    except Exception as e:                              # noqa: BLE001
+        return False, str(e)[:200]
+    named = set(str(v).lower() for _k, v in sans)
+    lack = [n for n in hatls_needs(store) if n.lower() not in named]
+    if lack:
+        return False, 'this node\'s certificate does not name %s yet' % ', '.join(lack)
+    return True, 'encrypted and checked (verify-full) both ways; this node\'s certificate ' \
+                 'names %s' % ', '.join(hatls_needs(store))
 
 
 def _net_thread(fn, *args):
@@ -22326,13 +23462,19 @@ def net_tick(daemon):
     me = node_name()
     job = _meta_json(store, 'net:job:' + me)
     ask = _meta_json(store, 'net:want:' + me)
+    if job and job.get('state') == 'trial':
+        net_trial_tick(daemon, job)
+        return
     if job and job.get('state') == 'rebooting':
         if boot_time() > float(job.get('boot') or 0) + 1:
             _net_thread(net_job_after, daemon, job)
-        elif time.time() - float(job.get('moved') or 0) > 900:
+        elif time.time() - float(job.get('moved') or 0) > 900 and not job.get('late_said'):
+            # Still waited for (1.0.146): marked failed, the restart by hand
+            # was never followed - no check, no trial, maintenance left on.
+            job['late_said'] = True
             _job_put(store, job, 'the machine did not restart in 15 minutes - restart it by '
-                     'hand; the network starts as set', job.get('pct'), ok=False,
-                     state='failed')
+                     'hand; the network starts as set, and is checked when it is back',
+                     job.get('pct'), ok=False)
         return
     if ask and ask.get('node') == me and (not job or job.get('id') != ask.get('id')) and \
             time.time() - float(ask.get('at') or 0) < 600:
@@ -22340,8 +23482,23 @@ def net_tick(daemon):
         return
     if job and job.get('state') == 'running' and not NET_WORK['busy'] and \
             time.time() - float(job.get('moved') or 0) > 300:
-        _job_put(store, job, 'it stopped half way (the service restarted?)', job.get('pct'),
-                 ok=False, state='failed')
+        by = '%s (network)' % (job.get('by') or 'otp')
+        if job.get('down_at'):
+            # Root was asked already: it may restart with the new network - then
+            # it is checked as after any restart (1.0.146).
+            _job_put(store, job, 'it stopped while root put the network in (the service '
+                     'restarted?) - waiting for the restart', job.get('pct'), ok=False,
+                     state='rebooting')
+            return
+        net_job_undo_told(daemon, job, by)
+        if job.get('maint'):
+            try:
+                maintenance_set(store, False, '', by)
+            except Exception:                           # noqa: BLE001
+                pass
+        _job_put(store, job, 'it stopped half way (the service restarted?)%s' % (
+            ' - out of maintenance' if job.get('maint') else ''), job.get('pct'),
+            ok=False, state='failed')
     if power_tick(daemon):
         return
     wanted = float(store.get_meta('net:read:' + me) or 0)
@@ -22537,6 +23694,256 @@ def net_view(store):
     return {'nodes': out, 'cluster': len(out) > 1, 'now': time.time(),
             'vip': {'on': bool(v.get('on')), 'address': v.get('address') or '',
                     'address6': v.get('address6') or ''} if CONFIG.get('ha_mode') else {}}
+# ---- changes that could cut the server off: kept, or taken back (1.0.137) -------------
+# A node's new network and a change of the firewall (or of who may reach the
+# pages) are put in on trial: unless somebody presses Keep it - on the pages
+# of either node, `otp --change-keep`, or the console - within net_confirm_min
+# / fw_confirm_min minutes, what was there before comes back by itself. A typo
+# in a gateway, a prefix, or a DROP rule in front of SSH no longer leaves the
+# machine to be put right at its console.
+#
+# The network: the node keeps what it had (its NetworkManager settings, its
+# host name) in its job; back up after the reboot the job waits as 'trial'.
+# Not kept in time - or come up without the new address at all - the node
+# asks itself for the old network, which is the same job the other way round
+# (a reboot, the other node told the old address again). So that the other
+# node can still be told, its pg_hba.conf keeps letting the old address in
+# while the new one is on trial; kept, it lets only the new one in again.
+# Who asks to keep or to go back writes 'net:keep:NODE' / 'net:back:NODE'; the
+# node itself writes its job, as before.
+#
+# The firewall: what was set before the first change of a trial is kept in
+# 'fw:trial'; later changes in the same trial move its deadline on. Not kept in
+# time, one node (claim_once) puts it back; every node puts that in as usual.
+
+def net_back_want(now):
+    """What the node has now, as a request for the network page would say it -
+    what it goes back to. None (and why) where it cannot be said so. The root
+    helper keeps the network itself whole as well (1.0.139) and puts that back;
+    this is what the other node is told, and what is asked where nothing was
+    kept."""
+    d = (now or {}).get('data') or {}
+    conf = d.get('conf') or {}
+    live = d.get('live') or {}
+    addr = net_current_ip(now or {})
+    if not addr or '/' not in addr:
+        return None, 'what the node has now could not be read (%s) - it cannot be put back ' \
+                     'by itself' % (conf.get('ipv4_method') or '?')
+    m6 = conf.get('ipv6_method')
+    on6 = m6 not in (None, '', 'disabled', 'ignore')
+    manual = conf.get('ipv4_method') == 'manual'
+    return {'con': d.get('con') or '',
+            'ipv4': {'addr': addr, 'gw': conf.get('ipv4_gateway') or ('' if manual else
+                                                                       live.get('gw4') or ''),
+                     'dns': list(conf.get('ipv4_dns') or [x for x in live.get('dns') or []
+                                                          if ':' not in x][:4]),
+                     'search': list(conf.get('ipv4_search') or [])},
+            'ipv6': {'on': on6, 'mode': 'manual' if m6 == 'manual' else 'auto',
+                     'addr': (conf.get('ipv6_addresses') or [''])[0] if m6 == 'manual' else '',
+                     'gw': conf.get('ipv6_gateway') or '', 'dns': list(conf.get('ipv6_dns') or [])},
+            'hostname': str(d.get('hostname') or ''), 'vip_elsewhere': True}, ''
+
+
+def net_trial_min():
+    return int(CONFIG.get('net_confirm_min') or 0)
+
+
+def net_trial_start(store, job, by):
+    """Back up after the reboot, all well: the job waits to be kept."""
+    n = int(job.get('trial_min') or 0)
+    job['trial_until'] = time.time() + n * 60
+    _job_put(store, job, 'it waits to be kept: Keep it within %d min (Settings - Network, '
+             'the banner on every page, or  otp --change-keep net --node %s), or the old '
+             'network comes back by itself at %s' % (
+                 n, node_name(), time.strftime('%H:%M', time.localtime(job['trial_until']))),
+             99, state='trial')
+    store.add_event('settings', 'the new network of %s is on trial: kept within %d min, or it '
+                    'goes back to %s' % (node_name(), n, (job.get('want') or {}).get('old_ip')),
+                    'warn', who=by)
+
+
+def net_go_back(daemon, job, why):
+    """The old network asked for, on this node - the same job the other way."""
+    store = daemon.store
+    me = node_name()
+    back = job.get('back')
+    job['back_asked'] = time.time()
+    if not back:
+        _job_put(store, job, 'not kept (%s), and it cannot go back by itself: %s' % (
+            why, job.get('back_why') or '?'), job.get('pct'), ok=False, state='failed')
+        return
+    # The network as it is now read first: going back is planned from what
+    # the node has (the new address), so the other node is told the old one.
+    try:
+        net_publish(store)
+    except Exception as e:                              # noqa: BLE001
+        log('network: read before going back: %s' % e, 'warn')
+    _job_put(store, job, 'not kept: %s - the old network (%s) comes back' % (
+        why, (back.get('ipv4') or {}).get('addr')), job.get('pct'), ok=False,
+        state='going back')
+    try:
+        net_ask(store, me, back, 'otp (%s)' % why, rollback=True, maint=bool(job.get('maint')),
+                snap=job.get('snap') or '')
+    except Exception as e:                              # noqa: BLE001
+        _job_put(store, job, 'the old network could not be asked for: %s' % e, job.get('pct'),
+                 ok=False, state='failed')
+        store.add_event('settings', 'the old network of %s could not be put back: %s' % (me, e),
+                        'bad')
+
+
+def net_trial_tick(daemon, job):
+    """A job on trial: kept, asked to go back, or out of time."""
+    store = daemon.store
+    me = node_name()
+    keep = _meta_json(store, 'net:keep:' + me) or {}
+    back = _meta_json(store, 'net:back:' + me) or {}
+    if keep.get('id') == job.get('id'):
+        job['kept'] = keep.get('by')
+        _job_put(store, job, 'kept by %s' % keep.get('by'), 100, state='done')
+        store.add_event('settings', '%s kept the new network of %s' % (keep.get('by'), me),
+                        who=keep.get('by'))
+        w = job.get('want') or {}
+        if job.get('keep_old') and w.get('old_ip') and w.get('new_ip'):
+            # The other node may let only the new address in again.
+            store.set_meta('readdress:dropold:' + me, json.dumps({
+                'id': job.get('id'), 'from': me, 'old': w['old_ip'], 'new': w['new_ip'],
+                'at': time.time()}))
+        return
+    if back.get('id') == job.get('id'):
+        net_go_back(daemon, job, 'put back by %s' % back.get('by'))
+        return
+    if time.time() > float(job.get('trial_until') or 0):
+        net_go_back(daemon, job, 'not kept within %d min' % int(job.get('trial_min') or 0))
+
+
+def net_trial_answer(store, node, act, by):
+    """The pages (of either node) or the command line: keep it, or go back."""
+    job = _meta_json(store, 'net:job:' + node) or {}
+    if job.get('state') != 'trial':
+        raise ValueError('the network of %s is not waiting to be kept' % node)
+    store.set_meta('net:%s:%s' % ('keep' if act == 'keep' else 'back', node),
+                   json.dumps({'id': job.get('id'), 'by': by, 'at': time.time()}))
+    return ('kept - %s says so within a few seconds' % node if act == 'keep' else
+            'the old network comes back - %s restarts with it' % node)
+
+
+def readdress_dropold_tick(store):
+    """The other node's new address kept: its old one no longer let in."""
+    me = node_name()
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'readdress:dropold:%'"):
+        try:
+            ask = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if not isinstance(ask, dict) or ask.get('from') in (me, None):
+            continue
+        done_key = 'readdress:dropold:done:' + me
+        if (store.get_meta(done_key) or '') == str(ask.get('id')):
+            continue
+        try:
+            said = _readdress_hba(ask['old'], ask['new'], False, drop_old=True)
+            log('the other node kept its new address %s: %s' % (ask['new'], said), 'info')
+        except Exception as e:                          # noqa: BLE001
+            log('the old address of the other node could not be taken out of pg_hba.conf: %s'
+                % e, 'warn')
+        store.set_meta(done_key, str(ask.get('id')))
+
+
+# ---- the firewall --------------------------------------------------------------------
+def fw_trial_min():
+    return int(CONFIG.get('fw_confirm_min') or 0)
+
+
+def fw_trial_begin(store, by):
+    """Before a change of the firewall or of who may reach the pages: what is
+    there now kept, for going back to."""
+    n = fw_trial_min()
+    if not n:
+        return None
+    t = time.time()
+    trial = _meta_json(store, 'fw:trial') or {}
+    if not trial or trial.get('done'):
+        trial = {'id': secrets.token_hex(6), 'was': fw_conf(store),
+                 'access': access_conf(store), 'at': t, 'by': by}
+    trial.update(until=t + n * 60, last_by=by, min=n)
+    store.set_meta('fw:trial', json.dumps(trial))
+    # The key the put-back is claimed by made now, by this node alone (1.0.139):
+    # made by both at the moment it ran out, it came over to each as a second
+    # row with the same key, and replication stopped.
+    if store.get_meta('fw_trial_back') is None:
+        store.set_meta('fw_trial_back', '')
+    return trial
+
+
+def fw_trial_answer(store, act, by):
+    trial = _meta_json(store, 'fw:trial') or {}
+    if not trial or trial.get('done'):
+        raise ValueError('no change of the firewall waits to be kept')
+    if act == 'keep':
+        trial.update(done='kept', done_by=by, done_at=time.time())
+        store.set_meta('fw:trial', json.dumps(trial))
+        store.add_event('settings', '%s kept the change of the firewall and access' % by,
+                        who=by)
+        return 'kept'
+    fw_put_back(store, trial, 'put back by %s' % by)
+    return 'what was there before comes back - each node puts it in within a few seconds'
+
+
+def fw_put_back(store, trial, why):
+    was = trial.get('was') or {}
+    # Put back as something said (1.0.146): a firewall never set before went
+    # back as "not set", which root reads as "leave it as it is" - and the
+    # rules of the trial stayed; so did the lists of who may reach the pages.
+    store.set_meta('fw:conf', json.dumps(dict(was, set=True, at=time.time(),
+                                              by='otp (%s)' % why)))
+    store.set_meta('web:access', json.dumps(trial.get('access') or {
+        k: {'any': True, 'from': []} for k in ACCESS_WORDS}))
+    trial.update(done='back', done_by=why, done_at=time.time())
+    store.set_meta('fw:trial', json.dumps(trial))
+    store.add_event('settings', 'the firewall and access went back to what they were before '
+                    '%s: %s' % (time.strftime('%H:%M', time.localtime(trial.get('at') or 0)),
+                                why), 'warn')
+    log('the firewall went back: %s' % why, 'warn')
+
+
+def fw_trial_tick(store):
+    trial = _meta_json(store, 'fw:trial') or {}
+    if not trial or trial.get('done') or time.time() <= float(trial.get('until') or 0):
+        return
+    # One node puts it back (both would write the same rows at once).
+    if claim_once(store, 'fw_trial_back', trial.get('id')):
+        fw_put_back(store, trial, 'not kept within %d min' % int(trial.get('min') or 0))
+
+
+def trials_view(store):
+    """What waits to be kept, for the banner of every page and --status."""
+    out = []
+    t = time.time()
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'net:job:%'"):
+        try:
+            job = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if isinstance(job, dict) and job.get('state') == 'trial':
+            w = job.get('want') or {}
+            out.append({'kind': 'net', 'node': job.get('node') or r['k'][8:],
+                        'until': float(job.get('trial_until') or 0), 'by': job.get('by'),
+                        'words': 'the new network of %s (%s)' % (
+                            job.get('node') or r['k'][8:], w.get('new_ip') or '?'),
+                        'back': (w.get('old_ip') or '')})
+    trial = _meta_json(store, 'fw:trial') or {}
+    if trial and not trial.get('done') and float(trial.get('until') or 0) > t - 60:
+        out.append({'kind': 'fw', 'node': '', 'until': float(trial.get('until') or 0),
+                    'by': trial.get('last_by') or trial.get('by'),
+                    'words': 'the change of the firewall and access', 'back': ''})
+    return out
+
+
+def trial_problem_words(trials):
+    return ['%s waits to be kept: %d min left, then it goes back by itself (Keep it on the '
+            'banner, or  otp --change-keep %s%s)' % (
+                x['words'], max(0, int((x['until'] - time.time()) // 60)), x['kind'],
+                (' --node %s' % x['node']) if x.get('node') else '') for x in trials]
 # ---- the time: chrony on every node (1.0.120) ----------------------------------------
 # Codes from the app are worked out from the clock: a node whose clock is off by
 # more than half a period refuses codes that are right. Settings → Time shows
@@ -23197,7 +24604,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             # NaN and Infinity are not numbers anybody means (1.0.103).
             self._body = json.loads(raw.decode('utf-8'), parse_constant=_no_constant) \
                 if raw else {}
-        except ValueError:
+        except (ValueError, RecursionError):            # [[[[... too (1.0.139)
             raise ApiError(400, 'the body is not JSON')
         if not isinstance(self._body, dict):
             raise ApiError(400, 'the body is not an object')
@@ -23269,6 +24676,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.route('POST')
 
     def route(self, method):
+        # A body of its own for each request (1.0.146): on a kept-alive
+        # connection the handler is the same, and the last one's was read again.
+        self.__dict__.pop('_body', None)
         url = urlparse(self.path)
         self.args = {k: v[-1] for k, v in parse_qs(url.query).items()}
         path = url.path.rstrip('/')
@@ -23312,7 +24722,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'the directory could not be asked just '
                                 'now - try again in a moment', 'detail': None}, 502)
         except DbError as e:
-            self.send_json({'ok': False, 'error': str(e)}, 503)
+            # Where the database is, only to somebody signed in (1.0.146).
+            if self._signed_in():
+                self.send_json({'ok': False, 'error': str(e)}, 503)
+            else:
+                log('%s %s: the database: %s' % (method, path, e), 'warn')
+                self.send_json({'ok': False, 'error': 'the database cannot be reached just now '
+                                                      '- try again in a moment'}, 503)
         except (TypeError, AttributeError, KeyError) as e:
             # A field of the wrong kind - null where a number goes, a list
             # where an object does (1.0.44): the request's fault, said so,
@@ -23474,8 +24890,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             # Counted per person, not per spelling (1.0.44): DOMAIN\\novak,
             # novak@anything and Novak are all novak here.
             who = str(name).strip().lower()
+            # "admin>person" (a test of somebody's sign-in) keeps its admin
+            # (1.0.146): CORP\\novak made it novak alone, one count for all.
+            pre, sep, who = who.rpartition('>')
             who = who.split('\\', 1)[-1].rsplit('@', 1)[0].strip()
-            keys.append((kind + '-name', who[:190]))
+            keys.append((kind + '-name', (pre + sep + who)[:190]))
         t = time.time()
         span = wait_min * 60
         with self.THROTTLE_LOCK:
@@ -23577,6 +24996,7 @@ LOCKOUT_KINDS = {
     'code-test': 'trying a code (Tokens)',
     'radtest': 'a RADIUS test (Test)',
     'texts-test': 'a test message (Message texts)',
+    'radius-src': 'signing in to the VPN, from one place',
 }
 LOCKOUTS_SENT = {'sig': None, 'at': 0.0}
 THROTTLE_GUARD = threading.Lock()
@@ -23593,9 +25013,29 @@ def lockouts_view(d):
         if not span:
             continue
         fails = [x for x in fails if t - x < span]
+        kind, who = key
+        if info.get('guard'):
+            # A place counted by the sign-in protection (1.0.137): blocked
+            # for its own time, by its refusals or by its names.
+            until = float(info.get('blocked_until') or 0)
+            blocked = until > t
+            if not fails and not blocked:
+                continue
+            names = [n for n, ts in (info.get('names') or {}).items() if t - ts < span]
+            last = max(fails[-1] if fails else 0, float(info.get('blocked_at') or 0))
+            rows.append({
+                'kind': kind, 'who': who, 'by': 'place', 'what': LOCKOUT_KINDS.get(kind, kind),
+                'base': kind, 'words': info.get('what') or 'wrong sign-ins',
+                'fails': len(fails), 'limit': int(info.get('limit') or 0),
+                'names': len(names), 'names_limit': int(info.get('names_limit') or 0),
+                'locked': blocked, 'until': until if blocked else None,
+                'why': info.get('blocked_why') if blocked else '',
+                'forgets': max(until, (fails[-1] + span) if fails else 0),
+                'first': fails[0] if fails else last, 'last': last,
+                'others': list(info.get('others') or [])})
+            continue
         if not fails:
             continue
-        kind, who = key
         by_name = kind.endswith('-name')
         base = kind[:-5] if by_name else kind
         limit = int(info.get('limit') or 0)
@@ -23680,16 +25120,19 @@ def lockouts_shared(store):
     rows = []
     span = 60 * int(CONFIG.get('code_send_window_min') or 15)
     limit = int(CONFIG.get('code_send_max') or 5)
+    per = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'codesent:%'"):
         try:
-            times = sorted(float(x) for x in json.loads(r['v'] or '[]'))
+            per.setdefault(node_key_name('codesent', r['k']), []).extend(
+                float(x) for x in json.loads(r['v'] or '[]'))
         except (ValueError, TypeError):
             continue
-        times = [x for x in times if t - x < span]
+    for who, times in per.items():          # every node's row of a person together (1.0.146)
+        times = sorted(x for x in times if t - x < span)
         if not times:
             continue
         locked = len(times) >= limit
-        rows.append({'kind': 'codes-sent', 'who': str(r['k'])[9:], 'by': 'name',
+        rows.append({'kind': 'codes-sent', 'who': who, 'by': 'name',
                      'what': LOCKOUT_KINDS['codes-sent'], 'base': 'codes-sent',
                      'words': 'codes sent', 'fails': len(times), 'limit': limit,
                      'locked': locked,
@@ -23716,7 +25159,7 @@ def lockouts_shared(store):
 
 def lockouts_shared_clear(store, kind, who, by):
     if kind == 'codes-sent':
-        n = store.db.run('DELETE FROM meta WHERE k = ?', ('codesent:' + who,))
+        n = node_key_drop(store, 'codesent', who)
         store.add_event('sign-ins', '%s cleared the count of codes sent to %s' % (by, who),
                         'warn', who=by)
         return n
@@ -23724,7 +25167,7 @@ def lockouts_shared_clear(store, kind, who, by):
         if not store.token(who):
             return 0
         store.token_write(who, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
-        store.db.run('DELETE FROM meta WHERE k = ?', ('scratchguard:' + who,))
+        node_key_drop(store, 'scratchguard', who)
         store.add_event('tokens', '%s let %s try again at once' % (by, who), who=by)
         return 1
     return 0
@@ -23944,7 +25387,8 @@ def admin_from_directory(h, name, password):
 @route('POST', '/api/auth/login')
 def _login(h):
     b = h.body()
-    name = str(b.get('name') or '').strip()
+    # No account has a longer name (1.0.146): megabytes typed went into the log.
+    name = str(b.get('name') or '').strip()[:190]
     password = str(b.get('password') or '')
     key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                      int(CONFIG.get('login_wait_min') or 15), name=name)
@@ -24558,7 +26002,7 @@ def _tokens_export(h):
             raise ApiError(409, 'the key of this token cannot be opened on this machine')
         h.store.add_event('tokens', '%s exported the token of %s as a .totp file' % (
             s['name'], one), 'warn', who=s['name'])
-        h.send_bytes(text.encode('utf-8'), re.sub(r'[^A-Za-z0-9@._-]', '_', one) + '.totp',
+        h.send_bytes(text.encode('utf-8'), totp_file_name(one),
                      'text/plain; charset=utf-8')
         return None
     lq, bad = list_query('tokens', h.arg('q'))
@@ -24581,7 +26025,7 @@ def _tokens_export(h):
                     str(tok.get('algorithm') or 'SHA1').upper() != 'SHA1':
                 odd.append('%s (%s digits, %s s, %s)' % (r['name'], tok.get('digits'),
                                                          tok.get('period'), tok.get('algorithm')))
-            z.writestr(re.sub(r'[^A-Za-z0-9@._-]', '_', r['name']) + '.totp', text)
+            z.writestr(totp_file_name(r['name']), text)
             done += 1
         notes = ['%d token(s) exported by %s on %s at %s.' % (
             done, s['name'], node_name(), time.strftime('%Y-%m-%d %H:%M:%S')), '',
@@ -24692,6 +26136,32 @@ def _token_do(h):
         return _token_act(h, s, b, act, name, who)
 
 
+def token_same_person(store, name):
+    """Another name of the same person with a token in use - one RADIUS would
+    stop using once `name` has one (1.0.139): under another suffix of the
+    realm, or the same account in another realm on the same directory."""
+    if '@' not in name:
+        return ''
+    realm = store.realm_for(name)
+    if not realm:
+        return ''
+    cands = realm_names(name, realm)[1:]
+    if realm.get('lookup') == 'sam' and realm.get('directory'):
+        who = name.rpartition('@')[0]
+        here = str(realm.get('directory') or '').lower()
+        for r in store.realms():
+            if r['id'] != realm['id'] and r.get('lookup') == 'sam' and \
+                    str(r.get('directory') or '').lower() == here and \
+                    r.get('suffix') not in (None, '', '*'):
+                cands.append(Authenticator.token_name('%s@%s' % (who, r['suffix']), r))
+    for c in cands:
+        c = norm_name(c)
+        t = store.token(c) if c != name else None
+        if t and t.get('state') != 'pending':
+            return c
+    return ''
+
+
 def _token_act(h, s, b, act, name, who):
     tk = h.d.tokens
     if act in ('disable', 'enable', 'unlock', 'note', 'window', 'drop_staged') and \
@@ -24707,6 +26177,12 @@ def _token_act(h, s, b, act, name, who):
             # administrator makes new ones.
             raise ApiError(403, '%s already has a token in use: only a full administrator '
                                 'replaces it (or the person, on the enrolment pages)' % name)
+        other = token_same_person(h.store, name) if s['role'] != 'fulladmin' else ''
+        if other:
+            # The same person under another name (1.0.139): the new token
+            # would be the one RADIUS takes - a working key for somebody else.
+            raise ApiError(403, '%s is the same person as %s, who has a token in use: only a '
+                                'full administrator replaces it' % (name, other))
         display = str(b.get('display') or '').strip()
         note = b.get('note')
         if had and not str(note or '').strip():
@@ -25001,7 +26477,7 @@ def _token_act(h, s, b, act, name, who):
         return {'scratch': codes, 'message': '%d new recovery codes' % len(codes)}
     if act == 'unlock':
         h.store.token_write(name, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
-        h.store.db.run('DELETE FROM meta WHERE k = ?', ('scratchguard:' + name,))
+        node_key_drop(h.store, 'scratchguard', name)
         h.store.add_event('tokens', '%s let %s try again at once' % (who, name), who=who)
         return {'message': 'the wrong codes are forgotten'}
     if act == 'rename':
@@ -25095,6 +26571,20 @@ def _token_act(h, s, b, act, name, who):
                           who=who)
         return {'message': 'the waiting replacement is gone; the old token stays'}
     raise ApiError(400, 'no such thing to do to a token: %s' % act)
+
+
+def totp_file_name(name):
+    """The file a token goes into, and its name read back from it (1.0.146):
+    jan+1@x.cz and jan_1@x.cz were both jan_1@x.cz.totp - one lost in the ZIP
+    - and o'neil@x.cz came back as o_neil@x.cz, which RADIUS never looks up."""
+    from urllib.parse import quote
+    return quote(str(name), safe='@.-_') + '.totp'
+
+
+def totp_file_owner(fname):
+    from urllib.parse import unquote
+    fname = os.path.basename(str(fname or ''))
+    return unquote(fname[:-5] if fname.endswith('.totp') else fname)
 
 
 def totp_files_in_zip(b64, label, out):
@@ -25259,7 +26749,7 @@ def _token_import(h):
             files.append(one)
     for one in files:
         fname = os.path.basename(str(one.get('name') or ''))
-        name = fname[:-5] if fname.endswith('.totp') else fname
+        name = totp_file_owner(fname)
         if want and norm_name(name) not in want:
             continue
         try:
@@ -25587,14 +27077,22 @@ def _dirs_do(h):
             msg = '%s keeps %d certificate(s)' % (one['name'], n)
         return {'message': msg, 'ca_list': after.get('ca_list') or []}
     if act == 'try':
-        h.me('fulladmin')
+        who = h.me('fulladmin')['name']
         if not CONFIG.get('admin_directory'):
             raise ApiError(400, 'no directory signs administrators in yet: choose one in '
                                 '"Sign administrators in against the directory" and save')
-        said = admin_ask_directory(h, str(b.get('user') or ''), str(b.get('password') or ''))
+        # Counted and written down (1.0.139), as a radtest is: each try is a
+        # directory password, and wrong ones lock the account there.
+        user = str(b.get('user') or '')
+        key = h.throttle('radtest', 20, 5, name='%s>%s' % (who, user[:120]), ip_tries=100)
+        said = admin_ask_directory(h, user, str(b.get('password') or ''))
         if said is None:
             raise ApiError(404, 'the directory %s is not set up' % CONFIG.get('admin_directory'))
         said.pop('entry', None)
+        if not said.get('ok'):
+            h.failed(key)
+        h.store.add_event('accounts', '%s tried the directory sign-in of %s: %s' % (
+            who, user[:120], 'it would sign in' if said.get('ok') else 'refused'), who=who)
         return {'tried': said}
     h.me('tokenadmin')
     if act not in ('check', 'groups', 'lookup'):
@@ -26787,19 +28285,6 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         access = access_checked_api(web['access'])
         if access_check:
             access_check(access)
-    fw = conf.get('firewall') or None
-    if fw:
-        rules = []
-        for r in fw.get('rules') or []:
-            if not isinstance(r, dict):
-                raise ApiError(400, 'a firewall rule is not an object')
-            one = fw_rule_checked(r, store)
-            for k in ('id', 'scope', 'disabled'):
-                if k in r:
-                    one[k] = r[k]
-            rules.append(one)
-        fw = dict(fw, rules=rules, off=[k for k in (fw.get('off') or [])
-                                         if k in FW_AUTO_OPTIONAL])
     # The certificates of the pages: a node of this cluster keeps its own
     # name; a file of one other machine's (a new machine put in its place)
     # is this node's.
@@ -26814,6 +28299,31 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
     foreign = [t for t in tls_in if t != 'vip' and t not in here and t not in mapping]
     if len(foreign) == 1 and len([t for t in tls_in if t != 'vip']) == 1:
         mapping[foreign[0]] = node_name()
+    fw = conf.get('firewall') or None
+    rules_left_out = 0
+    if fw:
+        rules = []
+        for r in fw.get('rules') or []:
+            if not isinstance(r, dict):
+                raise ApiError(400, 'a firewall rule is not an object')
+            # A rule of one node, named as this machine names it (1.0.146): one of
+            # a node this machine does not have stopped the whole import.
+            r = dict(r)
+            if r.get('scope') in mapping:
+                r['scope'] = mapping[r['scope']]
+            try:
+                one = fw_rule_checked(r, store)
+            except ApiError as e:
+                if 'no node' not in str(e):
+                    raise
+                rules_left_out += 1
+                continue
+            for k in ('id', 'scope', 'disabled'):
+                if k in r:
+                    one[k] = r[k]
+            rules.append(one)
+        fw = dict(fw, rules=rules, off=[k for k in (fw.get('off') or [])
+                                         if k in FW_AUTO_OPTIONAL])
     for t, prof in tls_in.items():
         if not isinstance(prof, dict):
             raise ApiError(400, 'the TLS of %s is not an object' % t)
@@ -26851,6 +28361,9 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         raise ApiError(400, 'the SMS gateway\'s certificates in the file are not certificates')
 
     said = collections.Counter()
+    imported_keys = set()
+    if rules_left_out:
+        said['firewall rules left out: of a node not here'] = rules_left_out
     try:
         for d in conf.get('directories') or []:
             d = dict(d)
@@ -26879,7 +28392,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             # Never what belongs to this machine alone (1.0.57): an imported
             # file switched the database or the cluster at the next restart.
             # A node's own value (key@node) comes too (1.0.62).
-            want = {}
+            want, per_node = {}, []
             for k, v in conf['settings'].items():
                 base, _at, node = str(k).partition('@')
                 if base not in DEFAULTS or base in FILE_ONLY_KEYS:
@@ -26889,17 +28402,22 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 if base in SEALED_KEYS and str(v or '').startswith('sealed:'):
                     continue
                 if node:
-                    node = mapping.get(node, node)
-                    try:
-                        daemon.save_settings({base: v}, by, node=node)
-                        said['settings'] += 1
-                    except BadSetting:
-                        pass            # a node this cluster does not have
+                    per_node.append((base, mapping.get(node, node), v))
                 else:
                     want[base] = v
             if want:
                 daemon.save_settings(want, by)
                 said['settings'] += len(want)
+            # A node's own after the shared ones (1.0.146): on a machine of its
+            # own a node's value is kept as the plain key, and the file's shared
+            # value saved after it wrote over it.
+            for base, node, v in per_node:
+                try:
+                    daemon.save_settings({base: v}, by, node=node)
+                    said['settings'] += 1
+                    imported_keys.update((base, '%s@%s' % (base, node)))
+                except BadSetting:
+                    pass            # a node this cluster does not have
         for a in conf.get('accounts') or []:
             name = str(a.get('name') or '').strip()
             if not name or name.lower() == str(keep_account or '').lower():
@@ -26938,6 +28456,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     # switched off, until somebody gives it one.
                     fields['disabled'] = 1
                     said['accounts switched off: no password in the file'] += 1
+                store.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
                 store.db.insert('accounts', dict(fields, name=name, pw=pw or '',
                                                  created=time.time(), last_in=None,
                                                  last_from='', prefs=str(a.get('prefs') or '{}')))
@@ -26956,6 +28475,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             tls_save(store, target, prof, by)
             said['certificates'] += 1
         if access is not None:
+            fw_trial_begin(store, by)
             store.set_meta('web:access', json.dumps(dict(access, at=time.time(), by=by)))
             said['page access'] += 1
         if isinstance(web.get('vip'), dict):
@@ -26965,6 +28485,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             store.set_meta('web:vip', json.dumps(dict(vip, at=time.time(), by=by)))
             said['web address'] += 1
         if fw is not None:
+            fw_trial_begin(store, by)
             store.set_meta('fw:conf', json.dumps(dict(fw, at=time.time(), by=by)))
             said['firewall'] += 1
         if pem:
@@ -27004,7 +28525,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     said['clients taken away'] += 1
             for r in store.realms():
                 if r['name'].lower() not in names('realms'):
-                    store.realm_drop(r['id'])
+                    store.realm_drop(r['id'], force=True)
                     said['realms taken away'] += 1
             for d in store.directories():
                 if d['name'].lower() not in names('directories'):
@@ -27017,7 +28538,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                         store.drop_account(a['name'])
                         said['accounts taken away'] += 1
             if 'settings' in conf:
-                have = set(str(k) for k in (conf.get('settings') or {}))
+                have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
                     if k not in have and base in DEFAULTS and base not in FILE_ONLY_KEYS and \
@@ -27956,7 +29477,7 @@ def _upgrade_view(h):
     if not nodes:
         nodes = [{'name': node_name(), 'version': __version__, 'me': True, 'alive': True,
                   'maintenance': maintenance_row(h.store)}]
-    ok, why = upgrade_checks(h.store, meta)
+    ok, why = upgrade_checks(h.store, meta, pages=True)
     plan = upgrade_plan(h.store)
     # A finished one hidden by Hide this (1.0.123).
     if plan and plan.get('state') != 'running' and \
@@ -27964,6 +29485,7 @@ def _upgrade_view(h):
         plan = None
     return {'node': node_name(), 'version': __version__, 'nodes': nodes, 'package': meta,
             'plan': plan, 'ready': ok, 'not_ready': why,
+            'downgrade_on': bool(CONFIG.get('upgrade_downgrade')),
             'mode': CONFIG.get('ha_mode') or '',
             'helper': UPGRADE_HELPER.exists(),
             'path_unit': Path('/etc/systemd/system/otp-upgrade.path').exists(),
@@ -28016,7 +29538,7 @@ def _upgrade_do(h):
     act = b.get('action')
     try:
         if act == 'start':
-            upgrade_start(h.store, s['name'])
+            upgrade_start(h.store, s['name'], pages=True)
             return dict(_upgrade_view(h), message='the upgrade has begun')
         if act == 'online_look':
             row = online_look(h.store, s['name'])
@@ -28026,13 +29548,34 @@ def _upgrade_do(h):
             return dict(_upgrade_view(h), message=(
                 'otp %s is there - newer than %s' % (n['version'], __version__) if row.get('newer')
                 else ('nothing newer than %s' % __version__ if n else 'no otp package there')))
+        if str(act or '').startswith('downgrade') and not CONFIG.get('upgrade_downgrade'):
+            # Offered on the pages only when switched on (1.0.144).
+            raise ValueError('going back to an older version is not offered on these pages: '
+                             'switch it on in Settings → Upgrades')
+        if act == 'downgrade_changelog':
+            return {'changelog': downgrade_changelog(b.get('version'))}
+        if act == 'downgrade_list':
+            # Going back (1.0.143): the older versions there, and what stands
+            # in the way of each.
+            return {'downgrade': downgrade_list(h.store)}
+        if act == 'downgrade_get':
+            plan = upgrade_plan(h.store)
+            if plan and plan['state'] == 'running':
+                raise ValueError('an upgrade is going on: wait for it, or stop it first')
+            meta = downgrade_fetch(h.store, str(b.get('version') or ''), s['name'])
+            if b.get('start'):
+                upgrade_start(h.store, s['name'], pages=True)
+                return dict(_upgrade_view(h), message='otp %s fetched and checked; going back '
+                            'to it has begun' % meta['version'])
+            return dict(_upgrade_view(h), message='otp %s is fetched, checked for this database '
+                        'and ready to go back to' % meta['version'])
         if act == 'online_get':
             plan = upgrade_plan(h.store)
             if plan and plan['state'] == 'running':
                 raise ValueError('an upgrade is going on: wait for it, or stop it first')
             meta = online_fetch(h.store, str(b.get('version') or ''), s['name'])
             if b.get('start'):
-                upgrade_start(h.store, s['name'])
+                upgrade_start(h.store, s['name'], pages=True)
                 return dict(_upgrade_view(h), message='otp %s fetched and checked; the upgrade '
                             'has begun' % meta['version'])
             return dict(_upgrade_view(h), message='otp %s is fetched, checked and ready'
@@ -28064,6 +29607,11 @@ def _upgrade_do(h):
             return dict(_upgrade_view(h), message='the package is forgotten')
     except ValueError as e:
         raise ApiError(400, str(e))
+    except (OSError, tarfile.TarError, subprocess.SubprocessError) as e:
+        # The address not answering, a package cut off (1.0.146): said, not an
+        # error 500 with its trace in the log.
+        raise ApiError(502, 'the address could not be read: %s'
+                       % (getattr(e, 'reason', None) or e))
     raise ApiError(400, 'no such thing to do')
 
 
@@ -28179,7 +29727,7 @@ def _ha_do(h):
             if CONFIG.get('ha_mode') == 'replicated':
                 # The second node of two replicating ones - or the same one
                 # again, after it was lost or reinstalled.
-                data = {'mode': 'replicated', 'key': sealing_key().hex(),
+                data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(),
                         'pg_major': int(h.store.db.value('SHOW server_version_num')) // 10000,
                         'slot': 3 - int(CONFIG.get('ha_slot') or 1),
                         'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),
@@ -28532,6 +30080,27 @@ def access_not_me_out(h, store, a, b):
                             'everybody in' % h.client_ip())
 
 
+@route('POST', '/api/trial')
+def _trial_do(h):
+    """A change on trial (1.0.137): keep it, or put back what was there."""
+    s = h.me('fulladmin')
+    b = h.body()
+    kind, act = str(b.get('kind') or ''), str(b.get('action') or '')
+    if act not in ('keep', 'back'):
+        raise ApiError(400, 'keep or back')
+    try:
+        if kind == 'net':
+            node = str(b.get('node') or '')
+            if node not in [n['name'] for n in ha_nodes(h.store)] + [node_name()]:
+                raise ApiError(400, 'there is no node %s' % node)
+            return {'message': net_trial_answer(h.store, node, act, s['name'])}
+        if kind == 'fw':
+            return {'message': fw_trial_answer(h.store, act, s['name'])}
+    except ValueError as e:
+        raise ApiError(409, str(e))
+    raise ApiError(400, 'net or fw')
+
+
 @route('POST', '/api/firewall')
 def _firewall_do(h):
     s = h.me('fulladmin')
@@ -28563,6 +30132,7 @@ def _firewall_do(h):
         if 'access' in b and isinstance(b.get('access'), dict):
             a = access_checked_api(b['access'])
             access_not_me_out(h, store, a, b)
+            fw_trial_begin(store, who)
             store.set_meta('web:access', json.dumps(dict(a, at=time.time(), by=who)))
             said.append('who may reach the pages: %s' % '; '.join(
                 '%s %s' % (k, 'everybody' if v['any'] else ', '.join(v['from']))
@@ -28631,10 +30201,14 @@ def _firewall_do(h):
         if 0 <= j < len(rules):
             rules[i], rules[j] = rules[j], rules[i]
             fw_set(store, who, rules=rules)
+            # The order decides which rule wins (1.0.146): written down as the others.
+            store.add_event('settings', '%s moved a firewall rule %s (now %d of %d)' % (
+                who, 'up' if j < i else 'down', j + 1, len(rules)), 'warn', who=who)
         return {'message': 'moved'}
     if act == 'access':
         a = access_checked_api(b)
         access_not_me_out(h, store, a, b)      # here too (1.0.59)
+        fw_trial_begin(store, who)
         store.set_meta('web:access', json.dumps(dict(a, at=time.time(), by=who)))
         store.add_event('settings', '%s set who may reach the pages: %s' % (who, '; '.join(
             '%s %s' % (k, 'everybody' if v['any'] else ', '.join(v['from'])) for k, v in a.items())),
@@ -28924,6 +30498,12 @@ def _mfa_do(h):
     act = b.get('action')
     name = acc['name']
     data = s.get('data') or {}
+    # The account as it is now, not as it was at this sign-in (1.0.139): a
+    # sign-in kept waiting from before the second step was set up could set
+    # up its own, over the one in use.
+    if act in ('enrol_start', 'enrol_confirm') and stage == 'enrol' and \
+            mfa_stage(h.store, name) != 'enrol':
+        raise ApiError(409, 'this account has its second step set up already - sign in again')
     if act == 'enrol_start':
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
@@ -28967,7 +30547,11 @@ def _mfa_do(h):
                 h.failed(key)
                 raise ApiError(400, 'that code is not right, or no longer good - send another')
             rec['dest'] = new['dest']
-        h.store.set_meta(mfa_key(name), json.dumps(rec))
+        with MFA_LOCK:
+            if mfa_stage(h.store, name) != 'enrol':
+                raise ApiError(409, 'this account has its second step set up already - sign '
+                                    'in again')
+            h.store.set_meta(mfa_key(name), json.dumps(rec))
         _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
         h.store.add_event('accounts', '%s set up the second step of signing in: %s%s' % (
             name, MFA_KIND_WORDS.get(rec['kind']),
@@ -29308,7 +30892,7 @@ def _rbackup_upload(h):
             pass
     up = secrets.token_hex(8)
     dst = RB_UPLOADS / up
-    h.body_to_file(dst, 8 * 1024 ** 3)
+    h.body_to_file(dst, 4 * 1024 ** 3)            # as nginx takes (1.0.139)
     try:
         with open(str(dst), 'rb') as f:
             head = f.read(8)
@@ -29455,6 +31039,27 @@ def _ntp_do(h):
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+@route('GET', '/api/console-login')
+def _console_login(h):
+    h.me('fulladmin')
+    return console_login_view(h.store)
+
+
+@route('POST', '/api/console-login')
+def _console_login_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    on = b.get('on')
+    if not isinstance(on, bool):
+        raise ApiError(400, 'on is true or false')
+    try:
+        console_login_ask(h.store, str(b.get('node') or node_name()), on, s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    return {'message': 'asked: the console at login is switched on within seconds' if on else
+            'asked: the console at login is switched off within seconds'}
 # ---- the console: otp run by its menus, on the server's own screen (1.0.130) --------
 # `otp --console` - and, with `otp --console-at-login on`, what root sees first
 # after signing in at the console or over SSH. Everything is done by the same
@@ -29799,6 +31404,12 @@ class Console(object):
         if others:
             self._put(y, 1, 'in maintenance: %s' % ', '.join(str(n) for n in others), A['warn'])
             y += 1
+        for t in st.get('trials') or []:
+            left = max(0, int(float(t.get('until') or 0) - time.time()))
+            self._put(y, 1, '%s waits to be kept: %d:%02d left (Cluster > Keep or put back)' % (
+                'the new network of %s' % t.get('node') if t.get('kind') == 'net'
+                else 'the change of the firewall', left // 60, left % 60), A['warn'])
+            y += 1
         if st and st.get('daemon_alive') is False:
             self._put(y, 1, 'the daemon is not answering', A['bad'])
             y += 1
@@ -30025,7 +31636,10 @@ class Console(object):
         try:
             got = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  stdin=subprocess.DEVNULL, env=e, timeout=1800)
-            return got.stdout.decode('utf-8', 'replace'), got.returncode
+            # Made safe here whatever the colour (1.0.146): with colour off the
+            # command wrote what a packet carried as it came, and page() put it
+            # on root's terminal - the title, the clipboard, the screen.
+            return term_safe(got.stdout.decode('utf-8', 'replace')), got.returncode
         except subprocess.TimeoutExpired:
             return 'it took more than 30 minutes and was stopped', 124
         except OSError as ex:
@@ -30214,9 +31828,14 @@ class Console(object):
             st['ino'] = os.fstat(f.fileno()).st_ino
             # Read from near the end only: a log can be gigabytes.
             f.seek(0, 2)
-            f.seek(max(0, f.tell() - 2 * 1024 * 1024))
+            start = max(0, f.tell() - 2 * 1024 * 1024)
+            f.seek(start)
             got = f.read().splitlines()
-            return got[1:][-self.LIVE_KEEP:] if len(got) > 1 else got
+            # The first line only when reading began inside it (1.0.146): a short
+            # log lost its first whole line.
+            if start and len(got) > 1:
+                got = got[1:]
+            return got[-self.LIVE_KEEP:]
 
         def more():
             f = st['f']
@@ -30327,7 +31946,7 @@ class Console(object):
         try:
             rx = re.compile(find, re.I)
             return lambda s: rx.search(s) is not None
-        except re.error:
+        except (re.error, OverflowError, RecursionError):   # a{9999999999} too (1.0.139)
             low = find.lower()
             return lambda s: low in s.lower()
 
@@ -30337,7 +31956,7 @@ class Console(object):
             return coloured
         try:
             rx = re.compile(find, re.I)
-        except re.error:
+        except (re.error, OverflowError, RecursionError):
             rx = re.compile(re.escape(find), re.I)
         out = []
         for part in re.split(r'(\x1b\[[0-9;?]*[A-Za-z])', coloured):
@@ -30382,7 +32001,7 @@ class Console(object):
 
         def add(raw):
             for ln in raw:
-                ln = ln.expandtabs(8).replace('\r', '')
+                ln = term_safe(ln.expandtabs(8).replace('\r', ''))
                 col = (paint(ln) if paint else ln) if p.on else self._plain_text(ln)
                 lines.append((self._plain_text(col), col))
         add(first())
@@ -30544,7 +32163,8 @@ class Console(object):
 
     def m_tokens(self):
         def load():
-            return self._rows(self.out('--tokens'), 'rows')
+            # Every one (1.0.146): the command gives 1000 unless asked.
+            return self._rows(self.out('--tokens', '--limit', '1000000'), 'rows')
 
         def tone(t):
             st = self._token_state(t)
@@ -30596,7 +32216,9 @@ class Console(object):
             if self.confirm('Delete', 'The token of %s is deleted - its app stops working '
                             'here and a new one must be enrolled. This cannot be undone.' % name,
                             'Delete it', danger=True):
-                self.act('--delete-token', name)
+                # Asked here already: the command has no terminal to ask on
+                # and refused without --yes (1.0.139).
+                self.act('--delete-token', name, '--yes')
 
     def token_new(self):
         got = self.form('Make a token (enrol)', [
@@ -30620,6 +32242,12 @@ class Console(object):
         if not got:
             return
         extra = ['--by', got['by']] + (['--to', got['to']] if got['by'] != 'app' else [])
+        had = ((self.out('--token', got['name']) or {}).get('token') or {})
+        if had and had.get('state') != 'pending':
+            if not self.confirm('Replace', 'The token of %s in use is replaced, and stops '
+                                'working now.' % got['name'], 'Replace it', danger=True):
+                return
+            extra.append('--yes')
         self.act('--enroll', got['name'], *extra)
 
     def radtest(self, name):
@@ -30889,8 +32517,10 @@ class Console(object):
                 'Empty: only the connection and the binding are tried. A name (novak): '
                 'it is looked up, with its groups.'))
             if who is not None:
-                self.act('--directory-test', r['name'], *(['--directory-user', who]
-                                                          if who else []))
+                # --directory-user is NAME USER, and a command of its own (1.0.139).
+                self.act('--directory-test', r['name'])
+                if who:
+                    self.act('--directory-user', r['name'], who)
         elif what == 'show':
             self.details(r['name'], r, skip=('bind_pw', 'ca'))
         elif what == 'delete' and self.confirm(
@@ -30940,7 +32570,33 @@ class Console(object):
                 if self.confirm(title, words, title):
                     self.act(flag)
             return go
+        def trials():
+            st = self.out('--status') or {}
+            got = st.get('trials') or []
+            if not got:
+                self.note('Changes on trial', 'Nothing waits to be kept.')
+                return
+            t = self.choose('Changes on trial', [
+                (i, '%s - %d min left' % ('the new network of %s' % x['node']
+                                          if x['kind'] == 'net' else 'the firewall and access',
+                                          max(0, int((x['until'] - time.time()) // 60))))
+                for i, x in enumerate(got)], 'Not kept in time, each goes back by itself.')
+            if t is None:
+                return
+            x = got[t]
+            act = self.choose('What to do', [('keep', 'Keep it'),
+                                             ('back', 'Put the old back now')])
+            if act == 'back' and not self.confirm('Put the old back', (
+                    '%s goes back to its old network and restarts.' % x['node'])
+                    if x['kind'] == 'net' else 'The firewall goes back to what it was.',
+                    'Put it back', danger=True):
+                return
+            if act:
+                self.act('--change-keep' if act == 'keep' else '--change-back', x['kind'],
+                         *(['--node', x['node']] if x.get('node') else []))
+                self.st_now = True
         return self.sub('Cluster, web address and maintenance', [
+            ('0', 'Keep or put back a change on trial (network, firewall)', trials),
             ('1', 'The cluster', lambda: self.act('--ha-status')),
             ('2', 'The web address, certificates, firewall', lambda: self.act('--web-status')),
             ('3', 'Maintenance of this node', maint),
@@ -30953,7 +32609,8 @@ class Console(object):
         ])
 
     # ---- settings on the text screen: arrows, Enter, a window to change one (1.0.134)
-    PANE_TITLES = [('radius', 'The RADIUS server'), ('realms', 'Realms'), ('tokens', 'Tokens'),
+    PANE_TITLES = [('radius', 'The RADIUS server'), ('guard', 'Sign-in protection'),
+                   ('realms', 'Realms'), ('tokens', 'Tokens'),
                    ('codes', 'Codes by e-mail and SMS'), ('portal', 'The enrolment pages'),
                    ('mail', 'Mail'), ('people', 'Accounts'), ('isemon', 'isemon'),
                    ('db', 'The database'), ('backup', 'Backups'), ('ha', 'High availability'),
@@ -31155,6 +32812,23 @@ class Console(object):
                 except Exception:                       # noqa: BLE001
                     pass
             return named[k]
+        if 0xc0 <= k < 0xf8:
+            # getch() gives UTF-8 a byte at a time (1.0.139): "ž" came as two
+            # Latin-1 letters, and a password typed here was not the one meant.
+            raw = bytearray([k])
+            src.nodelay(True)
+            try:
+                for _ in range(1 if k < 0xe0 else 2 if k < 0xf0 else 3):
+                    k2 = src.getch()
+                    if not 0x80 <= k2 < 0xc0:
+                        break
+                    raw.append(k2)
+            finally:
+                src.nodelay(False)
+            try:
+                return raw.decode('utf-8')
+            except UnicodeDecodeError:
+                return None
         if 32 <= k < 0x110000:
             try:
                 return chr(k)
@@ -32047,6 +33721,21 @@ class Console(object):
             if not os.path.isfile(script):
                 self.note('Upgrade', 'there is no install.sh in %s' % folder, 'bad')
                 return
+            # The version the package's otp.py says (1.0.146), not its folder's name.
+            m = None
+            try:
+                with open(os.path.join(folder, 'otp.py'), encoding='utf-8') as f:
+                    m = re.search(r"^__version__ = '(\d+\.\d+\.\d+)'", f.read(), re.M)
+            except OSError:
+                pass
+            if m and _ver_tuple(m.group(1)) < _ver_tuple(__version__):
+                # Never past the checks (1.0.143): an older one goes the safe way.
+                self.note('Upgrade', '%s is older than %s, which runs here. Going back is '
+                          'checked first - Upgrades → Go back to an older version, or\n'
+                          'otp --downgrade %s' % (m.group(1), __version__,
+                                                  path if path.endswith('.tar.gz') else
+                                                  'otp-%s.tar.gz' % m.group(1)), 'warn')
+                return
             if self.confirm('Upgrade', 'This node is upgraded with %s.' % script, 'Upgrade'):
                 def go():
                     self.clear_screen()
@@ -32058,6 +33747,39 @@ class Console(object):
             if self.confirm('Stop the upgrade', 'The nodes not yet begun stay as they are; '
                             'one being upgraded finishes.', 'Stop it'):
                 self.act('--upgrade-cancel')
+
+        def back():
+            # Going back to an older version (1.0.143): only one that is safe.
+            self.working('working…  looking for older versions')
+            got = self.out('--downgrade-check') or {}
+            if not got.get('versions') and got.get('url') is None:
+                self.note('Go back to an older version', 'The versions could not be read: '
+                          'is upgrade_url set? (otp --downgrade-check says why)', 'bad')
+                return
+            vs = got.get('versions') or []
+            ok = [v for v in vs if not v.get('why')]
+            if not ok:
+                self.note('Go back to an older version', 'Nothing older at %s may be gone back '
+                          'to.\n\n%s' % (got.get('url'), '\n'.join(
+                              '%s: %s' % (v['version'], '; '.join(v['why'])) for v in vs)
+                              or 'No older version is there.'), 'warn')
+                return
+            ver = self.choose('Go back to an older version', [
+                (v['version'], 'otp %s' % v['version']) for v in ok],
+                'This server runs %s and may go back to %s or newer (the database is not '
+                'touched). Found at %s:' % (__version__, got.get('floor'), got.get('url')))
+            if not ver:
+                return
+            nodes = self._nodes()
+            if not self.confirm('Go back to %s' % ver, (
+                    'The nodes %s go back one at a time - each in maintenance while it is, '
+                    'the other answering.' % ', '.join(nodes) if len(nodes) > 1 else
+                    'This server goes back - for a minute nobody can sign in to the VPN.') +
+                    ' The package is checked against the database first. What came in the '
+                    'newer versions is gone until you upgrade again.', 'Go back',
+                    danger=True):
+                return
+            self.live(lambda: self.show_live('--downgrade', ver, '--yes'))
         return self.sub('Upgrades', [
             ('1', 'How it stands', lambda: self.act('--upgrade-status')),
             ('2', 'Look for a new version on the web now', lambda: self.act('--upgrade-check')),
@@ -32066,6 +33788,7 @@ class Console(object):
              'plain'),
             ('5', 'Upgrade this node from a package file', install),
             ('6', 'Stop an upgrade going on', cancel),
+            ('7', 'Go back to an older version (only a safe one)', back),
         ])
 
     # ---- 11 the service ---------------------------------------------------------
@@ -32131,6 +33854,69 @@ def console_at_login_set(on):
     return ('the otp console opens when root signs in at the console or over SSH (q leaves '
             'it for the shell)' if on else 'root signs in to the ordinary shell; '
             '`otp --console` opens the console')
+
+
+# ---- switched on the pages (1.0.141) ------------------------------------------------
+# Settings → About: each node's switch. The page writes 'console:want:NODE'; that
+# node's daemon has its root helper write /etc/otp-console-login, and says how
+# it is in 'console:now:NODE' - read from the file itself, so a change made with
+# otp --console-at-login shows too.
+CONSOLE_WORK = {'busy': False, 'seen': 0.0}
+
+
+def console_login_view(store):
+    nodes = [node_name()] + [n['name'] for n in ha_nodes(store) if n['name'] != node_name()]
+    out = []
+    for n in nodes:
+        now = _meta_json(store, 'console:now:' + n) or {}
+        want = _meta_json(store, 'console:want:' + n) or {}
+        out.append({'name': n, 'me': n == node_name(), 'on': now.get('on'),
+                    'at': now.get('at'), 'error': now.get('error') or '',
+                    'pending': bool(want) and want.get('id') != now.get('done')})
+    return {'nodes': out}
+
+
+def console_login_ask(store, node, on, by):
+    known = [node_name()] + [n['name'] for n in ha_nodes(store)]
+    if node not in known:
+        raise ValueError('there is no node %s' % node)
+    store.set_meta('console:want:' + node, json.dumps({
+        'id': secrets.token_hex(6), 'on': bool(on), 'by': by, 'at': time.time()}))
+    store.add_event('settings', ('%s switched on the otp console at login on %s' if on else
+                                 '%s switched off the otp console at login on %s') % (by, node),
+                    'warn', who=by)
+
+
+def console_login_tick(daemon):
+    """Every few seconds: a switch asked for this node done; how it is, said."""
+    store = daemon.store
+    me = node_name()
+    want = _meta_json(store, 'console:want:' + me) or {}
+    now = _meta_json(store, 'console:now:' + me) or {}
+    if want and want.get('id') != now.get('done') and not CONSOLE_WORK['busy']:
+        CONSOLE_WORK['busy'] = True
+
+        def go():
+            try:
+                err = ''
+                try:
+                    root_ask('console.ask', 'console.json',
+                             {'do': 'set', 'on': bool(want.get('on'))}, 60)
+                except ValueError as e:
+                    err = str(e)[:300]
+                    log('the console at login could not be switched: %s' % err, 'warn')
+                store.set_meta('console:now:' + me, json.dumps({
+                    'on': console_at_login(), 'at': time.time(), 'done': want.get('id'),
+                    'error': err}))
+            finally:
+                CONSOLE_WORK['busy'] = False
+        threading.Thread(target=go, name='otp-console-login', daemon=True).start()
+        return
+    if time.time() - CONSOLE_WORK['seen'] > 60 and not CONSOLE_WORK['busy']:
+        CONSOLE_WORK['seen'] = time.time()
+        on = console_at_login()
+        if now.get('on') != on or 'on' not in now:
+            store.set_meta('console:now:' + me, json.dumps(dict(now, on=on, at=time.time())))
 
 
 def console_main(pal):
@@ -32199,6 +33985,22 @@ def start_colour():
 
 
 ANSI = re.compile(r'\033\[[0-9;]*m')
+TERM_CTL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+
+
+def term_safe(text):
+    """What came from outside, safe on a terminal (1.0.139): a User-Name or a
+    reason from a packet carried escapes that cleared the screen, set the
+    title or wrote the clipboard. Colours are kept; any other control
+    character is shown as \\xNN."""
+    t = str(text)
+    out, at = [], 0
+    for m in ANSI.finditer(t):
+        out.append(TERM_CTL.sub(lambda c: '\\x%02x' % ord(c.group(0)), t[at:m.start()]))
+        out.append(m.group(0))
+        at = m.end()
+    out.append(TERM_CTL.sub(lambda c: '\\x%02x' % ord(c.group(0)), t[at:]))
+    return ''.join(out)
 
 
 def plain_len(text):
@@ -32351,7 +34153,7 @@ def table(rows, heads, widths=None):
     if not rows:
         return '  (none)'
     pal = TABLE_PAL
-    cells = [[tone_cell(c, pal) for c in r] for r in rows]
+    cells = [[tone_cell(term_safe(c), pal) for c in r] for r in rows]
     cols = list(zip(*([heads] + [[str(c) for c in r] for r in cells])))
     w = widths or [min(48, max(plain_len(x) for x in col)) for col in cols]
     head = '  ' + '  '.join(h.upper().ljust(w[i]) for i, h in enumerate(heads))
@@ -32371,7 +34173,8 @@ class ColourOut(object):
 
     def _line(self, ln):
         p = self.pal
-        if not ln.strip() or ANSI.search(ln):
+        ln = term_safe(ln)
+        if not p.on or not ln.strip() or ANSI.search(ln):
             return ln
         m = self.LINE_KV.match(ln)
         if m and not ln.lstrip().startswith(('$', '#')):
@@ -32396,8 +34199,10 @@ class ColourOut(object):
         return getattr(self.s, name)
 
 
-def ask_password(prompt='password', twice=True):
-    said = os.environ.get('OTP_PASSWORD')
+def ask_password(prompt='password', twice=True, env='OTP_PASSWORD'):
+    # Each secret its own variable (1.0.139): OTP_PASSWORD, set for an
+    # account, became a client's shared secret.
+    said = os.environ.get(env) if env else None
     if said:
         return said
     first = getpass.getpass('%s: ' % prompt)
@@ -32511,7 +34316,9 @@ def help_text(parser, pal):
 
 
 def build_parser():
-    p = HelpfulParser(prog='otp', add_help=False, usage='otp [--json] [--no-color] [what to do]',
+    # Options whole, never shortened (1.0.146): --js was taken for --json -
+    # and --check --js went round itself until the stack ran out.
+    p = HelpfulParser(prog='otp', add_help=False, allow_abbrev=False, usage='otp [--json] [--no-color] [what to do]',
                       description='a one-time password server: RADIUS, TOTP, the enrolment '
                                   'of tokens and Active Directory, in one Python file',
                       formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(
@@ -32570,7 +34377,8 @@ def build_parser():
     g = p.add_argument_group('RADIUS')
     g.add_argument('--radtest', nargs='+', metavar='ARG', help='USER CODE [SERVER [PORT '
                    '[SECRET]]] - ask the way radtest does; the server is this one, the secret '
-                   'that of the client for 127.0.0.1, unless given')
+                   'that of the client for 127.0.0.1, unless given. CODE or SECRET as - is '
+                   'asked for (or OTP_RADTEST_PASSWORD, OTP_SECRET)')
     g.add_argument('--clients', action='store_true', help='the RADIUS clients')
     g.add_argument('--add-client', metavar='NAME', help='add (or change) a client: with '
                    '--address and --secret, and --realm for names that come without one')
@@ -32604,7 +34412,8 @@ def build_parser():
     g.add_argument('--hosts', metavar='H1,H2', help='its servers, in order')
     g.add_argument('--base', metavar='DN', help='where to look: DC=example,DC=local')
     g.add_argument('--bind-dn', metavar='WHO', help='the account it reads with')
-    g.add_argument('--bind-pw', metavar='PASS', help='its password (or OTP_BIND_PW)')
+    g.add_argument('--bind-pw', metavar='PASS', help='its password: - asks for it (or '
+                   'OTP_BIND_PW) - not on the command line, where ps shows it')
     g.add_argument('--tls', choices=('ldaps', 'starttls', 'none'), help='how it is reached')
     g.add_argument('--port', type=int, metavar='N', help='its port')
     g.add_argument('--no-verify', action='store_true', help='do not check its certificate')
@@ -32686,7 +34495,19 @@ def build_parser():
                         'its progress (--yes: without asking)')
     g.add_argument('--upgrade-follow', action='store_true', help='follow an upgrade going on, '
                    'with its progress, until it ends')
+    g.add_argument('--downgrade-check', action='store_true', help='the versions at upgrade_url '
+                   'older than this one, and whether each may be gone back to')
+    g.add_argument('--downgrade', metavar='VERSION|FILE', help='go back to an older otp - VERSION '
+                   'from upgrade_url, or an otp-X.Y.Z.tar.gz - only when it is safe: checked '
+                   'against how far back the versions that ran here allow, and against the '
+                   'database\'s tables; the database itself is not touched. Every node, one at '
+                   'a time (--yes: without asking)')
     g.add_argument('--rename-from-opt', action='store_true', help=argparse.SUPPRESS)
+    g.add_argument('--change-keep', metavar='net|fw', choices=('net', 'fw'),
+                   help='keep a change on trial: a node\'s new network (with --node) or the '
+                        'firewall - not kept, it goes back by itself')
+    g.add_argument('--change-back', metavar='net|fw', choices=('net', 'fw'),
+                   help='put back now what was there before a change on trial')
     g.add_argument('--upgrade-cancel', action='store_true', help='stop an upgrade started on '
                    'the pages: the nodes not yet begun stay as they are')
     g = p.add_argument_group('HIGH AVAILABILITY (TWO NODES, ONE POSTGRESQL)')
@@ -32784,9 +34605,10 @@ HELP_EXAMPLES = [
     ('otp --radtest novak 123456', 'what radtest asks, from this machine'),
     ('otp --log --rejects', 'who was refused, and why'),
     ('otp --request 42', 'every step of one decision'),
-    ("otp --add-client ASA --address 192.0.2.1 --secret 'something long' --realm example.cz", ''),
+    ('otp --add-client ASA --address 192.0.2.1 --secret - --realm example.cz',
+     'the secret asked for (or OTP_SECRET)'),
     ("otp --add-directory AD --hosts dc1.example.local,dc2.example.local \\\n"
-     "    --base DC=example,DC=local --bind-dn otp@example.local --bind-pw '...'", ''),
+     "    --base DC=example,DC=local --bind-dn otp@example.local --bind-pw -", ''),
     ("otp --add-realm example.cz --suffix example.cz --directory AD --lookup upn \\\n"
      "    --groups 'VPN_USERS;VPN_ADMINS'", ''),
     ('otp --import-legacy /root/old-otp', 'everything from a totpcgi + FreeRADIUS server'),
@@ -33088,7 +34910,10 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     write_file_settings(changes)
     chown_to_service(CONFIG_FILE, 0o640)
     load_config(saved=store.settings_saved())
-    data = {'mode': 'replicated', 'key': sealing_key().hex(), 'pg_major': major, 'slot': 2,
+    # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
+    # key, and the second node wrote an empty secrets.key and could not start.
+    data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(), 'pg_major': major,
+            'slot': 2,
             'db': {'db_name': name, 'db_user': user, 'db_password': pw},
             'peer': {'name': node_name(), 'address': me, 'port': port, 'slot': 1},
             'cluster': CONFIG.get('site_name') or 'otp'}
@@ -33120,6 +34945,9 @@ def cli_ha_join_replicated(args, pal, data, ask):
     peer = data.get('peer') or {}
     db = data.get('db') or {}
     name, user, pw = db.get('db_name'), db.get('db_user'), db.get('db_password')
+    if not re.match(r'^[0-9a-f]{64}\Z', str(data.get('key') or '')):
+        raise SystemExit('otp: the bundle holds no key - make it again on the first node '
+                         '(otp --ha-bundle), with this version')
     print(pal.head('joining %s - a PostgreSQL on each node, replicating both ways'
                    % (peer.get('name') or '?')))
     node = args.node_name or ask('This node\'s name', socket.gethostname().split('.')[0])
@@ -33588,6 +35416,13 @@ def cli_stage_files(args):
             args.import_legacy = stage(args.import_legacy)
         if getattr(args, 'import_totpcgi', None):
             args.import_totpcgi = stage(args.import_totpcgi)
+        # A package to go back to and a directory's authority (1.0.146): in
+        # /root, where the docs put them, the otp account could not read them.
+        if getattr(args, 'downgrade', None) and (
+                args.downgrade.endswith(('.tar.gz', '.tgz')) or os.path.sep in args.downgrade):
+            args.downgrade = stage(args.downgrade)
+        if getattr(args, 'ca', None):
+            args.ca = stage(args.ca)
         if getattr(args, 'export_config', None) and args.export_config != '-':
             mode = 0o600 if getattr(args, 'with_secrets', False) else 0o640
             fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
@@ -33663,7 +35498,8 @@ def cli_upgrade_follow(store, pal):
                 fill = '█' * n + '░' * (width - n)
                 paint = pal.bad if bad else (pal.good if good else pal.info)
                 return paint(fill) + ' %3d %%' % pc
-            lines = [pal.head('upgrade to %s' % plan.get('version')) + pal.dim(
+            lines = [pal.head(('going back to %s' if plan.get('downgrade') else 'upgrade to %s')
+                              % plan.get('version')) + pal.dim(
                 '  started by %s · %s' % (plan.get('by') or '?', plan.get('state')))]
             lines.append('  %-16s %s  %d of %d node(s) done' % (
                 'all', bar(whole, plan.get('state') == 'failed', plan.get('state') == 'done'),
@@ -33676,17 +35512,22 @@ def cli_upgrade_follow(store, pal):
                 lines.append('  %-16s %s  %s' % (x['name'][:16], bar(
                     pc, x.get('state') == 'failed', x.get('state') == 'done'),
                     str(words)[:60]))
-            if tty and drawn:
-                sys.stdout.write('\x1b[%dA' % drawn)
-            for ln in lines:
-                sys.stdout.write(('\x1b[2K' if tty else '') + ln + '\n')
+            # Past ColourOut (1.0.146): it shows any escape that is not a
+            # colour as text - the frame was drawn again below, never over.
             sys.stdout.flush()
+            raw = getattr(sys.stdout, 's', sys.stdout)
+            if tty and drawn:
+                raw.write('\x1b[%dA' % drawn)
+            for ln in lines:
+                raw.write(('\x1b[2K' if tty else '') + term_safe(ln) + '\n')
+            raw.flush()
             drawn = len(lines)
             if plan.get('state') != 'running':
                 ok = plan.get('state') == 'done'
                 print((pal.ok_line if ok else pal.bad_line)(
-                    'the upgrade %s' % ('is done - every node runs %s' % plan.get('version')
-                                        if ok else 'ended: %s' % plan.get('state'))))
+                    '%s %s' % ('going back' if plan.get('downgrade') else 'the upgrade',
+                               'is done - every node runs %s' % plan.get('version')
+                               if ok else 'ended: %s' % plan.get('state'))))
                 return 0 if ok else 1
             if not tty:
                 drawn = 0
@@ -33708,8 +35549,9 @@ def cli_main(argv=None):
     TABLE_PAL = pal
     args = parser.parse_args(argv)
     # Every line coloured (1.0.132) - not the console's own screen, nor JSON.
-    if pal.on and not args.console and not args.json and not args.daemon and \
-            not isinstance(sys.stdout, ColourOut):
+    # On a terminal always: what is printed is made safe there (1.0.139).
+    if (pal.on or sys.stdout.isatty()) and not args.console and not args.json and \
+            not args.daemon and not isinstance(sys.stdout, ColourOut):
         sys.stdout = ColourOut(sys.stdout, pal)
     if args.help:
         sys.stdout.write(parser.format_help())
@@ -33816,6 +35658,25 @@ def cli_main(argv=None):
             print('  the authority ends %s' % datetime.fromtimestamp(
                 v['authority_end'][0]).strftime('%Y-%m-%d'))
         return 0
+    if args.change_keep or args.change_back:
+        kind = args.change_keep or args.change_back
+        act = 'keep' if args.change_keep else 'back'
+        trials = trials_view(store)
+        if kind == 'net':
+            node = args.node or (next((x['node'] for x in trials if x['kind'] == 'net'), None)
+                                 or node_name())
+            try:
+                said = net_trial_answer(store, node, act, 'command line')
+            except ValueError as e:
+                raise SystemExit('otp: %s' % e)
+        else:
+            try:
+                said = fw_trial_answer(store, act, 'command line')
+            except ValueError as e:
+                raise SystemExit('otp: %s' % e)
+        print(pal.ok_line(said))
+        return 0
+
     if args.ha_readdress:
         if not args.ha_address and not args.ha_peer:
             v = readdress_view(store)
@@ -33980,6 +35841,70 @@ def cli_main(argv=None):
     if args.upgrade_follow:
         return cli_upgrade_follow(store, pal)
 
+    if args.downgrade_check:
+        try:
+            got = downgrade_list(store)
+        except Exception as e:                          # noqa: BLE001
+            raise SystemExit('otp: %s' % e)
+        if args.json:
+            print(json.dumps(got, indent=2, default=str))
+            return 0
+        print(pal.head('going back from %s - looked at %s' % (__version__, got['url'])))
+        print(pal.dim('  it may go back to %s or newer (set by otp %s; this machine allows %s)'
+                      % (got['floor'], got['floor_by'], got['root_floor'] or 'nothing yet')))
+        if not got['versions']:
+            print(pal.ok_line('no version older than %s is there' % __version__))
+        for v in got['versions']:
+            if v['why']:
+                print(pal.bad_line('%-10s %s' % (v['version'], '; '.join(v['why']))))
+            else:
+                print(pal.ok_line('%-10s may be gone back to: otp --downgrade %s'
+                                  % (v['version'], v['version'])))
+        return 0
+
+    if args.downgrade:
+        plan = upgrade_plan(store)
+        if plan and plan['state'] == 'running':
+            raise SystemExit('otp: an upgrade is going on - otp --upgrade-follow')
+        want = args.downgrade
+        is_file = want.endswith(('.tar.gz', '.tgz')) or os.path.sep in want
+        if not is_file:
+            why = downgrade_why_not(store, want)
+            if why:
+                raise SystemExit('otp: otp %s cannot be gone back to: %s' % (want, '; '.join(why)))
+        nodes = [n['name'] for n in ha_nodes(store)] or [node_name()]
+        print(pal.head('otp %s → %s (going back)' % (__version__, os.path.basename(want))))
+        print('  ' + ('the nodes %s, one at a time - each in maintenance while it is done'
+                      % ', '.join(nodes) if len(nodes) > 1 else
+                      'this server - for a minute nobody can sign in to the VPN'))
+        print('  ' + pal.dim('the database stays as it is; what came in the newer versions is '
+                             'gone until you upgrade again'))
+        if not args.yes:
+            try:
+                ok = input('  go back? (y/N) ').strip().lower() in ('y', 'yes', 'a', 'ano')
+            except (EOFError, KeyboardInterrupt):
+                ok = False
+            if not ok:
+                print('  nothing done')
+                return 1
+        print(pal.dim('  checking it: its signature, how far back this may go, the tables…'))
+        try:
+            if is_file:
+                if not os.path.isfile(want):
+                    raise ValueError('%s is not a file' % want)
+                meta = downgrade_file(store, want, 'command line')
+            else:
+                meta = downgrade_fetch(store, want, 'command line')
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        print(pal.ok_line('otp %s checked (signed by %s) - the database can take it'
+                          % (meta['version'], meta.get('signed_by'))))
+        try:
+            upgrade_start(store, 'command line')
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        return cli_upgrade_follow(store, pal)
+
     if args.upgrade_status:
         meta = json.loads(store.get_meta('upgrade:pkg') or 'null')
         plan = upgrade_plan(store)
@@ -34121,6 +36046,8 @@ def cli_main(argv=None):
                                 if CONFIG.get('isemon') else 'not sent'))
         for p in s['problems']:
             print(pal.bad_line(p))
+        for p in trial_problem_words(s.get('trials') or []):
+            print(pal.warn_line(p))
         bad = 0
         if args.check:
             print(pal.head('checking every part of it'))
@@ -34204,8 +36131,8 @@ def cli_main(argv=None):
         print(pal.dim('  %d of %d in the last %s h' % (len(rows), total, args.hours)))
         return 0
 
-    if args.request:
-        r = store.radius_row(args.request)
+    if args.request is not None:
+        r = store.radius_row(args.request) if 0 <= args.request < 2 ** 62 else None
         if not r:
             raise SystemExit('there is no request %d' % args.request)
         if args.json:
@@ -34239,7 +36166,8 @@ def cli_main(argv=None):
         return 0
 
     if args.tokens:
-        rows, total = store.tokens(q=args.search, limit=args.limit if '--limit' in sys.argv else 1000)
+        rows, total = store.tokens(q=args.search, limit=args.limit if any(
+            x == '--limit' or x.startswith('--limit=') for x in sys.argv) else 1000)
         if args.json:
             out({'rows': rows, 'total': total})
             return 0
@@ -34379,7 +36307,7 @@ def cli_main(argv=None):
             raise SystemExit('no token %s' % norm_name(args.unlock))
         store.token_write(norm_name(args.unlock), {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         # Its recovery codes given back too, as on the pages (1.0.103).
-        store.db.run('DELETE FROM meta WHERE k = ?', ('scratchguard:' + norm_name(args.unlock),))
+        node_key_drop(store, 'scratchguard', args.unlock)
         store.add_event('tokens', 'the command line let %s try again at once'
                         % norm_name(args.unlock), who='command line')
         print(pal.ok_line('the wrong codes of %s are forgotten' % norm_name(args.unlock)))
@@ -34391,7 +36319,8 @@ def cli_main(argv=None):
         n = collections.Counter()
         for f in sorted(Path(args.import_totpcgi).glob('*.totp')):
             try:
-                said = import_totp(store, f.name[:-5], f.read_text(errors='replace'), 'import',
+                said = import_totp(store, totp_file_owner(f.name), f.read_text(errors='replace'),
+                                   'import',
                                    args.replace)
             except ValueError as e:
                 said = 'not imported: %s' % e
@@ -34427,8 +36356,14 @@ def cli_main(argv=None):
             # Not on the command line, where `ps` shows it (1.0.136).
             code = os.environ.get('OTP_RADTEST_PASSWORD') or getpass.getpass('password + code: ')
         server = a[2] if len(a) > 2 else '127.0.0.1'
-        port = int(a[3]) if len(a) > 3 else int(CONFIG.get('radius_auth_port') or 1812)
+        try:
+            port = int(a[3]) if len(a) > 3 else int(CONFIG.get('radius_auth_port') or 1812)
+        except ValueError:
+            raise SystemExit('otp --radtest: the port is a number')
         secret = a[4] if len(a) > 4 else None
+        if secret == '-':
+            # As --secret - (1.0.139): not on the command line, where ps shows it.
+            secret = ask_password('the shared secret', twice=False, env='OTP_SECRET')
         if secret is None:
             local = store.client_for('127.0.0.1')
             if not local:
@@ -34495,13 +36430,15 @@ def cli_main(argv=None):
                    None)
         data = {'id': old['id'] if old else None, 'name': args.add_client,
                 'address': args.address or (old or {}).get('address'),
-                'secret': (os.environ.get('OTP_SECRET') or ask_password('the shared secret'))
+                'secret': ask_password('the shared secret', env='OTP_SECRET')
                 if args.secret == '-' else args.secret if args.secret is not None else (
-                    None if old else ask_password('the shared secret')),
+                    None if old else ask_password('the shared secret', env='OTP_SECRET')),
                 'realm': args.realm if args.realm is not None else (old or {}).get('realm', ''),
                 # A client switched off stays off when it is changed (1.0.136).
                 'require_ma': (old or {}).get('require_ma', 0),
                 'enabled': (old or {}).get('enabled', 1),
+                'nas_type': (old or {}).get('nas_type', ''),
+                'position': (old or {}).get('position'),
                 'note': args.note or (old or {}).get('note', '')}
         store.client_save(data, who)
         bump(store)
@@ -34516,6 +36453,8 @@ def cli_main(argv=None):
         if not one:
             raise SystemExit('there is no client called %s' % args.del_client)
         store.client_drop(one['id'])
+        store.add_event('clients', 'command line took away the client %s' % one['name'],
+                        who='command line')
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -34548,12 +36487,17 @@ def cli_main(argv=None):
                           'auth_mode': args.mode or old.get('auth_mode') or 'otp',
                           'groups': groups, 'check_disabled': old.get('check_disabled', 1),
                           'nested': old.get('nested', 1), 'reply': old.get('reply', ''),
-                          'enabled': 1, 'token_name': old.get('token_name', 'whole'),
+                          # As it was (1.0.146): a realm switched off on the pages
+                          # was switched on again by a note given here.
+                          'enabled': old.get('enabled', 1), 'position': old.get('position'),
+                          'token_name': old.get('token_name', 'whole'),
                           'methods': [m.strip() for m in args.methods.split(',')]
                           if args.methods else old.get('methods'),
                           'aliases': args.aliases if args.aliases is not None
                           else old.get('aliases') or [],
                           'note': args.note or old.get('note', '')}, who)
+        store.add_event('realms', 'command line saved the realm %s' % args.add_realm,
+                        who='command line')
         bump(store)
         print(pal.ok_line('the realm %s is saved' % args.add_realm))
         return 0
@@ -34563,7 +36507,12 @@ def cli_main(argv=None):
                    None)
         if not one:
             raise SystemExit('there is no realm called %s' % args.del_realm)
-        store.realm_drop(one['id'])
+        try:
+            store.realm_drop(one['id'])
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        store.add_event('realms', 'command line took away the realm %s' % one['name'],
+                        who='command line')
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -34585,6 +36534,9 @@ def cli_main(argv=None):
         if args.ca:
             ca = Path(args.ca).read_text()
         pw = args.bind_pw if args.bind_pw is not None else os.environ.get('OTP_BIND_PW')
+        if pw == '-':
+            pw = ask_password('the password of %s' % (args.bind_dn or 'the binding account'),
+                              twice=False, env='OTP_BIND_PW')
         data = {'id': old.get('id'), 'name': args.add_directory,
                 'hosts': args.hosts or old.get('hosts'), 'base': args.base or old.get('base'),
                 'bind_dn': args.bind_dn if args.bind_dn is not None else old.get('bind_dn', ''),
@@ -34593,12 +36545,15 @@ def cli_main(argv=None):
                 'port': args.port or (old.get('port') if not args.tls else None),
                 'verify': 0 if args.no_verify else old.get('verify', 1),
                 'weak': (args.weak_certs == 'on') if args.weak_certs else old.get('weak', 0),
-                'nested': old.get('nested', 1), 'enabled': 1,
+                'nested': old.get('nested', 1), 'enabled': old.get('enabled', 1),
+                'timeout_s': old.get('timeout_s') or 10,
                 'user_attr': old.get('user_attr') or 'sAMAccountName',
                 'note': args.note or old.get('note', '')}
         if ca is not None:
             data['ca'] = ca
         store.directory_save(data, who)
+        store.add_event('directories', 'command line saved the directory %s'
+                        % args.add_directory, who='command line')
         bump(store)
         print(pal.ok_line('the directory %s is saved' % args.add_directory))
         return 0
@@ -34607,7 +36562,12 @@ def cli_main(argv=None):
         one = store.directory(args.del_directory)
         if not one:
             raise SystemExit('there is no directory called %s' % args.del_directory)
-        store.directory_drop(one['id'])
+        try:
+            store.directory_drop(one['id'])
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        store.add_event('directories', 'command line took away the directory %s' % one['name'],
+                        who='command line')
         bump(store)
         print(pal.ok_line('gone'))
         return 0

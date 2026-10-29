@@ -4,6 +4,288 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.146 — 29 October 2026
+
+**A second deep look through the whole program: bugs fixed**
+
+*RADIUS and the codes*
+- Two nodes no longer write the same row for "a code was just sent" and the
+  recovery-code guard: each node keeps its own row (`NAME@@NODE`), so
+  logical replication never stops on a duplicate key.
+- Sign-in protection: a single trusted IPv6 address trusts its /64 (requests
+  are told apart by their /64); a directory that could not be asked is the
+  server's trouble, not a guess, and is not counted against the place.
+- A phone number written as `420603123456` (country code, no +) is no longer
+  made `+420420603123456`.
+- The Teltonika debug log no longer holds the text of an SMS with its live
+  code.
+
+*Realms, clients, directories*
+- Taking away a realm that a client takes alone is refused (that client would
+  have taken every realm); the import that replaces everything switches such
+  clients off instead.
+- A directory renamed keeps its realms (any case) and the administrators'
+  sign-in directory; the one administrators sign in against cannot be taken
+  away. Saving a client, realm or directory someone else just took away says
+  so instead of making a new one; switches sent as text are read as on/off.
+- Taking away an administrator account takes its second step with it - a new
+  account of the same name starts without it.
+- The command line keeps a client's, realm's or directory's on/off, position
+  and timeout when it saves one again, writes those changes to the events,
+  and no longer takes an abbreviated option for another.
+
+*Pages and API*
+- A request on a kept-alive connection no longer reads the previous one's
+  body; a database fault says only "cannot be reached" to someone not signed
+  in.
+- Settings import: firewall rules of a node this machine does not have are
+  left out (and said) instead of stopping the import; per-node settings are
+  kept after the shared ones.
+- Token files with a name `/` or `\` cannot be written (export and import
+  quote it); token imports refuse names the program would not make.
+- The firewall trial's first change keeps the rules as they were to go back
+  to; a token administrator is no longer shown a firewall page that fails.
+- Online upgrade: an address that does not answer, a package cut off or a
+  check that takes too long is said, not an error 500. A package to go back
+  to cannot be started from the pages once going back is switched off.
+- Certificate lists (mail server, SMS gateway, directory): adding nothing
+  no longer empties the list; only *Take all away* does.
+- Moving a firewall rule up or down is written to the events.
+- Network trial: a reboot the root helper did not answer is waited for, a
+  failed job puts the other node's address back and leaves maintenance; a
+  job stalled past its time is said.
+- The portal says plainly when no way of getting codes is open for the
+  account.
+
+*Install, console, backups*
+- install.sh writes config.json in place of a link only by replacing it;
+  `--uninstall --yes` without a terminal refuses instead of doing nothing;
+  Ctrl+C during an upgrade rolls it back as a failure; chrony's config is found
+  on Debian too.
+- The console: packet text shown without colour is made safe, the token list
+  is no longer cut at 1000, *Install from package* checks the version in the
+  package's otp.py; `--upgrade-follow` keeps its progress line.
+- Old FreeRADIUS import: a `#` inside quotes is kept, a block inside a client
+  (`limit { }`) no longer ends it, and one client it cannot take no longer
+  stops the rest.
+- The scheduled remote backup is not skipped for the day when the database
+  was away at that minute; folders a stopped backup or restore left behind
+  are taken away at start (6 hours old); SFTP/SCP to an IPv6 address works.
+
+## 1.0.145 — 29 October 2026
+
+**Going back: the list of versions tidied**
+- Each version one row - the version and *yes* on the left, *What changed* and
+  *Go back to X* side by side on the right; on a narrow screen the buttons go
+  below as a whole instead of being squeezed.
+- The versions it may not go back to are folded below, the reasons said once
+  there, each version with a short word (*below 1.0.139*; the whole reason when
+  the pointer rests on it) - a long reason no longer stretches every row.
+
+## 1.0.144 — 29 October 2026
+
+**Going back to an older version: switched on in Settings, with what changed**
+- Settings → Upgrades → *Offer going back to an older version*
+  (`upgrade_downgrade`), off by default: off, the pages show nothing of going
+  back and the API refuses it; on, the card *Going back to an older version*
+  is there. On the server, root can always: `otp --downgrade`.
+- Each version in its list has *What changed*: what came in it, and - folded
+  - what going back to it gives up, the versions after it up to this one.
+  Read from the CHANGELOG.md installed beside otp.py (install.sh puts it there
+  now), or from the package at the address where it is not there.
+
+## 1.0.143 — 29 October 2026
+
+**Going back to an older version - only a safe one**
+- Settings → Upgrades → *Going back to an older version*, `otp --downgrade
+  VERSION|FILE` (and `--downgrade-check`), the console's Upgrades → *Go back
+  to an older version*. Never by putting the database back: the tables stay as
+  they are, whatever their size, and the older version runs on them.
+- Refused below the highest floor (`DOWNGRADE_FLOOR`, now 1.0.139) of any
+  version that ran on this database (kept per node in the database) and of any
+  installed on this machine (`/usr/local/lib/otp/downgrade-floor`, root's
+  alone - the otp account cannot lower it, so the server cannot be taken back
+  to a version with a fixed hole); and when the database has a NOT NULL column
+  without a default that the older version does not know.
+- The package is checked as an upgrade's; the nodes go back one at a time,
+  each in maintenance, as in an upgrade. Root's helper puts an older version
+  in only when going back is asked for, and never below its floor.
+- The console's *Upgrade this node from a package file* refuses an older
+  package and points to going back.
+
+## 1.0.142 — 29 October 2026
+
+**From the web: choose the version to go to**
+- Settings → Upgrades → From the web: with more than one version at the
+  address newer than the one running, a list beside the buttons lets you choose
+  which one *Upgrade to X now* and *Only fetch it* take - the newest is chosen.
+  With only one newer version the page is as before. Each is checked as before
+  (its signature, every file); an older one is never offered nor taken.
+
+## 1.0.141 — 28 October 2026
+
+**The console at login, switched on the pages**
+- Settings → About → The console at login: a switch for each node - on, root
+  signing in at the machine's console or over SSH lands in `otp --console`;
+  off, the ordinary shell. Full administrators; the node's own root helper
+  writes /etc/otp-console-login (as `otp --console-at-login on|off` does), and
+  each node says how it is within a minute - a change made on the command line
+  shows too. Every switch is written in Events.
+
+## 1.0.140 — 28 October 2026
+
+**A network on trial goes back whole**
+- Before a new network is put in on trial, the node keeps what it has: the
+  root helper the connection's whole NetworkManager profile (every address -
+  the second ones too - routes, MTU, DHCP or set by hand), the host name,
+  /etc/hosts and the IPv6 switch; the daemon this node's own settings
+  (radius_bind, mail_helo, isemon_hostname, db_host, ha_address) and the
+  pages' certificate. Not kept in time, exactly that comes back - until now
+  only the first address, the gateway and DNS were asked for again, and the
+  certificate and settings were worked out again the other way round.
+- A network from DHCP can be put on trial and go back too.
+- Going back to a short host name (otp1) is no longer refused by the root
+  helper.
+- After the reboot - going back or not - the job checks and says, step by
+  step: replication both ways, the link between the databases encrypted and
+  checked (verify-full) on both nodes with this node's certificate naming its
+  address, and the web address (keepalived) set up again.
+
+**High availability**
+- `otp --ha-setup` on a node whose daemon never ran yet made a bundle without
+  the key that seals the tokens; the second node wrote an empty secrets.key
+  and its daemon could not start. The key is made first now, and
+  `--ha-join` refuses a bundle without one.
+
+## 1.0.139 — 28 October 2026
+
+**Remote backups are locked with the password you typed** (important)
+- Until now the password of the backups was used as it is kept in config.json,
+  sealed: the backups were locked with that sealed text, not with the password
+  typed on the pages. They opened only on the machine that made them; on a new
+  machine (`--restore-bundle`, the page, `openssl enc -d` as RESTORE.md says)
+  the password did not open them. Now the password typed locks them.
+- Backups made before 1.0.139 still open on the machine that made them (otp
+  tries the old way too). **Make a new remote backup after the upgrade**: only
+  that one opens anywhere with your password.
+- A backup that is not locked is no longer put back where a password is in play
+  (one set, or typed): otp never sends one unlocked, so it was put there by
+  somebody else.
+- SFTP/SCP: with both a password and a key with a passphrase, each prompt gets
+  its own answer (the password went to the key, and the key failed). The SCP
+  folder takes no characters a shell reads (use SFTP for those).
+
+**Security**
+- `otp --ha-setup`: db_name and db_user are checked before they are written
+  into pg_hba.conf as root (a value with a space or a new line in config.json
+  wrote a line of its own there).
+- A token administrator can no longer make a token for a person who has one in
+  use under another name RADIUS would then stop using (another suffix of the
+  realm, or the same account in another realm on the same directory) - a full
+  administrator's to do, as replacing a token is.
+- Administrators' second step: a sign-in left waiting from before the account
+  set its second step up can no longer set up its own over it.
+- The command line and the console: names, reasons and attributes that came in
+  a RADIUS packet are shown with their control characters as \xNN - escapes in
+  them cleared the screen, set the title or wrote the clipboard of the
+  terminal (`otp --log`, `--request`, the console's live views).
+- Telling the other node a new address: where the link's certificate names the
+  old address, the other node is reached checked by the cluster's authority -
+  no longer unchecked, nor in the clear.
+- `--add-client` without `--secret` no longer takes OTP_PASSWORD as the shared
+  secret (it is OTP_SECRET). `--radtest USER CODE SERVER PORT -` and
+  `--bind-pw -` ask for the secret instead of taking it on the command line;
+  the help shows these.
+- The directory sign-in test on the pages is counted (as a radtest is) and
+  written in the events.
+
+**RADIUS**
+- A right code is no longer refused because a second answer to the same
+  question (a retransmit, or the other node) counted a try meanwhile.
+- RADIUS no longer waits for a page saving a setting while that page waits for
+  a slow query (`client seen`, written once a minute a client).
+- Moving to another database no longer takes RADIUS off its own connection for
+  the whole move.
+- The short pause after wrong codes works with `rate_limit_tries` above 50;
+  sign-in protection works with `radius_guard_tries` above 1000 and
+  `radius_guard_names` above 500.
+- Sign-in protection: a Calling-Station-Id with a port (203.0.113.5:51234,
+  [2001:db8::5]:51234) is counted as its address - it was a new place at each
+  connection and never blocked. A code used once already (the same request
+  sent to the other node) is not counted as a guess.
+
+**High availability and the network**
+- Going back after a network trial works when the old host name is a short one
+  (it was refused, and the new network stayed).
+- The firewall trial: the row its put-back is claimed by is made when the trial
+  starts, by one node - made by both at the moment it ran out, it could stop
+  replication.
+- TLS between the databases: a password with a ? in it no longer breaks
+  switching it on or off, and the password stays out of PostgreSQL's log.
+- The change of the addresses and the TLS of the link no longer write over each
+  other's request to the root helper.
+- Putting a copy back that brings another key: the cluster's authority is
+  sealed again with that key (it could not be opened after).
+
+**Smaller**
+- The console: letters with accents typed in its windows (passwords too) come
+  out as typed; Delete on a token, replacing a token in use (asked first) and
+  "Try it (and look somebody up)" on a directory work; a filter like
+  `a{9999999999}` no longer closes it.
+- `otp --tokens --limit=N`, `otp --request 0`, a port in `--radtest` that is
+  not a number.
+- A search such as `name:,` on the pages no longer ends in an error.
+- A reload while config.json is missing keeps the settings in effect (it went
+  back to the defaults).
+- A body nested too deep is refused as not JSON, not an error.
+- Restoring no longer leaves a file open each time.
+- Putting a backup back from the page: up to 4 GB, as nginx takes.
+- Czech texts that were missing: the enrolment sign-in, the notices when the
+  daemon cannot be reached; two window titles showed &amp;.
+
+## 1.0.138 — 28 October 2026
+
+**New versions are looked for at https://github.com/falco81/OTP/tree/main/release**
+- The default upgrade_url is the release folder of the OTP repository. A
+  value saved as the old default (falco81/Utils/tree/main/otp) is taken as the
+  new place; an address of your own stays as it is.
+- That folder keeps the last ten versions.
+
+## 1.0.137 — 28 October 2026
+
+**Sign-in protection: guessing from one place blocked (RADIUS)** - Settings →
+Sign-in protection, off by default
+- Switched on (`radius_guard`), the place each VPN request comes from - its
+  Calling-Station-Id, the address the person connects from - is counted:
+  too many refusals from one place (`radius_guard_tries`, 20) or too many
+  different names refused from it (`radius_guard_names`, 5) within
+  `radius_guard_window_min` (15) and it is blocked for `radius_guard_block_min`
+  (30). A blocked place is refused at once: nothing checked, and nobody's token
+  counts its guesses - a guesser can no longer lock other people's tokens.
+  `radius_guard_trusted`: addresses or networks never blocked. The server's
+  own trouble (a directory away) is never counted.
+- The table under it: every place counted and every token locked, how far each
+  has got towards its limit (a bar that fills), how long a block still runs,
+  the names tried; a filter by name or address; Clear one, the ones shown, or
+  all. The same rows in Accounts → Locked out. Each node counts its own; both
+  are shown and cleared.
+
+**Changes that could cut the server off go back by themselves unless kept**
+- A node's new network (`net_confirm_min`, 10 min) and a change of the
+  firewall or of who may reach the pages (`fw_confirm_min`, 5 min) are put in
+  on trial. A banner on every page counts the time down with *Keep it* and
+  *Put the old back now*; `otp --change-keep net|fw [--node N]`,
+  `otp --change-back ...`, the console (Cluster) and `otp --status` too.
+- The network: not kept - or come up without its new address - the node goes
+  back to its old network (a restart; the other node of a cluster told the old
+  address again: its pg_hba.conf lets both in while the new one is on trial,
+  and only the new one once it is kept). The firewall: the rules and the access
+  lists as they were before come back on every node.
+- The console's settings browser has the new group, and its main screen says
+  when a change waits to be kept.
+
+New: docs/sign-in-protection.md.
+
 ## 1.0.136 — 28 October 2026
 
 A review of the whole application for bugs and security problems, with the

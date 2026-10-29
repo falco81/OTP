@@ -1,5 +1,5 @@
 [Unit]
-Description=otp - TLS, the web address, the firewall or PostgreSQL's log, asked for on the pages
+Description=otp - TLS, the web address, the firewall, the network, the time, the console at login or PostgreSQL's log, asked for on the pages
 
 [Path]
 PathExists=/var/lib/otp/web/request.json
@@ -8,6 +8,7 @@ PathExists=/var/lib/otp/web/pgtls.ask
 PathExists=/var/lib/otp/web/fw.ask
 PathExists=/var/lib/otp/web/net.ask
 PathExists=/var/lib/otp/web/ntp.ask
+PathExists=/var/lib/otp/web/console.ask
 Unit=otp-web.service
 
 [Install]

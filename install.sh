@@ -323,7 +323,7 @@ done
 [[ -f "$SOURCE_DIR/otp.py" ]] || fail "otp.py is not beside this script; run it from inside the unpacked folder"
 
 OS_PRETTY="$( . /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}" )"
-OS_MAJOR="$( . /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID%%.*}" )"
+OS_MAJOR="$( . /etc/os-release 2>/dev/null; v="${VERSION_ID:-}"; printf '%s' "${v%%.*}" )"   # none on Debian testing (1.0.146)
 case "$( . /etc/os-release 2>/dev/null; printf '%s%s' "${ID:-}" "${ID_LIKE:-}" )" in
     *rhel*|*fedora*|*centos*|*almalinux*|*rocky*) PKG="dnf";;
     *debian*|*ubuntu*) PKG="apt";;
@@ -348,7 +348,17 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     step "Removing otp $VERSION"
     say "The database, the key of the tokens, the configuration and the accounts are kept:"
     say "  $STATE_DIR  and  $CONFIG_DIR"
-    confirm "Go ahead?" n || { say "Nothing was changed."; exit 0; }
+    # Asked even with --yes, as --help says (1.0.146): it said nothing and
+    # changed nothing, and exited 0.
+    if [[ -n "$ASSUME_YES" && ! -t 0 ]]; then
+        fail "removing is never a default: run --uninstall on a terminal, it asks"
+    fi
+    ASSUME_YES="" confirm "Go ahead?" n || { say "Nothing was changed."; exit 0; }
+    # An upgrade going on is not cut off under its own feet (1.0.44) - looked
+    # at before anything is stopped or taken away (1.0.146).
+    if [[ -z "$DRY_RUN" ]] && systemctl is-active --quiet otp-upgrade.service 2>/dev/null; then
+        fail "an upgrade from the pages is running (otp-upgrade.service); wait for it, then again"
+    fi
     run systemctl disable --now otp.service 2>/dev/null || true
     run systemctl disable --now otp-upgrade.path 2>/dev/null || true
     run systemctl disable --now otp-web.path 2>/dev/null || true
@@ -360,10 +370,6 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     fi
     [[ -e /etc/nginx/conf.d/otp_vip.conf ]] && run rm -f /etc/nginx/conf.d/otp_vip.conf
     [[ -e /usr/libexec/keepalived/otp-vip-check ]] && run rm -f /usr/libexec/keepalived/otp-vip-check
-    # An upgrade going on is not cut off under its own feet (1.0.44).
-    if systemctl is-active --quiet otp-upgrade.service 2>/dev/null; then
-        fail "an upgrade from the pages is running (otp-upgrade.service); wait for it, then again"
-    fi
     for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$NGINX_CONF" "$BIN_LINK" \
                "$UPGRADE_PATH_UNIT" "$UPGRADE_SERVICE_UNIT" "$WEB_PATH_UNIT" "$WEB_SERVICE_UNIT" \
                /etc/polkit-1/rules.d/49-otp-database.rules "$CONFIG_DIR/may-restart-database" \
@@ -615,7 +621,7 @@ php_pool_dir() {
     b="$(php_fpm_bin)"
     v="${b##*/php-fpm}"
     if [[ -n "$v" && -d "/etc/php/$v/fpm/pool.d" ]]; then echo "/etc/php/$v/fpm/pool.d"; return; fi
-    for d in $(ls -1d /etc/php/*/fpm/pool.d 2>/dev/null | sort -V -r); do
+    for d in $(ls -1d /etc/php/*/fpm/pool.d 2>/dev/null | sort -V -r || true); do
         v="$(echo "$d" | cut -d/ -f4)"
         [[ -x "/usr/sbin/php-fpm$v" ]] && { echo "$d"; return; }
     done
@@ -904,7 +910,7 @@ runtime_python() {
 install_program() {
     step "The daemon"
     run install -D -m 0755 "$SOURCE_DIR/otp.py" "$LIB_DIR/otp.py"
-    for extra in INSTALL.md README.md; do
+    for extra in INSTALL.md README.md CHANGELOG.md; do
         [[ -f "$SOURCE_DIR/$extra" ]] && run install -D -m 0644 "$SOURCE_DIR/$extra" "$LIB_DIR/$extra"
     done
     for d in docs test deploy; do
@@ -970,6 +976,21 @@ install_upgrader() {
         [[ -f "$SOURCE_DIR/deploy/release-keys/$(basename "$k")" ]] || run rm -f "$k"
     done
     otp_subdir "$STATE_DIR/upgrade"
+    # How far back this machine may go (1.0.143): the highest floor of every
+    # version put in here - an older version's install.sh leaves it as it is,
+    # so going back never lowers it. Root's alone.
+    local floor new
+    new="$(sed -n "s/^DOWNGRADE_FLOOR = '\([0-9.]*\)'.*/\1/p" "$SOURCE_DIR/otp.py" | head -n 1)"
+    if [[ -n "$new" ]]; then
+        floor=""
+        if [[ -L "$LIB_DIR/downgrade-floor" ]]; then run rm -f "$LIB_DIR/downgrade-floor"
+        elif [[ -f "$LIB_DIR/downgrade-floor" ]]; then
+            floor="$(head -c 32 "$LIB_DIR/downgrade-floor" | tr -cd '0-9.' || true)"
+        fi
+        if [[ -z "$floor" ]] || ! ver_ge "$floor" "$new"; then floor="$new"; fi
+        if [[ -n "$DRY_RUN" ]]; then note "[would write] $LIB_DIR/downgrade-floor: $floor"
+        else printf '%s\n' "$floor" > "$LIB_DIR/downgrade-floor"; chown root:root "$LIB_DIR/downgrade-floor"; chmod 0644 "$LIB_DIR/downgrade-floor"; fi
+    fi
     # TLS and the cluster's web address from the pages (1.0.47): root's helper,
     # keepalived's check, and the units that start the helper when asked.
     if [[ -f "$SOURCE_DIR/deploy/otp_web.py" ]]; then
@@ -986,7 +1007,7 @@ install_upgrader() {
     fi
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp-upgrade.service" "$UPGRADE_SERVICE_UNIT"
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp-upgrade.path" "$UPGRADE_PATH_UNIT"
-    good "upgrades from the pages: otp-upgrade.path, packages signed by $(ls "$LIB_DIR/release-keys" 2>/dev/null | sed 's/\.pub$//' | paste -sd, -)"
+    good "upgrades from the pages: otp-upgrade.path, packages signed by $(ls "$LIB_DIR/release-keys" 2>/dev/null | sed 's/\.pub$//' | paste -sd, - || true)"
 }
 
 as_otp() {             # a command of otp's, as its own account
@@ -1471,6 +1492,12 @@ except Exception:
         fi
     }
     trap upgrade_rescue EXIT
+    # Stopped by a signal (1.0.146) - Ctrl-C, a hang-up, otp_upgrade.py's TERM
+    # at its deadline - the exit status was 0 and the rescue did nothing:
+    # the node stayed in maintenance.
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
     # A machine installed without the pages is upgraded without them
     # (1.0.44): --upgrade from the pages cannot say --no-web.
     if [[ -n "$WITH_WEB" && ! -e "$NGINX_CONF" && ! -d "$WEB_DIR" ]]; then
@@ -1554,7 +1581,9 @@ install_console
 install_db_drivers
 install_db_restart
 install_colour
-[[ -n "$WITH_WEB" ]] && ensure_php
+# In an if, not after && (1.0.146): a function called after && runs with
+# errexit off, and a failure inside it went by unnoticed.
+if [[ -n "$WITH_WEB" ]]; then ensure_php; fi
 
 step "The accounts it runs as"
 getent group "$WEB_GROUP" >/dev/null || run groupadd --system "$WEB_GROUP"
@@ -1598,20 +1627,27 @@ done
 install_program
 
 step "Configuration"
-if [[ -f "$CONFIG_FILE" ]]; then
+if [[ -L "$CONFIG_FILE" ]]; then
+    fail "$CONFIG_FILE is a link - root does not write through one in a folder the otp account may change; put the file itself there (or remove the link) and run this again"
+elif [[ -f "$CONFIG_FILE" ]]; then
     good "$CONFIG_FILE is already there and was left alone"
 elif [[ -n "$DRY_RUN" ]]; then
     note "[would write] $CONFIG_FILE"
 else
-    SITE_NAME="${SITE_NAME:-${SERVER_NAME%%.*}}" python3 - "$CONFIG_FILE" <<'PY'
+    # Made beside it and put in its place (1.0.146): /etc/otp is the otp
+    # account's to write, and a link it put there for config.json was
+    # followed by root - a file of root's anywhere made the otp group's.
+    tmpc="$(mktemp "$CONFIG_DIR/.config.json.XXXXXX")"
+    SITE_NAME="${SITE_NAME:-${SERVER_NAME%%.*}}" python3 - "$tmpc" <<'PY'
 import json, os, sys
 out = {'db_engine': 'sqlite', 'site_name': os.environ.get('SITE_NAME', '')}
 with open(sys.argv[1], 'w') as f:
     json.dump(out, f, indent=2, sort_keys=True)
     f.write('\n')
 PY
-    chmod 0660 "$CONFIG_FILE"
-    chown root:"$SERVICE_USER" "$CONFIG_FILE"
+    chmod 0660 "$tmpc"
+    chown root:"$SERVICE_USER" "$tmpc"
+    mv -fT "$tmpc" "$CONFIG_FILE"
     good "$CONFIG_FILE"
 fi
 note "What is saved on the pages goes into the database. Which database that is lives here."
@@ -1692,7 +1728,7 @@ fi
 step "The service"
 restart_daemon
 
-[[ -n "$WITH_WEB" ]] && install_pages
+if [[ -n "$WITH_WEB" ]]; then install_pages; fi
 open_firewall
 
 step "Does it work"

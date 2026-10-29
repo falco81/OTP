@@ -176,7 +176,7 @@ if (isset($_GET['api'])) {
             echo json_encode(['ok' => false, 'error' => 'only a full administrator may put a backup back']);
             exit;
         }
-        [$tmp, $why] = otp_take_body(8 * 1024 * 1024 * 1024);
+        [$tmp, $why] = otp_take_body(4 * 1024 * 1024 * 1024);   // as nginx and the pool take (1.0.139)
         if ($tmp === null) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => $why]);
@@ -284,6 +284,7 @@ if (isset($_GET['api'])) {
         'firewall' => '/api/firewall', 'ha-history' => '/api/ha/history',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts', 'mailq-one' => '/api/mailq/one', 'software' => '/api/software',
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
     ];
     $writes = [
@@ -296,7 +297,8 @@ if (isset($_GET['api'])) {
         'columns' => '/api/auth/columns', 'my-settings' => '/api/auth/settings',
         'ha' => '/api/ha', 'mail' => '/api/mail', 'upgrade' => '/api/upgrade', 'web' => '/api/web', 'firewall' => '/api/firewall',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts',
-        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
     ];
     if ($post) {
@@ -485,6 +487,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 <div id="offline" class="offline" hidden></div>
 <div id="phpsafety" class="offline" hidden></div>
 <div id="problems" class="offline warnish" hidden></div>
+<div id="trials" class="trials" hidden></div>
 
 <div class="tabs" role="tablist">
   <button role="tab" aria-selected="true" data-tab="overview" data-icon="chart"
@@ -714,6 +717,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     </div>
     <div class="ctl-group">RADIUS</div>
     <button type="button" data-pane="radius" data-icon="router" title="Where the RADIUS server listens, what it answers and how.">The RADIUS server</button>
+    <button type="button" data-pane="guard" data-icon="shield" title="Somebody guessing codes or names from one place: counted, and blocked for a while; changes of the network and the firewall that go back by themselves unless kept.">Sign-in protection</button>
     <button type="button" data-pane="clients" data-icon="net" title="The VPN concentrators and anything else that may ask: their addresses, their shared secrets, the realm added to their names.">Clients</button>
     <button type="button" data-pane="realms" data-icon="globe" title="What a name after its @ means: which directory it is looked up in, which groups let it in, what the password is and what goes back in the answer.">Realms</button>
     <button type="button" data-pane="dir" data-icon="key" title="The Active Directory servers the realms and the sign-ins ask: how they are reached, as whom, and a check that says which step failed.">Active Directory</button>
@@ -756,6 +760,19 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       <p class="ctl-lede">otp answers RADIUS itself - no FreeRADIUS - on the ports below. A request
         from an address that is not one of the clients is never answered.</p></div>
     <div class="card full"><div id="sect-radius"></div></div>
+  </div>
+
+  <div class="ctl-pane" id="pane-guard" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Sign-in protection</h2>
+      <p class="ctl-lede">Guessing from one place held back, and changes that could cut this
+        server off taken back unless somebody keeps them.</p></div>
+    <div class="card full"><div id="sect-guard"></div></div>
+    <div class="card full fulladmin-only" id="gd-card"><h2>Counted and blocked now <span class="right" id="gd-tools"></span></h2>
+      <p class="note">The places the VPN's requests come from with refusals still counted, and the
+        tokens locked by wrong codes - how close each is to its limit, and how long a block still
+        runs. Type a name or an address to see only those; Clear lets them in again at once.</p>
+      <div class="btnrow" style="margin-bottom:10px"><input type="search" id="gd-find" class="mono" placeholder="a name or an address" autocomplete="off" style="max-width:320px"></div>
+      <div id="gd-table"></div></div>
   </div>
 
   <div class="ctl-pane" id="pane-clients" hidden>
@@ -1523,6 +1540,17 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
         <button class="btn cmd" id="up-forget" data-icon="trash" hidden>Forget the package</button>
       </div>
       <div id="up-ready"></div>
+    </div>
+    <div class="card full admin-only" id="up-down-card" hidden>
+      <h2>Going back to an older version</h2>
+      <p class="note">Only to a version that is safe: one that reads what the newer versions
+        wrote into the database the same, and has every security fix that matters - each version
+        says how far back it may go, and the highest of what ran on this database and was
+        installed on this machine counts. The database is not put back nor changed: its tables
+        stay as they are and the older version runs on them, so it does not matter how big it
+        is. The package is checked like an upgrade's, and against this database's tables, before
+        anything is put in; then the nodes go back one at a time, as in an upgrade.</p>
+      <div id="up-down"></div>
     </div>
     <div class="card full" id="up-plan-card" hidden>
       <h2>The upgrade</h2>

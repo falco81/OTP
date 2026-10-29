@@ -74,6 +74,7 @@ And the real thing, from anywhere a client is allowed:
 - [docs/renaming-and-readdressing.md](docs/renaming-and-readdressing.md) - a node renamed or given a new address: putting the cluster right, from the pages or the command line
 - [docs/tls-and-vip.md](docs/tls-and-vip.md) - certificates, TLS, the web address (VIP), the firewall
 - [docs/load-balancers.md](docs/load-balancers.md) - HAProxy, nginx, Apache, F5, NetScaler, LVS, with real health checks
+- [docs/sign-in-protection.md](docs/sign-in-protection.md) - guessing from one place blocked (RADIUS), and network and firewall changes that go back by themselves unless kept
 - [docs/firewall.md](docs/firewall.md) - the firewall (iptables / ip6tables) and who may reach which pages, from Settings
 - [docs/reply-attributes.md](docs/reply-attributes.md) - what an Access-Accept can carry, product by product (Cisco ASA, FortiGate, Palo Alto, NetScaler, F5, Horizon UAG and more)
 

@@ -99,3 +99,31 @@ A node that has not come back in 15 minutes is marked as failed. It stays in
 maintenance until it does.
 
 Everything is in Events: who asked, what each node did.
+
+## On trial (1.0.137)
+
+A new network is put in on trial: unless somebody presses *Keep it* (the
+banner on every page, or `otp --change-keep net --node NODE`) within
+`net_confirm_min` minutes (10), the node goes back to its old network by itself
+- also at once when it comes up without its new address. See
+[sign-in-protection.md](sign-in-protection.md).
+
+### What going back puts back (1.0.140)
+
+Before a change on trial each node keeps what it has, and going back puts
+exactly that back - not the old values worked out again:
+
+- **The network itself**: the root helper keeps the connection's whole
+  NetworkManager profile (every address, route, MTU, DHCP or set by hand -
+  a network from DHCP can go back too), the host name, `/etc/hosts` and the
+  IPv6 switch (in `/var/lib/otp-net`, root's alone), and loads them back.
+- **This node's settings and certificate**: `radius_bind`, `mail_helo`,
+  `isemon_hostname`, `db_host`, `ha_address` and the pages' own certificate as
+  they were.
+- **The other node**: told the old address again - its `pg_hba.conf` lets the
+  old address in and the trial's address out, its subscription and `ha_peer`
+  move back.
+- **Checked after the reboot**, each a step of the job: the address,
+  replication both ways, the link between the databases encrypted and checked
+  (verify-full) on both nodes with this node's certificate naming the old
+  address, and the web address (keepalived) set up again.
