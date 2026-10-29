@@ -311,6 +311,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup',
@@ -325,6 +326,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -764,6 +766,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of each node: chrony, its time servers, how far off it is - codes from the app are worked out from it.">Time</button>
     <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
     <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the web address moved out of the way first.">Restart and power off</button>
+    <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the web address moved out of the way first; a restart offered when one is needed.">System updates</button>
+    <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node as root over SSH: made here, added or taken away.">SSH keys of root</button>
     <div class="ctl-group">Data</div>
     <button type="button" data-pane="db" data-icon="db" title="Which database everything lives in, how big it is, copies of it, and how long things are kept.">The database</button>
     <button type="button" data-pane="backup" data-icon="archive" title="Backups of everything to another machine - FTP, FTPS, SFTP, SCP, SMB or a folder - locked with a password, on a schedule, and putting one back.">Backups</button>
@@ -1253,6 +1257,21 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         web address moves to the other node first; restarted one after the other, the service never stops.
         The page follows each node down and up again.</p></div>
     <div id="pw-host"></div>
+  </div>
+  <div class="ctl-pane" id="pane-osup" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">System updates</h2>
+      <p class="ctl-lede">The operating system's packages, updated by dnf (or apt) on each node. In a cluster one
+        node at a time: each is out of service while it is updated - the web address moves to the other,
+        which answers RADIUS meanwhile - and back in service before the next one starts. A restart an update
+        needs is offered when it is done, or made by itself, one node after the other.</p></div>
+    <div id="ou-host"></div>
+  </div>
+  <div class="ctl-pane" id="pane-sshkeys" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">SSH keys of root</h2>
+      <p class="ctl-lede">The keys that may sign in to each node as root over SSH - the lines of
+        /root/.ssh/authorized_keys. A key made here is shown once, to be kept by you, and kept nowhere on the
+        server; its public half goes onto the nodes chosen. Every change is written into Events.</p></div>
+    <div id="sk-host"></div>
   </div>
   <div class="ctl-pane" id="pane-backup" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Backups</h2>

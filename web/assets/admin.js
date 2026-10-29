@@ -2479,6 +2479,8 @@ function showPane(name) {
   if (name === 'backup') loadRbackup();
   if (name === 'network') loadNet();
   if (name === 'power') loadPower();
+  if (name === 'sshkeys') loadSshKeys(); else skPoll(false);
+  if (name === 'osup') loadOsup(); else ouPoll(false);
   if (name === 'time') loadNtp();
   if (name === 'ha') loadHa();
   if (name === 'mail') loadMail();
@@ -12347,4 +12349,440 @@ function ntpSave() {
   return api('ntp', {action: 'save', conf: c}).then(function (r) {
     toast(r.message, 'good'); NTP.draft = null; setTimeout(loadNtp, 5000); return true;
   });
+}
+
+/* ---- Settings → SSH keys of root (1.0.158) -------------------------------------
+   Each node's /root/.ssh/authorized_keys as its root helper reads it; the keys
+   put side by side, a column a node. Made here, a key's private half comes to
+   this page once and is kept nowhere. */
+var SK = {d: null, poll: null, asked: 0};
+function loadSshKeys() {
+  api('sshkeys').then(function (d) {
+    SK.d = d; drawSshKeys();
+    /* Read afresh on every node when the pane is opened. */
+    if (Date.now() - SK.asked > 20000) {
+      SK.asked = Date.now();
+      api('sshkeys', {action: 'refresh', nodes: skNodes(true)}).then(function () { skPoll(true); }).catch(function () {});
+    }
+    skPoll(skPending());
+  }).catch(oops);
+}
+function skNodes(aliveOnly) {
+  return ((SK.d && SK.d.nodes) || []).filter(function (n) { return !aliveOnly || n.alive; }).map(function (n) { return n.name; });
+}
+function skPending() { return ((SK.d && SK.d.nodes) || []).some(function (n) { return n.pending; }); }
+function skPoll(on) {
+  if (on && !SK.poll) {
+    SK.poll = setInterval(function () {
+      if (TAB !== 'settings' || PANE !== 'sshkeys') { skPoll(false); return; }
+      api('sshkeys').then(function (d) { SK.d = d; drawSshKeys(true); if (!skPending()) skPoll(false); }).catch(function () {});
+    }, 2000);
+  }
+  if (!on && SK.poll) { clearInterval(SK.poll); SK.poll = null; }
+}
+function skKind(k) {
+  var t = String(k.type || '?').toUpperCase();
+  return t + (k.bits && t !== 'ED25519' ? ' ' + k.bits : '');
+}
+function drawSshKeys(live) {
+  var real = $('sk-host');
+  if (!real || !SK.d) return;
+  liveFill(real, function (host) {
+    var d = SK.d, nodes = d.nodes || [];
+    /* What sshd makes of root: keys are no use where it does not let root in. */
+    nodes.forEach(function (n) {
+      var sd = n.sshd || {};
+      if (n.error) host.appendChild(el('p', 'note bad', n.name + ': ' + n.error));
+      if (sd.there && sd.permit_root === 'no')
+        host.appendChild(el('p', 'note warn', n.name + ': sshd does not let root sign in at all (PermitRootLogin no) - the keys below are not used there until it does.'));
+      if (sd.there && sd.pubkey === 'no')
+        host.appendChild(el('p', 'note warn', n.name + ': sshd takes no keys (PubkeyAuthentication no).'));
+    });
+    var card = el('div', 'card full');
+    var h = el('h2', '', 'Keys that may sign in as root');
+    var tools = el('span', 'right');
+    var mk = cmdButton('Make a new key', 'key', 'primary small');
+    explain(mk, 'A new pair made here - Ed25519, or RSA 4096 where something old needs RSA. Its private half is shown once, to download or copy; its public half goes onto the nodes you choose.');
+    mk.disabled = !d.keygen;
+    var add = cmdButton('Add a public key', 'upload', 'small');
+    explain(add, 'A public key you have already (ssh-ed25519 AAAA… you@laptop) put onto the nodes you choose.');
+    var again = iconButton('refresh', 'Read the keys again on every node');
+    tools.appendChild(mk); tools.appendChild(add); tools.appendChild(again);
+    h.appendChild(tools);
+    card.appendChild(h);
+    mk.onclick = skMake;
+    add.onclick = skAdd;
+    again.onclick = function () {
+      api('sshkeys', {action: 'refresh', nodes: skNodes(true)}).then(function () { skPoll(true); toast('asked again'); }).catch(oops);
+    };
+    /* One row a key, by its fingerprint, a column a node. */
+    var byFp = {}, order = [];
+    nodes.forEach(function (n) {
+      (n.keys || []).forEach(function (k) {
+        var id = k.fp || ('?' + k.comment);
+        if (!byFp[id]) { byFp[id] = {k: k, on: {}}; order.push(id); }
+        byFp[id].on[n.name] = true;
+      });
+    });
+    if (!order.length) {
+      card.appendChild(el('p', 'note', nodes.some(function (n) { return n.at; })
+        ? 'No key lets root in over SSH on ' + nodes.map(function (n) { return n.name; }).join(' or ') + '.'
+        : 'Reading the keys of each node…'));
+    } else {
+      var heads = ['Key', 'Fingerprint', 'Comment'].concat(nodes.length > 1 ? nodes.map(function (n) { return n.name; }) : []).concat(['']);
+      card.appendChild(listTable(heads, order, function (id) {
+        var row = byFp[id], k = row.k;
+        var tr = el('tr');
+        var t = el('td');
+        t.appendChild(el('span', 'tag ' + (String(k.type).toUpperCase() === 'ED25519' ? 'good' : 'info'), skKind(k)));
+        if (k.options) t.appendChild(el('span', 'tag warn', 'with options'));
+        tr.appendChild(t);
+        tr.appendChild(noI18n(el('td', 'mono small', k.fp || '–')));
+        tr.appendChild(noI18n(el('td', 'small', k.comment || '–')));
+        if (nodes.length > 1) nodes.forEach(function (n) {
+          var c = el('td');
+          c.appendChild(el('span', 'tag ' + (row.on[n.name] ? 'good' : 'dim'), row.on[n.name] ? 'yes' : '–'));
+          tr.appendChild(c);
+        });
+        var act = el('td', 'right');
+        var rm = iconButton('trash', 'Take this key away');
+        rm.onclick = function () { skDrop(row); };
+        act.appendChild(rm);
+        tr.appendChild(act);
+        return tr;
+      }, 'plain'));
+    }
+    var pend = nodes.filter(function (n) { return n.pending; }).map(function (n) { return n.name; });
+    if (pend.length) card.appendChild(el('p', 'muted small', 'Being written on ' + pend.join(', ') + '…'));
+    host.appendChild(card);
+    /* Each node's own facts. */
+    var grid = el('div', 'pw-grid');
+    nodes.forEach(function (n) {
+      var c = el('div', 'card pw-node');
+      var hd = el('div', 'pw-head');
+      hd.appendChild(el('span', 'dot ' + (n.alive ? 'ok' : 'bad')));
+      hd.appendChild(noI18n(el('b', '', n.name)));
+      if (n.me) hd.appendChild(el('span', 'tag info', 'this page'));
+      c.appendChild(hd);
+      var sd = n.sshd || {};
+      c.appendChild(netFacts([
+        ['Keys', String((n.keys || []).length)],
+        ['Root may sign in', sd.there ? (sd.permit_root || '?') : 'sshd is not here'],
+        ['With a password', sd.there ? (sd.password || '?') : ''],
+        ['SSH port', sd.port || '', true],
+        ['The file', n.file || '/root/.ssh/authorized_keys', true],
+        ['Read', n.at ? ago(n.at) : 'not yet']
+      ]));
+      grid.appendChild(c);
+    });
+    host.appendChild(grid);
+  }, live);
+}
+function skNodePicker(body) {
+  var nodes = (SK.d && SK.d.nodes) || [];
+  var box = el('div', 'sk-nodes');
+  var boxes = [];
+  if (nodes.length > 1) {
+    box.appendChild(el('div', 'k small muted', 'Onto the nodes'));
+    nodes.forEach(function (n) {
+      var lab = el('label', 'chk');
+      var c = el('input'); c.type = 'checkbox'; c.checked = n.alive; c.disabled = !n.alive; c.value = n.name;
+      lab.appendChild(c); lab.appendChild(noI18n(el('span', '', ' ' + n.name + (n.alive ? '' : ' (not answering)'))));
+      box.appendChild(lab);
+      boxes.push(c);
+    });
+    body.appendChild(box);
+  }
+  return function () {
+    if (!boxes.length) return [nodes.length ? nodes[0].name : ''];
+    return boxes.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+  };
+}
+function skMake() {
+  var kind = 'ed25519', pick, cm;
+  modal('Make a new SSH key for root', function (body) {
+    var p = el('p', 'note');
+    p.innerHTML = 'The pair is made on this server. Its <b>private</b> half is shown to you once, here, to download or copy - it is kept nowhere afterwards; its <b>public</b> half goes into <code>/root/.ssh/authorized_keys</code> of the nodes chosen. Put a passphrase on it after downloading (<code>ssh-keygen -p -f the-file</code>).';
+    body.appendChild(p);
+    var segb = el('div', 'seg');
+    (SK.d.kinds || []).forEach(function (k) {
+      var b = el('button', k.kind === kind ? 'on' : '', k.words);
+      b.type = 'button';
+      b.onclick = function () { kind = k.kind; Array.prototype.forEach.call(segb.children, function (x) { x.classList.remove('on'); }); b.classList.add('on'); };
+      segb.appendChild(b);
+    });
+    body.appendChild(formField('The kind', segb));
+    cm = textBox('', 'root@' + (SETTINGS && SETTINGS.node || 'otp') + ' ' + new Date().toISOString().slice(0, 10), 'mono');
+    body.appendChild(formField('A comment that says whose it is', cm));
+    pick = skNodePicker(body);
+  }, [{words: 'Cancel', close: true}, {words: 'Make it', cls: 'primary', icon: 'key', go: function (b) {
+    var nodes = pick();
+    if (!nodes.length) { toast('choose a node', 'warn'); return; }
+    busy(b, true);
+    api('sshkeys', {action: 'make', kind: kind, comment: cm.value, nodes: nodes}).then(function (x) {
+      skShowMade(x); skPoll(true);
+    }).catch(function (e) { busy(b, false); oops(e); });
+  }}], 'medium');
+}
+function skShowMade(x) {
+  modal('Keep the private key now', function (body) {
+    var w = el('p', 'note warn');
+    w.textContent = 'This is the only time it is shown. Whoever holds it signs in to ' + x.nodes.join(' and ') + ' as root.';
+    body.appendChild(w);
+    var area = noI18n(el('textarea', 'mono'));
+    area.rows = 9; area.readOnly = true; area.value = x.private; area.spellcheck = false;
+    body.appendChild(area);
+    var row = el('div', 'btnrow');
+    var dl = cmdButton('Download the key', 'download', 'primary');
+    dl.onclick = function () {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([x.private], {type: 'application/octet-stream'}));
+      a.download = x.file;
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+    var cp = cmdButton('Copy it', 'copy', '');
+    cp.onclick = function () { copyText(x.private, cp, 'the private key is on the clipboard'); };
+    row.appendChild(dl); row.appendChild(cp);
+    row.style.margin = '12px 0 16px';
+    body.appendChild(row);
+    body.appendChild(el('p', 'btnhelp', 'Its public half, put onto the nodes - click it to copy:'));
+    body.appendChild(rbCopyme(x.public, 'the public key is on the clipboard'));
+    body.appendChild(noI18n(el('p', 'muted small mono', x.fp)));
+    body.appendChild(el('p', 'btnhelp', 'Then, on your machine: ssh -i ' + x.file + ' root@…'));
+  }, [{words: 'I have kept it', cls: 'primary', close: true}], 'medium');
+}
+function skAdd() {
+  var area, pick;
+  modal('Add a public key for root', function (body) {
+    var p = el('p', 'note');
+    p.innerHTML = 'One line of a <code>.pub</code> file: <code>ssh-ed25519 AAAA… you@laptop</code>. Ed25519, ECDSA or RSA of 3072 bits and more; options before the key are not taken here.';
+    body.appendChild(p);
+    area = noI18n(el('textarea', 'mono'));
+    area.rows = 4; area.spellcheck = false; area.placeholder = 'ssh-ed25519 AAAA… you@laptop';
+    body.appendChild(area);
+    pick = skNodePicker(body);
+    setTimeout(function () { area.focus(); }, 60);
+  }, [{words: 'Cancel', close: true}, {words: 'Add it', cls: 'primary', icon: 'add', close: true, go: function () {
+    var nodes = pick();
+    api('sshkeys', {action: 'add', line: area.value.trim(), nodes: nodes}).then(function (x) { toast(x.message, 'good'); skPoll(true); }).catch(oops);
+  }}], 'medium');
+}
+function skDrop(row) {
+  var nodes = Object.keys(row.on);
+  var last = ((SK.d && SK.d.nodes) || []).filter(function (n) { return row.on[n.name] && (n.keys || []).length <= 1; }).map(function (n) { return n.name; });
+  confirmThen('Take the key away', 'Root no longer signs in with <code>' + htmlText(row.k.fp || '') + '</code>' + (row.k.comment ? ' (' + htmlText(row.k.comment) + ')' : '') + ' on ' + htmlText(nodes.join(', ')) + '.'
+    + (last.length ? '<br><br><b>It is the last key root signs in with on ' + htmlText(last.join(', ')) + '.</b> Unless root may sign in with a password, nobody reaches it over SSH as root after this.' : ''),
+    'Take it away', function () {
+      api('sshkeys', {action: 'drop', fp: row.k.fp, nodes: nodes, last_ok: !!last.length}).then(function (x) { toast(x.message, 'good'); skPoll(true); }).catch(oops);
+    }, true);
+}
+
+/* ---- Settings → System updates (1.0.158) ----------------------------------------
+   What each node has waiting, the update one node at a time - out of service,
+   dnf or apt, back in service - with its output as it comes, and the restart
+   it needs offered at the end. */
+var OU = {d: null, poll: null, node: '', cleared: {}, hide: false, reboot: 'ask'};
+try { OU.hide = localStorage.getItem('otp-ou-hide') === '1'; } catch (e) { /* only a convenience */ }
+var OU_STATE = {waiting: ['waits its turn', 'dim'], draining: ['out of service', 'warn'],
+                updating: ['updating', 'info'], rebooting: ['restarting', 'warn'],
+                done: ['done', 'good'], failed: ['failed', 'bad'], skipped: ['left out', 'dim']};
+function loadOsup() {
+  api('osup').then(function (d) { OU.d = d; drawOsup(); ouPoll(ouLive(d)); }).catch(oops);
+}
+function ouLive(d) {
+  d = d || OU.d || {};
+  return (d.plan && d.plan.state === 'running') || (d.nodes || []).some(function (n) { return (n.check || {}).state === 'running'; }) || !!(d.power && d.power.id);
+}
+function ouPoll(on) {
+  if (on && !OU.poll) {
+    OU.poll = setInterval(function () {
+      if (TAB !== 'settings' || PANE !== 'osup') { ouPoll(false); return; }
+      api('osup').then(function (d) { OU.d = d; OU.away = 0; drawOsup(true); if (!ouLive(d)) ouPoll(false); })
+        .catch(function () { OU.away = OU.away || Date.now(); drawOsup(true); });
+    }, 2500);
+  }
+  if (!on && OU.poll) { clearInterval(OU.poll); OU.poll = null; }
+}
+function ouPercent(r) {
+  var st = (r || {}).state;
+  if (st === 'done' || st === 'failed') return 100;
+  if (st === 'draining') return Math.min(8, 3 + Math.round((Date.now() / 1000 - Number(r.drain_at || r.at || 0)) / 3));
+  if (st === 'updating') return Math.max(8, Math.min(95, Number(r.pct || 0)));
+  if (st === 'rebooting') return 96;
+  return 0;
+}
+function drawOsup(live) {
+  var real = $('ou-host');
+  if (!real || !OU.d) return;
+  liveFill(real, function (host) {
+    var d = OU.d, plan = d.plan || {}, nodes = d.nodes || [];
+    var running = plan.state === 'running';
+    if (OU.away) host.appendChild(el('p', 'note warn', 'This page\'s server is not answering for ' + span(Math.round((Date.now() - OU.away) / 1000)) + ' - restarting, or the web address moving; asked again every few seconds.'));
+    /* A restart the update left to do. */
+    var need = nodes.filter(function (n) { return n.reboot; });
+    if (need.length && !(d.power && d.power.id)) {
+      var rb = el('div', 'card full notice warn ou-reboot');
+      rb.appendChild(el('h2', '', need.length > 1 ? 'The nodes need a restart' : need[0].name + ' needs a restart'));
+      rb.appendChild(el('p', 'note', 'The update put in a new kernel or libraries that only a restart brings into use. ' + (d.cluster ? 'Restarted one after the other, each in maintenance while it is, the service never stops.' : 'For a minute or two nobody signs in to the VPN.')));
+      var go = cmdButton(need.length > 1 ? 'Restart them, one at a time' : 'Restart ' + need[0].name, 'refresh', 'primary');
+      go.onclick = function () {
+        confirmThen('Restart after the update', 'Restarted now: ' + htmlText(need.map(function (n) { return n.name; }).join(', ')) + (need.length > 1 ? ', one after the other.' : '.'), 'Restart', function () {
+          api('osup', {action: 'reboot', nodes: need.map(function (n) { return n.name; })}).then(function (x) { toast(x.message, 'good'); ouPoll(true); }).catch(oops);
+        }, false);
+      };
+      rb.appendChild(go);
+      host.appendChild(rb);
+    }
+    if (d.power && d.power.id) host.appendChild(el('p', 'note', 'Restarting: ' + (d.power.targets || []).join(', ') + ' - followed on Restart and power off.'));
+    /* What each node has waiting. */
+    var grid = el('div', 'pw-grid');
+    nodes.forEach(function (n) {
+      var c = el('div', 'card pw-node');
+      var hd = el('div', 'pw-head');
+      hd.appendChild(el('span', 'dot ' + (n.alive ? 'ok' : 'bad')));
+      hd.appendChild(noI18n(el('b', '', n.name)));
+      if (n.me) hd.appendChild(el('span', 'tag info', 'this page'));
+      var ck = n.check || {};
+      if (ck.state === 'running') hd.appendChild(el('span', 'tag info', 'looking…'));
+      else if (ck.checked && ck.state === 'done') hd.appendChild(el('span', 'tag ' + (ck.count ? 'warn' : 'good'), ck.count ? num(ck.count) + ' waiting' : 'up to date'));
+      if (n.reboot) hd.appendChild(el('span', 'tag warn', 'restart needed'));
+      c.appendChild(hd);
+      c.appendChild(netFacts([
+        ['Updates waiting', ck.checked ? num(ck.count || 0) : 'not looked yet'],
+        ['Of them security', ck.security !== undefined && ck.security !== null ? num(ck.security) : ''],
+        ['Looked', ck.checked ? ago(ck.checked) : ''],
+        ['Updated by', ck.pm || '', true]
+      ]));
+      if (ck.error) c.appendChild(el('p', 'note bad', ck.error));
+      if ((ck.packages || []).length) {
+        var more = el('details', 'fold');
+        more.appendChild(el('summary', '', 'what is waiting'));
+        more.appendChild(noI18n(el('pre', 'lines', ck.packages.slice(0, 300).join('\n') + (ck.packages.length > 300 ? '\n…' : ''))));
+        OU.pkOpen = OU.pkOpen || {};
+        if (OU.pkOpen[n.name]) more.open = true;
+        more.ontoggle = function () { OU.pkOpen[n.name] = more.open; };
+        c.appendChild(more);
+      }
+      var row = el('div', 'btnrow');
+      var look = cmdButton('Look for updates', 'search', '');
+      look.disabled = !n.alive || ck.state === 'running' || running;
+      look.onclick = function () { api('osup', {action: 'check', nodes: [n.name]}).then(function (x) { toast(x.message); ouPoll(true); }).catch(oops); };
+      row.appendChild(look);
+      c.appendChild(row);
+      grid.appendChild(c);
+    });
+    host.appendChild(grid);
+    /* The update itself. */
+    if (!running) {
+      var uc = el('div', 'card full');
+      uc.appendChild(el('h2', '', d.cluster ? 'Update the nodes' : 'Update this server'));
+      uc.appendChild(el('p', 'note', d.cluster
+        ? 'The other node first, then this one - each out of service while it is updated, the web address on the other, RADIUS answered there; back in service before the next one starts.'
+        : 'dnf (or apt) updates every package. RADIUS goes on answering meanwhile; a restart it needs is offered at the end.'));
+      var segb = el('div', 'seg');
+      [['ask', 'Ask me when a restart is needed'], ['auto', 'Restart by itself when needed' + (d.cluster ? ', one at a time' : '')]].forEach(function (o) {
+        var b = el('button', OU.reboot === o[0] ? 'on' : '', o[1]);
+        b.type = 'button';
+        b.onclick = function () { OU.reboot = o[0]; drawOsup(true); };
+        segb.appendChild(b);
+      });
+      uc.appendChild(formField('After the update', segb));
+      var row2 = el('div', 'btnrow');
+      var start = cmdButton(d.cluster ? 'Update them, one at a time' : 'Update it now', 'download', 'primary');
+      start.disabled = !d.helper || nodes.some(function (n) { return !n.alive; }) || !!(d.power && d.power.id);
+      start.onclick = function () {
+        confirmThen(d.cluster ? 'Update the nodes' : 'Update this server', 'Every package of the system is updated' + (d.cluster ? ', on ' + htmlText(nodes.map(function (n) { return n.name; }).join(' and then ')) + ', each out of service while it is.' : '.')
+          + (OU.reboot === 'auto' ? '<br><br>A node that needs it is <b>restarted by itself</b>.' : '<br><br>A restart it needs is offered when it is done.'),
+          'Update', function () {
+            api('osup', {action: 'start', reboot: OU.reboot}).then(function (x) { toast(x.message, 'good'); OU.node = ''; loadOsup(); ouPoll(true); }).catch(oops);
+          }, false);
+      };
+      var lookAll = cmdButton('Look on every node', 'search', '');
+      lookAll.onclick = function () { api('osup', {action: 'check'}).then(function (x) { toast(x.message); ouPoll(true); }).catch(oops); };
+      row2.appendChild(start); row2.appendChild(lookAll);
+      uc.appendChild(row2);
+      if (!d.helper) uc.appendChild(el('p', 'note bad', 'The root helper of this node is not installed (install.sh --upgrade puts it in).'));
+      host.appendChild(uc);
+    }
+    /* How far it is. */
+    if (plan.id) {
+      var pc = el('div', 'card full');
+      var ph = el('h2', '', 'The update');
+      if (running) {
+        var stop = cmdButton('Stop it', 'cancel', 'small danger');
+        explain(stop, 'The nodes not begun stay as they are; a node being updated finishes.');
+        stop.onclick = function () { confirmThen('Stop the update', 'The nodes not yet begun stay as they are; one being updated finishes.', 'Stop it', function () { api('osup', {action: 'cancel'}).then(function (x) { toast(x.message); loadOsup(); }).catch(oops); }, true); };
+        var tl = el('span', 'right'); tl.appendChild(stop); ph.appendChild(tl);
+      }
+      pc.appendChild(ph);
+      pc.appendChild(el('p', 'note', 'Started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · ' + ({running: 'going on', done: 'done', failed: 'failed', cancelled: 'stopped'})[plan.state || 'running']
+        + (plan.reboot === 'auto' ? ' · restarted where needed' : '')));
+      var steps = (plan.order || []).map(function (nm) {
+        var n = nodes.filter(function (x) { return x.name === nm; })[0] || {name: nm};
+        return {name: nm, row: n.row || {}};
+      });
+      var all = steps.length ? Math.round(steps.reduce(function (m, s) { return m + ouPercent(s.row); }, 0) / steps.length) : 0;
+      pc.appendChild(upBar(all, plan.state === 'failed' ? 'bad' : (plan.state === 'done' ? 'good' : ''),
+        num(all) + ' % · ' + steps.filter(function (s) { return s.row.state === 'done'; }).length + ' of ' + steps.length + ' node(s) done', true));
+      var t = listTable(['Node', 'Step', 'How far', 'What happened', 'When'], steps, function (s) {
+        var tr = el('tr');
+        tr.appendChild(noI18n(el('td', 'mono', s.name)));
+        var w = OU_STATE[s.row.state] || OU_STATE.waiting;
+        var c = el('td'); c.appendChild(el('span', 'tag ' + w[1], w[0])); tr.appendChild(c);
+        var b2 = el('td', 'up-how');
+        var p2 = ouPercent(s.row);
+        b2.appendChild(upBar(p2, s.row.state === 'failed' ? 'bad' : (s.row.state === 'done' ? 'good' : ''), num(p2) + ' %' + (s.row.state === 'updating' && s.row.phase ? ' · ' + txT(s.row.phase) : '')));
+        tr.appendChild(b2);
+        tr.appendChild(el('td', 'small', s.row.said || ''));
+        tr.appendChild(el('td', 'muted', s.row.at ? ago(s.row.at) : '–'));
+        return tr;
+      }, 'plain');
+      (t.querySelector('table') || t).classList.add('up-plan-table');
+      pc.appendChild(t);
+      if (!running) pc.appendChild(hideBar(function () { return api('osup', {action: 'hide'}).then(function (x) { OU.d = x; drawOsup(); }); }));
+      host.appendChild(pc);
+    }
+    /* What the package manager says, a node at a time. */
+    var have = nodes.filter(function (n) { return ((n.row || {}).lines || []).length || ((n.check || {}).lines || []).length; });
+    if (have.length) {
+      if (!OU.node || !have.some(function (n) { return n.name === OU.node; })) {
+        var busyOne = have.filter(function (n) { return (n.row || {}).state === 'updating' || (n.check || {}).state === 'running'; })[0];
+        OU.node = (busyOne || have[0]).name;
+      }
+      var lc = el('div', 'card full');
+      var lh = el('h2', '', 'What it says');
+      var lt = el('span', 'right');
+      var hb = cmdButton(OU.hide ? 'Show it' : 'Hide it', OU.hide ? 'unfold' : 'fold', 'small');
+      hb.onclick = function () { OU.hide = !OU.hide; try { localStorage.setItem('otp-ou-hide', OU.hide ? '1' : '0'); } catch (e) { /* only a convenience */ } drawOsup(true); };
+      var cb = cmdButton('Clear the window', 'broom', 'small');
+      explain(cb, 'Empty this window; what comes after is shown.');
+      lt.appendChild(hb); lt.appendChild(cb);
+      lh.appendChild(lt);
+      lc.appendChild(lh);
+      if (have.length > 1) {
+        var sg = el('div', 'seg');
+        sg.style.marginBottom = '10px';
+        have.forEach(function (n) {
+          var b3 = noI18n(el('button', OU.node === n.name ? 'on' : '', n.name));
+          b3.type = 'button';
+          b3.onclick = function () { OU.node = n.name; drawOsup(true); };
+          sg.appendChild(b3);
+        });
+        lc.appendChild(sg);
+      }
+      var one = have.filter(function (n) { return n.name === OU.node; })[0];
+      var lines = (one.row || {}).lines && (one.row || {}).lines.length ? one.row.lines : ((one.check || {}).lines || []);
+      var key = OU.node + '|' + ((one.row || {}).began || (one.check || {}).began || '');
+      var from = OU.cleared[key] || 0;
+      cb.onclick = function () { OU.cleared[key] = lines.length; drawOsup(true); };
+      if (!OU.hide) {
+        var pre = noI18n(el('pre', 'lines ou-log', lines.slice(from).join('\n') || '–'));
+        lc.appendChild(pre);
+        setTimeout(function () { pre.scrollTop = pre.scrollHeight; }, 0);
+      } else {
+        lc.appendChild(el('p', 'muted small', 'Hidden - ' + num(lines.length) + ' line(s).'));
+      }
+      host.appendChild(lc);
+    }
+  }, live);
 }

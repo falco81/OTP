@@ -25,6 +25,7 @@ descriptor, never a path the otp account could swap for a link.
 
   otp_web.py            serve request.json (as root, from systemd)
   otp_web.py --status   what is in place here (JSON)
+  otp_web.py --os-job ID check|upgrade   the system's updates (started by itself)
 """
 import ipaddress
 import json
@@ -2493,6 +2494,395 @@ def console_part():
     write_here(CONSOLE_FILE, json.dumps(out))
 
 
+# ---- the SSH keys root signs in with (1.0.158) ---------------------------------------
+SSHKEYS_ASK = 'sshkeys.ask'
+SSHKEYS_FILE = 'sshkeys.json'
+ROOT_AUTH = os.environ.get('OTP_ROOT_AUTHKEYS', '/root/.ssh/authorized_keys')
+KEY_TYPES = ('ssh-ed25519', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
+             'ssh-rsa', 'sk-ssh-ed25519@openssh.com', 'sk-ecdsa-sha2-nistp256@openssh.com')
+KEY_LINE_RE = re.compile(r'^(?P<type>[a-z0-9@.-]+) (?P<blob>[A-Za-z0-9+/]{40,16000}={0,3})'
+                         r'(?: (?P<comment>[^\x00-\x1f\x7f]{0,200}))?\Z')
+
+
+def key_facts(line):
+    """(bits, SHA256:..., type) of one public key line, read by ssh-keygen."""
+    got = subprocess.run(['ssh-keygen', '-l', '-E', 'sha256', '-f', '-'], input=line + '\n',
+                         capture_output=True, text=True, timeout=20)
+    m = re.match(r'^(\d+) (SHA256:[A-Za-z0-9+/=]+) .*\((\w+)\)\s*$', got.stdout.strip())
+    if got.returncode != 0 or not m:
+        return None
+    return int(m.group(1)), m.group(2), m.group(3)
+
+
+def auth_lines():
+    """The lines of root's authorized_keys - none where it is not there. Never
+    through a link."""
+    try:
+        fd = os.open(ROOT_AUTH, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise Refused('%s cannot be read: %s' % (ROOT_AUTH, e))
+    with os.fdopen(fd, 'r', encoding='utf-8', errors='replace') as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise Refused('%s is not a plain file' % ROOT_AUTH)
+        return f.read(1 << 20).split('\n')
+
+
+def auth_keys(lines):
+    out = []
+    for i, ln in enumerate(lines):
+        t = ln.strip()
+        if not t or t.startswith('#'):
+            continue
+        facts = key_facts(t)
+        m = KEY_LINE_RE.match(t)
+        out.append({'line': i, 'fp': facts[1] if facts else '', 'bits': facts[0] if facts else 0,
+                    'type': facts[2] if facts else '?',
+                    'comment': (m.group('comment') or '') if m else '',
+                    'options': not bool(m), 'readable': bool(facts)})
+    return out
+
+
+def auth_write(lines):
+    """root's authorized_keys written whole: its folder made 0700 if it is not
+    there, refused if it is a link; a new file of root's, 0600, renamed in."""
+    folder = os.path.dirname(ROOT_AUTH)
+    try:
+        st = os.lstat(folder)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise Refused('%s is not a plain folder' % folder)
+    except FileNotFoundError:
+        os.makedirs(folder, mode=0o700)
+    try:
+        if stat.S_ISLNK(os.lstat(ROOT_AUTH).st_mode):
+            raise Refused('%s is a link - put the file itself there' % ROOT_AUTH)
+    except FileNotFoundError:
+        pass
+    text = '\n'.join(lines).rstrip('\n') + '\n'
+    fd, tmp = tempfile.mkstemp(prefix='.authorized_keys.', dir=folder)
+    try:
+        os.fchmod(fd, 0o600)
+        if os.geteuid() == 0:
+            os.fchown(fd, 0, 0)
+        with os.fdopen(fd, 'w') as f:
+            fd = None
+            f.write(text)
+        os.replace(tmp, ROOT_AUTH)
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    if shutil.which('restorecon') and not NO_SERVICES:
+        subprocess.run(['restorecon', '-R', folder], capture_output=True)
+
+
+def sshd_says():
+    """What sshd makes of root and of keys: a key is no use where it does not
+    let root in with one."""
+    if not shutil.which('sshd'):
+        return {'there': False}
+    got = subprocess.run(['sshd', '-T'], capture_output=True, text=True, timeout=20)
+    said = {}
+    for ln in got.stdout.splitlines():
+        k, _, v = ln.partition(' ')
+        if k in ('permitrootlogin', 'pubkeyauthentication', 'passwordauthentication', 'port'):
+            said[k] = v.strip()
+    return {'there': True, 'permit_root': said.get('permitrootlogin', ''),
+            'pubkey': said.get('pubkeyauthentication', ''),
+            'password': said.get('passwordauthentication', ''), 'port': said.get('port', '')}
+
+
+def sshkeys_do(r):
+    do = r.get('do')
+    lines = auth_lines()
+    if do == 'add':
+        line = str(r.get('line') or '').strip()
+        m = KEY_LINE_RE.match(line)
+        if not m or m.group('type') not in KEY_TYPES:
+            raise Refused('that is not one public key line (ssh-ed25519 AAAA... comment) - '
+                          'options before the key are not taken here')
+        facts = key_facts(line)
+        if not facts:
+            raise Refused('ssh-keygen does not read that key')
+        bits, fp, kind = facts
+        if kind == 'RSA' and bits < 3072:
+            raise Refused('an RSA key of %d bits is too weak: 3072 at least, or ed25519' % bits)
+        if kind == 'DSA':
+            raise Refused('DSA keys are not taken')
+        if any(k['fp'] == fp for k in auth_keys(lines)):
+            raise Refused('that key is there already (%s)' % fp)
+        lines = [ln for ln in lines if ln.strip()] + [line]
+        auth_write(lines)
+    elif do == 'drop':
+        fp = str(r.get('fp') or '')
+        keys = auth_keys(lines)
+        hit = [k for k in keys if k['fp'] and k['fp'] == fp]
+        if not hit:
+            raise Refused('no key %s is there' % fp)
+        if len(keys) == len(hit) and not r.get('last_ok'):
+            raise Refused('that is the last key root signs in with here - said again to take it '
+                          'away anyway')
+        gone = {k['line'] for k in hit}
+        auth_write([ln for i, ln in enumerate(lines) if i not in gone])
+    elif do != 'list':
+        raise Refused('list, add or drop')
+    lines = auth_lines()
+    return {'keys': [dict((k, v) for k, v in x.items() if k != 'line') for x in auth_keys(lines)],
+            'file': ROOT_AUTH, 'sshd': sshd_says()}
+
+
+def sshkeys_part():
+    d = web_fd()
+    try:
+        raw = read_req(SSHKEYS_ASK, 65536)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(SSHKEYS_ASK, d)
+        return
+    drop_ask(SSHKEYS_ASK, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict):
+            raise Refused('the request is not an object')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        out['data'] = sshkeys_do(r)
+        out['ok'] = True
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(SSHKEYS_FILE, json.dumps(out))
+
+
+# ---- updates of the operating system (1.0.158) ------------------------------------------
+# Asked with osup.ask, answered at once; the work itself - minutes of dnf or
+# apt - runs as a unit of its own (systemd-run), so this oneshot service ends
+# and the other asks are served meanwhile. Its progress and its last lines go
+# into osup.json, every second or so.
+OSUP_ASK = 'osup.ask'
+OSUP_ANS = 'osup.ans'
+OSUP_FILE = 'osup.json'
+OSUP_LOCK = os.environ.get('OTP_OSUP_LOCK', '/run/otp-osup.lock')
+OSUP_PM = os.environ.get('OTP_OSUP_PM', '')          # tests: a fake package manager
+
+
+def osup_pm():
+    if OSUP_PM:
+        return 'fake'
+    if shutil.which('dnf'):
+        return 'dnf'
+    if shutil.which('apt-get'):
+        return 'apt'
+    return ''
+
+
+def osup_running():
+    import fcntl
+    try:
+        fd = os.open(OSUP_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def osup_launch(ident, kind):
+    if osup_running():
+        raise Refused('an update or a look for updates is going on already')
+    if not osup_pm():
+        raise Refused('neither dnf nor apt-get is on this machine')
+    me = os.path.abspath(__file__)
+    argv = [sys.executable, '-I', me, '--os-job', ident, kind]
+    if (shutil.which('systemd-run') and not NO_SERVICES and os.path.isdir('/run/systemd/system')):
+        got = subprocess.run(['systemd-run', '--unit', 'otp-os-%s-%s' % (kind, ident[:12]),
+                              '--collect', '--quiet', '--property', 'TimeoutStopSec=30min'] + argv,
+                             capture_output=True, text=True, timeout=30)
+        if got.returncode != 0:
+            raise Refused('systemd-run: %s' % (got.stderr or got.stdout).strip()[-200:])
+        return
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+
+
+def osup_part():
+    d = web_fd()
+    try:
+        raw = read_req(OSUP_ASK, 4096)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(OSUP_ASK, d)
+        return
+    drop_ask(OSUP_ASK, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict):
+            raise Refused('the request is not an object')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        kind = r.get('kind')
+        if r.get('do') != 'run' or kind not in ('check', 'upgrade'):
+            raise Refused('run: check or upgrade')
+        osup_launch(out['id'], kind)
+        out['ok'] = True
+        out['data'] = {'started': kind, 'pm': osup_pm()}
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(OSUP_ANS, json.dumps(out))
+
+
+def osup_job(ident, kind):
+    """The work itself, as root, in a process of its own."""
+    import fcntl
+    fd = os.open(OSUP_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 1
+    state = {'id': ident, 'kind': kind, 'state': 'running', 'pct': 1, 'lines': [],
+             'began': time.time(), 'at': time.time(), 'packages': [], 'reboot': False,
+             'pm': osup_pm(), 'phase': 'starting'}
+    last = [0.0]
+
+    def put(force=False):
+        state['at'] = time.time()
+        if force or time.time() - last[0] > 0.8:
+            last[0] = time.time()
+            state['lines'] = state['lines'][-400:]
+            write_here(OSUP_FILE, json.dumps(state))
+
+    def say(line):
+        line = line.rstrip()
+        if line:
+            state['lines'].append(line[:300])
+        put()
+
+    env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C',
+           'DEBIAN_FRONTEND': 'noninteractive', 'HOME': '/root'}
+
+    def stream(cmd, on_line=None, ok=(0,)):
+        say('$ ' + ' '.join(cmd))
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                             stdin=subprocess.DEVNULL, text=True, bufsize=1)
+        for ln in p.stdout:
+            say(ln)
+            if on_line:
+                on_line(ln)
+        rc = p.wait()
+        if rc not in ok:
+            raise Refused('%s ended with %d' % (cmd[0], rc))
+        return rc
+
+    pm = state['pm']
+    try:
+        put(True)
+        if kind == 'check':
+            state['phase'] = 'asking for what is new'
+            pk = []
+            if pm == 'fake':
+                stream([OSUP_PM, 'check'], lambda ln: pk.append(ln.strip())
+                       if ln.strip() and not ln.startswith('#') else None)
+            elif pm == 'dnf':
+                rc_out = []
+                stream(['dnf', '-q', '--refresh', 'check-update'], rc_out.append, ok=(0, 100))
+                for ln in rc_out:
+                    parts = ln.split()
+                    if len(parts) >= 3 and '.' in parts[0] and not ln.startswith(' '):
+                        pk.append('%s %s' % (parts[0], parts[1]))
+                state['security'] = 0
+                sec = subprocess.run(['dnf', '-q', 'updateinfo', 'list', '--security'],
+                                     capture_output=True, text=True, env=env, timeout=300)
+                state['security'] = len([x for x in sec.stdout.splitlines() if x.strip()])
+            else:
+                stream(['apt-get', 'update'])
+                got = subprocess.run(['apt', 'list', '--upgradable'], capture_output=True,
+                                     text=True, env=env, timeout=300)
+                for ln in got.stdout.splitlines():
+                    if '/' in ln and '[upgradable' in ln:
+                        name = ln.split('/', 1)[0]
+                        ver = ln.split()[1] if len(ln.split()) > 1 else ''
+                        pk.append('%s %s' % (name, ver))
+            state['packages'] = pk[:1000]
+            state['count'] = len(pk)
+            state['pct'] = 100
+        else:
+            seen = {'total': 0, 'done': 0}
+
+            def count(ln):
+                m = re.search(r'\b(\d+)/(\d+)\s*$', ln)
+                if pm in ('dnf', 'fake') and m and re.search(
+                        r'(Upgrading|Installing|Cleanup|Verifying|Running scriptlet|Erasing|'
+                        r'Reinstalling|Downgrading|Obsoleting)\s*:', ln):
+                    total = int(m.group(2)) * 2          # each one upgraded and then verified
+                    seen['total'] = max(seen['total'], total)
+                    seen['done'] = min(seen['total'], seen['done'] + 1)
+                    state['phase'] = 'putting the packages in'
+                if pm == 'dnf' and ln.startswith('Downloading Packages'):
+                    state['phase'] = 'downloading'
+                    state['pct'] = max(state['pct'], 8)
+                if pm == 'apt':
+                    m2 = re.match(r'^(\d+) upgraded, (\d+) newly installed', ln)
+                    if m2:
+                        seen['total'] = (int(m2.group(1)) + int(m2.group(2))) * 2
+                    if ln.startswith(('Unpacking ', 'Setting up ')):
+                        seen['done'] += 1
+                        state['phase'] = 'putting the packages in'
+                    if ln.startswith('Get:'):
+                        state['phase'] = 'downloading'
+                        state['pct'] = max(state['pct'], 8)
+                if seen['total']:
+                    state['pct'] = max(state['pct'], min(97, 10 + int(87 * seen['done'] /
+                                                                      seen['total'])))
+            state['phase'] = 'asking for what is new'
+            if pm == 'fake':
+                stream([OSUP_PM, 'upgrade'], count)
+            elif pm == 'dnf':
+                stream(['dnf', '-y', '--refresh', 'upgrade'], count)
+            else:
+                stream(['apt-get', 'update'])
+                state['pct'] = max(state['pct'], 5)
+                stream(['apt-get', '-y', '-o', 'Dpkg::Options::=--force-confdef', '-o',
+                        'Dpkg::Options::=--force-confold', 'upgrade'], count)
+            state['phase'] = 'whether a restart is needed'
+            if pm == 'fake':
+                state['reboot'] = subprocess.run([OSUP_PM, 'needs-restart']).returncode == 1
+            elif pm == 'dnf':
+                nr = subprocess.run(['dnf', 'needs-restarting', '-r'], capture_output=True,
+                                    text=True, env=env, timeout=300)
+                state['reboot'] = nr.returncode == 1
+                if state['reboot']:
+                    say(nr.stdout.strip().splitlines()[0] if nr.stdout.strip() else
+                        'a restart is needed')
+            else:
+                state['reboot'] = os.path.exists('/var/run/reboot-required')
+            state['pct'] = 100
+        state['state'] = 'done'
+        state['phase'] = 'done'
+    except Refused as e:
+        state.update(state='failed', said=str(e)[:300])
+    except Exception as e:                              # noqa: BLE001
+        state.update(state='failed', said='it broke: %s' % str(e)[:300])
+    finally:
+        put(True)
+        os.close(fd)
+    return 0
+
+
 def serve():
     d = web_fd()
     try:
@@ -2519,6 +2909,14 @@ def serve():
         console_part()
     except Exception as e:                              # noqa: BLE001
         print('otp_web.py: the console at login: %s' % e, file=sys.stderr)
+    try:
+        sshkeys_part()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: root\'s SSH keys: %s' % e, file=sys.stderr)
+    try:
+        osup_part()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: the updates of the system: %s' % e, file=sys.stderr)
     try:
         os.replace('request.json', 'request.taken', src_dir_fd=d, dst_dir_fd=d)
     except FileNotFoundError:
@@ -2571,6 +2969,8 @@ def main(argv):
     if os.geteuid() != 0:
         print('otp_web.py: root only', file=sys.stderr)
         return 2
+    if argv[:1] == ['--os-job'] and len(argv) >= 3 and argv[2] in ('check', 'upgrade'):
+        return osup_job(re.sub(r'[^A-Za-z0-9]', '', argv[1])[:40], argv[2])
     return serve()
 
 

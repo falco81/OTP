@@ -4,6 +4,32 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.158 — 29 October 2026
+
+**SSH keys of root, and system updates, from Settings**
+- *Settings → SSH keys of root*: the keys that may sign in to each node as
+  root (`/root/.ssh/authorized_keys`), in one table with a column per node.
+  A public key you have already is added to the nodes you choose; a new key
+  is made here - Ed25519, or RSA 4096 - and its private half is shown once,
+  to download or copy, and kept nowhere on the server. A key is taken away
+  with two confirmations, and the last key of a node only when said again.
+  RSA under 3072 bits, DSA and lines with options before the key are refused.
+  The file is written by the root helper as 0600 root:root in a 0700 folder,
+  never through a link; what sshd says (PermitRootLogin, keys, passwords,
+  port) is shown beside it. Every change is in Events.
+- *Settings → System updates*: what dnf (or apt) has waiting on each node -
+  how many, how many of them security, the packages - and an update of all
+  of them with a bar and what the package manager says as it goes (hidden,
+  shown or cleared at will). In a cluster one node at a time, the other
+  first: each is put into maintenance - the web address moves away and the
+  other answers RADIUS - updated, and back in service before the next one
+  starts. A restart an update needs is offered at the end (one node after
+  the other) or made by itself, as chosen. An update is refused while an
+  upgrade of otp, a restart or a power off is going on, or a node is not
+  heard from; it can be stopped between nodes.
+- The update runs outside the root helper's own service, under its own lock,
+  so a long update holds nothing else up; RADIUS is never waited on.
+
 ## 1.0.157 — 29 October 2026
 
 **The page's own panels only, and shorter words everywhere**
