@@ -522,6 +522,13 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         live_tls = store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'hatls:%'")
     except Exception:                                   # noqa: BLE001
         live_tls = []
+    # Who is signed in stays as it is now (1.0.147): the copy's sign-ins came
+    # back with it - one signed out since, or of a password changed since,
+    # opened the pages again until it ran out.
+    try:
+        live_sessions = store.db.rows('SELECT * FROM sessions')
+    except Exception:                                   # noqa: BLE001
+        live_sessions = None
     c = _db_conf()
     if kind == 'copy':
         load_tables(store.db, path)
@@ -571,6 +578,16 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     store.db.make_tables()
     if CONFIG.get('ha_mode') == 'replicated' and store.db.engine == 'postgres':
         ha_sequences(store.db, int(CONFIG.get('ha_slot') or 1))
+    if live_sessions is not None:
+        try:
+            store.db.run('DELETE FROM sessions')
+            have = set(c.lower() for c in store.db.columns('sessions'))
+            for r in live_sessions:
+                row = {k: v for k, v in dict(r).items() if k.lower() in have and k != 'id'}
+                keys = sorted(row)
+                store.db.insert_many('sessions', keys, [[row[k] for k in keys]])
+        except Exception as e:                          # noqa: BLE001
+            log('the sign-ins could not be kept as they were: %s' % e, 'warn')
     for r in live_tls:
         try:
             store.set_meta(r['k'], r['v'])

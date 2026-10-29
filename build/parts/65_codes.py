@@ -229,7 +229,9 @@ def phone_checked(dest):
             raise ValueError('write the number with its country code: +420 603 123 456')
         digits = raw.lstrip('0')
         # 420603123456 written without its + (1.0.146): not +420420603123456.
-        if pre.lstrip('+') and digits.startswith(pre.lstrip('+')) and \
+        # Not a number dialled at home with its 0 (1.0.147): 0491 12345678
+        # in Germany is 491..., and is not +49 1 12345678.
+        if not raw.startswith('0') and pre.lstrip('+') and digits.startswith(pre.lstrip('+')) and \
                 len(digits) - len(pre.lstrip('+')) >= 8:
             raw = '+' + digits
         else:
@@ -336,10 +338,12 @@ def node_key_times(store, prefix, name):
     return sorted(out)
 
 
-def node_key_add(store, prefix, name, keep, most=None):
+def node_key_add(store, prefix, name, keep, most=None, limit=None):
     """`time.time()` added to this node's own row for `name`, written only over
     what was read; the times older than `keep` seconds dropped. True once
-    written."""
+    written. With `limit`: False, nothing written, when every node's rows
+    together already hold that many - counted again at each try, so of
+    requests at once only as many as the limit get past (1.0.147)."""
     k = node_key(prefix, name)
     for _ in range(8):
         t = time.time()
@@ -348,7 +352,19 @@ def node_key_add(store, prefix, name, keep, most=None):
             times = [float(x) for x in json.loads(raw or '[]')]
         except (ValueError, TypeError):
             times = []
-        times = [x for x in times if t - x < keep] + [t]
+        times = [x for x in times if t - x < keep]
+        if limit is not None:
+            others = 0
+            for r in node_key_rows(store, prefix, name):
+                if r['k'] == k:
+                    continue
+                try:
+                    others += len([x for x in json.loads(r['v'] or '[]') if t - float(x) < keep])
+                except (ValueError, TypeError):
+                    continue
+            if others + len(times) >= limit:
+                return False
+        times.append(t)
         if most:
             times = times[-most:]
         new = json.dumps(times)
@@ -375,11 +391,8 @@ def code_send_allowed(store, name):
     database so both nodes count together - each in a row of its own
     (1.0.146), written only over what was read (1.0.94)."""
     span = 60 * int(CONFIG.get('code_send_window_min') or 15)
-    t = time.time()
-    times = [x for x in node_key_times(store, 'codesent', name) if t - x < span]
-    if len(times) >= int(CONFIG.get('code_send_max') or 5):
-        return False
-    return node_key_add(store, 'codesent', name, span)
+    return node_key_add(store, 'codesent', name, span,
+                        limit=int(CONFIG.get('code_send_max') or 5))
 
 
 def code_send_wait_min(store, name):
@@ -1032,10 +1045,22 @@ def sms_send(to, text):
             said = r.read(4000).decode('utf-8', 'replace')
             status = r.status
     except urllib.error.HTTPError as e:
-        raise SmsError('the gateway answered %d: %s' % (e.code, e.read(300).decode('utf-8', 'replace')))
+        _TEL_TEXT.v = text
+        try:
+            body = _tel_hidden(e.read(300).decode('utf-8', 'replace'))
+        finally:
+            _TEL_TEXT.v = ''
+        raise SmsError('the gateway answered %d: %s' % (e.code, body))
     except (urllib.error.URLError, OSError) as e:
         raise SmsError('the gateway could not be reached: %s' % getattr(e, 'reason', e))
     want = str(CONFIG.get('sms_ok_status') or '').strip()
+    # A gateway that says back what it was sent (1.0.147): not the code
+    # into the events and the log with it.
+    _TEL_TEXT.v = text
+    try:
+        said = _tel_hidden(said)
+    finally:
+        _TEL_TEXT.v = ''
     if want and want.lower() not in said.lower():
         raise SmsError('the gateway answered %d without "%s": %s' % (status, want, said[:300]))
     return 'the gateway answered %d%s' % (status, (': ' + said[:200]) if said.strip() else '')

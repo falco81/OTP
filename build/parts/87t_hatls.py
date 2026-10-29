@@ -270,10 +270,13 @@ def hatls_start(store, by, here=True):
         try:
             # The same values replication carries anyway, written in place -
             # never a delete, which would go over and take them away here.
+            # Only over a row the other node has already (1.0.147): a row made
+            # there and here at once is a duplicate key that stops replication
+            # for good. A row new here goes over by replication.
+            hits = 0
             for k, v in (('hatls:ca', store.get_meta('hatls:ca')), ('hatls:want', json.dumps(w))):
-                far.run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE '
-                        'SET v = EXCLUDED.v', (k, v))
-            told = True
+                hits += far.run('UPDATE meta SET v = ? WHERE k = ?', (v, k)) or 0
+            told = hits > 0
             break
         except Exception:                               # noqa: BLE001
             continue
@@ -310,9 +313,8 @@ def hatls_off(store, by, here=True):
         except Exception:                               # noqa: BLE001
             continue
         try:
-            far.run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE '
-                    'SET v = EXCLUDED.v', ('hatls:want', json.dumps(w)))
-            told = True
+            told = bool(far.run('UPDATE meta SET v = ? WHERE k = ?',
+                                ('hatls:want', json.dumps(w))))   # see hatls_start
             break
         except Exception:                               # noqa: BLE001
             continue

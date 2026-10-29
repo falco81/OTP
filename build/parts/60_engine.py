@@ -489,9 +489,12 @@ def scratch_guard_times(store, name):
 def scratch_guard_note(store, name):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
+    before = len(scratch_guard_times(store, name))
     node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_MOST * 2)
     times = scratch_guard_times(store, name)
-    if len(times) == SCRATCH_GUARD_MOST:
+    # Said once, as the count goes past it (1.0.147): two nodes at once went
+    # from 19 to 21, and "exactly 20" was never seen.
+    if before < SCRATCH_GUARD_MOST <= len(times):
         store.add_event('tokens', 'the recovery codes of %s are not taken for a day: %d '
                         'requests in a day had a wrong password or a wrong recovery code - '
                         'somebody may be guessing them (Unlock it on the token gives them back)'

@@ -1302,7 +1302,7 @@ class Daemon(object):
         try:
             upgrade_tick(self)
         except Exception as e:                          # noqa: BLE001
-            log('the upgrade: %s' % e, 'warn')
+            log_sparing('tick:upgrade:' + str(e)[:80], 'the upgrade: %s' % e, 'warn', 3600)
         signal.signal(signal.SIGTERM, lambda *_: self.stop_flag.set())
         signal.signal(signal.SIGINT, lambda *_: self.stop_flag.set())
         # Only noted in the handler (1.0.94): read again in this loop, not in
@@ -1348,11 +1348,11 @@ class Daemon(object):
                 try:
                     upgrade_tick(self)
                 except Exception as e:                  # noqa: BLE001
-                    log('the upgrade: %s' % e, 'warn')
+                    log_sparing('tick:upgrade:' + str(e)[:80], 'the upgrade: %s' % e, 'warn', 3600)
                 try:
                     web_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
-                    log('TLS and the web address: %s' % e, 'warn')
+                    log_sparing('tick:web:' + str(e)[:80], 'TLS and the web address: %s' % e, 'warn', 3600)
                 try:
                     rb_tick(self)               # backups to the destinations (1.0.109)
                 except Exception as e:          # noqa: BLE001
@@ -1371,7 +1371,7 @@ class Daemon(object):
                     try:
                         readdress_tick(self.store, self)    # told a new address (1.0.106)
                     except Exception as e:      # noqa: BLE001
-                        log('a new address of the cluster: %s' % e, 'warn')
+                        log_sparing('tick:readdress:' + str(e)[:80], 'a new address of the cluster: %s' % e, 'warn', 3600)
                 try:
                     online_tick(self)           # a new version on the web (1.0.123)
                 except Exception as e:          # noqa: BLE001
@@ -1402,7 +1402,7 @@ class Daemon(object):
                 try:
                     ha_watch_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
-                    log('the cluster\'s history: %s' % e, 'warn')
+                    log_sparing('tick:ha_watch:' + str(e)[:80], 'the cluster\'s history: %s' % e, 'warn', 3600)
                 if time.monotonic() - last_tidy > 3600:
                     last_tidy = time.monotonic()
                     # In a thread of its own (1.0.57): long directory lookups

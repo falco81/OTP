@@ -922,6 +922,7 @@
   .set-item.changed label{color:var(--info)}
   /* A public list switched and not saved yet (1.10.205). */
   #feeds-list .kv.changed .swlbl{color:var(--info) !important}
+  .sw-box .kv-row.changed b{color:var(--info)}
   /* A row that opens something, focused from the keyboard: the same ring
      on every table, not the browser's own on some. (1.10.160) */
   table.rows tbody tr.tappable:focus-visible{outline:2px solid var(--info);outline-offset:-2px}

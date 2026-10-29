@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.146'
+__version__ = '1.0.147'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -7521,9 +7521,12 @@ def scratch_guard_times(store, name):
 def scratch_guard_note(store, name):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
+    before = len(scratch_guard_times(store, name))
     node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_MOST * 2)
     times = scratch_guard_times(store, name)
-    if len(times) == SCRATCH_GUARD_MOST:
+    # Said once, as the count goes past it (1.0.147): two nodes at once went
+    # from 19 to 21, and "exactly 20" was never seen.
+    if before < SCRATCH_GUARD_MOST <= len(times):
         store.add_event('tokens', 'the recovery codes of %s are not taken for a day: %d '
                         'requests in a day had a wrong password or a wrong recovery code - '
                         'somebody may be guessing them (Unlock it on the token gives them back)'
@@ -8729,7 +8732,9 @@ def phone_checked(dest):
             raise ValueError('write the number with its country code: +420 603 123 456')
         digits = raw.lstrip('0')
         # 420603123456 written without its + (1.0.146): not +420420603123456.
-        if pre.lstrip('+') and digits.startswith(pre.lstrip('+')) and \
+        # Not a number dialled at home with its 0 (1.0.147): 0491 12345678
+        # in Germany is 491..., and is not +49 1 12345678.
+        if not raw.startswith('0') and pre.lstrip('+') and digits.startswith(pre.lstrip('+')) and \
                 len(digits) - len(pre.lstrip('+')) >= 8:
             raw = '+' + digits
         else:
@@ -8836,10 +8841,12 @@ def node_key_times(store, prefix, name):
     return sorted(out)
 
 
-def node_key_add(store, prefix, name, keep, most=None):
+def node_key_add(store, prefix, name, keep, most=None, limit=None):
     """`time.time()` added to this node's own row for `name`, written only over
     what was read; the times older than `keep` seconds dropped. True once
-    written."""
+    written. With `limit`: False, nothing written, when every node's rows
+    together already hold that many - counted again at each try, so of
+    requests at once only as many as the limit get past (1.0.147)."""
     k = node_key(prefix, name)
     for _ in range(8):
         t = time.time()
@@ -8848,7 +8855,19 @@ def node_key_add(store, prefix, name, keep, most=None):
             times = [float(x) for x in json.loads(raw or '[]')]
         except (ValueError, TypeError):
             times = []
-        times = [x for x in times if t - x < keep] + [t]
+        times = [x for x in times if t - x < keep]
+        if limit is not None:
+            others = 0
+            for r in node_key_rows(store, prefix, name):
+                if r['k'] == k:
+                    continue
+                try:
+                    others += len([x for x in json.loads(r['v'] or '[]') if t - float(x) < keep])
+                except (ValueError, TypeError):
+                    continue
+            if others + len(times) >= limit:
+                return False
+        times.append(t)
         if most:
             times = times[-most:]
         new = json.dumps(times)
@@ -8875,11 +8894,8 @@ def code_send_allowed(store, name):
     database so both nodes count together - each in a row of its own
     (1.0.146), written only over what was read (1.0.94)."""
     span = 60 * int(CONFIG.get('code_send_window_min') or 15)
-    t = time.time()
-    times = [x for x in node_key_times(store, 'codesent', name) if t - x < span]
-    if len(times) >= int(CONFIG.get('code_send_max') or 5):
-        return False
-    return node_key_add(store, 'codesent', name, span)
+    return node_key_add(store, 'codesent', name, span,
+                        limit=int(CONFIG.get('code_send_max') or 5))
 
 
 def code_send_wait_min(store, name):
@@ -9532,10 +9548,22 @@ def sms_send(to, text):
             said = r.read(4000).decode('utf-8', 'replace')
             status = r.status
     except urllib.error.HTTPError as e:
-        raise SmsError('the gateway answered %d: %s' % (e.code, e.read(300).decode('utf-8', 'replace')))
+        _TEL_TEXT.v = text
+        try:
+            body = _tel_hidden(e.read(300).decode('utf-8', 'replace'))
+        finally:
+            _TEL_TEXT.v = ''
+        raise SmsError('the gateway answered %d: %s' % (e.code, body))
     except (urllib.error.URLError, OSError) as e:
         raise SmsError('the gateway could not be reached: %s' % getattr(e, 'reason', e))
     want = str(CONFIG.get('sms_ok_status') or '').strip()
+    # A gateway that says back what it was sent (1.0.147): not the code
+    # into the events and the log with it.
+    _TEL_TEXT.v = text
+    try:
+        said = _tel_hidden(said)
+    finally:
+        _TEL_TEXT.v = ''
     if want and want.lower() not in said.lower():
         raise SmsError('the gateway answered %d without "%s": %s' % (status, want, said[:300]))
     return 'the gateway answered %d%s' % (status, (': ' + said[:200]) if said.strip() else '')
@@ -12625,7 +12653,7 @@ class Daemon(object):
         try:
             upgrade_tick(self)
         except Exception as e:                          # noqa: BLE001
-            log('the upgrade: %s' % e, 'warn')
+            log_sparing('tick:upgrade:' + str(e)[:80], 'the upgrade: %s' % e, 'warn', 3600)
         signal.signal(signal.SIGTERM, lambda *_: self.stop_flag.set())
         signal.signal(signal.SIGINT, lambda *_: self.stop_flag.set())
         # Only noted in the handler (1.0.94): read again in this loop, not in
@@ -12671,11 +12699,11 @@ class Daemon(object):
                 try:
                     upgrade_tick(self)
                 except Exception as e:                  # noqa: BLE001
-                    log('the upgrade: %s' % e, 'warn')
+                    log_sparing('tick:upgrade:' + str(e)[:80], 'the upgrade: %s' % e, 'warn', 3600)
                 try:
                     web_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
-                    log('TLS and the web address: %s' % e, 'warn')
+                    log_sparing('tick:web:' + str(e)[:80], 'TLS and the web address: %s' % e, 'warn', 3600)
                 try:
                     rb_tick(self)               # backups to the destinations (1.0.109)
                 except Exception as e:          # noqa: BLE001
@@ -12694,7 +12722,7 @@ class Daemon(object):
                     try:
                         readdress_tick(self.store, self)    # told a new address (1.0.106)
                     except Exception as e:      # noqa: BLE001
-                        log('a new address of the cluster: %s' % e, 'warn')
+                        log_sparing('tick:readdress:' + str(e)[:80], 'a new address of the cluster: %s' % e, 'warn', 3600)
                 try:
                     online_tick(self)           # a new version on the web (1.0.123)
                 except Exception as e:          # noqa: BLE001
@@ -12725,7 +12753,7 @@ class Daemon(object):
                 try:
                     ha_watch_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
-                    log('the cluster\'s history: %s' % e, 'warn')
+                    log_sparing('tick:ha_watch:' + str(e)[:80], 'the cluster\'s history: %s' % e, 'warn', 3600)
                 if time.monotonic() - last_tidy > 3600:
                     last_tidy = time.monotonic()
                     # In a thread of its own (1.0.57): long directory lookups
@@ -14258,6 +14286,13 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         live_tls = store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'hatls:%'")
     except Exception:                                   # noqa: BLE001
         live_tls = []
+    # Who is signed in stays as it is now (1.0.147): the copy's sign-ins came
+    # back with it - one signed out since, or of a password changed since,
+    # opened the pages again until it ran out.
+    try:
+        live_sessions = store.db.rows('SELECT * FROM sessions')
+    except Exception:                                   # noqa: BLE001
+        live_sessions = None
     c = _db_conf()
     if kind == 'copy':
         load_tables(store.db, path)
@@ -14307,6 +14342,16 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     store.db.make_tables()
     if CONFIG.get('ha_mode') == 'replicated' and store.db.engine == 'postgres':
         ha_sequences(store.db, int(CONFIG.get('ha_slot') or 1))
+    if live_sessions is not None:
+        try:
+            store.db.run('DELETE FROM sessions')
+            have = set(c.lower() for c in store.db.columns('sessions'))
+            for r in live_sessions:
+                row = {k: v for k, v in dict(r).items() if k.lower() in have and k != 'id'}
+                keys = sorted(row)
+                store.db.insert_many('sessions', keys, [[row[k] for k in keys]])
+        except Exception as e:                          # noqa: BLE001
+            log('the sign-ins could not be kept as they were: %s' % e, 'warn')
     for r in live_tls:
         try:
             store.set_meta(r['k'], r['v'])
@@ -18240,10 +18285,29 @@ def ha_forget(store, name):
     store.db.run('DELETE FROM meta WHERE k = ?', ('node:' + name,))
 
 
+def ha_lead(store):
+    """Whether this node is the one of a replicated pair that does what one
+    node does for both (1.0.147): the first by name of the nodes heard from,
+    this one when it hears no other."""
+    if CONFIG.get('ha_mode') != 'replicated':
+        return True
+    alive = sorted(n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me'))
+    return not alive or alive[0] == node_name()
+
+
 def claim_once(store, key, value):
     """True for exactly one node: the one whose conditional UPDATE changed the
     row. A key not there yet is made first; two nodes making it at the same
-    moment cannot both insert it (it is the primary key)."""
+    moment cannot both insert it (it is the primary key).
+
+    Two replicated databases are two tables, though: each node's INSERT went
+    in, and replication then stopped on the other's for good; each UPDATE
+    took the day too. A key of both nodes (not one of this node's own,
+    'NAME:NODE') is claimed by one node alone since 1.0.147 - see ha_lead -
+    so only that one ever writes its row."""
+    if CONFIG.get('ha_mode') == 'replicated' and not key.endswith(':' + node_name()) and \
+            not ha_lead(store):
+        return False
     if store.get_meta(key) is None:
         try:
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
@@ -22005,10 +22069,13 @@ def hatls_start(store, by, here=True):
         try:
             # The same values replication carries anyway, written in place -
             # never a delete, which would go over and take them away here.
+            # Only over a row the other node has already (1.0.147): a row made
+            # there and here at once is a duplicate key that stops replication
+            # for good. A row new here goes over by replication.
+            hits = 0
             for k, v in (('hatls:ca', store.get_meta('hatls:ca')), ('hatls:want', json.dumps(w))):
-                far.run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE '
-                        'SET v = EXCLUDED.v', (k, v))
-            told = True
+                hits += far.run('UPDATE meta SET v = ? WHERE k = ?', (v, k)) or 0
+            told = hits > 0
             break
         except Exception:                               # noqa: BLE001
             continue
@@ -22045,9 +22112,8 @@ def hatls_off(store, by, here=True):
         except Exception:                               # noqa: BLE001
             continue
         try:
-            far.run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE '
-                    'SET v = EXCLUDED.v', ('hatls:want', json.dumps(w)))
-            told = True
+            told = bool(far.run('UPDATE meta SET v = ? WHERE k = ?',
+                                ('hatls:want', json.dumps(w))))   # see hatls_start
             break
         except Exception:                               # noqa: BLE001
             continue
@@ -23270,6 +23336,7 @@ def net_job_run(daemon, ask):
                 time.sleep(1)
         # 6. The network, the name - and the reboot.
         job['down_at'] = time.time()
+        job['wait_from'] = time.time()      # how long the restart is waited for (1.0.147)
         _job_put(store, job, 'NetworkManager, the host name and /etc/hosts', 70, state='rebooting')
         got = None
         if ask.get('rollback') and ask.get('snap'):
@@ -23453,6 +23520,48 @@ def _net_thread(fn, *args):
     return True
 
 
+NET_REBOOT_GIVE_UP_S = 3600
+
+
+def net_job_stalled(daemon, job, by):
+    store = daemon.store
+    net_job_undo_told(daemon, job, by)
+    if job.get('maint'):
+        try:
+            maintenance_set(store, False, '', by)
+        except Exception:                               # noqa: BLE001
+            pass
+    _job_put(store, job, 'it stopped half way (the service restarted?)%s' % (
+        ' - out of maintenance' if job.get('maint') else ''), job.get('pct'),
+        ok=False, state='failed')
+
+
+def net_job_give_up(daemon, job):
+    """A restart waited for an hour that never came (1.0.147). Where the new
+    address is on the machine all the same, it is checked as after a
+    restart; where it is not, the other node gets this one's address back,
+    maintenance ends and the job is failed."""
+    w = job.get('want') or {}
+    new_ip = str(w.get('new_ip') or '')
+    if new_ip and new_ip in set(local_addresses()):
+        net_job_after(daemon, job)
+        return
+    by = '%s (network)' % (job.get('by') or 'otp')
+    store = daemon.store
+    net_job_undo_told(daemon, job, by)
+    if job.get('maint'):
+        try:
+            maintenance_set(store, False, '', by)
+        except Exception:                               # noqa: BLE001
+            pass
+    _job_put(store, job, 'the machine did not restart in an hour and the new address is not '
+             'on it: the other node was given this one\'s address back%s' % (
+                 ' and maintenance ended' if job.get('maint') else ''), job.get('pct'),
+             ok=False, state='failed')
+    store.add_event('settings', 'the new network of %s was not put in: no restart in an hour'
+                    % node_name(), 'bad', who=by)
+
+
 def net_tick(daemon):
     """Every few seconds: something asked of this node, a job to finish after
     a reboot, the network said again now and then."""
@@ -23466,9 +23575,14 @@ def net_tick(daemon):
         net_trial_tick(daemon, job)
         return
     if job and job.get('state') == 'rebooting':
+        late = time.time() - float(job.get('wait_from') or job.get('moved') or 0)
         if boot_time() > float(job.get('boot') or 0) + 1:
             _net_thread(net_job_after, daemon, job)
-        elif time.time() - float(job.get('moved') or 0) > 900 and not job.get('late_said'):
+        elif late > NET_REBOOT_GIVE_UP_S:
+            # Not for ever (1.0.147): no restart in an hour, and nothing else
+            # of the network, the restart or power off went on meanwhile.
+            _net_thread(net_job_give_up, daemon, job)
+        elif late > 900 and not job.get('late_said'):
             # Still waited for (1.0.146): marked failed, the restart by hand
             # was never followed - no check, no trial, maintenance left on.
             job['late_said'] = True
@@ -23486,19 +23600,15 @@ def net_tick(daemon):
         if job.get('down_at'):
             # Root was asked already: it may restart with the new network - then
             # it is checked as after any restart (1.0.146).
+            job['wait_from'] = time.time()
             _job_put(store, job, 'it stopped while root put the network in (the service '
                      'restarted?) - waiting for the restart', job.get('pct'), ok=False,
                      state='rebooting')
             return
-        net_job_undo_told(daemon, job, by)
-        if job.get('maint'):
-            try:
-                maintenance_set(store, False, '', by)
-            except Exception:                           # noqa: BLE001
-                pass
-        _job_put(store, job, 'it stopped half way (the service restarted?)%s' % (
-            ' - out of maintenance' if job.get('maint') else ''), job.get('pct'),
-            ok=False, state='failed')
+        # On the network's own thread (1.0.147): telling the other node
+        # waits for its database.
+        _net_thread(net_job_stalled, daemon, job, by)
+        return
     if power_tick(daemon):
         return
     wanted = float(store.get_meta('net:read:' + me) or 0)
@@ -24892,7 +25002,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             who = str(name).strip().lower()
             # "admin>person" (a test of somebody's sign-in) keeps its admin
             # (1.0.146): CORP\\novak made it novak alone, one count for all.
-            pre, sep, who = who.rpartition('>')
+            # Only for those tests (1.0.147): a name typed at a sign-in is
+            # never split there - a>CORP\\novak, b>CORP\\novak... was a fresh
+            # count each time for novak's password.
+            pre = sep = ''
+            if kind in ('code-test', 'radtest'):
+                pre, sep, who = who.rpartition('>')
             who = who.split('\\', 1)[-1].rsplit('@', 1)[0].strip()
             keys.append((kind + '-name', (pre + sep + who)[:190]))
         t = time.time()
@@ -28469,9 +28584,20 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 else:
                     prof.pop(kk, None)
             target = mapping.get(t, t)
-            if not prof.get('key') and (_json_meta(store, 'web:tls:' + target) or {}).get('key'):
-                # A file without the secrets does not take a key away.
-                prof['key'] = _json_meta(store, 'web:tls:' + target)['key']
+            old_key = (_json_meta(store, 'web:tls:' + target) or {}).get('key')
+            if not prof.get('key') and old_key:
+                # A file without the secrets does not take a key away - kept
+                # where it is the certificate's own (1.0.147): beside another
+                # certificate, nginx would not start with the pair.
+                try:
+                    mine = prof.get('cert') and _pub_of_cert(prof['cert']) == _pub_of_key(
+                        unseal_secret(old_key, 'web:tls') or '')
+                except Exception:                       # noqa: BLE001
+                    mine = False
+                if mine or not prof.get('cert'):
+                    prof['key'] = old_key
+                else:
+                    said['certificates without their key (put it in on the pages)'] += 1
             tls_save(store, target, prof, by)
             said['certificates'] += 1
         if access is not None:

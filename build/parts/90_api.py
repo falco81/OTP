@@ -400,7 +400,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             who = str(name).strip().lower()
             # "admin>person" (a test of somebody's sign-in) keeps its admin
             # (1.0.146): CORP\\novak made it novak alone, one count for all.
-            pre, sep, who = who.rpartition('>')
+            # Only for those tests (1.0.147): a name typed at a sign-in is
+            # never split there - a>CORP\\novak, b>CORP\\novak... was a fresh
+            # count each time for novak's password.
+            pre = sep = ''
+            if kind in ('code-test', 'radtest'):
+                pre, sep, who = who.rpartition('>')
             who = who.split('\\', 1)[-1].rsplit('@', 1)[0].strip()
             keys.append((kind + '-name', (pre + sep + who)[:190]))
         t = time.time()
@@ -3977,9 +3982,20 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 else:
                     prof.pop(kk, None)
             target = mapping.get(t, t)
-            if not prof.get('key') and (_json_meta(store, 'web:tls:' + target) or {}).get('key'):
-                # A file without the secrets does not take a key away.
-                prof['key'] = _json_meta(store, 'web:tls:' + target)['key']
+            old_key = (_json_meta(store, 'web:tls:' + target) or {}).get('key')
+            if not prof.get('key') and old_key:
+                # A file without the secrets does not take a key away - kept
+                # where it is the certificate's own (1.0.147): beside another
+                # certificate, nginx would not start with the pair.
+                try:
+                    mine = prof.get('cert') and _pub_of_cert(prof['cert']) == _pub_of_key(
+                        unseal_secret(old_key, 'web:tls') or '')
+                except Exception:                       # noqa: BLE001
+                    mine = False
+                if mine or not prof.get('cert'):
+                    prof['key'] = old_key
+                else:
+                    said['certificates without their key (put it in on the pages)'] += 1
             tls_save(store, target, prof, by)
             said['certificates'] += 1
         if access is not None:

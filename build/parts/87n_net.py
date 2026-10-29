@@ -519,6 +519,7 @@ def net_job_run(daemon, ask):
                 time.sleep(1)
         # 6. The network, the name - and the reboot.
         job['down_at'] = time.time()
+        job['wait_from'] = time.time()      # how long the restart is waited for (1.0.147)
         _job_put(store, job, 'NetworkManager, the host name and /etc/hosts', 70, state='rebooting')
         got = None
         if ask.get('rollback') and ask.get('snap'):
@@ -702,6 +703,48 @@ def _net_thread(fn, *args):
     return True
 
 
+NET_REBOOT_GIVE_UP_S = 3600
+
+
+def net_job_stalled(daemon, job, by):
+    store = daemon.store
+    net_job_undo_told(daemon, job, by)
+    if job.get('maint'):
+        try:
+            maintenance_set(store, False, '', by)
+        except Exception:                               # noqa: BLE001
+            pass
+    _job_put(store, job, 'it stopped half way (the service restarted?)%s' % (
+        ' - out of maintenance' if job.get('maint') else ''), job.get('pct'),
+        ok=False, state='failed')
+
+
+def net_job_give_up(daemon, job):
+    """A restart waited for an hour that never came (1.0.147). Where the new
+    address is on the machine all the same, it is checked as after a
+    restart; where it is not, the other node gets this one's address back,
+    maintenance ends and the job is failed."""
+    w = job.get('want') or {}
+    new_ip = str(w.get('new_ip') or '')
+    if new_ip and new_ip in set(local_addresses()):
+        net_job_after(daemon, job)
+        return
+    by = '%s (network)' % (job.get('by') or 'otp')
+    store = daemon.store
+    net_job_undo_told(daemon, job, by)
+    if job.get('maint'):
+        try:
+            maintenance_set(store, False, '', by)
+        except Exception:                               # noqa: BLE001
+            pass
+    _job_put(store, job, 'the machine did not restart in an hour and the new address is not '
+             'on it: the other node was given this one\'s address back%s' % (
+                 ' and maintenance ended' if job.get('maint') else ''), job.get('pct'),
+             ok=False, state='failed')
+    store.add_event('settings', 'the new network of %s was not put in: no restart in an hour'
+                    % node_name(), 'bad', who=by)
+
+
 def net_tick(daemon):
     """Every few seconds: something asked of this node, a job to finish after
     a reboot, the network said again now and then."""
@@ -715,9 +758,14 @@ def net_tick(daemon):
         net_trial_tick(daemon, job)
         return
     if job and job.get('state') == 'rebooting':
+        late = time.time() - float(job.get('wait_from') or job.get('moved') or 0)
         if boot_time() > float(job.get('boot') or 0) + 1:
             _net_thread(net_job_after, daemon, job)
-        elif time.time() - float(job.get('moved') or 0) > 900 and not job.get('late_said'):
+        elif late > NET_REBOOT_GIVE_UP_S:
+            # Not for ever (1.0.147): no restart in an hour, and nothing else
+            # of the network, the restart or power off went on meanwhile.
+            _net_thread(net_job_give_up, daemon, job)
+        elif late > 900 and not job.get('late_said'):
             # Still waited for (1.0.146): marked failed, the restart by hand
             # was never followed - no check, no trial, maintenance left on.
             job['late_said'] = True
@@ -735,19 +783,15 @@ def net_tick(daemon):
         if job.get('down_at'):
             # Root was asked already: it may restart with the new network - then
             # it is checked as after any restart (1.0.146).
+            job['wait_from'] = time.time()
             _job_put(store, job, 'it stopped while root put the network in (the service '
                      'restarted?) - waiting for the restart', job.get('pct'), ok=False,
                      state='rebooting')
             return
-        net_job_undo_told(daemon, job, by)
-        if job.get('maint'):
-            try:
-                maintenance_set(store, False, '', by)
-            except Exception:                           # noqa: BLE001
-                pass
-        _job_put(store, job, 'it stopped half way (the service restarted?)%s' % (
-            ' - out of maintenance' if job.get('maint') else ''), job.get('pct'),
-            ok=False, state='failed')
+        # On the network's own thread (1.0.147): telling the other node
+        # waits for its database.
+        _net_thread(net_job_stalled, daemon, job, by)
+        return
     if power_tick(daemon):
         return
     wanted = float(store.get_meta('net:read:' + me) or 0)

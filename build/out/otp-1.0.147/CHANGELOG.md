@@ -4,6 +4,64 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.147 — 29 October 2026
+
+**The console at login: saved with the save bar**
+- Settings → About → *The console at login*: the switch only shows what it
+  will be and waits on the save bar at the bottom, as every other setting -
+  the node is switched by *Save the changes*, not at the click; *Put them
+  back* takes it back.
+
+**More bugs fixed**
+
+*High availability*
+- What one node does for both - the hourly tidying, the repair of the database link's
+  certificates and a new authority for it when the old one nears its end, putting back a
+  firewall change not kept - is now done by one node alone: the first by
+  name of the nodes heard from. Both nodes used to write the row for it, and
+  when both made it at once, replication stopped on a duplicate key.
+- *Encrypt the link* and *switch it off* tell the other node only over a row
+  it already has; a row new on both nodes at once stopped replication.
+
+*Sign-in and codes (fixes of 1.0.146's own changes)*
+- The count of wrong passwords per name could be got round on the pages'
+  and the portal's sign-in with a name such as `a>CORP\novak` - each prefix
+  counted on its own. Only the administrators' tests keep their own count now.
+- Requests at the same moment no longer get more codes sent than
+  `code_send_max`: the limit is checked again as the send is written.
+- A number dialled at home with its 0 is never taken as one with its
+  country code (`0491 12345678` with +49 stays +49 491 12345678).
+- "The recovery codes are not taken for a day" is written also when two
+  nodes counted past the limit at once.
+
+*Network*
+- A change of the network waiting for a restart that never comes is given
+  up after an hour: checked where the new address is on the machine all the
+  same, else the other node gets this one's address back, maintenance ends,
+  and restart / power off and new changes work again. Telling the other
+  node runs on the network's own thread.
+
+*Backups*
+- Putting a backup back keeps who is signed in now: the sign-ins in the
+  copy came back with it - one signed out since opened the pages again.
+- A settings file without the secrets keeps the key of the pages'
+  certificate only where it belongs to the certificate in the file; beside
+  another certificate nginx would not start. It says which came without it.
+
+*Install*
+- config.json of a new install is made with its owner and mode set on the
+  open file, never by name - the otp account can no longer swap a link in
+  between the steps.
+- `--python PATH` and `--system-python` are remembered: the next upgrade -
+  from the pages too - tries that Python first instead of the newest.
+
+*Logs and SMS*
+- An error of the minute's work (the upgrade, the web address, a new
+  address, the cluster's history) is written once an hour while it stays
+  the same, not every minute.
+- An SMS gateway that answers with the text it was sent no longer puts the
+  code into the events and the log.
+
 ## 1.0.146 — 29 October 2026
 
 **A second deep look through the whole program: bugs fixed**

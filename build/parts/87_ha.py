@@ -217,10 +217,29 @@ def ha_forget(store, name):
     store.db.run('DELETE FROM meta WHERE k = ?', ('node:' + name,))
 
 
+def ha_lead(store):
+    """Whether this node is the one of a replicated pair that does what one
+    node does for both (1.0.147): the first by name of the nodes heard from,
+    this one when it hears no other."""
+    if CONFIG.get('ha_mode') != 'replicated':
+        return True
+    alive = sorted(n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me'))
+    return not alive or alive[0] == node_name()
+
+
 def claim_once(store, key, value):
     """True for exactly one node: the one whose conditional UPDATE changed the
     row. A key not there yet is made first; two nodes making it at the same
-    moment cannot both insert it (it is the primary key)."""
+    moment cannot both insert it (it is the primary key).
+
+    Two replicated databases are two tables, though: each node's INSERT went
+    in, and replication then stopped on the other's for good; each UPDATE
+    took the day too. A key of both nodes (not one of this node's own,
+    'NAME:NODE') is claimed by one node alone since 1.0.147 - see ha_lead -
+    so only that one ever writes its row."""
+    if CONFIG.get('ha_mode') == 'replicated' and not key.endswith(':' + node_name()) and \
+            not ha_lead(store):
+        return False
     if store.get_meta(key) is None:
         try:
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
