@@ -3136,3 +3136,5 @@ pre.lines.ou-log{max-height:420px;overflow:auto}
 #sk-host .rb-below{margin-top:12px}
 /* Buttons beside a card's title (1.0.159): they touched. */
 .card h2 .right{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px}
+#sk-host td.sk-act{white-space:nowrap}
+#sk-host td.sk-act .btn + .btn, #sk-host td.sk-act button + button{margin-left:8px}

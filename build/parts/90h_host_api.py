@@ -80,6 +80,9 @@ def _osup_do(h):
         if act == 'cancel':
             osup_cancel(h.store, s['name'])
             return {'message': 'stopped - a node being updated finishes'}
+        if act == 'clear':
+            osup_clear(h.store, s['name'])
+            return osup_view(h.store)
         if act == 'hide':
             plan = osup_plan(h.store)
             if plan.get('state') == 'running':

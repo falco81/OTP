@@ -5,7 +5,7 @@
 # Usage (as root): python3 t_host.py VERSION
 import os, sys, json, time, subprocess, urllib.request, tempfile, threading, atexit, shutil
 
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.159'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.160'
 V = '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = tempfile.mkdtemp(prefix='otp-host-')
@@ -208,6 +208,11 @@ ok('what dnf said is there', v and any('Upgrading' in ln for n in v['nodes'] for
 t0 = v['plan']['at'] if v else time.time()
 ok('looked again after the update', until(lambda: all(float((n.get('check') or {}).get('checked') or 0) > t0
                                                      for n in osv()['nodes'])))
+c, x = call('node1', '/api/osup', {'action': 'clear'}, S)
+ok('the window cleared on both: %s' % c, c == 200 and not any(((n.get('row') or {}).get('lines') or []) + ((n.get('check') or {}).get('lines') or []) for n in x['nodes']))
+ok('... and stays so when read again', not any(((n.get('row') or {}).get('lines') or []) + ((n.get('check') or {}).get('lines') or []) for n in osv()['nodes']))
+call('node1', '/api/osup', {'action': 'check', 'nodes': ['node2']}, S)
+ok('... what comes after is shown', until(lambda: [n for n in osv()['nodes'] if n['name'] == 'node2'][0]['check'].get('lines')))
 c, x = call('node1', '/api/osup', {'action': 'hide'}, S)
 ok('hidden when done', c == 200 and not x.get('plan'))
 print('ALL %d / %d' % (sum(R), len(R)))

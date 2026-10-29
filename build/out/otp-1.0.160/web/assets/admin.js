@@ -12408,14 +12408,11 @@ function drawSshKeys(live) {
     var tools = el('span', 'right');
     var add = cmdButton('Add a public key', 'upload', 'small');
     explain(add, 'A public key you have already (ssh-ed25519 AAAA… you@laptop) - pasted, or read from its .pub file - put onto the nodes you choose.');
-    var exp = cmdButton('Export them', 'download', 'small');
-    explain(exp, 'The public keys below as one authorized_keys file, every node\'s together - public halves only.');
     var again = iconButton('refresh', 'Read the keys again on every node');
-    tools.appendChild(add); tools.appendChild(exp); tools.appendChild(again);
+    tools.appendChild(add); tools.appendChild(again);
     h.appendChild(tools);
     card.appendChild(h);
     add.onclick = skAdd;
-    exp.onclick = skExport;
     again.onclick = function () {
       api('sshkeys', {action: 'refresh', nodes: skNodes(true)}).then(function () { skPoll(true); toast('asked again'); }).catch(oops);
     };
@@ -12449,7 +12446,12 @@ function drawSshKeys(live) {
           c.appendChild(el('span', 'tag ' + (row.on[n.name] ? 'good' : 'dim'), row.on[n.name] ? 'yes' : '–'));
           tr.appendChild(c);
         });
-        var act = el('td', 'right');
+        var act = el('td', 'right sk-act');
+        /* Each key exported by itself, as its .pub file (1.0.160). */
+        var ex = iconButton('download', 'Export this key - its public half, as a .pub file');
+        ex.disabled = !k.text;
+        ex.onclick = function () { skExport(k); };
+        act.appendChild(ex);
         var rm = iconButton('trash', 'Take this key away');
         rm.onclick = function () { skDrop(row); };
         act.appendChild(rm);
@@ -12667,19 +12669,11 @@ function skSave(text, file) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
 }
-/* Every node's public keys as one authorized_keys file, each once. */
-function skExport() {
-  var seen = {}, out = [];
-  ((SK.d && SK.d.nodes) || []).forEach(function (n) {
-    (n.keys || []).forEach(function (k) {
-      var id = k.fp || k.text;
-      if (!k.text || seen[id]) return;
-      seen[id] = true;
-      out.push(k.text);
-    });
-  });
-  if (!out.length) { toast('no key to export', 'warn'); return; }
-  skSave(out.join('\n') + '\n', 'authorized_keys-' + (SETTINGS && SETTINGS.node || 'otp'));
+/* One key's public half as a .pub file, named by its comment. */
+function skExport(k) {
+  var name = String(k.comment || k.type || 'key').replace(/[^A-Za-z0-9@._-]+/g, '_').replace(/^[._]+/, '').slice(0, 60) || 'key';
+  skSave(k.text + '\n', name + '.pub');
+  toast('exported: ' + name + '.pub', 'good');
 }
 function skAdd() {
   var area, pick;
@@ -12724,7 +12718,7 @@ function skDrop(row) {
    What each node has waiting, the update one node at a time - out of service,
    dnf or apt, back in service - with its output as it comes, and the restart
    it needs offered at the end. */
-var OU = {d: null, poll: null, node: '', cleared: {}, hide: false, reboot: 'ask', asked: 0};
+var OU = {d: null, poll: null, node: '', hide: false, reboot: 'ask', asked: 0};
 try { OU.hide = localStorage.getItem('otp-ou-hide') === '1'; } catch (e) { /* only a convenience */ }
 var OU_STATE = {waiting: ['waits its turn', 'dim'], draining: ['out of service', 'warn'],
                 updating: ['updating', 'info'], rebooting: ['restarting', 'warn'],
@@ -12861,7 +12855,7 @@ function drawOsup(live) {
         confirmThen(d.cluster ? 'Update the nodes' : 'Update this server', 'Every package of the system is updated' + (d.cluster ? ', on ' + htmlText(nodes.map(function (n) { return n.name; }).join(' and then ')) + ', each out of service while it is.' : '.')
           + (OU.reboot === 'auto' ? '<br><br>A node that needs it is <b>restarted by itself</b>.' : '<br><br>A restart it needs is offered when it is done.'),
           'Update', function () {
-            api('osup', {action: 'start', reboot: OU.reboot}).then(function (x) { toast(x.message, 'good'); OU.node = ''; OU.cleared = {}; ouAsked(); loadOsup(); }).catch(oops);
+            api('osup', {action: 'start', reboot: OU.reboot}).then(function (x) { toast(x.message, 'good'); OU.node = ''; ouAsked(); loadOsup(); }).catch(oops);
           }, false);
       };
       var lookAll = cmdButton('Look on every node', 'search', '');
@@ -12922,7 +12916,7 @@ function drawOsup(live) {
       var hb = cmdButton(OU.hide ? 'Show it' : 'Hide it', OU.hide ? 'unfold' : 'fold', 'small');
       hb.onclick = function () { OU.hide = !OU.hide; try { localStorage.setItem('otp-ou-hide', OU.hide ? '1' : '0'); } catch (e) { /* only a convenience */ } drawOsup(); };
       var cb = cmdButton('Clear the window', 'broom', 'small');
-      explain(cb, 'Empty this window; what comes after is shown.');
+      explain(cb, 'Empty the window of every node - for every page, and after a reload too; what comes after is shown.');
       lt.appendChild(hb); lt.appendChild(cb);
       lh.appendChild(lt);
       lc.appendChild(lh);
@@ -12939,9 +12933,12 @@ function drawOsup(live) {
       }
       var one = have.filter(function (n) { return n.name === OU.node; })[0];
       var lines = (one.row || {}).lines && (one.row || {}).lines.length ? one.row.lines : ((one.check || {}).lines || []);
-      var key = OU.node + '|' + ((one.row || {}).began || (one.check || {}).began || '');
-      var from = OU.cleared[key] || 0;
-      cb.onclick = function () { OU.cleared[key] = lines.length; drawOsup(); };
+      var from = 0;
+      cb.onclick = function () {
+        busy(cb, true);
+        api('osup', {action: 'clear'}).then(function (x) { OU.d = x; drawOsup(); toast('the window is empty'); })
+          .catch(function (e) { busy(cb, false); oops(e); });
+      };
       if (!OU.hide) {
         var pre = noI18n(el('pre', 'lines ou-log', lines.slice(from).join('\n') || '–'));
         lc.appendChild(pre);

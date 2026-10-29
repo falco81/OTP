@@ -5,7 +5,7 @@
 const { chromium } = require('playwright');
 const SHOT = process.argv[2] || '/tmp/claude-0/ui159';
 const now = () => Date.now() / 1000;
-let checks = {otp1: 0, otp2: 0}, asked = {};
+let checks = {otp1: 0, otp2: 0}, asked = {}, cleared = false;
 function check(n) {
   const t = asked[n];
   if (t && Date.now() - t < 5000) return {state: 'running', began: t / 1000, lines: ['$ dnf -q --refresh check-update', 'looking on ' + n]};
@@ -13,7 +13,7 @@ function check(n) {
   return {state: 'done', checked: now() - 60, began: now() - 70, count: c, security: 21, pm: 'dnf',
           reboot_after: n === 'otp1', reboot_why: n === 'otp1' ? ['glibc', 'kernel-core'] : [], reboot_now: false,
           packages: ['bind-libs.x86_64 32:9.16 appstream', 'kernel.x86_64 5.14.0 baseos'],
-          lines: ['$ dnf -q --refresh check-update'].concat(Array.from({length: 30}, (_, i) => n + ' pkg-' + i + '.x86_64  1.' + i + '  baseos'))};
+          lines: cleared && !asked[n] ? [] : ['$ dnf -q --refresh check-update'].concat(Array.from({length: 30}, (_, i) => n + ' pkg-' + i + '.x86_64  1.' + i + '  baseos'))};
 }
 function osup() {
   return {cluster: true, helper: true, power: {}, plan: {},
@@ -41,6 +41,7 @@ function sshkeys() {
     const r = route.request(), what = r.url().split('api=')[1];
     if (r.method() === 'POST') {
       const q = JSON.parse(r.postData() || '{}');
+      if (what === 'osup' && q.action === 'clear') { cleared = true; asked = {}; return route.fulfill({json: osup()}); }
       if (what === 'osup' && q.action === 'check') { (q.nodes || ['otp1', 'otp2']).forEach(n => { asked[n] = Date.now(); checks[n] += 1; }); }
       if (what === 'sshkeys' && q.action === 'rk_make') {
         kept[q.scope] = {fp: 'SHA256:new' + q.scope, pub: 'ssh-ed25519 AAAAC3Nza' + q.scope + ' otp-root-' + q.scope};
@@ -66,8 +67,13 @@ function sshkeys() {
   ok('hidden', !(await p.locator('#ou-host pre.ou-log').count()));
   await p.locator('#ou-host button', {hasText: /Show it|Zobrazit/}).click(); await p.waitForTimeout(400);
   ok('shown again', (await log()).includes('otp1 pkg-'));
-  await p.locator('#ou-host button', {hasText: /Clear the window|Vyčistit/}).click(); await p.waitForTimeout(400);
-  ok('cleared', (await log()).trim() === '–');
+  await p.locator('#ou-host button', {hasText: /Hide it|Skrýt/}).click(); await p.waitForTimeout(300);
+  await p.locator('#ou-host button', {hasText: /Clear the window|Vyčistit/}).click(); await p.waitForTimeout(600);
+  ok('cleared on both, even when hidden: no window left', !(await p.locator('#ou-host pre.ou-log').count()) && !(await p.locator('#ou-host').innerText()).match(/Hidden|Skryto/));
+  await p.reload(); await p.waitForTimeout(2000);
+  ok('... and still so after a reload', !(await p.locator('#ou-host').innerText()).match(/Hidden|Skryto|otp1 pkg-/));
+  await p.evaluate(() => { try { localStorage.setItem('otp-ou-hide', '0'); } catch (e) {} });
+  await p.reload(); await p.waitForTimeout(2000);
   const card2 = p.locator('#ou-host .pw-node').nth(1);
   await card2.locator('button', {hasText: /Look for updates|Zjistit aktualizace/}).click();
   ok('looking shown on otp2', await card2.locator('text=/looking|zjišťuje/').waitFor({timeout: 6000}).then(() => true, () => false));
@@ -94,9 +100,13 @@ function sshkeys() {
   await p.locator('#modal-foot button').last().click(); await p.waitForTimeout(1200);
   ok('no Download nor Forget in the key panel', !(await p.locator('#sk-host .rb-panel button', {hasText: /Download it|Forget it|Stáhnout|Zapomenout/}).count()));
   ok('made for every node: the public half shown', (await p.locator('#sk-host .rb-below').innerText()).includes('ssh-ed25519 AAAAC3Nzaall'));
+  ok('no export of all the keys at once', !(await p.locator('#sk-host button', {hasText: /Export them|Exportovat/}).count()));
+  const [dl] = await Promise.all([p.waitForEvent('download'), p.locator('#sk-host tbody tr').first().locator('button').first().click()]);
+  const fs = require('fs'); const pth = await dl.path();
+  ok('one key exported by itself: ' + dl.suggestedFilename(), dl.suggestedFilename() === 'root@Chris.pub' && fs.readFileSync(pth, 'utf8') === 'ssh-rsa AAAA root@Chris\n');
   await p.locator('#sk-host .seg button').nth(2).click(); await p.waitForTimeout(500);
   ok('otp2 alone has none yet', (await p.locator('#sk-host .rb-below').innerText()).match(/None made|Zatím|Žádný/));
-  await p.screenshot({path: SHOT + '/ha-sk1.png', fullPage: true});
+  await p.screenshot({path: SHOT + '/ha-sk1.png', fullPage: true}); await p.screenshot({path: SHOT + '/ha-sk2.png', clip: {x: 80, y: 600, width: 1500, height: 300}});
   const g2 = await p.$$eval('#sk-host .card > *, #sk-host .rb-panel > *', els => {
     const out = []; els.forEach(e => { const n = e.nextElementSibling; if (!n || !e.offsetHeight || !n.offsetHeight) return;
       const g = n.getBoundingClientRect().top - e.getBoundingClientRect().bottom; if (g < 6) out.push([e.className, n.className, Math.round(g)]); }); return out; });

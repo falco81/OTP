@@ -289,10 +289,46 @@ def osup_view(store):
                       'check': chk, 'reboot': bool(row.get('reboot') and not row.get('rebooted')) or
                       bool(chk.get('reboot_now') and chk.get('state') == 'done'),
                       'started': (_meta_json(store, 'node:' + n) or {}).get('started')})
+    _osup_cleared(store, nodes)
     hidden = bool(plan) and seen == plan.get('id') and plan.get('state') != 'running'
     return {'plan': {} if hidden else plan, 'nodes': nodes, 'now': time.time(),
             'cluster': bool(CONFIG.get('ha_mode')), 'helper': WEB_DIR.is_dir(),
             'power': power_plan(store) if power_busy(store) else {}}
+
+
+def _osup_mark(part):
+    """Which run a part's lines are of: the same mark, the same run."""
+    return '%s|%s' % (part.get('plan') or part.get('id') or '', part.get('began') or '')
+
+
+def _osup_cleared(store, nodes):
+    """The lines cleared from the window (1.0.159) left out: of the run they
+    were cleared in, only what came after the last line then shown. Kept in
+    the database, so for every page and after a reload."""
+    cl = _meta_json(store, 'host:osup:cleared') or {}
+    for n in nodes:
+        for part in ('row', 'check'):
+            p = n.get(part) or {}
+            c = (cl.get(n['name']) or {}).get(part) or {}
+            lines = p.get('lines') or []
+            if not lines or not c or c.get('mark') != _osup_mark(p):
+                continue
+            last = c.get('last')
+            at = max((i for i, ln in enumerate(lines) if ln == last), default=None)
+            n[part] = dict(p, lines=lines[at + 1:] if at is not None else lines)
+
+
+def osup_clear(store, by):
+    """The window of every node emptied: the lines there now not shown again."""
+    plan = osup_plan(store)
+    cl = {}
+    for n in host_nodes(store):
+        row = osup_row(store, n)
+        parts = {'row': row if row.get('plan') == plan.get('id') else {},
+                 'check': _meta_json(store, 'host:osup:check:' + n) or {}}
+        cl[n] = {k: {'mark': _osup_mark(p), 'last': (p.get('lines') or [''])[-1]}
+                 for k, p in parts.items() if p.get('lines')}
+    store.set_meta('host:osup:cleared', json.dumps(cl))
 
 
 def osup_check_ask(store, nodes, by):
