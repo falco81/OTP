@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.156 — 29 October 2026
+
+**Shorter words under the settings**
+- Under each setting's box its words take three lines at most; a click on
+  them opens the rest in place, and the whole is shown, as before, when the
+  pointer rests on the setting's name or its (i). The settings pages were a
+  wall of words.
+- *Czech and Slovak letters in names* and *Letters of other languages in
+  names* say what they do in one line; the rest is on the (i).
+
 ## 1.0.155 — 29 October 2026
 
 **Letters in names: Czech and Slovak ones a setting of their own, both off**

@@ -2134,6 +2134,12 @@ input:focus,select:focus,textarea:focus{border-color:var(--info);box-shadow:0 0 
 .notice b{display:block;margin-bottom:2px}
 .set-item label{font-size:13.5px}
 .set-item .says{font-size:12.5px;line-height:1.5}
+/* Three lines of what a setting does under its box (1.0.156); the whole on
+   its name or (i), or open in place with a click. The settings pages were a
+   wall of words. */
+.set-item .says.clamp:not(.open){display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;
+  -webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
+.set-item .says.clamp.cut:not(.open):hover{color:var(--tx-dim)}
 .note.warn{color:var(--warn)}
 /* -- the token window (1.0.20) --------------------------------------------- */
 .modal .box.tokwin{width:min(1180px,96vw)}
