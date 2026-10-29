@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.151 — 29 October 2026
+
+**The space between cards**
+- A card drawn after a block of cards with a holder of its own (Network:
+  *New settings* and *Taken back unless kept*) touched it: the space between
+  cards now holds there too. Every pane and tab of the administration was
+  measured for it.
+
 ## 1.0.150 — 29 October 2026
 
 **Settings where they belong**
