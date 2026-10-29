@@ -396,7 +396,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 <head>
 <?php otp_head($title, $lang, $load, $nonce, '/'); ?>
 </head>
-<body class="app-shell<?= $me ? ' framed' : '' ?>">
+<body class="app-shell fold-words<?= $me ? ' framed' : '' ?>">
 <div class="wrap">
 
 <?php if (!$me): ?>

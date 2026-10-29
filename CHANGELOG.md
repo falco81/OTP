@@ -4,6 +4,21 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.157 — 29 October 2026
+
+**The page's own panels only, and shorter words everywhere**
+- No browser tooltip is left anywhere on the pages: whatever gets a title -
+  drawn when the page opens or any time later - says it in the page's own
+  panel, never beside it (the message texts' editor, the values of About and
+  isemon, the language buttons of the enrolment pages had the browser's white
+  box). The pictures of the enrolment pages keep their words for screen
+  readers without a tooltip.
+- A pane's opening words and a card's notes take three lines at most on the
+  administration pages: a click opens the rest in place, and the whole is in
+  the page's panel on the pointer. Warnings, errors, words with a link or a
+  button in them and everything in a dialog are shown whole, and so are the
+  enrolment pages.
+
 ## 1.0.156 — 29 October 2026
 
 **Shorter words under the settings**

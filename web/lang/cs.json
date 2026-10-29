@@ -3,7 +3,7 @@
   "code": "cs",
   "name": "Čeština",
   "english": "Czech",
-  "version": "1.0.156",
+  "version": "1.0.157",
   "made": "2026-10-23",
   "about": "Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen \"text\", nikdy \"source\". Prázdný text znamená: zobrazit anglicky."
  },
@@ -14897,598 +14897,606 @@
    "text": "token už existuje; lze ho nahradit kódem z něj"
   },
   "s3723": {
+   "source": "there is no RADIUS client yet: nobody can ask this server",
+   "text": "zatím tu není žádný RADIUS klient: tento server se nemá kdo ptát"
+  },
+  "s3724": {
    "source": "there is no client for 127.0.0.1 to send the test from: add one (the installer makes \"localhost\"), or give the secret",
    "text": "není klient pro 127.0.0.1, ze kterého poslat test: přidejte ho (installer vytváří „localhost“), nebo zadejte heslo"
   },
-  "s3724": {
+  "s3725": {
    "source": "there is no directory to look in: Settings → Active Directory",
    "text": "není v jakém adresáři hledat: Nastavení → Active Directory"
   },
-  "s3725": {
+  "s3726": {
    "source": "there is no full administrator who can sign in in that file: putting it back would lock everybody out of these pages (on the command line it can be put back, and an account made after it)",
    "text": "v tom souboru není žádný plný administrátor, který se může přihlásit: obnova by všem zamkla tyto stránky (na příkazové řádce ji lze obnovit a účet založit potom)"
   },
-  "s3726": {
+  "s3727": {
    "source": "there is no picture of your own yet - upload one first",
    "text": "vlastní obrázek zatím není – nejdřív ho nahrajte"
   },
-  "s3727": {
+  "s3728": {
+   "source": "there is no realm yet: every request is refused",
+   "text": "zatím tu není žádný realm: každý požadavek se odmítne"
+  },
+  "s3729": {
    "source": "there is no such account",
    "text": "takový účet není"
   },
-  "s3728": {
+  "s3730": {
    "source": "there is no such client",
    "text": "takový klient není"
   },
-  "s3729": {
+  "s3731": {
    "source": "there is no such directory",
    "text": "takový adresář není"
   },
-  "s3730": {
+  "s3732": {
    "source": "there is no such file",
    "text": "takový soubor není"
   },
-  "s3731": {
+  "s3733": {
    "source": "there is no such realm",
    "text": "takový realm není"
   },
-  "s3732": {
+  "s3734": {
    "source": "there is no such request",
    "text": "takový požadavek neexistuje"
   },
-  "s3733": {
+  "s3735": {
    "source": "there is no token in use yet",
    "text": "zatím nemáte token v provozu"
   },
-  "s3734": {
+  "s3736": {
    "source": "there is nothing in this file to import - is it an export of otp?",
    "text": "v tomto souboru není nic k importu – je to export z otp?"
   },
-  "s3735": {
+  "s3737": {
    "source": "these pages",
    "text": "tyto stránky"
   },
-  "s3736": {
+  "s3738": {
    "source": "this account has its second step set up already",
    "text": "tento účet už druhý krok nastavený má"
   },
-  "s3737": {
+  "s3739": {
    "source": "this account may not have a token here - ask the administrator",
    "text": "tento účet tu nesmí mít token – obraťte se na administrátora"
   },
-  "s3738": {
+  "s3740": {
    "source": "this account signs in with its directory password, which is changed in the directory",
    "text": "tento účet se přihlašuje heslem z adresáře, které se mění v adresáři"
   },
-  "s3739": {
+  "s3741": {
    "source": "this bundle makes this node replicate with its own PostgreSQL, which takes root on this machine (installing and setting up PostgreSQL): copy it here and run  otp --ha-join FILE  as root",
    "text": "tento balíček nastaví uzel na replikaci s vlastním PostgreSQL, což na tomto stroji vyžaduje root (instalace a nastavení PostgreSQL): zkopírujte ho sem a spusťte  otp --ha-join SOUBOR  jako root"
   },
-  "s3740": {
+  "s3742": {
    "source": "this column",
    "text": "tento sloupec"
   },
-  "s3741": {
+  "s3743": {
    "source": "this is the database in use",
    "text": "tohle je používaná databáze"
   },
-  "s3742": {
+  "s3744": {
    "source": "this is the node answering: it would write itself back at once",
    "text": "tohle je uzel, který odpovídá: zapsal by se hned zpět"
   },
-  "s3743": {
+  "s3745": {
    "source": "this machine cannot go back yet",
    "text": "tento stroj se zatím vrátit neumí"
   },
-  "s3744": {
+  "s3746": {
    "source": "this month",
    "text": "tento měsíc"
   },
-  "s3745": {
+  "s3747": {
    "source": "this node",
    "text": "tento uzel"
   },
-  "s3746": {
+  "s3748": {
    "source": "this node does not replicate",
    "text": "tento uzel nereplikuje"
   },
-  "s3747": {
+  "s3749": {
    "source": "this node has not been through the steps",
    "text": "tento uzel kroky neprošel"
   },
-  "s3748": {
+  "s3750": {
    "source": "this node is being rebuilt from the other one; try again in a few minutes",
    "text": "tento uzel se právě obnovuje z druhého; zkuste to za pár minut"
   },
-  "s3749": {
+  "s3751": {
    "source": "this node is on its way; the other node's database could not be reached just now - it starts when replication carries it over, or press the button there",
    "text": "tento uzel začal; databáze druhého uzlu teď není dosažitelná – začne, až to replikace přenese, nebo stiskněte tlačítko tam"
   },
-  "s3750": {
+  "s3752": {
    "source": "this node is one of a cluster: its database is not moved from here (switch the replication off first - Settings → High availability)",
    "text": "tento uzel je součástí clusteru: jeho databáze se odsud nepřesouvá (nejdřív vypněte replikaci – Nastavení → Vysoká dostupnost)"
   },
-  "s3751": {
+  "s3753": {
    "source": "this node is one of two already: each has its own PostgreSQL and they replicate to each other",
    "text": "tento uzel už je jeden ze dvou: každý má vlastní PostgreSQL a navzájem se replikují"
   },
-  "s3752": {
+  "s3754": {
    "source": "this node takes nothing from the other for now",
    "text": "tento uzel zatím nic nepřebírá od druhého"
   },
-  "s3753": {
+  "s3755": {
    "source": "this node takes the other's rows again, from where it stopped",
    "text": "tento uzel znovu přebírá řádky druhého, od místa, kde přestal"
   },
-  "s3754": {
+  "s3756": {
    "source": "this node takes the other's rows as before (Database → TLS)",
    "text": "tento uzel bere řádky druhého jako dřív (Databáze → TLS)"
   },
-  "s3755": {
+  "s3757": {
    "source": "this node takes the other's rows over TLS, its certificate checked (verify-full)",
    "text": "tento uzel bere řádky druhého přes TLS s ověřeným certifikátem (verify-full)"
   },
-  "s3756": {
+  "s3758": {
    "source": "this node's PostgreSQL does not speak TLS",
    "text": "PostgreSQL tohoto uzlu neumí TLS"
   },
-  "s3757": {
+  "s3759": {
    "source": "this node's PostgreSQL is being given its certificate (root helper)",
    "text": "PostgreSQL tohoto uzlu dostává certifikát (root helper)"
   },
-  "s3758": {
+  "s3760": {
    "source": "this node's PostgreSQL is told to take the other node over TLS only",
    "text": "PostgreSQL tohoto uzlu má pouštět druhý uzel už jen přes TLS"
   },
-  "s3759": {
+  "s3761": {
    "source": "this node's PostgreSQL lets the other node in without TLS too",
    "text": "PostgreSQL tohoto uzlu pouští druhý uzel i bez TLS"
   },
-  "s3760": {
+  "s3762": {
    "source": "this node's certificate as it was before",
    "text": "certifikát tohoto uzlu jako před změnou"
   },
-  "s3761": {
+  "s3763": {
    "source": "this node’s address is not on this machine",
    "text": "adresa tohoto uzlu na tomto stroji není"
   },
-  "s3762": {
+  "s3764": {
    "source": "this node’s own - every node of the cluster has one of its own; the others’ are in Settings → High availability",
    "text": "vlastní nastavení tohoto uzlu – každý uzel clusteru má svoje; ta ostatních jsou v Nastavení → Vysoká dostupnost"
   },
-  "s3763": {
+  "s3765": {
    "source": "this one",
    "text": "tento"
   },
-  "s3764": {
+  "s3766": {
    "source": "this page",
    "text": "tato stránka"
   },
-  "s3765": {
+  "s3767": {
    "source": "this program only ever READS a directory, and something tried to send it an extended operation that is not StartTLS. Nothing was sent.",
    "text": "tento program adresář jen ČTE a něco se pokusilo poslat rozšířenou operaci, která není StartTLS. Nic nebylo odesláno."
   },
-  "s3766": {
+  "s3768": {
    "source": "this server is upgraded: for a minute nobody can sign in to the VPN.",
    "text": "server se aktualizuje: asi minutu se nikdo nepřihlásí do VPN."
   },
-  "s3767": {
+  "s3769": {
    "source": "this sign-in has no second step to give",
    "text": "toto přihlášení nemá žádný druhý krok"
   },
-  "s3768": {
+  "s3770": {
    "source": "this text cannot have it",
    "text": "tento text to mít nemůže"
   },
-  "s3769": {
+  "s3771": {
    "source": "this text is one plain line",
    "text": "tento text je jeden řádek bez formátování"
   },
-  "s3770": {
+  "s3772": {
    "source": "this token gets no codes sent",
    "text": "na tento token se kódy neposílají"
   },
-  "s3771": {
+  "s3773": {
    "source": "this week",
    "text": "tento týden"
   },
-  "s3772": {
+  "s3774": {
    "source": "through a mail server",
    "text": "přes poštovní server"
   },
-  "s3773": {
+  "s3775": {
    "source": "through a mail server (SMTP relay)",
    "text": "přes poštovní server (SMTP relay)"
   },
-  "s3774": {
+  "s3776": {
    "source": "through the outgoing mail",
    "text": "přes frontu odchozí pošty"
   },
-  "s3775": {
+  "s3777": {
    "source": "tls is none, ldaps or starttls",
    "text": "tls je none, ldaps nebo starttls"
   },
-  "s3776": {
+  "s3778": {
    "source": "tmsh - a monitor that reads /healthz, the pool, the virtual server (SSL offload, X-Forwarded-For)",
    "text": "tmsh – monitor čtoucí /healthz, pool, virtuální server (SSL offload, X-Forwarded-For)"
   },
-  "s3777": {
+  "s3779": {
    "source": "to be downloaded",
    "text": "ke stažení"
   },
-  "s3778": {
+  "s3780": {
    "source": "to manage the machine - turned off, take care to keep a rule of your own for it",
    "text": "pro správu stroje – když ho vypnete, nechte si na něj vlastní pravidlo"
   },
-  "s3779": {
+  "s3781": {
    "source": "today",
    "text": "dnes"
   },
-  "s3780": {
+  "s3782": {
    "source": "token admin",
    "text": "správce tokenů"
   },
-  "s3781": {
+  "s3783": {
    "source": "token, code, verify or test",
    "text": "token, code, verify nebo test"
   },
-  "s3782": {
+  "s3784": {
    "source": "token_name is whole or bare",
    "text": "token_name je whole nebo bare"
   },
-  "s3783": {
+  "s3785": {
    "source": "tokens",
    "text": "tokeny"
   },
-  "s3784": {
+  "s3786": {
    "source": "too many attempts - wait a minute and try again",
    "text": "příliš mnoho pokusů – počkejte minutu a zkuste to znovu"
   },
-  "s3785": {
+  "s3787": {
    "source": "too variable",
    "text": "příliš kolísá"
   },
-  "s3786": {
+  "s3788": {
    "source": "totp_label needs {user} or {name} in it, or every token on a phone has the same name",
    "text": "totp_label musí obsahovat {user} nebo {name}, jinak má každý token v telefonu stejné jméno"
   },
-  "s3787": {
+  "s3789": {
    "source": "trusted",
    "text": "důvěryhodný"
   },
-  "s3788": {
+  "s3790": {
    "source": "trying a code (Tokens)",
    "text": "zkouška kódu (Tokeny)"
   },
-  "s3789": {
+  "s3791": {
    "source": "two hundred rules at most",
    "text": "nejvýš dvě stě pravidel"
   },
-  "s3790": {
+  "s3792": {
    "source": "type a name first",
    "text": "nejdřív zadejte jméno"
   },
-  "s3791": {
+  "s3793": {
    "source": "unless told otherwise, so",
    "text": ", pokud mu není řečeno jinak, takže"
   },
-  "s3792": {
+  "s3794": {
    "source": "unnamed",
    "text": "bez názvu"
   },
-  "s3793": {
+  "s3795": {
    "source": "unreachable",
    "text": "nedostupný"
   },
-  "s3794": {
+  "s3796": {
    "source": "up again",
    "text": "znovu běží"
   },
-  "s3795": {
+  "s3797": {
    "source": "upgrading",
    "text": "aktualizuje se"
   },
-  "s3796": {
+  "s3798": {
    "source": "used",
    "text": "použitý"
   },
-  "s3797": {
+  "s3799": {
    "source": "valid",
    "text": "platný"
   },
-  "s3798": {
+  "s3800": {
    "source": "versions differ",
    "text": "verze se liší"
   },
-  "s3799": {
+  "s3801": {
    "source": "waiting",
    "text": "čeká"
   },
-  "s3800": {
+  "s3802": {
    "source": "waiting for a code",
    "text": "čeká na kód"
   },
-  "s3801": {
+  "s3803": {
    "source": "waiting for a start",
    "text": "čeká na start"
   },
-  "s3802": {
+  "s3804": {
    "source": "waiting for another try",
    "text": "čeká na další pokus"
   },
-  "s3803": {
+  "s3805": {
    "source": "waiting for root",
    "text": "čeká na root"
   },
-  "s3804": {
+  "s3806": {
    "source": "waiting for the other node",
    "text": "čeká na druhý uzel"
   },
-  "s3805": {
+  "s3807": {
    "source": "waiting or failed",
    "text": "čekající nebo selhané"
   },
-  "s3806": {
+  "s3808": {
    "source": "waiting, sending, sent, failed or expired",
    "text": "waiting, sending, sent, failed nebo expired"
   },
-  "s3807": {
+  "s3809": {
    "source": "waits its turn",
    "text": "čeká, až na něj přijde řada"
   },
-  "s3808": {
+  "s3810": {
    "source": "weak certificates taken",
    "text": "přijímá slabé certifikáty"
   },
-  "s3809": {
+  "s3811": {
    "source": "web address",
    "text": "webová adresa"
   },
-  "s3810": {
+  "s3812": {
    "source": "weekly",
    "text": "týdně"
   },
-  "s3811": {
+  "s3813": {
    "source": "weeks",
    "text": "týdnů"
   },
-  "s3812": {
+  "s3814": {
    "source": "what follows the @",
    "text": "co následuje za @"
   },
-  "s3813": {
+  "s3815": {
    "source": "what happened",
    "text": "co se stalo"
   },
-  "s3814": {
+  "s3816": {
    "source": "what install.sh said",
    "text": "co řekl install.sh"
   },
-  "s3815": {
+  "s3817": {
    "source": "what is in it is counted",
    "text": "počítá se obsah"
   },
-  "s3816": {
+  "s3818": {
    "source": "what is written, not yet folded in",
    "text": "zapsané, ještě nezačleněné"
   },
-  "s3817": {
+  "s3819": {
    "source": "what it says",
    "text": "co říká"
   },
-  "s3818": {
+  "s3820": {
    "source": "what otp needs",
    "text": "co potřebuje otp"
   },
-  "s3819": {
+  "s3821": {
    "source": "what the VPN shows cannot be sent",
    "text": "to, co ukazuje VPN, se poslat nedá"
   },
-  "s3820": {
+  "s3822": {
    "source": "what the disk takes per second",
    "text": "co disk zvládne za sekundu"
   },
-  "s3821": {
+  "s3823": {
    "source": "what the mail held is gone - it cannot be sent",
    "text": "obsah mailu už není – nelze ho odeslat"
   },
-  "s3822": {
+  "s3824": {
    "source": "what the receiving server said",
    "text": "co řekl přijímající server"
   },
-  "s3823": {
+  "s3825": {
    "source": "what this program noted about itself: sign-ins, changes, copies, starts and stops.",
    "text": "co si tento program zapsal o sobě: přihlášení, změny, kopie, spuštění a zastavení."
   },
-  "s3824": {
+  "s3826": {
    "source": "whatever the server offers best (PLAIN, LOGIN, CRAM-MD5)",
    "text": "co server nabízí nejlepšího (PLAIN, LOGIN, CRAM-MD5)"
   },
-  "s3825": {
+  "s3827": {
    "source": "where",
    "text": "kde"
   },
-  "s3826": {
+  "s3828": {
    "source": "where a code was checked besides RADIUS",
    "text": "kde byl kód zkontrolován mimo RADIUS"
   },
-  "s3827": {
+  "s3829": {
    "source": "where it was sent",
    "text": "kam odešel"
   },
-  "s3828": {
+  "s3830": {
    "source": "where the codes are sent",
    "text": "kam se kódy posílají"
   },
-  "s3829": {
+  "s3831": {
    "source": "where the codes are sent: a mail address, or a phone number however written",
    "text": "kam se kódy posílají: e-mail, nebo telefonní číslo zapsané jakkoli"
   },
-  "s3830": {
+  "s3832": {
    "source": "which account?",
    "text": "který účet?"
   },
-  "s3831": {
+  "s3833": {
    "source": "which ones - empty: all (realm:example.cz, name:novak*, kind:mail…)",
    "text": "které – prázdné: všechny (realm:example.cz, name:novak*, kind:mail…)"
   },
-  "s3832": {
+  "s3834": {
    "source": "which ones - empty: all (realm:example.cz, name:novak*…)",
    "text": "které – prázdné: všechny (realm:example.cz, name:novak*…)"
   },
-  "s3833": {
+  "s3835": {
    "source": "which token?",
    "text": "který token?"
   },
-  "s3834": {
+  "s3836": {
    "source": "while paused",
    "text": "během pauzy"
   },
-  "s3835": {
+  "s3837": {
    "source": "who did it",
    "text": "kdo to udělal"
   },
-  "s3836": {
+  "s3838": {
    "source": "who had it sent",
    "text": "kdo ho nechal poslat"
   },
-  "s3837": {
+  "s3839": {
    "source": "who made it",
    "text": "kdo ho vytvořil"
   },
-  "s3838": {
+  "s3840": {
    "source": "who or what made it",
    "text": "kdo nebo co ho vytvořil"
   },
-  "s3839": {
+  "s3841": {
    "source": "who?",
    "text": "kdo?"
   },
-  "s3840": {
+  "s3842": {
    "source": "whoever passes the realm’s group filter",
    "text": "kdokoli, kdo projde skupinovým filtrem realmu"
   },
-  "s3841": {
+  "s3843": {
    "source": "whom it goes to",
    "text": "komu jde"
   },
-  "s3842": {
+  "s3844": {
    "source": "why - for the events",
    "text": "proč – pro události"
   },
-  "s3843": {
+  "s3845": {
    "source": "why - what the token said",
    "text": "proč – co řekl token"
   },
-  "s3844": {
+  "s3846": {
    "source": "with a password kept here",
    "text": "s heslem uloženým zde"
   },
-  "s3845": {
+  "s3847": {
    "source": "with colours and the code large (HTML)",
    "text": "barevný, s velkým kódem (HTML)"
   },
-  "s3846": {
+  "s3848": {
    "source": "with the password (AES-256)",
    "text": "heslem (AES-256)"
   },
-  "s3847": {
+  "s3849": {
    "source": "without TLS too",
    "text": "i bez TLS"
   },
-  "s3848": {
+  "s3850": {
    "source": "without a realm",
    "text": "bez realmu"
   },
-  "s3849": {
+  "s3851": {
    "source": "working",
    "text": "pracuje se"
   },
-  "s3850": {
+  "s3852": {
    "source": "write it as Name = value",
    "text": "pište to jako Název = hodnota"
   },
-  "s3851": {
+  "s3853": {
    "source": "write the number with its country code: +420 603 123 456",
    "text": "zadejte číslo i s předvolbou: +420 603 123 456"
   },
-  "s3852": {
+  "s3854": {
    "source": "writing the certificate and the TLS settings",
    "text": "zapisuje se certifikát a nastavení TLS"
   },
-  "s3853": {
+  "s3855": {
    "source": "wrong",
    "text": "chybně"
   },
-  "s3854": {
+  "s3856": {
    "source": "wrong code",
    "text": "chybný kód"
   },
-  "s3855": {
+  "s3857": {
    "source": "wrong codes",
    "text": "špatných kódů"
   },
-  "s3856": {
+  "s3858": {
    "source": "wrong codes in a row",
    "text": "chybné kódy za sebou"
   },
-  "s3857": {
+  "s3859": {
    "source": "wrong sign-ins",
    "text": "chybná přihlášení"
   },
-  "s3858": {
+  "s3860": {
    "source": "yes",
    "text": "ano"
   },
-  "s3859": {
+  "s3861": {
    "source": "yes - switched off",
    "text": "ano – vypnutý"
   },
-  "s3860": {
+  "s3862": {
    "source": "yesterday",
    "text": "včera"
   },
-  "s3861": {
+  "s3863": {
    "source": "your rules",
    "text": "vaše pravidla"
   },
-  "s3862": {
+  "s3864": {
    "source": "á č ď é ě í ľ ň ó ř š ť ú ů ý ž in sign-in names. Off: letters without accents only.",
    "text": "á č ď é ě í ľ ň ó ř š ť ú ů ý ž v přihlašovacích jménech. Vypnuto: jen písmena bez diakritiky."
   },
-  "s3863": {
+  "s3865": {
    "source": "– (cleared)",
    "text": "– (vynulováno)"
   },
-  "s3864": {
+  "s3866": {
    "source": "… in (minutes)",
    "text": "… za (minut)"
   },
-  "s3865": {
+  "s3867": {
    "source": "…and also the names ending in @",
    "text": "…a také jména končící na @"
   },
-  "s3866": {
+  "s3868": {
    "source": "…and its IPv6 address (optional)",
    "text": "…a její IPv6 adresa (volitelně)"
   },
-  "s3867": {
+  "s3869": {
    "source": "…in the first updates",
    "text": "…v prvních aktualizacích"
   },
-  "s3868": {
+  "s3870": {
    "source": "↑ ↓ and Tab or Enter take one · Esc closes",
    "text": "↑ ↓ a Tab nebo Enter vybere · Esc zavře"
   },
-  "s3869": {
+  "s3871": {
    "source": "✓ RIGHT",
    "text": "✓ SPRÁVNĚ"
   },
-  "s3870": {
+  "s3872": {
    "source": "✗ WRONG",
    "text": "✗ ŠPATNĚ"
   },
-  "s3871": {
+  "s3873": {
    "source": "✗: a token is there under that name already - left as it is; take one of the two away by hand.",
    "text": "✗: pod tím jménem už token je – zůstává, jak je; jeden z nich odeberte ručně."
   }
