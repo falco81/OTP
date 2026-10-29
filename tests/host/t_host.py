@@ -5,7 +5,7 @@
 # Usage (as root): python3 t_host.py VERSION
 import os, sys, json, time, subprocess, urllib.request, tempfile, threading, atexit, shutil
 
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.160'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.161'
 V = '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = tempfile.mkdtemp(prefix='otp-host-')
@@ -112,7 +112,7 @@ c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': weak, 'nodes': ['
 ok('RSA 2048 refused on the node: %s' % keys('node2').get('error'),
    until(lambda: 'too weak' in (keys('node2').get('error') or '')))
 c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': 'command="sh" ' + pub, 'nodes': ['node2']}, S)
-ok('a line with options refused', until(lambda: 'options' in (keys('node2').get('error') or '')))
+ok('a line with options refused: %s' % c, c == 400)
 fp_jan = [k for k in keys('node1')['keys'] if k['comment'] == 'jan@laptop'][0]['fp']
 call('node1', '/api/sshkeys', {'action': 'drop', 'fp': fp_jan, 'nodes': ['node1'], 'last_ok': True}, S)
 ok('jan@laptop taken away on node1, kept on node2', until(lambda: not any(k['fp'] == fp_jan for k in keys('node1')['keys'])
@@ -152,6 +152,10 @@ ok('my own private key given for node1: only its public half put on (%s)' % x.ge
    and 'PRIVATE' not in (st.get_meta('host:rootkey:node1') or ''))
 c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'all', 'key': pub}, S)
 ok('a public line given for every node', c == 200 and until(lambda: kept('all')['fp'] == fp_jan and all(kept('all')['on'].values())))
+subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'from-private', '-f', work + '/p'], check=True)
+c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': open(work + '/p').read(), 'nodes': ['node2']}, S)
+ok('a private key added: only its public half put on (%s)' % x.get('message'),
+   c == 200 and until(lambda: any(k['comment'] == 'from-private' for k in keys('node2')['keys'])))
 c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'node1', 'key': 'nonsense'}, S)
 ok('neither a public nor a private key refused: %s' % c, c == 400)
 ok('the key made before stays on both', has('node1', fa) and has('node2', fa))

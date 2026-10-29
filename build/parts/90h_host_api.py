@@ -20,9 +20,12 @@ def _sshkeys_do(h):
             sshkeys_ask(h.store, nodes, 'list', s['name'])
             return {'message': 'asked again'}
         if act == 'add':
-            line = str(b.get('line') or '').strip()
+            # A public line, or a private key of which only the public half
+            # is used and nothing else kept (1.0.161).
+            line, was_private = rootkey_public(b.get('line'), str(b.get('passphrase') or ''))
             sshkeys_ask(h.store, nodes, 'add', s['name'], line=line)
-            return {'message': 'the key goes onto %s within a few seconds' % ', '.join(nodes)}
+            return {'message': 'the key goes onto %s within a few seconds%s' % (
+                ', '.join(nodes), ' - the private half was not kept' if was_private else '')}
         if act == 'drop':
             sshkeys_ask(h.store, nodes, 'drop', s['name'], fp=str(b.get('fp') or ''),
                         last_ok=bool(b.get('last_ok')))

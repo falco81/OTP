@@ -3133,6 +3133,7 @@ pre.lines.ou-log{max-height:420px;overflow:auto}
 #ou-host .card > .up-bar{margin:6px 0 14px}
 #ou-host .ou-reboot .btnrow, #ou-host .ou-reboot > button{margin-top:4px}
 #sk-host .rb-panel{margin-top:4px}
+#sk-host .rb-below:empty{display:none}
 #sk-host .rb-below{margin-top:12px}
 /* Buttons beside a card's title (1.0.159): they touched. */
 .card h2 .right{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px}

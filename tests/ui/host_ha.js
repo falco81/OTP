@@ -98,14 +98,15 @@ function sshkeys() {
   ok('the private half shown once', (await p.locator('#modal textarea, .modal-box textarea').first().inputValue().catch(() => '')).includes('PRIVATE KEY'));
   await p.screenshot({path: SHOT + '/ha-sk0.png'});
   await p.locator('#modal-foot button').last().click(); await p.waitForTimeout(1200);
+  ok('no Use my own in the key panel: added in the list', !(await p.locator('#sk-host .rb-panel button', {hasText: /Use my own|Použít vlastní/}).count()) && await p.locator('#sk-host button', {hasText: /Add a key|Přidat klíč/}).count() === 1);
   ok('no Download nor Forget in the key panel', !(await p.locator('#sk-host .rb-panel button', {hasText: /Download it|Forget it|Stáhnout|Zapomenout/}).count()));
-  ok('made for every node: the public half shown', (await p.locator('#sk-host .rb-below').innerText()).includes('ssh-ed25519 AAAAC3Nzaall'));
+  ok('made for every node: in the list, marked made here, not repeated above', (await p.locator('#sk-host tbody').innerText()).match(/otp-root-all/) && !(await p.locator('#sk-host .rb-below').innerText()).includes('ssh-ed25519'));
   ok('no export of all the keys at once', !(await p.locator('#sk-host button', {hasText: /Export them|Exportovat/}).count()));
   const [dl] = await Promise.all([p.waitForEvent('download'), p.locator('#sk-host tbody tr').first().locator('button').first().click()]);
   const fs = require('fs'); const pth = await dl.path();
   ok('one key exported by itself: ' + dl.suggestedFilename(), dl.suggestedFilename() === 'root@Chris.pub' && fs.readFileSync(pth, 'utf8') === 'ssh-rsa AAAA root@Chris\n');
   await p.locator('#sk-host .seg button').nth(2).click(); await p.waitForTimeout(500);
-  ok('otp2 alone has none yet', (await p.locator('#sk-host .rb-below').innerText()).match(/None made|Zatím|Žádný/));
+  ok('otp2 alone: only the button, no key shown', (await p.locator('#sk-host .rb-panel').innerText()).match(/Make a key|Vytvořit klíč/) && !(await p.locator('#sk-host .rb-below').innerText()).trim());
   await p.screenshot({path: SHOT + '/ha-sk1.png', fullPage: true}); await p.screenshot({path: SHOT + '/ha-sk2.png', clip: {x: 80, y: 600, width: 1500, height: 300}});
   const g2 = await p.$$eval('#sk-host .card > *, #sk-host .rb-panel > *', els => {
     const out = []; els.forEach(e => { const n = e.nextElementSibling; if (!n || !e.offsetHeight || !n.offsetHeight) return;

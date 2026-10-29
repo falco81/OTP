@@ -12354,8 +12354,9 @@ function ntpSave() {
 /* ---- Settings → SSH keys of root (1.0.158) -------------------------------------
    Each node's /root/.ssh/authorized_keys as its root helper reads it; the keys
    put side by side, a column a node. Above them root's key kept here, drawn as
-   isemon draws a router's (1.0.159), made here or given - one for every node,
-   or one for a node of its own. */
+   isemon draws a router's (1.0.159), made here - one for every node, or one for
+   a node of its own. The key is then in the list below, a key of one's own
+   added there too (1.0.161). */
 var SK = {d: null, poll: null, asked: 0, scope: 'all'};
 function loadSshKeys() {
   api('sshkeys').then(function (d) {
@@ -12406,8 +12407,8 @@ function drawSshKeys(live) {
     var card = el('div', 'card full');
     var h = el('h2', '', 'Keys that may sign in as root');
     var tools = el('span', 'right');
-    var add = cmdButton('Add a public key', 'upload', 'small');
-    explain(add, 'A public key you have already (ssh-ed25519 AAAA… you@laptop) - pasted, or read from its .pub file - put onto the nodes you choose.');
+    var add = cmdButton('Add a key', 'upload', 'small');
+    explain(add, 'A key you have already - its public line or .pub file, or the private key, of which only the public half is used - put onto the nodes you choose.');
     var again = iconButton('refresh', 'Read the keys again on every node');
     tools.appendChild(add); tools.appendChild(again);
     h.appendChild(tools);
@@ -12437,7 +12438,7 @@ function drawSshKeys(live) {
         var t = el('td');
         t.appendChild(el('span', 'tag ' + (String(k.type).toUpperCase() === 'ED25519' ? 'good' : 'info'), skKind(k)));
         if (k.options) t.appendChild(el('span', 'tag warn', 'with options'));
-        if (kept[k.fp]) t.appendChild(el('span', 'tag info', 'made or given here'));
+        if (kept[k.fp]) t.appendChild(el('span', 'tag info', 'made here'));
         tr.appendChild(t);
         tr.appendChild(noI18n(el('td', 'mono small', k.fp || '–')));
         tr.appendChild(noI18n(el('td', 'small', k.comment || '–')));
@@ -12532,7 +12533,7 @@ function skKeptCard(d) {
   var cur = scopes.filter(function (r) { return r.scope === SK.scope; })[0] || {scope: 'all', on: {}};
   var nodes = Object.keys(cur.on || {});
   var where = cur.scope === 'all' ? (nodes.length > 1 ? 'both nodes - the same key' : 'this server') : '<b>' + htmlText(cur.scope) + '</b> only';
-  var P = rbPanel('Its <b>public</b> half goes into <code>/root/.ssh/authorized_keys</code> of ' + where + '. The <b>private</b> half is never kept here: one made here is shown to you once, to download or copy; one of your own stays with you.');
+  var P = rbPanel('Its <b>public</b> half goes into <code>/root/.ssh/authorized_keys</code> of ' + where + '. The <b>private</b> half is never kept here: it is shown to you once, to download or copy. The key is then in the list below - exported or taken away there; a key of your own is added there too.');
   if (!d.keygen) {
     var miss = el('p', 'note');
     miss.style.color = 'var(--warn)';
@@ -12541,34 +12542,8 @@ function skKeptCard(d) {
   }
   var mk = cmdButton('Make a key', 'key', '');
   explain(mk, 'Make a fresh pair here - Ed25519, or RSA 4096 where something old needs RSA. Its private half is shown to you once; its public half goes into root\'s authorized_keys of ' + (cur.scope === 'all' ? 'every node' : cur.scope) + '.');
-  var own = cmdButton('Use my own', 'upload', '');
-  explain(own, 'A key you already have: its public line or its .pub file - or the private key, whose public half is worked out here and the private half not kept.');
-  [mk, own].forEach(function (b) { P.row.appendChild(b); });
+  P.row.appendChild(mk);
   mk.disabled = !d.keygen;
-  var lack = nodes.filter(function (n) { return !cur.on[n]; });
-  if (cur.has && lack.length) {
-    P.row.appendChild(el('span', 'spacer'));
-    var put = cmdButton('Put it on again', 'refresh', 'primary');
-    explain(put, 'Its public half into root\'s authorized_keys of ' + lack.join(', ') + ', where it is not.');
-    put.onclick = function () { skKept('rk_again', {}, put); };
-    P.row.appendChild(put);
-  }
-  if (!cur.has || !cur.pub) {
-    P.below.appendChild(el('p', 'btnhelp', 'None made or given here yet.'));
-  } else {
-    P.below.appendChild(el('p', 'btnhelp', (cur.how === 'made' ? 'The last one made here, by ' : 'The last one given here, by ') + (cur.by || '?') + ' · ' + ago(cur.at)));
-    var on = el('div', 'sk-on');
-    nodes.forEach(function (n) {
-      var t = el('span', 'tag ' + (cur.on[n] ? 'good' : 'warn'));
-      t.appendChild(noI18n(el('span', '', n + ' ')));
-      t.appendChild(el('span', '', cur.on[n] ? 'on it' : 'not on it'));
-      on.appendChild(t);
-    });
-    P.below.appendChild(on);
-    P.below.appendChild(el('p', 'btnhelp', 'The public half. Click it to copy.'));
-    P.below.appendChild(rbCopyme(cur.pub, 'the public key is on the clipboard'));
-    P.below.appendChild(noI18n(el('p', 'muted small mono', cur.fp)));
-  }
   var words = cur.scope === 'all' ? 'every node' : cur.scope;
   mk.onclick = function () {
     var kind = 'ed25519';
@@ -12592,40 +12567,6 @@ function skKeptCard(d) {
       }).then(function (d2) { SK.d = d2; drawSshKeys(); skPoll(true); })
         .catch(function (e) { busy(b, false); oops(e); });
     }}], 'medium');
-  };
-  own.onclick = function () {
-    modal('Use my own key for ' + words, function (body) {
-      var p = el('p', 'note');
-      p.innerHTML = 'Its public line (<code>ssh-ed25519 AAAA… you@laptop</code>), pasted or read from its <code>.pub</code> file, goes into root\'s authorized_keys of ' + htmlText(nodes.join(', ')) + '. A private key is taken too: its public half is worked out here and the private half is not kept.';
-      body.appendChild(p);
-      var area = noI18n(el('textarea', 'mono'));
-      area.rows = 6; area.id = 'sk-paste-area'; area.spellcheck = false;
-      area.placeholder = 'ssh-ed25519 AAAA… you@laptop';
-      body.appendChild(area);
-      var fr = el('div', 'btnrow');
-      fr.style.margin = '8px 0 12px';
-      var pickB = cmdButton('Read a file…', 'upload', 'small');
-      var input = el('input'); input.type = 'file'; input.hidden = true;
-      pickB.onclick = function () { input.click(); };
-      input.onchange = function () {
-        var f = input.files && input.files[0];
-        if (!f) return;
-        if (f.size > 65536) { toast('that file is far bigger than a key', 'warn'); return; }
-        f.text().then(function (t) { area.value = t.trim(); ppf.hidden = t.indexOf('PRIVATE KEY') < 0; });
-      };
-      fr.appendChild(pickB); fr.appendChild(input);
-      body.appendChild(fr);
-      var pp = maskBox('', '', 'mono');
-      pp.id = 'sk-paste-pp';
-      var ppf = formField('Its passphrase, if the private key has one', pp);
-      ppf.hidden = true;
-      area.oninput = function () { ppf.hidden = area.value.indexOf('PRIVATE KEY') < 0; };
-      body.appendChild(ppf);
-      setTimeout(function () { area.focus(); }, 60);
-    }, [{words: 'Cancel', close: true},
-        {words: 'Put it on', cls: 'primary', icon: 'upload', close: true, go: function () {
-          skKept('rk_given', {key: $('sk-paste-area').value, passphrase: $('sk-paste-pp').value});
-        }}], 'medium');
   };
   card.appendChild(P.box);
   return card;
@@ -12673,35 +12614,41 @@ function skSave(text, file) {
 function skExport(k) {
   var name = String(k.comment || k.type || 'key').replace(/[^A-Za-z0-9@._-]+/g, '_').replace(/^[._]+/, '').slice(0, 60) || 'key';
   skSave(k.text + '\n', name + '.pub');
-  toast('exported: ' + name + '.pub', 'good');
+  toast('the key is exported as ' + name + '.pub', 'good');
 }
 function skAdd() {
-  var area, pick;
-  modal('Add a public key for root', function (body) {
+  var area, pick, pp, ppf;
+  modal('Add a key for root', function (body) {
     var p = el('p', 'note');
-    p.innerHTML = 'One line of a <code>.pub</code> file: <code>ssh-ed25519 AAAA… you@laptop</code>. Ed25519, ECDSA or RSA of 3072 bits and more; options before the key are not taken here.';
+    p.innerHTML = 'One line of a <code>.pub</code> file: <code>ssh-ed25519 AAAA… you@laptop</code>. Ed25519, ECDSA or RSA of 3072 bits and more; options before the key are not taken here. A private key is taken too: its public half is worked out here and the private half is not kept.';
     body.appendChild(p);
     area = noI18n(el('textarea', 'mono'));
     area.rows = 4; area.spellcheck = false; area.placeholder = 'ssh-ed25519 AAAA… you@laptop';
     body.appendChild(area);
     var fr = el('div', 'btnrow');
     fr.style.margin = '8px 0 4px';
-    var pickB = cmdButton('Read a .pub file…', 'upload', 'small');
-    var input = el('input'); input.type = 'file'; input.accept = '.pub,.txt'; input.hidden = true;
+    var pickB = cmdButton('Read a file…', 'upload', 'small');
+    var input = el('input'); input.type = 'file'; input.hidden = true;
     pickB.onclick = function () { input.click(); };
     input.onchange = function () {
       var f = input.files && input.files[0];
       if (!f) return;
       if (f.size > 65536) { toast('that file is far bigger than a key', 'warn'); return; }
-      f.text().then(function (t) { area.value = t.trim().split(/\r?\n/)[0]; });
+      f.text().then(function (t) { t = t.trim(); area.value = t.indexOf('PRIVATE KEY') >= 0 ? t : t.split(/\r?\n/)[0]; skAddPp(); });
     };
     fr.appendChild(pickB); fr.appendChild(input);
     body.appendChild(fr);
+    pp = maskBox('', '', 'mono');
+    ppf = formField('Its passphrase, if the private key has one', pp);
+    var skAddPp = function () { ppf.hidden = area.value.indexOf('PRIVATE KEY') < 0; };
+    area.oninput = skAddPp;
+    skAddPp();
+    body.appendChild(ppf);
     pick = skNodePicker(body);
     setTimeout(function () { area.focus(); }, 60);
   }, [{words: 'Cancel', close: true}, {words: 'Add it', cls: 'primary', icon: 'add', close: true, go: function () {
     var nodes = pick();
-    api('sshkeys', {action: 'add', line: area.value.trim(), nodes: nodes}).then(function (x) { toast(x.message, 'good'); skPoll(true); }).catch(oops);
+    api('sshkeys', {action: 'add', line: area.value.trim(), passphrase: pp.value, nodes: nodes}).then(function (x) { toast(x.message, 'good'); skPoll(true); }).catch(oops);
   }}], 'medium');
 }
 function skDrop(row) {

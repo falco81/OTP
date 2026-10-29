@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.161 — 29 October 2026
+
+**SSH keys of root: one place for a key of one's own, the key made not repeated**
+- *A key for root* only makes a key now: *Use my own* is gone - a key of one's
+  own is added in the list, where *Add a key* takes its public line or .pub
+  file and also a private key (with its passphrase), of which only the public
+  half is used and nothing else kept.
+- After a key is made its public half is no longer shown again above the list:
+  it is in the list, marked *made here*, exported or taken away there.
+
 ## 1.0.160 — 29 October 2026
 
 **The updates' window cleared for good, each SSH key exported by itself**
