@@ -4443,11 +4443,11 @@ def _portal_login(h):
     full = Authenticator.full_name(name, CONFIG.get('portal_realm') or
                                    CONFIG.get('default_realm') or '')
     if full and name_letters_problem(full):
-        # Letters of another language, switched off (1.0.154): said plainly -
+        # Letters with accents or of another language, switched off (1.0.154): said plainly -
         # it is no password that is wrong.
         h.failed(key)
-        raise ApiError(400, 'that name has letters of another language, which this server '
-                            'does not take - ask the administrator')
+        raise ApiError(400, 'that name has letters this server does not take (accents or '
+                            'another language) - ask the administrator')
     realm = h.store.realm_for(full) if full else None
     if not any(r.get('directory') for r in h.store.realms()):
         # Nobody can enrol yet - and the one trying is most likely the

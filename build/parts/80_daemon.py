@@ -234,6 +234,48 @@ def token_restore(store, t, by='restore', replace=False):
         {'totp': 'the app', 'mail': 'codes by mail', 'sms': 'codes by SMS'}[kind], len(left))
 
 
+def names_letters_kept(daemon):
+    """Once, on the first start of a version that checks the letters of names
+    (1.0.155): where tokens or accounts with accents or other languages' letters
+    are there already and nobody chose either setting, they are switched on as
+    those names need - so an upgrade does not shut those people out of the VPN.
+    A new server starts with both off. One node of a cluster does it; the other
+    gets it by replication."""
+    store = daemon.store
+    key = 'names:letters:checked'
+    if store.get_meta(key) is not None or not ha_lead(store):
+        return
+    saved = store.settings_saved()
+    if 'names_czsk_letters' in saved:
+        store.set_meta(key, '1')
+        return
+    home = other = 0
+    for table in ('tokens', 'accounts'):
+        for r in store.db.rows('SELECT name FROM %s' % table):
+            n = str(r['name'] or '')
+            if all(ord(c) < 128 for c in n):
+                continue
+            if all(ord(c) < 128 or c in NAME_LETTERS_HOME for c in n):
+                home += 1
+            else:
+                other += 1
+    want = {}
+    if other and 'names_any_letters' not in saved:
+        # (1.0.154 took Czech and Slovak letters by itself, and others only
+        # when names_any_letters was switched on - a choice made then stays.)
+        want['names_any_letters'] = 1
+    if home or (other and 'names_any_letters' in saved):
+        want['names_czsk_letters'] = 1
+    if want:
+        daemon.save_settings(want, by='otp (upgrade)')
+        store.add_event('settings', 'names with %s are here already (%d token(s) and account(s)): '
+                        '%s switched on so that they still sign in - switch it off on Settings - '
+                        'The tokens if they should not' % (
+                            'letters of other languages' if other else 'Czech or Slovak letters',
+                            home + other, ', '.join(sorted(want))), 'warn', who='otp')
+    store.set_meta(key, '1')
+
+
 STALE_WORK = ('otp-rbackup-', 'otp-putback-', 'otp-download-', 'otp-dl-', 'otp-peek-',
               'otp-fetch-')
 
@@ -1261,6 +1303,10 @@ class Daemon(object):
         except Exception as e:                      # noqa: BLE001
             log('the floor for going back could not be written: %s' % e, 'warn')
         stale_work_away()
+        try:
+            names_letters_kept(self)
+        except Exception as e:                      # noqa: BLE001
+            log('the letters names take could not be looked at: %s' % e, 'warn')
         if not sealing_key():
             # A database that already holds sealed secrets gets no new key in
             # place of a missing one (1.0.33): the secrets would stay lost, and

@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.154'
+__version__ = '1.0.155'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -149,6 +149,7 @@ DEFAULTS = {
     'scratch_count': 5,
     'scratch_digits': 8,
     'token_names_case': 'lower',
+    'names_czsk_letters': 0,
     'names_any_letters': 0,
     # --- the enrolment pages -------------------------------------------------
     'portal': 1,
@@ -332,6 +333,7 @@ TUNABLE = {
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
+    'names_czsk_letters': (0, 1),
     'names_any_letters': (0, 1),
     'portal': (0, 1), 'portal_who': ('realm_groups', 'groups', 'anyone'),
     'portal_confirm': (0, 1), 'portal_reissue': (0, 1), 'portal_show_secret': (0, 1),
@@ -484,6 +486,7 @@ NAMES = {
     'scratch_count': 'Recovery codes per token',
     'scratch_digits': 'Digits in a recovery code',
     'token_names_case': 'Names of tokens are kept in',
+    'names_czsk_letters': 'Czech and Slovak letters in names',
     'names_any_letters': 'Letters of other languages in names',
     'portal': 'The enrolment pages are open',
     'portal_title': 'The title of the enrolment pages',
@@ -794,14 +797,20 @@ SAYS = {
     'token_names_case': 'Whether <code>Novak@example.cz</code> and <code>novak@example.cz'
                         '</code> are one token. Active Directory does not care, and neither '
                         'should this, unless something else forces it to.',
-    'names_any_letters': 'Off: the names of people, tokens and accounts take letters without '
-                         'accents, digits and the letters of Czech and Slovak (á č ď é ě í ľ ĺ ň ó ô '
-                         'ŕ ř š ť ú ů ý ž ä) - a name with any other letter (Cyrillic, Greek, '
-                         'Polish ł, German ß, ö...) is refused: at the VPN, on the enrolment pages, '
-                         'when a token or an account is made and when an administrator from the '
-                         'directory signs in. On: letters of any language. A name that only '
-                         'looks like another one (a Cyrillic а for a Latin a) is one way to pass '
-                         'for somebody; switch it on only where such names are really used.',
+    'names_czsk_letters': 'The letters of Czech and Slovak with their accents (á č ď é ě í ľ ĺ ň ó ô '
+                          'ŕ ř š ť ú ů ý ž ä) in the names of people, tokens and accounts. With '
+                          'both this and the one beside it off, a name takes letters without '
+                          'accents, digits, . _ - and @ only, and one with any other letter is '
+                          'refused: at the VPN before anything is asked, on the enrolment pages, '
+                          'when a token or an account is made and when an administrator from the '
+                          'directory signs in. Most directories keep their sign-in names so '
+                          '(novak), and only the display names have accents - those are never '
+                          'checked.',
+    'names_any_letters': 'Letters of every other language in names - Cyrillic, Greek, Polish ł, '
+                         'German ß and ö, and the rest. A name that only looks like another (a '
+                         'Cyrillic а for a Latin a) is one way to pass for somebody: switch it on '
+                         'only where such names are really used. On, it takes the Czech and '
+                         'Slovak letters too.',
     'portal': 'The pages where people enrol their own token. Switched off they say so and '
               'let nobody in; administrators can still enrol anybody here.',
     'portal_title': 'The heading on every enrolment page and the title of the browser tab. Empty: One-time passwords, in the language of the page.',
@@ -952,7 +961,8 @@ PANES = {
     'tokens': ['totp_issuer', 'totp_label', 'totp_digits', 'totp_period', 'totp_algorithm',
                'totp_window', 'totp_disallow_reuse', 'rate_limit_tries', 'rate_limit_s',
                'lockout_after', 'lockout_min', 'admin_show_key',
-               'scratch_count', 'scratch_digits', 'token_names_case', 'names_any_letters'],
+               'scratch_count', 'scratch_digits', 'token_names_case', 'names_czsk_letters',
+               'names_any_letters'],
     'portal': ['portal', 'portal_title', 'portal_realm', 'portal_hint', 'portal_who',
                'portal_groups', 'portal_confirm', 'portal_reissue', 'portal_show_secret',
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
@@ -1658,8 +1668,9 @@ def short_host():
         return 'otp'
 
 
-# The letters a name takes while names_any_letters is off (1.0.154): those
-# without accents, and Czech's and Slovak's.
+# Letters beyond ASCII a name takes (1.0.154, split in 1.0.155): Czech's and
+# Slovak's with names_czsk_letters, every language's with names_any_letters;
+# both off, none.
 NAME_LETTERS_HOME = set('áäčďéěíĺľňóôŕřšťúůýž' + 'áäčďéěíĺľňóôŕřšťúůýž'.upper())
 
 
@@ -1670,12 +1681,17 @@ def name_letters_problem(name):
         return ''
     import unicodedata
     said = unicodedata.normalize('NFC', str(name or ''))
-    odd = sorted({c for c in said if ord(c) > 127 and c not in NAME_LETTERS_HOME})
+    home = bool(CONFIG.get('names_czsk_letters'))
+    odd = sorted({c for c in said if ord(c) > 127 and not (home and c in NAME_LETTERS_HOME)})
     if not odd:
         return ''
-    return ('the name %s has letters of another language (%s) - only Czech and Slovak ones are '
-            'taken (Settings - The tokens - Letters of other languages in names)'
-            % (said[:60], ' '.join(odd[:8])))
+    if home:
+        return ('the name %s has letters of another language (%s) - only Czech and Slovak ones '
+                'are taken (Settings - The tokens - Letters of other languages in names)'
+                % (said[:60], ' '.join(odd[:8])))
+    return ('the name %s has letters with accents or of another language (%s) - only letters '
+            'without accents are taken (Settings - The tokens - Czech and Slovak letters in '
+            'names, Letters of other languages in names)' % (said[:60], ' '.join(odd[:8])))
 
 
 def dn_list(text):

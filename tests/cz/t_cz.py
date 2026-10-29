@@ -3,7 +3,7 @@
 # administrators' groups, the enrolment portal and the pages' API.
 # Usage: python3 t_cz.py VERSION   (starts its own mock AD and daemon)
 import os, sys, json, time, subprocess, urllib.request, tempfile, base64, atexit
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.154'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.155'
 V = '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 D = tempfile.mkdtemp(prefix='otp-cz-'); run = D + '/run'; os.makedirs(run)
@@ -36,6 +36,14 @@ st.client_save({'name': 'asa', 'address': '127.0.0.1', 'secret': 'tajné-heslo-�
 st.add_account('local', 'fulladmin', 'Local-Admin-Pass-153!', must_change=0)
 tk = otp.Tokens(st)
 KEYS = {}
+try:
+    tk.enroll('žofie@corpnet.cz', 'test'); ok_cz_off = False
+except ValueError as e:
+    ok_cz_off = 'accents' in str(e)
+# The administrator switched the Czech and Slovak letters on (1.0.155), the
+# others stay off; nothing for the upgrade to decide.
+st.save_setting('names_czsk_letters', 1, 'test'); st.set_meta('names:letters:checked', '1')
+otp.CONFIG['names_czsk_letters'] = 1
 try:
     tk.enroll('łukasz@corpnet.cz', 'test'); ok_refused = False
 except ValueError as e:
@@ -94,6 +102,7 @@ def radius(user, pw):
     return {2: 'accept', 3: 'reject', 11: 'challenge'}.get(c, c), words
 
 
+ok('both off: a token for žofie (Czech ž) is refused', ok_cz_off)
 ok('a token for łukasz (Polish ł) is refused while other languages are off', ok_refused)
 time.sleep(31)          # the codes of the enrolment step used: the next step
 r, w = radius('jcermak@corpnet.cz', 'Heslo-Žluťoučký-1' + code('jcermak@corpnet.cz'))
@@ -142,6 +151,15 @@ ok('pages: Cizí Člověk, in neither, refused: %s' % c, c == 401)
 c, role = admin('žofie@corpnet.cz', 'Heslo-Ďábel-2')
 ok('pages: žofie (diacritics in the login name) in "Správci OTP" signs in: %s %s' % (c, role), c == 200 and role == 'fulladmin')
 
+c, x = call('/api/settings', {'settings': {'names_czsk_letters': 0}}, S)
+r, w = radius('žofie@corpnet.cz', 'Heslo-Ďábel-2' + code('žofie@corpnet.cz'))
+ok('RADIUS, Czech and Slovak letters off: žofie refused: %s' % r, r == 'reject')
+r, w = radius('jcermak@corpnet.cz', 'Heslo-Žluťoučký-1' + code('jcermak@corpnet.cz'))
+ok('RADIUS, Czech and Slovak letters off: jcermak (no accents in the name, accents in the password) still accepted: %s' % r, r == 'accept')
+c, x = call('/api/portal/login', {'name': 'žofie', 'password': 'Heslo-Ďábel-2'})
+ok('portal, Czech and Slovak letters off: žofie told so: %s %s' % (c, x.get('error')), c == 400)
+c, x = call('/api/settings', {'settings': {'names_czsk_letters': 1}}, S)
+_, a = call('/api/auth/login', {'name': 'local', 'password': 'Local-Admin-Pass-153!'}); S = a['token']
 c, role = admin('łukasz', 'Haslo-Łódź-6')
 ok('pages, other languages off: łukasz in "Správci OTP" refused: %s' % c, c == 401)
 c, x = call('/api/portal/login', {'name': 'иван', 'password': 'Пароль-7'})
