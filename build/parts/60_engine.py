@@ -481,30 +481,16 @@ SCRATCH_GUARD_S = 86400
 
 
 def scratch_guard_times(store, name):
-    try:
-        got = [float(x) for x in json.loads(store.get_meta('scratchguard:' + norm_name(name))
-                                            or '[]')]
-    except (ValueError, TypeError):
-        got = []
-    return [x for x in got if time.time() - x < SCRATCH_GUARD_S]
+    # Every node's row (1.0.146), see node_key.
+    return [x for x in node_key_times(store, 'scratchguard', name)
+            if time.time() - x < SCRATCH_GUARD_S]
 
 
 def scratch_guard_note(store, name):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
-    k = 'scratchguard:' + norm_name(name)
-    for _round in range(8):
-        raw = store.get_meta(k)
-        times = scratch_guard_times(store, name)[-(SCRATCH_GUARD_MOST * 2):] + [time.time()]
-        new = json.dumps(times)
-        if raw is None:
-            try:
-                store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, new))
-                break
-            except Exception:                           # noqa: BLE001
-                continue
-        if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
-            break
+    node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_MOST * 2)
+    times = scratch_guard_times(store, name)
     if len(times) == SCRATCH_GUARD_MOST:
         store.add_event('tokens', 'the recovery codes of %s are not taken for a day: %d '
                         'requests in a day had a wrong password or a wrong recovery code - '

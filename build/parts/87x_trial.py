@@ -195,11 +195,13 @@ def fw_trial_answer(store, act, by):
 
 def fw_put_back(store, trial, why):
     was = trial.get('was') or {}
-    store.set_meta('fw:conf', json.dumps(dict(was, at=time.time(), by='otp (%s)' % why)))
-    if trial.get('access'):
-        store.set_meta('web:access', json.dumps(trial['access']))
-    else:
-        store.db.run("DELETE FROM meta WHERE k = 'web:access'")
+    # Put back as something said (1.0.146): a firewall never set before went
+    # back as "not set", which root reads as "leave it as it is" - and the
+    # rules of the trial stayed; so did the lists of who may reach the pages.
+    store.set_meta('fw:conf', json.dumps(dict(was, set=True, at=time.time(),
+                                              by='otp (%s)' % why)))
+    store.set_meta('web:access', json.dumps(trial.get('access') or {
+        k: {'any': True, 'from': []} for k in ACCESS_WORDS}))
     trial.update(done='back', done_by=why, done_at=time.time())
     store.set_meta('fw:trial', json.dumps(trial))
     store.add_event('settings', 'the firewall and access went back to what they were before '

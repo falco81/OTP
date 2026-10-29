@@ -16,7 +16,7 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      'cannot be sent', 'does not decode', 'too many codes sent',
                      'has no directory', 'nowhere to send', 'too many answers at once',
                      'longer than a RADIUS packet', 'no realm takes', 'may not use the realm',
-                     'carries no', 'already been used')
+                     'carries no', 'already been used', 'could not be asked')
 
 
 def guard_on():
@@ -63,7 +63,13 @@ def guard_trusted(src):
             net = ipaddress.ip_network(x.strip(), strict=False)
         except ValueError:
             continue
-        if net.version == a.version and a.prefixlen >= net.prefixlen and a.subnet_of(net):
+        if net.version != a.version:
+            continue
+        if a.prefixlen >= net.prefixlen and a.subnet_of(net):
+            return True
+        # One IPv6 address (1.0.146): requests are told apart by their /64
+        # only, so the /64 it is in is the one trusted.
+        if a.version == 6 and a.prefixlen == 64 and net.overlaps(a):
             return True
     return False
 

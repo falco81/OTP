@@ -342,6 +342,12 @@ function codesCard(tok) {
 function wayChooser(replacing) {
   var ways = ME.methods || ['totp'];
   var wrap = el('div', 'ways');
+  if (!ways.length) {
+    /* No way at all (1.0.146): a realm whose only way - mail or SMS - cannot be
+       sent from here gave a page with nothing to choose and no word why. */
+    wrap.appendChild(el('p', 'note bad', 'No way of getting the codes is open for your account just now. Ask the administrator.'));
+    return wrap;
+  }
   var pick = {kind: ways.length === 1 ? ways[0] : (ME.token && ME.token.kind && ways.indexOf(ME.token.kind) < 0 ? ways[0] : null)};
   var tiles = el('div', 'way-tiles');
   var destBox = el('div', 'way-dest');

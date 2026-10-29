@@ -184,6 +184,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.route('POST')
 
     def route(self, method):
+        # A body of its own for each request (1.0.146): on a kept-alive
+        # connection the handler is the same, and the last one's was read again.
+        self.__dict__.pop('_body', None)
         url = urlparse(self.path)
         self.args = {k: v[-1] for k, v in parse_qs(url.query).items()}
         path = url.path.rstrip('/')
@@ -227,7 +230,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'the directory could not be asked just '
                                 'now - try again in a moment', 'detail': None}, 502)
         except DbError as e:
-            self.send_json({'ok': False, 'error': str(e)}, 503)
+            # Where the database is, only to somebody signed in (1.0.146).
+            if self._signed_in():
+                self.send_json({'ok': False, 'error': str(e)}, 503)
+            else:
+                log('%s %s: the database: %s' % (method, path, e), 'warn')
+                self.send_json({'ok': False, 'error': 'the database cannot be reached just now '
+                                                      '- try again in a moment'}, 503)
         except (TypeError, AttributeError, KeyError) as e:
             # A field of the wrong kind - null where a number goes, a list
             # where an object does (1.0.44): the request's fault, said so,
@@ -389,8 +398,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             # Counted per person, not per spelling (1.0.44): DOMAIN\\novak,
             # novak@anything and Novak are all novak here.
             who = str(name).strip().lower()
+            # "admin>person" (a test of somebody's sign-in) keeps its admin
+            # (1.0.146): CORP\\novak made it novak alone, one count for all.
+            pre, sep, who = who.rpartition('>')
             who = who.split('\\', 1)[-1].rsplit('@', 1)[0].strip()
-            keys.append((kind + '-name', who[:190]))
+            keys.append((kind + '-name', (pre + sep + who)[:190]))
         t = time.time()
         span = wait_min * 60
         with self.THROTTLE_LOCK:
@@ -616,16 +628,19 @@ def lockouts_shared(store):
     rows = []
     span = 60 * int(CONFIG.get('code_send_window_min') or 15)
     limit = int(CONFIG.get('code_send_max') or 5)
+    per = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'codesent:%'"):
         try:
-            times = sorted(float(x) for x in json.loads(r['v'] or '[]'))
+            per.setdefault(node_key_name('codesent', r['k']), []).extend(
+                float(x) for x in json.loads(r['v'] or '[]'))
         except (ValueError, TypeError):
             continue
-        times = [x for x in times if t - x < span]
+    for who, times in per.items():          # every node's row of a person together (1.0.146)
+        times = sorted(x for x in times if t - x < span)
         if not times:
             continue
         locked = len(times) >= limit
-        rows.append({'kind': 'codes-sent', 'who': str(r['k'])[9:], 'by': 'name',
+        rows.append({'kind': 'codes-sent', 'who': who, 'by': 'name',
                      'what': LOCKOUT_KINDS['codes-sent'], 'base': 'codes-sent',
                      'words': 'codes sent', 'fails': len(times), 'limit': limit,
                      'locked': locked,
@@ -652,7 +667,7 @@ def lockouts_shared(store):
 
 def lockouts_shared_clear(store, kind, who, by):
     if kind == 'codes-sent':
-        n = store.db.run('DELETE FROM meta WHERE k = ?', ('codesent:' + who,))
+        n = node_key_drop(store, 'codesent', who)
         store.add_event('sign-ins', '%s cleared the count of codes sent to %s' % (by, who),
                         'warn', who=by)
         return n
@@ -660,7 +675,7 @@ def lockouts_shared_clear(store, kind, who, by):
         if not store.token(who):
             return 0
         store.token_write(who, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
-        store.db.run('DELETE FROM meta WHERE k = ?', ('scratchguard:' + who,))
+        node_key_drop(store, 'scratchguard', who)
         store.add_event('tokens', '%s let %s try again at once' % (by, who), who=by)
         return 1
     return 0
@@ -880,7 +895,8 @@ def admin_from_directory(h, name, password):
 @route('POST', '/api/auth/login')
 def _login(h):
     b = h.body()
-    name = str(b.get('name') or '').strip()
+    # No account has a longer name (1.0.146): megabytes typed went into the log.
+    name = str(b.get('name') or '').strip()[:190]
     password = str(b.get('password') or '')
     key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                      int(CONFIG.get('login_wait_min') or 15), name=name)
@@ -1494,7 +1510,7 @@ def _tokens_export(h):
             raise ApiError(409, 'the key of this token cannot be opened on this machine')
         h.store.add_event('tokens', '%s exported the token of %s as a .totp file' % (
             s['name'], one), 'warn', who=s['name'])
-        h.send_bytes(text.encode('utf-8'), re.sub(r'[^A-Za-z0-9@._-]', '_', one) + '.totp',
+        h.send_bytes(text.encode('utf-8'), totp_file_name(one),
                      'text/plain; charset=utf-8')
         return None
     lq, bad = list_query('tokens', h.arg('q'))
@@ -1517,7 +1533,7 @@ def _tokens_export(h):
                     str(tok.get('algorithm') or 'SHA1').upper() != 'SHA1':
                 odd.append('%s (%s digits, %s s, %s)' % (r['name'], tok.get('digits'),
                                                          tok.get('period'), tok.get('algorithm')))
-            z.writestr(re.sub(r'[^A-Za-z0-9@._-]', '_', r['name']) + '.totp', text)
+            z.writestr(totp_file_name(r['name']), text)
             done += 1
         notes = ['%d token(s) exported by %s on %s at %s.' % (
             done, s['name'], node_name(), time.strftime('%Y-%m-%d %H:%M:%S')), '',
@@ -1969,7 +1985,7 @@ def _token_act(h, s, b, act, name, who):
         return {'scratch': codes, 'message': '%d new recovery codes' % len(codes)}
     if act == 'unlock':
         h.store.token_write(name, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
-        h.store.db.run('DELETE FROM meta WHERE k = ?', ('scratchguard:' + name,))
+        node_key_drop(h.store, 'scratchguard', name)
         h.store.add_event('tokens', '%s let %s try again at once' % (who, name), who=who)
         return {'message': 'the wrong codes are forgotten'}
     if act == 'rename':
@@ -2063,6 +2079,20 @@ def _token_act(h, s, b, act, name, who):
                           who=who)
         return {'message': 'the waiting replacement is gone; the old token stays'}
     raise ApiError(400, 'no such thing to do to a token: %s' % act)
+
+
+def totp_file_name(name):
+    """The file a token goes into, and its name read back from it (1.0.146):
+    jan+1@x.cz and jan_1@x.cz were both jan_1@x.cz.totp - one lost in the ZIP
+    - and o'neil@x.cz came back as o_neil@x.cz, which RADIUS never looks up."""
+    from urllib.parse import quote
+    return quote(str(name), safe='@.-_') + '.totp'
+
+
+def totp_file_owner(fname):
+    from urllib.parse import unquote
+    fname = os.path.basename(str(fname or ''))
+    return unquote(fname[:-5] if fname.endswith('.totp') else fname)
 
 
 def totp_files_in_zip(b64, label, out):
@@ -2227,7 +2257,7 @@ def _token_import(h):
             files.append(one)
     for one in files:
         fname = os.path.basename(str(one.get('name') or ''))
-        name = fname[:-5] if fname.endswith('.totp') else fname
+        name = totp_file_owner(fname)
         if want and norm_name(name) not in want:
             continue
         try:
@@ -3763,19 +3793,6 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         access = access_checked_api(web['access'])
         if access_check:
             access_check(access)
-    fw = conf.get('firewall') or None
-    if fw:
-        rules = []
-        for r in fw.get('rules') or []:
-            if not isinstance(r, dict):
-                raise ApiError(400, 'a firewall rule is not an object')
-            one = fw_rule_checked(r, store)
-            for k in ('id', 'scope', 'disabled'):
-                if k in r:
-                    one[k] = r[k]
-            rules.append(one)
-        fw = dict(fw, rules=rules, off=[k for k in (fw.get('off') or [])
-                                         if k in FW_AUTO_OPTIONAL])
     # The certificates of the pages: a node of this cluster keeps its own
     # name; a file of one other machine's (a new machine put in its place)
     # is this node's.
@@ -3790,6 +3807,31 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
     foreign = [t for t in tls_in if t != 'vip' and t not in here and t not in mapping]
     if len(foreign) == 1 and len([t for t in tls_in if t != 'vip']) == 1:
         mapping[foreign[0]] = node_name()
+    fw = conf.get('firewall') or None
+    rules_left_out = 0
+    if fw:
+        rules = []
+        for r in fw.get('rules') or []:
+            if not isinstance(r, dict):
+                raise ApiError(400, 'a firewall rule is not an object')
+            # A rule of one node, named as this machine names it (1.0.146): one of
+            # a node this machine does not have stopped the whole import.
+            r = dict(r)
+            if r.get('scope') in mapping:
+                r['scope'] = mapping[r['scope']]
+            try:
+                one = fw_rule_checked(r, store)
+            except ApiError as e:
+                if 'no node' not in str(e):
+                    raise
+                rules_left_out += 1
+                continue
+            for k in ('id', 'scope', 'disabled'):
+                if k in r:
+                    one[k] = r[k]
+            rules.append(one)
+        fw = dict(fw, rules=rules, off=[k for k in (fw.get('off') or [])
+                                         if k in FW_AUTO_OPTIONAL])
     for t, prof in tls_in.items():
         if not isinstance(prof, dict):
             raise ApiError(400, 'the TLS of %s is not an object' % t)
@@ -3827,6 +3869,9 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         raise ApiError(400, 'the SMS gateway\'s certificates in the file are not certificates')
 
     said = collections.Counter()
+    imported_keys = set()
+    if rules_left_out:
+        said['firewall rules left out: of a node not here'] = rules_left_out
     try:
         for d in conf.get('directories') or []:
             d = dict(d)
@@ -3855,7 +3900,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             # Never what belongs to this machine alone (1.0.57): an imported
             # file switched the database or the cluster at the next restart.
             # A node's own value (key@node) comes too (1.0.62).
-            want = {}
+            want, per_node = {}, []
             for k, v in conf['settings'].items():
                 base, _at, node = str(k).partition('@')
                 if base not in DEFAULTS or base in FILE_ONLY_KEYS:
@@ -3865,17 +3910,22 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 if base in SEALED_KEYS and str(v or '').startswith('sealed:'):
                     continue
                 if node:
-                    node = mapping.get(node, node)
-                    try:
-                        daemon.save_settings({base: v}, by, node=node)
-                        said['settings'] += 1
-                    except BadSetting:
-                        pass            # a node this cluster does not have
+                    per_node.append((base, mapping.get(node, node), v))
                 else:
                     want[base] = v
             if want:
                 daemon.save_settings(want, by)
                 said['settings'] += len(want)
+            # A node's own after the shared ones (1.0.146): on a machine of its
+            # own a node's value is kept as the plain key, and the file's shared
+            # value saved after it wrote over it.
+            for base, node, v in per_node:
+                try:
+                    daemon.save_settings({base: v}, by, node=node)
+                    said['settings'] += 1
+                    imported_keys.update((base, '%s@%s' % (base, node)))
+                except BadSetting:
+                    pass            # a node this cluster does not have
         for a in conf.get('accounts') or []:
             name = str(a.get('name') or '').strip()
             if not name or name.lower() == str(keep_account or '').lower():
@@ -3914,6 +3964,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     # switched off, until somebody gives it one.
                     fields['disabled'] = 1
                     said['accounts switched off: no password in the file'] += 1
+                store.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
                 store.db.insert('accounts', dict(fields, name=name, pw=pw or '',
                                                  created=time.time(), last_in=None,
                                                  last_from='', prefs=str(a.get('prefs') or '{}')))
@@ -3982,7 +4033,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     said['clients taken away'] += 1
             for r in store.realms():
                 if r['name'].lower() not in names('realms'):
-                    store.realm_drop(r['id'])
+                    store.realm_drop(r['id'], force=True)
                     said['realms taken away'] += 1
             for d in store.directories():
                 if d['name'].lower() not in names('directories'):
@@ -3995,7 +4046,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                         store.drop_account(a['name'])
                         said['accounts taken away'] += 1
             if 'settings' in conf:
-                have = set(str(k) for k in (conf.get('settings') or {}))
+                have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
                     if k not in have and base in DEFAULTS and base not in FILE_ONLY_KEYS and \
@@ -4934,7 +4985,7 @@ def _upgrade_view(h):
     if not nodes:
         nodes = [{'name': node_name(), 'version': __version__, 'me': True, 'alive': True,
                   'maintenance': maintenance_row(h.store)}]
-    ok, why = upgrade_checks(h.store, meta)
+    ok, why = upgrade_checks(h.store, meta, pages=True)
     plan = upgrade_plan(h.store)
     # A finished one hidden by Hide this (1.0.123).
     if plan and plan.get('state') != 'running' and \
@@ -4995,7 +5046,7 @@ def _upgrade_do(h):
     act = b.get('action')
     try:
         if act == 'start':
-            upgrade_start(h.store, s['name'])
+            upgrade_start(h.store, s['name'], pages=True)
             return dict(_upgrade_view(h), message='the upgrade has begun')
         if act == 'online_look':
             row = online_look(h.store, s['name'])
@@ -5021,7 +5072,7 @@ def _upgrade_do(h):
                 raise ValueError('an upgrade is going on: wait for it, or stop it first')
             meta = downgrade_fetch(h.store, str(b.get('version') or ''), s['name'])
             if b.get('start'):
-                upgrade_start(h.store, s['name'])
+                upgrade_start(h.store, s['name'], pages=True)
                 return dict(_upgrade_view(h), message='otp %s fetched and checked; going back '
                             'to it has begun' % meta['version'])
             return dict(_upgrade_view(h), message='otp %s is fetched, checked for this database '
@@ -5032,7 +5083,7 @@ def _upgrade_do(h):
                 raise ValueError('an upgrade is going on: wait for it, or stop it first')
             meta = online_fetch(h.store, str(b.get('version') or ''), s['name'])
             if b.get('start'):
-                upgrade_start(h.store, s['name'])
+                upgrade_start(h.store, s['name'], pages=True)
                 return dict(_upgrade_view(h), message='otp %s fetched and checked; the upgrade '
                             'has begun' % meta['version'])
             return dict(_upgrade_view(h), message='otp %s is fetched, checked and ready'
@@ -5064,6 +5115,11 @@ def _upgrade_do(h):
             return dict(_upgrade_view(h), message='the package is forgotten')
     except ValueError as e:
         raise ApiError(400, str(e))
+    except (OSError, tarfile.TarError, subprocess.SubprocessError) as e:
+        # The address not answering, a package cut off (1.0.146): said, not an
+        # error 500 with its trace in the log.
+        raise ApiError(502, 'the address could not be read: %s'
+                       % (getattr(e, 'reason', None) or e))
     raise ApiError(400, 'no such thing to do')
 
 
@@ -5653,6 +5709,9 @@ def _firewall_do(h):
         if 0 <= j < len(rules):
             rules[i], rules[j] = rules[j], rules[i]
             fw_set(store, who, rules=rules)
+            # The order decides which rule wins (1.0.146): written down as the others.
+            store.add_event('settings', '%s moved a firewall rule %s (now %d of %d)' % (
+                who, 'up' if j < i else 'down', j + 1, len(rules)), 'warn', who=who)
         return {'message': 'moved'}
     if act == 'access':
         a = access_checked_api(b)

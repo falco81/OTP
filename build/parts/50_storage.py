@@ -500,6 +500,18 @@ def list_position(v):
 ACCOUNT_NAME_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._@\\-]{0,120}\Z')
 
 
+def _yes(data, key, default):
+    """A yes/no field of a form: 1 or 0, its default where it is missing or null
+    (1.0.146: null raised a TypeError - an error 500 for a typed request)."""
+    v = data.get(key)
+    if v is None or v == '':
+        return int(default)
+    try:
+        return int(bool(int(v)))
+    except (TypeError, ValueError):
+        raise ValueError('%s is 0 or 1' % key)
+
+
 class Storage(object):
     """Everything this daemon keeps, over whichever database it is."""
 
@@ -795,6 +807,9 @@ class Storage(object):
             bad = password_problem(password)
             if bad:
                 raise ValueError(bad)
+        # A second step left by an account of this name taken away before
+        # (1.0.146) is not this one's: somebody else's phone would answer it.
+        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
         return self.db.insert('accounts', {
             'name': name, 'role': role, 'pw': password_hash(password) if password else '',
             'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
@@ -822,6 +837,9 @@ class Storage(object):
         self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
         self.db.run('DELETE FROM sessions WHERE kind = ? AND LOWER(name) = ?',
                     ('admin', one['name'].lower()))
+        # Its second step with it (1.0.146): a new account of the same name
+        # took it over - the old owner's authenticator signing it in.
+        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + one['name'].lower(),))
 
     # ---- how somebody laid out the tables (as on isemon, 1.10.146 on) -------
     COLS_MOST_TABLES = 300
@@ -1164,13 +1182,17 @@ class Storage(object):
             old = self.db.row('SELECT * FROM clients WHERE id = ?', (int(ident),)) if ident else None
         except (TypeError, ValueError):
             raise ValueError('the id of a client is a number')
+        if ident and not old:
+            # Taken away meanwhile (1.0.146): saved from a form opened before,
+            # it came back - without its secret.
+            raise ValueError('that client was taken away meanwhile - open it again')
         clash = self.db.row('SELECT id FROM clients WHERE LOWER(name) = ?', (name.lower(),))
         if clash and (not old or clash['id'] != old['id']):
             raise ValueError('there is a client called %s already' % name)
         row = {'name': name, 'address': str(net) if net.num_addresses > 1 else
                str(net.network_address),
                'realm': str(data.get('realm') or '').strip().lstrip('@')[:190],
-               'require_ma': int(bool(int(data.get('require_ma') or 0))),
+               'require_ma': _yes(data, 'require_ma', 0),
                'enabled': int(bool(int(data.get('enabled', 1) if data.get('enabled')
                                        is not None else 1))),
                'note': str(data.get('note') or '')[:400],
@@ -1341,6 +1363,10 @@ class Storage(object):
         directory = str(data.get('directory') or '').strip()
         if directory and not self.directory(directory):
             raise ValueError('there is no directory called %s' % directory)
+        if directory:
+            # As the directory is called (1.0.146): typed in another case it
+            # was kept so, and a rename of the directory left the realm behind.
+            directory = self.directory(directory)['name']
         if token_name == 'bare':
             # Names without their realm are one person's only within one
             # directory (1.0.101): novak@a in one and novak@b in another
@@ -1381,6 +1407,8 @@ class Storage(object):
             raise ValueError('the answer for everybody in the realm: %s' % e)
         ident = data.get('id')
         old = self.db.row('SELECT * FROM realms WHERE id = ?', (int(ident),)) if ident else None
+        if ident and not old:
+            raise ValueError('that realm was taken away meanwhile - open it again')
         for other in self.realms():
             if old and other['id'] == old['id']:
                 continue
@@ -1431,10 +1459,10 @@ class Storage(object):
             taken.append(other)
         row = {'name': name, 'suffix': suffix, 'directory': directory, 'lookup': lookup,
                'auth_mode': mode, 'group_list': json.dumps(groups),
-               'check_disabled': int(bool(int(data.get('check_disabled', 1)))),
-               'nested': int(bool(int(data.get('nested', 1)))),
+               'check_disabled': _yes(data, 'check_disabled', 1),
+               'nested': _yes(data, 'nested', 1),
                'reply': str(data.get('reply') or '').strip(),
-               'enabled': int(bool(int(data.get('enabled', 1)))),
+               'enabled': _yes(data, 'enabled', 1),
                'position': list_position(data.get('position')),
                'note': str(data.get('note') or '')[:400], 'token_name': token_name,
                'methods': ','.join(methods), 'aliases': ','.join(aliases)}
@@ -1454,8 +1482,30 @@ class Storage(object):
             self._realms = None
         return ident
 
-    def realm_drop(self, ident):
+    def clients_only_realm(self, name):
+        """The clients that take this realm and no other."""
+        out = []
+        for c in self.db.rows("SELECT id, name, realms FROM clients WHERE COALESCE(realms, '') <> ''"):
+            names = [x.strip().lower() for x in re.split(r'[,;\n]+', c['realms'] or '')
+                     if x.strip()]
+            if names and all(x == str(name).lower() for x in names):
+                out.append(c)
+        return out
+
+    def realm_drop(self, ident, force=False):
+        """A realm taken away. A client that took only this one would take every
+        realm once it was out of its list (1.0.146) - refused; `force` (a
+        configuration put back whole) switches such a client off instead."""
         one = self.db.row('SELECT name FROM realms WHERE id = ?', (int(ident),))
+        only = self.clients_only_realm(one['name']) if one else []
+        if only and not force:
+            raise ValueError('the client(s) %s take only this realm - without it they would '
+                             'take every realm; change them first' % ', '.join(
+                                 c['name'] for c in only))
+        for c in only:
+            self.db.update('clients', c['id'], {'enabled': 0})
+            log('the client %s took only the realm %s, which was taken away: switched off'
+                % (c['name'], one['name']), 'warn')
         self.db.run('DELETE FROM realms WHERE id = ?', (int(ident),))
         self._realms = None
         if one:
@@ -1504,7 +1554,7 @@ class Storage(object):
         pem = str(pem or '').strip()
         row = self.db.row('SELECT ca FROM directories WHERE id = ?', (int(ident),))
         have = split_certificates((row or {}).get('ca') or '')
-        if mode in ('add', 'set') and pem:
+        if mode == 'add' or (mode == 'set' and pem):
             new = split_certificates(pem)
             if not new or not all(describe_certificate(b) for b in new):
                 raise ValueError('that is not a certificate this can read: a PEM certificate '
@@ -1521,8 +1571,10 @@ class Storage(object):
             if len(keep) == len(have):
                 raise ValueError('that certificate is not among the ones kept')
             have = keep
-        else:
+        elif mode in ('set', 'clear'):
             have = []
+        else:
+            raise ValueError('add, set, drop or clear?')
         pem = '\n'.join(have)
         with self.lock:
             self.db.run('UPDATE directories SET ca = ? WHERE id = ?', (pem, int(ident)))
@@ -1564,17 +1616,19 @@ class Storage(object):
         ident = data.get('id')
         old = self.db.row('SELECT * FROM directories WHERE id = ?',
                           (int(ident),)) if ident else None
+        if ident and not old:
+            raise ValueError('that directory was taken away meanwhile - open it again')
         clash = self.db.row('SELECT id FROM directories WHERE LOWER(name) = ?', (name.lower(),))
         if clash and (not old or clash['id'] != old['id']):
             raise ValueError('there is a directory called %s already' % name)
         row = {'name': name, 'hosts': ', '.join(clean), 'port': port, 'tls': tls,
-               'verify': int(bool(int(data.get('verify', 1)))), 'base': base,
-               'weak': int(bool(int(data.get('weak') or 0))),
+               'verify': _yes(data, 'verify', 1), 'base': base,
+               'weak': _yes(data, 'weak', 0),
                'bind_dn': str(data.get('bind_dn') or '').strip(),
                'user_attr': str(data.get('user_attr') or 'sAMAccountName').strip(),
-               'nested': int(bool(int(data.get('nested', 1)))),
+               'nested': _yes(data, 'nested', 1),
                'timeout_s': max(2, min(60, int(data.get('timeout_s') or 10))),
-               'enabled': int(bool(int(data.get('enabled', 1)))),
+               'enabled': _yes(data, 'enabled', 1),
                'note': str(data.get('note') or '')[:400]}
         if 'ca' in data:
             row['ca'] = ca
@@ -1584,9 +1638,15 @@ class Storage(object):
         with self.lock:
             if old:
                 if old['name'] != name:
-                    self.db.run('UPDATE realms SET directory = ? WHERE directory = ?',
-                                (name, old['name']))
+                    self.db.run('UPDATE realms SET directory = ? WHERE LOWER(directory) = ?',
+                                (name, old['name'].lower()))
                     self._realms = None
+                    # The one administrators sign in against too (1.0.146):
+                    # left on the old name, every directory administrator was
+                    # signed out and could not sign in again.
+                    if str(CONFIG.get('admin_directory') or '').lower() == old['name'].lower():
+                        self.save_setting('admin_directory', name, by)
+                        CONFIG['admin_directory'] = name
                 self.db.update('directories', old['id'], row)
                 ident = old['id']
             else:
@@ -1603,6 +1663,9 @@ class Storage(object):
             if used:
                 raise ValueError('the realm(s) %s look people up in it; change them first'
                                  % ', '.join(used))
+            if str(CONFIG.get('admin_directory') or '').lower() == one['name'].lower():
+                raise ValueError('administrators sign in against it (Settings → Accounts); '
+                                 'choose another directory for them first')
         self.db.run('DELETE FROM directories WHERE id = ?', (int(ident),))
         self._dirs = None
 

@@ -246,7 +246,7 @@ function showMe() {
       : (ME.role === 'tokenadmin' ? 'Look at every page and look after people’s tokens: make, replace, switch off, take away. No setting and no account.'
          : 'Look at every page. Nothing can be changed from this account; how your own tables are laid out is yours to change.')));
     body.appendChild(may);
-    if (ME.source === 'directory') {
+    if (ME.source === 'directory' && TOKADMIN) {     /* whois is a token administrator's (1.0.146) */
       var dsec = el('div', 'me-sec');
       dsec.appendChild(el('h3', '', 'In the directory'));
       var dbody = el('div', 'muted', 'asking the directory…');
@@ -1392,9 +1392,12 @@ function tokenPeek(name) {
         + dayWords(new Date(t.locked_until * 1000)) + ' ' + clockWords(new Date(t.locked_until * 1000)) + '.'
         : num(t.failures || 0) + ' now.';
       ac.add('Wrong codes in a row', lockWords, [un]);
-      var win = selectBox([['-1', 'as the setting'], ['0', 'none'], ['1', '1 step'],
-                           ['2', '2 steps'], ['4', '4 steps'], ['8', '8 steps']],
-                          String(t.window_steps === null ? -1 : t.window_steps));
+      var winOpts = [['-1', 'as the setting'], ['0', 'none'], ['1', '1 step'],
+                     ['2', '2 steps'], ['4', '4 steps'], ['8', '8 steps']];
+      var winNow = String(t.window_steps === null || t.window_steps === undefined ? -1 : t.window_steps);
+      /* One brought from elsewhere (totpcgi: 3) shown as it is (1.0.146), not blank. */
+      if (!winOpts.some(function (o) { return o[0] === winNow; })) winOpts.push([winNow, winNow + ' steps']);
+      var win = selectBox(winOpts, winNow);
       win.style.width = '160px';
       win.onchange = function () { tokenDo(name, 'window', {window: Number(win.value)}); };
       if (!sent) ac.add('Clock drift allowed', 'How far the phone’s clock may be off, in steps of ' + t.period + ' s.', [win]);
@@ -4501,7 +4504,7 @@ function loadDb() {
     dumpCard(d);
     drawTune(d);
     drawErasable(d.erasable || {});
-    if (d.job && d.job.running) dbWatch();
+    if (d.job && d.job.running && ADMIN) dbWatch();     /* its progress is a full administrator's (1.0.146) */
     explainWhatWasDrawn($('pane-db'));
   }).catch(oops);
 }
@@ -7324,13 +7327,14 @@ function drawUpWeb(d) {
     if (!o.at) p.textContent = w.check ? 'Not looked at yet - within minutes, or press Look now.' : 'Not looked at: looking every day is switched off below. Look now asks once.';
     else if (o.error) p.textContent = 'Looked ' + ago(o.at) + ': ' + o.error;
     else if (o.newer) p.textContent = 'otp ' + o.newest.version + ' is there - this server runs ' + (o.here || d.version) + ' (looked ' + ago(o.at) + ')';
-    if (o.newer && (o.newer_list || []).length > 1) {
-      host.appendChild(p);
-      p = el('p', 'note', num(o.newer_list.length) + ' versions there are newer than this one - choose which to go to; the newest is chosen.');
-    }
     else if (o.newest) p.textContent = 'Nothing newer: the newest there is ' + o.newest.version + ' and this server runs ' + (o.here || d.version) + ' (looked ' + ago(o.at) + ')';
     else p.textContent = 'No otp package there (looked ' + ago(o.at) + ')';
     host.appendChild(p);
+    /* One chain above (1.0.146): the line for several newer versions sat in
+       the middle of it and every case below it said the wrong thing. */
+    if (o.at && !o.error && o.newer && (o.newer_list || []).length > 1) {
+      host.appendChild(el('p', 'note', num(o.newer_list.length) + ' versions there are newer than this one - choose which to go to; the newest is chosen.'));
+    }
     if (o.url) host.appendChild(noI18n(el('p', 'mono small muted', o.url)));
     var row = el('div', 'btnrow');
     var look = cmdButton('Look now', 'refresh', '');
@@ -8505,6 +8509,13 @@ function fwSave() {
   return ask.then(function (yes) { return yes ? go() : false; });
 }
 function loadFw() {
+  if (!TOKADMIN) {
+    /* The map of the network is not for every reader (1.0.57); said here once,
+       not refused every five seconds (1.0.146). */
+    var lede = $('fw-lede');
+    if (lede) lede.textContent = 'The firewall and who may reach the pages are shown to administrators only.';
+    return;
+  }
   apiLatest('fw', 'firewall').then(drawFw).catch(oops);     /* the newest only (1.0.61) */
   clearInterval(FW.timer);
   FW.timer = setInterval(function () {
@@ -11694,7 +11705,8 @@ function netFormCard(n) {
   if (!data.nm) { card.appendChild(el('p', 'note', 'Nothing can be set from here without NetworkManager.')); return card; }
   var on6was = !(conf.ipv6_method === 'disabled' || conf.ipv6_method === 'ignore' || !conf.ipv6_method);
   var host = textBox(data.hostname || '', 'otp1.example.cz', 'mono');
-  var a4 = textBox((conf.ipv4_addresses || [])[0] || ((live.addrs4 || [])[0] || {}).addr || '', '192.0.2.10/24', 'mono');
+  var a4Was = (conf.ipv4_addresses || [])[0] || ((live.addrs4 || [])[0] || {}).addr || '';
+  var a4 = textBox(a4Was, '192.0.2.10/24', 'mono');
   var gw = textBox(conf.ipv4_gateway || live.gw4 || '', '192.0.2.1', 'mono');
   var dns = textBox((conf.ipv4_dns || live.dns || []).filter(function (x) { return x.indexOf(':') < 0; }).join(', '), '192.0.2.53, 192.0.2.54', 'mono');
   var search = textBox((conf.ipv4_search || []).join(', '), 'example.cz', 'mono');
@@ -11790,7 +11802,7 @@ function netFormCard(n) {
         api('net', {action: 'apply', node: n.name, want: w}).then(function (r) {
           toast(r.message, 'good');
           NET.watch = n.name;
-          NET.target = {node: n.name, old: (a4.defaultValue || '').split('/')[0], ip: w.ipv4.addr.split('/')[0], host: w.hostname, oldHost: data.hostname || '', me: n.me};
+          NET.target = {node: n.name, old: (a4Was || '').split('/')[0],   /* what the box was filled with (1.0.146) - its defaultValue was always '' */ ip: w.ipv4.addr.split('/')[0], host: w.hostname, oldHost: data.hostname || '', me: n.me};
           loadNet();
         }).catch(oops);
       });
@@ -12281,7 +12293,9 @@ function ntpForm() {
     mins.oninput = function () { dr.minsources = mins.value; };
     g.appendChild(formField('Sources that have to agree', mins, 'The clock is set only when at least this many sources agree. 1 with one server; 2 or 3 with several.'));
     var allow = textBox((dr.allow || []).join(', '), '192.0.2.0/24', 'mono');
-    allow.oninput = function () { dr.allow = allow.value; };
+    /* A list, as it came (1.0.146): kept as the typed text, the next drawing
+       of the pane broke on .join and it stopped refreshing. */
+    allow.oninput = function () { dr.allow = allow.value.split(/[\s,;]+/).filter(Boolean); };
     g.appendChild(formField('Serve the time to', allow, 'Networks that may ask these nodes for the time (UDP 123) - for the VPN concentrators, say. Empty: nobody. The firewall opens it by itself.'));
     body.appendChild(g);
   };

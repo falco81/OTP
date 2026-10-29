@@ -2166,7 +2166,11 @@ NTP_ASK = 'ntp.ask'
 NTP_FILE = 'ntp.json'
 CHRONYC = os.environ.get('OTP_CHRONYC', 'chronyc')
 TIMEDATECTL = os.environ.get('OTP_TIMEDATECTL', 'timedatectl')
-CHRONY_CONF = os.environ.get('OTP_CHRONY_CONF', '/etc/chrony.conf')
+# Debian and Ubuntu read /etc/chrony/chrony.conf (1.0.146): the other was
+# written there and never read, and "applied" said so.
+CHRONY_CONF = os.environ.get('OTP_CHRONY_CONF') or next(
+    (p for p in ('/etc/chrony.conf', '/etc/chrony/chrony.conf') if os.path.isfile(p)),
+    '/etc/chrony.conf')
 NTP_BEGIN = '# ---- otp: the time servers, set on its pages (Settings - Time) ----'
 NTP_END = '# ---- otp: end ----'
 NTP_KEYS = ('server', 'pool', 'peer', 'makestep', 'allow', 'minsources', 'maxdistance', 'sourcedir')

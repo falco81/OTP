@@ -4,6 +4,74 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.146 — 29 October 2026
+
+**A second deep look through the whole program: bugs fixed**
+
+*RADIUS and the codes*
+- Two nodes no longer write the same row for "a code was just sent" and the
+  recovery-code guard: each node keeps its own row (`NAME@@NODE`), so
+  logical replication never stops on a duplicate key.
+- Sign-in protection: a single trusted IPv6 address trusts its /64 (requests
+  are told apart by their /64); a directory that could not be asked is the
+  server's trouble, not a guess, and is not counted against the place.
+- A phone number written as `420603123456` (country code, no +) is no longer
+  made `+420420603123456`.
+- The Teltonika debug log no longer holds the text of an SMS with its live
+  code.
+
+*Realms, clients, directories*
+- Taking away a realm that a client takes alone is refused (that client would
+  have taken every realm); the import that replaces everything switches such
+  clients off instead.
+- A directory renamed keeps its realms (any case) and the administrators'
+  sign-in directory; the one administrators sign in against cannot be taken
+  away. Saving a client, realm or directory someone else just took away says
+  so instead of making a new one; switches sent as text are read as on/off.
+- Taking away an administrator account takes its second step with it - a new
+  account of the same name starts without it.
+- The command line keeps a client's, realm's or directory's on/off, position
+  and timeout when it saves one again, writes those changes to the events,
+  and no longer takes an abbreviated option for another.
+
+*Pages and API*
+- A request on a kept-alive connection no longer reads the previous one's
+  body; a database fault says only "cannot be reached" to someone not signed
+  in.
+- Settings import: firewall rules of a node this machine does not have are
+  left out (and said) instead of stopping the import; per-node settings are
+  kept after the shared ones.
+- Token files with a name `/` or `\` cannot be written (export and import
+  quote it); token imports refuse names the program would not make.
+- The firewall trial's first change keeps the rules as they were to go back
+  to; a token administrator is no longer shown a firewall page that fails.
+- Online upgrade: an address that does not answer, a package cut off or a
+  check that takes too long is said, not an error 500. A package to go back
+  to cannot be started from the pages once going back is switched off.
+- Certificate lists (mail server, SMS gateway, directory): adding nothing
+  no longer empties the list; only *Take all away* does.
+- Moving a firewall rule up or down is written to the events.
+- Network trial: a reboot the root helper did not answer is waited for, a
+  failed job puts the other node's address back and leaves maintenance; a
+  job stalled past its time is said.
+- The portal says plainly when no way of getting codes is open for the
+  account.
+
+*Install, console, backups*
+- install.sh writes config.json in place of a link only by replacing it;
+  `--uninstall --yes` without a terminal refuses instead of doing nothing;
+  Ctrl+C during an upgrade rolls it back as a failure; chrony's config is found
+  on Debian too.
+- The console: packet text shown without colour is made safe, the token list
+  is no longer cut at 1000, *Install from package* checks the version in the
+  package's otp.py; `--upgrade-follow` keeps its progress line.
+- Old FreeRADIUS import: a `#` inside quotes is kept, a block inside a client
+  (`limit { }`) no longer ends it, and one client it cannot take no longer
+  stops the rest.
+- The scheduled remote backup is not skipped for the day when the database
+  was away at that minute; folders a stopped backup or restore left behind
+  are taken away at start (6 hours old); SFTP/SCP to an IPv6 address works.
+
 ## 1.0.145 — 29 October 2026
 
 **Going back: the list of versions tidied**

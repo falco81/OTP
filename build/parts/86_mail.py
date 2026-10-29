@@ -25,7 +25,8 @@ def mail_ca_set(store, pem, mode='add', fingerprint=''):
     by itself - the same as a directory's."""
     pem = str(pem or '').strip()
     have = split_certificates(mail_ca_pem(store))
-    if mode == 'add' and pem:
+    if mode == 'add':
+        # Nothing sent is not "empty the list" (1.0.146): only 'clear' empties it.
         new = split_certificates(pem)
         if not new or not all(describe_certificate(b) for b in new):
             raise ValueError('that is not a certificate this can read: a PEM certificate '
@@ -39,8 +40,10 @@ def mail_ca_set(store, pem, mode='add', fingerprint=''):
         if len(keep) == len(have):
             raise ValueError('that certificate is not among the ones kept')
         have = keep
-    else:
+    elif mode == 'clear':
         have = []
+    else:
+        raise ValueError('add, drop or clear?')
     store.set_meta(MAIL_CA_META, '\n'.join(have))
     return describe_certificates('\n'.join(have))
 

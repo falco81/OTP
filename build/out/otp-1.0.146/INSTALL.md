@@ -9,8 +9,8 @@ library, and PHP pages that only relay to it.
 ## The short version
 
 ```bash
-tar xzf otp-1.0.145.tar.gz
-cd otp-1.0.145
+tar xzf otp-1.0.146.tar.gz
+cd otp-1.0.146
 sudo ./install.sh --server-name otp.example.local
 ```
 
@@ -31,7 +31,7 @@ token it has:
 
 ```bash
 mkdir /root/old-otp && cd /root/old-otp && unzip /root/otp.zip   # its etc/raddb and etc/totpcgi
-cd /root/otp-1.0.145
+cd /root/otp-1.0.146
 sudo ./install.sh --server-name otp.example.local \
      --import-legacy /root/old-otp \
      --radius-from 192.0.2.1/32 \

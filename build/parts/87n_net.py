@@ -50,26 +50,32 @@ def boot_time():
     return 0.0
 
 
+NET_ROOT_LOCK = threading.Lock()
+
+
 def net_root(data, wait=60):
-    """One request to the root helper (otp_web.py) and its answer."""
-    ask_id = secrets.token_hex(8)
-    data = dict(data, id=ask_id)
-    tmp = WEB_DIR / ('.%s.%d' % (NET_ASK_NAME, os.getpid()))
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as f:
-        f.write(json.dumps(data))
-    os.replace(str(tmp), str(WEB_DIR / NET_ASK_NAME))
-    end = time.time() + wait
-    while time.time() < end:
-        try:
-            got = json.loads((WEB_DIR / NET_ANSWER_NAME).read_text())
-        except (OSError, ValueError):
-            got = None
-        if isinstance(got, dict) and got.get('id') == ask_id:
-            if not got.get('ok'):
-                raise ValueError(got.get('said') or 'the root helper said no')
-            return got.get('data') or {}
-        time.sleep(0.4)
+    """One request to the root helper (otp_web.py) and its answer - one at a
+    time (1.0.146): "Read it again" on the pages during a job wrote over the
+    job's request, or took its answer, and the job waited for nothing."""
+    with NET_ROOT_LOCK:
+        ask_id = secrets.token_hex(8)
+        data = dict(data, id=ask_id)
+        tmp = WEB_DIR / ('.%s.%s' % (NET_ASK_NAME, secrets.token_hex(6)))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(data))
+        os.replace(str(tmp), str(WEB_DIR / NET_ASK_NAME))
+        end = time.time() + wait
+        while time.time() < end:
+            try:
+                got = json.loads((WEB_DIR / NET_ANSWER_NAME).read_text())
+            except (OSError, ValueError):
+                got = None
+            if isinstance(got, dict) and got.get('id') == ask_id:
+                if not got.get('ok'):
+                    raise ValueError(got.get('said') or 'the root helper said no')
+                return got.get('data') or {}
+            time.sleep(0.4)
     raise ValueError('the root helper of this node did not answer in %d s - is otp-web.path '
                      'running?  systemctl status otp-web.path' % wait)
 
@@ -358,6 +364,26 @@ def net_undo_get(store, snap):
     return got if snap and got.get('snap') == snap else None
 
 
+def net_job_undo_told(daemon, job, by):
+    """A job stopped before the network changed, after the other node was told
+    the new address (1.0.146): its pg_hba.conf, its subscription and its
+    ha_peer - and this node's ha_address - moved back to the address the node
+    still has. Left, the cluster pointed at an address that never came."""
+    w = job.get('want') or {}
+    if not job.get('told') or not w.get('ip_changed') or not w.get('old_ip'):
+        return
+    store = daemon.store
+    try:
+        got = ha_readdress(store, mine=w['old_ip'], by='%s (put back)' % by, daemon=daemon)
+        _job_put(store, job, 'the other node told the address again: %s' % (
+            got.get('message') or w['old_ip']), job.get('pct'), ok=not got.get('left'))
+    except Exception as e:                              # noqa: BLE001
+        _job_put(store, job, 'the other node could not be told the address again (%s): '
+                 'Settings → High availability → The addresses of the two nodes' % e,
+                 job.get('pct'), ok=False)
+    job['told'] = False
+
+
 def net_job_run(daemon, ask):
     store = daemon.store
     me = node_name()
@@ -399,6 +425,10 @@ def net_job_run(daemon, ask):
         # 2. The other node told the new address.
         if w['ip_changed'] and CONFIG.get('ha_mode') == 'replicated':
             _job_put(store, job, 'telling the other node %s' % w['new_ip'], 12)
+            # From here the other node (and ha_address) may have the new one:
+            # stopped before the network changed, they are told back (1.0.146).
+            job['told'] = True
+            asked_at = time.time()
             got = ha_readdress(store, mine=w['new_ip'], by=by, daemon=daemon,
                                keep_old=job.get('keep_old'))
             if got.get('left'):
@@ -413,7 +443,9 @@ def net_job_run(daemon, ask):
             done = None
             while time.time() < end:
                 a = _meta_json(store, 'readdress:ask') or {}
-                if a.get('from') == me and a.get('done'):
+                # This job's request, not one answered before (1.0.146).
+                if a.get('from') == me and a.get('done') and \
+                        float(a.get('at') or 0) >= asked_at - 1:
                     done = a
                     break
                 time.sleep(2)
@@ -512,6 +544,13 @@ def net_job_run(daemon, ask):
             me, w['new_ip']), 85)
     except Exception as e:                              # noqa: BLE001
         job['error'] = str(e)[:400]
+        if job.get('state') == 'rebooting' and 'did not answer' in str(e):
+            # Root may still put it in and restart (1.0.146): waited for, and
+            # checked after the restart as any other - not left failed.
+            _job_put(store, job, 'root did not answer in time - it may still put the network '
+                     'in and restart; waiting for that', job.get('pct'), ok=False)
+            return
+        net_job_undo_told(daemon, job, by)
         if job.get('maint'):
             try:
                 maintenance_set(store, False, '', by)
@@ -678,10 +717,13 @@ def net_tick(daemon):
     if job and job.get('state') == 'rebooting':
         if boot_time() > float(job.get('boot') or 0) + 1:
             _net_thread(net_job_after, daemon, job)
-        elif time.time() - float(job.get('moved') or 0) > 900:
+        elif time.time() - float(job.get('moved') or 0) > 900 and not job.get('late_said'):
+            # Still waited for (1.0.146): marked failed, the restart by hand
+            # was never followed - no check, no trial, maintenance left on.
+            job['late_said'] = True
             _job_put(store, job, 'the machine did not restart in 15 minutes - restart it by '
-                     'hand; the network starts as set', job.get('pct'), ok=False,
-                     state='failed')
+                     'hand; the network starts as set, and is checked when it is back',
+                     job.get('pct'), ok=False)
         return
     if ask and ask.get('node') == me and (not job or job.get('id') != ask.get('id')) and \
             time.time() - float(ask.get('at') or 0) < 600:
@@ -689,8 +731,23 @@ def net_tick(daemon):
         return
     if job and job.get('state') == 'running' and not NET_WORK['busy'] and \
             time.time() - float(job.get('moved') or 0) > 300:
-        _job_put(store, job, 'it stopped half way (the service restarted?)', job.get('pct'),
-                 ok=False, state='failed')
+        by = '%s (network)' % (job.get('by') or 'otp')
+        if job.get('down_at'):
+            # Root was asked already: it may restart with the new network - then
+            # it is checked as after any restart (1.0.146).
+            _job_put(store, job, 'it stopped while root put the network in (the service '
+                     'restarted?) - waiting for the restart', job.get('pct'), ok=False,
+                     state='rebooting')
+            return
+        net_job_undo_told(daemon, job, by)
+        if job.get('maint'):
+            try:
+                maintenance_set(store, False, '', by)
+            except Exception:                           # noqa: BLE001
+                pass
+        _job_put(store, job, 'it stopped half way (the service restarted?)%s' % (
+            ' - out of maintenance' if job.get('maint') else ''), job.get('pct'),
+            ok=False, state='failed')
     if power_tick(daemon):
         return
     wanted = float(store.get_meta('net:read:' + me) or 0)

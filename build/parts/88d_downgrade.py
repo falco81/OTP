@@ -132,9 +132,12 @@ def downgrade_package_schema(path):
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8',
                'OTP_STATE': str(work), 'OTP_CONFIG': str(work / 'none.json'),
                'OTP_LOGDIR': str(work), 'OTP_RUN': str(work)}
-        r = subprocess.run([sys.executable, '-I', '-c', _DOWNGRADE_SCHEMA_PY, str(work)],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
-                           env=env, cwd=str(work))
+        try:
+            r = subprocess.run([sys.executable, '-I', '-c', _DOWNGRADE_SCHEMA_PY, str(work)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+                               env=env, cwd=str(work))
+        except subprocess.TimeoutExpired:
+            raise ValueError('the tables of the package could not be read in 2 minutes')
         try:
             return json.loads(r.stdout.decode('utf-8', 'replace').strip().splitlines()[-1])
         except (ValueError, IndexError):

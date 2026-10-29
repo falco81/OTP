@@ -655,7 +655,11 @@ class RbSsh(object):
             # sftp -b asks ssh for batch mode, which takes no password; the
             # first value given wins, and this comes first.
             self.opts += ['-o', 'BatchMode=no']
-        self.dest = '%s@%s' % (t.get('user') or 'root', t['host'])
+        host = str(t['host']).strip('[]')
+        self.dest = '%s@%s' % (t.get('user') or 'root', host)
+        # scp and sftp read user@host:path - an IPv6 address in brackets
+        # there (1.0.146), ssh takes it bare.
+        self.rdest = '%s@[%s]' % (t.get('user') or 'root', host) if ':' in host else self.dest
         self.dir = (t.get('path') or '').rstrip('/') or '.'
         # Signed in and the folder made, at once - the errors said here.
         if t['kind'] == 'sftp':
@@ -695,7 +699,7 @@ class RbSsh(object):
         with open(batch, 'w') as f:
             f.write('\n'.join(cmds) + '\n')
         return self._run(['sftp'] + self.opts + ['-P', str(int(self.t['port'])), '-b', batch,
-                                                 self.dest], 'sftp', timeout=timeout)
+                                                 self.rdest], 'sftp', timeout=timeout)
 
     def put(self, local, name):
         name = rb_safe_name(name)
@@ -704,7 +708,7 @@ class RbSsh(object):
                         '-rm "%s"' % name, 'rename ".%s.part" "%s"' % (name, name)])
         else:
             self._run(['scp'] + self.opts + ['-P', str(int(self.t['port'])), '-q', local,
-                                             '%s:%s/.%s.part' % (self.dest, self.dir, name)],
+                                             '%s:%s/.%s.part' % (self.rdest, self.dir, name)],
                       'scp')
             self._ssh('mv -f -- %s %s' % (shlex_quote('%s/.%s.part' % (self.dir, name)),
                                           shlex_quote('%s/%s' % (self.dir, name))))
@@ -715,7 +719,7 @@ class RbSsh(object):
             self._sftp(['cd "%s"' % self.dir, 'get "%s" "%s"' % (name, local)])
         else:
             self._run(['scp'] + self.opts + ['-P', str(int(self.t['port'])), '-q',
-                                             '%s:%s/%s' % (self.dest, self.dir, name), local],
+                                             '%s:%s/%s' % (self.rdest, self.dir, name), local],
                       'scp')
 
     def list(self):
@@ -1324,8 +1328,11 @@ def rb_tick(daemon):
     day = rb_due(store, getattr(daemon, '_rb_day', ''))
     if not day or RB_JOB['running']:
         return
+    # Marked done only once the database said whether it is this run's
+    # (1.0.146): the database away just then left the day without a backup.
+    claimed = claim_once(store, 'rbackup_day:' + node_name(), day)
     daemon._rb_day = day
-    if not claim_once(store, 'rbackup_day:' + node_name(), day):
+    if not claimed:
         return
     if not any(t.get('enabled') for t in rb_targets(store)):
         return

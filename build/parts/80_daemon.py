@@ -37,10 +37,26 @@ def parse_totp_file(text):
 TOKEN_WINDOW_MOST = 20     # the most the pages allow (1.0.101)
 
 
+TOKEN_NAME_RE = re.compile(r'^[^\s@,;=\x00-\x1f\x7f]+(@[A-Za-z0-9.-]+)?\Z')
+
+
+def token_name_problem(name):
+    """Why `name` is not a token's name, or '' - the rule of a new token's and a
+    rename's, for the imports too (1.0.146): a file '.totp' made a token with no
+    name, which no page could open or take away."""
+    if not name or len(name) > 180 or not TOKEN_NAME_RE.match(name):
+        return ('%r is not a name: a name, or a name@realm - no spaces, commas, semicolons '
+                'or =, 180 characters at most' % str(name)[:60])
+    return ''
+
+
 def import_totp(store, name, text, by='import', replace=False):
     """One person's token, from the old server's file. Returns what happened."""
     secret, opts, codes = parse_totp_file(text)
     name = norm_name(name)
+    bad = token_name_problem(name)
+    if bad:
+        return 'not taken: %s' % bad
     if store.token(name) and not replace:
         return 'kept (there is a token for %s already)' % name
     window = -1
@@ -61,6 +77,9 @@ def import_totp(store, name, text, by='import', replace=False):
         'activated': time.time(), 'failures': 0, 'fail_times': '[]', 'locked_until': None,
         'pending_secret': None, 'pending_scratch': None, 'pending_at': None, 'pending_by': None,
         'issuer': str(CONFIG.get('totp_issuer') or ''), 'label': name,
+        # An app's key now (1.0.146): put over a token whose codes came by
+        # mail or SMS, it stayed one - sending to the old address.
+        'kind': '', 'dest': '',
         'note': 'brought over from totpcgi' + ('' if 'TOTP_AUTH' in opts else
                                                ' (the file was not marked TOTP_AUTH)')})
     try:
@@ -154,8 +173,9 @@ def token_restore(store, t, by='restore', replace=False):
     if not isinstance(t, dict):
         raise ValueError('not a token')
     name = norm_name(t.get('name'))
-    if not name or len(name) > 190:
-        raise ValueError('no name')
+    bad = token_name_problem(name)
+    if bad:
+        raise ValueError(bad)
     kind = str(t.get('kind') or 'totp')
     if kind not in ('totp', 'mail', 'sms'):
         raise ValueError('a kind this version does not know: %s' % kind)
@@ -214,6 +234,34 @@ def token_restore(store, t, by='restore', replace=False):
         {'totp': 'the app', 'mail': 'codes by mail', 'sms': 'codes by SMS'}[kind], len(left))
 
 
+STALE_WORK = ('otp-rbackup-', 'otp-putback-', 'otp-download-', 'otp-dl-', 'otp-peek-',
+              'otp-fetch-')
+
+
+def stale_work_away(older=6 * 3600):
+    """What a backup, a download or a putting back left in the state folder
+    when the program stopped in the middle of it (1.0.146) - a copy of the
+    database, unlocked, for nobody. Hours old only: the command line may be
+    at one just now."""
+    try:
+        items = list(STATE_DIR.iterdir())
+    except OSError:
+        return
+    for p in items:
+        if not p.name.startswith(STALE_WORK):
+            continue
+        try:
+            if time.time() - p.lstat().st_mtime < older:
+                continue
+            if p.is_dir() and not p.is_symlink():
+                shutil.rmtree(str(p), ignore_errors=True)
+            else:
+                p.unlink()
+            log('left from before, taken away: %s' % p.name, 'info')
+        except OSError:
+            pass
+
+
 def _legacy_root(root):
     root = Path(root)
     for cand in (root, root / 'otp', root / 'otp' / 'otp'):
@@ -222,15 +270,73 @@ def _legacy_root(root):
     raise ValueError('%s holds no etc/raddb or etc/totpcgi' % root)
 
 
+def _conf_no_comments(text):
+    """FreeRADIUS text without its # comments - a # inside quotes kept (1.0.146):
+    secret = "has#hash" is a secret, not "has"."""
+    out, quote = [], ''
+    for line in str(text or '').splitlines():
+        keep, i = [], 0
+        while i < len(line):
+            ch = line[i]
+            if quote:
+                keep.append(ch)
+                if ch == '\\' and i + 1 < len(line):
+                    keep.append(line[i + 1])
+                    i += 1
+                elif ch == quote:
+                    quote = ''
+            elif ch in '"\'':
+                quote = ch
+                keep.append(ch)
+            elif ch == '#':
+                break
+            else:
+                keep.append(ch)
+            i += 1
+        quote = ''                      # a quote never runs over a line
+        out.append(''.join(keep))
+    return '\n'.join(out)
+
+
 def parse_clients_conf(text):
-    """FreeRADIUS clients.conf as [{name, address, secret, shortname}]."""
+    """FreeRADIUS clients.conf as [{name, address, secret, shortname}]. Only
+    what is set at the top of a client block counts: a block inside it
+    (limit { ... }) is passed over (1.0.146) - it used to end the client
+    there and leave its secret behind."""
     out = []
-    body = re.sub(r'#[^\n]*', '', str(text or ''))
-    for m in re.finditer(r'client\s+(\S+)\s*\{([^}]*)\}', body):
-        key, inside = m.group(1), m.group(2)
-        vals = dict((a.strip().lower(), b.strip().strip('"'))
-                    for a, b in re.findall(r'^\s*([A-Za-z_]+)\s*=\s*(.+?)\s*$', inside, re.M))
-        addr = vals.get('ipaddr') or vals.get('ipv4addr') or key
+    body = _conf_no_comments(text)
+    for m in re.finditer(r'(?m)^\s*client\s+(\S+)\s*\{', body):
+        key, depth, i, top = m.group(1), 1, m.end(), []
+        quote = ''
+        while i < len(body) and depth:
+            ch, was = body[i], depth
+            if quote:
+                if ch == '\\':
+                    if depth == 1:
+                        top.append(body[i:i + 2])
+                    i += 2
+                    continue
+                if ch == quote or ch == '\n':
+                    quote = ''
+            elif ch in '"\'':
+                quote = ch
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if not depth:
+                    break
+            if depth == 1 and was == 1:
+                top.append(ch)
+            i += 1
+        inside = ''.join(top)
+        vals = {}
+        for a, b in re.findall(r'^\s*([A-Za-z_0-9]+)\s*=\s*(.+?)\s*$', inside, re.M):
+            b = b.strip()
+            if len(b) >= 2 and b[0] == b[-1] and b[0] in '"\'':
+                b = b[1:-1].replace('\\' + b[0], b[0])
+            vals[a.strip().lower()] = b
+        addr = vals.get('ipaddr') or vals.get('ipv4addr') or vals.get('ipv6addr') or key
         out.append({'name': vals.get('shortname') or key, 'address': addr,
                     'secret': vals.get('secret', ''),
                     'require_ma': 1 if vals.get('require_message_authenticator') == 'yes'
@@ -259,7 +365,7 @@ def parse_handler_yaml(text):
     got = {'hosts': [], 'groups': []}
     in_list = None
     for raw in str(text or '').splitlines():
-        line = raw.split('#', 1)[0].rstrip() if not raw.strip().startswith("- '") else raw
+        line = _conf_no_comments(raw).rstrip()
         if not line.strip():
             continue
         m = re.match(r'^(\w+)\s*:\s*(.*)\Z', line.strip())
@@ -405,10 +511,16 @@ def import_legacy(store, root, by='import', replace=False, say=print):
                 say('client %s: %s is the address of the client %s here already, left out'
                     % (name, plain, same['name']))
                 continue
-            store.client_save({'id': old['id'] if old else None, 'name': name,
-                               'address': plain, 'secret': c['secret'], 'realm': realm,
-                               'require_ma': c['require_ma'], 'enabled': 1,
-                               'note': 'brought over from clients.conf'}, by)
+            try:
+                store.client_save({'id': old['id'] if old else None, 'name': name,
+                                   'address': plain, 'secret': c['secret'], 'realm': realm,
+                                   'require_ma': c['require_ma'], 'enabled': 1,
+                                   'note': 'brought over from clients.conf'}, by)
+            except ValueError as e:
+                # One client this cannot take (no secret, a name it refuses)
+                # leaves the others to come over (1.0.146).
+                say('client %s: left out - %s' % (name, e))
+                continue
             done['clients'] += 1
             say('client %s: %s%s' % (name, plain, (', names get @' + realm) if realm else ''))
     # ---- the settings ----------------------------------------------------------
@@ -1121,6 +1233,7 @@ class Daemon(object):
             downgrade_floor_note(self.store)        # how far back it may go (1.0.143)
         except Exception as e:                      # noqa: BLE001
             log('the floor for going back could not be written: %s' % e, 'warn')
+        stale_work_away()
         if not sealing_key():
             # A database that already holds sealed secrets gets no new key in
             # place of a missing one (1.0.33): the secrets would stay lost, and

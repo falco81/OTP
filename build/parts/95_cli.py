@@ -391,7 +391,9 @@ def help_text(parser, pal):
 
 
 def build_parser():
-    p = HelpfulParser(prog='otp', add_help=False, usage='otp [--json] [--no-color] [what to do]',
+    # Options whole, never shortened (1.0.146): --js was taken for --json -
+    # and --check --js went round itself until the stack ran out.
+    p = HelpfulParser(prog='otp', add_help=False, allow_abbrev=False, usage='otp [--json] [--no-color] [what to do]',
                       description='a one-time password server: RADIUS, TOTP, the enrolment '
                                   'of tokens and Active Directory, in one Python file',
                       formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(
@@ -1489,6 +1491,13 @@ def cli_stage_files(args):
             args.import_legacy = stage(args.import_legacy)
         if getattr(args, 'import_totpcgi', None):
             args.import_totpcgi = stage(args.import_totpcgi)
+        # A package to go back to and a directory's authority (1.0.146): in
+        # /root, where the docs put them, the otp account could not read them.
+        if getattr(args, 'downgrade', None) and (
+                args.downgrade.endswith(('.tar.gz', '.tgz')) or os.path.sep in args.downgrade):
+            args.downgrade = stage(args.downgrade)
+        if getattr(args, 'ca', None):
+            args.ca = stage(args.ca)
         if getattr(args, 'export_config', None) and args.export_config != '-':
             mode = 0o600 if getattr(args, 'with_secrets', False) else 0o640
             fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
@@ -1578,11 +1587,15 @@ def cli_upgrade_follow(store, pal):
                 lines.append('  %-16s %s  %s' % (x['name'][:16], bar(
                     pc, x.get('state') == 'failed', x.get('state') == 'done'),
                     str(words)[:60]))
-            if tty and drawn:
-                sys.stdout.write('\x1b[%dA' % drawn)
-            for ln in lines:
-                sys.stdout.write(('\x1b[2K' if tty else '') + ln + '\n')
+            # Past ColourOut (1.0.146): it shows any escape that is not a
+            # colour as text - the frame was drawn again below, never over.
             sys.stdout.flush()
+            raw = getattr(sys.stdout, 's', sys.stdout)
+            if tty and drawn:
+                raw.write('\x1b[%dA' % drawn)
+            for ln in lines:
+                raw.write(('\x1b[2K' if tty else '') + term_safe(ln) + '\n')
+            raw.flush()
             drawn = len(lines)
             if plan.get('state') != 'running':
                 ok = plan.get('state') == 'done'
@@ -2194,7 +2207,7 @@ def cli_main(argv=None):
         return 0
 
     if args.request is not None:
-        r = store.radius_row(args.request)
+        r = store.radius_row(args.request) if 0 <= args.request < 2 ** 62 else None
         if not r:
             raise SystemExit('there is no request %d' % args.request)
         if args.json:
@@ -2369,7 +2382,7 @@ def cli_main(argv=None):
             raise SystemExit('no token %s' % norm_name(args.unlock))
         store.token_write(norm_name(args.unlock), {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         # Its recovery codes given back too, as on the pages (1.0.103).
-        store.db.run('DELETE FROM meta WHERE k = ?', ('scratchguard:' + norm_name(args.unlock),))
+        node_key_drop(store, 'scratchguard', args.unlock)
         store.add_event('tokens', 'the command line let %s try again at once'
                         % norm_name(args.unlock), who='command line')
         print(pal.ok_line('the wrong codes of %s are forgotten' % norm_name(args.unlock)))
@@ -2381,7 +2394,8 @@ def cli_main(argv=None):
         n = collections.Counter()
         for f in sorted(Path(args.import_totpcgi).glob('*.totp')):
             try:
-                said = import_totp(store, f.name[:-5], f.read_text(errors='replace'), 'import',
+                said = import_totp(store, totp_file_owner(f.name), f.read_text(errors='replace'),
+                                   'import',
                                    args.replace)
             except ValueError as e:
                 said = 'not imported: %s' % e
@@ -2498,6 +2512,8 @@ def cli_main(argv=None):
                 # A client switched off stays off when it is changed (1.0.136).
                 'require_ma': (old or {}).get('require_ma', 0),
                 'enabled': (old or {}).get('enabled', 1),
+                'nas_type': (old or {}).get('nas_type', ''),
+                'position': (old or {}).get('position'),
                 'note': args.note or (old or {}).get('note', '')}
         store.client_save(data, who)
         bump(store)
@@ -2512,6 +2528,8 @@ def cli_main(argv=None):
         if not one:
             raise SystemExit('there is no client called %s' % args.del_client)
         store.client_drop(one['id'])
+        store.add_event('clients', 'command line took away the client %s' % one['name'],
+                        who='command line')
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -2544,12 +2562,17 @@ def cli_main(argv=None):
                           'auth_mode': args.mode or old.get('auth_mode') or 'otp',
                           'groups': groups, 'check_disabled': old.get('check_disabled', 1),
                           'nested': old.get('nested', 1), 'reply': old.get('reply', ''),
-                          'enabled': 1, 'token_name': old.get('token_name', 'whole'),
+                          # As it was (1.0.146): a realm switched off on the pages
+                          # was switched on again by a note given here.
+                          'enabled': old.get('enabled', 1), 'position': old.get('position'),
+                          'token_name': old.get('token_name', 'whole'),
                           'methods': [m.strip() for m in args.methods.split(',')]
                           if args.methods else old.get('methods'),
                           'aliases': args.aliases if args.aliases is not None
                           else old.get('aliases') or [],
                           'note': args.note or old.get('note', '')}, who)
+        store.add_event('realms', 'command line saved the realm %s' % args.add_realm,
+                        who='command line')
         bump(store)
         print(pal.ok_line('the realm %s is saved' % args.add_realm))
         return 0
@@ -2559,7 +2582,12 @@ def cli_main(argv=None):
                    None)
         if not one:
             raise SystemExit('there is no realm called %s' % args.del_realm)
-        store.realm_drop(one['id'])
+        try:
+            store.realm_drop(one['id'])
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        store.add_event('realms', 'command line took away the realm %s' % one['name'],
+                        who='command line')
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -2592,12 +2620,15 @@ def cli_main(argv=None):
                 'port': args.port or (old.get('port') if not args.tls else None),
                 'verify': 0 if args.no_verify else old.get('verify', 1),
                 'weak': (args.weak_certs == 'on') if args.weak_certs else old.get('weak', 0),
-                'nested': old.get('nested', 1), 'enabled': 1,
+                'nested': old.get('nested', 1), 'enabled': old.get('enabled', 1),
+                'timeout_s': old.get('timeout_s') or 10,
                 'user_attr': old.get('user_attr') or 'sAMAccountName',
                 'note': args.note or old.get('note', '')}
         if ca is not None:
             data['ca'] = ca
         store.directory_save(data, who)
+        store.add_event('directories', 'command line saved the directory %s'
+                        % args.add_directory, who='command line')
         bump(store)
         print(pal.ok_line('the directory %s is saved' % args.add_directory))
         return 0
@@ -2606,7 +2637,12 @@ def cli_main(argv=None):
         one = store.directory(args.del_directory)
         if not one:
             raise SystemExit('there is no directory called %s' % args.del_directory)
-        store.directory_drop(one['id'])
+        try:
+            store.directory_drop(one['id'])
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        store.add_event('directories', 'command line took away the directory %s' % one['name'],
+                        who='command line')
         bump(store)
         print(pal.ok_line('gone'))
         return 0

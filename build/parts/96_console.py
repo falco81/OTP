@@ -574,7 +574,10 @@ class Console(object):
         try:
             got = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  stdin=subprocess.DEVNULL, env=e, timeout=1800)
-            return got.stdout.decode('utf-8', 'replace'), got.returncode
+            # Made safe here whatever the colour (1.0.146): with colour off the
+            # command wrote what a packet carried as it came, and page() put it
+            # on root's terminal - the title, the clipboard, the screen.
+            return term_safe(got.stdout.decode('utf-8', 'replace')), got.returncode
         except subprocess.TimeoutExpired:
             return 'it took more than 30 minutes and was stopped', 124
         except OSError as ex:
@@ -763,9 +766,14 @@ class Console(object):
             st['ino'] = os.fstat(f.fileno()).st_ino
             # Read from near the end only: a log can be gigabytes.
             f.seek(0, 2)
-            f.seek(max(0, f.tell() - 2 * 1024 * 1024))
+            start = max(0, f.tell() - 2 * 1024 * 1024)
+            f.seek(start)
             got = f.read().splitlines()
-            return got[1:][-self.LIVE_KEEP:] if len(got) > 1 else got
+            # The first line only when reading began inside it (1.0.146): a short
+            # log lost its first whole line.
+            if start and len(got) > 1:
+                got = got[1:]
+            return got[-self.LIVE_KEEP:]
 
         def more():
             f = st['f']
@@ -1093,7 +1101,8 @@ class Console(object):
 
     def m_tokens(self):
         def load():
-            return self._rows(self.out('--tokens'), 'rows')
+            # Every one (1.0.146): the command gives 1000 unless asked.
+            return self._rows(self.out('--tokens', '--limit', '1000000'), 'rows')
 
         def tone(t):
             st = self._token_state(t)
@@ -2650,7 +2659,13 @@ class Console(object):
             if not os.path.isfile(script):
                 self.note('Upgrade', 'there is no install.sh in %s' % folder, 'bad')
                 return
-            m = re.search(r'otp-(\d+\.\d+\.\d+)$', os.path.basename(folder.rstrip('/')))
+            # The version the package's otp.py says (1.0.146), not its folder's name.
+            m = None
+            try:
+                with open(os.path.join(folder, 'otp.py'), encoding='utf-8') as f:
+                    m = re.search(r"^__version__ = '(\d+\.\d+\.\d+)'", f.read(), re.M)
+            except OSError:
+                pass
             if m and _ver_tuple(m.group(1)) < _ver_tuple(__version__):
                 # Never past the checks (1.0.143): an older one goes the safe way.
                 self.note('Upgrade', '%s is older than %s, which runs here. Going back is '

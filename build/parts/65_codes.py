@@ -227,7 +227,13 @@ def phone_checked(dest):
         pre = str(CONFIG.get('sms_prefix') or '').strip()
         if not pre:
             raise ValueError('write the number with its country code: +420 603 123 456')
-        raw = pre + raw.lstrip('0')
+        digits = raw.lstrip('0')
+        # 420603123456 written without its + (1.0.146): not +420420603123456.
+        if pre.lstrip('+') and digits.startswith(pre.lstrip('+')) and \
+                len(digits) - len(pre.lstrip('+')) >= 8:
+            raw = '+' + digits
+        else:
+            raw = pre + digits
     if not re.match(r'^\+[1-9][0-9]{7,14}\Z', raw):
         raise ValueError('that is not a phone number - write it as +420 603 123 456')
     return raw
@@ -294,32 +300,86 @@ def realm_methods(realm):
 
 
 # ---- how many were sent ------------------------------------------------------------
-def code_send_allowed(store, name):
-    """Whether one more code may be sent to `name` now; counted in the
-    database so both nodes count together. Written only over what was read
-    (1.0.94): requests at once each read "four sent" and all sent one."""
-    k = 'codesent:' + norm_name(name)
+# Rows counted for a person by every node (1.0.146): each node writes a key of
+# its own - 'codesent:NAME@@NODE' - and reads them all. One key for both made
+# by both at once (its first INSERT on each node) came over to the other as a
+# second row with the same key, and replication stopped for good.
+NODE_KEY_SEP = '@@'
+
+
+def node_key(prefix, name):
+    return '%s:%s%s%s' % (prefix, norm_name(name), NODE_KEY_SEP, node_name())
+
+
+def node_key_rows(store, prefix, name):
+    """Every node's row for `name` (and one written before 1.0.146)."""
+    n = norm_name(name)
+    return store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
+                         ('%s:%s' % (prefix, n),
+                          '%s:%s%s%%' % (prefix, n.replace('!', '!!').replace('%', '!%')
+                                         .replace('_', '!_'), NODE_KEY_SEP)))
+
+
+def node_key_name(prefix, k):
+    """The name a key is counted for, its node taken off."""
+    return str(k)[len(prefix) + 1:].split(NODE_KEY_SEP, 1)[0]
+
+
+def node_key_times(store, prefix, name):
+    """The times in every node's row for `name`."""
+    out = []
+    for r in node_key_rows(store, prefix, name):
+        try:
+            out += [float(x) for x in json.loads(r['v'] or '[]')]
+        except (ValueError, TypeError):
+            continue
+    return sorted(out)
+
+
+def node_key_add(store, prefix, name, keep, most=None):
+    """`time.time()` added to this node's own row for `name`, written only over
+    what was read; the times older than `keep` seconds dropped. True once
+    written."""
+    k = node_key(prefix, name)
     for _ in range(8):
         t = time.time()
-        span = 60 * int(CONFIG.get('code_send_window_min') or 15)
         raw = store.get_meta(k)
         try:
             times = [float(x) for x in json.loads(raw or '[]')]
         except (ValueError, TypeError):
             times = []
-        times = [x for x in times if t - x < span]
-        if len(times) >= int(CONFIG.get('code_send_max') or 5):
-            return False
-        new = json.dumps(times + [t])
+        times = [x for x in times if t - x < keep] + [t]
+        if most:
+            times = times[-most:]
+        new = json.dumps(times)
         if raw is None:
             try:
                 store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, new))
                 return True
             except Exception:                           # noqa: BLE001
-                continue                # written by another meanwhile: read again
+                continue
         if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
             return True
     return False
+
+
+def node_key_drop(store, prefix, name):
+    n = 0
+    for r in node_key_rows(store, prefix, name):
+        n += store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],)) or 0
+    return n
+
+
+def code_send_allowed(store, name):
+    """Whether one more code may be sent to `name` now; counted in the
+    database so both nodes count together - each in a row of its own
+    (1.0.146), written only over what was read (1.0.94)."""
+    span = 60 * int(CONFIG.get('code_send_window_min') or 15)
+    t = time.time()
+    times = [x for x in node_key_times(store, 'codesent', name) if t - x < span]
+    if len(times) >= int(CONFIG.get('code_send_max') or 5):
+        return False
+    return node_key_add(store, 'codesent', name, span)
 
 
 def code_send_wait_min(store, name):
@@ -328,8 +388,7 @@ def code_send_wait_min(store, name):
     span = 60 * int(CONFIG.get('code_send_window_min') or 15)
     limit = int(CONFIG.get('code_send_max') or 5)
     try:
-        times = sorted(float(x) for x in json.loads(store.get_meta('codesent:' + norm_name(name))
-                                                    or '[]'))
+        times = node_key_times(store, 'codesent', name)
     except (ValueError, TypeError):
         times = []
     t = time.time()
@@ -392,7 +451,7 @@ def sms_ca_set(store, pem, mode='add', fingerprint=''):
     and taken out by itself, as the mail server's."""
     pem = str(pem or '').strip()
     have = split_certificates(sms_ca_pem(store))
-    if mode == 'add' and pem:
+    if mode == 'add':
         new = split_certificates(pem)
         if not new or not all(describe_certificate(b) for b in new):
             raise ValueError('that is not a certificate this can read: a PEM certificate '
@@ -406,8 +465,10 @@ def sms_ca_set(store, pem, mode='add', fingerprint=''):
         if len(keep) == len(have):
             raise ValueError('that certificate is not among the ones kept')
         have = keep
-    else:
+    elif mode == 'clear':
         have = []
+    else:
+        raise ValueError('add, drop or clear?')
     store.set_meta(SMS_CA_META, '\n'.join(have))
     return describe_certificates('\n'.join(have))
 
@@ -515,9 +576,18 @@ class _TelAnswer(object):
         return False
 
 
+_TEL_TEXT = threading.local()     # the text being sent, kept out of the debug log
+
+
 def _tel_hidden(words):
     """A request or an answer as the debug log may hold it: no password,
-    no token (1.0.113)."""
+    no token (1.0.113), and not the text with its live code (1.0.146)."""
+    text = getattr(_TEL_TEXT, 'v', '') or ''
+    if text:
+        for form in {text, urllib.parse.quote(text, safe=''), urllib.parse.quote_plus(text),
+                     json.dumps(text)[1:-1], json.dumps(text, ensure_ascii=False)[1:-1]}:
+            if form:
+                words = words.replace(form, '<the text, %d characters>' % len(text))
     words = re.sub(r'(?i)("(?:password|token)"\s*:\s*")[^"]*', r'\1***', words)
     words = re.sub(r'(?i)((?:password|token)=)[^&\s]*', r'\1***', words)
     return re.sub(r'(?i)(Bearer )\S+', r'\1***', words)
@@ -699,6 +769,7 @@ def tel_send(to, text):
                            CONFIG.get('sms_tel_host'), CONFIG.get('sms_tel_api') or 'rest',
                            time.time() - waited), 'debug')
         began = time.time()
+        _TEL_TEXT.v = text
         try:
             said = _tel_send(to, text)
             if loud:
@@ -709,6 +780,7 @@ def tel_send(to, text):
                 log('sms: FAILED after %.1f s - %s' % (time.time() - began, e), 'debug')
             raise
         finally:
+            _TEL_TEXT.v = ''
             TELTONIKA['last'] = time.time()
 
 

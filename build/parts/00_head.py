@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.145'
+__version__ = '1.0.146'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1554,8 +1554,12 @@ def log(words, level='info'):
     # A line of its own begins only with a time (1.0.57): a newline in what
     # is written - a User-Name, say - continues indented, so it cannot pass
     # for a line of otp's; other control characters are shown, not written.
+    words = str(words)
+    if len(words) > 20000:
+        # A line, not megabytes (1.0.146): a name typed at the sign-in went in whole.
+        words = words[:20000] + ' ... (%d characters more)' % (len(words) - 20000)
     words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', lambda m: '\\x%02x' % ord(m.group(0)),
-                   str(words)).replace('\n', '\n    ')
+                   words).replace('\n', '\n    ')
     line = '%s %-5s %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), level, words)
     global _LOG_FILE
     with _LOG_LOCK:

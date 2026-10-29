@@ -225,7 +225,7 @@ def upgrade_plan(store):
     return plan
 
 
-def upgrade_checks(store, meta):
+def upgrade_checks(store, meta, pages=False):
     """What must be so before an upgrade starts - (ok, [why not]). A package
     to go back to (1.0.143) is looked at again as it was when it was taken."""
     why = []
@@ -234,6 +234,9 @@ def upgrade_checks(store, meta):
     down = bool(meta.get('downgrade'))
     if down:
         why += downgrade_why_not(store, meta['version'])
+        if pages and not CONFIG.get('upgrade_downgrade'):
+            # Switched off since it was fetched (1.0.146): not started from the pages.
+            why.append('going back to an older version is switched off (Settings → Upgrades)')
     nodes = upgrade_nodes_now(store)
     for n in ha_nodes(store):
         if not n.get('alive'):
@@ -258,9 +261,9 @@ def upgrade_checks(store, meta):
     return not why, why
 
 
-def upgrade_start(store, by):
+def upgrade_start(store, by, pages=False):
     meta = _meta_json(store, 'upgrade:pkg')
-    ok, why = upgrade_checks(store, meta)
+    ok, why = upgrade_checks(store, meta, pages)
     if not ok:
         raise ValueError('; '.join(why))
     names = [n['name'] for n in upgrade_nodes_now(store)]

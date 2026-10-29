@@ -283,7 +283,7 @@ if (isset($_GET['api'])) {
         'upgrade' => '/api/upgrade', 'web' => '/api/web',
         'firewall' => '/api/firewall', 'ha-history' => '/api/ha/history',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts', 'mailq-one' => '/api/mailq/one', 'software' => '/api/software',
-        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
     ];
