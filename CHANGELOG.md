@@ -4,6 +4,17 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.160 — 29 October 2026
+
+**The updates' window cleared for good, each SSH key exported by itself**
+- *Clear the window* in *System updates* empties the window of every node, in
+  the database: for every page and after a reload too, hidden or shown - what
+  a node says after it is shown again. Nothing is left behind it ("Hidden - 262
+  line(s)" stayed).
+- *SSH keys of root*: each key in the list is exported by itself - its public
+  half as a .pub file named by its comment - from a button beside its bin, in
+  place of the one export of all of them.
+
 ## 1.0.159 — 29 October 2026
 
 **A key for root as isemon draws a router's, and the two new panes fixed**
