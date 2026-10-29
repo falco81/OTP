@@ -4,6 +4,20 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.155 — 29 October 2026
+
+**Letters in names: Czech and Slovak ones a setting of their own, both off**
+- Settings → The tokens → *Czech and Slovak letters in names*
+  (`names_czsk_letters`) and *Letters of other languages in names*
+  (`names_any_letters`), both off by default: with both off, the names of
+  people, tokens and accounts take letters without accents, digits, `. _ -`
+  and `@` only; the first lets in á č ď é ě í ľ ĺ ň ó ô ŕ ř š ť ú ů ý ž ä,
+  the second the letters of every language. Display names are never checked.
+- Upgrading keeps everybody signing in: on its first start this version
+  looks at the names of the tokens and accounts there, and where nobody chose
+  the settings and names with such letters are there, it switches on what
+  they need, and says so in the events. A new server starts with both off.
+
 ## 1.0.154 — 29 October 2026
 
 **Letters of other languages in names: off unless switched on**
