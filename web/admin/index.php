@@ -89,6 +89,31 @@ if (isset($_GET['api'])) {
         echo json_encode(is_array($data) ? $data : ['ok' => false, 'error' => 'sign-in failed']);
         exit;
     }
+    if ($what === 'mfa' && $post) {
+        /* The second step given (1.0.149): the daemon ends the sign-in the
+           password opened and hands a new one - its cookie set here, the
+           token never shown to the page. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$status, $body] = otp_call('/api/auth/mfa', 'POST', sent_json(), 90.0);
+        if ($status === 0) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' =>
+                'the daemon is not answering — is otp.service running?']);
+            exit;
+        }
+        $data = json_decode($body, true);
+        if (is_array($data) && !empty($data['token'])) {
+            if ($status === 200) {
+                otp_set_session((string) $data['token']);
+            }
+            unset($data['token']);
+            $body = json_encode($data);
+        }
+        http_response_code($status);
+        echo $body;
+        exit;
+    }
     if ($what === 'upgrade-package' && $post) {
         /* A new version of otp (1.0.37): the .tar.gz itself is the body, as a
            database being put back is. A full administrator only, asked before

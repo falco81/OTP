@@ -4,6 +4,87 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.149 — 29 October 2026
+
+**Back up now on every node of a cluster**
+- Settings → Backups → *Back up now* makes the backup of every node, as the
+  schedule does: the node the page is on at once, the other within a minute
+  (each node its own backup to every destination). A backup to chosen
+  destinations only stays this node's.
+
+**A deep look at security, failures and load: what was found is fixed**
+
+*Security*
+- The command line run as root (the root console's *What is in it* and
+  *Put it back* on a listed backup among others) copied the file named into a
+  folder already the otp account's: a link planted in the backups folder let
+  that account read any file of root's, and one put into the folder during
+  the copy had root overwrite any file. A file the otp account can reach is
+  now opened by that account itself; any other is copied by its descriptors
+  into a folder of root's, handed over only once it is filled. Going back
+  below 1.0.149 is refused from now on.
+- The console's *Upgrade this node from a package* runs a package through
+  root's upgrade helper - its signature checked before anything of it is
+  unpacked or run; a folder only when it is root's alone, said as unchecked.
+  The console's live log no longer follows a link nor hangs on a FIFO.
+- Root's helper changes pg_hba.conf, its copies and the database link's
+  certificate in PostgreSQL's folders by descriptor, never by name: whoever
+  runs as postgres could have pointed a name at a file of root's.
+- A test of somebody's sign-in tries a person's password 5 times in 15
+  minutes at most (it was 80 in 5); a test sent to another RADIUS server needs
+  that server's secret - this machine's own is used for 127.0.0.1 only.
+- The second step of the administrators' sign-in hands a new session once
+  given; switching it on ends the other sign-ins already open. Errors say
+  the directory's and the database's details only to an administrator past
+  the second step.
+- A remote backup destination moved to another server needs its password
+  typed again: *Try it* sent the saved one to the new server.
+- A realm keeping its tokens under the name alone - bare, or with the
+  suffix `*` or none - next to such a realm of another directory is refused:
+  one person's token signed in the other directory's account of that name.
+- Recovery codes rest after 20 wrong tries from one place, and for everybody
+  only after 100 from everywhere: a stranger who knew a name could switch off
+  that person's recovery codes for a day.
+- nginx without auth_request takes no upload over 32 MB (it took 4 GB from
+  anybody on the allow list before the page could refuse it).
+
+*Always answering, never refusing the right people*
+- A database that is there but does not answer - locked, full, a statement or
+  a lock wait run out - is now treated as one gone: no answer, so the VPN asks
+  the other node. It refused everybody with a right code.
+- RADIUS's own connection to PostgreSQL and MariaDB waits 8 s for a statement
+  and 3 s for a lock (it was 120 s and 10 s): past that the request is left
+  unanswered instead of holding every sign-in behind it.
+- Putting a backup back puts the node into maintenance for the whole of it:
+  the VPN asks the other node instead of waiting or being refused.
+- A copy or a dump is not made when it would fill the disk under the
+  database (128 MB and the database's size must stay free).
+- Sign-in protection forgets places no longer counted, and publishes the
+  blocked and the busiest 500 only: many IPv6 /64s grew memory and the list
+  shared between the nodes without end.
+- The first sign-in of a directory administrator in a cluster is made by
+  one node only: on both at once replication stopped on a duplicate.
+- A client that signs its requests is held to it also when the database
+  does not answer just then (the request is not answered).
+- A mail or SMS token put back from a token backup takes its recovery codes
+  again.
+
+*Under load, with a slow or half-dead directory*
+- A directory server that takes the connection but leaves its searches
+  unanswered is passed over for 30 s and the next server asked, as one that
+  does not connect: it held every RADIUS worker, realms without a directory
+  too, and the second server was never asked.
+- One directory takes at most half of the RADIUS workers at once; a request
+  past that is refused at once as the directory's trouble - a slow directory
+  no longer stops the realms that do not ask it.
+- A request waiting longer than 10 s (it was 15) is not worked on: the VPN
+  has asked again or asked the other node by then.
+- RADIUS's own connection to the database: PostgreSQL and MariaDB give up a
+  statement after 5 s and a lock wait after 2 s, SQLite a busy file after
+  3 s - then no answer, never a refusal.
+- Old log rows are taken away 1000 at a time with a pause between, and
+  SQLite's write-ahead log is cut back after it and kept under 64 MB.
+
 ## 1.0.148 — 29 October 2026
 
 **The console at login: no "on" beside the switch**

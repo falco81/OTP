@@ -77,14 +77,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.148'
+__version__ = '1.0.149'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
 # older one would misread, or fixes a hole an older one has. install.sh keeps
 # the highest of these in a file of root's (downgrade-floor); each node keeps
 # its own in the database.
-DOWNGRADE_FLOOR = '1.0.139'
+DOWNGRADE_FLOOR = '1.0.149'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -2172,6 +2172,27 @@ class DbError(Exception):
     pass
 
 
+# The database's own trouble, not the request's (1.0.149): locked, full, out of
+# space, a statement or a lock wait that ran out, a server shutting down.
+DB_TROUBLE_KINDS = ('OperationalError', 'QueryCanceled', 'QueryCanceledError', 'LockNotAvailable',
+                    'DiskFull', 'AdminShutdown', 'CannotConnectNow', 'SerializationFailure',
+                    'DeadlockDetected', 'InterfaceError', 'InternalError', 'OutOfMemory',
+                    'TooManyConnections', 'ConnectionFailure', 'ConnectionException')
+DB_TROUBLE_WORDS = ('database is locked', 'disk is full', 'disk i/o error', 'no space left')
+
+
+def db_trouble(e):
+    if isinstance(e, DbError):
+        return True
+    names = {c.__name__ for c in type(e).__mro__}
+    said = str(e).lower()
+    if 'out of range' in said:
+        return False                # a value too big: the request's, said as such
+    return bool(names & set(DB_TROUBLE_KINDS)) and (
+        type(e).__module__.split('.')[0] in ('sqlite3', 'psycopg2', 'pymysql', 'MySQLdb') or
+        any(w in said for w in DB_TROUBLE_WORDS))
+
+
 SCHEMA_VERSION = 1
 
 SCHEMA = [
@@ -2470,16 +2491,33 @@ class Db(object):
                 lane.down_said = str(e)
                 raise
 
+    # RADIUS's own lane waits less (1.0.149): a VPN gives up on an answer in
+    # 5 to 15 s; a statement there that waited 120 s held every sign-in behind
+    # it. Past these it is no answer, and the VPN asks the other node.
+    RADIUS_STATEMENT_S = 5
+    RADIUS_LOCK_S = 2
+    RADIUS_SQLITE_BUSY_S = 3
+
     def _connect(self):
+        quick = self._lanes.get('radius') is not None and self._lane() is self._lanes.get('radius')
+        stmt_s = min(self.statement_s or self.RADIUS_STATEMENT_S, self.RADIUS_STATEMENT_S) \
+            if quick else self.statement_s
+        lock_s = self.RADIUS_LOCK_S if quick else self.LOCK_S
         with self.lock:
             if self.engine == 'sqlite':
                 self.path.parent.mkdir(parents=True, exist_ok=True)
+                # RADIUS's lane waits 3 s for the file (1.0.149), not 30: past
+                # that, no answer, and the VPN asks the other node.
                 conn = sqlite3.connect(str(self.path), check_same_thread=False,
-                                       isolation_level=None, timeout=30)
+                                       isolation_level=None,
+                                       timeout=self.RADIUS_SQLITE_BUSY_S if quick else 30)
                 conn.row_factory = sqlite3.Row
                 try:
                     conn.execute('PRAGMA journal_mode=WAL')
                     conn.execute('PRAGMA synchronous=NORMAL')
+                    # The log of the file shrunk back after a big write (1.0.149):
+                    # it stayed at its largest - 1.3 GB beside a 1 GB database.
+                    conn.execute('PRAGMA journal_size_limit=67108864')
                 except sqlite3.Error:
                     pass
                 self.conn = conn
@@ -2498,14 +2536,15 @@ class Db(object):
                         connect_timeout=self.timeout,
                         # A line that drops without a word no longer holds
                         # every request behind the lock for hours (1.0.57).
-                        read_timeout=max(30, self.statement_s + 10) if self.statement_s else 300,
+                        read_timeout=(stmt_s + 4) if quick else (
+                            max(30, self.statement_s + 10) if self.statement_s else 300),
                         write_timeout=60,
                         cursorclass=pymysql.cursors.DictCursor,
                         **db_tls_args('mariadb', self.tls, self.tls_ca))
                 except Exception as e:
                     raise DbError('MariaDB at %s could not be reached: %s' % (self.where(), e))
-                for sql in ('SET SESSION innodb_lock_wait_timeout = %d' % self.LOCK_S,
-                            'SET SESSION max_statement_time = %d' % self.statement_s):
+                for sql in ('SET SESSION innodb_lock_wait_timeout = %d' % lock_s,
+                            'SET SESSION max_statement_time = %d' % stmt_s):
                     try:
                         with self.conn.cursor() as cur:
                             cur.execute(sql)
@@ -2531,9 +2570,9 @@ class Db(object):
                         keepalives_count=3,
                         # ...and a line that drops while a statement is out:
                         # given up after 30 s, not the kernel's 15 min.
-                        tcp_user_timeout=30000,
+                        tcp_user_timeout=10000 if quick else 30000,
                         options='-c lock_timeout=%d -c statement_timeout=%d' % (
-                            self.LOCK_S * 1000, self.statement_s * 1000),
+                            lock_s * 1000, stmt_s * 1000),
                         **db_tls_args('postgres', self.tls, self.tls_ca))
                     self.conn.autocommit = True
                     self.conn.set_client_encoding('UTF8')
@@ -2595,7 +2634,10 @@ class Db(object):
                                        'broken pipe', 'connection reset', 'not connected',
                                        'interfaceerror', 'cursor already closed',
                                        'connection has been closed',
-                                       'connection is closed', 'ssl connection has been closed'))
+                                       'connection is closed', 'ssl connection has been closed',
+                                       # tcp_user_timeout ran out (1.0.149): the line dropped
+                                       'could not receive data', 'connection timed out',
+                                       'server closed the connection'))
 
     def query(self, sql, args=(), fetch=True):
         # While this node is rebuilt from the other, nothing but the rebuild
@@ -6393,15 +6435,24 @@ class Storage(object):
             # As the directory is called (1.0.146): typed in another case it
             # was kept so, and a rename of the directory left the realm behind.
             directory = self.directory(directory)['name']
-        if token_name == 'bare':
+        def plain_names(tn, sfx):
+            # A realm whose tokens are kept under the name alone: bare, or
+            # whole with no suffix to add - * or none (1.0.149): a bare a.cz
+            # and a * of another directory both kept "falco", and one falco
+            # signed in as the other.
+            return tn == 'bare' or str(sfx or '') in ('', '*')
+        if plain_names(token_name, suffix):
             # Names without their realm are one person's only within one
             # directory (1.0.101): novak@a in one and novak@b in another
             # shared the token "novak", and the second could enrol it, or
             # sign in to the first realm with it.
             for r in self.realms():
-                if r.get('token_name') == 'bare' and str(r.get('name')).lower() != \
+                if plain_names(r.get('token_name'), r.get('suffix')) and \
+                        str(r.get('name')).lower() != \
                         str(data.get('name') or '').strip().lower() and \
-                        str(r.get('directory') or '').lower() != directory.lower():
+                        str(r.get('directory') or '').lower() != directory.lower() and \
+                        (token_name == 'bare' and r.get('token_name') == 'bare' or
+                         (directory and r.get('directory'))):
                     raise ValueError('the realm %s already keeps its tokens under the name '
                                      'alone, with the directory %s: names alone are one '
                                      'person\'s only within one directory - keep this '
@@ -7014,17 +7065,24 @@ class Storage(object):
         """Rows older than `cut`, deleted in batches (1.0.33), with a breath
         between them (1.0.57) so RADIUS requests waiting on the database get
         their turn."""
-        gone = 0
-        for _ in range(100000):
+        # 1000 at a time and a fifth of a second between (1.0.149): 5000 with
+        # 0.02 s left RADIUS a quarter of its pace for the whole of it.
+        gone, batch = 0, 1000
+        for _ in range(1000000):
             if self.db.engine == 'mariadb':
-                n = self.db.run('DELETE FROM %s WHERE ts < ? LIMIT 5000' % table, (cut,))
+                n = self.db.run('DELETE FROM %s WHERE ts < ? LIMIT %d' % (table, batch), (cut,))
             else:
                 n = self.db.run('DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE '
-                                'ts < ? LIMIT 5000)' % (table, table), (cut,))
+                                'ts < ? LIMIT %d)' % (table, table, batch), (cut,))
             gone += int(n or 0)
-            if not n or n < 5000:
+            if not n or n < batch:
                 break
-            time.sleep(0.02)
+            time.sleep(0.2)
+        if gone and self.db.engine == 'sqlite':
+            try:
+                self.db.run(RawSql('PRAGMA wal_checkpoint(TRUNCATE)'))
+            except Exception:                           # noqa: BLE001
+                pass
         return gone
 
     def counts(self):
@@ -7111,6 +7169,30 @@ class Directory(object):
     DEAD_S = 30
     DEAD_LOCK = threading.Lock()
 
+    # How many RADIUS workers one directory may hold at once (1.0.149): half
+    # of them. A directory answering in seconds took every worker, and the
+    # realms of the code alone - which never ask it - went unanswered too.
+    BUSY = {}
+    BUSY_LOCK = threading.Lock()
+
+    @contextlib.contextmanager
+    def held(self):
+        if not threading.current_thread().name.startswith('radius'):
+            yield                       # the pages and the command line: not counted
+            return
+        most = max(2, int(CONFIG.get('radius_workers') or 16) // 2)
+        with self.BUSY_LOCK:
+            n = self.BUSY.get(self.name.lower(), 0)
+            if n >= most:
+                raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
+                                      'this one is not added to them' % (self.name, n))
+            self.BUSY[self.name.lower()] = n + 1
+        try:
+            yield
+        finally:
+            with self.BUSY_LOCK:
+                self.BUSY[self.name.lower()] = max(0, self.BUSY.get(self.name.lower(), 1) - 1)
+
     def _order(self):
         """The servers in the order to ask them: the one that answered last
         first, those that did not answer lately last - and when none has,
@@ -7173,6 +7255,7 @@ class Directory(object):
                         break
                 self.last_good = host
                 self._up(host)
+                one.otp_host = host
                 return one
             except (LdapError, OSError, ValueError) as e:
                 # Unreachable, timed out, the line dropped, StartTLS hung
@@ -7188,6 +7271,35 @@ class Directory(object):
             raise refused
         raise LdapUnreachable('no server of %s could be reached (%s)'
                               % (self.name, '; '.join(tried) or 'none is set'))
+
+    def asked(self, do):
+        """do(link) on the first server that answers - and on the next when
+        the search itself is not answered (1.0.149): a server that took the
+        connection and the reading account's bind but then left its searches
+        unanswered was never passed over, the other server never asked, and
+        every RADIUS worker waited on it in turn."""
+        with self.held():
+            return self._asked(do)
+
+    def _asked(self, do):
+        last = None
+        for _ in range(max(1, len(self.hosts))):
+            link = self.link()
+            host = getattr(link, 'otp_host', None)
+            try:
+                return do(link)
+            except (LdapError, OSError) as e:
+                if isinstance(e, LdapError) and not (isinstance(e, LdapUnreachable) or
+                                                     e.code in LDAP_TRY_ANOTHER):
+                    raise
+                last = e
+                if host:
+                    self._down(host)
+                    if self.last_good == host:
+                        self.last_good = None
+            finally:
+                link.close()
+        raise last if isinstance(last, LdapUnreachable) else LdapUnreachable(str(last))
 
     def find_user(self, name, how='upn'):
         """The entry of one account, or None. `how` is upn (the whole
@@ -7209,13 +7321,10 @@ class Directory(object):
         else:
             want = ldap_equal('userPrincipalName', said)
         flt = ldap_and(ldap_equal('objectClass', 'user'), want)
-        link = self.link()
-        try:
-            # Three, not two (1.0.101): a computer's account among them is
-            # dropped below, and must not hide a second person of the name.
-            rows = link.search(self.base, flt, USER_ATTRS, scope=2, limit=3)
-        finally:
-            link.close()
+        # Three, not two (1.0.101): a computer's account among them is
+        # dropped below, and must not hide a second person of the name.
+        rows = self.asked(lambda link: link.search(self.base, flt, USER_ATTRS, scope=2,
+                                                   limit=3))
         entry = None
         # A computer's account is not a person's (1.0.101): objectClass=user
         # takes them in on AD, and anybody in the domain may make up to ten
@@ -7273,14 +7382,12 @@ class Directory(object):
             got = self.cache.get(key)
             if got and time.time() - got[0] < self.CACHE_S:
                 return got[1]
-        link = self.link()
-        link.PAGES_MOST = 20            # a sign-in's groups, not a census (1.0.59)
-        try:
-            rows = link.search(self.base, ldap_and(ldap_equal('objectClass', 'group'),
+        def do(link):
+            link.PAGES_MOST = 20        # a sign-in's groups, not a census (1.0.59)
+            return link.search(self.base, ldap_and(ldap_equal('objectClass', 'group'),
                                                    ldap_in_chain('member', entry['dn'])),
                                ('cn',), scope=2, limit=5000, paged=True)
-        finally:
-            link.close()
+        rows = self.asked(do)
         out = [(r['dn'], (r['attrs'].get('cn') or [cn_of(r['dn'])])[0]) for r in rows]
         with self.lock:
             self.cache[key] = (time.time(), out)
@@ -7305,15 +7412,13 @@ class Directory(object):
         dcs = [p for p in re.split(r'(?<!\\),', str(self.base or '')) if
                p.strip().lower().startswith('dc=')]
         where = ','.join(p.strip() for p in dcs) or self.base
-        link = self.link()
-        link.PAGES_MOST = 5
-        try:
-            rows = link.search(where, ldap_and(
+        def do(link):
+            link.PAGES_MOST = 5
+            return link.search(where, ldap_and(
                 ldap_equal('objectClass', 'group'),
                 ldap_or(ldap_equal('sAMAccountName', said), ldap_equal('cn', said))),
                 ('cn', 'sAMAccountName'), scope=2, limit=50, paged=True)
-        finally:
-            link.close()
+        rows = self.asked(do)
 
         def first(r, a):
             for k, v in r['attrs'].items():
@@ -7346,6 +7451,10 @@ class Directory(object):
             # Cut at a NUL somewhere on the way, a password is empty - and an
             # empty one binds anonymously (1.0.101).
             raise LdapError('the password holds a control character')
+        with self.held():
+            return self._password_ok(entry, password)
+
+    def _password_ok(self, entry, password):
         tried = []
         order = self._order()
         if not order:
@@ -7508,8 +7617,16 @@ def lockout_said(store, name, n, mins):
         pass
 
 
-SCRATCH_GUARD_MOST = 20          # a day's refused tries before recovery codes rest (1.0.101)
+SCRATCH_GUARD_MOST = 20          # a day's refused tries from one place (1.0.101, 1.0.149)
+SCRATCH_GUARD_ALL = 100          # ... and from everywhere together (1.0.149)
 SCRATCH_GUARD_S = 86400
+# One place's count, in this node's memory (1.0.149): a stranger who knew only
+# a name sent 20 wrong passwords and the person's recovery codes were not
+# taken for a day - just when the phone was lost. Now one place rests alone;
+# all of them together only at five times as many.
+SCRATCH_PLACES = {}
+SCRATCH_PLACES_LOCK = threading.Lock()
+REQUEST_PLACE = threading.local()
 
 
 def scratch_guard_times(store, name):
@@ -7518,23 +7635,53 @@ def scratch_guard_times(store, name):
             if time.time() - x < SCRATCH_GUARD_S]
 
 
-def scratch_guard_note(store, name):
+def _scratch_place(name, place, add=False):
+    k = (norm_name(name), str(place or '')[:64])
+    t = time.time()
+    with SCRATCH_PLACES_LOCK:
+        if len(SCRATCH_PLACES) > 20000:
+            SCRATCH_PLACES.clear()
+        got = [x for x in SCRATCH_PLACES.get(k, []) if t - x < SCRATCH_GUARD_S]
+        if add:
+            got = (got + [t])[-SCRATCH_GUARD_MOST * 2:]
+        if got:
+            SCRATCH_PLACES[k] = got
+        else:
+            SCRATCH_PLACES.pop(k, None)
+        return len(got)
+
+
+def scratch_guard_clear(name):
+    n = norm_name(name)
+    with SCRATCH_PLACES_LOCK:
+        for k in [k for k in SCRATCH_PLACES if k[0] == n]:
+            del SCRATCH_PLACES[k]
+
+
+def scratch_guard_note(store, name, place=''):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
+    here = _scratch_place(name, place, add=True)
     before = len(scratch_guard_times(store, name))
-    node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_MOST * 2)
+    node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_ALL * 2)
     times = scratch_guard_times(store, name)
     # Said once, as the count goes past it (1.0.147): two nodes at once went
     # from 19 to 21, and "exactly 20" was never seen.
-    if before < SCRATCH_GUARD_MOST <= len(times):
-        store.add_event('tokens', 'the recovery codes of %s are not taken for a day: %d '
+    if before < SCRATCH_GUARD_ALL <= len(times) or here == SCRATCH_GUARD_MOST:
+        store.add_event('tokens', 'the recovery codes of %s are not taken for a day%s: %d '
                         'requests in a day had a wrong password or a wrong recovery code - '
                         'somebody may be guessing them (Unlock it on the token gives them back)'
-                        % (norm_name(name), SCRATCH_GUARD_MOST), 'warn', who='otp')
+                        % (norm_name(name), '' if len(times) >= SCRATCH_GUARD_ALL else
+                           ' from %s' % (place or 'one place'),
+                           len(times) if len(times) >= SCRATCH_GUARD_ALL else here),
+                        'warn', who='otp')
 
 
-def scratch_guarded(store, name):
-    return len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_MOST
+def scratch_guarded(store, name, place=None):
+    if place is None:
+        place = getattr(REQUEST_PLACE, 'v', '') or ''
+    return _scratch_place(name, place) >= SCRATCH_GUARD_MOST or \
+        len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_ALL
 
 
 def entry_unusable(entry, locked=True):
@@ -8097,7 +8244,10 @@ class Tokens(object):
         if tries and len(fails) >= tries:
             return False, SAY_RATE, facts
         secret = unseal_secret(tok.get('secret') or '', token_bind(name))
-        if not secret:
+        # Only a token of the app needs its key (1.0.149): one by mail or SMS
+        # put back from a backup has none, and its recovery codes were
+        # refused as "cannot be opened".
+        if not secret and token_kind(tok) == 'totp':
             return False, SAY_LOST, facts
         digits = int(tok.get('digits') or 6)
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other
@@ -10234,7 +10384,8 @@ class Authenticator(object):
                         # each such request is counted towards the token's
                         # recovery codes instead: past a day's few, they are
                         # not taken for a while. Codes from the app go on.
-                        scratch_guard_note(self.store, d.token_name)
+                        scratch_guard_note(self.store, d.token_name,
+                                           getattr(REQUEST_PLACE, 'v', ''))
                     return d.refuse('the directory refused the password: %s' % e
                                     if not isinstance(e, LdapUnreachable)
                                     else 'LDAP server(s) have gone away')
@@ -10619,13 +10770,21 @@ class RadiusServer(object):
             # Older than any NAS waits (1.0.57): after a stall the queue held
             # minutes of requests whose NAS had long given up, each with its
             # directory binds and its code used up, ahead of the new ones.
-            if time.time() - arrived > int(CONFIG.get('radius_stale_s') or 15):
+            # 10 s (1.0.149): past what a VPN waits for an answer before it asks
+            # again or asks the other node - 15 s worked on requests long given
+            # up behind a slow directory, each using its code up.
+            if time.time() - arrived > int(CONFIG.get('radius_stale_s') or 10):
                 self.counts['stale'] += 1
                 with self.unknown_lock:
                     self.quiet['too old to answer'] += 1
                 continue
             try:
                 self.handle(kind, sock, data, peer, arrived)
+            except DbError as e:
+                # Not answered, as any request while the database is away.
+                self.counts['no_database'] += 1
+                log_sparing('radius-db', 'RADIUS requests go unanswered: %s'
+                            % str(e).split('\n')[0][:200], 'error')
             except Exception as e:
                 # Sparingly (1.0.59): a packet that breaks it once breaks it
                 # every time it is sent, by anybody using the NAS's address.
@@ -10877,8 +11036,13 @@ class RadiusServer(object):
                 if r['k'].split(':', 2)[-1] == want[1:]:
                     self.ma_seen.add((cid, ip))
                     return True
-        except Exception:                               # noqa: BLE001
-            pass
+        except Exception as e:                          # noqa: BLE001
+            # Not known is not "it never signed" (1.0.149): the database not
+            # answering let an unsigned request past the rule that a client
+            # which signs must always sign. Asked again next time, and this
+            # request is not answered.
+            self.ma_asked.pop((cid, ip), None)
+            raise DbError('whether %s signs its requests could not be read: %s' % (ip, e))
         return False
 
     def status(self, pkt, client, ip, port, secret):
@@ -10932,6 +11096,11 @@ class RadiusServer(object):
         except Exception as e:                          # noqa: BLE001
             log_sparing('radius-guard', 'the sign-in protection: %s' % e, 'warn')
             src, blocked = '', None
+        # Where the person is, for the recovery codes' guard (1.0.149).
+        try:
+            REQUEST_PLACE.v = guard_source(w)
+        except Exception:                               # noqa: BLE001
+            REQUEST_PLACE.v = ''
         try:
             if blocked:
                 d = Decision()
@@ -10956,6 +11125,15 @@ class RadiusServer(object):
                         'reached (%s)' % str(e).split('\n')[0][:200], 'error')
             return None
         except Exception as e:
+            if db_trouble(e):
+                # The database there but not answering - locked, full, a
+                # statement or a lock that ran out (1.0.149): as when it is
+                # gone, no answer. A refusal refused everybody with a right
+                # code, and the VPN never asked the other node.
+                self.counts['no_database'] += 1
+                log_sparing('radius-db', 'RADIUS requests go unanswered: the database is not '
+                            'answering (%s)' % str(e).split('\n')[0][:200], 'error')
+                return None
             # Whatever went wrong inside, the VPN gets an answer - a refusal
             # with the reason written down - rather than silence and a retry.
             log_sparing('radius-decide:%s' % type(e).__name__,
@@ -11955,10 +12133,37 @@ def import_legacy(store, root, by='import', replace=False, say=print):
 # ---------------------------------------------------------------------------
 # Copies of the database
 # ---------------------------------------------------------------------------
+BACKUP_ROOM_MIN = 128 << 20
+
+
+def backup_room_check(store, folder=None):
+    """Room left for a copy without filling the disk (1.0.149): a full disk
+    under a SQLite database refused every sign-in until space was freed.
+    What the copy may take - the database file itself at most - and 128 MB
+    more must stay free."""
+    try:
+        free = shutil.disk_usage(str(folder or BACKUP_DIR)).free
+    except OSError:
+        return
+    size = 0
+    if store.db.engine == 'sqlite':
+        try:
+            size = os.path.getsize(str(store.db.path))
+        except (OSError, TypeError):
+            size = 0
+    need = size + BACKUP_ROOM_MIN
+    if free < need:
+        raise ValueError('there is no room for a copy in %s: %d MB free, %d MB needed so that '
+                         'the disk is not filled under the database - take old copies away, '
+                         'or give the disk more room' % (folder or BACKUP_DIR, free >> 20,
+                                                         need >> 20))
+
+
 def make_backup(store, why='by hand'):
     """A copy of everything into the backups folder - and the key that opens
     the tokens beside it, because one without the other is nothing."""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backup_room_check(store)
     stamp_ = datetime.now().strftime('%Y%m%d-%H%M%S')
     # A name of its own (two in one second overwrote each other) and written
     # under another until it is whole (1.0.59): a half file counted as a
@@ -14000,6 +14205,7 @@ def make_dump(store, label='daily', folder=None):
     engine = store.db.engine
     folder = Path(folder) if folder else DUMP_DIR
     folder.mkdir(parents=True, exist_ok=True)
+    backup_room_check(store, folder)            # never the disk filled (1.0.149)
     info = dump_info(engine)
     kind = engine if info['ready'] else 'copy'
     name = 'otp-%s-%s-%s%s' % (engine if kind != 'copy' else 'copy', _stamp(),
@@ -14250,7 +14456,13 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
                 held.append(Path(kname))
                 key_file = kname
             path = tmpname
-        return _db_file_restore(store, path, by, key_file, from_name, kind)
+        # This node answers nothing while it is done (1.0.149): the VPN asks
+        # the other node, as in maintenance.
+        RESTORE_RUNNING.set()
+        try:
+            return _db_file_restore(store, path, by, key_file, from_name, kind)
+        finally:
+            RESTORE_RUNNING.clear()
     finally:
         for x in held:
             try:
@@ -16733,6 +16945,14 @@ def rb_checked(data, old=None):
             raise ValueError('the folder (SCP) is letters, digits and . _ / ~ + @ % = , - '
                              'only - use SFTP for any other')
     pw = data.get('password')
+    # The saved password goes only to the server it was saved for (1.0.149):
+    # with another server typed in, Try it sent it there - to whoever the
+    # administrator chose. Typed again for a new one.
+    moved = bool(old) and (old.get('kind') != kind or
+                           str(old.get('host') or '').lower() != str(t.get('host') or '').lower() or
+                           int(old.get('port') or 0) != int(t.get('port') or 0))
+    if (pw is None or is_masked(pw)) and moved and old.get('password'):
+        raise ValueError('the server changed: type the password again')
     if pw is None or is_masked(pw):
         t['password'] = old.get('password') or ''
     else:
@@ -17898,9 +18118,60 @@ def rb_due(store, last_day):
     return today if today != last_day else None
 
 
+RB_NOW_LIVE_S = 900
+
+
+def rb_now_ask_others(store, by):
+    """Back up now on the other nodes too (1.0.149), as the schedule does: each
+    node makes its own. Asked in a row of the asking node's own per node
+    asked - 'rbackup:now:NODE@@ASKER' - so only one node ever writes it."""
+    if not CONFIG.get('ha_mode'):
+        return []
+    asked = []
+    ident = secrets.token_hex(6)
+    for n in ha_nodes(store):
+        if n.get('me') or not n.get('alive'):
+            continue
+        store.set_meta(node_key('rbackup:now', n['name']),
+                       json.dumps({'id': ident, 'at': time.time(), 'by': by,
+                                   'from': node_name()}))
+        asked.append(n['name'])
+    return asked
+
+
+def rb_now_asked(daemon):
+    """A Back up now asked of this node by another; started once each."""
+    store = daemon.store
+    done_k = 'rbackup:nowdone:' + node_name()
+    try:
+        done = set(json.loads(store.get_meta(done_k) or '[]'))
+    except ValueError:
+        done = set()
+    for r in node_key_rows(store, 'rbackup:now', node_name()):
+        try:
+            ask = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        ident = str(ask.get('id') or '')
+        if not ident or ident in done or time.time() - float(ask.get('at') or 0) > RB_NOW_LIVE_S:
+            continue
+        if RB_JOB['running']:
+            return                      # asked again at the next tick
+        store.set_meta(done_k, json.dumps(sorted(done | {ident})[-20:]))
+        rb_job_start(store, '%s (Back up now on %s)' % (ask.get('by') or 'otp',
+                                                        ask.get('from') or '?'))
+        return
+
+
 def rb_tick(daemon):
     """Once a minute from the daemon's loop: the scheduled backup, this node's."""
     store = daemon.store
+    if CONFIG.get('ha_mode'):
+        try:
+            rb_now_asked(daemon)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('rb-now:' + str(e)[:60], 'Back up now asked by the other node: %s'
+                        % e, 'warn', 600)
     day = rb_due(store, getattr(daemon, '_rb_day', ''))
     if not day or RB_JOB['running']:
         return
@@ -19376,6 +19647,7 @@ UPGRADE_PIECE = 40000                       # base64 characters in one meta row
 UPGRADE_DRAIN_S = int(os.environ.get('OTP_UPGRADE_DRAIN_S', '20'))
 UPGRADE_TIMEOUT_S = 30 * 60
 MAINT_CACHE = {'at': 0.0, 'row': None}
+RESTORE_RUNNING = threading.Event()
 
 
 def _meta_json(store, k):
@@ -19429,6 +19701,10 @@ def maintenance_now(store):
     every RADIUS packet."""
     if HA_REBUILDING.is_set():
         return {'on': True, 'why': 'rebuilt from the other node'}
+    if RESTORE_RUNNING.is_set():
+        # A backup put back (1.0.149): RADIUS waited for the whole of it with
+        # the database held, or met tables being made again and refused.
+        return {'on': True, 'why': 'a backup is being put back'}
     now = time.time()
     if now - MAINT_CACHE['at'] > 2:
         MAINT_CACHE['at'] = now
@@ -21213,7 +21489,7 @@ def vip_watch(daemon):
             os.chmod(str(tmp), 0o640)
             os.replace(str(tmp), str(VIP_STATE))
         except Exception as e:                          # noqa: BLE001
-            log('the web address: %s' % e, 'warn')
+            log_sparing('vip-watch:' + str(e)[:80], 'the web address: %s' % e, 'warn', 600)
             daemon.stop_flag.wait(10)
 
 
@@ -24796,7 +25072,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path != '/api/health':
             want = api_token()
             given = str(self.headers.get('X-Otp-Token') or '')
-            if not want or not hmac.compare_digest(want, given):
+            # As bytes (1.0.149): a token with a letter beyond ASCII raised
+            # TypeError there, and the connection was dropped with a trace.
+            if not want or not hmac.compare_digest(want.encode('utf-8'),
+                                                   given.encode('utf-8', 'replace')):
                 return self.send_json({'ok': False, 'error': 'not this API’s token'}, 403)
         fn = ROUTES.get((method, path))
         if not fn:
@@ -24875,10 +25154,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             return False
         try:
             # Only a look: an error must not keep a session alive. (1.0.36)
-            return bool(self.store.session_get(
-                token, 'admin', int(CONFIG.get('session_idle_min') or 120) * 60, touch=False) or
-                self.store.session_get(
-                token, 'portal', int(CONFIG.get('portal_session_min') or 15) * 60, touch=False))
+            # An administrator past the second step only (1.0.149): a portal
+            # user, or a password without its code, was told the directory's
+            # and the database's addresses with every error.
+            s = self.store.session_get(
+                token, 'admin', int(CONFIG.get('session_idle_min') or 120) * 60, touch=False)
+            return bool(s) and not mfa_pending(s)
         except Exception:                               # noqa: BLE001
             return False
 
@@ -25135,6 +25416,12 @@ def lockouts_view(d):
             until = float(info.get('blocked_until') or 0)
             blocked = until > t
             if not fails and not blocked:
+                # Forgotten once nothing of it counts (1.0.149): every new
+                # place stayed for good - 50 000 /64s were 45 MB, and the
+                # list published every few seconds 18 MB.
+                if t - float(info.get('at') or 0) > span and t - until > span:
+                    d.login_fails.pop(key, None)
+                    d.login_info.pop(key, None)
                 continue
             names = [n for n, ts in (info.get('names') or {}).items() if t - ts < span]
             last = max(fails[-1] if fails else 0, float(info.get('blocked_at') or 0))
@@ -25181,8 +25468,15 @@ def lockouts_clear(d, which=None):
     return n
 
 
+LOCKOUTS_PUBLISHED_MOST = 500
+
+
 def lockouts_publish(d, force=False):
     rows = lockouts_view(d)
+    if len(rows) > LOCKOUTS_PUBLISHED_MOST:
+        # The locked ones and the busiest (1.0.149), not every place.
+        rows = sorted(rows, key=lambda r: (not r.get('locked'), -int(r.get('fails') or 0)))[
+            :LOCKOUTS_PUBLISHED_MOST]
     sig = json.dumps([(r['kind'], r['who'], r['fails'], r['locked']) for r in rows])
     now = time.time()
     if not force and sig == LOCKOUTS_SENT['sig'] and now - LOCKOUTS_SENT['at'] < 60:
@@ -25283,9 +25577,13 @@ def lockouts_shared_clear(store, kind, who, by):
             return 0
         store.token_write(who, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         node_key_drop(store, 'scratchguard', who)
+        scratch_guard_clear(who)
         store.add_event('tokens', '%s let %s try again at once' % (by, who), who=by)
         return 1
     return 0
+
+
+RADTEST_NAME_TRIES = 5
 
 
 @route('GET', '/api/lockouts')
@@ -25492,11 +25790,50 @@ def admin_from_directory(h, name, password):
             return None
         h.store.set_account(name, role=role, display=entry.get('display') or '',
                             dn=entry['dn'], group_list=groups)
+    elif CONFIG.get('ha_mode') == 'replicated' and not ha_lead(h.store):
+        # Made by one node of the two only (1.0.149): a first sign-in on both
+        # at once - or while replication was stopped - put the name in twice,
+        # and replication stopped on it for good. The other node's database
+        # gets it; replication brings it here.
+        dir_account_far(h.store, name, role, said, entry, groups)
     else:
         h.store.add_account(name, role, None, source='directory',
                             note='signed in from %s' % said['directory'],
                             display=entry.get('display') or '', dn=entry['dn'], groups=groups)
     return h.store.account(name)
+
+
+def dir_account_far(store, name, role, said, entry, groups):
+    if not ACCOUNT_NAME_RE.match(name) or role not in ROLES_ALL:
+        raise ApiError(401, 'the name or the password is not right')
+    row = {'name': name, 'role': role, 'pw': '', 'source': 'directory', 'disabled': 0,
+           'must_change': 0, 'note': ('signed in from %s' % said['directory'])[:400],
+           'created': time.time(), 'last_in': None, 'last_from': '', 'prefs': '{}',
+           'display': entry.get('display') or '', 'dn': entry['dn'], 'group_list': groups}
+    mode, ca = ha_link_tls()
+    done = False
+    for tls in [None] + ([('verify-ca', ca)] if mode == 'verify-full' else []):
+        try:
+            far = db_open(ha_peer_conf(timeout=5, tls=tls))
+        except Exception:                               # noqa: BLE001
+            continue
+        try:
+            if not far.row('SELECT id FROM accounts WHERE LOWER(name) = ?', (name.lower(),)):
+                far.insert('accounts', row)
+            done = True
+            break
+        except Exception:                               # noqa: BLE001
+            continue
+        finally:
+            far.close()
+    if done:
+        for _ in range(40):
+            if store.account(name):
+                return
+            time.sleep(0.25)
+    raise ApiError(503, 'the first sign-in of %s is made on the other node of the cluster, '
+                        'which could not be reached or has not passed it on yet - try again in '
+                        'a minute, or sign in there' % name)
 
 
 @route('POST', '/api/auth/login')
@@ -26593,6 +26930,7 @@ def _token_act(h, s, b, act, name, who):
     if act == 'unlock':
         h.store.token_write(name, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         node_key_drop(h.store, 'scratchguard', name)
+        scratch_guard_clear(name)
         h.store.add_event('tokens', '%s let %s try again at once' % (who, name), who=who)
         return {'message': 'the wrong codes are forgotten'}
     if act == 'rename':
@@ -26669,7 +27007,7 @@ def _token_act(h, s, b, act, name, who):
     if act == 'test':
         # Counted per administrator and token (1.0.57): a dry test counts
         # nothing on the token, and so could be asked without end.
-        h.throttle('code-test', 10, 5, name='%s>%s' % (who, name))
+        h.throttle('code-test', 10, 5, name='%s>%s' % (who, name), name_tries=10)
         ok, said, facts = tk.check(name, str(b.get('code') or ''), how='test',
                                    src=h.client_ip(), dry=not b.get('use'))
         if not ok:
@@ -27199,7 +27537,10 @@ def _dirs_do(h):
         # Counted and written down (1.0.139), as a radtest is: each try is a
         # directory password, and wrong ones lock the account there.
         user = str(b.get('user') or '')
-        key = h.throttle('radtest', 20, 5, name='%s>%s' % (who, user[:120]), ip_tries=100)
+        # A person's password tried 5 times in 15 minutes at most (1.0.149):
+        # 80 in 5 was a guessing tool for anybody's directory password.
+        key = h.throttle('radtest', 20, 15, name='%s>%s' % (who, user[:120]), ip_tries=100,
+                         name_tries=RADTEST_NAME_TRIES)
         said = admin_ask_directory(h, user, str(b.get('password') or ''))
         if said is None:
             raise ApiError(404, 'the directory %s is not set up' % CONFIG.get('admin_directory'))
@@ -27241,8 +27582,8 @@ def _radtest(h):
         # Asked on another node of the cluster (1.0.45): through the
         # database both open, the password sealed with the key both have.
         # Counted here too (1.0.94): it tries a directory password as well.
-        rkey = h.throttle('radtest', 20, 5, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
-                      ip_tries=100)
+        rkey = h.throttle('radtest', 20, 15, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
+                      ip_tries=100, name_tries=RADTEST_NAME_TRIES)
         got = radtest_elsewhere(h.store, node, s['name'], h.client_ip(), b)
         if not (isinstance(got, dict) and got.get('result') in ('accept', 'challenge')):
             h.failed(rkey)
@@ -27252,8 +27593,8 @@ def _radtest(h):
         h.me('fulladmin')
     # Counted per administrator and person tried (1.0.57): each test tries a
     # directory password, and nothing else limited how many.
-    rkey = h.throttle('radtest', 20, 5, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
-                      ip_tries=100)
+    rkey = h.throttle('radtest', 20, 15, name='%s>%s' % (s['name'], str(b.get('user') or '')[:120]),
+                      ip_tries=100, name_tries=RADTEST_NAME_TRIES)
     got = radtest_do(h.store, h.d, s['name'], h.client_ip(), b)
     # The first step of a mail or SMS token is a challenge, not a wrong
     # password (1.0.103): counted as one here (not on the other node), it
@@ -27298,6 +27639,12 @@ def radtest_do(store, daemon, by, src, b):
                 'user': d.user, 'realm': d.realm, 'how': 'direct', 'node': node_name(),
                 'state': bytes(d.state).hex() if d.state else '', 'message': d.message}
     secret = str(b.get('secret') or '')
+    server = str(b.get('server') or '127.0.0.1')
+    if not secret and server not in ('127.0.0.1', '::1', 'localhost'):
+        # The localhost client's secret only to this machine (1.0.149): sent
+        # to a server anybody typed, it could be cracked from the packet there.
+        raise ApiError(400, 'give the secret of that server - the one of this machine\'s own '
+                       'client is only used for 127.0.0.1')
     if not secret:
         local = store.client_for('127.0.0.1')
         if not local:
@@ -27305,7 +27652,6 @@ def radtest_do(store, daemon, by, src, b):
                            'one (the installer makes "localhost"), or give the secret')
         secret = local['_secret']
     port = int(b.get('port') or CONFIG.get('radius_auth_port') or 1812)
-    server = str(b.get('server') or '127.0.0.1')
     code, words, took = radius_ask(server, port, secret, user, password,
                                    extra=[('State', '0x' + state)] if state else ())
     got_state = next((v for k, v in words if k == 'State'), '')
@@ -27514,9 +27860,20 @@ def _settings_do(h):
         raise ApiError(400, 'the database is changed on Settings - The database with its own '
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
+    was_2fa = bool(CONFIG.get('admin_2fa'))
     try:
-        return h.d.save_settings(asked, by=s['name'], node=b.get('node'),
-                                 drawn_by=b.get('drawn_by'))
+        got = h.d.save_settings(asked, by=s['name'], node=b.get('node'),
+                                drawn_by=b.get('drawn_by'))
+        if not was_2fa and CONFIG.get('admin_2fa'):
+            # The second step for those signed in already too (1.0.149): their
+            # sessions, opened with the password alone, stayed whole for hours.
+            # The one saving it stays - it is how it was switched on.
+            gone = h.store.db.run('DELETE FROM sessions WHERE kind = ? AND id <> ?',
+                                  ('admin', int(s.get('id') or 0)))
+            if gone:
+                h.store.add_event('accounts', 'the second step was switched on: %d other '
+                                  'sign-in(s) to the pages ended' % gone, 'warn', who=s['name'])
+        return got
     except NodeMoved as e:
         raise ApiError(409, str(e))
     except BadSetting as e:
@@ -30593,10 +30950,17 @@ def _mfa_send(h, s, kind, dest, field):
 
 
 def _mfa_done(h, s, how):
-    h.store.session_merge(s['id'], {'mfa': None, 'mfa_new': None, 'mfa_code': None,
-                                    'mfa_sent_at': None, 'mfa_sent': None})
+    """The second step given: a sign-in of its own from here on (1.0.149) - the
+    one the password alone opened is ended, not made whole: whoever had seen
+    its cookie had the pages once the code was given."""
+    data = {k: v for k, v in (s.get('data') or {}).items()
+            if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent')}
+    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
+    h.store.session_drop(s['id'])
     h.store.add_event('sign-ins', '%s gave the second step (%s) from %s' % (
         s['name'], how, h.client_ip()), who=s['name'])
+    return token
 
 
 @route('GET', '/api/auth/mfa')
@@ -30678,12 +31042,12 @@ def _mfa_do(h):
                 raise ApiError(409, 'this account has its second step set up already - sign '
                                     'in again')
             h.store.set_meta(mfa_key(name), json.dumps(rec))
-        _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
+        token = _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
         h.store.add_event('accounts', '%s set up the second step of signing in: %s%s' % (
             name, MFA_KIND_WORDS.get(rec['kind']),
             ' (%s)' % dest_masked(rec['kind'], rec.get('dest')) if rec.get('dest') else ''),
             who=name)
-        return {'message': 'the second step is set up', 'done': True}
+        return {'message': 'the second step is set up', 'done': True, 'token': token}
     if act == 'send':
         if stage != 'check':
             raise ApiError(409, 'set the second step up first')
@@ -30724,8 +31088,8 @@ def _mfa_do(h):
                     not h.store.session_take(s['id'], 'mfa_code'):
                 h.failed(key)
                 raise ApiError(400, 'that code is not right, or no longer good - send another')
-        _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
-        return {'message': 'signed in', 'done': True}
+        token = _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
+        return {'message': 'signed in', 'done': True, 'token': token}
     raise ApiError(400, 'no such thing to do')
 
 from datetime import timedelta
@@ -30905,7 +31269,13 @@ def _rbackup_do(h):
         if act == 'run':
             only = [str(x) for x in (b.get('ids') or [])] or None
             job = rb_job_start(h.store, by, only)
-            return {'message': 'the backup is being made', 'job': job}
+            # Every node's, as the schedule makes them (1.0.149): in a cluster
+            # Back up now made only the backup of the node the page was on.
+            others = rb_now_ask_others(h.store, by) if not only else []
+            return {'message': 'the backup is being made' + (
+                ' here; %s make%s theirs within a minute' % (
+                    ', '.join(others), 's' if len(others) == 1 else '') if others else ''),
+                'job': job, 'others': others}
         if act == 'job':
             return {'job': dict(RB_JOB)}
         if act == 'list':
@@ -31945,9 +32315,22 @@ class Console(object):
         path = LOG_DIR / 'otp.log'
         st = {'f': None, 'ino': None}
 
+        def opened():
+            # Not through a link, nor stuck on a FIFO (1.0.149): the folder is
+            # the otp account's, and this is root's console.
+            fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                import stat as _st
+                if not _st.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError('not a plain file')
+            except OSError:
+                os.close(fd)
+                raise
+            return os.fdopen(fd, 'r', encoding='utf-8', errors='replace')
+
         def first():
             try:
-                f = open(str(path), 'r', encoding='utf-8', errors='replace')
+                f = opened()
             except OSError as e:
                 return [self.pal.bad_line('%s cannot be read: %s' % (path, e))]
             st['f'] = f
@@ -31977,7 +32360,7 @@ class Console(object):
                 try:
                     if os.stat(str(path)).st_ino != st['ino']:      # rotated
                         f.close()
-                        st['f'] = open(str(path), 'r', encoding='utf-8', errors='replace')
+                        st['f'] = opened()
                         st['ino'] = os.fstat(st['f'].fileno()).st_ino
                 except OSError:
                     pass
@@ -33839,10 +34222,25 @@ class Console(object):
                 return
             folder = path
             if path.endswith('.tar.gz'):
-                folder = tempfile.mkdtemp(prefix='otp-up-')
-                subprocess.call(['tar', '-xzf', path, '-C', folder])
-                inner = [x for x in os.listdir(folder) if x.startswith('otp-')]
-                folder = os.path.join(folder, inner[0]) if inner else folder
+                # A package goes through root's own helper (1.0.149): copied out
+                # of reach, its signature checked before anything of it is
+                # unpacked or run - a package in /var/lib/otp/upgrade is the otp
+                # account's to change, and was unpacked and run as it was.
+                helper = str(UPGRADE_HELPER)
+                if not os.path.isfile(helper):
+                    self.note('Upgrade', '%s is not installed - upgrade once with install.sh '
+                              '--upgrade from a package you checked' % helper, 'bad')
+                    return
+                if not self.confirm('Upgrade', 'This node is upgraded with %s once its '
+                                    'signature is checked.' % path, 'Upgrade'):
+                    return
+
+                def run_signed():
+                    self.clear_screen()
+                    subprocess.call(['/usr/bin/python3', '-I', helper, '--run', path])
+                    self.pause()
+                self.live(run_signed)
+                return
             script = os.path.join(folder, 'install.sh')
             if not os.path.isfile(script):
                 self.note('Upgrade', 'there is no install.sh in %s' % folder, 'bad')
@@ -33862,7 +34260,22 @@ class Console(object):
                                                   path if path.endswith('.tar.gz') else
                                                   'otp-%s.tar.gz' % m.group(1)), 'warn')
                 return
-            if self.confirm('Upgrade', 'This node is upgraded with %s.' % script, 'Upgrade'):
+            # A folder carries no signature (1.0.149): said so, and only one of
+            # root's own - nobody else may have changed what root runs.
+            try:
+                st = os.lstat(folder)
+                owned = st.st_uid == 0 and not st.st_mode & 0o022 and \
+                    os.lstat(script).st_uid == 0 and not os.lstat(script).st_mode & 0o022
+            except OSError:
+                owned = False
+            if not owned:
+                self.note('Upgrade', '%s is not root\'s alone - another account could have '
+                          'changed what would be run as root. Use the signed package '
+                          '(otp-X.Y.Z.tar.gz).' % folder, 'bad')
+                return
+            if self.confirm('Upgrade', 'This node is upgraded with %s. A folder is not '
+                            'checked for a signature - only one you unpacked yourself from a '
+                            'signed package.' % script, 'Upgrade unchecked'):
                 def go():
                     self.clear_screen()
                     subprocess.call(['bash', script, '--upgrade'])
@@ -35496,36 +35909,81 @@ def cli_stage_files(args):
     if not ids:
         return
     import atexit
-    holder = {'dir': None}
+    import stat
 
-    def folder():
-        if holder['dir'] is None:
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            d = tempfile.mkdtemp(prefix='.otp-cli-', dir=str(STATE_DIR))
-            os.chown(d, ids[0], ids[1])
-            holder['dir'] = d
-            atexit.register(shutil.rmtree, d, True)
-        return holder['dir']
+    def reachable(path):
+        """A file the otp account can get at by itself (1.0.149): any step of
+        its path that account's, or under its own folders. Not copied by
+        root - the otp account opens it, and a link it planted there leads
+        only where it may go anyway (/etc/shadow was copied to it)."""
+        p = os.path.abspath(str(path))
+        try:
+            real = os.path.realpath(p)
+        except OSError:
+            real = p
+        for own in (STATE_DIR, LOG_DIR, RUN_DIR, CONFIG_FILE.parent):
+            o = os.path.realpath(str(own))
+            if real == o or real.startswith(o + os.sep) or p.startswith(o + os.sep):
+                return True
+        cur = p
+        while True:
+            try:
+                if os.lstat(cur).st_uid == ids[0]:
+                    return True
+            except OSError:
+                pass
+            up = os.path.dirname(cur)
+            if up == cur:
+                return False
+            cur = up
+
+    def copy_in(src, dst):
+        """One file copied by its descriptors, never by name: not through a
+        link at either end, into a new file only."""
+        fi = os.open(str(src), os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fi).st_mode):
+                raise OSError('%s is not a plain file' % src)
+            fo = os.open(str(dst), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                while True:
+                    chunk = os.read(fi, 1 << 20)
+                    if not chunk:
+                        break
+                    view = memoryview(chunk)
+                    while view:
+                        view = view[os.write(fo, view):]
+                os.fchown(fo, ids[0], ids[1])
+            finally:
+                os.close(fo)
+        finally:
+            os.close(fi)
 
     def stage(path, with_key=False):
         src = Path(path)
-        if not src.exists():
-            return path             # said by the command itself
-        dst = Path(folder()) / src.name
+        if not src.exists() or reachable(src):
+            return path             # said by the command itself / its own to open
+        if src.is_symlink():
+            src = Path(os.path.realpath(str(src)))   # a link of root's own, followed
+        # A folder of root's for each file, 0700 while it is filled, the otp
+        # account's only once it is (1.0.149): handed over before the copy,
+        # a link put in it in between had root write wherever it led.
+        d = tempfile.mkdtemp(prefix='.otp-cli-', dir=str(STATE_DIR))
+        atexit.register(shutil.rmtree, d, True)
+        dst = Path(d) / src.name
         if src.is_dir():
             shutil.copytree(str(src), str(dst), symlinks=False)
+            for root, dirs, files in os.walk(str(dst)):
+                for n in dirs + files:
+                    os.lchown(os.path.join(root, n), ids[0], ids[1])
+            os.lchown(str(dst), ids[0], ids[1])
         else:
-            shutil.copy2(str(src), str(dst))
+            copy_in(src, dst)
             if with_key:
                 k = _key_beside(src)
                 if k is not None and Path(k).is_file():
-                    shutil.copy2(str(k), str(dst.parent / Path(k).name))
-        for root, dirs, files in os.walk(str(dst)) if dst.is_dir() else [(str(dst.parent), [],
-                                                                            [dst.name])]:
-            for n in dirs + files:
-                os.lchown(os.path.join(root, n), ids[0], ids[1])
-        if dst.is_dir():
-            os.lchown(str(dst), ids[0], ids[1])
+                    copy_in(k, Path(d) / Path(k).name)
+        os.chown(d, ids[0], ids[1])
         return str(dst)
     try:
         if getattr(args, 'restore', None):
@@ -36434,6 +36892,7 @@ def cli_main(argv=None):
         store.token_write(norm_name(args.unlock), {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         # Its recovery codes given back too, as on the pages (1.0.103).
         node_key_drop(store, 'scratchguard', args.unlock)
+        scratch_guard_clear(args.unlock)
         store.add_event('tokens', 'the command line let %s try again at once'
                         % norm_name(args.unlock), who='command line')
         print(pal.ok_line('the wrong codes of %s are forgotten' % norm_name(args.unlock)))
