@@ -874,7 +874,26 @@ runtime_python() {
     step "Python"
     local mods=() cand=() py v m pkg
     mapfile -t mods < <(py_mods_wanted)
-    if [[ -n "$PY_FORCE" ]]; then cand=("$PY_FORCE")
+    # The choice of --python / --system-python kept for the next upgrade
+    # (1.0.147): the pages' upgrade and a plain --upgrade took the newest
+    # Python again.
+    local kept="$LIB_DIR/python-choice"
+    if [[ -n "$PY_FORCE" ]]; then
+        [[ -z "$DRY_RUN" ]] && printf '%s\n' "$PY_FORCE" > "$kept"
+    elif [[ -n "$PY_SYSTEM" ]]; then
+        [[ -z "$DRY_RUN" ]] && printf 'system\n' > "$kept"
+    elif [[ -f "$kept" && ! -L "$kept" ]]; then
+        local was=""
+        was="$(head -n1 "$kept" 2>/dev/null || true)"
+        [[ "$was" == "system" ]] && was=/usr/bin/python3
+        if [[ "$was" == /* && -x "$was" ]]; then
+            # First, and the newest after it should it no longer run otp.
+            cand=("$was")
+            note "the Python chosen before is tried first: $was (--python PATH or --system-python to change it)"
+        fi
+    fi
+    if [[ ${#cand[@]} -gt 0 ]]; then cand+=(/usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3)
+    elif [[ -n "$PY_FORCE" ]]; then cand=("$PY_FORCE")
     elif [[ -n "$PY_SYSTEM" ]]; then cand=("/usr/bin/python3")
     else cand=(/usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3); fi
     OTP_PY=""
@@ -1637,17 +1656,32 @@ else
     # Made beside it and put in its place (1.0.146): /etc/otp is the otp
     # account's to write, and a link it put there for config.json was
     # followed by root - a file of root's anywhere made the otp group's.
-    tmpc="$(mktemp "$CONFIG_DIR/.config.json.XXXXXX")"
-    SITE_NAME="${SITE_NAME:-${SERVER_NAME%%.*}}" python3 - "$tmpc" <<'PY'
-import json, os, sys
+    # Made, its owner and mode set on the open file itself, never by name
+    # (1.0.147): a link put in place of the name between the steps was
+    # followed by chmod and chown.
+    SITE_NAME="${SITE_NAME:-${SERVER_NAME%%.*}}" python3 - "$CONFIG_DIR" "$CONFIG_FILE" "$SERVICE_USER" <<'PY'
+import grp, json, os, secrets, sys
+folder, final, group = sys.argv[1], sys.argv[2], sys.argv[3]
 out = {'db_engine': 'sqlite', 'site_name': os.environ.get('SITE_NAME', '')}
-with open(sys.argv[1], 'w') as f:
-    json.dump(out, f, indent=2, sort_keys=True)
-    f.write('\n')
+tmp = os.path.join(folder, '.config.json.' + secrets.token_hex(6))
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+try:
+    os.fchown(fd, 0, grp.getgrnam(group).gr_gid)
+    os.fchmod(fd, 0o660)
+    with os.fdopen(fd, 'w') as f:
+        fd = None
+        json.dump(out, f, indent=2, sort_keys=True)
+        f.write('\n')
+    os.rename(tmp, final)
+except BaseException:
+    if fd is not None:
+        os.close(fd)
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
 PY
-    chmod 0660 "$tmpc"
-    chown root:"$SERVICE_USER" "$tmpc"
-    mv -fT "$tmpc" "$CONFIG_FILE"
     good "$CONFIG_FILE"
 fi
 note "What is saved on the pages goes into the database. Which database that is lives here."

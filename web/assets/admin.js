@@ -5604,12 +5604,23 @@ function drawConsoleLogin(host) {
         row.appendChild(el('span', 'muted small', said));
         if (n.error) row.appendChild(el('p', 'note bad', n.error));
         if (n.pending) waiting = true;
+        /* The switch only says what it will be; the save bar at the bottom
+           does it (1.0.147), as with every other setting. */
+        var key = 'console-login:' + n.name;
+        if (PENDING[key] && !sw._input.disabled) {      /* drawn again, still not saved */
+          sw._input.checked = PENDING[key].on;
+          row.classList.add('changed');
+        }
         sw._input.onchange = function () {
           var on = sw._input.checked;
-          sw._input.disabled = true;
-          api('console-login', {node: n.name, on: on}).then(function (r) {
-            toast(r.message, 'good'); tries = 0; setTimeout(load, 2000);
-          }).catch(function (e) { sw._input.checked = !on; sw._input.disabled = false; oops(e); });
+          row.classList.toggle('changed', on !== !!n.on);
+          if (on === !!n.on) { delete PENDING[key]; markDirtyCount(); return; }
+          pendingSet(key, {pane: 'about', on: on, save: function () {
+            return api('console-login', {node: n.name, on: on}).then(function (r) {
+              toast(r.message, 'good'); tries = 0; setTimeout(load, 2000);
+              return true;
+            });
+          }, reset: function () { sw._input.checked = !!n.on; row.classList.remove('changed'); }});
         };
         list.appendChild(row);
       });
