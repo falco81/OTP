@@ -904,7 +904,7 @@ runtime_python() {
 install_program() {
     step "The daemon"
     run install -D -m 0755 "$SOURCE_DIR/otp.py" "$LIB_DIR/otp.py"
-    for extra in INSTALL.md README.md; do
+    for extra in INSTALL.md README.md CHANGELOG.md; do
         [[ -f "$SOURCE_DIR/$extra" ]] && run install -D -m 0644 "$SOURCE_DIR/$extra" "$LIB_DIR/$extra"
     done
     for d in docs test deploy; do

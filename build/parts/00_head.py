@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.143'
+__version__ = '1.0.144'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -140,6 +140,7 @@ DEFAULTS = {
     'totp_disallow_reuse': 1,
     # --- upgrades from the web (1.0.123) ----------------------------------
     'upgrade_check': 1,
+    'upgrade_downgrade': 0,
     'upgrade_url': 'https://github.com/falco81/OTP/tree/main/release',
     'rate_limit_tries': 3,
     'lockout_after': 10,
@@ -321,7 +322,7 @@ TUNABLE = {
     'totp_digits': (6, 8), 'totp_period': (15, 120),
     'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
     'totp_window': (0, 10), 'admin_show_key': (0, 1), 'totp_disallow_reuse': (0, 1),
-    'upgrade_check': (0, 1),
+    'upgrade_check': (0, 1), 'upgrade_downgrade': (0, 1),
     'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
     'radius_reject_reason': (0, 1), 'radius_ma_sticky': (0, 1),
@@ -461,6 +462,7 @@ NAMES = {
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
     'upgrade_check': 'Look for a new version every day',
+    'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
     'totp_disallow_reuse': 'A code works only once',
     'rate_limit_tries': 'Wrong codes before a pause',
@@ -665,6 +667,10 @@ SAYS = {
                      'otp-X.Y.Z.tar.gz packages; a newer one than runs here is offered on this '
                      'page - put in with one click, after its signature has been checked like '
                      'any package sent by hand. Nothing is put in by itself.',
+    'upgrade_downgrade': 'Off: nothing on these pages offers going back to an older version. '
+                         'On: Settings → Upgrades shows <i>Going back to an older version</i> - '
+                         'only the versions it is safe to go back to, each with what changed in '
+                         'it. On the server, root can always: otp --downgrade.',
     'upgrade_url': 'A GitHub folder (<code>https://github.com/OWNER/REPO/tree/BRANCH/FOLDER</code>), '
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
@@ -959,7 +965,7 @@ PANES = {
              'smtp_password', 'smtp_verify', 'smtp_timeout_s', 'mail_direct_port', 'mail_direct_tls', 'mail_dns', 'mail_from',
              'mail_from_name', 'mail_reply_to', 'mail_helo', 'mail_lang', 'mail_codes',
              'mail_retry_hours', 'mail_keep_days'],
-    'upgrade': ['upgrade_check', 'upgrade_url'],
+    'upgrade': ['upgrade_check', 'upgrade_url', 'upgrade_downgrade'],
     'about': ['site_name', 'ui_lang', 'api_port', 'debug', 'debug_radius', 'debug_ldap',
               'debug_api', 'debug_codes'],
 }

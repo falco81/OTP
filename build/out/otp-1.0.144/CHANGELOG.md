@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.144 — 29 October 2026
+
+**Going back to an older version: switched on in Settings, with what changed**
+- Settings → Upgrades → *Offer going back to an older version*
+  (`upgrade_downgrade`), off by default: off, the pages show nothing of going
+  back and the API refuses it; on, the card *Going back to an older version*
+  is there. On the server, root can always: `otp --downgrade`.
+- Each version in its list has *What changed*: what came in it, and - folded
+  - what going back to it gives up, the versions after it up to this one.
+  Read from the CHANGELOG.md installed beside otp.py (install.sh puts it there
+  now), or from the package at the address where it is not there.
+
 ## 1.0.143 — 29 October 2026
 
 **Going back to an older version - only a safe one**

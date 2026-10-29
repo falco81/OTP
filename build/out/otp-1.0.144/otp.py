@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.143'
+__version__ = '1.0.144'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -140,6 +140,7 @@ DEFAULTS = {
     'totp_disallow_reuse': 1,
     # --- upgrades from the web (1.0.123) ----------------------------------
     'upgrade_check': 1,
+    'upgrade_downgrade': 0,
     'upgrade_url': 'https://github.com/falco81/OTP/tree/main/release',
     'rate_limit_tries': 3,
     'lockout_after': 10,
@@ -321,7 +322,7 @@ TUNABLE = {
     'totp_digits': (6, 8), 'totp_period': (15, 120),
     'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
     'totp_window': (0, 10), 'admin_show_key': (0, 1), 'totp_disallow_reuse': (0, 1),
-    'upgrade_check': (0, 1),
+    'upgrade_check': (0, 1), 'upgrade_downgrade': (0, 1),
     'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
     'radius_reject_reason': (0, 1), 'radius_ma_sticky': (0, 1),
@@ -461,6 +462,7 @@ NAMES = {
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
     'upgrade_check': 'Look for a new version every day',
+    'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
     'totp_disallow_reuse': 'A code works only once',
     'rate_limit_tries': 'Wrong codes before a pause',
@@ -665,6 +667,10 @@ SAYS = {
                      'otp-X.Y.Z.tar.gz packages; a newer one than runs here is offered on this '
                      'page - put in with one click, after its signature has been checked like '
                      'any package sent by hand. Nothing is put in by itself.',
+    'upgrade_downgrade': 'Off: nothing on these pages offers going back to an older version. '
+                         'On: Settings → Upgrades shows <i>Going back to an older version</i> - '
+                         'only the versions it is safe to go back to, each with what changed in '
+                         'it. On the server, root can always: otp --downgrade.',
     'upgrade_url': 'A GitHub folder (<code>https://github.com/OWNER/REPO/tree/BRANCH/FOLDER</code>), '
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
@@ -959,7 +965,7 @@ PANES = {
              'smtp_password', 'smtp_verify', 'smtp_timeout_s', 'mail_direct_port', 'mail_direct_tls', 'mail_dns', 'mail_from',
              'mail_from_name', 'mail_reply_to', 'mail_helo', 'mail_lang', 'mail_codes',
              'mail_retry_hours', 'mail_keep_days'],
-    'upgrade': ['upgrade_check', 'upgrade_url'],
+    'upgrade': ['upgrade_check', 'upgrade_url', 'upgrade_downgrade'],
     'about': ['site_name', 'ui_lang', 'api_port', 'debug', 'debug_radius', 'debug_ldap',
               'debug_api', 'debug_codes'],
 }
@@ -20065,6 +20071,46 @@ def downgrade_file(store, path, by):
     return downgrade_take(store, path, info, by)
 
 
+def changelog_sections(text):
+    """{version: its section of CHANGELOG.md, heading and all}."""
+    out = {}
+    for m in re.finditer(r'^## (\d+\.\d+\.\d+)\b.*?(?=^## |\Z)', text or '', re.M | re.S):
+        out[m.group(1)] = m.group(0).strip()[:20000]
+    return out
+
+
+def downgrade_changelog(version):
+    """What came in `version`, and what going back to it from here gives up -
+    the sections of the versions after it, up to this one (1.0.144). From the
+    CHANGELOG.md installed beside otp.py; where that does not have it, from
+    the package at upgrade_url (read, not yet checked)."""
+    version = str(version or '')
+    if not re.match(r'^\d+\.\d+\.\d+\Z', version):
+        raise ValueError('which version?')
+    try:
+        here = changelog_sections((Path(__file__).resolve().parent / 'CHANGELOG.md')
+                                  .read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        here = {}
+    lost = [{'version': v, 'text': here[v]} for v in sorted(
+        here, key=_ver_tuple, reverse=True)
+        if _ver_tuple(version) < _ver_tuple(v) <= _ver_tuple(__version__)]
+    entry, src = here.get(version), 'here'
+    if entry is None:
+        src = 'package'
+        pk = next((p for p in online_list(online_url()) if p['version'] == version), None)
+        if not pk:
+            raise ValueError('otp %s is not at %s' % (version, online_url()))
+        data, _ct, _final = _online_get(pk['url'], limit=UPGRADE_MOST, timeout=120)
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tf:
+            m = next((x for x in tf.getmembers() if x.isfile() and
+                      x.name == 'otp-%s/CHANGELOG.md' % version), None)
+            text = tf.extractfile(m).read(4 << 20).decode('utf-8', 'replace') if m else ''
+        entry = changelog_sections(text).get(version) or ''
+    return {'version': version, 'here': __version__, 'entry': entry, 'from': src,
+            'lost': lost}
+
+
 # ---------------------------------------------------------------------------
 # The web side (1.0.47): TLS of each node and of the cluster's web address,
 # and that address itself (VIP, active/standby, held by keepalived).
@@ -29057,6 +29103,7 @@ def _upgrade_view(h):
         plan = None
     return {'node': node_name(), 'version': __version__, 'nodes': nodes, 'package': meta,
             'plan': plan, 'ready': ok, 'not_ready': why,
+            'downgrade_on': bool(CONFIG.get('upgrade_downgrade')),
             'mode': CONFIG.get('ha_mode') or '',
             'helper': UPGRADE_HELPER.exists(),
             'path_unit': Path('/etc/systemd/system/otp-upgrade.path').exists(),
@@ -29119,6 +29166,12 @@ def _upgrade_do(h):
             return dict(_upgrade_view(h), message=(
                 'otp %s is there - newer than %s' % (n['version'], __version__) if row.get('newer')
                 else ('nothing newer than %s' % __version__ if n else 'no otp package there')))
+        if str(act or '').startswith('downgrade') and not CONFIG.get('upgrade_downgrade'):
+            # Offered on the pages only when switched on (1.0.144).
+            raise ValueError('going back to an older version is not offered on these pages: '
+                             'switch it on in Settings → Upgrades')
+        if act == 'downgrade_changelog':
+            return {'changelog': downgrade_changelog(b.get('version'))}
         if act == 'downgrade_list':
             # Going back (1.0.143): the older versions there, and what stands
             # in the way of each.

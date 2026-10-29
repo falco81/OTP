@@ -4942,6 +4942,7 @@ def _upgrade_view(h):
         plan = None
     return {'node': node_name(), 'version': __version__, 'nodes': nodes, 'package': meta,
             'plan': plan, 'ready': ok, 'not_ready': why,
+            'downgrade_on': bool(CONFIG.get('upgrade_downgrade')),
             'mode': CONFIG.get('ha_mode') or '',
             'helper': UPGRADE_HELPER.exists(),
             'path_unit': Path('/etc/systemd/system/otp-upgrade.path').exists(),
@@ -5004,6 +5005,12 @@ def _upgrade_do(h):
             return dict(_upgrade_view(h), message=(
                 'otp %s is there - newer than %s' % (n['version'], __version__) if row.get('newer')
                 else ('nothing newer than %s' % __version__ if n else 'no otp package there')))
+        if str(act or '').startswith('downgrade') and not CONFIG.get('upgrade_downgrade'):
+            # Offered on the pages only when switched on (1.0.144).
+            raise ValueError('going back to an older version is not offered on these pages: '
+                             'switch it on in Settings → Upgrades')
+        if act == 'downgrade_changelog':
+            return {'changelog': downgrade_changelog(b.get('version'))}
         if act == 'downgrade_list':
             # Going back (1.0.143): the older versions there, and what stands
             # in the way of each.

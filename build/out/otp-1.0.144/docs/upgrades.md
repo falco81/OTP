@@ -177,9 +177,12 @@ maintenance while it is done, checked and brought back. Root's helper puts an
 older version in only when going back is asked for as such, and never below
 its floor file.
 
-- The pages: *Settings → Upgrades → Going back to an older version* - *Show
-  the versions to go back to* lists the older versions at `upgrade_url`, each
-  with what stands in its way; *Go back to X* (asked twice).
+- The pages, once *Settings → Upgrades → Offer going back to an older
+  version* (`upgrade_downgrade`, off by default) is on: *Going back to an older
+  version* - *Show the versions to go back to* lists the older versions at
+  `upgrade_url`, each with what stands in its way and *What changed* (what
+  came in it, and folded what going back to it gives up); *Go back to X*
+  (asked twice). Off, the pages offer nothing of it and the API refuses it.
 - The command line:
 
   ```bash

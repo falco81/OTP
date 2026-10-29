@@ -1541,7 +1541,7 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
       </div>
       <div id="up-ready"></div>
     </div>
-    <div class="card full admin-only" id="up-down-card">
+    <div class="card full admin-only" id="up-down-card" hidden>
       <h2>Going back to an older version</h2>
       <p class="note">Only to a version that is safe: one that reads what the newer versions
         wrote into the database the same, and has every security fix that matters - each version

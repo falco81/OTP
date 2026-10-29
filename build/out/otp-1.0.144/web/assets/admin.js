@@ -3194,6 +3194,7 @@ $('set-save').onclick = function () {
       });
       if (Object.keys(left).length) { DIRTY = left; markDirtyCount(); loadSettings(false); }
       else loadSettings();
+      if (paneLive('upgrade')) loadUpgrade();      /* the card to go back shown or not (1.0.144) */
       tick();
       return true;
     }).catch(function (e) {
@@ -7396,9 +7397,27 @@ function upDownConfirm(version, go) {
     : ' - for a minute nobody can sign in to the VPN.') + ' The database stays as it is. What came in the newer versions is gone until you upgrade again.'),
     'Go back', go, true);
 }
+function upDownChangelog(version) {
+  api('upgrade', {action: 'downgrade_changelog', version: version}).then(function (x) {
+    var c = x.changelog || {};
+    modal('What changed in ' + version, function (body) {
+      if (c.from === 'package') body.appendChild(el('p', 'note small', 'Read from the package at the address - it is checked only when it is chosen.'));
+      body.appendChild(c.entry ? noI18n(el('pre', 'lines', c.entry)) : el('p', 'note', 'The package says nothing about this version.'));
+      if ((c.lost || []).length) {
+        var det = el('details', 'fold');
+        det.appendChild(el('summary', '', 'What going back gives up: ' + c.lost.length + ' newer version(s), up to ' + c.here));
+        c.lost.forEach(function (one) { det.appendChild(noI18n(el('pre', 'lines', one.text))); });
+        body.appendChild(det);
+      }
+    }, [{words: 'Close', close: true}], 'medium');
+  }).catch(oops);
+}
 function drawUpDown(d) {
+  var card = $('up-down-card');
+  /* Offered only when switched on (1.0.144): Settings → Upgrades. */
+  if (card) card.hidden = !(d && d.downgrade_on);
   var host = $('up-down');
-  if (!host || host._made) return;
+  if (!host || host._made || !(d && d.downgrade_on)) return;
   host._made = true;
   var row = el('div', 'btnrow');
   var show = cmdButton('Show the versions to go back to', 'list', '');
@@ -7419,8 +7438,12 @@ function drawUpDown(d) {
         var ok = !(v.why || []).length;
         var said = el('span', ok ? 'tag ok' : 'small bad', ok ? 'yes' : (v.why || []).join('; '));
         var cell = el('span', '');
+        var notes = cmdButton('What changed', 'list', 'small');
+        notes.onclick = function () { upDownChangelog(v.version); };
+        cell.appendChild(notes);
         if (ok && !running) {
           var go = cmdButton('Go back to ' + v.version, 'undo', 'small danger');
+          go.style.marginLeft = '8px';
           go.onclick = function () {
             upDownConfirm(v.version, function () {
               busy(go, true);

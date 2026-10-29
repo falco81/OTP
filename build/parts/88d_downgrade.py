@@ -210,3 +210,43 @@ def downgrade_file(store, path, by):
         raise ValueError('otp %s is not older than %s, which runs here - that is an upgrade'
                          % (info['version'], info.get('installed') or __version__))
     return downgrade_take(store, path, info, by)
+
+
+def changelog_sections(text):
+    """{version: its section of CHANGELOG.md, heading and all}."""
+    out = {}
+    for m in re.finditer(r'^## (\d+\.\d+\.\d+)\b.*?(?=^## |\Z)', text or '', re.M | re.S):
+        out[m.group(1)] = m.group(0).strip()[:20000]
+    return out
+
+
+def downgrade_changelog(version):
+    """What came in `version`, and what going back to it from here gives up -
+    the sections of the versions after it, up to this one (1.0.144). From the
+    CHANGELOG.md installed beside otp.py; where that does not have it, from
+    the package at upgrade_url (read, not yet checked)."""
+    version = str(version or '')
+    if not re.match(r'^\d+\.\d+\.\d+\Z', version):
+        raise ValueError('which version?')
+    try:
+        here = changelog_sections((Path(__file__).resolve().parent / 'CHANGELOG.md')
+                                  .read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        here = {}
+    lost = [{'version': v, 'text': here[v]} for v in sorted(
+        here, key=_ver_tuple, reverse=True)
+        if _ver_tuple(version) < _ver_tuple(v) <= _ver_tuple(__version__)]
+    entry, src = here.get(version), 'here'
+    if entry is None:
+        src = 'package'
+        pk = next((p for p in online_list(online_url()) if p['version'] == version), None)
+        if not pk:
+            raise ValueError('otp %s is not at %s' % (version, online_url()))
+        data, _ct, _final = _online_get(pk['url'], limit=UPGRADE_MOST, timeout=120)
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tf:
+            m = next((x for x in tf.getmembers() if x.isfile() and
+                      x.name == 'otp-%s/CHANGELOG.md' % version), None)
+            text = tf.extractfile(m).read(4 << 20).decode('utf-8', 'replace') if m else ''
+        entry = changelog_sections(text).get(version) or ''
+    return {'version': version, 'here': __version__, 'entry': entry, 'from': src,
+            'lost': lost}
