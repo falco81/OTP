@@ -7323,6 +7323,10 @@ function drawUpWeb(d) {
     if (!o.at) p.textContent = w.check ? 'Not looked at yet - within minutes, or press Look now.' : 'Not looked at: looking every day is switched off below. Look now asks once.';
     else if (o.error) p.textContent = 'Looked ' + ago(o.at) + ': ' + o.error;
     else if (o.newer) p.textContent = 'otp ' + o.newest.version + ' is there - this server runs ' + (o.here || d.version) + ' (looked ' + ago(o.at) + ')';
+    if (o.newer && (o.newer_list || []).length > 1) {
+      host.appendChild(p);
+      p = el('p', 'note', num(o.newer_list.length) + ' versions there are newer than this one - choose which to go to; the newest is chosen.');
+    }
     else if (o.newest) p.textContent = 'Nothing newer: the newest there is ' + o.newest.version + ' and this server runs ' + (o.here || d.version) + ' (looked ' + ago(o.at) + ')';
     else p.textContent = 'No otp package there (looked ' + ago(o.at) + ')';
     host.appendChild(p);
@@ -7337,13 +7341,34 @@ function drawUpWeb(d) {
     row.appendChild(look);
     var running = !!(d.plan && d.plan.state === 'running');
     if (o.newer && !running) {
-      var up = cmdButton('Upgrade to ' + o.newest.version + ' now', 'play', 'primary');
+      /* More than one newer there (1.0.142): which one, the newest chosen. */
+      var list = (o.newer_list || []).filter(function (x) { return x && x.version; });
+      var pick = list[0] && list[0].version === o.newest.version ? list[0] : o.newest;
+      var choose = null;
+      if (list.length > 1) {
+        choose = selectBox(list.map(function (x, i) {
+          return [x.version, x.version + (i === 0 ? ' (the newest)' : '')];
+        }), pick.version);
+        explain(choose, 'The versions there newer than the one this server runs. The newest is chosen; any of them can be put in instead.');
+        row.appendChild(choose);
+      }
+      var up = cmdButton('Upgrade to ' + pick.version + ' now', 'play', 'primary');
+      var chosen = function () {
+        var v = choose ? choose.value : o.newest.version;
+        return list.filter(function (x) { return x.version === v; })[0] || o.newest;
+      };
+      if (choose) {
+        choose.onchange = function () {
+          setButtonIcon(up, 'play', 'Upgrade to ' + chosen().version + ' now');
+        };
+      }
       up.onclick = function () {
         var many = (d.nodes || []).length > 1;
-        confirmThen('Upgrade to otp ' + o.newest.version + '?', htmlText('It is fetched from ' + (o.newest.url || o.url) + ', its signature checked, and '
+        var c = chosen();
+        confirmThen('Upgrade to otp ' + c.version + '?', htmlText('It is fetched from ' + (c.url || o.url) + ', its signature checked, and '
           + (many ? 'the nodes are upgraded one at a time - each in maintenance while it is, so the service never stops.' : 'this server is upgraded: for a minute nobody can sign in to the VPN.')), 'Upgrade', function () {
           busy(up, true);
-          api('upgrade', {action: 'online_get', version: o.newest.version, start: true}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
+          api('upgrade', {action: 'online_get', version: c.version, start: true}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
             .catch(oops).then(function () { busy(up, false); });
         }, false);
       };
@@ -7352,7 +7377,7 @@ function drawUpWeb(d) {
       explain(only, 'Fetched and checked, and left ready below - put in when Upgrade is pressed.');
       only.onclick = function () {
         busy(only, true);
-        api('upgrade', {action: 'online_get', version: o.newest.version}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
+        api('upgrade', {action: 'online_get', version: chosen().version}).then(function (x) { toast(x.message, 'good'); drawUpgrade(x); })
           .catch(oops).then(function () { busy(only, false); });
       };
       row.appendChild(only);

@@ -99,6 +99,10 @@ The newest one newer than what runs here is offered: **Upgrade to X now**
 fetches it, checks it exactly as a package sent by hand (below - the signature
 of a release key this server trusts, every file in it), keeps it in the
 database and begins the upgrade; **Only fetch it** stops before the upgrade.
+With more than one version there newer than this one (1.0.142), a list beside
+the buttons lets you choose which to go to - the newest is chosen, and the
+buttons follow the choice; with only one, the page is as before. An older one
+than what runs here is never offered, nor taken.
 Nothing is ever put in by itself. `upgrade_check` off stops the daily look;
 *Look now* still asks.
 

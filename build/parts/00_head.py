@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.141'
+__version__ = '1.0.142'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults

@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.141'
+__version__ = '1.0.142'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -19602,7 +19602,8 @@ def ha_refresh_tables(store):
 # Settings → Upgrades → upgrade_url is asked once a day (upgrade_check) and when
 # Look now is pressed, for otp-X.Y.Z.tar.gz: a GitHub folder through GitHub's
 # API, any other page by the links in it, or one package's own address. The
-# newest one newer than what runs here is offered; one click fetches it, and it
+# newest one newer than what runs here is offered (any newer one there can be
+# chosen instead, 1.0.142); one click fetches it, and it
 # goes the road of a package sent by hand - its signature checked, kept in the
 # database for every node, and the upgrade begun. Nothing is put in by itself.
 ONLINE_PKG_RE = re.compile(r'(?:^|/)(otp-(\d+)\.(\d+)\.(\d+)\.tar\.gz)(?:\?|#|$)')
@@ -19779,6 +19780,12 @@ def online_view(store):
         n = row.get('newest') or {}
         row['newer'] = bool(n and _ver_tuple(n.get('version')) > _ver_tuple(__version__))
         row['here'] = __version__
+        # Every version there newer than this one, newest first (1.0.142): with
+        # more than one the page lets you choose which to go to.
+        row['newer_list'] = sorted(
+            (p for p in row.get('packages') or []
+             if _ver_tuple(p.get('version')) > _ver_tuple(__version__)),
+            key=lambda p: _ver_tuple(p.get('version')), reverse=True)
     return {'online': row, 'url': online_url(),
             'check': bool(CONFIG.get('upgrade_check'))}
 

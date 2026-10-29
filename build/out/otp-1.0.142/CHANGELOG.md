@@ -4,6 +4,15 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.142 — 29 October 2026
+
+**From the web: choose the version to go to**
+- Settings → Upgrades → From the web: with more than one version at the
+  address newer than the one running, a list beside the buttons lets you choose
+  which one *Upgrade to X now* and *Only fetch it* take - the newest is chosen.
+  With only one newer version the page is as before. Each is checked as before
+  (its signature, every file); an older one is never offered nor taken.
+
 ## 1.0.141 — 28 October 2026
 
 **The console at login, switched on the pages**
