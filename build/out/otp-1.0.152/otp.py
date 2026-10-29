@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.151'
+__version__ = '1.0.152'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -9375,14 +9375,50 @@ def _tel_who():
                           .encode('utf-8')).hexdigest()
 
 
+def _tel_logout(token, who=None):
+    """A login given back (1.0.152): every new one used to be left to run out
+    on the box, which lists each as a session of its own until it does. Best
+    effort, a few seconds at most - an older RutOS without it only says no."""
+    if not token:
+        return
+    try:
+        req = urllib.request.Request(_tel_url('/api/logout'), data=b'{}', method='POST',
+                                     headers={'Content-Type': 'application/json',
+                                              'Authorization': 'Bearer ' + token})
+        with _tel_open(req, 4) as r:
+            r.read(200)
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def _tel_drop_token():
+    """The login in hand given back and forgotten."""
+    old, TELTONIKA['token'] = TELTONIKA.get('token'), None
+    _tel_logout(old)
+
+
+def _tel_end_of_process():
+    # A command that sent or tried something gives its login back as it ends
+    # (1.0.152); the daemon keeps its one and renews it.
+    if DAEMON_DB[0] is None and TELTONIKA.get('token'):
+        _tel_drop_token()
+
+
+import atexit as _atexit                                # noqa: E402
+_atexit.register(_tel_end_of_process)
+
+
 def _tel_token(fresh=False):
     """A login on RutOS's own API: a token that lasts five minutes, renewed a
-    minute before."""
+    minute before - one at a time: the one before is given back first."""
     now = time.time()
     if TELTONIKA.get('who') != _tel_who():
+        # Another box or user: the old login is not this one's to give back
+        # with its address gone - it runs out by itself there.
         TELTONIKA.update(token=None, modem=None, who=_tel_who())
     if not fresh and TELTONIKA['token'] and now < TELTONIKA['until']:
         return TELTONIKA['token']
+    _tel_drop_token()
     body = json.dumps({'username': CONFIG.get('sms_tel_user') or 'admin',
                        'password': _tel_password()}).encode()
     tries = 0
@@ -9432,7 +9468,7 @@ def _tel_rest(path, method='GET', payload=None, timeout=20.0, again=True):
         except Exception:                               # noqa: BLE001
             pass
         if e.code in (401, 403) and again:
-            TELTONIKA['token'] = None                   # gone stale
+            TELTONIKA['token'] = None                   # gone stale - nothing to give back
             return _tel_rest(path, method, payload, timeout, again=False)
         raise SmsError('the Teltonika answered %s %s with HTTP %d %s' % (method, path, e.code,
                                                                          said))
@@ -9547,7 +9583,7 @@ def _tel_send(to, text):
             raise
         except (urllib.error.URLError, OSError) as e:
             if tries < 3 and _tel_never_arrived(e):
-                TELTONIKA['token'] = None               # a new connection, a new login
+                TELTONIKA['until'] = 0                  # a new connection, a new login
                 time.sleep(tries)
                 continue
             if not _tel_never_arrived(e):
@@ -9569,7 +9605,6 @@ def tel_check():
         if 'error' in said.lower() and 'no messages' not in said.lower():
             raise SmsError('the Teltonika said: %s' % said.strip()[:150])
         return 'the Teltonika answered and took the password'
-    TELTONIKA['token'] = None
     _tel_token(fresh=True)
     TELTONIKA['modem'] = None
     return 'the Teltonika let otp in; its modem is %s' % _tel_modem()
@@ -9635,7 +9670,6 @@ def tel_test():
             _x, ok = step('signing in (Post/Get)', tel_check)
             out['ok'] = ok
             return out
-        TELTONIKA['token'] = None
         TELTONIKA['modem'] = None
         _x, ok = step('signing in', lambda: (_tel_token(fresh=True) and 'let in as %s'
                                             % (CONFIG.get('sms_tel_user') or 'admin')))

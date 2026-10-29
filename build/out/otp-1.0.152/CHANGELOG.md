@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.152 — 29 October 2026
+
+**The Teltonika SMS gateway: one login at a time**
+- otp keeps one login to the Teltonika and uses it again for about four
+  minutes, as before; a new one is now made only after giving the one before
+  back (RutOS `/api/logout`) - after it ran out, after a test on the pages, or
+  when a send is tried again. A command on the server gives its login back as
+  it ends. Before, each new login stayed listed among the box's sessions
+  until it ran out by itself. Each node of a cluster keeps its own one.
+
 ## 1.0.151 — 29 October 2026
 
 **The space between cards**
