@@ -489,6 +489,7 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
             path = tmpname
         # This node answers nothing while it is done (1.0.149): the VPN asks
         # the other node, as in maintenance.
+        RESTORE_WHY[0] = 'a backup is being put back'
         RESTORE_RUNNING.set()
         try:
             return _db_file_restore(store, path, by, key_file, from_name, kind)

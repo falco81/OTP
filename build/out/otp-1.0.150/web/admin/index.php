@@ -789,8 +789,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 
   <div class="ctl-pane" id="pane-guard" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Sign-in protection</h2>
-      <p class="ctl-lede">Guessing from one place held back, and changes that could cut this
-        server off taken back unless somebody keeps them.</p></div>
+      <p class="ctl-lede">Guessing from one place held back - wrong passwords, wrong codes,
+        names nobody has.</p></div>
     <div class="card full"><div id="sect-guard"></div></div>
     <div class="card full fulladmin-only" id="gd-card"><h2>Counted and blocked now <span class="right" id="gd-tools"></span></h2>
       <p class="note">The places the VPN's requests come from with refusals still counted, and the
@@ -1238,6 +1238,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         first, the web address moves away, the network is set and the node restarts; back up, it
         checks its address, replication and the link between the databases, and comes back into service.</p></div>
     <div id="net-host"></div>
+    <div class="card full fulladmin-only"><h2>Taken back unless kept</h2><div id="sect-network"></div></div>
   </div>
   <div class="ctl-pane" id="pane-time" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Time</h2>
@@ -1526,6 +1527,7 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
       <div id="fw-nodes" class="fw-nodes"></div>
       <div id="fw-body"></div>
     </div>
+    <div class="card full fulladmin-only"><h2>Taken back unless kept</h2><div id="sect-fw"></div></div>
   </div>
   <div class="ctl-pane" id="pane-upgrade" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Upgrades and maintenance</h2>

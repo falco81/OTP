@@ -4,6 +4,26 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.150 — 29 October 2026
+
+**Settings where they belong**
+- *A new network goes back unless kept within* is on Settings → Network, and
+  *A firewall change goes back unless kept within* on Settings → Firewall and
+  access, each under *Taken back unless kept* - not on Sign-in protection.
+
+**RADIUS keeps its pace while the server works**
+- The daemon's copies of the database - *Back up now*, the copy before a
+  restore or an upgrade, the backups sent to the destinations - are made by a
+  process of their own (`otp --dump-copy`): made in the daemon, a big copy
+  took a third of RADIUS's pace for minutes. Measured: 364 answers a second,
+  none lost, p99 345 ms while a 700 000-row copy was made.
+- RADIUS has four connections of its own to PostgreSQL and MariaDB (it had
+  one): every sign-in waited for the one before it there, and one row held
+  by a lock held them all.
+- *Give the disk back* (VACUUM FULL, OPTIMIZE) in a cluster puts this node
+  out of RADIUS meanwhile - the other node answers; alone, the page says that
+  sign-ins wait for it.
+
 ## 1.0.149 — 29 October 2026
 
 **Back up now on every node of a cluster**

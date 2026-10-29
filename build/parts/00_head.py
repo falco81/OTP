@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.149'
+__version__ = '1.0.150'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -930,8 +930,10 @@ SAYS = {
 PANES = {
     'realms': ['default_realm'],
     'guard': ['radius_guard', 'radius_guard_tries', 'radius_guard_names',
-              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted',
-              'net_confirm_min', 'fw_confirm_min'],
+              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted'],
+    # Where the change they take back is made (1.0.150), not under sign-ins.
+    'network': ['net_confirm_min'],
+    'fw': ['fw_confirm_min'],
     'radius': ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'radius_status_server',
                'radius_reply_ma', 'radius_dup_window_s', 'radius_workers',
                'radius_unknown_log', 'radius_reject_delay_ms', 'radius_reject_reason',

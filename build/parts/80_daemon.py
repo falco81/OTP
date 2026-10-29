@@ -1944,9 +1944,19 @@ def db_give_back(store, progress):
     """Give the room deleted rows left back to the disk: VACUUM, OPTIMIZE
     TABLE, VACUUM FULL. Each holds a table shut while it works."""
     own = db_own(store)
+    # In a cluster this node rests meanwhile (1.0.150): the tables are held
+    # shut, and RADIUS waited on them - the other node answers. Alone, the
+    # page says first that sign-ins wait for it.
+    rest = bool(CONFIG.get('ha_mode')) and any(n.get('alive') and not n.get('me')
+                                               for n in ha_nodes(store))
+    if rest:
+        RESTORE_WHY[0] = 'the database gives its room back'
+        RESTORE_RUNNING.set()
     try:
         return _db_give_back(own or store.db, progress)
     finally:
+        if rest:
+            RESTORE_RUNNING.clear()
         if own:
             own.close()
 

@@ -31,6 +31,7 @@ UPGRADE_DRAIN_S = int(os.environ.get('OTP_UPGRADE_DRAIN_S', '20'))
 UPGRADE_TIMEOUT_S = 30 * 60
 MAINT_CACHE = {'at': 0.0, 'row': None}
 RESTORE_RUNNING = threading.Event()
+RESTORE_WHY = ['']
 
 
 def _meta_json(store, k):
@@ -86,8 +87,10 @@ def maintenance_now(store):
         return {'on': True, 'why': 'rebuilt from the other node'}
     if RESTORE_RUNNING.is_set():
         # A backup put back (1.0.149): RADIUS waited for the whole of it with
-        # the database held, or met tables being made again and refused.
-        return {'on': True, 'why': 'a backup is being put back'}
+        # the database held, or met tables being made again and refused. Room
+        # given back in a cluster too (1.0.150): VACUUM FULL holds each table
+        # shut - the other node answers meanwhile.
+        return {'on': True, 'why': RESTORE_WHY[0] or 'a backup is being put back'}
     now = time.time()
     if now - MAINT_CACHE['at'] > 2:
         MAINT_CACHE['at'] = now

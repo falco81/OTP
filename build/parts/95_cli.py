@@ -536,6 +536,8 @@ def build_parser():
                    'pages\' export) put in (--yes); with --replace, what is not in the file '
                    'is taken away and settings not in it go back to their defaults')
     g.add_argument('--backup', action='store_true', help='a copy of the database, now')
+    # The daemon's copies made by a process of their own (1.0.150), not shown.
+    g.add_argument('--dump-copy', action='store_true', help=argparse.SUPPRESS)
     g.add_argument('--restore', metavar='FILE', help='put a copy back (--yes); without --yes, '
                    'what is in it and where it was made')
     g.add_argument('--restore-bundle', metavar='FILE', help='put back a backup sent to a '
@@ -1695,6 +1697,8 @@ def cli_main(argv=None):
                              'suffix'))
     if args.daemon:
         return run_daemon()
+    if args.dump_copy:
+        return cli_dump_copy()
     if not acted and args.json:
         # --json alone (1.0.103): the state as JSON, asked by a script - never
         # the daemon in the foreground because stdin is not a terminal.
@@ -3144,6 +3148,24 @@ def daemon_lock():
     _DAEMON_LOCK = fd
 
 
+def cli_dump_copy():
+    """The daemon's copy of every table, written to stdout (1.0.150): made in
+    this process, its work no longer took the daemon's own time from RADIUS
+    - a copy of a big database is minutes of Python."""
+    load_config(saved=None)
+    try:
+        db = open_db()
+    except DbError as e:
+        sys.stderr.write('otp: %s\n' % e)
+        return 1
+    try:
+        dump_tables(db, sys.stdout.buffer, child=True)
+        sys.stdout.buffer.flush()
+    finally:
+        db.close()
+    return 0
+
+
 def run_daemon():
     become_service_user()
     load_config()
@@ -3152,6 +3174,7 @@ def run_daemon():
     try:
         db = open_db()
         store = Storage(db)
+        DAEMON_DB[0] = db
     except Exception as e:
         log('the database %s could not be opened: %s' % (CONFIG.get('db_engine'), e), 'error')
         raise SystemExit(1)
