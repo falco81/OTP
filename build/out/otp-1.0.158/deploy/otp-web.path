@@ -9,6 +9,8 @@ PathExists=/var/lib/otp/web/fw.ask
 PathExists=/var/lib/otp/web/net.ask
 PathExists=/var/lib/otp/web/ntp.ask
 PathExists=/var/lib/otp/web/console.ask
+PathExists=/var/lib/otp/web/sshkeys.ask
+PathExists=/var/lib/otp/web/osup.ask
 Unit=otp-web.service
 
 [Install]

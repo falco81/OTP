@@ -1465,6 +1465,15 @@ class Daemon(object):
                     log_sparing('console-tick', 'the console at login: %s' % e, 'warn',
                                 every=600)
                 try:
+                    sshkeys_tick(self)          # root's SSH keys (1.0.158)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
+                try:
+                    osup_tick(self)             # the updates of the system (1.0.158)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('osup-tick', 'the update of the system: %s' % e, 'warn',
+                                every=600)
+                try:
                     net_tick(self)              # the network, restart, power off (1.0.119)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('net-tick', 'the network: %s' % e, 'warn', every=600)

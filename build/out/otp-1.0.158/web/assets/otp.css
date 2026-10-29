@@ -3111,3 +3111,11 @@ body.mfa-on .signin{padding-top:24px}
 .trial-words { flex: 1 1 360px; }
 .trial-left { color: var(--warn); font-weight: 600; }
 .trial-tools { display: flex; gap: 8px; flex-wrap: wrap; }
+/* System updates and root's SSH keys (1.0.158). */
+pre.lines.ou-log{max-height:420px;overflow:auto}
+.ou-reboot .btnrow,.ou-reboot > .btn{margin-top:4px}
+.sk-nodes{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;margin:12px 0 4px}
+.sk-nodes .k{flex-basis:100%}
+.sk-nodes label.chk{display:inline-flex;gap:6px;align-items:center;font-size:13px}
+/* The nodes' cards under the keys card (1.0.158): they touched. */
+#sk-host > .card + .pw-grid, #ou-host > .card + .pw-grid{margin-top:16px}
