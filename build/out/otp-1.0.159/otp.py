@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.158'
+__version__ = '1.0.159'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -24801,8 +24801,7 @@ def ntp_view(store):
 # replication wants: what is asked of a node is in a row of the asking node's
 # own ('host:sshkeys:want:NODE@@ASKER', node_key) and the node answers in rows
 # of its own ('host:sshkeys:now:NODE', 'host:osup:node:NODE').
-HOST_WORK = {'ssh': False, 'ssh_seen': 0.0, 'osup': False, 'osup_read': 0.0}
-SSH_KEY_KINDS = {'ed25519': ['-t', 'ed25519'], 'rsa4096': ['-t', 'rsa', '-b', '4096']}
+HOST_WORK = {'ssh': False, 'ssh_seen': 0.0, 'ssh_since': 0.0, 'osup': False, 'osup_read': 0.0}
 
 
 def host_nodes(store):
@@ -24825,23 +24824,31 @@ def sshkeys_view(store):
     for n in host_nodes(store):
         now = _meta_json(store, 'host:sshkeys:now:' + n) or {}
         done = set(now.get('done') or [])
-        pending = 0
+        pending = late = 0
         for r in node_key_rows(store, 'host:sshkeys:want', n):
             try:
                 asks = json.loads(r['v'] or '[]')
             except ValueError:
                 continue
             for a in asks if isinstance(asks, list) else [asks]:
+                # A change still to be written - a read again is no change,
+                # and one not done in five minutes is not still coming (1.0.159).
                 if isinstance(a, dict) and a.get('id') and a['id'] not in done and \
-                        time.time() - float(a.get('at') or 0) < 3600:
+                        a.get('do') in ('add', 'drop') and time.time() - float(a.get('at') or 0) < 300:
                     pending += 1
+                elif isinstance(a, dict) and a.get('id') and a['id'] not in done and \
+                        a.get('do') in ('add', 'drop') and time.time() - float(a.get('at') or 0) < 3600:
+                    late += 1
         nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
                       'keys': now.get('keys') or [], 'sshd': now.get('sshd') or {},
                       'file': now.get('file') or '', 'at': now.get('at'),
-                      'error': now.get('error') or '', 'pending': pending})
+                      'error': now.get('error') or ('%d change(s) asked of it more than five minutes ago '
+                                                    'are not written - is otp-web.path running there?' % late
+                                                    if late else ''),
+                      'pending': pending})
     return {'nodes': nodes, 'keygen': bool(shutil.which('ssh-keygen')),
-            'kinds': [{'kind': 'ed25519', 'words': 'Ed25519 (the strongest, and short)'},
-                      {'kind': 'rsa4096', 'words': 'RSA 4096 (where something old needs RSA)'}]}
+            'cluster': len(nodes) > 1,
+            'kept': rootkey_view(store, {n['name']: n['keys'] for n in nodes})}
 
 
 def sshkeys_ask(store, nodes, do, by, line='', fp='', last_ok=False):
@@ -24878,7 +24885,7 @@ def sshkeys_ask(store, nodes, do, by, line='', fp='', last_ok=False):
 def sshkeys_tick(daemon):
     store = daemon.store
     me = node_name()
-    if HOST_WORK['ssh']:
+    if HOST_WORK['ssh'] and time.time() - HOST_WORK.get('ssh_since', 0) < 900:
         return
     now = _meta_json(store, 'host:sshkeys:now:' + me) or {}
     done = list(now.get('done') or [])
@@ -24897,44 +24904,67 @@ def sshkeys_tick(daemon):
     if not todo and not stale:
         return
     HOST_WORK['ssh'] = True
+    HOST_WORK['ssh_since'] = time.time()
+    # Reads asked again and again are one read (1.0.159).
+    lists = [a for a in todo if a.get('do') == 'list']
+    todo = [a for a in todo if a.get('do') != 'list'] + lists[-1:]
 
     def go():
+        row = dict(now)
+        changed_err = ''
         try:
-            err = ''
-            got = None
             for a in todo or [{'id': '', 'do': 'list'}]:
+                err, got = '', None
                 try:
                     got = root_ask('sshkeys.ask', 'sshkeys.json', {
                         'do': a.get('do'), 'line': a.get('line') or '', 'fp': a.get('fp') or '',
                         'last_ok': bool(a.get('last_ok'))}, 60)
-                    err = ''
-                except ValueError as e:
-                    err = str(e)[:300]
+                except Exception as e:                  # noqa: BLE001
+                    err = str(e)[:300] or e.__class__.__name__
                     log('root\'s SSH keys: %s' % err, 'warn')
                 if a.get('id'):
                     done.append(a['id'])
+                done.extend(x['id'] for x in lists if x.get('id') and x['id'] not in done)
+                # Written after each, so what is done shows as it is done.
+                # A change refused stays said over the read after it.
+                if err or a.get('do') != 'list' or not changed_err:
+                    row['error'] = err
+                if a.get('do') != 'list':
+                    changed_err = err
+                row.update(at=time.time(), done=done[-200:])
+                if got:
+                    row.update(keys=got.get('keys') or [], sshd=got.get('sshd') or {},
+                               file=got.get('file') or '')
+                store.set_meta('host:sshkeys:now:' + me, json.dumps(row))
             HOST_WORK['ssh_seen'] = time.time()
-            row = dict(now, at=time.time(), done=done[-50:], error=err)
-            if got:
-                row.update(keys=got.get('keys') or [], sshd=got.get('sshd') or {},
-                           file=got.get('file') or '')
-            store.set_meta('host:sshkeys:now:' + me, json.dumps(row))
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('sshkeys', 'root\'s SSH keys: %s' % e)
         finally:
             HOST_WORK['ssh'] = False
     threading.Thread(target=go, name='otp-sshkeys', daemon=True).start()
 
 
-def sshkey_make(kind, comment):
-    """A new key pair, made here by ssh-keygen, kept nowhere: (private, public,
-    fingerprint). The private half is shown once, to be downloaded."""
+# -- root's key, made or given here (1.0.159) -------------------------------------------
+# Drawn as isemon draws a router's key, but kept nowhere: otp never signs in
+# as root itself, so a private half in the database would only be one more
+# way to root on every node. A key made here is handed to the page once; one
+# given has its public half worked out and its private half dropped. What is
+# remembered of each - for every node ('all') or for one node - is its public
+# half, to show it and put it on again where it is missing.
+
+
+SSH_KEY_KINDS = {'ed25519': ['-t', 'ed25519'], 'rsa4096': ['-t', 'rsa', '-b', '4096']}
+
+
+def sshkey_pair(kind, comment):
+    """A new key pair made by ssh-keygen in a folder of its own, taken away
+    after: (private, public, fingerprint)."""
     if kind not in SSH_KEY_KINDS:
         raise ValueError('ed25519 or rsa4096')
     if not shutil.which('ssh-keygen'):
         raise ValueError('ssh-keygen is not on this machine (dnf install openssh-clients)')
-    comment = re.sub(r'[^A-Za-z0-9@._ -]', '', str(comment or ''))[:80].strip() or \
-        'root@%s %s' % (node_name(), time.strftime('%Y-%m-%d'))
-    work = tempfile.mkdtemp(prefix='.otp-key-')
-    try:
+    comment = re.sub(r'[^A-Za-z0-9@._ -]', '', str(comment or ''))[:80].strip() or 'root'
+    with tempfile.TemporaryDirectory(prefix='.otp-key-') as work:
         path = os.path.join(work, 'k')
         got = subprocess.run(['ssh-keygen', '-q'] + SSH_KEY_KINDS[kind] +
                              ['-a', '100', '-N', '', '-C', comment, '-f', path],
@@ -24945,11 +24975,82 @@ def sshkey_make(kind, comment):
             private = f.read()
         with open(path + '.pub') as f:
             public = f.read().strip()
-        fp = subprocess.run(['ssh-keygen', '-l', '-E', 'sha256', '-f', path + '.pub'],
-                            capture_output=True, text=True, timeout=20).stdout.split()
-        return private, public, (fp[1] if len(fp) > 1 else '')
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+    return private, public, ssh_fp_of(public)[0]
+
+
+def rootkey_scopes(store):
+    return ['all'] + (host_nodes(store) if CONFIG.get('ha_mode') or len(host_nodes(store)) > 1 else [])
+
+
+def rootkey_nodes(store, scope):
+    return host_nodes(store) if scope == 'all' else [scope]
+
+
+def rootkey_row(store, scope):
+    return _meta_json(store, 'host:rootkey:' + scope) or {}
+
+
+def _rootkey_scope(store, scope):
+    scope = str(scope or 'all')
+    if scope not in rootkey_scopes(store):
+        raise ValueError('for every node, or for one of them')
+    return scope
+
+
+def ssh_fp_of(public):
+    got = subprocess.run(['ssh-keygen', '-l', '-E', 'sha256', '-f', '-'], input=public + '\n',
+                         capture_output=True, text=True, timeout=20)
+    bits = got.stdout.split()
+    if got.returncode != 0 or len(bits) < 2:
+        raise ValueError('ssh-keygen does not read that key')
+    return bits[1], bits[-1].strip('()') if bits[-1].startswith('(') else ''
+
+
+def rootkey_view(store, keys_on):
+    out = []
+    for sc in rootkey_scopes(store):
+        r = rootkey_row(store, sc)
+        on = {n: any(k.get('fp') == r.get('fp') for k in keys_on.get(n, [])) if r.get('fp') else False
+              for n in rootkey_nodes(store, sc)}
+        out.append({'scope': sc, 'has': bool(r.get('pub')), 'pub': r.get('pub') or '',
+                    'fp': r.get('fp') or '', 'kind': r.get('kind') or '', 'how': r.get('how') or '',
+                    'by': r.get('by') or '', 'at': r.get('at'), 'on': on})
+    return out
+
+
+def rootkey_put(store, scope, public, by, how):
+    """A public half onto the nodes of a scope, remembered for it. The key put
+    there before stays - it is taken away in the list, if it should go."""
+    scope = _rootkey_scope(store, scope)
+    fp, kind = ssh_fp_of(public)
+    nodes = rootkey_nodes(store, scope)
+    sshkeys_ask(store, nodes, 'add', by, line=public)
+    store.set_meta('host:rootkey:' + scope, json.dumps({
+        'scope': scope, 'pub': public, 'fp': fp, 'kind': kind, 'how': how, 'by': by,
+        'at': time.time()}))
+    return {'pub': public, 'fp': fp, 'nodes': nodes}
+
+
+def rootkey_public(text, passphrase=''):
+    """What the page was given: a public key line as it is, or a private key's
+    public half - the private half dropped."""
+    text = str(text or '').strip()
+    if 'PRIVATE KEY-----' in text:
+        _, public = ssh_public_of(text, passphrase)
+        return public, True
+    line = text.splitlines()[0].strip() if text else ''
+    if not re.match(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|'
+                    r'sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/=]{20,}( [^\r\n]{0,200})?$', line):
+        raise ValueError('that is not a public key line (ssh-ed25519 AAAA… comment) nor a private key')
+    return line, False
+
+
+def rootkey_again(store, scope, by):
+    scope = _rootkey_scope(store, scope)
+    r = rootkey_row(store, scope)
+    if not r.get('pub'):
+        raise ValueError('there is no key made or given for that')
+    return sshkeys_ask(store, rootkey_nodes(store, scope), 'add', by, line=r['pub'])
 
 
 # -- the updates -----------------------------------------------------------------------
@@ -24980,7 +25081,8 @@ def osup_view(store):
         chk = _meta_json(store, 'host:osup:check:' + n) or {}
         nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
                       'row': row if row.get('plan') == plan.get('id') else {},
-                      'check': chk, 'reboot': bool(row.get('reboot') and not row.get('rebooted')),
+                      'check': chk, 'reboot': bool(row.get('reboot') and not row.get('rebooted')) or
+                      bool(chk.get('reboot_now') and chk.get('state') == 'done'),
                       'started': (_meta_json(store, 'node:' + n) or {}).get('started')})
     hidden = bool(plan) and seen == plan.get('id') and plan.get('state') != 'running'
     return {'plan': {} if hidden else plan, 'nodes': nodes, 'now': time.time(),
@@ -25084,6 +25186,15 @@ def osup_tick(daemon):
         osup_put(store, row)
     # A look for updates, asked.
     chk = _meta_json(store, 'host:osup:check:' + me) or {}
+    # It said a restart was waiting and the node has restarted since: looked
+    # at again, not left saying so (1.0.159).
+    if chk.get('reboot_now') and chk.get('state') == 'done' and not chk.get('relook') and \
+            boot_time() > float(chk.get('checked') or 0) + 1:
+        chk['relook'] = True
+        store.set_meta('host:osup:check:' + me, json.dumps(chk))
+        store.set_meta(node_key('host:osup:checkwant', me),
+                       json.dumps({'id': secrets.token_hex(6), 'by': 'otp (system update)',
+                                   'at': time.time()}))
     for r in node_key_rows(store, 'host:osup:checkwant', me):
         try:
             a = json.loads(r['v'] or '{}')
@@ -25182,9 +25293,11 @@ def _osup_follow_check(store, chk):
                 dict(chk, at=time.time(), lines=(got.get('lines') or [])[-40:])))
         return
     store.set_meta('host:osup:check:' + me, json.dumps(dict(
-        chk, state=got.get('state'), at=time.time(), checked=time.time(),
+        chk, state=got.get('state'), at=time.time(), checked=time.time(), relook=False,
         packages=(got.get('packages') or [])[:1000], count=int(got.get('count') or 0),
         security=got.get('security'), pm=got.get('pm'), error=got.get('said') or '',
+        reboot_after=bool(got.get('reboot_after')), reboot_why=(got.get('reboot_why') or [])[:20],
+        reboot_now=bool(got.get('reboot_now')),
         lines=(got.get('lines') or [])[-40:])))
 
 
@@ -32270,19 +32383,30 @@ def _sshkeys_do(h):
                         last_ok=bool(b.get('last_ok')))
             return {'message': 'the key is taken away on %s within a few seconds'
                                % ', '.join(nodes)}
-        if act == 'make':
-            # The private half goes to this page once and is kept nowhere; the
-            # public half onto the nodes asked for.
-            private, public, fp = sshkey_make(str(b.get('kind') or 'ed25519'),
-                                              str(b.get('comment') or ''))
-            sshkeys_ask(h.store, nodes, 'add', s['name'], line=public)
-            h.store.add_event('settings', '%s made a new SSH key for root (%s, %s) - its '
-                              'private half handed to the page once' % (s['name'], fp, ', '.join(nodes)),
-                              'warn', who=s['name'])
-            return {'private': private, 'public': public, 'fp': fp, 'nodes': nodes,
-                    'file': 'otp-root-%s-%s' % (re.sub(r'[^A-Za-z0-9-]', '', node_name()),
-                                                time.strftime('%Y%m%d')),
-                    'message': 'made - keep the private half now, it is not shown again'}
+        # Root's key made or given here (1.0.159): its private half kept nowhere.
+        scope = str(b.get('scope') or 'all')
+        if act == 'rk_make':
+            if b.get('kind', 'ed25519') not in ('ed25519', 'rsa4096'):
+                raise ValueError('ed25519 or rsa4096')
+            private, public, _ = sshkey_pair(str(b.get('kind') or 'ed25519'),
+                                             'root@%s %s' % (scope if scope != 'all' else node_name(),
+                                                             time.strftime('%Y-%m-%d')))
+            x = rootkey_put(h.store, scope, public, s['name'], 'made')
+            h.store.add_event('settings', '%s made a new SSH key for root on %s (%s) - its private '
+                              'half handed to the page once, kept nowhere' % (
+                                  s['name'], ', '.join(x['nodes']), x['fp']), 'warn', who=s['name'])
+            return dict(x, private=private,
+                        file='otp-root-%s-%s' % (re.sub(r'[^A-Za-z0-9-]', '', scope),
+                                                 time.strftime('%Y%m%d')),
+                        message='made - keep the private half now, it is not shown again')
+        if act == 'rk_given':
+            public, was_private = rootkey_public(b.get('key'), str(b.get('passphrase') or ''))
+            x = rootkey_put(h.store, scope, public, s['name'], 'given')
+            return dict(x, message='the public half goes onto %s%s' % (
+                ', '.join(x['nodes']), ' - the private half was not kept' if was_private else ''))
+        if act == 'rk_again':
+            nodes = rootkey_again(h.store, scope, s['name'])
+            return {'message': 'the key goes onto %s again' % ', '.join(nodes)}
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')

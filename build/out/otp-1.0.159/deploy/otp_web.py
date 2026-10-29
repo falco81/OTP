@@ -2540,7 +2540,9 @@ def auth_keys(lines):
         out.append({'line': i, 'fp': facts[1] if facts else '', 'bits': facts[0] if facts else 0,
                     'type': facts[2] if facts else '?',
                     'comment': (m.group('comment') or '') if m else '',
-                    'options': not bool(m), 'readable': bool(facts)})
+                    'options': not bool(m), 'readable': bool(facts),
+                    # The line itself, for the page's export: public halves only.
+                    'text': t[:16500]})
     return out
 
 
@@ -2614,10 +2616,11 @@ def sshkeys_do(r):
             raise Refused('an RSA key of %d bits is too weak: 3072 at least, or ed25519' % bits)
         if kind == 'DSA':
             raise Refused('DSA keys are not taken')
-        if any(k['fp'] == fp for k in auth_keys(lines)):
-            raise Refused('that key is there already (%s)' % fp)
-        lines = [ln for ln in lines if ln.strip()] + [line]
-        auth_write(lines)
+        # There already is no fault: a key of root's the app was handed, or
+        # one put on again (1.0.159).
+        if not any(k['fp'] == fp for k in auth_keys(lines)):
+            lines = [ln for ln in lines if ln.strip()] + [line]
+            auth_write(lines)
     elif do == 'drop':
         fp = str(r.get('fp') or '')
         keys = auth_keys(lines)
@@ -2746,6 +2749,39 @@ def osup_part():
     write_here(OSUP_ANS, json.dumps(out))
 
 
+# The packages a restart is needed for once they are updated, as dnf
+# needs-restarting -r and Debian's reboot-required name them (1.0.159).
+REBOOT_PKGS = {'kernel', 'kernel-core', 'kernel-rt', 'kernel-rt-core', 'kernel-modules',
+               'kernel-uek', 'glibc', 'linux-firmware', 'systemd', 'dbus', 'dbus-broker',
+               'dbus-daemon', 'microcode_ctl', 'zlib', 'zlib-ng-compat', 'libc6', 'linux-base',
+               'intel-microcode', 'amd64-microcode'}
+
+
+def reboot_for(packages):
+    """Which of the packages waiting want a restart once updated."""
+    out = []
+    for p in packages:
+        name = str(p).split()[0] if str(p).split() else ''
+        if re.search(r'\.(x86_64|aarch64|noarch|i686|ppc64le|s390x)$', name):
+            name = name.rsplit('.', 1)[0]
+        if name in REBOOT_PKGS or name.startswith(('linux-image', 'kernel-core-', 'linux-modules')):
+            out.append(name)
+    return sorted(set(out))
+
+
+def reboot_now(pm, env, say=None):
+    """Whether this machine waits for a restart already."""
+    if pm == 'fake':
+        return subprocess.run([OSUP_PM, 'needs-restart'], stdout=subprocess.DEVNULL).returncode == 1
+    if pm == 'dnf':
+        nr = subprocess.run(['dnf', 'needs-restarting', '-r'], capture_output=True,
+                            text=True, env=env, timeout=300)
+        if nr.returncode == 1 and say:
+            say(nr.stdout.strip().splitlines()[0] if nr.stdout.strip() else 'a restart is needed')
+        return nr.returncode == 1
+    return os.path.exists('/var/run/reboot-required')
+
+
 def osup_job(ident, kind):
     """The work itself, as root, in a process of its own."""
     import fcntl
@@ -2819,6 +2855,18 @@ def osup_job(ident, kind):
                         pk.append('%s %s' % (name, ver))
             state['packages'] = pk[:1000]
             state['count'] = len(pk)
+            # Whether the update will need a restart, told before it is made.
+            state['phase'] = 'whether a restart is needed'
+            state['reboot_why'] = reboot_for(pk)
+            state['reboot_after'] = bool(state['reboot_why'])
+            try:
+                state['reboot_now'] = reboot_now(pm, env)
+            except (OSError, subprocess.SubprocessError):
+                state['reboot_now'] = False
+            if state['reboot_now']:
+                say('a restart is needed already, before any update')
+            if state['reboot_why']:
+                say('a restart will be needed after the update: %s' % ', '.join(state['reboot_why']))
             state['pct'] = 100
         else:
             seen = {'total': 0, 'done': 0}
@@ -2859,17 +2907,7 @@ def osup_job(ident, kind):
                 stream(['apt-get', '-y', '-o', 'Dpkg::Options::=--force-confdef', '-o',
                         'Dpkg::Options::=--force-confold', 'upgrade'], count)
             state['phase'] = 'whether a restart is needed'
-            if pm == 'fake':
-                state['reboot'] = subprocess.run([OSUP_PM, 'needs-restart']).returncode == 1
-            elif pm == 'dnf':
-                nr = subprocess.run(['dnf', 'needs-restarting', '-r'], capture_output=True,
-                                    text=True, env=env, timeout=300)
-                state['reboot'] = nr.returncode == 1
-                if state['reboot']:
-                    say(nr.stdout.strip().splitlines()[0] if nr.stdout.strip() else
-                        'a restart is needed')
-            else:
-                state['reboot'] = os.path.exists('/var/run/reboot-required')
+            state['reboot'] = reboot_now(pm, env, say)
             state['pct'] = 100
         state['state'] = 'done'
         state['phase'] = 'done'

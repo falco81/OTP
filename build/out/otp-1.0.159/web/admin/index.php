@@ -1269,8 +1269,9 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   <div class="ctl-pane" id="pane-sshkeys" hidden>
     <div class="ctl-head"><h2 class="ctl-title">SSH keys of root</h2>
       <p class="ctl-lede">The keys that may sign in to each node as root over SSH - the lines of
-        /root/.ssh/authorized_keys. A key made here is shown once, to be kept by you, and kept nowhere on the
-        server; its public half goes onto the nodes chosen. Every change is written into Events.</p></div>
+        /root/.ssh/authorized_keys, read from every node. A key made here is shown once, to be kept by you, and
+        kept nowhere on the server; one of your own is put on by its public half - on every node or on one.
+        Every change is written into Events.</p></div>
     <div id="sk-host"></div>
   </div>
   <div class="ctl-pane" id="pane-backup" hidden>

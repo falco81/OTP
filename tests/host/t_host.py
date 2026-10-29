@@ -5,7 +5,7 @@
 # Usage (as root): python3 t_host.py VERSION
 import os, sys, json, time, subprocess, urllib.request, tempfile, threading, atexit, shutil
 
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.158'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.159'
 V = '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = tempfile.mkdtemp(prefix='otp-host-')
@@ -113,24 +113,55 @@ ok('RSA 2048 refused on the node: %s' % keys('node2').get('error'),
    until(lambda: 'too weak' in (keys('node2').get('error') or '')))
 c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': 'command="sh" ' + pub, 'nodes': ['node2']}, S)
 ok('a line with options refused', until(lambda: 'options' in (keys('node2').get('error') or '')))
-c, x = call('node1', '/api/sshkeys', {'action': 'make', 'kind': 'ed25519', 'comment': 'admin key', 'nodes': ['node2']}, S)
-ok('a key made: its private half handed once (%s)' % x.get('fp'), c == 200 and 'PRIVATE KEY' in x.get('private', ''))
-ok('... its public half only on node2', until(lambda: any(k['fp'] == x['fp'] for k in keys('node2')['keys'])) and
-   not any(k['fp'] == x['fp'] for k in keys('node1')['keys']))
-ok('... and kept nowhere on the server', not subprocess.run(['grep', '-rl', 'OPENSSH PRIVATE', N['node1']['dir'], N['node2']['dir']],
-                                                          capture_output=True).stdout.strip())
-c, x2 = call('node1', '/api/sshkeys', {'action': 'make', 'kind': 'rsa4096', 'nodes': ['node1']}, S)
-ok('an RSA 4096 key made: %s' % c, c == 200 and until(lambda: any(k['bits'] == 4096 for k in keys('node1')['keys'])))
 fp_jan = [k for k in keys('node1')['keys'] if k['comment'] == 'jan@laptop'][0]['fp']
-call('node1', '/api/sshkeys', {'action': 'drop', 'fp': fp_jan, 'nodes': ['node1', 'node2']}, S)
-ok('jan@laptop taken away on both', until(lambda: not any(k['fp'] == fp_jan for n in ('node1', 'node2') for k in keys(n)['keys'])))
+call('node1', '/api/sshkeys', {'action': 'drop', 'fp': fp_jan, 'nodes': ['node1'], 'last_ok': True}, S)
+ok('jan@laptop taken away on node1, kept on node2', until(lambda: not any(k['fp'] == fp_jan for k in keys('node1')['keys'])
+                                                         and any(k['fp'] == fp_jan for k in keys('node2')['keys'])))
 last = keys('node2')['keys'][0]['fp']
 call('node1', '/api/sshkeys', {'action': 'drop', 'fp': last, 'nodes': ['node2']}, S)
 ok('the last key of node2 not taken away without being said again',
    until(lambda: 'last key' in (keys('node2').get('error') or '')))
 call('node1', '/api/sshkeys', {'action': 'drop', 'fp': last, 'nodes': ['node2'], 'last_ok': True}, S)
 ok('... and taken away when said', until(lambda: not keys('node2')['keys']))
+
+# ---- root's key kept here, as isemon keeps a router's (1.0.159)
+def kept(scope):
+    return [r for r in call('node1', '/api/sshkeys', None, S)[1]['kept'] if r['scope'] == scope][0]
+
+
+def has(node, fp):
+    return any(k['fp'] == fp for k in keys(node)['keys'])
+
+
+ok('scopes: every node, node1, node2', [r['scope'] for r in call('node1', '/api/sshkeys', None, S)[1]['kept']]
+   == ['all', 'node1', 'node2'])
+c, x = call('node1', '/api/sshkeys', {'action': 'rk_make', 'scope': 'all'}, S)
+ok('a key made for every node: %s, its private half handed once' % c, c == 200 and 'OPENSSH PRIVATE KEY' in x.get('private', ''))
+fa = x['fp']
+ok('... its public half on node1 and node2', until(lambda: has('node1', fa) and has('node2', fa)))
+ok('... both seen as on it', until(lambda: all(kept('all')['on'].values())))
+ok('... the private half kept nowhere', 'PRIVATE' not in json.dumps([r['v'] for r in st.db.rows("SELECT v FROM meta")]) and
+   not subprocess.run(['grep', '-rl', 'OPENSSH PRIVATE', N['node1']['dir'], N['node2']['dir']], capture_output=True).stdout.strip())
+c, x = call('node1', '/api/sshkeys', {'action': 'rk_make', 'scope': 'node2', 'kind': 'rsa4096'}, S)
+f2 = x['fp']
+ok('an RSA 4096 key of node2 its own: only there', until(lambda: has('node2', f2)) and not has('node1', f2)
+   and any(k['bits'] == 4096 for k in keys('node2')['keys']))
+c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'node1', 'key': open(work + '/k').read()}, S)
+ok('my own private key given for node1: only its public half put on (%s)' % x.get('message'),
+   c == 200 and until(lambda: any(k['comment'] == 'jan@laptop' for k in keys('node1')['keys']))
+   and 'PRIVATE' not in (st.get_meta('host:rootkey:node1') or ''))
+c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'all', 'key': pub}, S)
+ok('a public line given for every node', c == 200 and until(lambda: kept('all')['fp'] == fp_jan and all(kept('all')['on'].values())))
+c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'node1', 'key': 'nonsense'}, S)
+ok('neither a public nor a private key refused: %s' % c, c == 400)
+ok('the key made before stays on both', has('node1', fa) and has('node2', fa))
+c, x = call('node1', '/api/sshkeys', {'action': 'rk_download', 'scope': 'all'}, S)
+ok('nothing to download: %s' % c, c == 400)
+ok('the keys read with their lines, to export', all(k.get('text', '').startswith('ssh-') for k in keys('node1')['keys']))
 ev = json.dumps(call('node1', '/api/events?limit=100', None, S)[1])
+ok('nothing left being written', until(lambda: not any(n['pending'] for n in call('node1', '/api/sshkeys', None, S)[1]['nodes']), 30))
+print('   pending', [(n['name'], n['pending']) for n in call('node1', '/api/sshkeys', None, S)[1]['nodes']])
+ok('the key made is in the events', 'made a new SSH key for root' in ev)
 ok('the changes are in the events', 'SSH key' in ev)
 
 # ---- updates
@@ -143,6 +174,10 @@ def osv():
 
 
 ok('... 3 waiting on each', until(lambda: all((n.get('check') or {}).get('count') == 3 for n in osv()['nodes'])))
+ck = osv()['nodes'][0]['check']
+ok('... and told before the update that a restart will be needed: %s' % ck.get('reboot_why'),
+   ck.get('reboot_after') and ck.get('reboot_why') == ['kernel'])
+ok('... and that one is waiting already', ck.get('reboot_now') and osv()['nodes'][0]['reboot'])
 c, x = call('node1', '/api/osup', {'action': 'start', 'reboot': 'ask'}, S)
 ok('the update started: order %s' % (x.get('plan') or {}).get('order'), c == 200 and x['plan']['order'] == ['node2', 'node1'])
 seen = {'node1_waited': False, 'maint2': False, 'pct': set()}
