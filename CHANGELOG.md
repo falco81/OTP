@@ -4,6 +4,38 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.159 — 29 October 2026
+
+**A key for root as isemon draws a router's, and the two new panes fixed**
+- *Settings → SSH keys of root* has *A key for root*, drawn as isemon's key of
+  a router: *Make a key* (Ed25519, or RSA 4096) and *Use my own* (a public line
+  or .pub file, or a private key whose public half is worked out here), the
+  public half below to copy. Unlike isemon it keeps no private half: otp never
+  signs in as root, so a key made here is shown once, to download or copy, and
+  one given leaves only its public half. In a cluster it goes onto both nodes
+  (the same key) or onto one, as chosen; *Put it on again* puts it where it is
+  missing. A key put there before stays until it is taken away in the list.
+- The keys root has now are read from every node and listed with the ones made or
+  given here marked; *Export them* saves them as one authorized_keys file (public
+  halves only); *Add a public key* also reads a .pub file. A key that is there
+  already is no fault.
+- "Being written on…" no longer stays: a read again is not a change waiting, a
+  node says what it has done after each change, and a change not done in five
+  minutes is said as such. The root helper's service has no start limit any
+  more - several asks in a few seconds left `otp-web.path` failed and every
+  later ask unanswered; `install.sh --upgrade` clears such a failure.
+- *System updates*: *Hide it*, *Clear the window* and the node buttons of the
+  log work (the redraw waited for the clicked button to lose the focus); *Look
+  for updates* is followed until the node says it is done, its log shown; the
+  updates waiting are looked at again after an update and after its restart.
+- *Look for updates* also tells whether the update will need a restart, before
+  it is made - the packages it is for (kernel, glibc, systemd, linux-firmware…)
+  on the node's card and above *Update* - and whether one is waiting already,
+  which is then offered at once; a node restarted is looked at again.
+- Room between the parts of both panes - the buttons beside a card's title no
+  longer touch (*Hide it* / *Clear the window*, *Add a public key* / *Export
+  them*) - and the choices as wide as their words.
+
 ## 1.0.158 — 29 October 2026
 
 **SSH keys of root, and system updates, from Settings**

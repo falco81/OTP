@@ -3118,4 +3118,21 @@ pre.lines.ou-log{max-height:420px;overflow:auto}
 .sk-nodes .k{flex-basis:100%}
 .sk-nodes label.chk{display:inline-flex;gap:6px;align-items:center;font-size:13px}
 /* The nodes' cards under the keys card (1.0.158): they touched. */
+#sk-host > .card + .card{margin-top:16px}
+.sk-on{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+.seg button .dot{margin-left:6px}
 #sk-host > .card + .pw-grid, #ou-host > .card + .pw-grid{margin-top:16px}
+/* System updates and root's SSH keys (1.0.159): room between their parts, and
+   a choice as wide as its words, not the card's. */
+#ou-host .set-item, #sk-host .set-item{margin:14px 0 4px}
+#ou-host .seg, #sk-host .seg{align-self:flex-start;flex-wrap:wrap;max-width:100%}
+#ou-host .card > .btnrow, #sk-host .card > .btnrow{margin-top:14px}
+#ou-host .pw-node .btnrow{margin-top:14px}
+#ou-host .pw-node details.fold{margin-top:12px}
+#ou-host .card > h2 + .seg{margin:4px 0 12px}
+#ou-host .card > .up-bar{margin:6px 0 14px}
+#ou-host .ou-reboot .btnrow, #ou-host .ou-reboot > button{margin-top:4px}
+#sk-host .rb-panel{margin-top:4px}
+#sk-host .rb-below{margin-top:12px}
+/* Buttons beside a card's title (1.0.159): they touched. */
+.card h2 .right{display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px}

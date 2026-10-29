@@ -12,6 +12,7 @@ PathExists=/var/lib/otp/web/console.ask
 PathExists=/var/lib/otp/web/sshkeys.ask
 PathExists=/var/lib/otp/web/osup.ask
 Unit=otp-web.service
+TriggerLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

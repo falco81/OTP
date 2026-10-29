@@ -972,6 +972,8 @@ install_program() {
     if [[ -f "$WEB_PATH_UNIT" ]]; then
         # Restarted, not only enabled (1.0.52): a path unit that is already
         # running keeps watching what its old file named.
+        # One left failed by systemd's start limit (before 1.0.159) watches nothing.
+        run systemctl reset-failed otp-web.service otp-web.path >/dev/null 2>&1 || true
         { run systemctl enable otp-web.path >/dev/null 2>&1 && run systemctl restart otp-web.path >/dev/null 2>&1; } \
             || warn "otp-web.path did not start; TLS and the web address from the pages wait for it"
     fi
