@@ -5599,9 +5599,9 @@ function drawConsoleLogin(host) {
         row.appendChild(sw);
         row.appendChild(name);
         if (n.me) row.appendChild(el('span', 'tag info', 'this one'));
-        var said = n.pending ? 'being switched…' : (n.on === null || n.on === undefined) ? 'not said yet - the node says within a minute'
-          : n.on ? 'on' : 'off';
-        row.appendChild(el('span', 'muted small', said));
+        /* The switch says on or off itself (1.0.148): words only when it cannot. */
+        var said = n.pending ? 'being switched…' : (n.on === null || n.on === undefined) ? 'not said yet - the node says within a minute' : '';
+        if (said) row.appendChild(el('span', 'muted small', said));
         if (n.error) row.appendChild(el('p', 'note bad', n.error));
         if (n.pending) waiting = true;
         /* The switch only says what it will be; the save bar at the bottom

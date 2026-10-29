@@ -4,6 +4,13 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.148 — 29 October 2026
+
+**The console at login: no "on" beside the switch**
+- Settings → About → *The console at login*: the switch alone shows on or
+  off; words beside it only while a node is being switched or has not said
+  yet.
+
 ## 1.0.147 — 29 October 2026
 
 **The console at login: saved with the save bar**
