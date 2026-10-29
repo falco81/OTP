@@ -4,6 +4,24 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.153 — 29 October 2026
+
+**Active Directory with Czech (or any) diacritics - checked, and two fixes**
+- A person's groups (nested) are looked for from the root of the domain, as
+  a group named without its place always was: with the directory's base set
+  to the people's OU (OU=Uživatelé,...), every group kept beside it
+  (OU=Skupiny,...) was missed - nobody was in any group, and every realm with
+  groups refused everybody. Not a matter of diacritics: any base below the
+  domain did it.
+- An administrator from the directory whose account has letters beyond
+  ASCII (žofie, žofie@corpnet.cz) can sign in: the account's name was
+  refused. Account names take letters of any language now.
+- Checked against a directory with diacritics in OUs, groups, names, a login
+  name and a comma in a DN (CN=Novák\, Petr): RADIUS with the groups by name
+  and by DN in any case, nested groups, reply attributes (Class = Uživatelé),
+  the administrators' groups, the people search, the enrolment portal, the QR
+  link and the token's mail - tests/cz/t_cz.py, 23 checks.
+
 ## 1.0.152 — 29 October 2026
 
 **The Teltonika SMS gateway: one login at a time**

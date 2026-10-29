@@ -294,7 +294,10 @@ class Directory(object):
                 return got[1]
         def do(link):
             link.PAGES_MOST = 20        # a sign-in's groups, not a census (1.0.59)
-            return link.search(self.base, ldap_and(ldap_equal('objectClass', 'group'),
+            # From the root of the domain (1.0.153), as group_dns looks: a base
+            # for the people (OU=Users,...) left out every group kept beside
+            # it (OU=Groups,...), and nobody was in any group.
+            return link.search(self.domain_root(), ldap_and(ldap_equal('objectClass', 'group'),
                                                    ldap_in_chain('member', entry['dn'])),
                                ('cn',), scope=2, limit=5000, paged=True)
         rows = self.asked(do)
@@ -302,6 +305,12 @@ class Directory(object):
         with self.lock:
             self.cache[key] = (time.time(), out)
         return out
+
+    def domain_root(self):
+        """DC=corpnet,DC=loc out of the base the people are looked for under."""
+        dcs = [p for p in re.split(r'(?<!\\),', str(self.base or '')) if
+               p.strip().lower().startswith('dc=')]
+        return ','.join(p.strip() for p in dcs) or self.base
 
     def group_dns(self, name):
         """The DN of the one group a name given without its place stands for
@@ -319,9 +328,7 @@ class Directory(object):
                 return got[1]
         # From the root of the domain, not the base the accounts are looked
         # for under: groups often live elsewhere (OU=Groups beside OU=Users).
-        dcs = [p for p in re.split(r'(?<!\\),', str(self.base or '')) if
-               p.strip().lower().startswith('dc=')]
-        where = ','.join(p.strip() for p in dcs) or self.base
+        where = self.domain_root()
         def do(link):
             link.PAGES_MOST = 5
             return link.search(where, ldap_and(

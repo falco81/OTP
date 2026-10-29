@@ -497,7 +497,9 @@ def list_position(v):
     return max(-1000000, min(1000000, n))
 
 
-ACCOUNT_NAME_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._@\\-]{0,120}\Z')
+# Letters of any language (1.0.153): an administrator from the directory whose
+# account is called žofie could not sign in - the name was refused.
+ACCOUNT_NAME_RE = re.compile(r'[^\W_][\w.@\\-]{0,120}\Z')
 
 
 def _yes(data, key, default):

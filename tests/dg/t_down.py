@@ -40,9 +40,12 @@ open(os.path.join(lib, 'downgrade-floor'), 'w').write('1.0.141\n')
 ok('root floor 1.0.141: 1.0.140 refused', otp.downgrade_why_not(st, '1.0.140') != [])
 open(os.path.join(lib, 'downgrade-floor'), 'w').write('1.0.139\n')
 # the package and the tables
-pkg = '/home/claude/otp/release/otp-1.0.142.tar.gz'
-ok('the tables of 1.0.142 read off its otp.py', 'tokens' in otp.downgrade_package_schema(pkg)['tables'])
-ok('this database can take 1.0.142', otp.downgrade_schema_why(st, pkg) == [])
+import glob as _g
+OLD = sorted((os.path.basename(x)[4:-7] for x in _g.glob('/home/claude/otp/release/otp-1.0.1*.tar.gz')),
+             key=otp._ver_tuple)[0]          # the oldest kept there (the newest ten are)
+pkg = '/home/claude/otp/release/otp-%s.tar.gz' % OLD
+ok('the tables of %s read off its otp.py' % OLD, 'tokens' in otp.downgrade_package_schema(pkg)['tables'])
+ok('this database can take %s' % OLD, otp.downgrade_schema_why(st, pkg) == [])
 st.db.run("ALTER TABLE tokens ADD COLUMN must_have TEXT NOT NULL DEFAULT 'x'")
 ok('a NOT NULL column with a default is fine', otp.downgrade_schema_why(st, pkg) == [])
 # sqlite cannot drop a default: a table of its own the old version knows, made strict
@@ -52,7 +55,7 @@ ok('a NOT NULL column without a default it does not know: refused', w and 'newer
 st.db.run('DROP TABLE token_once'); st.db.make_tables()
 # fetch from a file: the whole road, kept as a package to go back to
 meta = otp.downgrade_file(st, pkg, 'test')
-ok('kept as a package to go back to', meta['version'] == '1.0.142' and json.loads(st.get_meta('upgrade:pkg'))['downgrade'])
+ok('kept as a package to go back to', meta['version'] == OLD and json.loads(st.get_meta('upgrade:pkg'))['downgrade'])
 okk, why = otp.upgrade_checks(st, json.loads(st.get_meta('upgrade:pkg')))
 ok('upgrade_checks lets it start: %s' % why, okk)
 plan = otp.upgrade_start(st, 'test')
