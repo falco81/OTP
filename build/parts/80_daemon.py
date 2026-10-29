@@ -1117,6 +1117,10 @@ class Daemon(object):
     # ---- running -------------------------------------------------------------------
     def run(self):
         log('otp %s starting: the database is %s' % (__version__, self.store.db.where()))
+        try:
+            downgrade_floor_note(self.store)        # how far back it may go (1.0.143)
+        except Exception as e:                      # noqa: BLE001
+            log('the floor for going back could not be written: %s' % e, 'warn')
         if not sealing_key():
             # A database that already holds sealed secrets gets no new key in
             # place of a missing one (1.0.33): the secrets would stay lost, and

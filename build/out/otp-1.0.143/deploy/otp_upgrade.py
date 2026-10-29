@@ -16,7 +16,9 @@ runs this as root. This then trusts nothing it was handed:
   * every file in it is listed in MANIFEST with the right hash, nothing more,
     no links, no device, no path outside its one folder;
   * it is not older than the version installed (the same one again is a
-    retry and is allowed).
+    retry and is allowed) - unless going back is asked for (1.0.143), and
+    then not older than downgrade-floor beside this file: the highest floor
+    of every version install.sh put in here, which only root writes.
 
 Then its own install.sh --upgrade --yes is run, exactly as somebody would
 on the command line, and what it said is written back for the pages.
@@ -25,6 +27,7 @@ on the command line, and what it said is written back for the pages.
   otp_upgrade.py --inspect FILE  check a package and say what it is (JSON);
                                  any user - the daemon asks this way
   otp_upgrade.py --run FILE      check and put in a package by hand (root)
+  otp_upgrade.py --run FILE --downgrade   the same for an older one (root)
 """
 import hashlib
 import json
@@ -50,6 +53,7 @@ MOST_UNPACKED = 256 * 1024 * 1024
 MOST_FILES = 5000
 INSTALL_LIMIT_S = 20 * 60      # under TimeoutStartSec=25min and the daemon's 30 (1.0.59)
 TOP = re.compile(r'^otp-([0-9]+(?:\.[0-9]+){2,3})\Z')
+FLOOR_FILE = os.path.join(LIB_DIR, 'downgrade-floor')
 
 
 class Refused(Exception):
@@ -316,8 +320,24 @@ def status(**fields):
     write_safely(os.path.join(UPGRADE_DIR, 'status.json'), json.dumps(fields))
 
 
-def put_in(package, ident='', want_sha='', by='the command line', log_to=None):
-    """Check the package and run its install.sh --upgrade. Returns (rc, log)."""
+def root_floor():
+    """The oldest version this machine may go back to, or None."""
+    try:
+        fd = os.open(FLOOR_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as f:
+            st = os.fstat(f.fileno())
+            text = f.read(64).strip()
+    except OSError:
+        return None
+    if st.st_uid != 0 or st.st_mode & 0o022 or not re.match(r'^\d+\.\d+\.\d+\Z', text):
+        return None                     # not root's alone, or not a version: no floor
+    return text
+
+
+def put_in(package, ident='', want_sha='', by='the command line', log_to=None,
+           downgrade=False):
+    """Check the package and run its install.sh --upgrade. Returns (rc, log).
+    `downgrade`: an older version is asked for on purpose."""
     if os.geteuid() != 0:
         raise Refused('putting a version in takes root')
     work = tempfile.mkdtemp(prefix='otp-upgrade-', dir='/var/tmp')
@@ -354,8 +374,19 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None):
         os.makedirs(unpacked, mode=0o700)
         info = inspect(copy, extract_to=unpacked)
         if info['older']:
-            raise Refused('%s is older than %s, which is installed: going back is done on the '
-                          'command line' % (info['version'], info['installed']))
+            if not downgrade:
+                raise Refused('%s is older than %s, which is installed: going back is asked for '
+                              'as such (Settings - Upgrades - Going back, or otp --downgrade)'
+                              % (info['version'], info['installed']))
+            floor = root_floor()
+            if floor is None:
+                raise Refused('%s has no floor for going back (%s): install.sh --upgrade once '
+                              'with a version that knows it' % (LIB_DIR, FLOOR_FILE))
+            if version_tuple(info['version']) < version_tuple(floor):
+                raise Refused('%s is older than %s, the oldest the versions installed here '
+                              'allow' % (info['version'], floor))
+            say('going back from %s to %s (not older than %s, which this machine allows)'
+                % (info['installed'], info['version'], floor))
         say('otp %s, signed by %s, %d files - checked' % (info['version'], info['signed_by'],
                                                          info['files']))
         src = os.path.join(unpacked, info['top'])
@@ -491,7 +522,8 @@ def serve_request():
             raise Refused('the request names no package')
         status(id=ident, state='running', version=r.get('version'), pid=os.getpid())
         rc, info, _ = put_in(os.path.join(UPGRADE_DIR, name), ident,
-                             str(r.get('sha') or ''), r.get('by') or 'the pages', log_to)
+                             str(r.get('sha') or ''), r.get('by') or 'the pages', log_to,
+                             downgrade=r.get('downgrade') is True)
         status(id=ident, state='done' if rc == 0 else 'failed', rc=rc,
                version=info['version'], tail=log_lines[-40:])
     except Refused as e:
@@ -523,7 +555,8 @@ def main(argv):
         return 0
     if len(argv) >= 2 and argv[0] == '--run':
         try:
-            rc, _info, _ = put_in(os.path.abspath(argv[1]), log_to=print)
+            rc, _info, _ = put_in(os.path.abspath(argv[1]), log_to=print,
+                                  downgrade='--downgrade' in argv[2:])
         except Refused as e:
             print('refused: %s' % e)
             return 1

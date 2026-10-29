@@ -226,10 +226,14 @@ def upgrade_plan(store):
 
 
 def upgrade_checks(store, meta):
-    """What must be so before an upgrade starts - (ok, [why not])."""
+    """What must be so before an upgrade starts - (ok, [why not]). A package
+    to go back to (1.0.143) is looked at again as it was when it was taken."""
     why = []
     if not meta:
         return False, ['no package has been sent yet']
+    down = bool(meta.get('downgrade'))
+    if down:
+        why += downgrade_why_not(store, meta['version'])
     nodes = upgrade_nodes_now(store)
     for n in ha_nodes(store):
         if not n.get('alive'):
@@ -238,7 +242,7 @@ def upgrade_checks(store, meta):
     for n in nodes:
         have = str(n.get('version') or '')
         try:
-            if have and tuple(int(x) for x in have.split('.')) > \
+            if have and not down and tuple(int(x) for x in have.split('.')) > \
                     tuple(int(x) for x in meta['version'].split('.')):
                 why.append('%s runs %s, newer than %s' % (n['name'], have, meta['version']))
         except ValueError:
@@ -274,10 +278,11 @@ def upgrade_start(store, by):
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)',
                          (k, json.dumps({'state': 'none'})))
     plan = {'id': ident, 'version': meta['version'], 'sha': meta['sha'], 'order': order,
-            'by': by, 'at': time.time(), 'from': me}
+            'by': by, 'at': time.time(), 'from': me, 'downgrade': bool(meta.get('downgrade'))}
     store.set_meta('upgrade:plan', json.dumps(plan))
-    store.add_event('starting and stopping', '%s started the upgrade to %s: %s, one at a '
-                    'time' % (by, meta['version'], ', '.join(order)), 'warn', who=by)
+    store.add_event('starting and stopping', '%s started %s %s: %s, one at a time' % (
+        by, 'going back to' if plan['downgrade'] else 'the upgrade to', meta['version'],
+        ', '.join(order)), 'warn', who=by)
     return upgrade_plan(store)
 
 
@@ -407,7 +412,8 @@ def upgrade_tick(daemon):
                                  'was started with')
             path = upgrade_package_file(store, meta)
             req = {'id': plan['id'], 'file': path.name, 'sha': plan['sha'],
-                   'version': plan['version'], 'by': plan.get('by'), 'at': now}
+                   'version': plan['version'], 'by': plan.get('by'), 'at': now,
+                   'downgrade': bool(plan.get('downgrade'))}
             tmp = UPGRADE_DIR / 'request.part'
             try:
                 tmp.unlink()

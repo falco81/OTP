@@ -970,6 +970,21 @@ install_upgrader() {
         [[ -f "$SOURCE_DIR/deploy/release-keys/$(basename "$k")" ]] || run rm -f "$k"
     done
     otp_subdir "$STATE_DIR/upgrade"
+    # How far back this machine may go (1.0.143): the highest floor of every
+    # version put in here - an older version's install.sh leaves it as it is,
+    # so going back never lowers it. Root's alone.
+    local floor new
+    new="$(sed -n "s/^DOWNGRADE_FLOOR = '\([0-9.]*\)'.*/\1/p" "$SOURCE_DIR/otp.py" | head -n 1)"
+    if [[ -n "$new" ]]; then
+        floor=""
+        if [[ -L "$LIB_DIR/downgrade-floor" ]]; then run rm -f "$LIB_DIR/downgrade-floor"
+        elif [[ -f "$LIB_DIR/downgrade-floor" ]]; then
+            floor="$(head -c 32 "$LIB_DIR/downgrade-floor" | tr -cd '0-9.' || true)"
+        fi
+        if [[ -z "$floor" ]] || ! ver_ge "$floor" "$new"; then floor="$new"; fi
+        if [[ -n "$DRY_RUN" ]]; then note "[would write] $LIB_DIR/downgrade-floor: $floor"
+        else printf '%s\n' "$floor" > "$LIB_DIR/downgrade-floor"; chown root:root "$LIB_DIR/downgrade-floor"; chmod 0644 "$LIB_DIR/downgrade-floor"; fi
+    fi
     # TLS and the cluster's web address from the pages (1.0.47): root's helper,
     # keepalived's check, and the units that start the helper when asked.
     if [[ -f "$SOURCE_DIR/deploy/otp_web.py" ]]; then

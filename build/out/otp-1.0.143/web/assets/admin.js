@@ -7385,6 +7385,59 @@ function drawUpWeb(d) {
     host.appendChild(row);
   });
 }
+/* Going back to an older version (1.0.143): asked for on purpose, in a card
+   of its own - the versions at upgrade_url older than this one, each with what
+   stands in its way; the database is checked against the one chosen. */
+function upDownConfirm(version, go) {
+  var d = UP.last || {};
+  var many = (d.nodes || []).filter(function (n) { return n.alive; }).length > 1;
+  confirmThen('Go back to otp ' + version + '?', htmlText('The version running now is replaced by the older ' + version + (many
+    ? ' on every node, one at a time - each in maintenance while it is, so the service never stops.'
+    : ' - for a minute nobody can sign in to the VPN.') + ' The database stays as it is. What came in the newer versions is gone until you upgrade again.'),
+    'Go back', go, true);
+}
+function drawUpDown(d) {
+  var host = $('up-down');
+  if (!host || host._made) return;
+  host._made = true;
+  var row = el('div', 'btnrow');
+  var show = cmdButton('Show the versions to go back to', 'list', '');
+  row.appendChild(show);
+  host.appendChild(row);
+  var list = el('div', '');
+  host.appendChild(list);
+  show.onclick = function () {
+    busy(show, true);
+    api('upgrade', {action: 'downgrade_list'}).then(function (x) {
+      var g = x.downgrade || {};
+      clear(list);
+      list.appendChild(el('p', 'note small', 'At ' + (g.url || '?') + ' - this server runs ' + (g.here || '') + '; it may go back to ' + (g.floor || '?') + ' or newer.'));
+      var vs = g.versions || [];
+      if (!vs.length) { list.appendChild(el('p', 'note', 'No version older than this one is there.')); return; }
+      var running = !!((UP.last || {}).plan && UP.last.plan.state === 'running');
+      list.appendChild(listTable(['Version', 'Can it go back to it', ''], vs, function (v) {
+        var ok = !(v.why || []).length;
+        var said = el('span', ok ? 'tag ok' : 'small bad', ok ? 'yes' : (v.why || []).join('; '));
+        var cell = el('span', '');
+        if (ok && !running) {
+          var go = cmdButton('Go back to ' + v.version, 'undo', 'small danger');
+          go.onclick = function () {
+            upDownConfirm(v.version, function () {
+              busy(go, true);
+              api('upgrade', {action: 'downgrade_get', version: v.version, start: true}).then(function (r) { toast(r.message, 'good'); drawUpgrade(r); })
+                .catch(oops).then(function () { busy(go, false); });
+            });
+          };
+          cell.appendChild(go);
+        }
+        var tr = el('tr');
+        [noI18n(el('b', '', v.version)), said, cell].forEach(function (x) { var td = el('td'); td.appendChild(x); tr.appendChild(td); });
+        return tr;
+      }));
+    }).catch(function (e) { clear(list); list.appendChild(el('p', 'note bad', String((e && e.message) || e))); })
+      .then(function () { busy(show, false); });
+  };
+}
 function drawUpgrade(d) {
   d = upSteady(d);
   UP.last = d;
@@ -7426,7 +7479,8 @@ function drawUpgrade(d) {
     var p = d.package;
     var box = el('div', 'notice good');
     box.style.marginTop = '12px';
-    box.appendChild(el('b', '', 'otp ' + p.version));
+    if (p.downgrade) box.className = 'notice warn';
+    box.appendChild(el('b', '', 'otp ' + p.version + (p.downgrade ? ' - older: ready to go back to' : '')));
     box.appendChild(el('div', 'small', 'signed by ' + (p.signed_by || '?') + ' · ' + bytes(p.bytes) + ' · sent by ' + (p.by || '?') + ' · ' + ago(p.at)));
     pk.appendChild(box);
     if (p.changelog) {
@@ -7442,7 +7496,12 @@ function drawUpgrade(d) {
   $('up-forget').hidden = !d.package || running;
   $('up-start').disabled = !d.package || !d.ready || running;
   var many = (d.nodes || []).length > 1;
-  setButtonIcon($('up-start'), 'play', many ? 'Upgrade every node, one at a time' : 'Upgrade this server');
+  var down = !!(d.package && d.package.downgrade);
+  setButtonIcon($('up-start'), down ? 'undo' : 'play', down ? (many ? 'Go back on every node, one at a time' : 'Go back on this server')
+    : (many ? 'Upgrade every node, one at a time' : 'Upgrade this server'));
+  $('up-start').classList.toggle('danger', down);
+  $('up-start').classList.toggle('primary', !down);
+  drawUpDown(d);
   var rd = $('up-ready');
   clear(rd);
   if (d.package && !d.ready && !running) {
@@ -7455,7 +7514,7 @@ function drawUpgrade(d) {
   $('up-plan-card').hidden = !plan;
   liveFill($('up-plan'), function (ph) {
   if (plan) {
-    ph.appendChild(el('p', 'note', 'To ' + plan.version + ' · started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · '
+    ph.appendChild(el('p', 'note', (plan.downgrade ? 'Going back to ' : 'To ') + plan.version + ' · started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · '
       + ({running: 'going on', done: 'done', failed: 'failed', cancelled: 'stopped'})[plan.state]));
     /* How far, as bars (1.0.67): the whole and each node. */
     var steps = plan.steps || [];
@@ -7649,6 +7708,9 @@ if ($('up-drop')) {
       var p = d.package || {};
       var names = (d.nodes || []).filter(function (n) { return n.alive; }).map(function (n) { return n.name; });
       var many = names.length > 1;
+      if (p.downgrade) { upDownConfirm(p.version, function () {
+        api('upgrade', {action: 'start'}).then(function (r) { toast(r.message, 'good'); drawUpgrade(r); }).catch(oops);
+      }); return; }
       confirmThen(many ? 'Upgrade every node to ' + p.version : 'Upgrade this server to ' + p.version,
         many ? 'One node at a time: it is taken out of service, upgraded, checked and brought back, and only then the next one. The VPN and the load balancer use the other node meanwhile.'
              : 'This server is the only one: while it is put in and restarted - a minute or two - nobody can sign in to the VPN, and these pages stop answering for a moment.',

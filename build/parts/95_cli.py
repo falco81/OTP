@@ -568,6 +568,13 @@ def build_parser():
                         'its progress (--yes: without asking)')
     g.add_argument('--upgrade-follow', action='store_true', help='follow an upgrade going on, '
                    'with its progress, until it ends')
+    g.add_argument('--downgrade-check', action='store_true', help='the versions at upgrade_url '
+                   'older than this one, and whether each may be gone back to')
+    g.add_argument('--downgrade', metavar='VERSION|FILE', help='go back to an older otp - VERSION '
+                   'from upgrade_url, or an otp-X.Y.Z.tar.gz - only when it is safe: checked '
+                   'against how far back the versions that ran here allow, and against the '
+                   'database\'s tables; the database itself is not touched. Every node, one at '
+                   'a time (--yes: without asking)')
     g.add_argument('--rename-from-opt', action='store_true', help=argparse.SUPPRESS)
     g.add_argument('--change-keep', metavar='net|fw', choices=('net', 'fw'),
                    help='keep a change on trial: a node\'s new network (with --node) or the '
@@ -1557,7 +1564,8 @@ def cli_upgrade_follow(store, pal):
                 fill = '█' * n + '░' * (width - n)
                 paint = pal.bad if bad else (pal.good if good else pal.info)
                 return paint(fill) + ' %3d %%' % pc
-            lines = [pal.head('upgrade to %s' % plan.get('version')) + pal.dim(
+            lines = [pal.head(('going back to %s' if plan.get('downgrade') else 'upgrade to %s')
+                              % plan.get('version')) + pal.dim(
                 '  started by %s · %s' % (plan.get('by') or '?', plan.get('state')))]
             lines.append('  %-16s %s  %d of %d node(s) done' % (
                 'all', bar(whole, plan.get('state') == 'failed', plan.get('state') == 'done'),
@@ -1579,8 +1587,9 @@ def cli_upgrade_follow(store, pal):
             if plan.get('state') != 'running':
                 ok = plan.get('state') == 'done'
                 print((pal.ok_line if ok else pal.bad_line)(
-                    'the upgrade %s' % ('is done - every node runs %s' % plan.get('version')
-                                        if ok else 'ended: %s' % plan.get('state'))))
+                    '%s %s' % ('going back' if plan.get('downgrade') else 'the upgrade',
+                               'is done - every node runs %s' % plan.get('version')
+                               if ok else 'ended: %s' % plan.get('state'))))
                 return 0 if ok else 1
             if not tty:
                 drawn = 0
@@ -1892,6 +1901,70 @@ def cli_main(argv=None):
         return cli_upgrade_follow(store, pal)
 
     if args.upgrade_follow:
+        return cli_upgrade_follow(store, pal)
+
+    if args.downgrade_check:
+        try:
+            got = downgrade_list(store)
+        except Exception as e:                          # noqa: BLE001
+            raise SystemExit('otp: %s' % e)
+        if args.json:
+            print(json.dumps(got, indent=2, default=str))
+            return 0
+        print(pal.head('going back from %s - looked at %s' % (__version__, got['url'])))
+        print(pal.dim('  it may go back to %s or newer (set by otp %s; this machine allows %s)'
+                      % (got['floor'], got['floor_by'], got['root_floor'] or 'nothing yet')))
+        if not got['versions']:
+            print(pal.ok_line('no version older than %s is there' % __version__))
+        for v in got['versions']:
+            if v['why']:
+                print(pal.bad_line('%-10s %s' % (v['version'], '; '.join(v['why']))))
+            else:
+                print(pal.ok_line('%-10s may be gone back to: otp --downgrade %s'
+                                  % (v['version'], v['version'])))
+        return 0
+
+    if args.downgrade:
+        plan = upgrade_plan(store)
+        if plan and plan['state'] == 'running':
+            raise SystemExit('otp: an upgrade is going on - otp --upgrade-follow')
+        want = args.downgrade
+        is_file = want.endswith(('.tar.gz', '.tgz')) or os.path.sep in want
+        if not is_file:
+            why = downgrade_why_not(store, want)
+            if why:
+                raise SystemExit('otp: otp %s cannot be gone back to: %s' % (want, '; '.join(why)))
+        nodes = [n['name'] for n in ha_nodes(store)] or [node_name()]
+        print(pal.head('otp %s → %s (going back)' % (__version__, os.path.basename(want))))
+        print('  ' + ('the nodes %s, one at a time - each in maintenance while it is done'
+                      % ', '.join(nodes) if len(nodes) > 1 else
+                      'this server - for a minute nobody can sign in to the VPN'))
+        print('  ' + pal.dim('the database stays as it is; what came in the newer versions is '
+                             'gone until you upgrade again'))
+        if not args.yes:
+            try:
+                ok = input('  go back? (y/N) ').strip().lower() in ('y', 'yes', 'a', 'ano')
+            except (EOFError, KeyboardInterrupt):
+                ok = False
+            if not ok:
+                print('  nothing done')
+                return 1
+        print(pal.dim('  checking it: its signature, how far back this may go, the tables…'))
+        try:
+            if is_file:
+                if not os.path.isfile(want):
+                    raise ValueError('%s is not a file' % want)
+                meta = downgrade_file(store, want, 'command line')
+            else:
+                meta = downgrade_fetch(store, want, 'command line')
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        print(pal.ok_line('otp %s checked (signed by %s) - the database can take it'
+                          % (meta['version'], meta.get('signed_by'))))
+        try:
+            upgrade_start(store, 'command line')
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
         return cli_upgrade_follow(store, pal)
 
     if args.upgrade_status:

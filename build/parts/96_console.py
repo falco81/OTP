@@ -2650,6 +2650,15 @@ class Console(object):
             if not os.path.isfile(script):
                 self.note('Upgrade', 'there is no install.sh in %s' % folder, 'bad')
                 return
+            m = re.search(r'otp-(\d+\.\d+\.\d+)$', os.path.basename(folder.rstrip('/')))
+            if m and _ver_tuple(m.group(1)) < _ver_tuple(__version__):
+                # Never past the checks (1.0.143): an older one goes the safe way.
+                self.note('Upgrade', '%s is older than %s, which runs here. Going back is '
+                          'checked first - Upgrades → Go back to an older version, or\n'
+                          'otp --downgrade %s' % (m.group(1), __version__,
+                                                  path if path.endswith('.tar.gz') else
+                                                  'otp-%s.tar.gz' % m.group(1)), 'warn')
+                return
             if self.confirm('Upgrade', 'This node is upgraded with %s.' % script, 'Upgrade'):
                 def go():
                     self.clear_screen()
@@ -2661,6 +2670,39 @@ class Console(object):
             if self.confirm('Stop the upgrade', 'The nodes not yet begun stay as they are; '
                             'one being upgraded finishes.', 'Stop it'):
                 self.act('--upgrade-cancel')
+
+        def back():
+            # Going back to an older version (1.0.143): only one that is safe.
+            self.working('working…  looking for older versions')
+            got = self.out('--downgrade-check') or {}
+            if not got.get('versions') and got.get('url') is None:
+                self.note('Go back to an older version', 'The versions could not be read: '
+                          'is upgrade_url set? (otp --downgrade-check says why)', 'bad')
+                return
+            vs = got.get('versions') or []
+            ok = [v for v in vs if not v.get('why')]
+            if not ok:
+                self.note('Go back to an older version', 'Nothing older at %s may be gone back '
+                          'to.\n\n%s' % (got.get('url'), '\n'.join(
+                              '%s: %s' % (v['version'], '; '.join(v['why'])) for v in vs)
+                              or 'No older version is there.'), 'warn')
+                return
+            ver = self.choose('Go back to an older version', [
+                (v['version'], 'otp %s' % v['version']) for v in ok],
+                'This server runs %s and may go back to %s or newer (the database is not '
+                'touched). Found at %s:' % (__version__, got.get('floor'), got.get('url')))
+            if not ver:
+                return
+            nodes = self._nodes()
+            if not self.confirm('Go back to %s' % ver, (
+                    'The nodes %s go back one at a time - each in maintenance while it is, '
+                    'the other answering.' % ', '.join(nodes) if len(nodes) > 1 else
+                    'This server goes back - for a minute nobody can sign in to the VPN.') +
+                    ' The package is checked against the database first. What came in the '
+                    'newer versions is gone until you upgrade again.', 'Go back',
+                    danger=True):
+                return
+            self.live(lambda: self.show_live('--downgrade', ver, '--yes'))
         return self.sub('Upgrades', [
             ('1', 'How it stands', lambda: self.act('--upgrade-status')),
             ('2', 'Look for a new version on the web now', lambda: self.act('--upgrade-check')),
@@ -2669,6 +2711,7 @@ class Console(object):
              'plain'),
             ('5', 'Upgrade this node from a package file', install),
             ('6', 'Stop an upgrade going on', cancel),
+            ('7', 'Go back to an older version (only a safe one)', back),
         ])
 
     # ---- 11 the service ---------------------------------------------------------

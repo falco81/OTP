@@ -4,6 +4,25 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.143 — 29 October 2026
+
+**Going back to an older version - only a safe one**
+- Settings → Upgrades → *Going back to an older version*, `otp --downgrade
+  VERSION|FILE` (and `--downgrade-check`), the console's Upgrades → *Go back
+  to an older version*. Never by putting the database back: the tables stay as
+  they are, whatever their size, and the older version runs on them.
+- Refused below the highest floor (`DOWNGRADE_FLOOR`, now 1.0.139) of any
+  version that ran on this database (kept per node in the database) and of any
+  installed on this machine (`/usr/local/lib/otp/downgrade-floor`, root's
+  alone - the otp account cannot lower it, so the server cannot be taken back
+  to a version with a fixed hole); and when the database has a NOT NULL column
+  without a default that the older version does not know.
+- The package is checked as an upgrade's; the nodes go back one at a time,
+  each in maintenance, as in an upgrade. Root's helper puts an older version
+  in only when going back is asked for, and never below its floor.
+- The console's *Upgrade this node from a package file* refuses an older
+  package and points to going back.
+
 ## 1.0.142 — 29 October 2026
 
 **From the web: choose the version to go to**

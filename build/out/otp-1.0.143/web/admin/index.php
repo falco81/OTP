@@ -1541,6 +1541,17 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
       </div>
       <div id="up-ready"></div>
     </div>
+    <div class="card full admin-only" id="up-down-card">
+      <h2>Going back to an older version</h2>
+      <p class="note">Only to a version that is safe: one that reads what the newer versions
+        wrote into the database the same, and has every security fix that matters - each version
+        says how far back it may go, and the highest of what ran on this database and was
+        installed on this machine counts. The database is not put back nor changed: its tables
+        stay as they are and the older version runs on them, so it does not matter how big it
+        is. The package is checked like an upgrade's, and against this database's tables, before
+        anything is put in; then the nodes go back one at a time, as in an upgrade.</p>
+      <div id="up-down"></div>
+    </div>
     <div class="card full" id="up-plan-card" hidden>
       <h2>The upgrade</h2>
       <div id="up-plan"></div>

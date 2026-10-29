@@ -5004,6 +5004,21 @@ def _upgrade_do(h):
             return dict(_upgrade_view(h), message=(
                 'otp %s is there - newer than %s' % (n['version'], __version__) if row.get('newer')
                 else ('nothing newer than %s' % __version__ if n else 'no otp package there')))
+        if act == 'downgrade_list':
+            # Going back (1.0.143): the older versions there, and what stands
+            # in the way of each.
+            return {'downgrade': downgrade_list(h.store)}
+        if act == 'downgrade_get':
+            plan = upgrade_plan(h.store)
+            if plan and plan['state'] == 'running':
+                raise ValueError('an upgrade is going on: wait for it, or stop it first')
+            meta = downgrade_fetch(h.store, str(b.get('version') or ''), s['name'])
+            if b.get('start'):
+                upgrade_start(h.store, s['name'])
+                return dict(_upgrade_view(h), message='otp %s fetched and checked; going back '
+                            'to it has begun' % meta['version'])
+            return dict(_upgrade_view(h), message='otp %s is fetched, checked for this database '
+                        'and ready to go back to' % meta['version'])
         if act == 'online_get':
             plan = upgrade_plan(h.store)
             if plan and plan['state'] == 'running':

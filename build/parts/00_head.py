@@ -77,7 +77,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.142'
+__version__ = '1.0.143'
+# The oldest version this one may go back to (1.0.143): one that reads what
+# this one writes into the database and config.json the same, and has every
+# security fix that matters. Raised whenever a version writes something an
+# older one would misread, or fixes a hole an older one has. install.sh keeps
+# the highest of these in a file of root's (downgrade-floor); each node keeps
+# its own in the database.
+DOWNGRADE_FLOOR = '1.0.139'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults

@@ -190,15 +190,19 @@ def online_view(store):
             'check': bool(CONFIG.get('upgrade_check'))}
 
 
-def online_fetch(store, version, by):
+def online_fetch(store, version, by, older=False):
     """The package of `version` fetched from where it was found, checked and
-    kept as one sent by hand would be: its meta."""
+    kept as one sent by hand would be: its meta. `older`: one to go back to
+    (1.0.143), kept only if downgrade_take finds nothing in its way."""
     pk = [p for p in online_list(online_url())
           if p['version'] == str(version)]
     if not pk:
         raise ValueError('otp %s is not at %s any more' % (version, online_url()))
     pk = pk[0]
-    if _ver_tuple(pk['version']) <= _ver_tuple(__version__):
+    if older and _ver_tuple(pk['version']) >= _ver_tuple(__version__):
+        raise ValueError('otp %s is not older than %s, which runs here' % (pk['version'],
+                                                                           __version__))
+    if not older and _ver_tuple(pk['version']) <= _ver_tuple(__version__):
         raise ValueError('otp %s is not newer than %s, which runs here' % (pk['version'], __version__))
     UPGRADE_DIR.mkdir(mode=0o750, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='online-', suffix='.tar.gz', dir=str(UPGRADE_DIR))
@@ -213,6 +217,10 @@ def online_fetch(store, version, by):
             store.add_event('starting and stopping', 'otp %s from %s was refused: %s'
                             % (version, final, e), 'warn', who=by)
             raise ValueError('the package from %s was refused: %s' % (final, e))
+        if older:
+            if not info.get('older') and _ver_tuple(info['version']) >= _ver_tuple(__version__):
+                raise ValueError('%s is not older than %s' % (info['version'], __version__))
+            return downgrade_take(store, tmp, info, by)
         if info.get('older'):
             raise ValueError('%s is older than %s, which runs here' % (info['version'],
                                                                          info.get('installed')))
