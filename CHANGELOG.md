@@ -4,6 +4,36 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.178 — 30 October 2026
+
+**SSH to the nodes with a code from otp (pam_radius)**
+- *Settings → SSH server → Signing in with a code from otp*: sshd of every node
+  asks for a code from the account's token instead of its password, through
+  `pam_radius` and the node's own RADIUS on 127.0.0.1 - both nodes and a node
+  alone. otp installs pam_radius (EPEL on RHEL), makes the RADIUS client *SSH of
+  the nodes - pam_radius* with a random secret, keeps that secret in
+  `/etc/otp/pam_radius.conf` (0600, never on a command line), turns SELinux's
+  `authlogin_radius` on and puts a marked block into `/etc/pam.d/sshd` - on
+  trial like every change of the SSH server, taken out to the byte when switched
+  off.
+- Only some accounts, root in or out (out by default: a way in if otp is in
+  trouble), and the system password when otp does not answer (`localifdown`;
+  only with passwords on - under high security's *SSH: passwords* there is none).
+- Each node's card says whether the code is asked there. How it works and what
+  breaks it (a kernel with `ipv6.disable=1`): `docs/ssh-with-a-code.md`.
+
+**isemon: a test sign-in isemon shows**
+- *Send a test sign-in…* next to *Send a test line* on each node's card: a
+  `totp.cgi` line in totpcgi's own shape (Success or Failure) under a name given
+  (`otp-test` by default), its message saying it is a test from otp and the
+  node - isemon shows it among the sign-ins. Sent to the receivers only, not
+  into the node's files. The test line before is still there (isemon files it,
+  but shows nothing of it).
+
+**isemon over TLS: the wizard comes back after *Make the file***
+- Saving the file for the isemon machine closed the wizard; it now opens again
+  with everything as it was, to finish the settings.
+
 ## 1.0.177 — 30 October 2026
 
 - A switch of another node stands right under the setting's own switch, its

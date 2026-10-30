@@ -4455,6 +4455,21 @@ function drawIsemon() {
           }, function () { busy(t, false); drawIsemon(); }).catch(function (e) { busy(t, false); oops(e); });
         };
         row2.appendChild(t);
+        /* A sign-in isemon shows (1.0.178), under a name given. */
+        var ts = cmdButton('Send a test sign-in…', 'person', 'small');
+        ts.disabled = t.disabled;
+        explain(ts, 'A line in the very shape of totpcgi\'s (totp.cgi), from ' + n.node + ' to every isemon receiver: isemon shows it as a sign-in of the name given - its message says it is a test.');
+        ts.onclick = function () {
+          askInModal('A test sign-in for isemon', 'isemon shows it under this name as a sign-in from ' + n.node + ', "Success" or "Failure" as chosen; its message says it is a test from otp. Nothing is checked and nothing is written into this node\'s files.',
+            [{label: 'As the user', value: 'otp-test', mono: true}, {label: 'Success or Failure (s / f)', value: 's', mono: true}], 'Send it', 'pulse', function (v, b) {
+              busy(b, true);
+              askNodes('isemon', {action: 'test', node: n.node, as_user: v[0].trim(), ok: !/^f/i.test(v[1].trim())}, function (node, got) {
+                IS.said[node] = got;
+                if (got.state) IS.d.nodes.forEach(function (x) { if (x.node === node) Object.assign(x, got.state, {at: Date.now() / 1000}); });
+              }, function () { closeModal(); drawIsemon(); }).catch(function (e) { busy(b, false); oops(e); });
+            });
+        };
+        row2.appendChild(ts);
         c.appendChild(row2);
       }
       grid.appendChild(c);
@@ -13666,6 +13681,7 @@ function drawSshd(live) {
         ['Who may sign in', v.allowusers || 'everybody'],
         ['Keys of root', String(n.keys)],
         ['SELinux', (n.now || {}).selinux || '–', true],
+        ['A code from otp', !n.radius || n.radius.pam === undefined ? '–' : (n.radius.pam ? 'asked (pam_radius)' : (n.radius.module ? 'not asked' : 'pam_radius is not here'))],
         ['Read', n.now.at ? ago(n.now.at) : 'not yet']
       ]));
       if (n.now.error) c.appendChild(el('p', 'note bad', n.now.error));
@@ -13716,6 +13732,34 @@ function drawSshd(live) {
     if (dr.manage && !dr.password && dr.permit_root === 'yes')
       fc.appendChild(el('p', 'note', 'Passwords off: root signs in with a key either way.'));
     host.appendChild(fc);
+    /* A code from otp (1.0.178): pam_radius asks this node's own RADIUS. */
+    var rc = el('div', 'card full');
+    rc.appendChild(el('h2', '', 'Signing in with a code from otp'));
+    rc.appendChild(el('p', 'muted small', 'sshd asks for a code from the account\'s token where it would ask for its password, through pam_radius and the RADIUS of the node itself (127.0.0.1). The RADIUS client "SSH of the nodes - pam_radius" is made by itself. Users sign in with their token in a realm with no suffix - the name typed at ssh is the name otp looks up.'));
+    var rs = switchBox(dr.radius);
+    rs._input.disabled = !dr.manage;
+    rs._input.onchange = function () { dr.radius = !!rs._get(); sdDirty(); drawSshd(); };
+    rc.appendChild(formField('Ask for a code from otp', rs, dr.manage ? 'A key alone still lets in - sshd asks for the code only where it asks for a password.' : 'Needs otp to set the SSH server, above.'));
+    var rg = el('div', 'formgrid sd-grid' + (dr.manage && dr.radius ? '' : ' off'));
+    var ru = textBox((dr.radius_users || []).join(' '), 'everybody', 'mono');
+    ru.disabled = !dr.manage || !dr.radius;
+    ru.oninput = function () { dr.radius_users = ru.value.split(/[\s,]+/).filter(Boolean); sdDirty(); };
+    rg.appendChild(formField('Only these accounts', ru, 'Separated by spaces. Empty: everybody but root, unless root is asked too.'));
+    var rr = switchBox(dr.radius_root);
+    rr._input.disabled = !dr.manage || !dr.radius;
+    rr._input.onchange = function () { dr.radius_root = !!rr._get(); sdDirty(); };
+    rg.appendChild(formField('Root too', rr, 'Off: root signs in as before - a way in if otp itself is in trouble.'));
+    var rf = switchBox(dr.radius_fallback && dr.password);
+    rf._input.disabled = !dr.manage || !dr.radius || !dr.password;
+    rf._input.onchange = function () { dr.radius_fallback = !!rf._get(); sdDirty(); };
+    rg.appendChild(formField('The system password when otp does not answer', rf, dr.password ? 'pam_radius steps aside (localifdown) and the account\'s own password is asked.' : 'Needs passwords on - with them off, nobody gets in without the code.'));
+    rc.appendChild(rg);
+    if (dr.manage && dr.radius) {
+      var miss = nodes.filter(function (n) { return n.radius && n.radius.module === false; }).map(function (n) { return n.name; });
+      if (miss.length) rc.appendChild(el('p', 'note warn', 'pam_radius is not on ' + miss.join(', ') + ' - otp installs it when this is saved (RHEL: from EPEL - dnf install epel-release first).'));
+      rc.appendChild(el('p', 'note', 'Keep the session you have open and try a new one while it is on trial. A kernel booted with ipv6.disable=1 breaks pam_radius 2.0 - nobody gets the code asked.'));
+    }
+    host.appendChild(rc);
     /* The notice. */
     var nc = el('div', 'card full');
     nc.appendChild(el('h2', '', 'The notice'));
@@ -14764,36 +14808,43 @@ function drawIsemonTls() {
   box.appendChild(list);
   host.appendChild(box);
 }
-function isemonTlsWizard() {
+function isemonTlsWizard(was) {
   var t = IS.d.tls || {};
   var cur = (t.targets || [])[0] || {};
+  was = was || null;
   var hostI, portI, srcI, pemI, namesI, mtlsI, verI, out, pemF, namesF, bundleRow;
   modal('Encrypt the sending to isemon', function (body) {
     body.appendChild(el('p', 'note', 'Step by step: where isemon is and whose certificate it has; for one made here, the locked file for isemon with what to do there; then tried from every node; then switched over.'));
     var g = el('div', 'formgrid');
-    hostI = textBox(cur.host || '', 'isemon.example.cz', 'mono');
+    if (was && was.saved) body.appendChild(el('p', 'note good', 'The file for isemon is saved. Put it in on the isemon machine as README.txt in it says, then Try it on every node and Switch over.'));
+    hostI = textBox(was ? was.host : (cur.host || ''), 'isemon.example.cz', 'mono');
     g.appendChild(formField('isemon’s address', hostI, 'As the nodes reach it - the name or the address its certificate is for.'));
-    portI = textBox(String(cur.proto === 'tls' ? cur.port : 6514), '6514', 'mono');
+    portI = textBox(was ? String(was.port) : String(cur.proto === 'tls' ? cur.port : 6514), '6514', 'mono');
     g.appendChild(formField('Port', portI, '6514 is syslog over TLS.'));
     srcI = selectBox([['otp', 'otp makes isemon a certificate - a locked file for isemon'], ['given', 'isemon has one from its own CA (PEM)'], ['system', 'isemon has one from a public CA']],
-      t.ca_is_otp || !t.tls ? 'otp' : (t.ca === 'given' ? 'given' : 'system'));
+      was ? was.src : (t.ca_is_otp || !t.tls ? 'otp' : (t.ca === 'given' ? 'given' : 'system')));
     g.appendChild(formField('isemon’s certificate', srcI, 'Who signed the certificate isemon’s rsyslog answers with.'));
-    mtlsI = switchBox(t.tls ? t.mtls : true);
+    mtlsI = switchBox(was ? was.mtls : (t.tls ? t.mtls : true));
     g.appendChild(formField('isemon takes otp’s nodes only (mutual TLS)', mtlsI, 'Each node shows isemon a certificate of its own from otp’s authority, made and renewed by itself; isemon’s rsyslog lets in only those (PermittedPeer).'));
-    verI = switchBox(t.tls ? t.verify : true);
+    verI = switchBox(was ? was.verify : (t.tls ? t.verify : true));
     verI._input.disabled = !!t.hisec;
     g.appendChild(formField('Check isemon’s certificate', verI, 'Off only to try it: encrypted, but whoever answers is taken.'));
     body.appendChild(g);
     pemI = el('textarea', 'mono'); pemI.rows = 5; pemI.placeholder = '-----BEGIN CERTIFICATE-----';
+    if (was) pemI.value = was.pem || '';
     pemF = formField('isemon’s authority (PEM)', pemI, 'The CA certificate that signed isemon’s certificate. Nothing secret.');
     body.appendChild(pemF);
-    namesI = textBox(cur.host || '', 'isemon.example.cz, 10.1.2.3', 'mono');
+    namesI = textBox(was ? was.names : (cur.host || ''), 'isemon.example.cz, 10.1.2.3', 'mono');
     namesF = formField('Names in isemon’s certificate', namesI, 'Every name and address the nodes reach isemon by, separated by commas.');
     body.appendChild(namesF);
     bundleRow = el('div', 'btnrow');
     var mk = cmdButton('Make the file for isemon…', 'download', 'small');
     explain(mk, 'isemon’s certificate and its key from otp’s authority, otp’s authority, the rsyslog configuration and what to do - one ZIP locked with a passphrase you give now (the key is in it). otp does not keep the key. Open it with 7-Zip (7z x isemon-tls.zip).');
     mk.onclick = function () {
+      /* What is filled in, to come back to (1.0.178): the passphrase's window
+         takes the wizard's place, and the wizard closed with it. */
+      var keep = {host: hostI.value, port: portI.value, src: srcI.value, mtls: !!mtlsI._get(), verify: !!verI._get(),
+                  pem: pemI.value, names: namesI.value};
       askInModal('The file for isemon', 'A passphrase for the file: 12 characters at least. You need it to open the file on the isemon machine - otp does not keep it.',
         [{label: 'Passphrase', type: 'password'}, {label: 'Again', type: 'password'}], 'Make it', 'download', function (v, b) {
           if (v[0] !== v[1]) { toast('the two are not the same', 'bad'); return; }
@@ -14808,6 +14859,8 @@ function isemonTlsWizard() {
             setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
             closeModal();
             toast('the file for isemon is saved - put it in on the isemon machine (README.txt in it), then Try it on every node', 'good');
+            keep.saved = true;
+            isemonTlsWizard(keep);
           }).catch(function (e) { busy(b, false); oops(e); });
         });
     };
