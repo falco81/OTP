@@ -908,6 +908,7 @@ class Daemon(object):
         self.shipper = None
         self.siem = None
         self.sshgate = None
+        self.snmp = None
         _HS_WAIVE['store'][0] = store       # the exceptions to high security read from it
         self.dirs = {}
         self.reload_directories()
@@ -932,6 +933,8 @@ class Daemon(object):
             self.radius = RadiusServer(self)
             # SSH with a code (1.0.181): a gate of its own on 127.0.0.1.
             self.sshgate = SshGate(self)
+            # SNMPv3 (1.0.182): an agent of its own, in a thread of its own.
+            self.snmp = SnmpAgent(self)
 
     def reload_directories(self):
         self.store._dirs = None

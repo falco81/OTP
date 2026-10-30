@@ -3,7 +3,7 @@
 V=${1:?version}
 cd "$(dirname "$0")"
 python3 -I ../build/out/otp-$V/test/checks.py 2>/dev/null | tail -1 || true
-for t in acme/t_acme.py isemon/t_isemontls.py isemon/t_isetest.py metrics/t_metrics.py ask/t_ask.py verify/t_verify.py hisec/t_hisec.py exp/t_totpzip.py siem/t_siem.py \
+for t in acme/t_acme.py isemon/t_isemontls.py isemon/t_isetest.py metrics/t_metrics.py snmp/t_snmp.py ask/t_ask.py verify/t_verify.py hisec/t_hisec.py exp/t_totpzip.py siem/t_siem.py \
          alerts/t_alerts.py power/t_power.py host/t_host.py sshd/t_sshd.py sshd/t_pamradius.py sshd/t_sshotp_api.py chal/t_chal.py cz/t_cz.py \
          adm/t_admin_groups.py dg/t_down.py dg/t_root.py; do
   [ -f "$t" ] || continue

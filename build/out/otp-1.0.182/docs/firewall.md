@@ -51,6 +51,7 @@ and nothing else.
 | DHCPv6 client | 6 | udp 546 from fe80::/10 | yes |
 | HTTP / HTTPS | both | tcp 80,443 - from everybody when one of the three page lists is for everybody, else from the networks of the three lists | yes |
 | RADIUS | as the client | udp 1812 (and 1813 for accounting) from each enabled RADIUS client, only from them | yes |
+| SNMPv3 | as the network | udp 161 (the port set) from the networks under *Settings → Monitoring → Only from*, from everywhere when none is set - only while SNMPv3 is on | yes |
 | The other node | as the node | everything from the other node (replication, its pages, the health check, its answers) | no |
 | VRRP | as the node | IP protocol 112 from the other node, while the VIP address is on | no |
 

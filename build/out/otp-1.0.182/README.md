@@ -87,7 +87,7 @@ High security: [docs/high-security.md](docs/high-security.md).
 Automatic certificates (ACME, HTTP-01 and DNS-01): [docs/acme.md](docs/acme.md).
 Encryption to the database server, every node: [docs/database-tls.md](docs/database-tls.md).
 isemon over TLS, and what to do on the isemon machine: [docs/isemon-tls.md](docs/isemon-tls.md).
-Prometheus metrics of every node: [docs/monitoring.md](docs/monitoring.md).
+Prometheus metrics and SNMPv3 of every node: [docs/monitoring.md](docs/monitoring.md).
 SSH to the nodes with a code from otp (pam_radius): [docs/ssh-with-a-code.md](docs/ssh-with-a-code.md).
 The database, and moving into MariaDB or PostgreSQL: [docs/the-database.md](docs/the-database.md).
 PHP and php2shell (CVE-2026-109618 / CVE-2026-109619): [docs/php2shell.md](docs/php2shell.md).

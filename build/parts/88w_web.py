@@ -1052,6 +1052,15 @@ def fw_auto(store, node):
                     'time to the networks set under Settings → Time',
                     'rules': [{'family': _fam(a.split('/')[0]), 'proto': 'udp', 'port': '123',
                                'source': a} for a in nc['allow']]})
+    # SNMPv3 (1.0.182): from the networks set, or from everywhere.
+    if CONFIG.get('snmp'):
+        nets = [w for w in re.split(r'[\s,;]+', str(CONFIG.get('snmp_from') or '')) if w]
+        port = str(int(CONFIG.get('snmp_port') or 161))
+        out.append({'key': 'snmp', 'title': 'SNMPv3', 'why': 'the monitoring asks each node '
+                    '(Settings → Monitoring); from the networks set there only',
+                    'rules': [{'family': _fam(n.split('/')[0]), 'proto': 'udp', 'port': port,
+                               'source': n} for n in nets] or
+                    [{'family': f, 'proto': 'udp', 'port': port, 'source': ''} for f in (4, 6)]})
     # Inside the cluster: always, never turned off.
     if CONFIG.get('ha_mode') and peers:
         nodes_only = [p for p in peers if p != str(v.get('address') or '').split('/')[0]]

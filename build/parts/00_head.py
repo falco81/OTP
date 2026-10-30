@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import binascii
 import collections
 import contextlib
+import errno
 import getpass
 import hashlib
 import heapq
@@ -78,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.181'
+__version__ = '1.0.182'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -197,6 +199,20 @@ DEFAULTS = {
     'ssh_gate_port': 18129,
     'metrics_token': '',
     'metrics_from': '',
+    # --- SNMPv3 (1.0.182) ------------------------------------------------------
+    'snmp': 0,
+    'snmp_port': 161,
+    'snmp_bind': '',
+    'snmp_from': '',
+    'snmp_user': '',
+    'snmp_auth': 'SHA-256',
+    'snmp_auth_pass': '',
+    'snmp_priv': 'AES-128',
+    'snmp_priv_pass': '',
+    'snmp_contact': '',
+    'snmp_location': '',
+    'snmp_traps': 0,
+    'snmp_trap_to': '',
     'isemon_verify': 1,
     'isemon_mtls': 0,
     'ship_files': 1,
@@ -393,7 +409,7 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # name isemon files its lines under and the debug switches.
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
              'isemon_hostname', 'siem_hostname', 'acme_node_name', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
-             'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes')
+             'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes', 'snmp_bind')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
 # when, whether, how many.
@@ -407,11 +423,12 @@ def this_node_name(conf=None):
 METRICS_TOKEN_RE_HEAD = re.compile(r'^[A-Za-z0-9_.~+/=-]{24,200}\Z')
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
                'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
-               'acme_dns_key', 'acme_desec_token', 'metrics_token')
+               'acme_dns_key', 'acme_desec_token', 'metrics_token', 'snmp_auth_pass',
+               'snmp_priv_pass')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
                'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
-               'acme_desec_token', 'metrics_token')
+               'acme_desec_token', 'metrics_token', 'snmp_auth_pass', 'snmp_priv_pass')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -442,6 +459,8 @@ TUNABLE = {
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
+    'snmp': (0, 1), 'snmp_port': (1, 65535), 'snmp_auth': ('SHA-256', 'SHA-512', 'SHA-1'),
+    'snmp_priv': ('AES-128', 'AES-256'), 'snmp_traps': (0, 1),
     'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
     'retain_radius_days': (0, 36500), 'retain_otp_days': (0, 36500),
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
@@ -683,6 +702,19 @@ NAMES = {
     'metrics': 'Prometheus metrics (/metrics)',
     'metrics_token': 'Its token (Bearer)',
     'metrics_from': 'Only from',
+    'snmp': 'SNMPv3',
+    'snmp_port': 'Port (UDP)',
+    'snmp_bind': 'Listen on',
+    'snmp_from': 'SNMP only from',
+    'snmp_user': 'User',
+    'snmp_auth': 'Authentication',
+    'snmp_auth_pass': 'Its passphrase (authentication)',
+    'snmp_priv': 'Encryption',
+    'snmp_priv_pass': 'Its passphrase (encryption)',
+    'snmp_contact': 'Contact (sysContact)',
+    'snmp_location': 'Location (sysLocation)',
+    'snmp_traps': 'Traps when something is wrong',
+    'snmp_trap_to': 'Where traps go',
     'isemon_verify': 'Check isemon’s certificate (TLS)',
     'isemon_mtls': 'Each node shows isemon a certificate of its own (TLS)',
     'ship_files': 'Write the same lines into files here too',
@@ -1132,6 +1164,27 @@ SAYS = {
     'metrics_from': 'The addresses or networks Prometheus asks from, <code>10.0.5.0/24, '
                     '2001:db8::/64</code>. Empty: from anywhere that reaches the pages, with the '
                     'token.',
+    'snmp': 'Each node answers SNMPv3 itself - an agent of otp, no snmpd: the system group and '
+            'otp\u2019s own objects (OTP-MIB, <code>deploy/OTP-MIB.txt</code>), read only. '
+            'authPriv only: a user with a passphrase for each.',
+    'snmp_port': '161 is SNMP\u2019s. Another where snmpd of the system has it already.',
+    'snmp_bind': 'Empty: every address of the node. Or one of its addresses.',
+    'snmp_from': 'The addresses or networks the monitoring asks from, <code>10.0.5.0/24, '
+                 '192.0.2.7</code>. Empty: anybody with the user and its passphrases. The '
+                 'firewall lets in these only.',
+    'snmp_user': 'The SNMPv3 user (securityName) the monitoring asks as - the same on every '
+                 'node.',
+    'snmp_auth': 'HMAC of every message. SHA-256 or SHA-512; SHA-1 only for old monitoring.',
+    'snmp_auth_pass': '12 characters at least. Kept sealed.',
+    'snmp_priv': 'Every message encrypted. AES-256 is net-snmp\u2019s and Zabbix\u2019s '
+                 '(\u201cAES256\u201d, not Cisco\u2019s \u201cAES256C\u201d).',
+    'snmp_priv_pass': '12 characters at least - best not the same as the other. Kept sealed.',
+    'snmp_contact': 'Who looks after it - as sysContact.0 says.',
+    'snmp_location': 'Where it is - as sysLocation.0 says.',
+    'snmp_traps': 'An SNMPv2 trap (authPriv) when something goes wrong - what the alerts see - '
+                  'and when it is right again, from the node that sends the alerts.',
+    'snmp_trap_to': 'host or host:port (162 by default), separated by commas. The receiver '
+                    'knows the user with each node\u2019s engine ID (shown below).',
     'isemon_ca': 'The CA certificate (PEM) isemon’s certificate is signed by - otp’s own '
                  'authority when <i>Encrypted sending</i> made it. Empty: the system’s.',
     'isemon_verify': 'isemon’s certificate checked against the authority and its name against the '
@@ -1393,7 +1446,9 @@ PANES = {
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
-    'monitor': ['metrics', 'metrics_token', 'metrics_from'],
+    'monitor': ['metrics', 'metrics_token', 'metrics_from', 'snmp', 'snmp_port', 'snmp_bind',
+                'snmp_from', 'snmp_user', 'snmp_auth', 'snmp_auth_pass', 'snmp_priv',
+                'snmp_priv_pass', 'snmp_contact', 'snmp_location', 'snmp_traps', 'snmp_trap_to'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
              'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
@@ -1437,6 +1492,11 @@ ONLY_WHEN = {
     'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
     'isemon_max_bytes': ['isemon', '1'], 'isemon_ca': ['isemon', '1'],
     'metrics_token': ['metrics', '1'], 'metrics_from': ['metrics', '1'],
+    'snmp_port': ['snmp', '1'], 'snmp_bind': ['snmp', '1'], 'snmp_from': ['snmp', '1'],
+    'snmp_user': ['snmp', '1'], 'snmp_auth': ['snmp', '1'], 'snmp_auth_pass': ['snmp', '1'],
+    'snmp_priv': ['snmp', '1'], 'snmp_priv_pass': ['snmp', '1'], 'snmp_contact': ['snmp', '1'],
+    'snmp_location': ['snmp', '1'], 'snmp_traps': ['snmp', '1'],
+    'snmp_trap_to': ['snmp_traps', '1'],
     'isemon_verify': ['isemon', '1'], 'isemon_mtls': ['isemon', '1'],
     'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
     'admin_group_readonly': ['admin_directory', '*'],
@@ -1646,6 +1706,27 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('metrics_from: %r is not an address or a network' % one)
+    if key in ('snmp_from',):
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('snmp_from: %r is not an address or a network' % one)
+    if key == 'snmp_bind' and str(got).strip():
+        try:
+            ipaddress.ip_address(str(got).strip())
+        except ValueError:
+            raise BadSetting('snmp_bind: one address of the node, or empty for every one')
+    if key == 'snmp_user' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9._-]{1,32}\Z', str(got).strip()):
+        raise BadSetting('snmp_user: 1 to 32 letters, digits and . _ -')
+    if key in ('snmp_auth_pass', 'snmp_priv_pass') and str(got) and not is_masked(got) and \
+            not 12 <= len(str(got)) <= 128:
+        raise BadSetting('%s: 12 to 128 characters' % key)
+    if key in ('snmp_contact', 'snmp_location') and len(str(got)) > 255:
+        raise BadSetting('%s: 255 characters at most' % key)
+    if key == 'snmp_trap_to' and str(got).strip():
+        snmp_trap_targets(str(got), strict=True)
     if key == 'metrics_token' and str(got).strip() and not is_masked(got) and \
             not METRICS_TOKEN_RE_HEAD.match(str(got).strip()):
         raise BadSetting('metrics_token: 24 to 200 letters, digits and -_.~+/=')

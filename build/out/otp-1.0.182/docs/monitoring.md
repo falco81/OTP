@@ -1,0 +1,154 @@
+# Monitoring: Prometheus (1.0.173)
+
+*Settings → Monitoring*, for a full administrator. Off until switched on.
+
+Each node answers `https://NODE/metrics` in Prometheus' text format, for itself -
+ask every node by its own address (the VIP address is one node at a time).
+
+| Setting | |
+|---|---|
+| `metrics` | on/off |
+| `metrics_token` | what Prometheus sends as `Authorization: Bearer ...` - *Make a token…* makes one and shows it once; kept sealed |
+| `metrics_from` | the addresses or networks Prometheus asks from (`10.0.5.0/24, 2001:db8::/64`); empty: anywhere that reaches the pages, with the token |
+
+nginx sends `/metrics` to `metrics.php`, which hands the token to the daemon; the
+daemon checks it (and where the request comes from) before it says anything. A
+wrong or missing token is a 401, a network not let in a 403, metrics switched off
+a 404. An upgrade puts the `location = /metrics` into an nginx file of an older
+version by itself.
+
+## prometheus.yml
+
+```yaml
+scrape_configs:
+  - job_name: otp
+    scheme: https
+    metrics_path: /metrics
+    bearer_token_file: /etc/prometheus/otp.token      # the token, 0600, Prometheus' own
+    tls_config:
+      ca_file: /etc/prometheus/otp-ca.pem              # the CA of the nodes' certificates, if not a public one
+    static_configs:
+      - targets: ['10.0.5.11:443', '10.0.5.12:443']
+```
+
+The page shows this with the nodes' addresses filled in, and *What this node answers
+now*.
+
+## What it says
+
+| Metric | |
+|---|---|
+| `otp_info{version,node,site,engine}` | 1 |
+| `otp_start_time_seconds` | when the daemon started |
+| `otp_database_up`, `otp_database_seconds` | the database answers, and how long `SELECT 1` took |
+| `otp_radius_listening` | RADIUS listens |
+| `otp_radius_requests_total{kind}` | RADIUS packets since the start: `packets`, `accept`, `reject`, `challenge`, `accounting`, `status`, `repeated`, `unknown`, `malformed`, `dropped`, `overflow`, `no_database`, `maintenance`... |
+| `otp_radius_queued` | requests waiting for a worker |
+| `otp_radius_last_day{result}` | Access-Requests of the last 24 hours (the database's - both nodes) |
+| `otp_tokens{state}`, `otp_tokens{kind}` | tokens |
+| `otp_clients`, `otp_realms`, `otp_directories` | how many |
+| `otp_ha_node_up{node}`, `otp_ha_heartbeat_age_seconds{node}` | the cluster |
+| `otp_ha_replication_running{name}`, `otp_ha_replication_errors_total{name}`, `otp_ha_replication_behind_bytes{name}` | replication, as this node's PostgreSQL sees it |
+| `otp_certificate_expiry_timestamp_seconds{target,name}` | the pages' certificates - each node's and the VIP address's |
+| `otp_mail_queue{state}` | mail waiting or failed |
+| `otp_isemon_sent_total{target}`, `otp_isemon_trouble{target}`, `otp_isemon_dropped_total` | isemon |
+| `otp_siem_sent_total{target}`, `otp_siem_trouble{target}`, `otp_siem_dropped_total` | syslog / SIEM |
+| `otp_alerts_open{level}`, `otp_alert{key,level}` | what the alerts see wrong now |
+| `otp_high_security` | high security on |
+| `otp_scrape_seconds` | how long the answer took |
+
+## Alerts, for example
+
+```yaml
+groups:
+  - name: otp
+    rules:
+      - alert: OtpDown
+        expr: up{job="otp"} == 0 or otp_database_up == 0 or otp_radius_listening == 0
+        for: 2m
+      - alert: OtpReplication
+        expr: otp_ha_replication_running == 0 or otp_ha_replication_behind_bytes > 100e6
+        for: 5m
+      - alert: OtpCertificate
+        expr: otp_certificate_expiry_timestamp_seconds - time() < 14 * 86400
+      - alert: OtpAlerts
+        expr: otp_alerts_open{level="bad"} > 0
+        for: 10m
+```
+
+## SNMPv3 (1.0.182)
+
+Each node answers SNMPv3 itself: an agent of the otp daemon, in a thread of its
+own - no snmpd, nothing in RADIUS' way. *Settings → Monitoring → SNMPv3*.
+
+- **authPriv only.** One user (securityName), the same on every node, with a
+  passphrase for authentication and one for encryption (12 characters at least,
+  kept sealed like every secret of otp). noAuthNoPriv and authNoPriv are not
+  answered. Authentication HMAC-SHA-256 (default), -SHA-512 or -SHA-1 (RFC 3414,
+  RFC 7860); encryption AES-128 (default) or AES-256 (RFC 3826; AES-256 with the
+  key extended as net-snmp and Zabbix do it - their `AES256`, not Cisco's
+  `AES256C`).
+- **Each node an engine of its own** - its engine ID made once and kept in
+  `/var/lib/otp/snmp-engine`, the engine boots counted in `snmp-boots`. The page
+  shows each node's engine ID (click to copy) - a trap receiver needs it.
+- **Port 161/udp** on every address of the node (or one, *Listen on*, set for each
+  node). Binding 161 needs `CAP_NET_BIND_SERVICE`: `otp.service` has it from
+  1.0.182 (`install.sh --upgrade` puts the unit in); nothing else is given to the
+  daemon. Where the system's snmpd has 161 already, give otp another port.
+- **Only from**: the networks the monitoring asks from; the firewall lets in these
+  only (or everybody when none is set). Anything else is not answered at all.
+- Read only: GET, GETNEXT and GETBULK. A SET is refused (notWritable).
+- *Ask it* on each node's card: the node asks its own agent on 127.0.0.1 as a
+  manager would - discovery, then a GET authPriv.
+
+### What it answers
+
+| OID | |
+|---|---|
+| `1.3.6.1.2.1.1` | the system group: sysDescr (otp, the version, the node), sysObjectID, sysUpTime, sysContact, sysName, sysLocation |
+| `1.3.6.1.6.3.10.2.1` | the engine: its ID, boots, time |
+| `1.3.6.1.6.3.15.1.1` | usmStats: unknown users, wrong digests, not in the time window... |
+| `1.3.6.1.4.1.8072.9999.9999.7` | **OTP-MIB** (`deploy/OTP-MIB.txt`): the version, node, database engine, high security; RADIUS (listening, queued, packets, accepts, rejects, challenges... as Counter64); the database (up, latency); the tokens; the alerts (how many bad and warn, and a table of each); the certificates (days left); the nodes of the cluster; and `otpMetricTable` - every sample of `/metrics`, name, labels and value |
+
+otp has no enterprise number of its own: its objects are under net-snmp's
+`netSnmpPlaypen` (`.1.3.6.1.4.1.8072.9999.9999`), `.7`. Load `OTP-MIB.txt` into
+the monitoring (it imports `NET-SNMP-MIB`, which net-snmp and Zabbix have) - or
+use the numbers.
+
+```
+snmpwalk -v3 -l authPriv -u otpmon -a SHA-256 -A '...' -x AES -X '...' otp1 1.3.6.1.4.1.8072.9999.9999.7
+snmpget  -v3 -l authPriv -u otpmon -a SHA-256 -A '...' -x AES -X '...' otp1 \
+         1.3.6.1.4.1.8072.9999.9999.7.5.1.0 1.3.6.1.4.1.8072.9999.9999.7.2.1.0
+```
+
+Zabbix: an SNMP interface on each node, SNMPv3, security level authPriv, the
+user, *SHA256* and *AES128* (or what was chosen) with the passphrases; items with
+the OIDs above (`otpAlertsBad.0` > 0, `otpRadiusListening.0` = 0,
+`otpDbUp.0` = 0...).
+
+### Traps
+
+*Traps when something is wrong*: an SNMPv2-Trap, authPriv, from the node that
+sends the alerts (the one with the VIP address, or the first alive) to every
+receiver in *Where traps go* (`host` or `host:port`, 162 by default):
+
+- `otpAlertRaised` (`.7.0.1`) when something goes wrong - what the alerts see
+  (*Alerts and reports*), after their delay - and again when a warning becomes
+  bad;
+- `otpAlertCleared` (`.7.0.2`) when it is right again;
+- `otpTestTrap` (`.7.0.3`) from *Send a test trap*.
+
+Each carries `otpTrapKey`, `otpTrapLevel`, `otpTrapTitle`, `otpTrapSaid` and
+`otpTrapNode`. Their own record of what was said, apart from the mails: traps go
+whether the alerts' mails are on or not.
+
+The receiver knows the user with **each node's engine ID** (a trap is sent by the
+node's own engine), in `snmptrapd.conf`:
+
+```
+createUser -e 0x80001f8805... otpmon SHA-256 '...' AES '...'
+createUser -e 0x80001f8805... otpmon SHA-256 '...' AES '...'
+authUser log,execute otpmon priv
+```
+
+The page writes those lines with the engine IDs filled in.

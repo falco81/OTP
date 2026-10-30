@@ -79,6 +79,7 @@ def health_publish(daemon):
     row = {'at': now, 'disks': disks_now(), 'dirs_down': dead, 'sms': dict(SMS_HEALTH),
            'siem': daemon.siem.state() if getattr(daemon, 'siem', None) else {},
            'isemon': daemon.shipper.state() if getattr(daemon, 'shipper', None) else {},
+           'snmp': dict(SNMP_STATE) if getattr(daemon, 'snmp', None) else {},
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -874,8 +875,16 @@ def alerts_tick(daemon):
             logs_start(daemon)
             if not alerts_lead(store):
                 return
+            cur = None
             if CONFIG.get('alerts') or CONFIG.get('report'):
-                alerts_evaluate(store)
+                cur = alerts_evaluate(store)['now']
+            if CONFIG.get('snmp') and CONFIG.get('snmp_traps'):
+                # SNMPv3 traps (1.0.182): what the alerts see, apart from the mails.
+                try:
+                    snmp_traps_tick(daemon, cur if cur is not None else
+                                    alert_problems(store, 'en'))
+                except Exception as e:              # noqa: BLE001
+                    log_sparing('snmp-traps', 'SNMPv3 traps: %s' % e, 'warn', every=900)
             if CONFIG.get('report') and report_due():
                 since, until, pid = report_period()
                 if store.get_meta('report:sent') != pid and claim_once(store, 'report:sent', pid):

@@ -4,6 +4,28 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.182 — 30 October 2026
+
+**SNMPv3**
+- Each node answers SNMPv3 itself - an agent of the otp daemon in a thread of its
+  own, no snmpd: the system group, the engine's own objects and otp's (OTP-MIB,
+  `deploy/OTP-MIB.txt`: RADIUS, the database, the tokens, the alerts, the
+  certificates, the cluster, and every sample of `/metrics` as a table). Read
+  only; GET, GETNEXT, GETBULK.
+- authPriv only: one user, HMAC-SHA-256/-512/-1 and AES-128/-256, the two
+  passphrases kept sealed. Each node an engine ID of its own, shown on the page.
+  Only from the networks set; the firewall lets in those.
+- Traps (SNMPv2-Trap, authPriv) from the node that sends the alerts: something
+  wrong, right again, and a test one from the page; the receiver's
+  `snmptrapd.conf` lines written on the page with the engine IDs.
+- *Settings → Monitoring*: the settings, each node's agent (port, engine ID,
+  asked and answered, the last asking), *Ask it* (the node asks its own agent as
+  a manager would) and *Send a test trap*.
+- `otp.service` may bind ports below 1024 (`CAP_NET_BIND_SERVICE`, nothing else),
+  for 161 - `install.sh --upgrade` puts the unit in.
+- Tested against pysnmp: discovery, GET, walk, bulk walk, every authentication
+  with every encryption, wrong passphrases, an unknown user, traps received.
+
 ## 1.0.181 — 30 October 2026
 
 **SSH with a code: SSH tokens of their own**
