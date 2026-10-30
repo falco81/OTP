@@ -404,12 +404,18 @@ def acme_due(store, target, name):
 
 
 def acme_order(store, target, name, by, say=None):
-    """One certificate ordered and put in; the state kept, an event written."""
-    say = say or (lambda t: None)
+    """One certificate ordered and put in; the state kept, an event written -
+    and what was done on the way (1.0.175), for the card."""
+    tell = say or (lambda t: None)
+    steps = []
+
+    def say(t):
+        steps.append([round(time.time(), 1), str(t)[:300]])
+        tell(t)
     if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
                     r'[A-Za-z]{2,63}\Z', name):
         raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)' % name)
-    st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url()}
+    st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url(), 'steps': steps}
     a = None
     try:
         a = Acme(store)
@@ -436,6 +442,7 @@ def acme_order(store, target, name, by, say=None):
         tls_save(store, target, prof, by)
         st.update(ok=True, not_after=info.get('not_after'), issuer=info.get('issuer'),
                   ordered_at=time.time())
+        st['steps'] = steps[-25:]
         store.set_meta('acme:state:' + target, json.dumps(st))
         store.add_event('settings', 'a certificate for %s (%s) came from the CA, good until %s'
                         % (name, 'the VIP address' if target == 'vip' else target,
@@ -452,6 +459,7 @@ def acme_order(store, target, name, by, say=None):
         for k in ('not_after', 'issuer', 'ordered_at'):
             if old.get(k):
                 st[k] = old[k]
+        st['steps'] = steps[-25:]
         store.set_meta('acme:state:' + target, json.dumps(st))
         store.add_event('settings', 'no certificate for %s came from the CA: %s' % (name, e),
                         'bad', who=by)
@@ -646,10 +654,55 @@ def acme_dns_put(store, name, txt, say):
         undo = _dns_desec(rr, txt)
     else:
         undo = _dns_manual(store, rr, txt, say)
-    _dns_wait(say, 60 if how == 'desec' else 0)
-    if how != 'manual':
-        acme_txt_seen(name, txt, say)
+    if how == 'desec':
+        _desec_seen(rr, txt, say)
+    else:
+        _dns_wait(say)
+        if how != 'manual':
+            acme_txt_seen(name, txt, say)
     return undo
+
+
+DESEC_NS = ('ns1.desec.io', 'ns2.desec.org')
+
+
+def _desec_seen(rr, txt, say):
+    """deSEC's own name servers asked until both have the record (1.0.175),
+    then a while more: they are anycast, and the CA asks from several places
+    of the world - "During secondary validation: NXDOMAIN" was a place deSEC
+    had not reached yet. Asked straight, never through a resolver, so no
+    resolver keeps "not there" for the CA."""
+    _dns_wait(say)
+    addrs = []
+    for ns in DESEC_NS:
+        try:
+            addrs += [(ns, a) for t, a in dns_ask(ns, 1) if t == 'A'][:1]
+        except OSError:
+            pass
+    if not addrs:
+        say('deSEC\'s name servers not found - waited %d s instead' % 120)
+        _dns_wait(say, 120)
+        return
+    end = time.time() + float(os.environ.get('OTP_DESEC_PROPAGATION') or 300)
+    while True:
+        seen = []
+        for ns, a in addrs:
+            try:
+                rc, got = _dns_parse(_dns_ask(a, rr, 16, 3.0))
+                if txt in [v for t, v in got if t == 'TXT']:
+                    seen.append(ns)
+            except OSError:
+                pass
+        if len(seen) == len(addrs):
+            break
+        if time.time() > end:
+            say('%s TXT not on every deSEC name server yet (%s) - the CA is asked anyway'
+                % (rr, ', '.join(seen) or 'none'))
+            return
+        time.sleep(5)
+    settle = float(os.environ.get('OTP_DESEC_SETTLE') or 60)
+    say('%s TXT is on %s; %d s more for deSEC\'s other places' % (rr, ', '.join(seen), settle))
+    time.sleep(settle)
 
 
 def _dns_rfc2136(rr, txt):
@@ -885,31 +938,36 @@ def dns_ask_rc(name, qtype):
         except OSError as e:
             last = e
             continue
-        rcode, recs = _dns_records(data)
-        if rcode == 3:
-            return 3, []
-        if rcode:
-            last = OSError(DNS_RCODES.get(rcode, 'rcode %d' % rcode))
-            continue
-        out = []
-        for rtype, _n, at, size in recs:
-            rd = data[at:at + size]
-            if rtype == 5:
-                out.append(('CNAME', _dns_name(data, at)[0].lower()))
-            elif rtype == 16:
-                j, parts = 0, []
-                while j < len(rd):
-                    parts.append(rd[j + 1:j + 1 + rd[j]].decode('utf-8', 'replace'))
-                    j += 1 + rd[j]
-                out.append(('TXT', ''.join(parts)))
-            elif rtype == 1 and size == 4:
-                out.append(('A', socket.inet_ntop(socket.AF_INET, rd)))
-            elif rtype == 28 and size == 16:
-                out.append(('AAAA', socket.inet_ntop(socket.AF_INET6, rd)))
-            elif rtype == 2:
-                out.append(('NS', _dns_name(data, at)[0].lower()))
-        return 0, out
+        rcode, out = _dns_parse(data)
+        if rcode in (0, 3):
+            return rcode, out
+        last = OSError(DNS_RCODES.get(rcode, 'rcode %d' % rcode))
     raise OSError('no DNS server answered (%s)' % (last or 'none'))
+
+
+def _dns_parse(data):
+    """(rcode, [(type, text)]) of one answer."""
+    rcode, recs = _dns_records(data)
+    if rcode:
+        return rcode, []
+    out = []
+    for rtype, _n, at, size in recs:
+        rd = data[at:at + size]
+        if rtype == 5:
+            out.append(('CNAME', _dns_name(data, at)[0].lower()))
+        elif rtype == 16:
+            j, parts = 0, []
+            while j < len(rd):
+                parts.append(rd[j + 1:j + 1 + rd[j]].decode('utf-8', 'replace'))
+                j += 1 + rd[j]
+            out.append(('TXT', ''.join(parts)))
+        elif rtype == 1 and size == 4:
+            out.append(('A', socket.inet_ntop(socket.AF_INET, rd)))
+        elif rtype == 28 and size == 16:
+            out.append(('AAAA', socket.inet_ntop(socket.AF_INET6, rd)))
+        elif rtype == 2:
+            out.append(('NS', _dns_name(data, at)[0].lower()))
+    return 0, out
 
 
 # Names looked up by ACME's DNS servers (1.0.172): in the threads of this page

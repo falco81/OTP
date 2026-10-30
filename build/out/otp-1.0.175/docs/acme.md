@@ -88,7 +88,11 @@ it there (`acme_dns`):
   `yourname.dedyn.io` or one of your own whose DNS is at deSEC) and
   `acme_desec_token` (sealed). A name outside that domain gets a CNAME in your
   DNS, once - see below. deSEC's records live at least an hour (its minimum
-  TTL); otp waits a minute for them to reach its name servers.
+  TTL). otp asks deSEC's own name servers (`ns1.desec.io`, `ns2.desec.org` - asked
+  straight, never through a resolver) until both have the record, then waits a
+  minute more before it asks the CA: deSEC is anycast, and the CA checks from
+  several places of the world - one deSEC had not reached yet answered
+  `During secondary validation: NXDOMAIN`.
 - **By hand**: the record is shown on the page; the order waits up to an hour
   for *It is in DNS*. Renewals wait for you the same way.
 

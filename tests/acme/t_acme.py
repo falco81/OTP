@@ -26,7 +26,7 @@ DNSJSON = CAW + '/dns.json'
 env = dict(os.environ, OTP_STATE=D, OTP_CONFIG=D + '/config.json', OTP_LOGDIR=D, OTP_RUN=D + '/run', OTP_STAY_ROOT='1',
            OTP_ACME_EVERY='5', OTP_ACME_SETTLE='0.5', OTP_NSUPDATE=HERE + '/fake_nsupdate.sh', DNSJSON=DNSJSON,
            OTP_CF_API='http://127.0.0.1:36780/client/v4', OTP_DESEC_API='http://127.0.0.1:36780/api/v1',
-           OTP_ACME_DNS_LEAST='0', OTP_ACME_SEEN_WAIT='3')
+           OTP_ACME_DNS_LEAST='0', OTP_ACME_SEEN_WAIT='3', OTP_DESEC_SETTLE='0', OTP_DESEC_PROPAGATION='20')
 json.dump({'db_engine': 'sqlite', 'radius_bind': '127.0.0.1', 'radius_auth_port': 36710, 'radius_acct_port': 36711,
            'api_port': APORT, 'node_name': 'otp1'}, open(D + '/config.json', 'w'))
 os.environ.update(env); sys.path.insert(0, V); sys.argv = ['x']
@@ -342,6 +342,7 @@ c, v = call('/api/acme', {'action': 'name', 'target': 'otp1', 'name': NAME}, S)
 
 # deSEC (1.0.170): its domain, a CNAME in your DNS, the guide and its check.
 json.dump({}, open(DNSJSON, 'w'))
+d0 = dns(); d0['A ns1.desec.io'] = '127.0.0.2'; d0['A ns2.desec.org'] = '127.0.0.2'; json.dump(d0, open(DNSJSON, 'w'))
 c, x = SET({'acme_resolvers': '127.0.0.2', 'acme_challenge': 'dns-01', 'acme_dns': 'desec', 'acme_desec_domain': 'otpdesec.dedyn.io',
             'acme_desec_token': 'desec-token-170-abcdefghijklmnop', 'acme_dns_wait': 0})
 ok('deSEC chosen (%s)' % c, c == 200)
@@ -363,6 +364,8 @@ r1 = [r for r in g['rows'] if r['target'] == 'otp1'][0]
 ok('the CNAME put in: the check finds it (%s)' % r1.get('said'), r1.get('ok') is True)
 c, stt, v = order_now('desec')
 ok('DNS-01 by deSEC through the CNAME: the certificate came (%s)' % (stt.get('said') or 'ok'), stt.get('ok'))
+words = ' | '.join(x[1] for x in stt.get('steps') or [])
+ok('... it waited until both deSEC name servers had the record (%s)' % words[-200:], 'is on ns1.desec.io, ns2.desec.org' in words)
 ok('... a 429 waited out, and the record taken away again', Fake.desec_429[0] == 0 and not any(Fake.desec.values()))
 SET({'acme_dns': 'rfc2136', 'acme_dns_alias': 'acme.otp.test'})
 v = call('/api/acme', None, S)[1]
