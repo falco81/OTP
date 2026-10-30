@@ -4,6 +4,38 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.169 — 30 October 2026
+
+**Automatic certificates, every node a card, the exceptions of high security**
+- *Settings → Automatic certificates* (ACME, off until switched on): the
+  certificate of the web address - and, where asked, each node's own -
+  ordered from Let's Encrypt (or its staging, or a CA of your own: step-ca, an
+  internal CA) and renewed by itself 30 days before it runs out. Checked by
+  HTTP-01 - nginx sends port 80's `/.well-known/acme-challenge/` to acme.php,
+  the answer kept in the database so whichever node has the web address gives
+  it - or by **DNS-01** for servers not on the internet: RFC 2136 (nsupdate with
+  a TSIG key, kept sealed, given in a file, never on a command line),
+  Cloudflare, acme-dns, or by hand (the TXT record shown, the order waiting for
+  *It is in DNS*). The account's key kept sealed; *Try port 80*; every order an
+  event. In a cluster the web address's is ordered by one node, served by both.
+- Every node a card, as on *Time*: *isemon*, *Syslog and SIEM*, *Disks and
+  logs*, *Proxy → Try it*, the backups of each node and the directory's
+  *Check* show both nodes, each with its state and what can be done on it.
+  The tests are made on the node they are for - a test line to isemon or to
+  the syslog servers, the proxy tried, the connection to Active Directory -
+  asked once on the page, answered by each node.
+- *Proxy → Try it* always tries - straight where no proxy is set or the
+  address is in the list, through the proxy otherwise - and draws the way it
+  went: this node, the proxy, the address; each step with its time (the name
+  looked up, the connection, the tunnel, TLS and the certificate, the answer).
+- *High security*: every rule can be made an exception with its switch - it
+  then stops nothing and is not enforced; what was only advised (the second
+  step of the administration, the key shown, short recovery codes, long
+  sign-ins, direct mail without TLS...) is now a rule like the others. The
+  security check (updates, certificates, backups) is listed apart.
+- *Backups tried*: a card of its own, its gaps as every card's, with *Clear the
+  list* and a cross on each try.
+
 ## 1.0.168 — 30 October 2026
 
 **High security - and a whole backup not locked when chosen**

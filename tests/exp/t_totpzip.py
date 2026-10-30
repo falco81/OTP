@@ -106,6 +106,10 @@ c, x = B({'passphrase': 'Tajne-heslo-168'})
 ok('backup locked (%s)' % c, c == 200 and x['locked'] and 'locked' in json.loads(x['file']))
 st.set_meta('web:access', json.dumps({'admin': {'any': False, 'from': ['10.0.0.0/8']}}))
 call('/api/settings', {'settings': {'radius_guard': 1}}, S)
+# The rest that stands against it made exceptions (1.0.169) - but the exports.
+for r in call('/api/hisec', None, S)[1].get('block', []):
+    if r['rule'] != 'export:unlocked':
+        call('/api/hisec', {'action': 'waive', 'rule': r['rule'], 'on': True}, S)
 c, _ = call('/api/settings', {'settings': {'high_security': 1}}, S)
 ok('high security on: %s' % c, c == 200)
 time.sleep(1.5)

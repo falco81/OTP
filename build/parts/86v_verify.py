@@ -189,6 +189,21 @@ def rb_verified(store):
     return out
 
 
+def rb_verified_forget(store, at=None):
+    """Taken off the list - one try (by its time) or all; the backups stay."""
+    n = 0
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'rbackup:verified:%'"):
+        try:
+            rows = json.loads(r['v'] or '[]')
+        except ValueError:
+            rows = []
+        keep = [] if at is None else [x for x in rows if abs(float(x.get('at') or 0) - at) > 0.001]
+        if len(keep) != len(rows):
+            n += len(rows) - len(keep)
+            store.set_meta(r['k'], json.dumps(keep))
+    return n
+
+
 def rb_verify_start(store, by, tid=None, name=None):
     """In a thread of its own, followed as a backup is (RB_JOB)."""
     with RB_LOCK:

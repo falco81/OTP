@@ -78,6 +78,7 @@ def health_publish(daemon):
         pass
     row = {'at': now, 'disks': disks_now(), 'dirs_down': dead, 'sms': dict(SMS_HEALTH),
            'siem': daemon.siem.state() if getattr(daemon, 'siem', None) else {},
+           'isemon': daemon.shipper.state() if getattr(daemon, 'shipper', None) else {},
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))

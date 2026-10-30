@@ -1594,7 +1594,7 @@ def _tokens_export(h):
     b = h.body()
     lock = b.get('lock', True) is not False
     phrase = str(b.get('passphrase') or '')
-    if not lock and CONFIG.get('high_security'):
+    if not lock and hisec_enforced('export:unlocked', h.store):
         raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
                             'locked with a passphrase')
     if lock and len(phrase) < 8:
@@ -2262,7 +2262,7 @@ def _tokens_backup(h):
     # Locked unless asked otherwise in so many words, and never under high
     # security (1.0.168): every key and recovery code is in it.
     lock = b.get('lock', True) is not False
-    if not lock and CONFIG.get('high_security'):
+    if not lock and hisec_enforced('export:unlocked', h.store):
         raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
                             'locked with a passphrase')
     if lock and len(phrase) < 8:
@@ -2721,6 +2721,14 @@ def _dirs_do(h):
             who, user[:120], 'it would sign in' if said.get('ok') else 'refused'), who=who)
         return {'tried': said}
     h.me('tokenadmin')
+    # The connection to a directory tried from every node (1.0.169): each node
+    # reaches the domain controllers on its own.
+    if act == 'check_all':
+        if str(b.get('name') or '').lower() not in h.d.dirs:
+            raise ApiError(404, 'there is no directory called %s (switched on)' % b.get('name'))
+        return node_ask(h.d, 'dircheck', {'name': str(b.get('name') or '')}, h.me()['name'])
+    if act == 'result':
+        return {'nodes': node_ask_results(h.store, 'dircheck', str(b.get('id') or ''))}
     if act not in ('check', 'groups', 'lookup'):
         raise ApiError(400, 'no such thing to do with a directory')     # 1.0.103
     ad = h.d.dirs.get(str(b.get('name') or '').lower())
@@ -3058,16 +3066,46 @@ def _hisec(h):
     return hisec_view(h.store)
 
 
+@route('POST', '/api/hisec')
+def _hisec_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'waive':
+        raise ApiError(400, 'no such thing to do')
+    try:
+        hisec_waive(h.store, str(b.get('rule') or ''), bool(b.get('on')), s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    return hisec_view(h.store)
+
+
 @route('POST', '/api/isemon')
 def _isemon_do(h):
     s = h.me('fulladmin')
-    if not h.d.shipper:
-        raise ApiError(503, 'nothing is being sent from this process')
-    h.d.shipper.put('otp', 'daemon', 'a test from otp %s, sent by %s - isemon reads nothing '
-                    'from this line' % (__version__, s['name']))
-    h.d.shipper.flush(3)
-    time.sleep(0.3)
-    return {'isemon': h.d.shipper.state()}
+    b = h.body()
+    if str(b.get('action') or '') == 'result':
+        return {'nodes': node_ask_results(h.store, 'isemon', str(b.get('id') or ''))}
+    if not CONFIG.get('isemon'):
+        raise ApiError(400, 'sending to isemon is off')
+    # From every node (1.0.169): each sends its own test line.
+    return node_ask(h.d, 'isemon', {'by': s['name'], 'only': str(b.get('node') or '')},
+                    s['name'])
+
+
+@route('GET', '/api/isemon')
+def _isemon(h):
+    """What each node sends to isemon (1.0.169): this one as it is now, the
+    other as its own row of the last minute says."""
+    h.me()
+    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    out = []
+    for n in sorted(set(nodes) | {node_name()}):
+        row = _meta_json(h.store, 'host:health:' + n) or {}
+        st = (h.d.shipper.state() if h.d.shipper else {}) if n == node_name() else \
+            (row.get('isemon') or {})
+        out.append(dict(st, node=n, me=n == node_name(),
+                        at=time.time() if n == node_name() else row.get('at')))
+    return {'nodes': out, 'on': bool(CONFIG.get('isemon'))}
 
 
 @route('GET', '/api/users')

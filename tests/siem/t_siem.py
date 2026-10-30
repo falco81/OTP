@@ -220,7 +220,15 @@ c, x = SET({'siem_format': 'rfc5424', 'siem_signins': 0})
 time.sleep(1.5)
 n0 = len(GOT['tcp'])
 radius('anna@loc.test', '222222')
-c, x = call('/api/siem', {'action': 'test'}, S)
+def siem_test():
+    c, x = call('/api/siem', {'action': 'test'}, S)
+    if c != 200:
+        return c, x
+    got = until(lambda: (call('/api/siem', {'action': 'result', 'id': x['id']}, S)[1].get('nodes') or {}).get('otp1'), 30)
+    return (200 if got else 504), (got or {})
+
+
+c, x = siem_test()
 ok('a test line: %s %s' % (c, x.get('test')), c == 200 and set(x['test'].values()) == {'sent'})
 sd = until(lambda: [l for l in GOT['tcp'][n0:] if '[otp@32473 ' in l and 'event="test"' in l])
 ok('RFC 5424 structured data', sd)
@@ -233,16 +241,26 @@ time.sleep(1.5)
 t0 = time.time()
 r, _ = radius('bob@loc.test')
 ok('a server down: the sign-in is not held up (%.2f s) - %s' % (time.time() - t0, r), r == 'accept' and time.time() - t0 < 1.5)
-c, x = call('/api/siem', {'action': 'test'}, S)
+c, x = siem_test()
 ok('... and the test says so: %s' % x.get('test'), c == 200 and x['test'].get('127.0.0.1:1/tcp') != 'sent')
 # ---- the proxy -------------------------------------------------------------------------
-c, x = call('/api/proxy', {'action': 'try', 'url': 'http://127.0.0.1:%d/' % HPORT}, S)
-ok('no proxy set: said so (%s)' % c, c == 400)
+def try_(url):
+    c, x = call('/api/proxy', {'action': 'try', 'url': url}, S)
+    if c != 200:
+        return c, x
+    got = until(lambda: (call('/api/proxy', {'action': 'result', 'id': x['id']}, S)[1].get('nodes') or {}).get('otp1'), 40)
+    return (200 if got else 504), (got or {})
+
+
+c, x = try_('https://localhost:%d/' % SPORT)
+ok('no proxy set: tried straight, step by step (%s %s %s)' % (c, x.get('mode'), [(s_['what'][:25], s_['ok']) for s_ in x.get('steps', [])]),
+   c == 200 and x['mode'] == 'direct' and x['why_direct'] == 'no proxy is set' and x['steps'][0]['ok'] and x['steps'][1]['ok']
+   and not x['ok'] and 'certificate' in x['steps'][-1]['what'])
 c, x = SET({'proxy': 1, 'proxy_url': 'http://px-user:pw@127.0.0.1:%d' % PPORT})
 ok('a password in the address refused: %s' % c, c == 400)
 c, x = SET({'proxy': 1, 'proxy_url': 'http://127.0.0.1:%d' % PPORT, 'proxy_no': ''})
-c, x = call('/api/proxy', {'action': 'try', 'url': 'http://example.invalid/'}, S)
-ok('no password: the proxy\'s 407 told (%s)' % x.get('said'), c == 200 and not x['ok'] and '407' in str(x.get('said')))
+c, x = try_('http://example.invalid/')
+ok('no password: the proxy\'s 407 told (%s)' % x.get('steps'), c == 200 and not x['ok'] and x['mode'] == 'proxy' and '407' in json.dumps(x['steps']))
 c, x = SET({'proxy_user': 'px-user', 'proxy_password': 'p@ss:w/rd'})
 ok('the password saved: %s' % c, c == 200)
 c, x = call('/api/settings', None, S)
@@ -251,16 +269,17 @@ ok('... and not shown (%s)' % (pw[0].get('value') if pw else None), pw and 'p@ss
 raw = st.db.value("SELECT v FROM meta WHERE k = 'x'", (), None)
 saved = json.dumps(st.db.rows("SELECT * FROM settings")) if True else ''
 ok('... kept sealed in the database', 'p@ss:w/rd' not in saved and 'sealed:' in saved)
-c, x = call('/api/proxy', {'action': 'try', 'url': 'http://example.invalid/'}, S)
+c, x = try_('http://example.invalid/')
 ok('through the proxy, its password right: %s %s' % (x.get('ok'), x.get('status')), c == 200 and x['ok'] and x['status'] == 200
    and PX['auth'][-1] == WANT)
 SET({'proxy_no': '10.9.9.9'})
-c, x = call('/api/proxy', {'action': 'try', 'url': 'https://localhost:%d/' % SPORT}, S)
-ok('https: a CONNECT through it (%s)' % PX['seen'][-1], PX['seen'][-1].startswith('CONNECT localhost:%d' % SPORT))
+c, x = try_('https://localhost:%d/' % SPORT)
+ok('https: a CONNECT through it, the tunnel then TLS (%s, %s)' % (PX['seen'][-1], [s_['what'][:30] for s_ in x.get('steps', [])]),
+   PX['seen'][-1].startswith('CONNECT localhost:%d' % SPORT) and x['steps'][2]['ok'] and 'tunnel' in x['steps'][2]['what'])
 n = len(PX['seen'])
 SET({'proxy_no': '.invalid, 10.0.0.0/8'})
-c, x = call('/api/proxy', {'action': 'try', 'url': 'http://straight.invalid/'}, S)
-ok('a name in the straight list not sent to the proxy', len(PX['seen']) == n and x.get('ok') is False)
+c, x = try_('http://straight.invalid/')
+ok('a name in the straight list not sent to the proxy (%s)' % x.get('why_direct'), len(PX['seen']) == n and x.get('mode') == 'direct' and 'straight' in x.get('why_direct', ''))
 ok('proxy_skips: .domain, a net, not others', otp.proxy_skips('a.b.invalid') is False or True)
 otp.CONFIG.update(proxy_no='.example.cz, 10.0.0.0/8, ::1')
 ok('... checked: %s' % [otp.proxy_skips(h) for h in ('x.example.cz', 'example.cz', '10.2.3.4', '::1', 'github.com', '11.0.0.1')],

@@ -907,6 +907,7 @@ class Daemon(object):
         self.stop_flag = threading.Event()
         self.shipper = None
         self.siem = None
+        _HS_WAIVE['store'][0] = store       # the exceptions to high security read from it
         self.dirs = {}
         self.reload_directories()
         self.tokens = Tokens(store)
@@ -1243,6 +1244,7 @@ class Daemon(object):
             'database': {'engine': self.store.db.engine, 'where': self.store.db.where()},
             'lang': CONFIG.get('ui_lang') or 'cs', 'php': php_state(), 'admin_show_key': bool(CONFIG.get('admin_show_key')),
             'high_security': bool(CONFIG.get('high_security')),
+            'hisec_waived': sorted(hisec_waived(self.store)),
             'default_realm': CONFIG.get('default_realm') or '',
             'node': node_name(),
             'nodes': [{'name': n['name'], 'alive': n['alive'], 'age': n['age'],
@@ -1483,6 +1485,14 @@ class Daemon(object):
                     osup_sched_tick(self)       # updates and restarts on a schedule (1.0.164)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osup-sched', 'the schedule of updates: %s' % e, 'warn', every=600)
+                try:
+                    node_ask_tick(self)         # tests asked of every node (1.0.169)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('node-ask', 'a test asked of every node: %s' % e, 'warn', every=600)
+                try:
+                    acme_tick(self)             # certificates by ACME (1.0.169)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('acme-tick', 'ACME: %s' % e, 'warn', every=600)
                 try:
                     sshd_tick(self)             # the SSH server and the notices (1.0.163)
                 except Exception as e:          # noqa: BLE001

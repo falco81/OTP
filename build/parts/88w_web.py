@@ -446,6 +446,10 @@ def web_desired(store):
         out['fw'] = fw
     if access is not None:
         out['access'] = access
+    # ACME (1.0.169): port 80 answers the CA for the names ordered - the web
+    # address's on every node, wherever it is now.
+    if CONFIG.get('acme'):
+        out['acme'] = acme_http_names(store)
     return out
 
 
@@ -471,7 +475,7 @@ def web_tick(store):
     # Nothing ever asked and nothing to ask: no request at all.
     st = web_status()
     if not st and not desired['vip']['on'] and not desired['tls']['node'] and \
-            'fw' not in desired and 'access' not in desired:
+            'fw' not in desired and 'access' not in desired and 'acme' not in desired:
         return
     h = web_hash(desired)
     if st.get('hash') == h:

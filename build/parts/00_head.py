@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.168'
+__version__ = '1.0.169'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -311,6 +311,28 @@ DEFAULTS = {
     'logs_journal_days': 0,
     'logs_keep': 30,
     'logs_max_mb': 200,
+    'acme': 0,
+    'acme_email': '',
+    'acme_ca': 'letsencrypt',
+    'acme_url': '',
+    'acme_ca_pem': '',
+    'acme_for': 'vip',
+    'acme_node_name': '',
+    'acme_days': 30,
+    'acme_key': 'ec',
+    'acme_challenge': 'http-01',
+    'acme_dns': 'manual',
+    'acme_dns_server': '',
+    'acme_dns_zone': '',
+    'acme_dns_tsig_name': '',
+    'acme_dns_tsig_alg': 'hmac-sha256',
+    'acme_dns_tsig_secret': '',
+    'acme_dns_token': '',
+    'acme_dns_url': '',
+    'acme_dns_user': '',
+    'acme_dns_key': '',
+    'acme_dns_subdomain': '',
+    'acme_dns_wait': 30,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -357,7 +379,7 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # the pages ask the daemon on, the name it greets mail servers with, the
 # name isemon files its lines under and the debug switches.
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
-             'isemon_hostname', 'siem_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
+             'isemon_hostname', 'siem_hostname', 'acme_node_name', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
              'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
@@ -370,10 +392,11 @@ def this_node_name(conf=None):
 
 
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
-               'rbackup_password', 'proxy_password')
+               'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
+               'acme_dns_key')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
-               'proxy_password')
+               'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -426,6 +449,12 @@ TUNABLE = {
     'proxy': (0, 1), 'proxy_os': (0, 1), 'proxy_sms': (0, 1),
     'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
     'logs_max_mb': (1, 100000),
+    'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
+    'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('ec', 'rsa2048'),
+    'acme_challenge': ('http-01', 'dns-01'), 'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns'),
+    'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384', 'hmac-sha224', 'hmac-sha1',
+                          'hmac-md5'),
+    'acme_dns_wait': (0, 600),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -446,6 +475,16 @@ TUNABLE = {
 }
 
 CHOICE_WORDS = {
+    'acme_challenge': {'http-01': 'HTTP-01 - the CA asks port 80 of the name',
+                       'dns-01': 'DNS-01 - a TXT record in DNS (no port open to the internet)'},
+    'acme_dns': {'manual': 'by hand - the record is shown here, you put it in',
+                 'rfc2136': 'RFC 2136 dynamic update with a TSIG key (BIND, PowerDNS, Knot...)',
+                 'cloudflare': 'Cloudflare, with an API token', 'acmedns': 'an acme-dns server'},
+    'acme_ca': {'letsencrypt': 'Let\u2019s Encrypt', 'letsencrypt-staging': 'Let\u2019s Encrypt - staging (to try it)',
+                'custom': 'another ACME CA (step-ca, an internal CA...)'},
+    'acme_for': {'vip': 'the web address (or this node, where there is none)',
+                 'node': 'each node\u2019s own name', 'both': 'the web address and each node'},
+    'acme_key': {'ec': 'ECDSA P-256', 'rsa2048': 'RSA 2048'},
     'rbackup_verify': {'off': 'only by hand', 'after': 'after every backup, the one just sent',
                        'weekly': 'once a week, the newest one'},
     'mail_mode': {'off': 'off - no mail is sent',
@@ -686,6 +725,28 @@ NAMES = {
     'logs_journal_days': 'The system journal kept for (days)',
     'logs_keep': 'otp’s own logs kept (files)',
     'logs_max_mb': 'A log file at most (MB)',
+    'acme': 'Certificates from an ACME CA',
+    'acme_email': 'Mail of the account at the CA',
+    'acme_ca': 'The CA',
+    'acme_url': 'Its ACME directory',
+    'acme_ca_pem': 'The CA\u2019s own certificate',
+    'acme_for': 'For',
+    'acme_node_name': 'This node\u2019s DNS name',
+    'acme_days': 'Renewed when fewer days are left than',
+    'acme_key': 'The key of the certificate',
+    'acme_challenge': 'How the CA checks the name',
+    'acme_dns': 'Who puts the TXT record in DNS',
+    'acme_dns_server': 'The DNS server taking the updates',
+    'acme_dns_zone': 'The zone',
+    'acme_dns_tsig_name': 'The name of the TSIG key',
+    'acme_dns_tsig_alg': 'Its algorithm',
+    'acme_dns_tsig_secret': 'The TSIG secret',
+    'acme_dns_token': 'The Cloudflare API token',
+    'acme_dns_url': 'The acme-dns server',
+    'acme_dns_user': 'acme-dns user',
+    'acme_dns_key': 'acme-dns key',
+    'acme_dns_subdomain': 'acme-dns subdomain',
+    'acme_dns_wait': 'Wait for DNS to carry it (s)',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1153,6 +1214,36 @@ SAYS = {
     'logs_journal_days': 'Nothing older is kept. 0: as the system has it.',
     'logs_keep': 'How many old files of /var/log/otp are kept, one a day.',
     'logs_max_mb': 'A file bigger than this is put aside sooner than once a day.',
+    'acme': 'The certificates ordered from the CA by HTTP-01 and renewed by themselves - port 80 '
+            'of the name must reach a node. In a cluster the answer is kept in the database, so '
+            'whichever node has the web address gives it. Off until switched on.',
+    'acme_email': 'Where the CA writes when a certificate runs out unrenewed. Empty: none.',
+    'acme_ca': 'Let\u2019s Encrypt, its staging (certificates browsers do not trust - to try '
+               'it), or another.',
+    'acme_url': 'The directory of another ACME CA, <code>https://ca.example.cz/acme/acme/directory</code>.',
+    'acme_ca_pem': 'The CA\u2019s root (PEM), where the system does not trust it already.',
+    'acme_for': 'Which certificates are ordered.',
+    'acme_node_name': 'The name this node\u2019s own certificate is for. Empty: its full host name.',
+    'acme_days': 'Let\u2019s Encrypt\u2019s certificates last 90 days; 30 is what it advises.',
+    'acme_key': 'ECDSA is smaller and quicker; RSA for old clients.',
+    'acme_challenge': 'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, '
+                      'for a CA of your own). DNS-01 needs nothing open: the CA reads a TXT record.',
+    'acme_dns': 'By hand the order waits up to an hour for you; the others renew by themselves.',
+    'acme_dns_server': 'The primary DNS server of the zone, <code>ns1.example.cz</code> or with a port '
+                       '<code>10.0.0.53:53</code>.',
+    'acme_dns_zone': 'Where the record goes, <code>example.cz</code>. Empty: as the server finds it.',
+    'acme_dns_tsig_name': 'As the DNS server knows it, <code>otp-acme.</code>; allowed to update '
+                          '_acme-challenge records only.',
+    'acme_dns_tsig_alg': 'As the key was made (tsig-keygen makes hmac-sha256).',
+    'acme_dns_tsig_secret': 'The key\u2019s secret (base64). Kept sealed; written to a file only otp '
+                            'reads for the moment nsupdate runs.',
+    'acme_dns_token': 'A token with Zone - DNS - Edit for the zone. Kept sealed.',
+    'acme_dns_url': '<code>https://auth.acme-dns.example.cz</code>; _acme-challenge.NAME is a CNAME to '
+                    'the subdomain below.',
+    'acme_dns_user': 'From the registration at acme-dns.',
+    'acme_dns_key': 'From the registration at acme-dns. Kept sealed.',
+    'acme_dns_subdomain': 'From the registration at acme-dns.',
+    'acme_dns_wait': 'How long the record is given to reach every DNS server before the CA is asked.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1243,6 +1334,11 @@ PANES = {
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
+    'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
+             'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
+             'acme_dns_server', 'acme_dns_zone', 'acme_dns_tsig_name', 'acme_dns_tsig_alg',
+             'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_url', 'acme_dns_user',
+             'acme_dns_key', 'acme_dns_subdomain', 'acme_dns_wait'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1306,6 +1402,16 @@ ONLY_WHEN = {
     'siem_hostname': ['siem', '1'], 'siem_verify': ['siem', '1'], 'siem_ca': ['siem', '1'],
     'proxy_url': ['proxy', '1'], 'proxy_user': ['proxy', '1'], 'proxy_password': ['proxy', '1'],
     'proxy_no': ['proxy', '1'], 'proxy_os': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
+    'acme_for': ['acme', '1'], 'acme_email': ['acme', '1'], 'acme_ca': ['acme', '1'],
+    'acme_url': ['acme_ca', 'custom'], 'acme_ca_pem': ['acme_ca', 'custom'],
+    'acme_node_name': ['acme_for', 'vip-not'], 'acme_days': ['acme', '1'], 'acme_key': ['acme', '1'],
+    'acme_challenge': ['acme', '1'], 'acme_dns': ['acme_challenge', 'dns-01'],
+    'acme_dns_wait': ['acme_challenge', 'dns-01'],
+    'acme_dns_server': ['acme_dns', 'rfc2136'], 'acme_dns_zone': ['acme_dns', 'rfc2136'],
+    'acme_dns_tsig_name': ['acme_dns', 'rfc2136'], 'acme_dns_tsig_alg': ['acme_dns', 'rfc2136'],
+    'acme_dns_tsig_secret': ['acme_dns', 'rfc2136'], 'acme_dns_token': ['acme_dns', 'cloudflare'],
+    'acme_dns_url': ['acme_dns', 'acmedns'], 'acme_dns_user': ['acme_dns', 'acmedns'],
+    'acme_dns_key': ['acme_dns', 'acmedns'], 'acme_dns_subdomain': ['acme_dns', 'acmedns'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1389,7 +1495,7 @@ def _coerce(current, value):
 
 
 # Settings of several lines (1.0.103): the rest are one line each.
-SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca',
+SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca', 'acme_ca_pem',
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
 
@@ -1468,6 +1574,33 @@ def check_setting(key, value):
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'acme_email' and str(got).strip() and \
+            not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', str(got).strip()):
+        raise BadSetting('acme_email: a mail address')
+    if key == 'acme_url' and str(got).strip() and \
+            not re.match(r'^https://[^\s"<>]+\Z', str(got).strip()):
+        raise BadSetting('acme_url: an address starting https://')
+    if key == 'acme_dns_url' and str(got).strip() and \
+            not re.match(r'^(https://[^\s"<>]+|http://(127\.0\.0\.1|localhost)(:\d+)?(/[^\s"<>]*)?)\Z',
+                         str(got).strip()):
+        raise BadSetting('acme_dns_url: an address starting https://')
+    if key in ('acme_dns_server',) and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9.\-:\[\]]{1,260}\Z', str(got).strip()):
+        raise BadSetting('acme_dns_server: a name or an address, :port if not 53')
+    if key in ('acme_dns_zone', 'acme_dns_tsig_name') and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9][A-Za-z0-9.\-_]{0,252}\Z', str(got).strip()):
+        raise BadSetting('%s: a DNS name' % key)
+    if key == 'acme_dns_tsig_secret' and str(got).strip() and not is_masked(got) and \
+            not re.match(r'^[A-Za-z0-9+/=]{8,512}\Z', str(got).strip()):
+        raise BadSetting('acme_dns_tsig_secret: the secret in base64, as tsig-keygen makes it')
+    if key in ('acme_dns_user', 'acme_dns_subdomain') and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9-]{1,64}\Z', str(got).strip()):
+        raise BadSetting('%s: letters, digits and dashes' % key)
+    if key == 'acme_ca_pem' and str(got).strip() and '-----BEGIN CERTIFICATE-----' not in str(got):
+        raise BadSetting('acme_ca_pem: a certificate in PEM, -----BEGIN CERTIFICATE-----')
+    if key == 'acme_node_name' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9][A-Za-z0-9.-]{0,252}\Z', str(got).strip()):
+        raise BadSetting('acme_node_name: a DNS name')
     if key == 'siem_targets':
         if len(siem_targets(str(got), strict=True)) > 8:
             raise BadSetting('siem_targets: 8 servers at most')

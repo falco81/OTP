@@ -282,6 +282,15 @@ def checked(r):
     else:
         out['fw'] = None
     out['access'] = access_checked(r.get('access'))
+    names = r.get('acme')
+    if names is None:
+        out['acme'] = None
+    else:
+        if not isinstance(names, list) or len(names) > 10 or \
+                not all(isinstance(n, str) and re.match(r'^[A-Za-z0-9][A-Za-z0-9.-]{0,252}\Z', n)
+                        for n in names):
+            raise Refused('the names of the ACME certificates are DNS names, 10 at most')
+        out['acme'] = names
     v = r.get('vip') or {}
     out['vip'] = vip = {'on': bool(v.get('on'))}
     if not vip['on']:
@@ -754,6 +763,61 @@ def access_now():
     return out
 
 
+ACME_LOCATION = '''    # A certificate by ACME (1.0.169): the CA's HTTP-01 challenge answered on
+    # port 80 by acme.php - the answer is in otp's database, so whichever node
+    # the CA reaches gives it. Everything else goes to HTTPS.
+    location ^~ /.well-known/acme-challenge/ {
+        limit_req     zone=otp_all burst=20 nodelay;
+        fastcgi_pass  unix:/run/php-fpm/otp.sock;
+        fastcgi_param SCRIPT_FILENAME /var/www/otp/acme.php;
+        include       fastcgi_params;
+        fastcgi_read_timeout 10s;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }'''
+
+
+def http_block(text):
+    """(start, end) of the port-80 server { } of an nginx file."""
+    for m in re.finditer(r'(?m)^[ \t]*server[ \t]*\{', text):
+        depth, j = 0, m.end() - 1
+        while j < len(text):
+            if text[j] == '{':
+                depth += 1
+            elif text[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        block = text[m.start():j + 1]
+        if re.search(r'(?m)^\s*listen\s+(\[::\]:)?80\b', block) and 'ssl' not in block.split('{', 1)[1][:400]:
+            return m.start(), j + 1
+    return None
+
+
+def acme_into(main, names):
+    """The port-80 server given the ACME location (1.0.169), and the names
+    certificates are ordered for in its server_name - the web address's on
+    every node, so the CA reaches otp on whichever node has it."""
+    where = http_block(main)
+    if not where:
+        return main
+    block = main[where[0]:where[1]]
+    new = block
+    if 'acme-challenge' not in new:
+        new = re.sub(r'(?m)^[ \t]*return[ \t]+301[ \t]+https://\$host\$request_uri;[ \t]*$',
+                     lambda m: ACME_LOCATION, new, count=1)
+    m = re.search(r'(?m)^(\s*server_name\s+)([^;#]*);', new)
+    if m and names:
+        have = m.group(2).split()
+        base = [x for x in have if not x.startswith('otp-acme:')]
+        want = base + [n for n in names if n not in base]
+        if want != have:
+            new = new[:m.start()] + m.group(1) + ' '.join(want) + ';' + new[m.end():]
+    return main[:where[0]] + new + main[where[1]:] if new != block else main
+
+
 def nginx_part(r, last):
     """This node's server and the web address's, with their TLS."""
     said, dh = [], {}
@@ -783,6 +847,13 @@ def nginx_part(r, last):
                 main = f.read()
         except OSError as e:
             raise Refused('otp\'s nginx file cannot be read (%s): %s' % (NGINX_MAIN, e))
+        if r.get('acme') is not None:
+            new_main = acme_into(main, r['acme'])
+            if new_main != main:
+                write_root(NGINX_MAIN, new_main, 0o644)
+                main, changed = new_main, True
+                said.append('nginx: port 80 answers the ACME CA (%s)' % (', '.join(r['acme']) or
+                                                                        'no name yet'))
         if r.get('access'):
             new_main = access_into(main, r['access'])
             if new_main != main:

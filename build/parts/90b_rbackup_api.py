@@ -192,6 +192,19 @@ def _rbackup_do(h):
             return {'message': 'the backup is being tried', 'job': job}
         if act == 'verified':
             return {'verified': rb_verified(h.store)[:40]}
+        if act == 'verified_forget':
+            at = None
+            if not b.get('all'):
+                try:
+                    at = float(b.get('at'))
+                except (TypeError, ValueError):
+                    raise ValueError('which try?')
+            n = rb_verified_forget(h.store, at)
+            if not n:
+                raise ValueError('that try is not on the list any more')
+            h.store.add_event('backups', '%s took %d tr%s of backups off the list; the backups '
+                              'stay where they are' % (by, n, 'y' if n == 1 else 'ies'), who=by)
+            return {'message': 'taken off the list', 'verified': rb_verified(h.store)[:20]}
         if act == 'list':
             return {'files': rb_remote_list(h.store, b.get('id'))}
         if act == 'delete_file':

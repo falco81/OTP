@@ -2479,6 +2479,7 @@ function showPane(name) {
   if (name === 'sshkeys') loadSshKeys(); else skPoll(false);
   if (name === 'alerts') loadAlerts();
   if (name === 'siem') loadSiem();
+  if (name === 'acme') loadAcme(); else acPoll(false);
   if (name === 'hisec') loadHisec();
   if (name === 'proxy') drawProxy();
   if (name === 'logs') loadLogs();
@@ -2489,7 +2490,7 @@ function showPane(name) {
   if (name === 'mail') loadMail();
   if (name === 'mailq') loadMailq(); else mailqWatch(false);
   if (name === 'texts') loadTexts();
-  if (name === 'isemon') drawIsemon();
+  if (name === 'isemon') loadIsemon();
   if (name === 'about') drawAbout();
   if (name === 'upgrade') loadUpgrade();
   if (name === 'web') loadWeb();
@@ -3026,9 +3027,9 @@ function settingItemBare(s) {
    go back, the choices that may not be chosen, a number's highest; the daemon
    refuses them anyway. Switched on only once nothing stands against it - what
    does is listed in a window, each with where it is set. */
-function hsOn() { return !!(STATUS && STATUS.high_security); }
-function hsOptions(sel, bad) {
-  if (!hsOn()) return;
+function hsOn(rule) { return !!(STATUS && STATUS.high_security) && !(rule && (STATUS.hisec_waived || []).indexOf(rule) >= 0); }
+function hsOptions(sel, bad, rule) {
+  if (!hsOn(rule)) return;
   Array.prototype.forEach.call(sel.options, function (o) {
     if (bad.indexOf(o.value) >= 0) { o.disabled = true; o.title = 'not under high security'; }
   });
@@ -3063,37 +3064,64 @@ function hsSwitch(box, s) {
 }
 function hsWindow(d, may) {
   modal(may ? 'High security' : 'High security cannot be switched on yet', function (body) {
-    var block = d.block || [], warn = d.warn || [];
-    body.appendChild(el('p', 'note' + (may ? '' : ' warn'), may
-      ? 'Nothing stands against it. Save the settings to switch it on: from then on every way of doing something less safely is refused.'
-      : num(block.length) + ' thing(s) stand against it. Set them as said - then switch it on again.'));
-    var list = function (rows, cls, title) {
-      if (!rows.length) return;
-      body.appendChild(el('h4', 'hs-h ' + cls, title));
-      var ul = el('div', 'hs-list');
-      rows.forEach(function (x) {
-        var it = el('div', 'hs-item ' + cls);
-        it.appendChild(el('span', 'dot ' + (cls === 'bad' ? 'bad' : 'warn')));
-        var t = el('div', 'hs-t');
-        t.appendChild(el('div', 'hs-what', x.what));
-        var f = el('div', 'muted small');
-        if (x.kind !== 'check') { f.appendChild(el('span', '', 'Set:')); f.appendChild(document.createTextNode(' ')); } f.appendChild(el('span', '', x.fix));
-        if (x.pane) {
-          var a = el('a', '', 'Open it →');
-          a.href = '#settings/' + x.pane;
-          a.onclick = function () { closeModal(); };
-          f.appendChild(document.createTextNode(' · '));
-          f.appendChild(a);
-        }
-        t.appendChild(f);
-        it.appendChild(t);
-        ul.appendChild(it);
-      });
-      body.appendChild(ul);
+    var draw = function (v) {
+      clear(body);
+      var block = v.block || [];
+      var ok = !block.length;
+      body.appendChild(el('p', 'note' + (ok ? '' : ' warn'), ok
+        ? 'Nothing stands against it now. Switch it on again and save: from then on every way of doing something less safely is refused - but the exceptions.'
+        : num(block.length) + ' thing(s) stand against it. Set them as said, or make one an exception with its switch - then switch it on again.'));
+      hsList(body, block, 'bad', 'Stands against it', draw);
+      hsList(body, v.waived || [], 'waived', 'Exceptions - not enforced', draw);
     };
-    list(block, 'bad', 'Stands against it');
-    list(warn, 'warn', 'Advised - does not stop it');
-  }, [{words: 'Close', close: true}]);
+    draw(d);
+  }, [{words: 'Close', close: true}], 'large');
+}
+/* One rule a row: what, what to set, where - and on the right the switch that
+   makes it an exception: it then stops nothing and is not enforced. */
+function hsList(host, rows, cls, title, redraw) {
+  if (!rows.length) return;
+  host.appendChild(el('h4', 'hs-h ' + (cls === 'waived' ? 'dim' : cls), title));
+  var ul = el('div', 'hs-list');
+  rows.forEach(function (x) {
+    var it = el('div', 'hs-item ' + cls);
+    it.appendChild(el('span', 'dot ' + (cls === 'bad' ? 'bad' : (cls === 'ok' ? 'ok' : (cls === 'warn' ? 'warn' : 'dim')))));
+    var t = el('div', 'hs-t');
+    t.appendChild(el('div', 'hs-what', x.title || x.what));
+    if (x.details && x.details.length) t.appendChild(noI18n(el('div', 'small muted mono', x.details.join(', '))));
+    var f = el('div', 'muted small');
+    if (x.kind !== 'check') { f.appendChild(el('span', '', 'Set:')); f.appendChild(document.createTextNode(' ')); }
+    f.appendChild(el('span', '', x.fix));
+    if (x.pane) {
+      var a = el('a', '', 'Open it →');
+      a.href = '#settings/' + x.pane;
+      a.onclick = function () { if ($('modal-box') && $('modal-box').contains(a)) closeModal(); };
+      f.appendChild(document.createTextNode(' · '));
+      f.appendChild(a);
+    }
+    t.appendChild(f);
+    it.appendChild(t);
+    if (x.rule && x.kind !== 'check' && ADMIN) {
+      var sw = el('label', 'hs-ex');
+      var box = switchBox(!!x.waived);
+      sw.appendChild(el('span', 'small muted', 'Exception'));
+      sw.appendChild(box);
+      explain(sw, 'On: this rule is an exception - it does not stop high security and is not enforced while it is on. Every change is an event.');
+      box._input.onchange = function () {
+        var want = !!box._get();
+        box._input.disabled = true;
+        api('hisec', {action: 'waive', rule: x.rule, on: want}).then(function (v) {
+          toast(want ? 'an exception now' : 'enforced again', 'good');
+          if (STATUS) STATUS.hisec_waived = (v.waived || []).map(function (r) { return r.rule; });
+          redraw(v);
+          if ($('hs-host') && redraw !== drawHisec) drawHisec(v);
+        }).catch(function (e) { box._input.disabled = false; box._set(!want); oops(e); });
+      };
+      it.appendChild(sw);
+    }
+    ul.appendChild(it);
+  });
+  host.appendChild(ul);
 }
 
 /** The groups that may enrol, found in the directory: each one's button
@@ -3891,12 +3919,13 @@ function editDir(a) {
     var name = textBox(a.name, 'AD', '');
     var hosts = textBox(a.hosts, 'dc1.example.local, dc2.example.local', 'mono');
     var tls = selectBox([['ldaps', 'LDAPS (636)'], ['starttls', 'StartTLS (389)'], ['none', 'plain LDAP (389) - a test only']], a.tls);
-    hsOptions(tls, ['none']);
+    hsOptions(tls, ['none'], 'dir:tls');
     var port = textBox(a.port, '636', 'mono');
     tls.onchange = function () { port.value = tls.value === 'ldaps' ? '636' : '389'; };
     var verify = switchBox(a.verify);
     var weak = switchBox(!!a.weak);                  /* old, weak certificates (1.0.77) */
-    if (hsOn()) { if (a.verify || a.verify === undefined) verify._input.disabled = true; if (!a.weak) weak._input.disabled = true; }
+    if (hsOn('dir:verify') && (a.verify || a.verify === undefined)) verify._input.disabled = true;
+    if (hsOn('dir:weak') && !a.weak) weak._input.disabled = true;
     var base = textBox(a.base, 'DC=example,DC=local', 'mono');
     var bind = textBox(a.bind_dn, 'otp@example.local', 'mono');
     var pw = secretBox(a.id ? a.bind_pw : '', a.id ? 'set - leave as it is to keep it' : '', 'mono');
@@ -3950,16 +3979,38 @@ function editDir(a) {
   }, [{words: 'Close', close: true}, {words: 'Save', cls: 'primary', icon: 'save', go: function (b) { MODAL_GO(b); }}], 'large');
 }
 
+/* Tried from every node (1.0.169): each reaches the domain controllers on its own. */
 function checkDir(name) {
-  peek('Checking ' + name, function () { return api('directories', {action: 'check', name: name}); }, function (body, d) {
-    var c = d.check;
-    body.appendChild(peekFacts([['How', c.tls === 'none' ? 'plain LDAP' : c.tls], ['Certificate', c.tls === 'none' ? 'not used' : (c.verify ? 'checked' : 'NOT checked') + (c.weak ? ' · weak taken' : '')],
-                                ['Took', num(c.took_ms) + ' ms']]));
-    c.servers.forEach(function (s) {
-      body.appendChild(el('h3', 'peek-h', s.host + ':' + s.port));
-      body.appendChild(stepsList(s.steps));
-    });
-  });
+  modal('Checking ' + name, function (body) {
+    var grid = nodeGrid();
+    body.appendChild(grid);
+    var cards = {};
+    askNodes('directories', {action: 'check_all', name: name}, function (n, got) {
+      var slot = cards[n];
+      if (!slot) return;
+      var c = got.check;
+      var fresh = nodeCard({node: n, me: !!(STATUS && n === STATUS.node)}, got.ok ? 'ok' : 'bad', got.ok ? 'reached' : 'not reached', got.ok ? 'ok' : 'crit');
+      if (got.error || !c) {
+        fresh.appendChild(el('p', 'note bad', got.error || 'no answer'));
+      } else {
+        fresh.appendChild(netFacts([['How', c.tls === 'none' ? 'plain LDAP' : c.tls], ['Certificate', c.tls === 'none' ? 'not used' : (c.verify ? 'checked' : 'NOT checked') + (c.weak ? ' · weak taken' : '')],
+                                    ['Took', num(c.took_ms) + ' ms']]));
+        (c.servers || []).forEach(function (sv) {
+          fresh.appendChild(noI18n(el('h3', 'peek-h', sv.host + ':' + sv.port)));
+          fresh.appendChild(stepsList(sv.steps));
+        });
+      }
+      grid.replaceChild(fresh, slot);
+      cards[n] = fresh;
+    }).then(function (x) {
+      (x.nodes || []).forEach(function (n) {
+        var c = nodeCard({node: n, me: !!(STATUS && n === STATUS.node)}, 'dim', 'being tried', 'info');
+        c.appendChild(el('p', 'muted small', 'Connecting to the domain controllers from ' + n + '…'));
+        grid.appendChild(c);
+        cards[n] = c;
+      });
+    }).catch(function (e) { closeModal(); oops(e); });
+  }, [{words: 'Close', close: true}], 'large');
 }
 /** A question in the page's own popup - never the browser's. `fields` are
     {label, type, placeholder, says}; `go(values, button)` gets what was typed. */
@@ -4240,38 +4291,128 @@ function backupPick(files, phrase, bk) {
   }, [{words: 'Close', close: true}, {words: 'Restore the ones picked', cls: 'primary', icon: 'upload', go: function (b) { MODAL_GO(b); }}], 'large');
 }
 
+/* ---- every node as a card of its own (1.0.169) ----------------------------------
+   The standard of the panes that show the nodes - Time, Network, Syslog, isemon,
+   Disks and logs: one card a node, its state in the head, the facts as tiles,
+   what can be done on that node below; the settings for all in a card after. */
+function nodeGrid() { return el('div', 'pw-grid node-grid'); }
+function nodeCard(n, dot, tag, tagCls) {
+  var c = el('div', 'card ntp-node');
+  var head = el('div', 'pw-head');
+  head.appendChild(el('span', 'dot ' + dot));
+  head.appendChild(noI18n(el('b', '', n.node || n.name)));
+  if (n.me) head.appendChild(el('span', 'tag info', 'this page'));
+  if (tag) head.appendChild(el('span', 'tag ' + (tagCls || 'dim'), tag));
+  c.appendChild(head);
+  return c;
+}
+function nodeBig(c, value, words) {
+  var big = el('div', 'ntp-big');
+  big.appendChild(noI18n(el('span', 'ntp-off', value)));
+  if (words) big.appendChild(el('span', 'muted small', ' ' + words));
+  c.appendChild(big);
+}
+function nodeFresh(n) { return n.at && Date.now() / 1000 - n.at < 300; }
+/* A test only a node can make, asked of it (or of every node) and its answer
+   followed: onEach(node, answer) as each comes, onDone() at the end. */
+function askNodes(what, body, onEach, onDone) {
+  return api(what, body).then(function (x) {
+    var left = (x.nodes || []).slice(), began = Date.now();
+    var timer = setInterval(function () {
+      api(what, {action: 'result', id: x.id}).then(function (r) {
+        left = left.filter(function (n) {
+          var got = (r.nodes || {})[n];
+          if (got) { onEach(n, got); return false; }
+          return true;
+        });
+        if (!left.length || Date.now() - began > 60000) {
+          clearInterval(timer);
+          left.forEach(function (n) { onEach(n, {ok: false, error: 'did not answer in a minute - is it running?'}); });
+          if (onDone) onDone();
+        }
+      }).catch(function () {});
+    }, 1000);
+    return x;
+  });
+}
+
 /* ---- isemon --------------------------------------------------------------- */
+var IS = {d: null, said: {}};
+function loadIsemon() {
+  api('isemon').then(function (d) { IS.d = d; drawIsemon(); }).catch(oops);
+  drawIsemonGuide();
+}
 function drawIsemon() {
-  var host = $('isemon-state');
-  clear(host);
-  var i = (STATUS && STATUS.isemon) || (SETTINGS && SETTINGS.isemon) || {};
-  host.appendChild(el('h2', '', 'What is being sent'));
-  host.appendChild(peekFacts([['Sending', i.on ? 'yes' : 'no'], ['As the host', i.host || '–'],
-                              ['To', (i.targets || []).join(', ') || '–'],
-                              ['Last sent', i.last_sent ? ago(i.last_sent) : 'never'],
-                              ['Waiting', num(i.queued || 0)], ['Files here', i.files ? i.file_dir : 'no']]));
-  Object.keys(i.sent || {}).forEach(function (k) {
-    host.appendChild(el('p', 'small good', k + ': ' + num(i.sent[k]) + ' line(s) sent'));
+  var real = $('isemon-state');
+  if (!real || !IS.d) return;
+  liveLetGo(real);
+  liveFill(real, function (host) {
+    var grid = nodeGrid();
+    (IS.d.nodes || []).forEach(function (n) {
+      var fresh = nodeFresh(n), trouble = Object.keys(n.trouble || {});
+      var on = n.on && (n.targets || []).length;
+      var c = nodeCard(n, !fresh ? 'bad' : (!on ? 'dim' : (trouble.length ? 'warn' : 'ok')),
+        !fresh ? 'not heard from' : (!n.on ? 'off' : (!(n.targets || []).length ? 'nowhere to send' : (trouble.length ? 'trouble' : 'sending'))),
+        !fresh ? 'crit' : (!on ? 'dim' : (trouble.length ? 'warn' : 'ok')));
+      var total = 0;
+      Object.keys(n.sent || {}).forEach(function (k) { total += n.sent[k]; });
+      nodeBig(c, num(total), 'line(s) sent since it started');
+      c.appendChild(netFacts([
+        ['As the host', n.host || '', true], ['To', (n.targets || []).join(', ') || '', true],
+        ['Last sent', n.last_sent ? ago(n.last_sent) : 'never'], ['Waiting', num(n.queued || 0)],
+        ['Dropped, the queue full', num(n.dropped || 0)], ['Files here', n.files ? n.file_dir : 'no', !!n.files]
+      ]));
+      (n.targets || []).forEach(function (t) {
+        var row = el('div', 'si-row');
+        row.appendChild(el('span', 'dot ' + ((n.trouble || {})[t] ? 'bad' : ((n.sent || {})[t] ? 'ok' : 'dim'))));
+        row.appendChild(noI18n(el('span', 'mono', t)));
+        row.appendChild(el('span', 'muted small', num((n.sent || {})[t] || 0) + ' sent'));
+        c.appendChild(row);
+        if ((n.trouble || {})[t]) c.appendChild(noI18n(el('div', 'si-said small', n.trouble[t])));
+      });
+      var said = IS.said[n.node];
+      if (said) c.appendChild(nodeSaid(said, said.ok ? 'The test line went to ' + (said.went || []).join(', ') : 'The test line did not go'));
+      if (ADMIN) {
+        var row2 = el('div', 'btnrow');
+        var t = cmdButton('Send a test line', 'pulse', 'small');
+        t.disabled = !IS.d.on || !fresh;
+        explain(t, 'One line from ' + n.node + ' to every isemon receiver, now - isemon reads nothing from it; to see it arrive.');
+        t.onclick = function () {
+          busy(t, true);
+          askNodes('isemon', {action: 'test', node: n.node}, function (node, got) {
+            IS.said[node] = got;
+            if (got.state) IS.d.nodes.forEach(function (x) { if (x.node === node) Object.assign(x, got.state, {at: Date.now() / 1000}); });
+          }, function () { busy(t, false); drawIsemon(); }).catch(function (e) { busy(t, false); oops(e); });
+        };
+        row2.appendChild(t);
+        c.appendChild(row2);
+      }
+      grid.appendChild(c);
+    });
+    host.appendChild(grid);
   });
-  Object.keys(i.trouble || {}).forEach(function (k) {
-    host.appendChild(el('p', 'small bad', k + ': ' + i.trouble[k]));
-  });
-  var guide = el('div', 'guide');
-  guide.appendChild(el('h3', 'peek-h', 'On the isemon machine'));
-  guide.appendChild(el('p', 'note', 'isemon reads a token server from two files under /var/log/remote/HOST/: totp.cgi.log and radius-detail.log. Its rsyslog needs a rule for both program names - deploy/isemon/11-otp.conf in this package, copied to /etc/rsyslog.d/ there - and in isemon: Settings → The OTP logs switched on, the folder of this host in it, and RADIUS detail switched on.'));
+}
+/* What a test found, in a node's card. */
+function nodeSaid(got, words) {
+  var p = el('div', 'node-said ' + (got.ok ? 'ok' : 'bad'));
+  p.appendChild(el('span', 'dot ' + (got.ok ? 'ok' : 'bad')));
+  var t = el('div');
+  t.appendChild(el('b', '', got.error ? 'It did not go' : words));
+  if (got.error) t.appendChild(noI18n(el('div', 'small muted', got.error)));
+  t.appendChild(el('div', 'small muted', ago(got.at)));
+  p.appendChild(t);
+  return p;
+}
+function drawIsemonGuide() {
+  var host = $('isemon-guide');
+  if (!host || host._drawn) return;
+  host._drawn = true;
+  host.appendChild(el('h2', '', 'On the isemon machine'));
+  host.appendChild(el('p', 'note', 'isemon reads a token server from two files under /var/log/remote/HOST/: totp.cgi.log and radius-detail.log. Its rsyslog needs a rule for both program names - deploy/isemon/11-otp.conf in this package, copied to /etc/rsyslog.d/ there - and in isemon: Settings → The OTP logs switched on, the folder of each node in it, and RADIUS detail switched on.'));
   var pre = el('pre', 'wrap mono');
   pre.textContent = 'if ($programname == "totp.cgi" or $programname == "radius-detail") then {\n'
     + '    action(type="omfile" dynaFile="OTPFile" fileOwner="root" fileGroup="isemon" fileCreateMode="0640")\n    stop\n}';
-  guide.appendChild(pre);
-  host.appendChild(guide);
-  if (ADMIN) {
-    var t = cmdButton('Send a test line', 'pulse', 'small');
-    t.style.marginTop = '10px';
-    t.onclick = function () {
-      api('isemon', {}).then(function (d) { STATUS.isemon = d.isemon; drawIsemon(); toast('sent - see above whether it went', 'good'); }).catch(oops);
-    };
-    host.appendChild(t);
-  }
+  host.appendChild(noI18n(pre));
 }
 
 /* ---- accounts ------------------------------------------------------------- */
@@ -6157,7 +6298,7 @@ if ($('exp-go')) {
     var whole = $('exp-format').value === 'backup';
     /* Locked unless chosen otherwise (1.0.167); under high security always
        (1.0.168) - the choice is not even offered. */
-    var high = !!(STATUS && STATUS.high_security);
+    var high = hsOn('export:unlocked');
     if (high) $('exp-lock').value = 'lock';
     $('exp-lock').hidden = high;
     var lock = $('exp-lock').value === 'lock';
@@ -6179,7 +6320,7 @@ if ($('exp-go')) {
   $('exp-go').onclick = function () {
     var q = $('exp-q').value.trim(), st = $('exp-state').value;
     if ($('exp-format').value === 'backup') {
-      var bLock = $('exp-lock').value === 'lock' || !!(STATUS && STATUS.high_security);
+      var bLock = $('exp-lock').value === 'lock' || hsOn('export:unlocked');
       var pass = bLock ? $('exp-pass').value : '';
       if (bLock && pass.length < 8) { toast('a passphrase of 8 characters at least: the file holds every key', 'bad'); return; }
       confirmThen('Back the tokens up', 'One file with ' + (q || st || $('exp-kind').value ? 'the tokens that match' : '<b>every</b> token')
@@ -6231,7 +6372,7 @@ function tokenExport(name) {
     body.appendChild(el('p', 'note', 'A .totp file with its key and its unused recovery codes. Whoever has the file can sign in as ' + name + '.'));
     var how = {v: 'lock', value: function () { return this.v; }};
     var sg = el('div', 'seg');
-    [['lock', 'Locked with a passphrase'], ['open', 'Not locked']].filter(function (o) { return o[0] === 'lock' || !(STATUS && STATUS.high_security); }).forEach(function (o) {
+    [['lock', 'Locked with a passphrase'], ['open', 'Not locked']].filter(function (o) { return o[0] === 'lock' || !hsOn('export:unlocked'); }).forEach(function (o) {
       var bt = el('button', o[0] === how.v ? 'on' : '', o[1]);
       bt.type = 'button';
       bt.onclick = function () {
@@ -8393,7 +8534,7 @@ function certPolicy(target, prof, d) {
       t.appendChild(el('div', 'tls-tile-prot', p[2]));
       t.appendChild(el('div', 'tls-tile-s', p[3]));
       t.onclick = function () { st.preset = p[0]; paint(); };
-      if (hsOn() && (p[0] === 'intermediate' || p[0] === 'custom')) { t.disabled = true; t.appendChild(el('div', 'small hs-note', 'not under high security')); }
+      if (hsOn('web:tls') && (p[0] === 'intermediate' || p[0] === 'custom')) { t.disabled = true; t.appendChild(el('div', 'small hs-note', 'not under high security')); }
       tiles.appendChild(t);
     });
     body.appendChild(tiles);
@@ -8849,8 +8990,8 @@ function drawFwAccess(d) {
     [[true, 'Everybody'], [false, 'Only from']].forEach(function (o) {
       var b = el('button', '', o[1]);
       b.type = 'button';
-      b.disabled = !d.may || (o[0] && p[0] === 'admin' && hsOn());
-      if (o[0] && p[0] === 'admin' && hsOn()) b.title = 'not under high security';
+      b.disabled = !d.may || (o[0] && p[0] === 'admin' && hsOn('fw:admin'));
+      if (o[0] && p[0] === 'admin' && hsOn('fw:admin')) b.title = 'not under high security';
       b.onclick = function () {
         st[p[0]].any = o[0];
         Array.prototype.forEach.call(seg.children, function (x) { x.classList.toggle('on', x === b); });
@@ -10968,12 +11109,50 @@ function drawRbTop() {
   card.appendChild(going);
   if (!d.tools.openssl) card.appendChild(el('p', 'note bad', 'openssl is not on this machine: backups cannot be locked (dnf install openssl).'));
   host.appendChild(card);
-  if ((d.verified || []).length) host.appendChild(rbTriedCard(d.verified));
+  /* In a cluster each node backs itself up (1.0.169): every node's last
+     backup and last try, side by side. */
+  var names = Object.keys(d.last_by_node || {});
+  (d.verified || []).forEach(function (v) { if (v.node && names.indexOf(v.node) < 0) names.push(v.node); });
+  if (names.indexOf(d.node) < 0) names.push(d.node);
+  if (names.length > 1) {
+    var grid = nodeGrid();
+    grid.classList.add('rb-nodes');
+    names.sort().forEach(function (n) {
+      var last = (d.last_by_node || {})[n];
+      var tr = (d.verified || []).filter(function (v) { return v.node === n; })[0];
+      var bad = (last && !last.ok) || (tr && !tr.ok);
+      var c = nodeCard({node: n, me: n === d.node}, !last ? 'dim' : (bad ? 'bad' : 'ok'),
+        !last ? 'no backup yet' : (last.ok ? 'went everywhere' : 'did not go everywhere'), !last ? 'dim' : (last.ok ? 'ok' : 'crit'));
+      nodeBig(c, last ? ago(last.at) : '–', last ? 'the last backup' : '');
+      c.appendChild(netFacts([['Size', last && last.bytes ? rbBytes(last.bytes) : ''], ['Tokens', last && last.tokens != null ? num(last.tokens) : ''],
+        ['Tried', tr ? (tr.ok ? 'can be put back' : 'NOT GOOD') + ' · ' + ago(tr.at) : 'never']]));
+      grid.appendChild(c);
+    });
+    host.appendChild(grid);
+  }
+  RB.verified = d.verified || [];
+  drawRbTried();
 }
-/* The backups tried (1.0.169): each try, every check of it. */
-function rbTriedCard(rows) {
-  var c = el('div', 'card full');
-  c.appendChild(el('h2', '', 'Backups tried'));
+/* The backups tried (1.0.169): each try, every check of it; the list can be
+   emptied, or a try taken off - the backups themselves stay. */
+function drawRbTried() {
+  var card = $('rb-tried-card'), host = $('rb-tried'), tools = $('rb-tried-tools');
+  if (!card) return;
+  var rows = RB.verified || [];
+  card.hidden = !rows.length;
+  clear(host);
+  clear(tools);
+  if (!rows.length) return;
+  var forget = function (q) {
+    api('rbackup', Object.assign({action: 'verified_forget'}, q)).then(function (d) {
+      toast(d.message, 'good'); RB.verified = d.verified || []; drawRbTried();
+    }).catch(oops);
+  };
+  var wipe = cmdButton('Clear the list', 'trash', 'small');
+  wipe.onclick = function () {
+    confirmThen('Clear the list of backups tried?', 'Every try goes from this list (for both nodes). <b>The backups themselves stay where they are.</b> Events keeps a line saying who cleared it.', 'Clear the list', function () { forget({all: 1}); }, true);
+  };
+  tools.appendChild(wipe);
   var list = el('div', 'rb-tried');
   rows.slice(0, 8).forEach(function (v, i) {
     var it = el('details', 'rb-try ' + (v.ok ? 'good' : 'bad'));
@@ -10981,23 +11160,31 @@ function rbTriedCard(rows) {
     var sm = el('summary');
     sm.appendChild(el('span', 'dot ' + (v.ok ? 'ok' : 'bad')));
     sm.appendChild(el('b', '', v.ok ? 'Can be put back' : 'Not good'));
-    sm.appendChild(noI18n(el('span', 'mono small', ' ' + (v.file || '?'))));
-    sm.appendChild(el('span', 'muted small', '·')); sm.appendChild(el('span', 'muted small', ago(v.at))); sm.appendChild(el('span', 'muted small', '·'));
+    sm.appendChild(noI18n(el('span', 'mono small', v.file || '?')));
+    sm.appendChild(el('span', 'muted small', '·'));
+    sm.appendChild(el('span', 'muted small', ago(v.at)));
+    sm.appendChild(el('span', 'muted small', '·'));
     sm.appendChild(noI18n(el('span', 'muted small', (v.node || '') + ' → ' + (v.target_name || ''))));
+    var x = el('button', 'xbtn rb-try-x');
+    x.type = 'button';
+    x.setAttribute('data-icon', 'close');
+    x.title = 'Take it off the list';
+    x.onclick = function (e) { e.preventDefault(); e.stopPropagation(); forget({at: v.at}); };
+    sm.appendChild(x);
     it.appendChild(sm);
     var ul = el('div', 'rb-checks');
     (v.checks || []).forEach(function (k) {
       var row = el('div', 'rb-check');
       row.appendChild(el('span', 'dot ' + (k.ok ? 'ok' : 'bad')));
       row.appendChild(el('span', '', k.what));
-      if (k.said) row.appendChild(noI18n(el('span', 'muted small', ' - ' + k.said)));
+      if (k.said) row.appendChild(noI18n(el('span', 'muted small', '- ' + k.said)));
       ul.appendChild(row);
     });
     it.appendChild(ul);
     list.appendChild(it);
   });
-  c.appendChild(list);
-  return c;
+  host.appendChild(list);
+  dressButtons(host);
 }
 /* RESTORE.md on the pages (1.0.110): read here, downloaded as the file. */
 function rbGuide() {
@@ -11270,7 +11457,7 @@ function rbPickKind() {
         b.appendChild(el('span', 'small bad', 'missing here: ' + missing.join(', ') + (k.kind === 'smb' ? ' (dnf install samba-client)' : ' (dnf install openssh-clients)')));
       }
       b.onclick = function () { closeModal(); setTimeout(function () { rbEdit({kind: k.kind, enabled: 1, port: k.port}); }, 30); };
-      if (hsOn() && k.kind === 'ftp') { b.disabled = true; b.appendChild(el('span', 'small hs-note', 'not under high security')); }
+      if (hsOn('backup:ftp') && k.kind === 'ftp') { b.disabled = true; b.appendChild(el('span', 'small hs-note', 'not under high security')); }
       g.appendChild(b);
     });
     body.appendChild(g);
@@ -11330,7 +11517,7 @@ function rbEdit(t) {
         f.domain = textBox(t.domain || '', 'CORP', 'mono');
         g2.appendChild(formField('Domain (workgroup)', f.domain));
         f.smb_encrypt = switchBox(t.smb_encrypt === undefined ? 1 : t.smb_encrypt);
-        if (hsOn() && f.smb_encrypt._get()) f.smb_encrypt._input.disabled = true;
+        if (hsOn('backup:smb') && f.smb_encrypt._get()) f.smb_encrypt._input.disabled = true;
         g2.appendChild(formField('SMB3 encryption required', f.smb_encrypt, 'Everything on the wire encrypted; a server that cannot is refused.'));
       }
       if (t.kind === 'ftp' || t.kind === 'ftps') {
@@ -11548,7 +11735,7 @@ function rbFtpsBlock(body, t, f, cur) {
   f.implicit.onchange = function () { if (f.port && (!f.port.value || f.port.value === '21' || f.port.value === '990')) f.port.value = f.implicit.value === '1' ? '990' : '21'; };
   g.appendChild(formField('TLS', f.implicit));
   f.tls_check = selectBox([['system', 'against the authorities this machine trusts'], ['ca', 'against an authority of my own'], ['pin', 'pinned: exactly this certificate'], ['none', 'not checked (not safe)']], t.tls_check || 'system');
-  hsOptions(f.tls_check, ['none']);
+  hsOptions(f.tls_check, ['none'], 'backup:ftps');
   g.appendChild(formField('The server’s certificate is checked', f.tls_check));
   s.appendChild(g);
   f.ca = el('textarea', 'mono rb-area small');
@@ -13395,14 +13582,14 @@ function drawSshd(live) {
     var seg = el('div', 'seg');
     [['prohibit-password', 'With a key only'], ['yes', 'With a key or a password'], ['no', 'Not at all']].forEach(function (o) {
       var b = el('button', dr.permit_root === o[0] ? 'on' : '', o[1]);
-      if (hsOn() && o[0] === 'yes') { b.disabled = true; b.title = 'not under high security'; }
+      if (hsOn('sshd:root') && o[0] === 'yes') { b.disabled = true; b.title = 'not under high security'; }
       b.type = 'button'; b.disabled = !dr.manage;
       b.onclick = function () { dr.permit_root = o[0]; sdDirty(); drawSshd(); };
       seg.appendChild(b);
     });
     g.appendChild(formField('Root signs in', seg));
     var pw = switchBox(dr.password);
-    pw._input.disabled = !dr.manage || (hsOn() && !dr.password);
+    pw._input.disabled = !dr.manage || (hsOn('sshd:password') && !dr.password);
     pw._input.onchange = function () { dr.password = !!pw._get(); sdDirty(); drawSshd(); };
     g.appendChild(formField('Passwords', pw, 'Off: only keys sign in, for everybody.'));
     var port = textBox(String(dr.port || 22), '22', 'mono');
@@ -13454,7 +13641,7 @@ function drawSshd(live) {
 
 /* ---- Settings → Syslog and SIEM, Proxy, Disks and logs (1.0.166) ----------------
    Each node's own state; the settings are the pane's own card. */
-var SI = {d: null};
+var SI = {d: null, said: {}};
 function loadSiem() {
   api('siem').then(function (d) { SI.d = d; drawSiem(); }).catch(oops);
 }
@@ -13464,69 +13651,65 @@ function drawSiem() {
   liveLetGo(real);
   liveFill(real, function (host) {
     var d = SI.d;
-    var c = el('div', 'card full');
-    var h = el('h2', '', 'Sent so far');
-    var tl = el('span', 'right');
-    var look = cmdButton('Look again', 'refresh', 'small');
-    look.onclick = function () { loadSiem(); };
-    var test = cmdButton('Send a test line', 'play', 'small');
-    explain(test, 'One line to every server below, from this node, now - to see it arrive and how it reads.');
-    test.disabled = !d.on;
-    test.onclick = function () {
-      busy(test, true);
-      api('siem', {action: 'test'}).then(function (x) {
-        busy(test, false);
-        SI.d = x; drawSiem();
-        var bad = Object.keys(x.test || {}).filter(function (k) { return x.test[k] !== 'sent'; });
-        if (bad.length) toast(bad.map(function (k) { return k + ': ' + x.test[k]; }).join(' · '), 'bad');
-        else toast('A test line went from ' + x.node + ' to ' + Object.keys(x.test || {}).join(', '), 'good');
-      }).catch(function (e) { busy(test, false); oops(e); });
-    };
-    tl.appendChild(look); tl.appendChild(test);
-    h.appendChild(tl);
-    c.appendChild(h);
-    if (!d.on) c.appendChild(el('p', 'note', 'Sending is off - switch it on below and say where to.'));
-    var grid = el('div', 'pw-grid');
+    if (!d.on) host.appendChild(el('p', 'note', 'Sending is off - switch it on below and say where to.'));
+    var grid = nodeGrid();
     (d.nodes || []).forEach(function (n) {
-      var nc = el('div', 'card pw-node');
-      var hd = el('div', 'pw-head');
       var trouble = Object.keys(n.trouble || {});
-      var fresh = n.at && Date.now() / 1000 - n.at < 300;
-      hd.appendChild(el('span', 'dot ' + (!fresh ? 'bad' : (trouble.length ? 'warn' : 'ok'))));
-      hd.appendChild(noI18n(el('b', '', n.node)));
-      if (n.me) hd.appendChild(el('span', 'tag dim', 'this node'));
-      nc.appendChild(hd);
-      if (!fresh) { nc.appendChild(el('p', 'muted small', 'Not heard from in the last minutes.')); grid.appendChild(nc); return; }
+      var fresh = nodeFresh(n), on = n.on && (n.targets || []).length;
+      var c = nodeCard(n, !fresh ? 'bad' : (!on ? 'dim' : (trouble.length ? 'warn' : 'ok')),
+        !fresh ? 'not heard from' : (!n.on ? 'off' : (!(n.targets || []).length ? 'nowhere to send' : (trouble.length ? 'trouble' : 'sending'))),
+        !fresh ? 'crit' : (!on ? 'dim' : (trouble.length ? 'warn' : 'ok')));
+      var total = 0;
+      Object.keys(n.sent || {}).forEach(function (k) { total += n.sent[k]; });
+      nodeBig(c, num(total), 'line(s) sent since it started');
+      c.appendChild(netFacts([
+        ['Written as', n.host || '', true], ['In the shape of', (n.format || '').toUpperCase(), true],
+        ['Last sent', n.last_sent ? ago(n.last_sent) : 'never'], ['Waiting to go', num(n.queued || 0)],
+        ['Dropped, the queue full', num(n.dropped || 0)], ['Read', n.at ? ago(n.at) : '']
+      ]));
       (n.targets || []).forEach(function (t) {
         var row = el('div', 'si-row');
         row.appendChild(el('span', 'dot ' + ((n.trouble || {})[t] ? 'bad' : ((n.sent || {})[t] ? 'ok' : 'dim'))));
         row.appendChild(noI18n(el('span', 'mono', t)));
         row.appendChild(el('span', 'muted small', num((n.sent || {})[t] || 0) + ' sent'));
-        nc.appendChild(row);
-        if ((n.trouble || {})[t]) nc.appendChild(noI18n(el('div', 'si-said small', n.trouble[t])));
+        c.appendChild(row);
+        if ((n.trouble || {})[t]) c.appendChild(noI18n(el('div', 'si-said small', n.trouble[t])));
       });
-      if (!(n.targets || []).length) nc.appendChild(el('p', 'muted small', 'Nowhere to send to.'));
-      var kv = el('div', 'lg-kv');
-      [['Waiting to go', num(n.queued || 0)], ['Dropped, the queue full', num(n.dropped || 0)],
-       ['Last sent', n.last_sent ? ago(n.last_sent) : '–', true], ['Written as', n.host || '–']].forEach(function (x) {
-        kv.appendChild(el('span', 'muted', x[0]));
-        kv.appendChild(x[2] ? el('b', '', x[1]) : noI18n(el('b', '', x[1])));
-      });
-      nc.appendChild(kv);
-      grid.appendChild(nc);
+      if (!(n.targets || []).length && fresh) c.appendChild(el('p', 'muted small', 'Nowhere to send to.'));
+      var said = SI.said[n.node];
+      if (said) {
+        var bad = Object.keys(said.test || {}).filter(function (k) { return said.test[k] !== 'sent'; });
+        c.appendChild(nodeSaid(said, said.ok ? 'The test line went to every server' : 'Not to ' + bad.join(', ')));
+      }
+      var row2 = el('div', 'btnrow');
+      var look = cmdButton('Look again', 'refresh', 'small');
+      look.onclick = function () { loadSiem(); };
+      var test = cmdButton('Send a test line', 'play', 'small');
+      explain(test, 'One line from ' + n.node + ' to every server, now - to see it arrive and how it reads.');
+      test.disabled = !d.on || !fresh;
+      test.onclick = function () {
+        busy(test, true);
+        askNodes('siem', {action: 'test', node: n.node}, function (node, got) {
+          SI.said[node] = got;
+          if (got.state) d.nodes.forEach(function (x) { if (x.node === node) Object.assign(x, got.state, {at: Date.now() / 1000}); });
+        }, function () { busy(test, false); drawSiem(); }).catch(function (e) { busy(test, false); oops(e); });
+      };
+      row2.appendChild(look); row2.appendChild(test);
+      c.appendChild(row2);
+      grid.appendChild(c);
     });
-    c.appendChild(grid);
-    host.appendChild(c);
+    host.appendChild(grid);
   });
 }
 
+var PX = {poll: null};
 function drawProxy() {
   var host = $('px-host');
   if (!host) return;
   clear(host);
   var c = el('div', 'card full');
   c.appendChild(el('h2', '', 'Try it'));
-  c.appendChild(el('p', 'note', 'An address asked through the proxy as it is saved, from this node. Empty: where the new versions are looked for.'));
+  c.appendChild(el('p', 'note', 'An address asked from this node the way otp asks the web: through the proxy as it is saved, or straight where none is set or the address is in the list. Each step is shown. Empty: where the new versions are looked for.'));
   var row = el('div', 'btnrow');
   var url = el('input');
   url.type = 'text';
@@ -13534,24 +13717,138 @@ function drawProxy() {
   url.style.flex = '1';
   url.style.minWidth = '260px';
   var go = cmdButton('Try it', 'play', 'primary');
-  var said = el('div', 'px-said small');
+  var said = el('div', 'px-out');
+  /* Tried on every node (1.0.169): each node's card fills in as it answers. */
   go.onclick = function () {
     busy(go, true);
     clear(said);
+    if (PX.poll) { clearInterval(PX.poll); PX.poll = null; }
     api('proxy', {action: 'try', url: url.value.trim()}).then(function (x) {
-      busy(go, false);
-      var line = el('div', 'al-ok');
-      line.appendChild(el('span', 'dot ' + (x.ok ? 'ok' : 'bad')));
-      var words = x.ok ? (x.straight ? 'Reached straight, not through the proxy (it is in the list below)' : 'Reached through the proxy') + ' - HTTP ' + x.status + ', ' + x.ms + ' ms, from ' + x.node
-        : 'Not reached: ' + x.said;
-      line.appendChild(el('span', '', words));
-      said.appendChild(line);
+      var nodes = x.nodes || [];
+      var cards = {};
+      var grid = nodeGrid();
+      nodes.forEach(function (n) {
+        var cd = nodeCard({node: n, me: !!(STATUS && n === STATUS.node)}, 'dim', 'being tried', 'info');
+        var body = el('div', 'px-out');
+        body.appendChild(pxPath(null, n));
+        cd.appendChild(body);
+        grid.appendChild(cd);
+        cards[n] = {body: body, done: false, card: cd};
+      });
+      said.appendChild(grid);
+      var began = Date.now();
+      var look = function () {
+        api('proxy', {action: 'result', id: x.id}).then(function (r) {
+          var left = 0;
+          nodes.forEach(function (n) {
+            var got = (r.nodes || {})[n];
+            if (cards[n].done) return;
+            if (!got) { left++; return; }
+            cards[n].done = true;
+            var hd = cards[n].card.querySelector('.pw-head');
+            hd.querySelector('.dot').className = 'dot ' + (got.ok ? 'ok' : 'bad');
+            var tg = hd.querySelector('.tag:last-child');
+            hd.replaceChild(el('span', 'tag ' + (got.ok ? 'ok' : 'crit'), got.ok ? (got.mode === 'proxy' ? 'through the proxy' : 'straight') : 'not reached'), tg);
+            clear(cards[n].body);
+            if (got.error) { cards[n].body.appendChild(el('p', 'note bad', got.error)); return; }
+            cards[n].body.appendChild(pxPath(got));
+            cards[n].body.appendChild(pxSteps(got));
+          });
+          if (!left || Date.now() - began > 60000) {
+            clearInterval(PX.poll); PX.poll = null; busy(go, false);
+            nodes.forEach(function (n) {
+              if (!cards[n].done) { clear(cards[n].body); cards[n].body.appendChild(el('p', 'note warn', 'This node did not answer in a minute - is it running?')); }
+            });
+          }
+        }).catch(function () {});
+      };
+      PX.poll = setInterval(look, 1000);
+      setTimeout(look, 300);
     }).catch(function (e) { busy(go, false); oops(e); });
   };
+  url.addEventListener('keydown', function (e) { if (e.key === 'Enter') go.click(); });
   row.appendChild(url); row.appendChild(go);
   c.appendChild(row);
   c.appendChild(said);
   host.appendChild(c);
+}
+/* The way it went, drawn: this node, the proxy (when it went through one),
+   the address - each link green, red, or still being tried. */
+function pxPath(x, nodeName) {
+  var box = el('div', 'px-path' + (x ? (x.ok ? ' ok' : ' bad') : ' going'));
+  var steps = (x && x.steps) || [];
+  var failAt = steps.filter(function (s) { return !s.ok; })[0];
+  var stop = function (icon, title, sub, cls) {
+    var n = el('div', 'px-stop ' + (cls || ''));
+    var ic = el('span', 'px-ic');
+    ic.innerHTML = iconMarkup(icon, 22);
+    n.appendChild(ic);
+    n.appendChild(noI18n(el('b', 'mono', title)));
+    if (sub) n.appendChild(el('span', 'muted small', sub));
+    return n;
+  };
+  var link = function (state, words) {
+    var l = el('div', 'px-link ' + state);
+    l.appendChild(el('span', 'px-wire'));
+    if (words) l.appendChild(el('span', 'px-lw small', words));
+    return l;
+  };
+  if (!x) {
+    box.appendChild(stop('router', nodeName || (STATUS && STATUS.node) || 'otp', 'the node', 'me'));
+    box.appendChild(link('going', 'trying…'));
+    box.appendChild(stop('globe', '…', '', ''));
+    return box;
+  }
+  var reached = function (re) { return steps.some(function (s) { return s.ok && re.test(s.what); }); };
+  box.appendChild(stop('router', x.node, 'the node', 'me'));
+  if (x.mode === 'proxy') {
+    var toProxy = reached(/^connected to the proxy/) ? 'ok' : 'bad';
+    box.appendChild(link(toProxy, toProxy === 'ok' ? 'connected' : 'not reached'));
+    box.appendChild(stop('wall', x.proxy, x.proxy_auth ? 'the proxy · with a password' : 'the proxy', toProxy === 'ok' ? 'good' : 'bad'));
+    var through = x.ok ? 'ok' : (toProxy === 'ok' ? 'bad' : 'off');
+    box.appendChild(link(through, through === 'ok' ? 'through the proxy' : (through === 'bad' ? 'stopped here' : '')));
+  } else {
+    var st = x.ok ? 'ok' : 'bad';
+    box.appendChild(link(st, 'straight'));
+  }
+  box.appendChild(stop(x.tls ? 'lock' : 'globe', x.host + ':' + x.port, x.tls ? x.tls.version + ' · ' + (x.tls.issuer || '') : '', x.ok ? 'good' : 'bad'));
+  var top = el('div', 'px-verdict ' + (x.ok ? 'ok' : 'bad'));
+  top.appendChild(el('span', 'dot ' + (x.ok ? 'ok' : 'bad')));
+  var words = x.ok
+    ? (x.mode === 'proxy' ? 'Reached through the proxy' : 'Reached straight') + ' - HTTP ' + x.status + ', ' + x.ms + ' ms'
+    : 'Not reached: ' + ((failAt && failAt.said) || '?');
+  top.appendChild(el('b', '', words));
+  if (x.mode === 'direct' && x.why_direct) top.appendChild(el('span', 'muted small', 'straight because ' + x.why_direct));
+  var wrap = el('div', 'px-result');
+  wrap.appendChild(top);
+  wrap.appendChild(box);
+  return wrap;
+}
+function pxSteps(x) {
+  var ul = el('div', 'px-steps');
+  var plan = x.mode === 'proxy'
+    ? ['the proxy looked up', 'connected to the proxy'].concat(/^https/.test(x.url) ? ['a tunnel through the proxy', 'TLS'] : []).concat(['asked for'])
+    : ['looked up', 'connected to'].concat(/^https/.test(x.url) ? ['TLS'] : []).concat(['asked for']);
+  var done = x.steps || [];
+  done.forEach(function (s) {
+    var r = el('div', 'px-step ' + (s.ok ? 'ok' : 'bad'));
+    r.appendChild(el('span', 'px-n', s.ok ? '✓' : '✗'));
+    var t = el('div', 'px-st');
+    t.appendChild(el('b', '', s.what));
+    if (s.said) t.appendChild(noI18n(el('div', 'muted small mono', s.said)));
+    r.appendChild(t);
+    r.appendChild(el('span', 'px-ms small muted', s.ms + ' ms'));
+    ul.appendChild(r);
+  });
+  for (var i = done.length; i < plan.length; i++) {
+    var r = el('div', 'px-step off');
+    r.appendChild(el('span', 'px-n', '○'));
+    var t = el('div', 'px-st');
+    t.appendChild(el('b', '', 'not tried - the step before stopped it'));
+    r.appendChild(t);
+    ul.appendChild(r);
+  }
+  return ul;
 }
 
 var LG = {d: null};
@@ -13564,49 +13861,42 @@ function drawLogs() {
   liveLetGo(real);
   liveFill(real, function (host) {
     var d = LG.d;
-    var c = el('div', 'card full');
-    var h = el('h2', '', 'The nodes');
-    var tl = el('span', 'right');
-    var again = cmdButton('Put in and look again', 'refresh', 'small');
-    explain(again, 'Every node puts the settings below in again and says how much its journal and logs take - this one at once, the other within a minute.');
-    again.onclick = function () {
-      busy(again, true);
-      api('logs', {action: 'refresh'}).then(function (x) { busy(again, false); LG.d = x; drawLogs(); toast('Asked of every node', 'good'); })
-        .catch(function (e) { busy(again, false); oops(e); });
-    };
-    tl.appendChild(again);
-    h.appendChild(tl);
-    c.appendChild(h);
-    var grid = el('div', 'pw-grid');
+    var grid = nodeGrid();
     (d.nodes || []).forEach(function (n) {
-      var nc = el('div', 'card pw-node');
-      var hd = el('div', 'pw-head');
-      hd.appendChild(el('span', 'dot ' + (!n.at ? 'dim' : (n.ok && n.current ? 'ok' : (n.ok ? 'warn' : 'bad')))));
-      hd.appendChild(noI18n(el('b', '', n.node)));
-      hd.appendChild(el('span', 'tag ' + (n.ok && n.current ? 'good' : (n.at ? 'warn' : 'dim')), !n.at ? 'not asked yet' : (n.ok && n.current ? 'as set' : (n.ok ? 'being put in' : 'failed'))));
-      nc.appendChild(hd);
+      var state = !n.at ? ['dim', 'not asked yet', 'dim'] : (n.ok && n.current ? ['ok', 'as set', 'ok'] : (n.ok ? ['warn', 'being put in', 'warn'] : ['bad', 'failed', 'crit']));
+      var c = nodeCard(n, state[0], state[1], state[2]);
+      var lim = d.disk_pct || 85;
+      var worst = (n.disks || []).reduce(function (m, dk) { return Math.max(m, dk.pct || 0); }, 0);
+      nodeBig(c, num(worst) + ' %', 'the fullest disk');
       (n.disks || []).forEach(function (dk) {
         var row = el('div', 'al-disk');
         var lab = el('div', 'al-disk-l');
         lab.appendChild(noI18n(el('span', 'mono', dk.path)));
         lab.appendChild(el('span', 'muted small', bytes(dk.free) + ' free of ' + bytes(dk.total)));
         row.appendChild(lab);
-        var lim = d.disk_pct || 85;
         row.appendChild(upBar(dk.pct, dk.pct >= 95 ? 'bad' : (dk.pct >= lim ? 'warn' : 'good'), num(dk.pct) + ' %'));
-        nc.appendChild(row);
+        c.appendChild(row);
       });
-      var kv = el('div', 'lg-kv');
-      [['The system journal', n.journal_use], ['otp’s logs', n.logdir], ['otp’s data', n.state]].forEach(function (x) {
-        kv.appendChild(el('span', 'muted', x[0]));
-        kv.appendChild(noI18n(el('b', '', x[1] == null ? '–' : bytes(x[1]))));
-      });
-      nc.appendChild(kv);
-      if (n.said && !n.ok) nc.appendChild(noI18n(el('div', 'si-said small', n.said)));
-      if (n.at) nc.appendChild(el('p', 'muted small', 'Asked ' + ago(n.at)));
-      grid.appendChild(nc);
+      c.appendChild(netFacts([
+        ['The system journal', n.journal_use == null ? '' : bytes(n.journal_use)],
+        ['otp’s logs', n.logdir == null ? '' : bytes(n.logdir)],
+        ['otp’s data', n.state == null ? '' : bytes(n.state)],
+        ['Asked', n.at ? ago(n.at) : '']
+      ]));
+      if (n.said && !n.ok) c.appendChild(noI18n(el('div', 'si-said small', n.said)));
+      var row2 = el('div', 'btnrow');
+      var again = cmdButton('Put in and look again', 'refresh', 'small');
+      explain(again, 'Every node puts the settings below in again and says how much its journal and logs take - the one this page is on at once, the other within a minute.');
+      again.onclick = function () {
+        busy(again, true);
+        api('logs', {action: 'refresh'}).then(function (x) { busy(again, false); LG.d = x; drawLogs(); toast('Asked of every node', 'good'); })
+          .catch(function (e) { busy(again, false); oops(e); });
+      };
+      row2.appendChild(again);
+      c.appendChild(row2);
+      grid.appendChild(c);
     });
-    c.appendChild(grid);
-    host.appendChild(c);
+    host.appendChild(grid);
   });
 }
 
@@ -13622,11 +13912,11 @@ function drawHisec(d) {
   var h = el('h2', '', d.on ? 'High security is on' : 'High security is off');
   var tl = el('span', 'right');
   var look = cmdButton('Look again', 'refresh', 'small');
-  look.onclick = function () { liveLetGo(host); loadHisec(); };
+  look.onclick = function () { loadHisec(); };
   tl.appendChild(look);
   h.appendChild(tl);
   c.appendChild(h);
-  var block = d.block || [], warn = d.warn || [];
+  var block = d.block || [], waived = d.waived || [], rules = d.rules || [];
   var top = el('div', 'al-ok');
   top.appendChild(el('span', 'dot ' + (block.length ? 'bad' : 'ok')));
   top.appendChild(el('span', '', block.length
@@ -13634,30 +13924,119 @@ function drawHisec(d) {
             : num(block.length) + ' thing(s) stand against switching it on.')
     : (d.on ? 'Everything is as high security wants it.' : 'Nothing stands against it - it can be switched on below.')));
   c.appendChild(top);
-  var box = el('div');
-  [[block, 'bad', 'Stands against it'], [warn, 'warn', 'Advised - does not stop it']].forEach(function (g) {
-    if (!g[0].length) return;
-    box.appendChild(el('h4', 'hs-h ' + g[1], g[2]));
-    var ul = el('div', 'hs-list');
-    g[0].forEach(function (x) {
-      var it = el('div', 'hs-item');
-      it.appendChild(el('span', 'dot ' + g[1]));
-      var t = el('div', 'hs-t');
-      t.appendChild(el('div', 'hs-what', x.what));
-      var f = el('div', 'muted small');
-      if (x.kind !== 'check') { f.appendChild(el('span', '', 'Set:')); f.appendChild(document.createTextNode(' ')); } f.appendChild(el('span', '', x.fix));
-      if (x.pane) {
-        var a = el('a', '', 'Open it →');
-        a.href = '#settings/' + x.pane;
-        f.appendChild(document.createTextNode(' · '));
-        f.appendChild(a);
-      }
-      t.appendChild(f);
-      it.appendChild(t);
-      ul.appendChild(it);
-    });
-    box.appendChild(ul);
-  });
-  c.appendChild(box);
+  if (waived.length) c.appendChild(el('p', 'muted small', num(waived.length) + ' exception(s): not enforced.'));
+  hsList(c, block, 'bad', 'Stands against it', drawHisec);
+  hsList(c, waived, 'waived', 'Exceptions - not enforced', drawHisec);
+  var kept = rules.filter(function (r) { return !r.bad && !r.waived; });
+  if (kept.length) {
+    var det = el('details', 'hs-kept');
+    det.appendChild(el('summary', '', 'Kept as high security wants it (' + num(kept.length) + ')'));
+    hsList(det, kept, 'ok', '', drawHisec);
+    c.appendChild(det);
+  }
   host.appendChild(c);
+  if ((d.warn || []).length) {
+    var k = el('div', 'card full');
+    k.appendChild(el('h2', '', 'The security check'));
+    k.appendChild(el('p', 'note', 'What is not as it should be now - it does not stop high security.'));
+    hsList(k, d.warn, 'warn', '', drawHisec);
+    host.appendChild(k);
+  }
+}
+
+/* ---- Settings → Automatic certificates (1.0.169) -------------------------------
+   One card a certificate - the web address's, each node's - who orders it, what
+   it has now, the last try; port 80 tried as the CA will try it. */
+var AC = {d: null, probe: {}, poll: null};
+function loadAcme() {
+  api('acme').then(function (d) { AC.d = d; drawAcme(); acPoll(d.work && d.work.busy); }).catch(oops);
+}
+function acPoll(on) {
+  if (on && !AC.poll) AC.poll = setInterval(function () {
+    if (TAB !== 'settings' || PANE !== 'acme') { acPoll(false); return; }
+    api('acme').then(function (d) { AC.d = d; drawAcme(); if (!(d.work && d.work.busy)) acPoll(false); }).catch(function () {});
+  }, 2000);
+  if (!on && AC.poll) { clearInterval(AC.poll); AC.poll = null; }
+}
+function drawAcme() {
+  var real = $('ac-host');
+  if (!real || !AC.d) return;
+  liveLetGo(real);
+  liveFill(real, function (host) {
+    var d = AC.d;
+    if (!d.on) host.appendChild(el('p', 'note', 'Off - switch it on below, say which certificates and the CA, and save.'));
+    if (d.work && d.work.busy) {
+      var g = el('div', 'going wide');
+      g.innerHTML = '<div class="bar"><span style="width:60%"></span></div>';
+      g.appendChild(el('div', 'says', d.work.says || 'ordering…'));
+      host.appendChild(g);
+    }
+    /* By hand (DNS-01): the record to put in, and the order waiting for it. */
+    if (d.manual) {
+      var mc = el('div', 'card full ac-manual');
+      mc.appendChild(el('h2', '', 'Put this TXT record in DNS'));
+      mc.appendChild(el('p', 'note warn', 'The order waits for it - up to an hour. Put it in, wait until DNS carries it, then say so. Take it away again once the certificate has come.'));
+      mc.appendChild(netFacts([['Name', d.manual.rr, true], ['Type', 'TXT', true], ['Value', d.manual.txt, true], ['TTL', '60', true]]));
+      var mr = el('div', 'btnrow');
+      var cp = cmdButton('Copy the value', 'copy', 'small');
+      cp.onclick = function () { copyText(d.manual.txt); };
+      var dn = cmdButton('It is in DNS', 'check', 'small primary');
+      dn.disabled = !!d.manual.done;
+      dn.onclick = function () { api('acme', {action: 'manual_done'}).then(function (x) { AC.d = x; drawAcme(); acPoll(true); }).catch(oops); };
+      var gv = cmdButton('Give the order up', 'close', 'small');
+      gv.onclick = function () { api('acme', {action: 'manual_drop'}).then(function (x) { AC.d = x; drawAcme(); }).catch(oops); };
+      mr.appendChild(cp); mr.appendChild(dn); mr.appendChild(gv);
+      mc.appendChild(mr);
+      host.appendChild(mc);
+    }
+    var grid = nodeGrid();
+    (d.targets || []).forEach(function (t) {
+      var st = t.state || {};
+      var left = t.not_after ? Math.floor((t.not_after - Date.now() / 1000) / 86400) : null;
+      var acme = t.how === 'ACME';
+      var dot = !acme ? 'dim' : (st.ok === false ? 'warn' : (left !== null && left < 14 ? 'warn' : 'ok'));
+      var c = nodeCard({node: t.target === 'vip' ? 'the web address' : t.target, me: t.target === d.node}, dot,
+        acme ? (st.ok === false ? 'the last try failed' : 'from the CA') : (t.how ? 'not from the CA' : 'no certificate'),
+        acme ? (st.ok === false ? 'warn' : 'ok') : 'dim');
+      nodeBig(c, left !== null ? num(left) : '–', left !== null ? 'days left' : '');
+      c.appendChild(netFacts([
+        ['For', t.name || '', true], ['Issued by', t.issuer || '', true],
+        ['Good until', t.not_after ? new Date(t.not_after * 1000).toLocaleDateString(numLang()) : ''],
+        ['Last ordered', st.ordered_at ? ago(st.ordered_at) : 'never'],
+        ['Ordered by', t.target === 'vip' ? 'the first node by name' : t.target]
+      ]));
+      if (st.ok === false && st.said) c.appendChild(nodeSaid({ok: false, error: st.said, at: st.failed_at}, ''));
+      var pr = AC.probe[t.target];
+      if (pr) c.appendChild(nodeSaid({ok: pr.ok, at: pr.at, error: pr.ok ? '' : pr.said}, 'Port 80 answers as the CA will ask it'));
+      var row = el('div', 'btnrow');
+      var probe = cmdButton('Try port 80', 'play', 'small');
+      probe.hidden = d.challenge === 'dns-01';
+      explain(probe, 'http://' + (t.name || '?') + '/.well-known/acme-challenge/ asked from this node, as the CA will ask it - whether it reaches otp. A firewall in front of the servers may still stop the CA from outside.');
+      probe.disabled = !t.name;
+      probe.onclick = function () {
+        busy(probe, true);
+        api('acme', {action: 'probe', target: t.target}).then(function (x) {
+          busy(probe, false); x.at = Date.now() / 1000; AC.probe[t.target] = x; drawAcme();
+        }).catch(function (e) { busy(probe, false); oops(e); });
+      };
+      var order = cmdButton('Order it now', 'download', 'small primary');
+      var may = (d.mine || []).indexOf(t.target) >= 0;
+      order.disabled = !d.on || !may || (d.work && d.work.busy);
+      explain(order, may ? 'Ordered from the CA now, and put in by every node that serves it.' : (d.on ? 'Not ordered from this node - the web address\'s by the first node by name, a node\'s by that node; or not asked for (Settings below).' : 'Switch it on below first.'));
+      order.onclick = function () {
+        busy(order, true);
+        api('acme', {action: 'order', target: t.target}).then(function (x) { busy(order, false); toast(x.message, 'good'); AC.d = x; drawAcme(); acPoll(true); })
+          .catch(function (e) { busy(order, false); oops(e); });
+      };
+      row.appendChild(probe); row.appendChild(order);
+      c.appendChild(row);
+      grid.appendChild(c);
+    });
+    host.appendChild(grid);
+    if (d.account && d.account.kid) {
+      var a = el('p', 'muted small', 'The account at the CA: ');
+      a.appendChild(noI18n(el('span', 'mono', d.account.kid)));
+      host.appendChild(a);
+    }
+  });
 }
