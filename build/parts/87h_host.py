@@ -616,7 +616,7 @@ SSHD_DEFAULT = {'manage': False, 'permit_root': 'prohibit-password', 'password':
                 # A code from otp at SSH sign-in (1.0.178): pam_radius asking
                 # this node's own RADIUS.
                 'radius': False, 'radius_users': [], 'radius_root': False,
-                'radius_fallback': True}
+                'radius_fallback': True, 'radius_with_key': False}
 HOST_WORK.update(sshd=False, sshd_read=0.0)
 
 
@@ -673,6 +673,7 @@ def sshd_checked_conf(b):
     c['radius_root'] = bool(b.get('radius_root'))
     # Passwords off: a node otp cannot ask lets nobody in with one either.
     c['radius_fallback'] = bool(b.get('radius_fallback', True)) and c['password']
+    c['radius_with_key'] = bool(b.get('radius_with_key')) and c['radius']
     return c
 
 
@@ -709,6 +710,8 @@ def sshd_save(store, b, by):
             ', '.join(c['radius_users']) or 'everybody but root' if not c['radius_root']
             else ', '.join(c['radius_users']) or 'everybody, root too',
             ', the system password when otp does not answer' if c['radius_fallback'] else '')
+        if c['radius_with_key']:
+            what += ', a key first'
     notes = [w for k, w in (('notice_ssh', 'SSH'), ('notice_console', 'console'),
                             ('notice_motd', 'after sign-in')) if c[k]]
     store.add_event('settings', '%s set the SSH server: %s%s%s' % (

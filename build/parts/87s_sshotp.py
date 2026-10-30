@@ -44,7 +44,7 @@ def sshotp_all(store):
         except ValueError:
             continue
         out.append({'name': v.get('name') or r['k'][len('sshotp:u:'):], 'at': v.get('at'),
-                    'kind': v.get('kind') or 'app',
+                    'kind': v.get('kind') or 'app', 'lang': v.get('lang') or '',
                     'dest': dest_masked(v.get('kind'), v.get('dest')) if v.get('dest') else '',
                     'by': v.get('by') or '', 'note': v.get('note') or '',
                     'used_at': v.get('used_at'), 'used_on': v.get('used_on') or '',
@@ -52,7 +52,7 @@ def sshotp_all(store):
     return sorted(out, key=lambda x: x['name'].lower())
 
 
-def sshotp_make(store, name, by, note='', replace=False, kind='app', dest=''):
+def sshotp_make(store, name, by, note='', replace=False, kind='app', dest='', lang=''):
     """A new SSH token for `name`: an app's (the QR and the secret shown this
     once), or codes sent by mail or SMS (1.0.181) where sending is set up."""
     name = sshotp_name(name)
@@ -65,6 +65,8 @@ def sshotp_make(store, name, by, note='', replace=False, kind='app', dest=''):
             raise ValueError('sending %s is not set up (Settings → %s)' % (
                 ('mail', 'Mail') if kind == 'mail' else ('SMS', 'Codes by e-mail and SMS')))
         dest = dest_checked(kind, dest)
+    # The language of its mails and SMS (1.0.183): Czech or English.
+    lang = str(lang or '') if str(lang or '') in CODE_TEXTS else code_lang()
     with SSHOTP_LOCK:
         had = sshotp_get(store, name)
         if had and not replace:
@@ -75,14 +77,14 @@ def sshotp_make(store, name, by, note='', replace=False, kind='app', dest=''):
             secret = b32_new(20)
             rec['secret'] = seal_secret(secret, sshotp_key(name))
         else:
-            rec['dest'] = dest
+            rec.update(dest=dest, lang=lang)
         store.set_meta(sshotp_key(name), json.dumps(rec))
     store.add_event('settings', '%s made %s SSH token for %s%s' % (
         by, 'a new' if had else 'an', name, '' if kind == 'app' else ' (codes by %s to %s)' % (
             'mail' if kind == 'mail' else 'SMS', dest_masked(kind, dest))),
         'warn' if had else 'info', who=by)
     if kind != 'app':
-        return {'name': name, 'kind': kind, 'dest': dest_masked(kind, dest)}
+        return {'name': name, 'kind': kind, 'dest': dest_masked(kind, dest), 'lang': lang}
     site = str(CONFIG.get('site_name') or short_host())
     uri = otpauth_uri(secret, name, '%s (SSH)' % site)
     return {'name': name, 'kind': 'app', 'qr': qr_data_uri(uri), 'uri': uri,
@@ -159,8 +161,8 @@ def ssh_gate_ephemeral():
 
 
 def ssh_gate_candidates(store):
-    """The port this node took before first, then the one set, then the rest of
-    18129-18199 - none of the kernel's own for outgoing connections."""
+    """The port set first, then the one this node took before, then the rest
+    of 18129-18199 - none of the kernel's own for outgoing connections."""
     lo, hi = ssh_gate_ephemeral()
     out = []
     try:
@@ -171,7 +173,7 @@ def ssh_gate_candidates(store):
         want = int(CONFIG.get('ssh_gate_port') or 18129)
     except (TypeError, ValueError):
         want = 18129
-    for p in [was, want] + list(SSH_GATE_PORTS):
+    for p in [want, was] + list(SSH_GATE_PORTS):
         if 1024 < p < 65536 and not lo <= p <= hi and p not in out:
             out.append(p)
     return out
@@ -206,7 +208,8 @@ def sshotp_send(store, name):
             SSHOTP_CHALLENGES.pop(k, None)
     code, salt = code_new(), secrets.token_hex(8)
     try:
-        code_send(store, kind, rec['dest'], code, purpose='ssh', name=name)
+        code_send(store, kind, rec['dest'], code, purpose='ssh', name=name,
+                  lang=rec.get('lang') or None)
     except (MailError, SmsError) as e:
         store.add_event('ssh', 'the SSH code for %s could not be sent (%s): %s' % (
             name, kind, e), 'warn', who=name)
@@ -216,7 +219,7 @@ def sshotp_send(store, name):
         SSHOTP_CHALLENGES[state] = {'name': name, 'hash': code_hash(salt, code), 'salt': salt,
                                     'exp': now + int(CONFIG.get('code_ttl_s') or 300),
                                     'tries': 0}
-    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms',
+    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms', lang=rec.get('lang') or None,
                      dest=dest_masked(kind, rec['dest']))
     return state, ask
 
@@ -321,6 +324,19 @@ class SshGate(object):
         except Exception as e:                          # noqa: BLE001
             log_sparing('sshgate', 'the SSH gate: %s' % e, 'warn', every=600)
             return
+        # The port set changed (1.0.183): listened on again, the new one first.
+        try:
+            asked = int(CONFIG.get('ssh_gate_port') or 18129)
+        except (TypeError, ValueError):
+            asked = 18129
+        if self.sock and want and asked != getattr(self, 'asked', asked) and asked != self.port:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+            SSH_GATE_STATE.update(listening=False, port=0)
+        self.asked = asked
         if self.sock and not want:
             try:
                 self.sock.close()

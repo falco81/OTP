@@ -76,8 +76,9 @@ call('/api/settings', {'settings': {'sms_mode': 'spool', 'sms_spool_dir': '/tmp'
 time.sleep(2)
 c, x = call('/api/sshd', {'action': 'sshotp_add', 'name': 'petr', 'kind': 'sms', 'dest': 'not a number'}, S)
 ok('by SMS to something not a number: refused (%s)' % c, c == 400, x)
-c, x = call('/api/sshd', {'action': 'sshotp_add', 'name': 'petr', 'kind': 'sms', 'dest': '+420777123456'}, S)
+c, x = call('/api/sshd', {'action': 'sshotp_add', 'name': 'petr', 'kind': 'sms', 'dest': '+420777123456', 'lang': 'en'}, S)
 m = x.get('made') or {}
+ok('... in English, as chosen', m.get('lang') == 'en' and [t for t in x['sshotp'] if t['name'] == 'petr'][0]['lang'] == 'en', x.get('sshotp'))
 ok('by SMS: made, no QR, the number masked (%s)' % c, c == 200 and m.get('kind') == 'sms' and 'qr' not in m and '777123' not in json.dumps(x), x)
 ok('... the channels the page offers', 'sms' in (x.get('channels') or []))
 print('ALL %d / %d' % (sum(R), len(R)))

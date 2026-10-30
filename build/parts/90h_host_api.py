@@ -140,7 +140,7 @@ def _sshd_do(h):
         if act == 'sshotp_add':
             got = sshotp_make(h.store, b.get('name'), s['name'], b.get('note') or '',
                               replace=bool(b.get('replace')), kind=str(b.get('kind') or 'app'),
-                              dest=str(b.get('dest') or ''))
+                              dest=str(b.get('dest') or ''), lang=str(b.get('lang') or ''))
             return dict(sshd_view(h.store), made=got, message=(
                 'the SSH token of %s is made - scan it now, it is not shown again' % got['name']
                 if got['kind'] == 'app' else 'the SSH token of %s is made - its codes go to %s'

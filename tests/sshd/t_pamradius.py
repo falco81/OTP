@@ -135,8 +135,14 @@ ok('... a wrong code sent back: asked again, then not in', not good and said.cou
 time.sleep(1)
 good, said = pam('eva', '')
 ok('... asked again at once: no second SMS within 20 s', not good and 'prompt' in said, said)
+otp.sshotp_make(st, 'ann', 'test', kind='sms', dest='+420777123457', lang='en')
+for f in os.listdir(D + '/sms'):
+    os.unlink(os.path.join(D + '/sms', f))
+st_, ask_ = otp.sshotp_send(st, 'ann')
+sms = ''.join(open(os.path.join(D + '/sms', f)).read() for f in os.listdir(D + '/sms') if not f.startswith('.'))
+ok('an SSH token in English: the SMS and the prompt in English', 'SSH sign-in code' in sms and ask_.startswith('Type the code'), (sms, ask_))
 ok('... the SMS says it is for SSH', 'SSH' in otp.code_message('sms', '+420777123456', '123456', 'ssh', lang='en'))
-ok('the SSH token says when it was used', (otp.sshotp_all(st)[0].get('used_at') or 0) > time.time() - 120)
+ok('the SSH token says when it was used', ([t for t in otp.sshotp_all(st) if t['name'] == 'jan'][0].get('used_at') or 0) > time.time() - 120)
 # Only these users: jan is not among them - his own password (none here) asked, not otp.
 apply(radius_users=['petr'])
 text = open(E + '/pam.d/sshd').read()
@@ -163,6 +169,28 @@ ok('passwords off: no fallback, and pam_deny after', 'localifdown' not in text a
 drop = open(E + '/ssh/sshd_config.d/00-otp.conf').read()
 ok('... PasswordAuthentication no, keyboard-interactive for the code', 'PasswordAuthentication no' in drop and
    'KbdInteractiveAuthentication yes' in drop, drop)
+# A key and then the code (1.0.183).
+apply(password=True, radius_with_key=True)
+drop = open(E + '/ssh/sshd_config.d/00-otp.conf').read()
+ok('a key, then the code: AuthenticationMethods for everybody, root left as it was',
+   drop.rstrip().endswith('Match User *,!root\n    AuthenticationMethods publickey,keyboard-interactive'), drop)
+
+
+def sshT(user):
+    got = subprocess.run(['/usr/sbin/sshd', '-T', '-f', E + '/ssh/sshd_config', '-C', 'user=%s,host=x,addr=10.0.0.1' % user],
+                         capture_output=True, text=True)
+    return [l for l in got.stdout.split('\n') if l.startswith('authenticationmethods')]
+
+
+ok('... sshd -T: jan a key and the code, root as before', sshT('jan') == ['authenticationmethods publickey,keyboard-interactive']
+   and sshT('root') == ['authenticationmethods any'], (sshT('jan'), sshT('root')))
+ok('... the Match did not reach the system\'s own settings', otp_web.sshd_match_kept() == '')
+apply(radius_with_key=True, radius_users=['petr', 'eva'])
+drop = open(E + '/ssh/sshd_config.d/00-otp.conf').read()
+ok('... only petr and eva: a Match of theirs', 'Match User petr,eva\n    AuthenticationMethods publickey,keyboard-interactive' in drop
+   and sshT('jan') == ['authenticationmethods any'] and sshT('eva') == ['authenticationmethods publickey,keyboard-interactive'], drop)
+apply(radius_with_key=False)
+ok('... off: no AuthenticationMethods', 'AuthenticationMethods' not in open(E + '/ssh/sshd_config.d/00-otp.conf').read())
 apply(radius=False)
 ok('switched off: sshd\'s PAM exactly as it was', open(E + '/pam.d/sshd').read() == ORIG)
 ok('... the secret\'s file gone', not os.path.exists(cf))

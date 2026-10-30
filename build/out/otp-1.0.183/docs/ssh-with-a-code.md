@@ -64,7 +64,8 @@ authenticator app. *A new one…* makes
 the secret anew (the one in the app stops working), *Remove* takes it away. Full
 administrators only; each is an event.
 
-**By mail or SMS** (where sending is set up - *Settings → Mail*, *Codes by e-mail
+**By mail or SMS** (where sending is set up; in Czech or English, chosen for each
+token - *Settings → Mail*, *Codes by e-mail
 and SMS*): choose *By mail* or *By SMS* and the address or number. At `ssh`, press
 Enter at the first prompt (`Password:`); otp sends a code and pam_radius asks for
 it in a second prompt (*Type the code from the SMS sent to +420\*\*\*\*\*\*456*) -
@@ -81,10 +82,20 @@ goes to isemon and the SIEM as events do. Both nodes see the same tokens.
 An account with no SSH token gets no code: with *The system password when otp
 does not answer* off, it gets in with a key only.
 
-A key alone still lets in: sshd asks PAM only where it would ask for a password
-(`AuthenticationMethods` is not changed). To want a key **and** a code, set
-`AuthenticationMethods publickey,keyboard-interactive` yourself in a file of
-your own under `/etc/ssh/sshd_config.d/`.
+## A key, and then the code (1.0.183)
+
+Off (the default), a key alone still lets in: sshd asks PAM - and so the code -
+only where it would ask for a password. With passwords off, an account with a
+key gets in with the key alone; one without a key, with the code alone.
+
+*A key, and then the code* on: sshd wants both - the key first, then the code
+(`AuthenticationMethods publickey,keyboard-interactive`) - from the accounts the
+code is asked of; the others (root, unless *Root too*) sign in as before. otp
+writes it as a `Match User` block at the end of its own drop-in and checks with
+`sshd -T` that the block reaches nothing of the system's own settings (sshd 8.2
+and later end a Match at the end of the file it is in); where it would, the
+change is refused and everything stays as it was. Each of those accounts needs a
+key of its own in `~/.ssh/authorized_keys` on every node.
 
 From 1.0.178-1.0.180 (a RADIUS client and the VPN's tokens): the client *SSH of
 the nodes - pam_radius* is removed by itself and each node's pam_radius is told
@@ -111,3 +122,10 @@ otp not answering nobody but a key gets in. Root left out keeps the way in.
 *Settings → SSH server* says per node whether the code is asked (pam_radius),
 not asked, or pam_radius is not there, and the gate's port. The SSH tokens list
 says when each was last used and on which node; *Events* has every sign-in.
+
+## The gate's port
+
+*Settings → SSH server → otp's gate for SSH*: the port tried first (18129). Where
+something else has it, each node takes the next free one of 18129-18199 by
+itself, remembers it and tells its pam_radius; each node's card says which. The
+gate listens on 127.0.0.1 only - nothing to open in the firewall.

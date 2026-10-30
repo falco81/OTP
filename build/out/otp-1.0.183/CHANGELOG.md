@@ -4,6 +4,21 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.183 — 30 October 2026
+
+**SSH with a code**
+- *A key, and then the code*: sshd wants an SSH key and after it the code
+  (`AuthenticationMethods publickey,keyboard-interactive`) from the accounts the
+  code is asked of - a key alone no longer lets them in. Root as before unless
+  *Root too*. A `Match User` block at the end of otp's drop-in, checked with
+  `sshd -T` to reach nothing of the system's own settings, or refused.
+- An SSH token by mail or SMS says its code in Czech or in English, chosen for
+  each token (and the second prompt of ssh with it).
+- The port of otp's gate for SSH is a setting of its own on *Settings → SSH
+  server*, in a card with its words - it stood without them at the bottom of
+  every page of Settings. Changed, each node listens on the new one and tells its
+  pam_radius.
+
 ## 1.0.182 — 30 October 2026
 
 **SNMPv3**

@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.182'
+__version__ = '1.0.183'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -459,6 +459,7 @@ TUNABLE = {
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
+    'ssh_gate_port': (1025, 65535),
     'snmp': (0, 1), 'snmp_port': (1, 65535), 'snmp_auth': ('SHA-256', 'SHA-512', 'SHA-1'),
     'snmp_priv': ('AES-128', 'AES-256'), 'snmp_traps': (0, 1),
     'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
@@ -702,6 +703,7 @@ NAMES = {
     'metrics': 'Prometheus metrics (/metrics)',
     'metrics_token': 'Its token (Bearer)',
     'metrics_from': 'Only from',
+    'ssh_gate_port': 'otp\u2019s gate for SSH: the port tried first',
     'snmp': 'SNMPv3',
     'snmp_port': 'Port (UDP)',
     'snmp_bind': 'Listen on',
@@ -1164,6 +1166,10 @@ SAYS = {
     'metrics_from': 'The addresses or networks Prometheus asks from, <code>10.0.5.0/24, '
                     '2001:db8::/64</code>. Empty: from anywhere that reaches the pages, with the '
                     'token.',
+    'ssh_gate_port': 'pam_radius of each node asks otp on 127.0.0.1 at this port, never from '
+                     'the network - nothing to open in the firewall. Where something else has it, '
+                     'each node takes the next free one of 18129-18199 by itself and tells its '
+                     'pam_radius; each node\u2019s card above says which.',
     'snmp': 'Each node answers SNMPv3 itself - an agent of otp, no snmpd: the system group and '
             'otp\u2019s own objects (OTP-MIB, <code>deploy/OTP-MIB.txt</code>), read only. '
             'authPriv only: a user with a passphrase for each.',
@@ -1446,6 +1452,7 @@ PANES = {
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
+    'sshd': ['ssh_gate_port'],
     'monitor': ['metrics', 'metrics_token', 'metrics_from', 'snmp', 'snmp_port', 'snmp_bind',
                 'snmp_from', 'snmp_user', 'snmp_auth', 'snmp_auth_pass', 'snmp_priv',
                 'snmp_priv_pass', 'snmp_contact', 'snmp_location', 'snmp_traps', 'snmp_trap_to'],
@@ -28811,7 +28818,7 @@ SSHD_DEFAULT = {'manage': False, 'permit_root': 'prohibit-password', 'password':
                 # A code from otp at SSH sign-in (1.0.178): pam_radius asking
                 # this node's own RADIUS.
                 'radius': False, 'radius_users': [], 'radius_root': False,
-                'radius_fallback': True}
+                'radius_fallback': True, 'radius_with_key': False}
 HOST_WORK.update(sshd=False, sshd_read=0.0)
 
 
@@ -28868,6 +28875,7 @@ def sshd_checked_conf(b):
     c['radius_root'] = bool(b.get('radius_root'))
     # Passwords off: a node otp cannot ask lets nobody in with one either.
     c['radius_fallback'] = bool(b.get('radius_fallback', True)) and c['password']
+    c['radius_with_key'] = bool(b.get('radius_with_key')) and c['radius']
     return c
 
 
@@ -28904,6 +28912,8 @@ def sshd_save(store, b, by):
             ', '.join(c['radius_users']) or 'everybody but root' if not c['radius_root']
             else ', '.join(c['radius_users']) or 'everybody, root too',
             ', the system password when otp does not answer' if c['radius_fallback'] else '')
+        if c['radius_with_key']:
+            what += ', a key first'
     notes = [w for k, w in (('notice_ssh', 'SSH'), ('notice_console', 'console'),
                             ('notice_motd', 'after sign-in')) if c[k]]
     store.add_event('settings', '%s set the SSH server: %s%s%s' % (
@@ -29185,7 +29195,7 @@ def sshotp_all(store):
         except ValueError:
             continue
         out.append({'name': v.get('name') or r['k'][len('sshotp:u:'):], 'at': v.get('at'),
-                    'kind': v.get('kind') or 'app',
+                    'kind': v.get('kind') or 'app', 'lang': v.get('lang') or '',
                     'dest': dest_masked(v.get('kind'), v.get('dest')) if v.get('dest') else '',
                     'by': v.get('by') or '', 'note': v.get('note') or '',
                     'used_at': v.get('used_at'), 'used_on': v.get('used_on') or '',
@@ -29193,7 +29203,7 @@ def sshotp_all(store):
     return sorted(out, key=lambda x: x['name'].lower())
 
 
-def sshotp_make(store, name, by, note='', replace=False, kind='app', dest=''):
+def sshotp_make(store, name, by, note='', replace=False, kind='app', dest='', lang=''):
     """A new SSH token for `name`: an app's (the QR and the secret shown this
     once), or codes sent by mail or SMS (1.0.181) where sending is set up."""
     name = sshotp_name(name)
@@ -29206,6 +29216,8 @@ def sshotp_make(store, name, by, note='', replace=False, kind='app', dest=''):
             raise ValueError('sending %s is not set up (Settings → %s)' % (
                 ('mail', 'Mail') if kind == 'mail' else ('SMS', 'Codes by e-mail and SMS')))
         dest = dest_checked(kind, dest)
+    # The language of its mails and SMS (1.0.183): Czech or English.
+    lang = str(lang or '') if str(lang or '') in CODE_TEXTS else code_lang()
     with SSHOTP_LOCK:
         had = sshotp_get(store, name)
         if had and not replace:
@@ -29216,14 +29228,14 @@ def sshotp_make(store, name, by, note='', replace=False, kind='app', dest=''):
             secret = b32_new(20)
             rec['secret'] = seal_secret(secret, sshotp_key(name))
         else:
-            rec['dest'] = dest
+            rec.update(dest=dest, lang=lang)
         store.set_meta(sshotp_key(name), json.dumps(rec))
     store.add_event('settings', '%s made %s SSH token for %s%s' % (
         by, 'a new' if had else 'an', name, '' if kind == 'app' else ' (codes by %s to %s)' % (
             'mail' if kind == 'mail' else 'SMS', dest_masked(kind, dest))),
         'warn' if had else 'info', who=by)
     if kind != 'app':
-        return {'name': name, 'kind': kind, 'dest': dest_masked(kind, dest)}
+        return {'name': name, 'kind': kind, 'dest': dest_masked(kind, dest), 'lang': lang}
     site = str(CONFIG.get('site_name') or short_host())
     uri = otpauth_uri(secret, name, '%s (SSH)' % site)
     return {'name': name, 'kind': 'app', 'qr': qr_data_uri(uri), 'uri': uri,
@@ -29300,8 +29312,8 @@ def ssh_gate_ephemeral():
 
 
 def ssh_gate_candidates(store):
-    """The port this node took before first, then the one set, then the rest of
-    18129-18199 - none of the kernel's own for outgoing connections."""
+    """The port set first, then the one this node took before, then the rest
+    of 18129-18199 - none of the kernel's own for outgoing connections."""
     lo, hi = ssh_gate_ephemeral()
     out = []
     try:
@@ -29312,7 +29324,7 @@ def ssh_gate_candidates(store):
         want = int(CONFIG.get('ssh_gate_port') or 18129)
     except (TypeError, ValueError):
         want = 18129
-    for p in [was, want] + list(SSH_GATE_PORTS):
+    for p in [want, was] + list(SSH_GATE_PORTS):
         if 1024 < p < 65536 and not lo <= p <= hi and p not in out:
             out.append(p)
     return out
@@ -29347,7 +29359,8 @@ def sshotp_send(store, name):
             SSHOTP_CHALLENGES.pop(k, None)
     code, salt = code_new(), secrets.token_hex(8)
     try:
-        code_send(store, kind, rec['dest'], code, purpose='ssh', name=name)
+        code_send(store, kind, rec['dest'], code, purpose='ssh', name=name,
+                  lang=rec.get('lang') or None)
     except (MailError, SmsError) as e:
         store.add_event('ssh', 'the SSH code for %s could not be sent (%s): %s' % (
             name, kind, e), 'warn', who=name)
@@ -29357,7 +29370,7 @@ def sshotp_send(store, name):
         SSHOTP_CHALLENGES[state] = {'name': name, 'hash': code_hash(salt, code), 'salt': salt,
                                     'exp': now + int(CONFIG.get('code_ttl_s') or 300),
                                     'tries': 0}
-    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms',
+    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms', lang=rec.get('lang') or None,
                      dest=dest_masked(kind, rec['dest']))
     return state, ask
 
@@ -29462,6 +29475,19 @@ class SshGate(object):
         except Exception as e:                          # noqa: BLE001
             log_sparing('sshgate', 'the SSH gate: %s' % e, 'warn', every=600)
             return
+        # The port set changed (1.0.183): listened on again, the new one first.
+        try:
+            asked = int(CONFIG.get('ssh_gate_port') or 18129)
+        except (TypeError, ValueError):
+            asked = 18129
+        if self.sock and want and asked != getattr(self, 'asked', asked) and asked != self.port:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+            SSH_GATE_STATE.update(listening=False, port=0)
+        self.asked = asked
         if self.sock and not want:
             try:
                 self.sock.close()
@@ -38828,7 +38854,7 @@ def _sshd_do(h):
         if act == 'sshotp_add':
             got = sshotp_make(h.store, b.get('name'), s['name'], b.get('note') or '',
                               replace=bool(b.get('replace')), kind=str(b.get('kind') or 'app'),
-                              dest=str(b.get('dest') or ''))
+                              dest=str(b.get('dest') or ''), lang=str(b.get('lang') or ''))
             return dict(sshd_view(h.store), made=got, message=(
                 'the SSH token of %s is made - scan it now, it is not shown again' % got['name']
                 if got['kind'] == 'app' else 'the SSH token of %s is made - its codes go to %s'

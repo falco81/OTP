@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.182'
+__version__ = '1.0.183'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -459,6 +459,7 @@ TUNABLE = {
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
+    'ssh_gate_port': (1025, 65535),
     'snmp': (0, 1), 'snmp_port': (1, 65535), 'snmp_auth': ('SHA-256', 'SHA-512', 'SHA-1'),
     'snmp_priv': ('AES-128', 'AES-256'), 'snmp_traps': (0, 1),
     'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
@@ -702,6 +703,7 @@ NAMES = {
     'metrics': 'Prometheus metrics (/metrics)',
     'metrics_token': 'Its token (Bearer)',
     'metrics_from': 'Only from',
+    'ssh_gate_port': 'otp\u2019s gate for SSH: the port tried first',
     'snmp': 'SNMPv3',
     'snmp_port': 'Port (UDP)',
     'snmp_bind': 'Listen on',
@@ -1164,6 +1166,10 @@ SAYS = {
     'metrics_from': 'The addresses or networks Prometheus asks from, <code>10.0.5.0/24, '
                     '2001:db8::/64</code>. Empty: from anywhere that reaches the pages, with the '
                     'token.',
+    'ssh_gate_port': 'pam_radius of each node asks otp on 127.0.0.1 at this port, never from '
+                     'the network - nothing to open in the firewall. Where something else has it, '
+                     'each node takes the next free one of 18129-18199 by itself and tells its '
+                     'pam_radius; each node\u2019s card above says which.',
     'snmp': 'Each node answers SNMPv3 itself - an agent of otp, no snmpd: the system group and '
             'otp\u2019s own objects (OTP-MIB, <code>deploy/OTP-MIB.txt</code>), read only. '
             'authPriv only: a user with a passphrase for each.',
@@ -1446,6 +1452,7 @@ PANES = {
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
+    'sshd': ['ssh_gate_port'],
     'monitor': ['metrics', 'metrics_token', 'metrics_from', 'snmp', 'snmp_port', 'snmp_bind',
                 'snmp_from', 'snmp_user', 'snmp_auth', 'snmp_auth_pass', 'snmp_priv',
                 'snmp_priv_pass', 'snmp_contact', 'snmp_location', 'snmp_traps', 'snmp_trap_to'],
