@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.185 — 30 October 2026
+
+- The SNMPv3 tile of the Overview is gone again: SNMPv3 has its card where otp
+  says what it lets in - *Settings → Firewall and access*, *SNMPv3* (its port,
+  from where), there while SNMPv3 is on; its words now in Czech too.
+- *Settings → Monitoring*: SNMPv3 first, Prometheus last - its settings and its
+  card.
+
 ## 1.0.184 — 30 October 2026
 
 - SNMPv3 switched on puts a tile of its own on the Overview, in a row under the

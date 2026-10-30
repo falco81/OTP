@@ -99,8 +99,8 @@ own - no snmpd, nothing in RADIUS' way. *Settings → Monitoring → SNMPv3*.
   only (or everybody when none is set) - by itself while SNMPv3 is on, where otp
   looks after the firewall (*Settings → Firewall and access*), and the rule goes
   when it is switched off. Anything else is not answered at all.
-- The **Overview** has a tile of its own while SNMPv3 is on: requests answered,
-  who asked last, the traps.
+- *Settings → Firewall and access* shows it among what otp lets in by itself
+  (*SNMPv3*: the port, from where) while it is on.
 - Read only: GET, GETNEXT and GETBULK. A SET is refused (notWritable).
 - *Ask it* on each node's card: the node asks its own agent on 127.0.0.1 as a
   manager would - discovery, then a GET authPriv.

@@ -3326,7 +3326,3 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .sd-tokens td.acts{text-align:right;white-space:nowrap}
 .sd-tokens td.acts .btn + .btn{margin-left:8px}
 
-/* The Overview's monitoring row (1.0.184): tiles as wide as those above. */
-.grid.top.ov-mon{grid-template-columns:repeat(4,minmax(0,1fr))}
-@media (max-width:900px){.grid.top.ov-mon{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:520px){.grid.top.ov-mon{grid-template-columns:minmax(0,1fr)}}
