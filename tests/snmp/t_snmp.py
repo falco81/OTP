@@ -188,9 +188,6 @@ kinds = [dict(t).get('1.3.6.1.6.3.1.1.4.1.0') for t in tr]
 ok('the alerts: one trap raised, none for still, one cleared (%s)' % kinds, kinds == [
    '1.3.6.1.4.1.8072.9999.9999.7.0.1', '1.3.6.1.4.1.8072.9999.9999.7.0.2'], tr)
 ok('... the raised one says what and how bad', tr and any('97 % full' in v for o, v in tr[0]) and any(v == 'bad' for o, v in tr[0]))
-c, x = call('/api/status', None, S)
-sn = x.get('snmp') or {}
-ok('the Overview\'s tile: on, listening, answered (%s)' % sn.get('answered'), sn.get('on') and sn.get('listening') and sn.get('answered', 0) > 5, sn)
 otp.load_config(saved=st.settings_saved())
 fw = [i for i in otp.fw_auto(st, 'otp1') if i['key'] == 'snmp']
 ok('the firewall: SNMPv3 from everywhere while no network is set', fw and fw[0]['on'] and
@@ -204,7 +201,6 @@ ok('from a network not let in: no answer', r['error'])
 setting(snmp_from='')
 c, x = setting(snmp=0)
 otp.load_config(saved=st.settings_saved())
-ok('off: no rule in the firewall, no tile', not [i for i in otp.fw_auto(st, 'otp1') if i['key'] == 'snmp'] and
-   not call('/api/status', None, S)[1].get('snmp'))
+ok('off: no rule in the firewall', not [i for i in otp.fw_auto(st, 'otp1') if i['key'] == 'snmp'])
 ev = json.dumps(call('/api/events?limit=30', None, S)[1])
 print('ALL %d / %d' % (sum(R), len(R)))

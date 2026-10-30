@@ -536,11 +536,6 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="card metric ok" id="card-maint"><div class="label">Maintenance and upgrades</div>
       <div class="value" id="m-maint">–</div><div class="sub" id="m-maint-sub">&nbsp;</div></div>
   </div>
-  <!-- Monitoring (1.0.184): a tile for each that is switched on. -->
-  <div class="grid top ov-mon" id="ov-mon" style="margin-top:14px" hidden>
-    <div class="card metric info" id="card-snmp" hidden><div class="label">SNMPv3</div>
-      <div class="value" id="m-snmp">–</div><div class="sub" id="m-snmp-sub">&nbsp;</div></div>
-  </div>
   <div class="card full" style="margin-top:14px">
     <h2>Requests
       <span class="right">
@@ -980,8 +975,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         isemon and syslog, the alerts open now. And SNMPv3: each node answers it itself, and sends traps when
         something is wrong.</p></div>
     <div class="card full"><h2>Settings</h2><div id="sect-monitor"></div></div>
-    <div id="mon-host"></div>
     <div id="snmp-host"></div>
+    <div id="mon-host"></div>
   </div>
   <div class="ctl-pane" id="pane-proxy" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Proxy</h2>

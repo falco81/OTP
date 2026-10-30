@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.184'
+__version__ = '1.0.185'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1453,9 +1453,9 @@ PANES = {
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
     'sshd': ['ssh_gate_port'],
-    'monitor': ['metrics', 'metrics_token', 'metrics_from', 'snmp', 'snmp_port', 'snmp_bind',
-                'snmp_from', 'snmp_user', 'snmp_auth', 'snmp_auth_pass', 'snmp_priv',
-                'snmp_priv_pass', 'snmp_contact', 'snmp_location', 'snmp_traps', 'snmp_trap_to'],
+    'monitor': ['snmp', 'snmp_port', 'snmp_bind', 'snmp_from', 'snmp_user', 'snmp_auth',
+                'snmp_auth_pass', 'snmp_priv', 'snmp_priv_pass', 'snmp_contact', 'snmp_location',
+                'snmp_traps', 'snmp_trap_to', 'metrics', 'metrics_token', 'metrics_from'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
              'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
@@ -13876,9 +13876,6 @@ class Daemon(object):
             'host': socket.gethostname(), 'started': self.started,
             'uptime': time.time() - self.started, 'now': time.time(),
             'radius': r, 'isemon': sh, 'tokens': c,
-            # The Overview's tile (1.0.184), shown while SNMPv3 is on.
-            'snmp': dict(SNMP_STATE, on=bool(CONFIG.get('snmp')), ready=bool(snmp_conf()),
-                         traps_on=bool(CONFIG.get('snmp_traps'))) if CONFIG.get('snmp') else {},
             'clients': len(self.store.clients()), 'realms': len(self.store.realms()),
             'directories': len(self.dirs),
             'day': {'accept': acc, 'reject': rej},

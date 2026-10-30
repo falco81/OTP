@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.184'
+__version__ = '1.0.185'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1453,9 +1453,9 @@ PANES = {
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
     'sshd': ['ssh_gate_port'],
-    'monitor': ['metrics', 'metrics_token', 'metrics_from', 'snmp', 'snmp_port', 'snmp_bind',
-                'snmp_from', 'snmp_user', 'snmp_auth', 'snmp_auth_pass', 'snmp_priv',
-                'snmp_priv_pass', 'snmp_contact', 'snmp_location', 'snmp_traps', 'snmp_trap_to'],
+    'monitor': ['snmp', 'snmp_port', 'snmp_bind', 'snmp_from', 'snmp_user', 'snmp_auth',
+                'snmp_auth_pass', 'snmp_priv', 'snmp_priv_pass', 'snmp_contact', 'snmp_location',
+                'snmp_traps', 'snmp_trap_to', 'metrics', 'metrics_token', 'metrics_from'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
              'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',

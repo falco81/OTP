@@ -554,43 +554,9 @@ function paintCards() {
   $('card-isemon').className = 'card metric ' + (!i.on ? 'info' : (Object.keys(i.trouble || {}).length ? 'crit' : 'ok'))
     + ($('card-isemon').classList.contains('tappable') ? ' tappable' : '');
   $('m-accept-sub').textContent = s.last ? 'the last request ' + ago(s.last.ts) : 'nothing asked yet';
-  paintSnmpCard(s.snmp || {});
   paintCards2(s);
 }
 
-/* SNMPv3 on the Overview (1.0.184): there while it is on. */
-function paintSnmpCard(a) {
-  var card = $('card-snmp');
-  if (!card) return;
-  card.hidden = !a.on;
-  $('ov-mon').hidden = !a.on;
-  if (!a.on) return;
-  var bad = !a.listening || !a.ready;
-  $('m-snmp').textContent = !a.ready ? 'not set' : (!a.listening ? 'down' : num(a.answered || 0));
-  var sub = $('m-snmp-sub');
-  clear(sub);
-  /* In parts, each its own words for the translation. */
-  var parts = !a.ready ? ['the user or a passphrase is missing; Settings → Monitoring']
-    : (!a.listening ? [a.error || 'not listening']
-      : ['answered on ' + a.port + '/udp', a.last_from ? 'last asked from ' + a.last_from + ' ' + ago(a.last_at) : 'nobody asked yet']
-        .concat(a.traps_on ? [num(a.traps || 0) + ' trap(s) sent'] : []));
-  parts.forEach(function (t, i) {
-    if (i) sub.appendChild(document.createTextNode(' · '));
-    sub.appendChild(el('span', '', t));
-  });
-  card.className = 'card metric ' + (bad ? 'crit' : (a.trap_error ? 'warn' : 'ok')) + (card.classList.contains('tappable') ? ' tappable' : '');
-}
-function peekSnmpCard() {
-  var a = (STATUS || {}).snmp || {};
-  peek('SNMPv3', function () { return Promise.resolve(a); }, function (body) {
-    body.appendChild(peekFacts([['Listening', a.listening ? 'on ' + a.port + '/udp' : 'no'],
-      ['Engine ID', a.engine || '–'], ['Asked / answered', num(a.asked || 0) + ' / ' + num(a.answered || 0)],
-      ['Last asked from', a.last_from ? a.last_from + ' · ' + ago(a.last_at) : 'never'],
-      ['Traps', a.traps_on ? num(a.traps || 0) + ' sent' : 'off']]));
-    if (a.error) body.appendChild(el('p', 'note bad', a.error));
-    if (a.trap_error) body.appendChild(el('p', 'note warn', 'Last trap: ' + a.trap_error));
-  }, {tab: 'settings', pane: 'monitor', words: 'Open Settings', icon: 'gear'});
-}
 function codeNowTile(name) {
   var box = el('div', 'tw-fact tw-code');
   box.appendChild(el('dt', '', 'Code now'));
@@ -969,7 +935,6 @@ cardOpens('card-accept', 'Everybody let in during the last 24 hours.', function 
 cardOpens('card-reject', 'Everything refused in the last 24 hours, and why.', function () { peekActivity('Refused - the last 24 hours', 'reject', 'Open the Log'); });
 cardOpens('card-tokens', 'The tokens: how many, which are locked out, which were used last.', peekTokensCard);
 cardOpens('card-isemon', 'What is sent to isemon, and whether it arrives.', peekIsemonCard);
-cardOpens('card-snmp', 'SNMPv3 of this node: whether it listens, who asked, the traps.', peekSnmpCard);
 cardOpens('card-server', 'This server: its version, how long it has run, RADIUS, problems.', peekServerCard);
 cardOpens('card-cluster', 'The nodes and the replication between them.', peekClusterCard);
 cardOpens('card-db', 'The database: where, how big, what it holds, the copies.', peekDbCard);
