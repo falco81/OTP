@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.169'
+__version__ = '1.0.170'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -332,6 +332,9 @@ DEFAULTS = {
     'acme_dns_user': '',
     'acme_dns_key': '',
     'acme_dns_subdomain': '',
+    'acme_desec_domain': '',
+    'acme_desec_token': '',
+    'acme_dns_alias': '',
     'acme_dns_wait': 30,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
@@ -393,10 +396,11 @@ def this_node_name(conf=None):
 
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
                'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
-               'acme_dns_key')
+               'acme_dns_key', 'acme_desec_token')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
-               'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key')
+               'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
+               'acme_desec_token')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -451,7 +455,8 @@ TUNABLE = {
     'logs_max_mb': (1, 100000),
     'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
     'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('ec', 'rsa2048'),
-    'acme_challenge': ('http-01', 'dns-01'), 'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns'),
+    'acme_challenge': ('http-01', 'dns-01'), 'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns',
+                                                                             'desec'),
     'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384', 'hmac-sha224', 'hmac-sha1',
                           'hmac-md5'),
     'acme_dns_wait': (0, 600),
@@ -479,7 +484,8 @@ CHOICE_WORDS = {
                        'dns-01': 'DNS-01 - a TXT record in DNS (no port open to the internet)'},
     'acme_dns': {'manual': 'by hand - the record is shown here, you put it in',
                  'rfc2136': 'RFC 2136 dynamic update with a TSIG key (BIND, PowerDNS, Knot...)',
-                 'cloudflare': 'Cloudflare, with an API token', 'acmedns': 'an acme-dns server'},
+                 'cloudflare': 'Cloudflare, with an API token', 'acmedns': 'an acme-dns server',
+                 'desec': 'deSEC.io (free), with an API token - a CNAME in your DNS'},
     'acme_ca': {'letsencrypt': 'Let\u2019s Encrypt', 'letsencrypt-staging': 'Let\u2019s Encrypt - staging (to try it)',
                 'custom': 'another ACME CA (step-ca, an internal CA...)'},
     'acme_for': {'vip': 'the web address (or this node, where there is none)',
@@ -747,6 +753,9 @@ NAMES = {
     'acme_dns_key': 'acme-dns key',
     'acme_dns_subdomain': 'acme-dns subdomain',
     'acme_dns_wait': 'Wait for DNS to carry it (s)',
+    'acme_desec_domain': 'The domain at deSEC',
+    'acme_desec_token': 'The deSEC API token',
+    'acme_dns_alias': 'The TXT records go into',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1244,6 +1253,14 @@ SAYS = {
     'acme_dns_key': 'From the registration at acme-dns. Kept sealed.',
     'acme_dns_subdomain': 'From the registration at acme-dns.',
     'acme_dns_wait': 'How long the record is given to reach every DNS server before the CA is asked.',
+    'acme_desec_domain': 'Your domain at deSEC, <code>example.dedyn.io</code> (free) or one of your own '
+                         'whose DNS is there. The records go into it; your DNS has a CNAME to it for each '
+                         'name - <i>In your DNS</i> above says which.',
+    'acme_desec_token': 'A token from deSEC (Token management) - one that may change this domain\u2019s '
+                        'records. Kept sealed.',
+    'acme_dns_alias': 'A zone the records go into instead of the name\u2019s own '
+                      '(<code>acme.example.net</code>), each name with a CNAME to it in your DNS - '
+                      '<i>In your DNS</i> above says which. Empty: _acme-challenge.NAME itself.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1338,7 +1355,8 @@ PANES = {
              'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
              'acme_dns_server', 'acme_dns_zone', 'acme_dns_tsig_name', 'acme_dns_tsig_alg',
              'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_url', 'acme_dns_user',
-             'acme_dns_key', 'acme_dns_subdomain', 'acme_dns_wait'],
+             'acme_dns_key', 'acme_dns_subdomain', 'acme_desec_domain', 'acme_desec_token',
+             'acme_dns_alias', 'acme_dns_wait'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1412,6 +1430,8 @@ ONLY_WHEN = {
     'acme_dns_tsig_secret': ['acme_dns', 'rfc2136'], 'acme_dns_token': ['acme_dns', 'cloudflare'],
     'acme_dns_url': ['acme_dns', 'acmedns'], 'acme_dns_user': ['acme_dns', 'acmedns'],
     'acme_dns_key': ['acme_dns', 'acmedns'], 'acme_dns_subdomain': ['acme_dns', 'acmedns'],
+    'acme_desec_domain': ['acme_dns', 'desec'], 'acme_desec_token': ['acme_dns', 'desec'],
+    'acme_dns_alias': ['acme_dns', 'acmedns-not'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1587,6 +1607,13 @@ def check_setting(key, value):
     if key in ('acme_dns_server',) and str(got).strip() and \
             not re.match(r'^[A-Za-z0-9.\-:\[\]]{1,260}\Z', str(got).strip()):
         raise BadSetting('acme_dns_server: a name or an address, :port if not 53')
+    if key in ('acme_desec_domain', 'acme_dns_alias') and str(got).strip() and \
+            not re.match(r'^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}\.?\Z',
+                         str(got).strip()):
+        raise BadSetting('%s: a DNS name, like example.dedyn.io' % key)
+    if key == 'acme_desec_token' and str(got).strip() and not is_masked(got) and \
+            not re.match(r'^[A-Za-z0-9_.-]{20,100}\Z', str(got).strip()):
+        raise BadSetting('acme_desec_token: the token as deSEC shows it')
     if key in ('acme_dns_zone', 'acme_dns_tsig_name') and str(got).strip() and \
             not re.match(r'^[A-Za-z0-9][A-Za-z0-9.\-_]{0,252}\Z', str(got).strip()):
         raise BadSetting('%s: a DNS name' % key)
@@ -13770,6 +13797,9 @@ class Daemon(object):
         threading.Thread(target=mail_queue, name='mail-queue', daemon=True).start()
         # The cluster's web address: whether this node may hold it (1.0.47).
         threading.Thread(target=vip_watch, args=(self,), name='vip-watch', daemon=True).start()
+        # A connection on this machine broken by its TLS mended (1.0.170) -
+        # its own thread: the loop below waits for the database.
+        threading.Thread(target=dbtls_watch, args=(self,), name='dbtls-watch', daemon=True).start()
         try:
             upgrade_tick(self)
         except Exception as e:                          # noqa: BLE001
@@ -13877,6 +13907,11 @@ class Daemon(object):
                     acme_tick(self)             # certificates by ACME (1.0.169)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('acme-tick', 'ACME: %s' % e, 'warn', every=600)
+                try:
+                    dbtls_tick(self)            # the connection to the database (1.0.170)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('dbtls-tick', 'the encryption to the database: %s' % e, 'warn',
+                                every=600)
                 try:
                     sshd_tick(self)             # the SSH server and the notices (1.0.163)
                 except Exception as e:          # noqa: BLE001
@@ -19584,6 +19619,12 @@ def rb_verify_due(store):
 HA_KIND = 'otp-ha-join'
 HA_STORE = {'store': None}
 HEARTBEAT_S = 15
+# One subscription of this database by its name (1.0.170): pg_subscription is
+# the whole server's catalog - a second database on the same PostgreSQL (or one
+# left from before) has subscriptions of the same names, and they were taken
+# for this one's: ALTER SUBSCRIPTION ... does not exist.
+SUB_HERE_SQL = ('SELECT 1 FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database '
+                'WHERE datname = current_database()) AND subname = ?')
 
 
 def node_name():
@@ -20155,7 +20196,7 @@ def ha_sub_names(slot):
 def ha_sub_here(db, slot):
     """The subscription for node `slot` as it is called in `db`."""
     for name in ha_sub_names(slot):
-        if db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (name,)):
+        if db.value(SUB_HERE_SQL, (name,)):
             return name
     return ha_sub_name(slot)
 
@@ -20321,7 +20362,7 @@ def ha_drop_sub(db, sub):
     names = ha_sub_names(sub.rsplit('_', 1)[1]) if sub[:9] in ('otp_from_', 'opt_from_') \
         else [sub]
     for one in names:
-        if db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (one,)):
+        if db.value(SUB_HERE_SQL, (one,)):
             db.run('ALTER SUBSCRIPTION %s DISABLE' % one)
             db.run('ALTER SUBSCRIPTION %s SET (slot_name = NONE)' % one)
             db.run('DROP SUBSCRIPTION %s' % one)
@@ -20337,8 +20378,10 @@ def ha_drop_slot(db, slot_name):
 
 
 def _ha_drop_slot(db, slot_name):
-    got = db.row('SELECT active, active_pid FROM pg_replication_slots WHERE slot_name = ?',
-                 (slot_name,))
+    # This database's only (1.0.170): the catalog is the server's, and a slot
+    # of the same name may be another database's - in use by it.
+    got = db.row('SELECT active, active_pid FROM pg_replication_slots WHERE slot_name = ? '
+                 'AND database = current_database()', (slot_name,))
     if not got:
         return False
     if got.get('active') and got.get('active_pid'):
@@ -20742,7 +20785,7 @@ def ha_control(store, act, by=''):
             far.close()
 
     def has(db, sub):
-        return bool(db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)))
+        return bool(db.value(SUB_HERE_SQL, (sub,)))
 
     if act in ('pause_in', 'pause'):
         if has(here, sub_in):
@@ -24375,7 +24418,61 @@ def acme_name_of(store, target):
                or '').strip()
     if not name and target == node_name():
         name = socket.getfqdn()
+    if not name:
+        # The name of the certificate it has now (1.0.170) - what Certificates
+        # and TLS shows: otp2's card said "for -" beside otp2.example.cz.
+        info = (tls_profile(store, target) or {}).get('info') or {}
+        for n in [info.get('cn')] + list(info.get('san') or []):
+            n = str(n or '').strip().lower()
+            if re.match(r'^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z', n):
+                name = n
+                break
+    if not name and target == node_name():
+        name = socket.getfqdn()
+    elif not name and target != 'vip':
+        # Another node's own name, as that node publishes it (1.0.170): its
+        # card said "for -" and Try port 80 asked http://?/.
+        name = str((_meta_json(store, 'acme:host:' + target) or {}).get('fqdn') or '').strip()
     return name
+
+
+def acme_care(store, target):
+    """Whether ACME looks after this certificate (1.0.170). Said on either page;
+    unsaid: yes for one from the CA, a self-signed one and none at all - never
+    for one uploaded or answered to a request (a CA of your own): switching ACME
+    on does not replace those."""
+    got = _meta_json(store, 'acme:care:' + target)
+    if got and 'on' in got:
+        return bool(got['on'])
+    prof = tls_profile(store, target) or {}
+    how = str(prof.get('how') or '')
+    return not prof.get('cert') or how == 'ACME' or how.startswith('self-signed')
+
+
+def acme_care_set(store, target, on, by, why=''):
+    was = acme_care(store, target)
+    store.set_meta('acme:care:' + target, json.dumps({'on': bool(on), 'at': time.time(),
+                                                     'by': by}))
+    if was != bool(on) and CONFIG.get('acme'):
+        store.add_event('settings', '%s: ACME %s the certificate of %s%s' % (
+            by, 'looks after' if on else 'no longer renews', 'the web address' if target == 'vip'
+            else target, (' - ' + why) if why else ''), 'info' if on else 'warn', who=by)
+
+
+ACME_HOST = {'at': 0.0, 'fqdn': None}
+
+
+def acme_host_publish(store):
+    """This node's full name, for the cards of the other nodes - once in ten
+    minutes, written only when it changed."""
+    if time.time() - ACME_HOST['at'] < 600:
+        return
+    ACME_HOST['at'] = time.time()
+    fqdn = socket.getfqdn()
+    if fqdn == ACME_HOST['fqdn']:
+        return
+    store.set_meta('acme:host:' + node_name(), json.dumps({'fqdn': fqdn, 'at': time.time()}))
+    ACME_HOST['fqdn'] = fqdn
 
 
 def acme_targets(store):
@@ -24389,7 +24486,20 @@ def acme_targets(store):
         out.append(('vip', acme_name_of(store, 'vip')))
     if want in ('node', 'both') or (want == 'vip' and not vip_conf(store).get('on')):
         out.append((node_name(), acme_name_of(store, node_name())))
-    return [(t, n) for t, n in out if n]
+    return [(t, n) for t, n in out if n and acme_care(store, t)]
+
+
+def acme_wanted(store):
+    """The certificates asked for at all (For), whichever node renews them."""
+    want = CONFIG.get('acme_for') or 'vip'
+    out = []
+    for t in tls_targets(store):
+        if t == 'vip':
+            if want in ('vip', 'both') and vip_conf(store).get('on'):
+                out.append(t)
+        elif want in ('node', 'both') or (want == 'vip' and not vip_conf(store).get('on')):
+            out.append(t)
+    return out
 
 
 def acme_state(store, target):
@@ -24460,6 +24570,10 @@ def acme_order(store, target, name, by, say=None):
 
 def acme_tick(daemon):
     """Once an hour: what is due, ordered - in a thread of its own."""
+    try:
+        acme_host_publish(daemon.store)
+    except Exception:                                   # noqa: BLE001
+        pass
     if not CONFIG.get('acme') or ACME_WORK['busy'] or \
             time.time() - ACME_WORK['at'] < ACME_EVERY:
         return
@@ -24508,7 +24622,10 @@ def acme_view(store):
         info = prof.get('info') or {}
         out.append({'target': t, 'name': acme_name_of(store, t), 'state': acme_state(store, t),
                     'how': prof.get('how') or '', 'subject': info.get('subject'),
-                    'issuer': info.get('issuer'), 'not_after': info.get('not_after')})
+                    'issuer': info.get('issuer'), 'not_after': info.get('not_after'),
+                    'care': acme_care(store, t), 'wanted': t in acme_wanted(store),
+                    'named': bool(str(store.settings_saved().get('acme_node_name@' + t) or '')
+                                  .strip()) if t != 'vip' else bool(vip_conf(store).get('fqdn'))})
     mine = [t for t, _ in acme_targets(store)]
     acc = _meta_json(store, 'acme:account') or {}
     return {'on': bool(CONFIG.get('acme')), 'targets': out, 'mine': mine,
@@ -24516,6 +24633,7 @@ def acme_view(store):
                 'kid': acc.get('kid'), 'email': acc.get('email'), 'at': acc.get('at')},
             'work': dict(ACME_WORK), 'node': node_name(),
             'challenge': CONFIG.get('acme_challenge') or 'http-01',
+            'dns_guide': acme_dns_guide(store),
             'manual': {k: v for k, v in (_meta_json(store, 'acme:manual') or {}).items()
                        if k in ('rr', 'txt', 'at', 'done')} or None}
 
@@ -24576,27 +24694,61 @@ def acme_http_names(store):
 NSUPDATE = os.environ.get('OTP_NSUPDATE') or 'nsupdate'
 
 
-def _dns_wait(say):
-    w = int(CONFIG.get('acme_dns_wait') or 0)
+def _dns_wait(say, least=0):
+    w = max(int(CONFIG.get('acme_dns_wait') or 0),
+            int(os.environ.get('OTP_ACME_DNS_LEAST', least)))
     if w:
         say('waited %d s for DNS to carry it' % w)
         time.sleep(w)
 
 
+def acme_dns_where(name):
+    """(where the TXT record goes, the CNAME your DNS needs or None) - 1.0.170.
+    The record goes to _acme-challenge.NAME itself, or - with a zone of its own
+    for them (deSEC, acme_dns_alias) - to _acme-challenge.LABEL.ZONE, and
+    _acme-challenge.NAME is a CNAME to it in your DNS, put in once: the CA
+    follows it. So a domain whose DNS has no API gets certificates by itself."""
+    name = str(name or '').rstrip('.').lower()
+    own = '_acme-challenge.' + name
+    how = CONFIG.get('acme_dns') or 'manual'
+    if how == 'acmedns':
+        url = str(CONFIG.get('acme_dns_url') or '').strip()
+        host = urllib.parse.urlparse(url).hostname or ''
+        sub = str(CONFIG.get('acme_dns_subdomain') or '').strip()
+        return own, ('%s.%s' % (sub, host) if sub and host else '')
+    zone = str(CONFIG.get('acme_dns_alias') or '').strip().rstrip('.').lower()
+    if how == 'desec':
+        dom = str(CONFIG.get('acme_desec_domain') or '').strip().rstrip('.').lower()
+        if dom and (name == dom or name.endswith('.' + dom)):
+            return own, None                            # its DNS is at deSEC itself
+        if not zone or not (zone == dom or zone.endswith('.' + dom)):
+            zone = dom
+    if not zone or name == zone or name.endswith('.' + zone):
+        return own, None
+    there = '_acme-challenge.%s.%s' % (name.split('.')[0], zone)
+    return there, there
+
+
 def acme_dns_put(store, name, txt, say):
     """The TXT record put in; returns what takes it away again."""
     how = CONFIG.get('acme_dns') or 'manual'
-    rr = '_acme-challenge.%s' % name.rstrip('.')
-    say('the TXT record %s put in DNS (%s)' % (rr, how))
+    rr, cname = acme_dns_where(name)
+    if cname and how != 'acmedns':
+        say('the TXT record %s put in DNS (%s; _acme-challenge.%s is a CNAME to it)'
+            % (rr, how, name))
+    else:
+        say('the TXT record %s put in DNS (%s)' % (rr, how))
     if how == 'rfc2136':
         undo = _dns_rfc2136(rr, txt)
     elif how == 'cloudflare':
         undo = _dns_cloudflare(rr, txt)
     elif how == 'acmedns':
         undo = _dns_acmedns(txt)
+    elif how == 'desec':
+        undo = _dns_desec(rr, txt)
     else:
         undo = _dns_manual(store, rr, txt, say)
-    _dns_wait(say)
+    _dns_wait(say, 60 if how == 'desec' else 0)
     return undo
 
 
@@ -24702,6 +24854,70 @@ def _dns_acmedns(txt):
     return lambda: None             # acme-dns keeps the last two; nothing to take away
 
 
+def _desec(method, path, body=None):
+    """deSEC's API (1.0.170): Authorization: Token; a 429 waited out (it says
+    how long) up to twice."""
+    tok = unseal_secret(CONFIG.get('acme_desec_token') or '') or ''
+    if not tok:
+        raise AcmeError('the deSEC API token is not set')
+    base = str(os.environ.get('OTP_DESEC_API') or 'https://desec.io/api/v1').rstrip('/')
+    for attempt in range(3):
+        req = urllib.request.Request(base + path, method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={'Authorization': 'Token ' + tok,
+                                              'Content-Type': 'application/json',
+                                              'User-Agent': 'otp/%s (acme)' % __version__})
+        try:
+            with url_open(req, timeout=30, context=ssl.create_default_context()
+                          if base.startswith('https') else None) as r:
+                raw = r.read(1 << 20)
+                return json.loads(raw.decode()) if raw.strip() else None
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and method == 'GET':
+                return None
+            if e.code == 429 and attempt < 2:
+                try:
+                    pause = float(e.headers.get('Retry-After') or 5)
+                except ValueError:
+                    pause = 5
+                time.sleep(min(max(pause, 1), 60))
+                continue
+            said = e.read(400).decode('utf-8', 'replace')
+            raise AcmeError('deSEC said %d: %s' % (e.code, said.strip() or e.reason))
+        except OSError as e:
+            raise AcmeError('deSEC did not answer: %s' % getattr(e, 'reason', e))
+    raise AcmeError('deSEC asked to wait too long (429)')
+
+
+def _dns_desec(rr, txt):
+    dom = str(CONFIG.get('acme_desec_domain') or '').strip().rstrip('.').lower()
+    if not dom:
+        raise AcmeError('the domain at deSEC is not set')
+    if not rr.endswith('.' + dom):
+        raise AcmeError('%s is not in %s' % (rr, dom))
+    sub = rr[:-len(dom) - 1]
+    path = '/domains/%s/rrsets/' % urllib.parse.quote(dom)
+    info = _desec('GET', '/domains/%s/' % urllib.parse.quote(dom))
+    if info is None:
+        raise AcmeError('deSEC has no domain %s that the token may see' % dom)
+    ttl = max(int(info.get('minimum_ttl') or 3600), 60)
+    one = '"%s"' % txt
+
+    def have():
+        got = _desec('GET', '%s%s/TXT/' % (path, urllib.parse.quote(sub))) or {}
+        return list(got.get('records') or [])
+
+    recs = have()
+    if one not in recs:
+        recs.append(one)
+    _desec('PATCH', path, [{'subname': sub, 'type': 'TXT', 'ttl': ttl, 'records': recs}])
+
+    def undo():
+        left = [x for x in have() if x != one]
+        _desec('PATCH', path, [{'subname': sub, 'type': 'TXT', 'ttl': ttl, 'records': left}])
+    return undo
+
+
 ACME_MANUAL_WAIT = float(os.environ.get('OTP_ACME_MANUAL_WAIT') or 3600)
 
 
@@ -24724,6 +24940,106 @@ def _dns_manual(store, rr, txt, say):
         got = _meta_json(store, 'acme:manual') or {}
         if got.get('id') == ident:
             store.db.run("DELETE FROM meta WHERE k = 'acme:manual'")
+
+
+# ---- what goes into your DNS, and whether it is there (1.0.170) -------------------------
+def dns_ask(name, qtype):
+    """One question to the system's resolvers (the mail's own DNS client):
+    [(type, text)] of the answer - CNAME (5), TXT (16), A (1), AAAA (28). []
+    for a name that is not there; OSError when no resolver answers."""
+    last = None
+    srvs = [x for x in re.split(r'[\s,]+', os.environ.get('OTP_ACME_RESOLVER') or '') if x]
+    for srv in (srvs or dns_servers())[:3]:
+        try:
+            data = _dns_ask(srv, str(name).rstrip('.'), qtype, 3.0)
+        except OSError as e:
+            last = e
+            continue
+        rcode, recs = _dns_records(data)
+        if rcode == 3:
+            return []
+        if rcode:
+            last = OSError(DNS_RCODES.get(rcode, 'rcode %d' % rcode))
+            continue
+        out = []
+        for rtype, _n, at, size in recs:
+            rd = data[at:at + size]
+            if rtype == 5:
+                out.append(('CNAME', _dns_name(data, at)[0].lower()))
+            elif rtype == 16:
+                j, parts = 0, []
+                while j < len(rd):
+                    parts.append(rd[j + 1:j + 1 + rd[j]].decode('utf-8', 'replace'))
+                    j += 1 + rd[j]
+                out.append(('TXT', ''.join(parts)))
+            elif rtype == 1 and size == 4:
+                out.append(('A', socket.inet_ntop(socket.AF_INET, rd)))
+            elif rtype == 28 and size == 16:
+                out.append(('AAAA', socket.inet_ntop(socket.AF_INET6, rd)))
+        return out
+    raise OSError('no DNS server answered (%s)' % (last or 'none'))
+
+
+def acme_dns_guide(store):
+    """What each certificate asked for needs in your DNS, by how the CA
+    checks it - for the card In your DNS."""
+    rows = []
+    http = (CONFIG.get('acme_challenge') or 'http-01') != 'dns-01'
+    how = CONFIG.get('acme_dns') or 'manual'
+    v = vip_conf(store)
+    addr = {n['name']: n.get('address') for n in ha_nodes(store)}
+    addr.setdefault(node_name(), node_address())
+    for t in acme_wanted(store):
+        name = acme_name_of(store, t)
+        if not name:
+            rows.append({'target': t, 'name': '', 'type': '', 'record': '', 'value': '',
+                         'why': 'its name is not known yet'})
+            continue
+        if http:
+            where = str(v.get('address') or '').split('/')[0] if t == 'vip' else addr.get(t) or ''
+            rows.append({'target': t, 'name': name, 'type': 'A', 'record': name, 'value': where,
+                         'why': 'the name points at an address that reaches port 80 of %s' % (
+                             'the web address' if t == 'vip' else t), 'check': 'a'})
+            continue
+        rr, cname = acme_dns_where(name)
+        own = '_acme-challenge.' + name
+        if how == 'acmedns' or cname:
+            rows.append({'target': t, 'name': name, 'type': 'CNAME', 'record': own,
+                         'value': (cname or '?') + '.', 'why': 'once, by hand, in your DNS',
+                         'check': 'cname'})
+        elif how == 'manual':
+            rows.append({'target': t, 'name': name, 'type': 'TXT', 'record': rr,
+                         'value': 'shown here at every order', 'why': 'by hand, at every order'})
+        else:
+            rows.append({'target': t, 'name': name, 'type': 'TXT', 'record': rr, 'value': '',
+                         'why': 'nothing to do: otp puts it in and takes it away'})
+    return {'rows': rows, 'challenge': 'http-01' if http else 'dns-01', 'dns': how}
+
+
+def acme_dns_check(store):
+    """Each row of the guide looked up from this node, as the CA will."""
+    g = acme_dns_guide(store)
+    for r in g['rows']:
+        if not r.get('check'):
+            continue
+        try:
+            if r['check'] == 'cname':
+                got = [x[1] for x in dns_ask(r['record'], 5) if x[0] == 'CNAME']
+                want = r['value'].rstrip('.').lower()
+                r['found'] = got[0] + '.' if got else ''
+                r['ok'] = bool(got) and got[0].rstrip('.') == want
+                r['said'] = 'there' if r['ok'] else (
+                    'it points elsewhere: %s' % r['found'] if got else 'not there yet')
+            else:
+                got = sorted({a[4][0] for a in socket.getaddrinfo(r['record'], 80,
+                                                                 proto=socket.IPPROTO_TCP)})
+                r['found'] = ', '.join(got)
+                r['ok'] = bool(got)
+                r['said'] = 'it points at %s' % r['found'] if got else 'not there'
+        except (OSError, socket.gaierror) as e:
+            r.update(ok=False, said='could not be looked up: %s' % str(e)[:120])
+    g['at'] = time.time()
+    return g
 
 
 # ---- the link between the two databases: encrypted and checked (1.0.104) -----------
@@ -25029,6 +25345,13 @@ def hatls_off(store, by, here=True):
     certificates leave both PostgreSQLs (ssl as it was before otp)."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
+    using = dbtls_in_use_with_ha_ca(store)
+    if using:
+        # Their own connection checks PostgreSQL with the cluster's
+        # certificate (1.0.170): it would stop with it.
+        raise ValueError('the connection of %s to its own database is encrypted with the '
+                         'cluster\'s certificate - switch that off first (Settings → The database '
+                         '→ Encryption to the database server)' % ', '.join(using))
     now = time.time()
     w = {'at': now, 'by': by, 'from': node_name(), 'off': True}
     store.set_meta('hatls:want', json.dumps(w))
@@ -25100,10 +25423,17 @@ def _hatls_off_tick(store, w, st):
             st['said'] = 'waiting for %s to let this node in without TLS' % (pn or 'the other node')
             hatls_put(store, st)
             return
+        if CONFIG.get('db_tls') and str(CONFIG.get('db_tls_ca') or '') == str(HA_CA_FILE):
+            # Back to Database → TLS would be the cluster's authority, about to
+            # go (1.0.170): stopped here, nothing taken away yet.
+            _hatls_fail(store, st, 'this node\'s own connection to its database is encrypted with '
+                        'the cluster\'s certificate - switch that off first (Settings → The '
+                        'database), then switch TLS off again')
+            return
         write_file_settings({'ha_tls': '', 'ha_tls_ca': ''})
         CONFIG['ha_tls'], CONFIG['ha_tls_ca'] = '', ''
         sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
-        if store.db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)):
+        if store.db.value(SUB_HERE_SQL, (sub,)):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
@@ -25476,7 +25806,7 @@ def _hatls_tick(store):
         write_file_settings({'ha_tls': 'verify-full', 'ha_tls_ca': str(HA_CA_FILE)})
         CONFIG['ha_tls'], CONFIG['ha_tls_ca'] = 'verify-full', str(HA_CA_FILE)
         sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
-        if store.db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)):
+        if store.db.value(SUB_HERE_SQL, (sub,)):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
@@ -25608,7 +25938,7 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
             CONFIG['ha_peer'] = peer
             done.append('ha_peer = %s (was %s)' % (peer, had_peer))
             sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
-            if store.db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)):
+            if store.db.value(SUB_HERE_SQL, (sub,)):
                 conninfo = ha_conninfo(peer, int(CONFIG.get('ha_peer_port') or 5432),
                                        CONFIG.get('db_name'), CONFIG.get('db_user'),
                                        CONFIG.get('db_password'))
@@ -28360,6 +28690,565 @@ def _ask_dircheck(daemon, args):
     ok = any(sv.get('ok') for sv in c.get('servers') or [])
     return {'ok': ok, 'check': c}
 
+
+# ---- the daemon's own connection to its database: encrypted and checked (1.0.170) -------
+# Settings → The database → Encryption to the database server, as a wizard, on
+# the running installation - every node, nothing stopped:
+#   replicated - each node's own PostgreSQL has the cluster's certificate once
+#                the link between the databases is encrypted (High availability):
+#                it names localhost and 127.0.0.1, so each node only moves its
+#                own connection over to verify-full with the cluster's authority;
+#   local      - PostgreSQL on this machine, no cluster: it is given a
+#                certificate from otp's own authority (renewed by itself 45 days
+#                before it ends, and made again when the machine's names or
+#                addresses change), then the connection moves over;
+#   remote     - a database server elsewhere (and the one of a shared cluster):
+#                its administrator gave it a certificate; its authority is given
+#                here, or the system's is used, or otp's own when that server is
+#                another node's PostgreSQL given one by this wizard.
+# The wizard goes in phases, each asked of every node and finished on all of
+# them before the next: 'server' (the certificates of the PostgreSQLs on the
+# nodes themselves), then 'connect' (every node's connection moved over). Off
+# the other way round: 'connect' with no TLS on every node, then 'server_off'.
+# Each move is made on the live database: the new connection is tried apart
+# first, then config.json is written and the daemon's connections are made
+# again with it - and put back at once to what they were if the first
+# statement on the new one does not go.
+# A connection that never leaves the machine (localhost) that stops working
+# because of its TLS - the certificate gone, PostgreSQL set up again - is moved
+# back to no TLS by itself, with an alert, unless high security forbids it:
+# RADIUS comes first.
+DBTLS_CA = STATE_DIR / 'db-ca.pem'
+DBTLS_EVERY = 300
+DBTLS_RENEW_DAYS = 45
+DBTLS_LOCK = threading.Lock()
+DBTLS_WORK = {'at': 0.0, 'rescue': 0.0, 'renew': None}
+DBTLS_MODES = ('', 'require', 'verify-ca', 'verify-full')
+
+
+def dbtls_kind(conf=None):
+    c = CONFIG if conf is None else conf
+    if c.get('db_engine') not in ('postgres', 'mariadb'):
+        return 'sqlite'
+    host = str(c.get('db_host') or '').strip()
+    if not host or host.startswith('/'):
+        return 'socket'                 # a Unix socket: nothing crosses a network
+    local = host.strip('[]') in ('127.0.0.1', 'localhost', '::1')
+    if c.get('db_engine') == 'postgres' and local:
+        return 'replicated' if c.get('ha_mode') == 'replicated' else 'local'
+    return 'remote'
+
+
+def _dbtls_system_ca():
+    """The system's authorities as one file: libpq has no 'the system' before
+    PostgreSQL 16, and an empty sslrootcert with verify-ca looks in ~/.postgresql."""
+    p = ssl.get_default_verify_paths()
+    for f in (p.cafile, p.openssl_cafile, '/etc/pki/tls/certs/ca-bundle.crt',
+              '/etc/ssl/certs/ca-certificates.crt'):
+        if f and os.path.isfile(f):
+            return str(f)
+    return ''
+
+
+def _dbtls_ssl(db):
+    """What the server says of this very connection: (ssl, version, cipher)."""
+    if db.engine == 'postgres':
+        row = db.row('SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid()')
+        if not row:
+            return False, '', ''
+        return bool(row.get('ssl')), str(row.get('version') or ''), str(row.get('cipher') or '')
+    if db.engine == 'mariadb':
+        got = {r.get('Variable_name') or r.get('variable_name'): r.get('Value') or r.get('value')
+               for r in db.rows("SHOW SESSION STATUS LIKE 'Ssl_%'")}
+        cipher = str(got.get('Ssl_cipher') or '')
+        return bool(cipher), str(got.get('Ssl_version') or ''), cipher
+    return False, '', ''
+
+
+def dbtls_probe(mode, ca):
+    """A connection of its own with these settings: whether it opens, and
+    whether it is encrypted. The daemon's own connections are not touched."""
+    c = {k: CONFIG.get(k) for k in DB_KEYS}
+    c.update(db_tls=mode, db_tls_ca=ca, db_timeout_s=8)
+    began = time.time()
+    out = {'mode': mode, 'ca': ca}
+    try:
+        db = db_open(c, statement_s=10)
+    except Exception as e:                              # noqa: BLE001
+        return dict(out, ok=False, said=scrub_secret(str(e).split('\n')[0])[:300],
+                    ms=int((time.time() - began) * 1000))
+    try:
+        db.value('SELECT 1')
+        ssl_on, ver, cipher = _dbtls_ssl(db)
+    except Exception as e:                              # noqa: BLE001
+        return dict(out, ok=False, said=scrub_secret(str(e).split('\n')[0])[:300],
+                    ms=int((time.time() - began) * 1000))
+    finally:
+        try:
+            db.close()
+        except Exception:                               # noqa: BLE001
+            pass
+    out.update(ok=True, ssl=ssl_on, version=ver, cipher=cipher,
+               ms=int((time.time() - began) * 1000))
+    if mode and not ssl_on:
+        out.update(ok=False, said='it opened, but not encrypted - the server does not speak TLS')
+    return out
+
+
+def _dbtls_dbs(daemon):
+    """Every connection of this daemon to its database."""
+    out = [daemon.store.db]
+    r = getattr(daemon, '_reader', None)
+    if r is not None and getattr(r, 'db', None) is not None and r.db is not daemon.store.db:
+        out.append(r.db)
+    return out
+
+
+def _dbtls_reconnect(daemon, mode, ca):
+    """Every connection of the daemon made again with (mode, ca) at its next
+    statement - the waits after a failed try forgotten too, or a lane that
+    failed with the old settings would say so for another minute."""
+    for d in _dbtls_dbs(daemon):
+        d.tls, d.tls_ca = mode, ca
+        d.close()
+        for lane in list(getattr(d, '_lanes', {}).values()):
+            lane.failed_until = 0.0
+            lane.down_until = 0.0
+
+
+def _dbtls_hisec(mode, store):
+    if mode in ('verify-ca', 'verify-full') or dbtls_kind() in ('sqlite', 'socket'):
+        return
+    if hisec_enforced('db:tls', store):
+        raise ValueError('high security is on: the database is reached with TLS that checks its '
+                         'certificate (verify-ca or verify-full) - or make db:tls an exception '
+                         'there first')
+
+
+def dbtls_switch(daemon, mode, ca, by):
+    """This node's connection moved over to (mode, ca) - on the live database,
+    put back as it was if the new one does not go."""
+    if mode not in DBTLS_MODES:
+        raise ValueError('the mode is require, verify-ca or verify-full')
+    with DBTLS_LOCK:
+        if mode and dbtls_kind() in ('sqlite', 'socket'):
+            raise ValueError('the database is %s - nothing goes over a network to encrypt'
+                             % ('a file on this machine' if dbtls_kind() == 'sqlite' else
+                                'reached over a Unix socket'))
+        _dbtls_hisec(mode, daemon.store)
+        p = dbtls_probe(mode, ca)
+        if not p['ok']:
+            raise ValueError('a connection with %s did not go: %s' % (mode or 'no TLS', p['said']))
+        old = (str(CONFIG.get('db_tls') or ''), str(CONFIG.get('db_tls_ca') or ''))
+        if old == (mode, ca):
+            dbtls_publish(daemon, force=True)
+            return dict(p, changed=False)
+
+        def use(m, c):
+            write_file_settings({'db_tls': m, 'db_tls_ca': c})
+            CONFIG['db_tls'], CONFIG['db_tls_ca'] = m, c
+            _dbtls_reconnect(daemon, m, c)
+        use(mode, ca)
+        try:
+            daemon.store.db.value('SELECT 1')
+            ssl_on, ver, cipher = _dbtls_ssl(daemon.store.db)
+            if mode and not ssl_on:
+                raise ValueError('the new connection is not encrypted')
+        except Exception as e:                          # noqa: BLE001
+            use(*old)
+            try:
+                daemon.store.db.value('SELECT 1')
+            except Exception:                           # noqa: BLE001
+                pass
+            raise ValueError('the daemon\'s connection did not go with it, so it is as it was: %s'
+                             % scrub_secret(str(e).split('\n')[0])[:300])
+        DBTLS_WORK.pop('rescued', None)
+        daemon.store.add_event('settings', '%s: the connection of %s to its database %s' % (
+            by, node_name(), ('is encrypted (%s, %s)' % (mode, ver or 'TLS')) if mode else
+            'is no longer encrypted'), 'warn' if not mode else 'info', who=by)
+        log('the connection to the database: %s' % (('%s, %s' % (mode, ver)) if mode else
+                                                    'no TLS'))
+        dbtls_publish(daemon, force=True)
+        return dict(p, changed=True, version=ver, cipher=cipher)
+
+
+def _dbtls_helper(what, store, by, wait=120):
+    """A request to this node's root helper about its PostgreSQL, and its answer."""
+    st = {}
+    _hatls_ask(st, what)
+    end = time.time() + wait
+    while time.time() < end:
+        got = _hatls_answer(st)
+        if got is not None:
+            if not got.get('ok'):
+                raise ValueError(got.get('said') or 'the root helper said no')
+            return got
+        time.sleep(0.5)
+    raise ValueError('the root helper of this node did not answer in 2 minutes - is '
+                     'otp-web.path running?  systemctl status otp-web.path')
+
+
+def _dbtls_server_cert(store, by):
+    """This machine's PostgreSQL given a certificate from otp's authority
+    (kind local): for localhost, 127.0.0.1 and its names; ssl switched on with
+    a reload, no restart."""
+    with HATLS_LOCK:
+        ca = hatls_ca(store)
+        if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
+                HATLS_CA_ROLL_DAYS * 86400:
+            hatls_ca_make(store, by)
+    names = hatls_names()
+    key, crt = hatls_issue(store, names)
+    got = _dbtls_helper({'do': 'server', 'cert': crt, 'key': key,
+                         'trust': hatls_trust(hatls_ca(store))}, store, by)
+    store.set_meta('dbtls:server:' + node_name(), json.dumps(
+        {'cert_end': got.get('cert_end') or _cert_end(crt), 'at': time.time(), 'by': by,
+         'names': names}))
+    return got
+
+
+def _dbtls_rows(store):
+    return {n: _meta_json(store, 'dbtls:node:' + n) or {} for n in host_nodes(store)}
+
+
+def _dbtls_ca_for(store, kind, mode, args):
+    """The authority file this node checks the server with, for this mode."""
+    if not mode or mode == 'require':
+        return ''
+    if kind in ('replicated', 'local'):
+        return str(HA_CA_FILE)
+    src = str(args.get('ca_source') or 'given')
+    if src == 'system':
+        return _dbtls_system_ca() if CONFIG.get('db_engine') == 'postgres' else ''
+    if src == 'keep':
+        return str(CONFIG.get('db_tls_ca') or '')
+    if src == 'otp':
+        pem = hatls_trust(hatls_ca(store))
+        if not pem:
+            raise ValueError('otp has no authority of its own yet - give the server\'s one')
+    else:
+        pem = str(args.get('ca_pem') or '').strip()
+        if '-----BEGIN CERTIFICATE-----' not in pem:
+            raise ValueError('the server\'s authority is a PEM certificate (-----BEGIN '
+                             'CERTIFICATE-----)')
+    tmp = str(DBTLS_CA) + '.new'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, 'w') as f:
+        f.write(pem.strip() + '\n')
+    os.chmod(tmp, 0o644)        # read by pg_dump and mariadb-dump too; nothing secret
+    if os.path.exists(str(DBTLS_CA)) and str(CONFIG.get('db_tls_ca') or '') == str(DBTLS_CA):
+        # The file in use is not written over before the new one is known to go.
+        alt = STATE_DIR / 'db-ca.next.pem'
+        os.replace(tmp, str(alt))
+        return str(alt)
+    os.replace(tmp, str(DBTLS_CA))
+    return str(DBTLS_CA)
+
+
+def dbtls_apply(daemon, args):
+    """What every node does in one phase of the wizard."""
+    store = daemon.store
+    by = str(args.get('by') or '?')
+    phase = str(args.get('phase') or '')
+    kind = dbtls_kind()
+    base = {'kind': kind, 'phase': phase}
+    if phase == 'server':
+        if kind != 'local':
+            return dict(base, ok=True, skip=True, said={
+                'replicated': 'its PostgreSQL has the cluster\'s certificate',
+                'remote': 'its database server is elsewhere',
+                'sqlite': 'its database is a file on this machine',
+                'socket': 'it reaches its database over a Unix socket'}.get(kind, ''))
+        srv = _meta_json(store, 'dbtls:server:' + node_name()) or {}
+        if srv and not args.get('renew') and \
+                float(srv.get('cert_end') or 0) - time.time() > DBTLS_RENEW_DAYS * 86400 and \
+                set(srv.get('names') or []) == set(hatls_names()) and HA_CA_FILE.exists():
+            p = dbtls_probe('verify-full', str(HA_CA_FILE))
+            if p['ok']:
+                return dict(base, ok=True, said='its PostgreSQL has its certificate already',
+                            cert_end=srv.get('cert_end'))
+        got = _dbtls_server_cert(store, by)
+        store.add_event('settings', '%s: the PostgreSQL of %s was given a certificate from '
+                        'otp\'s authority' % (by, node_name()), 'info', who=by)
+        dbtls_publish(daemon, force=True)
+        return dict(base, ok=True, said=got.get('said') or 'PostgreSQL answers over TLS',
+                    cert_end=got.get('cert_end'))
+    if phase == 'connect':
+        mode = str(args.get('mode') or '')
+        if mode not in DBTLS_MODES:
+            raise ValueError('the mode is require, verify-ca or verify-full')
+        if kind in ('sqlite', 'socket'):
+            return dict(base, ok=True, skip=True, said='nothing of it goes over a network')
+        if mode and kind == 'replicated':
+            st = hatls_state(store)
+            if st.get('step') != 'done' or not HA_CA_FILE.exists():
+                raise ValueError('this node\'s PostgreSQL has no certificate from the cluster yet - '
+                                 'encrypt the link between the databases first (High '
+                                 'availability → Repair)')
+            mode = 'verify-full'
+        elif mode and kind == 'local':
+            if not (_meta_json(store, 'dbtls:server:' + node_name()) or {}) or \
+                    not HA_CA_FILE.exists():
+                raise ValueError('this node\'s PostgreSQL has no certificate from otp yet')
+            mode = 'verify-full'
+        ca = _dbtls_ca_for(store, kind, mode, args)
+        try:
+            got = dbtls_switch(daemon, mode, ca, by)
+        except Exception:
+            if ca.endswith('db-ca.next.pem'):
+                try:
+                    os.unlink(ca)
+                except OSError:
+                    pass
+            raise
+        if ca.endswith('db-ca.next.pem'):
+            # It went: the new authority takes the usual name, and the
+            # connection is moved onto it - the same file, nothing to try again.
+            os.replace(ca, str(DBTLS_CA))
+            with DBTLS_LOCK:
+                write_file_settings({'db_tls_ca': str(DBTLS_CA)})
+                CONFIG['db_tls_ca'] = str(DBTLS_CA)
+                for d in _dbtls_dbs(daemon):
+                    d.tls_ca = str(DBTLS_CA)
+        return dict(got, **dict(base, ok=True, said='it was so already' if
+                                got.get('changed') is False else ''))
+    if phase == 'server_off':
+        if kind != 'local' or not (_meta_json(store, 'dbtls:server:' + node_name()) or {}):
+            return dict(base, ok=True, skip=True, said='nothing of otp\'s in its PostgreSQL')
+        if CONFIG.get('db_tls'):
+            raise ValueError('this node\'s connection still uses TLS - it moves back first')
+        others = [n for n, r in _dbtls_rows(store).items()
+                  if n != node_name() and r.get('mode') and r.get('kind') == 'remote']
+        if others:
+            raise ValueError('%s still reach%s a database with TLS - perhaps this one: switch '
+                             'them off first' % (', '.join(others), 'es' if len(others) == 1
+                                                 else ''))
+        got = _dbtls_helper({'do': 'server_off'}, store, by)
+        store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+        store.add_event('settings', '%s: otp\'s certificate left the PostgreSQL of %s'
+                        % (by, node_name()), 'warn', who=by)
+        dbtls_publish(daemon, force=True)
+        return dict(base, ok=True, said=got.get('said') or '')
+    raise ValueError('the phase is server, connect or server_off')
+
+
+def dbtls_publish(daemon, force=False):
+    """This node's connection as the server says it is, for the page."""
+    now = time.time()
+    if not force and now - DBTLS_WORK['at'] < DBTLS_EVERY:
+        return
+    DBTLS_WORK['at'] = now
+    store = daemon.store
+    row = {'at': now, 'kind': dbtls_kind(), 'mode': str(CONFIG.get('db_tls') or ''),
+           'ca': str(CONFIG.get('db_tls_ca') or ''), 'engine': CONFIG.get('db_engine'),
+           'host': str(CONFIG.get('db_host') or '')}
+    if row['ca'] == str(HA_CA_FILE):
+        row['ca_said'] = 'otp\'s own authority' if row['kind'] == 'local' else \
+            'the cluster\'s authority'
+    elif row['ca'] == str(DBTLS_CA):
+        row['ca_said'] = 'the authority given in the wizard'
+    elif row['ca'] and row['ca'] == _dbtls_system_ca():
+        row['ca_said'] = 'the system\'s authorities'
+    elif row['ca']:
+        row['ca_said'] = row['ca']
+    elif row['mode'] in ('verify-ca', 'verify-full'):
+        row['ca_said'] = 'the system\'s authorities'
+    try:
+        row['ssl'], row['version'], row['cipher'] = _dbtls_ssl(store.db)
+    except Exception as e:                              # noqa: BLE001
+        row['said'] = scrub_secret(str(e))[:200]
+    srv = _meta_json(store, 'dbtls:server:' + node_name()) or {}
+    if row['kind'] == 'local' and srv:
+        row['cert_end'] = srv.get('cert_end')
+        row['server'] = True
+    elif row['kind'] == 'replicated':
+        row['cert_end'] = hatls_state(store).get('cert_end')
+    if DBTLS_WORK.get('rescued'):
+        row['rescued'] = DBTLS_WORK['rescued']
+    try:
+        store.set_meta('dbtls:node:' + node_name(), json.dumps(row))
+    except Exception:                                   # noqa: BLE001
+        DBTLS_WORK['at'] = 0.0          # the database not there just now: again soon
+
+
+def _dbtls_rescue(daemon):
+    """A connection on this machine that stopped because of its TLS: back to
+    no TLS (nothing of it leaves the machine), said loudly. Under high
+    security it stays and is only said."""
+    now = time.time()
+    if now - DBTLS_WORK['rescue'] < 10:
+        return
+    DBTLS_WORK['rescue'] = now
+    if dbtls_kind() not in ('local', 'replicated') or not CONFIG.get('db_tls'):
+        return
+    try:
+        daemon.store.db.value('SELECT 1')
+        return
+    except Exception:                                   # noqa: BLE001
+        pass
+    mode, ca = str(CONFIG.get('db_tls') or ''), str(CONFIG.get('db_tls_ca') or '')
+    p = dbtls_probe(mode, ca)
+    if p['ok']:
+        return                                          # it is back: a passing failure
+    plain = dbtls_probe('', '')
+    if not plain['ok']:
+        return                                          # the database is down: not TLS's matter
+    why = p.get('said') or '?'
+    if hisec_enforced('db:tls', daemon.store):
+        log_sparing('dbtls-rescue', 'the connection to the database on this machine does not go '
+                    'with TLS (%s) and high security keeps it so' % why, 'error', every=600)
+        return
+    with DBTLS_LOCK:
+        write_file_settings({'db_tls': '', 'db_tls_ca': ''})
+        CONFIG['db_tls'], CONFIG['db_tls_ca'] = '', ''
+        _dbtls_reconnect(daemon, '', '')
+    DBTLS_WORK['rescued'] = {'at': now, 'was': mode, 'why': why[:200]}
+    log('the connection to the database on this machine stopped with TLS (%s): it goes without '
+        'TLS now - it never leaves the machine. Settings → The database → Encryption to put it '
+        'back' % why, 'error')
+    try:
+        daemon.store.add_event('settings', 'the connection of %s to its database on the same '
+                               'machine stopped with TLS (%s) and was moved back to no TLS, so '
+                               'RADIUS goes on - encrypt it again in Settings → The database'
+                               % (node_name(), why[:200]), 'bad')
+    except Exception:                                   # noqa: BLE001
+        pass
+    dbtls_publish(daemon, force=True)
+
+
+def dbtls_watch(daemon):
+    """Its own thread, from the start: the daemon's loop waits for the
+    database, and a connection broken by its TLS is what it would wait for."""
+    while True:
+        time.sleep(5)
+        try:
+            _dbtls_rescue(daemon)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('dbtls-rescue-x', 'the connection to the database: %s' % e, 'warn',
+                        every=600)
+        if not DBTLS_WORK['at']:
+            dbtls_publish(daemon)       # one not written while the database was away
+
+
+def dbtls_tick(daemon):
+    """Every few minutes the row for the page; the own certificate
+    (kind local) made again 45 days before it ends or when the machine's
+    names change - in a thread, the connection keeps going."""
+    dbtls_publish(daemon)
+    if dbtls_kind() != 'local':
+        return
+    srv = _meta_json(daemon.store, 'dbtls:server:' + node_name()) or {}
+    if not srv:
+        return
+    t = DBTLS_WORK.get('renew')
+    if t is not None and t.is_alive():
+        return
+    old = float(srv.get('cert_end') or 0) - time.time() < DBTLS_RENEW_DAYS * 86400
+    moved = set(srv.get('names') or []) != set(hatls_names())
+    if not (old or moved) or time.time() - float(srv.get('tried') or 0) < 6 * 3600:
+        return
+    srv['tried'] = time.time()
+    daemon.store.set_meta('dbtls:server:' + node_name(), json.dumps(srv))
+
+    def go():
+        try:
+            _dbtls_server_cert(daemon.store, 'otp (renewed)')
+            daemon.store.add_event('settings', 'the certificate of %s\'s PostgreSQL was made '
+                                   'again (%s)' % (node_name(), 'it was to end soon' if old else
+                                                   'the names of the machine changed'))
+            dbtls_publish(daemon, force=True)
+        except Exception as e:                          # noqa: BLE001
+            daemon.store.add_event('settings', 'the certificate of %s\'s PostgreSQL could not be '
+                                   'made again: %s' % (node_name(), e), 'bad')
+    DBTLS_WORK['renew'] = threading.Thread(target=go, name='otp-dbtls-renew', daemon=True)
+    DBTLS_WORK['renew'].start()
+
+
+def dbtls_view(store):
+    nodes = []
+    alive = host_alive(store)
+    for n in host_nodes(store):
+        row = _meta_json(store, 'dbtls:node:' + n) or {}
+        row.pop('ca', None)
+        nodes.append(dict(row, name=n, me=n == node_name(), alive=bool(alive.get(n))))
+    link_done = False
+    if CONFIG.get('ha_mode') == 'replicated':
+        hat = hatls_view(store)
+        link_done = len(hat['nodes']) >= 2 and all(x.get('step') == 'done' for x in hat['nodes'])
+    own_ca = bool(hatls_trust(hatls_ca(store))) if CONFIG.get('db_engine') == 'postgres' else False
+    return {'kind': dbtls_kind(), 'engine': CONFIG.get('db_engine'), 'nodes': nodes,
+            'mode': str(CONFIG.get('db_tls') or ''), 'ha_mode': CONFIG.get('ha_mode') or '',
+            'host': str(CONFIG.get('db_host') or ''), 'link_done': link_done,
+            'own_ca': own_ca, 'servers': [n for n in host_nodes(store)
+                                          if _meta_json(store, 'dbtls:server:' + n)],
+            'hisec': hisec_enforced('db:tls', store)}
+
+
+def dbtls_in_use_with_ha_ca(store):
+    """Nodes whose connection checks with the cluster's authority - the link's
+    TLS cannot be switched off under them."""
+    out = [n for n, r in _dbtls_rows(store).items()
+           if r.get('mode') and r.get('kind') == 'replicated']
+    if CONFIG.get('db_tls') and dbtls_kind() == 'replicated' and node_name() not in out:
+        out.append(node_name())
+    return out
+
+
+@node_ask_kind('dbtls_probe')
+def _ask_dbtls_probe(daemon, args):
+    """What a mode would do on this node - nothing changed."""
+    mode = str(args.get('mode') or '')
+    kind = dbtls_kind()
+    if kind in ('sqlite', 'socket'):
+        return {'ok': True, 'kind': kind, 'skip': True}
+    plain = dbtls_probe('require', '')
+    out = {'kind': kind, 'server_tls': bool(plain.get('ok')),
+           'server_said': plain.get('said') or ''}
+    if kind in ('replicated', 'local') and mode:
+        has = HA_CA_FILE.exists() and (
+            (kind == 'replicated' and hatls_state(daemon.store).get('step') == 'done') or
+            (kind == 'local' and bool(_meta_json(daemon.store, 'dbtls:server:' + node_name()))))
+        if not has:
+            if kind == 'replicated':
+                return dict(out, ok=False, said='the link between the databases is not encrypted '
+                            'yet - High availability → Repair first')
+            return dict(out, ok=True, needs_server=True,
+                        said='its PostgreSQL is given a certificate from otp first')
+        return dict(out, **{k: v for k, v in dbtls_probe('verify-full', str(HA_CA_FILE)).items()
+                            if k != 'ca'})
+    if not mode:
+        return dict(out, **{k: v for k, v in dbtls_probe('', '').items() if k != 'ca'})
+    tmp = None
+    try:
+        ca = ''
+        src = str(args.get('ca_source') or 'given')
+        if mode != 'require':
+            if src == 'system':
+                ca = _dbtls_system_ca() if CONFIG.get('db_engine') == 'postgres' else ''
+            elif src == 'keep':
+                ca = str(CONFIG.get('db_tls_ca') or '')
+            else:
+                pem = hatls_trust(hatls_ca(daemon.store)) if src == 'otp' else \
+                    str(args.get('ca_pem') or '')
+                if '-----BEGIN CERTIFICATE-----' not in pem:
+                    raise ValueError('the server\'s authority is a PEM certificate')
+                fd, tmp = tempfile.mkstemp(suffix='.pem', dir=str(STATE_DIR))
+                with os.fdopen(fd, 'w') as f:
+                    f.write(pem.strip() + '\n')
+                ca = tmp
+        return dict(out, **{k: v for k, v in dbtls_probe(mode, ca).items() if k != 'ca'})
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+@node_ask_kind('dbtls_apply')
+def _ask_dbtls_apply(daemon, args):
+    return dbtls_apply(daemon, args)
+
 # ---- alerts by mail, and the report (1.0.162) ------------------------------------------
 # Each node writes what only it can see into a row of its own every minute
 # ('host:health:NODE': its disks, the directories it cannot reach, the SMS
@@ -29449,13 +30338,14 @@ def _ha_rename(c, say):
             say('replication: the publication is now %s' % HA_PUB)
     # This node's subscription, bringing the other's rows: its name.
     old_in, new_in = 'opt_from_%d' % peer_slot, ha_sub_name(peer_slot)
-    if pg_admin("SELECT 1 FROM pg_subscription WHERE subname = '%s'" % old_in, port, db) == '1':
+    if pg_admin("SELECT 1 FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database "
+                "WHERE datname = current_database()) AND subname = '%s'" % old_in, port, db) == '1':
         pg_admin('ALTER SUBSCRIPTION %s RENAME TO %s' % (old_in, new_in), port, db)
         say('replication: this node\'s subscription is now %s' % new_in)
     # The slot here, and the other node's subscription that reads it.
     old_slot, new_slot = 'opt_from_%d' % slot, ha_sub_name(slot)
-    have_old = pg_admin("SELECT 1 FROM pg_replication_slots WHERE slot_name = '%s'" % old_slot,
-                        port) == '1'
+    have_old = pg_admin("SELECT 1 FROM pg_replication_slots WHERE slot_name = '%s' AND "
+                        "database = '%s'" % (old_slot, db), port) == '1'
     far = None
     for name, user in ((RENAME_NEW, RENAME_NEW), (RENAME_OLD, RENAME_OLD),
                        (c.get('db_name'), c.get('db_user'))):
@@ -29474,7 +30364,7 @@ def _ha_rename(c, say):
     try:
         sub = None
         for one in ha_sub_names(slot):
-            if far.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (one,)):
+            if far.value(SUB_HERE_SQL, (one,)):
                 sub = one
                 break
         if not sub:
@@ -29486,7 +30376,7 @@ def _ha_rename(c, say):
         time.sleep(2)
         try:
             if have_old and pg_admin("SELECT 1 FROM pg_replication_slots WHERE slot_name = "
-                                     "'%s'" % new_slot, port) != '1':
+                                     "'%s' AND database = '%s'" % (new_slot, db), port) != '1':
                 # Copied at the same place: what the other node had not yet
                 # taken is still there for it under the new name.
                 pg_admin("SELECT pg_copy_logical_replication_slot('%s', '%s')"
@@ -29507,7 +30397,8 @@ def _ha_rename(c, say):
             far.run('ALTER SUBSCRIPTION %s ENABLE' % sub)
         if have_old:
             pg_admin("SELECT pg_drop_replication_slot('%s') FROM pg_replication_slots WHERE "
-                     "slot_name = '%s' AND NOT active" % (old_slot, old_slot), port)
+                     "slot_name = '%s' AND database = '%s' AND NOT active"
+                     % (old_slot, old_slot, db), port)
         say('replication: the other node reads this one as %s, from where it was' % new_slot)
     finally:
         far.close()
@@ -35100,6 +35991,9 @@ def _web(h):
             'vip': dict(v, prefer_now=vip_prefer(store, v) if CONFIG.get('ha_mode') else '',
                         holder=holder),
             'tls': {t: tls_view(tls_profile(store, t)) for t in tls_targets(store)},
+            'acme': {'on': bool(CONFIG.get('acme')), 'care': {
+                t: acme_care(store, t) and t in acme_wanted(store) for t in tls_targets(store)},
+                     'state': {t: acme_state(store, t) for t in tls_targets(store)}},
             'presets': TLS_PRESETS, 'dh': DH_WORDS,
             'may': me.get('role') == 'fulladmin'}
 
@@ -35151,6 +36045,9 @@ def _web_do(h):
         prof.setdefault('preset', 'standard')
         prof.setdefault('dh', 'none')
         tls_save(store, target, prof, who)
+        # One put in by hand is kept (1.0.170): ACME does not replace it at its
+        # next renewal - Automatic certificates → Look after it gives it back.
+        acme_care_set(store, target, False, who, 'a certificate was put in by hand')
         store.add_event('settings', '%s put a certificate in for %s: %s (until %s)' % (
             who, words, info.get('subject'), stamp(info.get('not_after')) if info.get('not_after') else '?'), 'warn', who=who)
         return {'message': 'the certificate of %s is kept; the node%s put%s it in within a few '
@@ -35187,6 +36084,7 @@ def _web_do(h):
                 'tls': tls_view(prof)}
     if act == 'tls_forget':
         store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + target,))
+        acme_care_set(store, target, False, who, 'otp lets its TLS go')
         store.add_event('settings', '%s: otp no longer looks after the TLS of %s (nginx keeps '
                         'what it has)' % (who, words), 'warn', who=who)
         return {'message': 'otp no longer looks after the TLS of %s; nginx keeps the files it '
@@ -36676,15 +37574,50 @@ def _acme_do(h):
         if act == 'order':
             if not CONFIG.get('acme'):
                 raise ValueError('certificates by ACME are off - switch them on and save first')
-            mine = dict(acme_targets(h.store))
+            # Any of them from any node (1.0.170): the CA's question and the
+            # certificate are kept in the database, and the node it is for -
+            # every node, for the web address - puts it in. Ordered by hand,
+            # ACME looks after it from now on.
             target = str(b.get('target') or '')
-            if target not in mine:
-                raise ValueError('%s is not ordered from this node - the web address\'s is ordered '
-                                 'by %s, a node\'s by that node' % (target, 'the first node by name'))
-            acme_start(h.store, [(target, mine[target])], s['name'])
-            return dict(acme_view(h.store), message='the certificate of %s is being ordered' % mine[target])
+            if target not in tls_targets(h.store) or \
+                    (target == 'vip' and not vip_conf(h.store).get('address')):
+                raise ValueError('there is no such certificate')
+            name = acme_name_of(h.store, target)
+            if not name:
+                raise ValueError('the name of this certificate is not known - give it (Its name…)')
+            acme_care_set(h.store, target, True, s['name'], 'ordered by hand')
+            acme_start(h.store, [(target, name)], s['name'])
+            return dict(acme_view(h.store), message='the certificate of %s is being ordered' % name)
+        if act == 'dns_check':
+            return acme_dns_check(h.store)
+        if act == 'care':
+            target = str(b.get('target') or '')
+            if target not in tls_targets(h.store):
+                raise ValueError('there is no such certificate')
+            acme_care_set(h.store, target, bool(b.get('on')), s['name'])
+            return acme_view(h.store)
         if act == 'probe':
             return acme_probe(h.store, str(b.get('target') or ''))
+        if act == 'name':
+            # Every certificate's name from one page (1.0.170): the other
+            # node's and the web address's too, not only this node's.
+            target = str(b.get('target') or '')
+            name = str(b.get('name') or '').strip().lower().rstrip('.')
+            if name and not re.match(r'^(?=.{1,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+'
+                                     r'[a-z]{2,63}\Z', name):
+                raise ValueError('%s is not a full DNS name (like otp2.example.cz)' % name[:80])
+            if target == 'vip':
+                if not vip_conf(h.store).get('address'):
+                    raise ValueError('the web address is not set up (Settings → High availability)')
+                vip_set(h.store, s['name'], fqdn=name)
+            elif target in tls_targets(h.store):
+                h.d.save_settings({'acme_node_name': name}, by=s['name'], node=target)
+            else:
+                raise ValueError('there is no such certificate')
+            h.store.add_event('settings', '%s: the certificate of %s is for %s' % (
+                s['name'], 'the web address' if target == 'vip' else target,
+                name or 'its full host name'), who=s['name'])
+            return acme_view(h.store)
         if act in ('manual_done', 'manual_drop'):
             # The TXT record put in by hand (1.0.169) - or the order given up.
             got = _meta_json(h.store, 'acme:manual') or {}
@@ -36707,6 +37640,57 @@ def _acme_do(h):
     except (ValueError, AcmeError) as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+@route('GET', '/api/dbtls')
+def _dbtls(h):
+    h.me('fulladmin')
+    return dbtls_view(h.store)
+
+
+@route('POST', '/api/dbtls')
+def _dbtls_do(h):
+    """The wizard of Encryption to the database server (1.0.170): 'probe' and
+    'apply' asked of every node, 'result' what each said so far."""
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    if act == 'result':
+        kind = 'dbtls_probe' if b.get('of') == 'probe' else 'dbtls_apply'
+        return {'nodes': node_ask_results(h.store, kind, str(b.get('id') or '')),
+                'view': dbtls_view(h.store)}
+    mode = str(b.get('mode') or '')
+    if mode not in DBTLS_MODES:
+        raise ApiError(400, 'the mode is require, verify-ca or verify-full')
+    src = str(b.get('ca_source') or 'given')
+    if src not in ('given', 'system', 'otp', 'keep'):
+        raise ApiError(400, 'the authority is given, the system\'s, otp\'s or the one kept')
+    pem = str(b.get('ca_pem') or '').strip()
+    if pem and (len(pem) > 20000 or not re.match(
+            r'^(-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----\s*)+\Z',
+            pem)):
+        raise ApiError(400, 'the server\'s authority is one or more PEM certificates')
+    args = {'mode': mode, 'ca_source': src, 'ca_pem': pem, 'by': s['name'],
+            'only': str(b.get('node') or '')}
+    if act == 'probe':
+        return node_ask(h.d, 'dbtls_probe', args, s['name'])
+    if act != 'apply':
+        raise ApiError(400, 'no such thing to do')
+    phase = str(b.get('phase') or '')
+    if phase not in ('server', 'connect', 'server_off'):
+        raise ApiError(400, 'the phase is server, connect or server_off')
+    if phase == 'connect' and mode not in ('verify-ca', 'verify-full') and \
+            dbtls_kind() not in ('sqlite', 'socket') and hisec_enforced('db:tls', h.store):
+        raise ApiError(409, 'high security is on: the database is reached with TLS that checks '
+                       'its certificate (verify-ca or verify-full) - or make db:tls an '
+                       'exception there first')
+    args.update(phase=phase, renew=bool(b.get('renew')))
+    h.store.add_event('settings', '%s: encryption to the database server - %s%s' % (
+        s['name'], {'server': 'the certificates of the PostgreSQLs on the nodes',
+                    'connect': 'every node\'s connection to %s' % (mode or 'no TLS'),
+                    'server_off': 'otp\'s certificates out of the PostgreSQLs'}[phase],
+        (' (only %s)' % args['only']) if args['only'] else ''), 'info', who=s['name'])
+    return node_ask(h.d, 'dbtls_apply', args, s['name'])
 # ---- the console: otp run by its menus, on the server's own screen (1.0.130) --------
 # `otp --console` - and, with `otp --console-at-login on`, what root sees first
 # after signing in at the console or over SSH. Everything is done by the same
@@ -40796,12 +41780,13 @@ def cli_ha_standalone(args, pal):
             print(pal.warn_line('the replication: %s' % str(e).split('\n')[0][:200]))
         # Whatever is left of it here - the other node gone for good, or
         # names from before - taken away too.
-        for r in store.db.rows("SELECT subname FROM pg_subscription WHERE subname LIKE "
-                               "'o__!_from!_%' ESCAPE '!'"):
+        for r in store.db.rows("SELECT subname FROM pg_subscription WHERE subdbid = (SELECT oid "
+                               "FROM pg_database WHERE datname = current_database()) AND subname "
+                               "LIKE 'o__!_from!_%' ESCAPE '!'"):
             ha_drop_sub(store.db, r['subname'])
             say('the subscription %s is gone' % r['subname'])
         for r in store.db.rows("SELECT slot_name FROM pg_replication_slots WHERE slot_name "
-                               "LIKE 'o__!_from!_%' ESCAPE '!'"):
+                               "LIKE 'o__!_from!_%' ESCAPE '!' AND database = current_database()"):
             try:
                 _ha_drop_slot(store.db, r['slot_name'])
                 say('the replication slot %s is gone (nothing is kept for the other node '
