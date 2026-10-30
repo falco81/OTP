@@ -9,7 +9,7 @@ import tarfile
 # ---------------------------------------------------------------------------
 # One file that brings any loss back - one server or a cluster, onto a
 # machine installed from nothing: the whole database (an engine-independent
-# copy: tokens, settings, accounts, certificates, the web address, the
+# copy: tokens, settings, accounts, certificates, the VIP address, the
 # firewall, the texts, the logs), the key that opens the tokens, the machine's
 # config.json and the files it names, a manifest with the checksum of each,
 # and RESTORE.md - the exact steps. Locked with a password kept in the
@@ -950,7 +950,7 @@ def rb_restore_md(m):
         '| Tokens | %s |' % m.get('tokens', '?'),
         '', 'Everything is in it: the whole database (tokens and their recovery codes, the RADIUS',
         'clients, realms, directories, accounts, every setting, the certificates and keys of the',
-        'pages, the web address, the firewall, the message texts, the logs), the key that opens',
+        'pages, the VIP address, the firewall, the message texts, the logs), the key that opens',
         'the tokens (`secrets.key`) and this machine\'s `/etc/otp/config.json`.', '',
         'Keep the password of the backups apart from the backups (a password vault): without it',
         'the file cannot be opened - by anybody.', '',
@@ -1005,7 +1005,7 @@ def rb_restore_md(m):
             '  one server with everything. Move it to PostgreSQL (step 2), then make it two again:',
             '  `otp --ha-setup --ha-peer ADDRESS-OF-THE-SECOND --node-name %s` on it; on the' % node,
             '  second `./install.sh --with-db postgres --yes` and `otp --ha-join FILE`',
-            '  (docs/high-availability.md, "Building it - replicated"). The web address, the',
+            '  (docs/high-availability.md, "Building it - replicated"). The VIP address, the',
             '  firewall, the certificates of the pages and the encrypted link between the',
             '  databases come back by themselves from the database.',
             '- Each node sends its own backups; either node\'s newest is the whole cluster\'s data.',

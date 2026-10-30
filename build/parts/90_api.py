@@ -788,7 +788,7 @@ def _health(h):
     account exists at all (the sign-in page says how to make the first one
     otherwise), the language and this node's name. No version, no count."""
     # The database asked at most once a second (1.0.57): /healthz is public,
-    # and every load balancer, monitor and the web address's own check ask it.
+    # and every load balancer, monitor and the VIP address's own check ask it.
     got = HEALTH_SEEN.get('db')
     if got and time.time() - got[0] < 1.0:
         users, db_ok, maint = got[1]
@@ -3083,13 +3083,87 @@ def _hisec_do(h):
 def _isemon_do(h):
     s = h.me('fulladmin')
     b = h.body()
-    if str(b.get('action') or '') == 'result':
+    act = str(b.get('action') or '')
+    if act == 'result':
         return {'nodes': node_ask_results(h.store, 'isemon', str(b.get('id') or ''))}
+    if act.startswith('tls_'):
+        try:
+            return _isemon_tls_do(h, s, b, act)
+        except (ValueError, BadSetting) as e:
+            raise ApiError(400, str(e))
     if not CONFIG.get('isemon'):
         raise ApiError(400, 'sending to isemon is off')
     # From every node (1.0.169): each sends its own test line.
     return node_ask(h.d, 'isemon', {'by': s['name'], 'only': str(b.get('node') or '')},
                     s['name'])
+
+
+def _isemon_tls_target(b):
+    host = str(b.get('host') or '').strip().strip('[]')
+    if not re.match(r'^[A-Za-z0-9.:\-]{1,253}\Z', host):
+        raise ValueError('isemon\'s address is a name or an address')
+    try:
+        port = int(b.get('port') or 6514)
+    except (TypeError, ValueError):
+        raise ValueError('the port is a number')
+    if not 0 < port < 65536:
+        raise ValueError('the port is 1 to 65535')
+    return host, port
+
+
+def _isemon_tls_do(h, s, b, act):
+    """Encrypted sending to isemon (1.0.172): try it on every node, the
+    bundle for isemon, switch over, switch off."""
+    store = h.store
+    if act == 'tls_result':
+        return {'nodes': node_ask_results(store, 'isemon_tls', str(b.get('id') or '')),
+                'tls': isemon_tls_view(store)}
+    src = str(b.get('ca_source') or 'otp')
+    if src not in ('otp', 'given', 'system'):
+        raise ValueError('the authority is otp\'s, given, or the system\'s')
+    pem = str(b.get('ca_pem') or '').strip()
+    if src == 'given' and '-----BEGIN CERTIFICATE-----' not in pem:
+        raise ValueError('isemon\'s authority is a PEM certificate (-----BEGIN CERTIFICATE-----)')
+    if act == 'tls_probe':
+        host, port = _isemon_tls_target(b)
+        return node_ask(h.d, 'isemon_tls', {'host': host, 'port': port, 'ca_source': src,
+                                            'ca_pem': pem if src == 'given' else '',
+                                            'verify': bool(b.get('verify', True)),
+                                            'mtls': bool(b.get('mtls'))}, s['name'])
+    if act == 'tls_bundle':
+        _host, port = _isemon_tls_target(b)
+        names = [x for x in re.split(r'[\s,;]+', str(b.get('names') or '')) if x]
+        blob = isemon_tls_bundle(store, names, port, bool(b.get('mtls')),
+                                 str(b.get('passphrase') or ''), s['name'])
+        return {'name': 'isemon-tls.zip', 'file': base64.b64encode(blob).decode(),
+                'tls': isemon_tls_view(store)}
+    if act == 'tls_apply':
+        host, port = _isemon_tls_target(b)
+        verify = bool(b.get('verify', True))
+        if not verify and hisec_enforced('isemon', store):
+            raise ValueError('high security is on: isemon\'s certificate is checked')
+        keep = [t for t in syslog_targets(CONFIG.get('isemon_targets')) if t[0] != host]
+        targets = ['%s:%d/%s' % t for t in keep] + ['%s:%d/tls' % (host, port)]
+        ca = hatls_trust(hatls_ca(store)) if src == 'otp' else (pem if src == 'given' else '')
+        h.d.save_settings({'isemon': 1, 'isemon_targets': ', '.join(targets), 'isemon_ca': ca,
+                           'isemon_verify': 1 if verify else 0,
+                           'isemon_mtls': 1 if b.get('mtls') else 0}, by=s['name'])
+        store.add_event('settings', '%s: isemon at %s:%d is sent to over TLS%s' % (
+            s['name'], host, port, ', each node showing its own certificate' if b.get('mtls')
+            else ''), 'info', who=s['name'])
+        return {'message': 'isemon at %s:%d is sent to over TLS from now on' % (host, port),
+                'tls': isemon_tls_view(store)}
+    if act == 'tls_off':
+        host = str(b.get('host') or '').strip().strip('[]')
+        targets = ['%s:%d/%s' % ((t[0], 514, 'tcp') if t[2] == 'tls' and (not host or t[0] == host)
+                                 else t) for t in syslog_targets(CONFIG.get('isemon_targets'))]
+        if hisec_enforced('isemon', store):
+            raise ValueError('high security is on: isemon is sent to over TLS only')
+        h.d.save_settings({'isemon_targets': ', '.join(targets), 'isemon_mtls': 0}, by=s['name'])
+        store.add_event('settings', '%s: isemon is sent to over plain TCP again' % s['name'],
+                        'warn', who=s['name'])
+        return {'message': 'isemon is sent to over plain TCP (514) again', 'tls': isemon_tls_view(store)}
+    raise ValueError('no such thing to do')
 
 
 @route('GET', '/api/isemon')
@@ -3105,7 +3179,8 @@ def _isemon(h):
             (row.get('isemon') or {})
         out.append(dict(st, node=n, me=n == node_name(),
                         at=time.time() if n == node_name() else row.get('at')))
-    return {'nodes': out, 'on': bool(CONFIG.get('isemon'))}
+    return {'nodes': out, 'on': bool(CONFIG.get('isemon')),
+            'tls': isemon_tls_view(h.store) if h.me().get('role') == 'fulladmin' else None}
 
 
 @route('GET', '/api/users')
@@ -3879,8 +3954,8 @@ def _import(h):
 # ---- the whole configuration as one file (1.0.62) ------------------------------------
 # Everything that is set up rather than recorded: the settings (those of each
 # node too), the RADIUS clients, the realms, the directories, the accounts of
-# the pages, the certificates and keys of the pages and the web address, the
-# web address itself, who may reach which page, the firewall and the mail
+# the pages, the certificates and keys of the pages and the VIP address, the
+# VIP address itself, who may reach which page, the firewall and the mail
 # server's authorities. Not the tokens - they are in the copies of the
 # database. With the secrets it carries what opens all of it in the clear.
 CONFIG_FORMAT = 2
@@ -4029,7 +4104,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         try:
             vip_in.update(vip_checked(vip_in, store))
         except (ValueError, TypeError) as e:
-            raise ApiError(400, 'the web address in the file: %s' % e)
+            raise ApiError(400, 'the VIP address in the file: %s' % e)
     logos_in = {}
     for slot, k in (('portal', 'logo'), ('admin', 'admin_logo')):
         one = conf.get(k)
@@ -4180,9 +4255,9 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         if isinstance(web.get('vip'), dict):
             vip = dict(web['vip'])
             if not CONFIG.get('ha_mode'):
-                vip['on'] = False       # a web address is a cluster's
+                vip['on'] = False       # a VIP address is a cluster's
             store.set_meta('web:vip', json.dumps(dict(vip, at=time.time(), by=by)))
-            said['web address'] += 1
+            said['VIP address'] += 1
         if fw is not None:
             fw_trial_begin(store, by)
             store.set_meta('fw:conf', json.dumps(dict(fw, at=time.time(), by=by)))
@@ -5508,7 +5583,7 @@ def _ha_do(h):
     raise ApiError(400, 'no such thing to do')
 
 
-# ---- TLS and the cluster's web address (1.0.47) ------------------------------------
+# ---- TLS and the cluster's VIP address (1.0.47) ------------------------------------
 @route('GET', '/api/web')
 def _web(h):
     me = h.me()
@@ -5530,7 +5605,8 @@ def _web(h):
             'tls': {t: tls_view(tls_profile(store, t)) for t in tls_targets(store)},
             'acme': {'on': bool(CONFIG.get('acme')), 'care': {
                 t: acme_care(store, t) and t in acme_wanted(store) for t in tls_targets(store)},
-                     'state': {t: acme_state(store, t) for t in tls_targets(store)}},
+                     'state': {t: acme_state(store, t) for t in tls_targets(store)},
+                     'before': {t: acme_before(store, t) for t in tls_targets(store)}},
             'presets': TLS_PRESETS, 'dh': DH_WORDS,
             'may': me.get('role') == 'fulladmin'}
 
@@ -5547,7 +5623,7 @@ def _web_do(h):
         if target not in tls_targets(store):
             raise ApiError(400, 'there is no node or address called %s' % target)
         prof = tls_profile(store, target) or {}
-        words = 'the web address' if target == 'vip' else target
+        words = 'the VIP address' if target == 'vip' else target
     if act in ('tls_upload', 'tls_selfsigned'):
         if act == 'tls_upload':
             pfx = b''
@@ -5632,13 +5708,13 @@ def _web_do(h):
         return {'pem': prof['cert'] + (prof.get('chain') or ''), 'csr': prof.get('csr') or ''}
     if act in ('vip_save', 'vip_on', 'vip_off', 'vip_move'):
         if not CONFIG.get('ha_mode'):
-            raise ApiError(409, 'the web address is for a cluster: make this node one of two '
+            raise ApiError(409, 'the VIP address is for a cluster: make this node one of two '
                                 'first (Settings - High availability)')
     if act == 'vip_save':
         v = vip_set(store, who, **vip_checked(b, store))
-        store.add_event('settings', '%s set the web address: %s%s, VRRP id %d' % (
+        store.add_event('settings', '%s set the VIP address: %s%s, VRRP id %d' % (
             who, v['address'], ' (%s)' % v['fqdn'] if v['fqdn'] else '', v['vrid']), who=who)
-        return {'message': 'the web address is kept%s' % (
+        return {'message': 'the VIP address is kept%s' % (
             '; each node puts it in within a few seconds' if v.get('on') else
             ' - turn it on when ready')}
     if act == 'vip_on':
@@ -5646,14 +5722,14 @@ def _web_do(h):
         if not v.get('address'):
             raise ApiError(400, 'give the address first')
         vip_set(store, who, on=True)
-        store.add_event('settings', '%s turned the web address %s on' % (who, v['address']),
+        store.add_event('settings', '%s turned the VIP address %s on' % (who, v['address']),
                         'warn', who=who)
-        return {'message': 'the web address is on: each node installs keepalived if it has to '
+        return {'message': 'the VIP address is on: each node installs keepalived if it has to '
                            'and the address comes up on %s' % vip_prefer(store)}
     if act == 'vip_off':
         vip_set(store, who, on=False)
-        store.add_event('settings', '%s turned the web address off' % who, 'warn', who=who)
-        return {'message': 'the web address is off: keepalived stops on both nodes'}
+        store.add_event('settings', '%s turned the VIP address off' % who, 'warn', who=who)
+        return {'message': 'the VIP address is off: keepalived stops on both nodes'}
     if act == 'vip_mode':
         mode = str(b.get('mode') or '')
         if mode not in ('back', 'stays'):
@@ -5667,7 +5743,7 @@ def _web_do(h):
                 changes['prefer'] = to
         vip_set(store, who, **changes)
         v = vip_conf(store)
-        store.add_event('settings', '%s: the web address %s' % (who, (
+        store.add_event('settings', '%s: the VIP address %s' % (who, (
             'always goes back to %s' % vip_prefer(store, v)) if mode == 'back' else
             'stays where it is - it moves only when that node fails or by hand'), 'warn',
             who=who)
@@ -5681,13 +5757,13 @@ def _web_do(h):
             raise ApiError(409, '%s is not answering: the address cannot go there' % to)
         if vip_conf(store).get('mode') == 'stays':
             vip_set(store, who, move_to=to, move_at=time.time())
-            store.add_event('settings', '%s moved the web address to %s (it stays there)'
+            store.add_event('settings', '%s moved the VIP address to %s (it stays there)'
                             % (who, to), 'warn', who=who)
-            return {'message': 'the web address goes to %s within a few seconds and stays '
+            return {'message': 'the VIP address goes to %s within a few seconds and stays '
                                'there' % to}
         vip_set(store, who, prefer=to)
-        store.add_event('settings', '%s moved the web address to %s' % (who, to), 'warn', who=who)
-        return {'message': 'the web address goes to %s within a few seconds (if it is healthy)'
+        store.add_event('settings', '%s moved the VIP address to %s' % (who, to), 'warn', who=who)
+        return {'message': 'the VIP address goes to %s within a few seconds (if it is healthy)'
                            % to}
     if act == 'retry':
         node = str(b.get('node') or node_name())
@@ -5926,7 +6002,7 @@ def _firewall_do(h):
             '%s %s' % (k, 'everybody' if v['any'] else ', '.join(v['from'])) for k, v in a.items())),
             'warn', who=who)
         return {'message': 'kept; each node\'s nginx takes it within a few seconds (the other '
-                           'node and the web address are always let in)'}
+                           'node and the VIP address are always let in)'}
     raise ApiError(400, 'no such thing to do')
 
 

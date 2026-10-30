@@ -3,10 +3,12 @@
 # ---- the daemon's own connection to its database: encrypted and checked (1.0.170) -------
 # Settings → The database → Encryption to the database server, as a wizard, on
 # the running installation - every node, nothing stopped:
-#   replicated - each node's own PostgreSQL has the cluster's certificate once
-#                the link between the databases is encrypted (High availability):
-#                it names localhost and 127.0.0.1, so each node only moves its
-#                own connection over to verify-full with the cluster's authority;
+#   replicated - each node's own PostgreSQL: the certificate the link between
+#                the databases gave it (High availability) when that is on, or
+#                one from the same authority given here when it is not - the
+#                two are on and off each by itself (1.0.172): the link's TLS
+#                switched off leaves the certificate where the connection uses
+#                it, and this one switched off leaves it where the link does;
 #   local      - PostgreSQL on this machine, no cluster: it is given a
 #                certificate from otp's own authority (renewed by itself 45 days
 #                before it ends, and made again when the machine's names or
@@ -254,6 +256,20 @@ def _dbtls_ca_for(store, kind, mode, args):
     return str(DBTLS_CA)
 
 
+def _dbtls_link_has(store):
+    """Whether the link between the databases has this node's PostgreSQL
+    certificate in place and renews it (High availability → Repair done)."""
+    return CONFIG.get('ha_mode') == 'replicated' and \
+        hatls_state(store).get('step') == 'done' and \
+        CONFIG.get('ha_tls') == 'verify-full' and HA_CA_FILE.exists()
+
+
+def _dbtls_has_server(store):
+    """This node's PostgreSQL has a certificate from otp's authority."""
+    return HA_CA_FILE.exists() and (_dbtls_link_has(store) or bool(
+        _meta_json(store, 'dbtls:server:' + node_name())))
+
+
 def dbtls_apply(daemon, args):
     """What every node does in one phase of the wizard."""
     store = daemon.store
@@ -262,9 +278,12 @@ def dbtls_apply(daemon, args):
     kind = dbtls_kind()
     base = {'kind': kind, 'phase': phase}
     if phase == 'server':
-        if kind != 'local':
+        if kind == 'replicated' and _dbtls_link_has(store) and not args.get('renew'):
+            return dict(base, ok=True, skip=True,
+                        said='its PostgreSQL has the certificate of the link between the '
+                             'databases, renewed with it')
+        if kind not in ('local', 'replicated'):
             return dict(base, ok=True, skip=True, said={
-                'replicated': 'its PostgreSQL has the cluster\'s certificate',
                 'remote': 'its database server is elsewhere',
                 'sqlite': 'its database is a file on this machine',
                 'socket': 'it reaches its database over a Unix socket'}.get(kind, ''))
@@ -288,16 +307,8 @@ def dbtls_apply(daemon, args):
             raise ValueError('the mode is require, verify-ca or verify-full')
         if kind in ('sqlite', 'socket'):
             return dict(base, ok=True, skip=True, said='nothing of it goes over a network')
-        if mode and kind == 'replicated':
-            st = hatls_state(store)
-            if st.get('step') != 'done' or not HA_CA_FILE.exists():
-                raise ValueError('this node\'s PostgreSQL has no certificate from the cluster yet - '
-                                 'encrypt the link between the databases first (High '
-                                 'availability → Repair)')
-            mode = 'verify-full'
-        elif mode and kind == 'local':
-            if not (_meta_json(store, 'dbtls:server:' + node_name()) or {}) or \
-                    not HA_CA_FILE.exists():
+        if mode and kind in ('replicated', 'local'):
+            if not _dbtls_has_server(store):
                 raise ValueError('this node\'s PostgreSQL has no certificate from otp yet')
             mode = 'verify-full'
         ca = _dbtls_ca_for(store, kind, mode, args)
@@ -322,10 +333,20 @@ def dbtls_apply(daemon, args):
         return dict(got, **dict(base, ok=True, said='it was so already' if
                                 got.get('changed') is False else ''))
     if phase == 'server_off':
-        if kind != 'local' or not (_meta_json(store, 'dbtls:server:' + node_name()) or {}):
+        if kind not in ('local', 'replicated') or \
+                not (_meta_json(store, 'dbtls:server:' + node_name()) or {}):
             return dict(base, ok=True, skip=True, said='nothing of otp\'s in its PostgreSQL')
         if CONFIG.get('db_tls'):
             raise ValueError('this node\'s connection still uses TLS - it moves back first')
+        if kind == 'replicated' and (_dbtls_link_has(store) or
+                                     hatls_state(store).get('step') not in (None, 'off_done',
+                                                                            'failed')):
+            # The link between the databases uses the certificate (1.0.172):
+            # it stays, renewed by the link.
+            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+            dbtls_publish(daemon, force=True)
+            return dict(base, ok=True, said='the certificate stays: the link between the '
+                        'databases uses it and renews it')
         others = [n for n, r in _dbtls_rows(store).items()
                   if n != node_name() and r.get('mode') and r.get('kind') == 'remote']
         if others:
@@ -367,11 +388,14 @@ def dbtls_publish(daemon, force=False):
     except Exception as e:                              # noqa: BLE001
         row['said'] = scrub_secret(str(e))[:200]
     srv = _meta_json(store, 'dbtls:server:' + node_name()) or {}
-    if row['kind'] == 'local' and srv:
+    link = row['kind'] == 'replicated' and _dbtls_link_has(store)
+    if link:
+        row['cert_end'] = hatls_state(store).get('cert_end')
+        row['server_by'] = 'link'
+    elif row['kind'] in ('local', 'replicated') and srv:
         row['cert_end'] = srv.get('cert_end')
         row['server'] = True
-    elif row['kind'] == 'replicated':
-        row['cert_end'] = hatls_state(store).get('cert_end')
+        row['server_by'] = 'here'
     if DBTLS_WORK.get('rescued'):
         row['rescued'] = DBTLS_WORK['rescued']
     try:
@@ -444,11 +468,11 @@ def dbtls_tick(daemon):
     (kind local) made again 45 days before it ends or when the machine's
     names change - in a thread, the connection keeps going."""
     dbtls_publish(daemon)
-    if dbtls_kind() != 'local':
+    if dbtls_kind() not in ('local', 'replicated'):
         return
     srv = _meta_json(daemon.store, 'dbtls:server:' + node_name()) or {}
-    if not srv:
-        return
+    if not srv or _dbtls_link_has(daemon.store):
+        return                          # none of its own, or the link renews it
     t = DBTLS_WORK.get('renew')
     if t is not None and t.is_alive():
         return
@@ -493,16 +517,6 @@ def dbtls_view(store):
             'hisec': hisec_enforced('db:tls', store)}
 
 
-def dbtls_in_use_with_ha_ca(store):
-    """Nodes whose connection checks with the cluster's authority - the link's
-    TLS cannot be switched off under them."""
-    out = [n for n, r in _dbtls_rows(store).items()
-           if r.get('mode') and r.get('kind') == 'replicated']
-    if CONFIG.get('db_tls') and dbtls_kind() == 'replicated' and node_name() not in out:
-        out.append(node_name())
-    return out
-
-
 @node_ask_kind('dbtls_probe')
 def _ask_dbtls_probe(daemon, args):
     """What a mode would do on this node - nothing changed."""
@@ -514,13 +528,7 @@ def _ask_dbtls_probe(daemon, args):
     out = {'kind': kind, 'server_tls': bool(plain.get('ok')),
            'server_said': plain.get('said') or ''}
     if kind in ('replicated', 'local') and mode:
-        has = HA_CA_FILE.exists() and (
-            (kind == 'replicated' and hatls_state(daemon.store).get('step') == 'done') or
-            (kind == 'local' and bool(_meta_json(daemon.store, 'dbtls:server:' + node_name()))))
-        if not has:
-            if kind == 'replicated':
-                return dict(out, ok=False, said='the link between the databases is not encrypted '
-                            'yet - High availability → Repair first')
+        if not _dbtls_has_server(daemon.store):
             return dict(out, ok=True, needs_server=True,
                         said='its PostgreSQL is given a certificate from otp first')
         return dict(out, **{k: v for k, v in dbtls_probe('verify-full', str(HA_CA_FILE)).items()

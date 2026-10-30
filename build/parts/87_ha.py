@@ -109,7 +109,7 @@ def heartbeat(store, daemon=None):
     except Exception:                                   # noqa: BLE001
         pass
     try:
-        beat['web'] = web_state(store)          # TLS and the web address (1.0.47)
+        beat['web'] = web_state(store)          # TLS and the VIP address (1.0.47)
         # The whole firewall goes in a row of its own, when it changed
         # (1.0.67) - not into a heartbeat written every 15 s.
         for k in ('full', 'full_at', 'full_backend'):
@@ -124,7 +124,7 @@ def heartbeat(store, daemon=None):
 
 
 # Two machines with one name (1.0.110): both wrote the same heartbeat row, so
-# the other looked gone and the web address "on both". Each row now carries
+# the other looked gone and the VIP address "on both". Each row now carries
 # the machine it came from; a row from another machine, fresh, under this
 # node's name is said loudly - in the log, on every page and in --ha-status.
 NAME_CLASH = {}

@@ -211,7 +211,7 @@ def readdress_addresses():
     """The addresses this machine has, without loopback and link-local - from
     local_addresses() (88w_web), never a second function of that name: one
     here (1.0.106) took its place everywhere, found no `ip` in the service's
-    PATH, and the web address showed "on no node" though a node held it."""
+    PATH, and the VIP address showed "on no node" though a node held it."""
     out = []
     for a in sorted(local_addresses()):
         try:

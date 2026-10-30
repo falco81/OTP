@@ -503,7 +503,7 @@ def _osup_go(daemon, what, ctx):
             plan, row = ctx['plan'], ctx['row']
             if what == 'upgrade':
                 # Out of service first where another node answers meanwhile:
-                # the web address moves to it, RADIUS is answered there.
+                # the VIP address moves to it, RADIUS is answered there.
                 many = any(n.get('alive') and not n.get('me') for n in ha_nodes(store))
                 if many:
                     maintenance_set(store, True, 'the system is being updated', by)

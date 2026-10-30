@@ -90,12 +90,17 @@ for what, dd in (('RADIUS without the guard', {'radius_guard': 0}),
                  ('SMTP unencrypted', {'mail_mode': 'smtp', 'smtp_host': 'mail.example.cz', 'smtp_security': 'none'}),
                  ('SMTP without checking the certificate', {'mail_mode': 'smtp', 'smtp_host': 'mail.example.cz', 'smtp_verify': 0}),
                  ('syslog over TCP', {'siem': 1, 'siem_targets': 'tcp://10.0.0.5:514'}),
-                 ('isemon', {'isemon': 1}), ('a wide window of codes', {'totp_window': 3}),
+                 ('isemon plain', {'isemon': 1, 'isemon_targets': '10.0.0.6:514/tcp'}),
+                 ('isemon over TLS not checked', {'isemon': 1, 'isemon_targets': 'isemon.example.cz:6514/tls', 'isemon_verify': 0}),
+                 ('a wide window of codes', {'totp_window': 3}),
                  ('a code used again', {'totp_disallow_reuse': 0}), ('debug', {'debug': 1})):
     c, x = SET(dd)
     ok('refused: %s (%s: %s)' % (what, c, x.get('error', '')[:90]), c == 400 and 'high security' in x.get('error', ''))
 c, x = SET({'siem': 1, 'siem_targets': 'tls://siem.example.cz:6514'})
 ok('syslog over TLS: allowed (%s)' % c, c == 200)
+c, x = SET({'isemon': 1, 'isemon_targets': 'isemon.example.cz:6514/tls'})
+ok('isemon over TLS: allowed (1.0.172) (%s %s)' % (c, x.get('error', '')[:60]), c == 200)
+SET({'isemon': 0})
 c, x = SET({'session_hours': 12})
 ok('a sign-in of 12 hours refused (%s)' % c, c == 400)
 c, x = SET({'mail_mode': 'direct', 'mail_direct_tls': 'if-offered', 'mail_codes': 0})

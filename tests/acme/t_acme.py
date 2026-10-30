@@ -26,7 +26,7 @@ DNSJSON = CAW + '/dns.json'
 env = dict(os.environ, OTP_STATE=D, OTP_CONFIG=D + '/config.json', OTP_LOGDIR=D, OTP_RUN=D + '/run', OTP_STAY_ROOT='1',
            OTP_ACME_EVERY='5', OTP_ACME_SETTLE='0.5', OTP_NSUPDATE=HERE + '/fake_nsupdate.sh', DNSJSON=DNSJSON,
            OTP_CF_API='http://127.0.0.1:36780/client/v4', OTP_DESEC_API='http://127.0.0.1:36780/api/v1',
-           OTP_ACME_DNS_LEAST='0', OTP_ACME_RESOLVER='127.0.0.2')
+           OTP_ACME_DNS_LEAST='0', OTP_ACME_SEEN_WAIT='3')
 json.dump({'db_engine': 'sqlite', 'radius_bind': '127.0.0.1', 'radius_auth_port': 36710, 'radius_acct_port': 36711,
            'api_port': APORT, 'node_name': 'otp1'}, open(D + '/config.json', 'w'))
 os.environ.update(env); sys.path.insert(0, V); sys.argv = ['x']
@@ -237,23 +237,40 @@ threading.Thread(target=TS(('127.0.0.1', 36780), Fake).serve_forever, daemon=Tru
 
 
 def fake_dns():
-    """A resolver on 127.0.0.2:53 that knows the CNAMEs of dns.json - as the
-    check of In your DNS asks."""
+    """A resolver on 127.0.0.2:53 that knows dns.json: CNAMEs (followed, as a
+    resolver does), TXT records and A records ('A name')."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(('127.0.0.2', 53))
+
+    def nm(n):
+        return b''.join(bytes([len(x)]) + x.encode() for x in n.rstrip('.').split('.')) + b'\0'
     while True:
         q, peer = s.recvfrom(4096)
         i, labels = 12, []
         while q[i]:
             labels.append(q[i + 1:i + 1 + q[i]].decode()); i += 1 + q[i]
+        qtype = struct.unpack('!H', q[i + 1:i + 3])[0]
         qend = i + 5
         name = '.'.join(labels)
-        target = dns().get('CNAME ' + name)
-        head = q[:2] + struct.pack('!HHHHH', 0x8180 if target else 0x8183, 1, 1 if target else 0, 0, 0)
+        zone = dns()
+        ans = []
+        cur = name
+        for _ in range(5):
+            t = zone.get('CNAME ' + cur)
+            if not t:
+                break
+            ans.append((cur, 5, nm(t)))
+            cur = t.rstrip('.')
+        if qtype == 16:
+            for v in zone.get(cur, []) if isinstance(zone.get(cur), list) else []:
+                ans.append((cur, 16, bytes([len(v)]) + v.encode()))
+        if qtype == 1 and zone.get('A ' + cur):
+            ans.append((cur, 1, socket.inet_aton(zone['A ' + cur])))
+        found = bool(ans) or any(k.endswith(' ' + cur) or k == cur for k in zone)
+        head = q[:2] + struct.pack('!HHHHH', 0x8180 if found else 0x8183, 1, len(ans), 0, 0)
         out = head + q[12:qend]
-        if target:
-            rd = b''.join(bytes([len(x)]) + x.encode() for x in target.rstrip('.').split('.')) + b'\0'
-            out += b'\xc0\x0c' + struct.pack('!HHIH', 5, 1, 60, len(rd)) + rd
+        for n, t, rd in ans:
+            out += nm(n) + struct.pack('!HHIH', t, 1, 60, len(rd)) + rd
         s.sendto(out, peer)
 
 
@@ -322,7 +339,7 @@ c, v = call('/api/acme', {'action': 'name', 'target': 'otp1', 'name': NAME}, S)
 
 # deSEC (1.0.170): its domain, a CNAME in your DNS, the guide and its check.
 json.dump({}, open(DNSJSON, 'w'))
-c, x = SET({'acme_challenge': 'dns-01', 'acme_dns': 'desec', 'acme_desec_domain': 'otpdesec.dedyn.io',
+c, x = SET({'acme_resolvers': '127.0.0.2', 'acme_challenge': 'dns-01', 'acme_dns': 'desec', 'acme_desec_domain': 'otpdesec.dedyn.io',
             'acme_desec_token': 'desec-token-170-abcdefghijklmnop', 'acme_dns_wait': 0})
 ok('deSEC chosen (%s)' % c, c == 200)
 saved = json.dumps(st.db.rows('SELECT * FROM settings'))
@@ -353,4 +370,42 @@ SET({'acme_dns_alias': '', 'acme_challenge': 'http-01'})
 v = call('/api/acme', None, S)[1]
 row = [r for r in v['dns_guide']['rows'] if r['target'] == 'otp1'][0]
 ok('HTTP-01: the name is to point at the node (%s)' % row, row['type'] == 'A' and row['record'] == NAME)
+
+# Back to the certificate from before ACME (1.0.172).
+c, x = call('/api/web', {'action': 'tls_selfsigned', 'target': 'otp1', 'cn': NAME, 'names': '', 'days': 40}, S)
+mine_before = json.loads(st.get_meta('web:tls:otp1'))['info']['not_after']
+c, stt, v = order_now('over our own')
+ok('ordered over a certificate of our own: it came', stt.get('ok') and json.loads(st.get_meta('web:tls:otp1')).get('how') == 'ACME')
+b4 = mine(v)[0].get('before') or {}
+ok('... the one before kept to go back to (%s)' % b4.get('how'), b4.get('how', '').startswith('self-signed') and
+   abs(float(b4.get('not_after') or 0) - mine_before) < 2)
+ok('... and Certificates and TLS knows it', (call('/api/web', None, S)[1].get('acme', {}).get('before') or {}).get('otp1'))
+pol = json.loads(st.get_meta('web:tls:otp1'))
+c, x = call('/api/web', {'action': 'tls_policy', 'target': 'otp1', 'preset': 'modern', 'dh': 'none', 'hsts': 0}, S)
+ok('TLS settings changed on a certificate from ACME (%s)' % c, c == 200 and json.loads(st.get_meta('web:tls:otp1')).get('preset') == 'modern')
+c, v = call('/api/acme', {'action': 'put_back', 'target': 'otp1'}, S)
+prof = json.loads(st.get_meta('web:tls:otp1'))
+ok('put back: the certificate from before in place (%s)' % c, c == 200 and prof.get('how', '').startswith('self-signed') and
+   abs(float(prof['info']['not_after']) - mine_before) < 2)
+ok('... its key in place and sealed', prof.get('key') and 'BEGIN' not in prof['key'])
+ok('... its TLS settings as they were made (modern)', prof.get('preset') == 'modern')
+ok('... ACME leaves it alone, nothing left to go back to', mine(v)[0]['care'] is False and not mine(v)[0].get('before'))
+c, v = call('/api/acme', {'action': 'put_back', 'target': 'otp1'}, S)
+ok('... a second time: nothing to put back (%s)' % c, c == 400)
+
+# DNS servers of its own for ACME (1.0.172): Try port 80 asks them, not the machine.
+SET({'acme_resolvers': '127.0.0.2', 'acme_challenge': 'http-01'})
+d0 = dns(); d0.pop('A ' + NAME, None); json.dump(d0, open(DNSJSON, 'w'))
+c, p = call('/api/acme', {'action': 'probe', 'target': 'otp1'}, S)
+ok('Try port 80 with DNS servers of its own that do not know the name: said so (%s)' % (p.get('said') or '')[:80],
+   c == 200 and p.get('ok') is False and '127.0.0.2' in (p.get('said') or ''))
+d0 = dns(); d0['A ' + NAME] = '127.0.0.1'; json.dump(d0, open(DNSJSON, 'w'))
+c, p = call('/api/acme', {'action': 'probe', 'target': 'otp1'}, S)
+ok('... the name put in at them: port 80 answers (%s)' % (p.get('said') or '')[:60], c == 200 and p.get('ok') is True)
+c, g = call('/api/acme', {'action': 'dns_check'}, S)
+r1 = [r for r in g['rows'] if r['target'] == 'otp1'][0]
+ok('... Check DNS asks them too (%s)' % r1.get('said'), r1.get('ok') and '127.0.0.1' in r1.get('found', '') and g.get('resolvers') == ['127.0.0.2'])
+SET({'acme_resolvers': '1.2.3.4.5'}) if False else None
+c, x = SET({'acme_resolvers': 'not-an-address'})
+ok('a DNS server that is not an address refused (%s)' % c, c == 400)
 print('ALL %d / %d' % (sum(R), len(R)))

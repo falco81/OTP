@@ -1,13 +1,13 @@
 
 
 # ---- certificates by ACME: Let's Encrypt and the like (1.0.169) --------------------------
-# Settings → Automatic certificates: the certificate of the web address (and,
+# Settings → Automatic certificates: the certificate of the VIP address (and,
 # where asked, each node's own) ordered from an ACME CA - Let's Encrypt, its
 # staging, or one of your own (step-ca, an internal CA) - by HTTP-01, and
 # renewed when fewer than acme_days are left. The answer to the challenge is
 # kept in the database, so whichever node the CA reaches on port 80 gives it
 # (nginx sends /.well-known/acme-challenge/ to acme.php, which asks the
-# daemon): in a cluster the web address may be on either node. The web
+# daemon): in a cluster the VIP address may be on either node. The web
 # address's certificate is ordered by the one node that does what one node
 # does for both (alerts_lead); a node's own by that node. Signed with openssl;
 # done in a thread of its own, never on the way of a sign-in.
@@ -281,6 +281,42 @@ def acme_name_of(store, target):
     return name
 
 
+def acme_before(store, target):
+    """The certificate a target had before ACME replaced it, as the page may
+    see it (no key)."""
+    got = _meta_json(store, 'acme:before:' + target) or {}
+    if not got.get('cert'):
+        return None
+    info = got.get('info') or {}
+    return {'how': got.get('how'), 'subject': info.get('subject'), 'issuer': info.get('issuer'),
+            'not_after': info.get('not_after'), 'at': got.get('at'),
+            'ran_out': float(info.get('not_after') or 0) < time.time()}
+
+
+def acme_put_back(store, target, by):
+    """The certificate from before ACME back in place, ACME no longer renewing
+    it; its TLS settings (protocols, ciphers, DH, HSTS) stay as they are now."""
+    got = _meta_json(store, 'acme:before:' + target) or {}
+    if not got.get('cert'):
+        raise ValueError('there is no certificate from before ACME for this one')
+    info = got.get('info') or {}
+    if float(info.get('not_after') or 0) < time.time():
+        raise ValueError('the certificate from before ACME ran out on %s - put a new one in on '
+                         'Certificates and TLS' % stamp(info.get('not_after')))
+    prof = tls_profile(store, target) or {}
+    prof.update({k: got.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
+                                         'root_info', 'verify', 'how')})
+    prof.pop('pending_key', None)
+    prof.pop('csr', None)
+    tls_save(store, target, prof, by)
+    store.set_meta('acme:care:' + target, json.dumps({'on': False, 'at': time.time(), 'by': by}))
+    store.db.run('DELETE FROM meta WHERE k = ?', ('acme:before:' + target,))
+    store.add_event('settings', '%s put the certificate of %s from before ACME back (%s, until %s); '
+                    'ACME no longer renews it' % (by, 'the VIP address' if target == 'vip' else
+                                                  target, info.get('issuer') or '?',
+                                                  stamp(info.get('not_after'))), 'warn', who=by)
+
+
 def acme_care(store, target):
     """Whether ACME looks after this certificate (1.0.170). Said on either page;
     unsaid: yes for one from the CA, a self-signed one and none at all - never
@@ -300,7 +336,7 @@ def acme_care_set(store, target, on, by, why=''):
                                                      'by': by}))
     if was != bool(on) and CONFIG.get('acme'):
         store.add_event('settings', '%s: ACME %s the certificate of %s%s' % (
-            by, 'looks after' if on else 'no longer renews', 'the web address' if target == 'vip'
+            by, 'looks after' if on else 'no longer renews', 'the VIP address' if target == 'vip'
             else target, (' - ' + why) if why else ''), 'info' if on else 'warn', who=by)
 
 
@@ -321,7 +357,7 @@ def acme_host_publish(store):
 
 
 def acme_targets(store):
-    """[(target, name)] this node orders: the web address's on the lead, and
+    """[(target, name)] this node orders: the VIP address's on the lead, and
     its own where asked."""
     if not CONFIG.get('acme'):
         return []
@@ -381,6 +417,14 @@ def acme_order(store, target, name, by, say=None):
         got = cert_bundle(chain, key)
         info = got['info']
         prof = tls_profile(store, target) or {}
+        if prof.get('cert') and prof.get('how') != 'ACME':
+            # The certificate it had - uploaded, from your own CA - kept to go
+            # back to (1.0.172): ACME switched off or left alone, it is put
+            # back with a click, its key as sealed as it was.
+            store.set_meta('acme:before:' + target, json.dumps(
+                {k: prof.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
+                                          'root_info', 'verify', 'how')}
+                | {'at': time.time()}))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
@@ -394,7 +438,7 @@ def acme_order(store, target, name, by, say=None):
                   ordered_at=time.time())
         store.set_meta('acme:state:' + target, json.dumps(st))
         store.add_event('settings', 'a certificate for %s (%s) came from the CA, good until %s'
-                        % (name, 'the web address' if target == 'vip' else target,
+                        % (name, 'the VIP address' if target == 'vip' else target,
                            stamp(info.get('not_after')) if info.get('not_after') else '?'),
                         'info', who=by)
         return st
@@ -436,6 +480,7 @@ def acme_start(store, which, by):
     ACME_WORK.update(busy=True, says='starting')
 
     def go():
+        _ACME_DNS.on = True
         try:
             for t, n in which:
                 ACME_WORK['target'] = t
@@ -469,6 +514,7 @@ def acme_view(store):
                     'how': prof.get('how') or '', 'subject': info.get('subject'),
                     'issuer': info.get('issuer'), 'not_after': info.get('not_after'),
                     'care': acme_care(store, t), 'wanted': t in acme_wanted(store),
+                    'before': acme_before(store, t),
                     'named': bool(str(store.settings_saved().get('acme_node_name@' + t) or '')
                                   .strip()) if t != 'vip' else bool(vip_conf(store).get('fqdn'))})
     mine = [t for t, _ in acme_targets(store)]
@@ -497,6 +543,8 @@ def acme_probe(store, target):
     url = 'http://%s/.well-known/acme-challenge/%s' % (name, token)
     began = time.time()
     out = {'name': name, 'url': url, 'ok': False}
+    scope = acme_dns_scope()
+    scope.__enter__()
     try:
         time.sleep(float(os.environ.get('OTP_ACME_SETTLE') or 3))
         req = urllib.request.Request(url, headers={'User-Agent': 'otp/%s (acme probe)' % __version__})
@@ -511,6 +559,7 @@ def acme_probe(store, target):
     except (OSError, ValueError) as e:
         out['said'] = 'port 80 of %s cannot be reached: %s' % (name, getattr(e, 'reason', e))
     finally:
+        scope.__exit__()
         store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
     out['ms'] = int((time.time() - began) * 1000)
     return out
@@ -594,6 +643,8 @@ def acme_dns_put(store, name, txt, say):
     else:
         undo = _dns_manual(store, rr, txt, say)
     _dns_wait(say, 60 if how == 'desec' else 0)
+    if how != 'manual':
+        acme_txt_seen(name, txt, say)
     return undo
 
 
@@ -788,13 +839,37 @@ def _dns_manual(store, rr, txt, say):
 
 
 # ---- what goes into your DNS, and whether it is there (1.0.170) -------------------------
+def acme_resolvers():
+    """The DNS servers ACME asks (1.0.172): its own setting, else the
+    machine's (/etc/resolv.conf) - never the mail's."""
+    out = []
+    for w in re.split(r'[\s,;]+', str(CONFIG.get('acme_resolvers') or '')):
+        try:
+            out.append(str(ipaddress.ip_address(w)))
+        except ValueError:
+            pass
+    return out
+
+
+def _os_resolvers():
+    out = []
+    try:
+        with open('/etc/resolv.conf') as f:
+            for line in f:
+                bits = line.split()
+                if len(bits) >= 2 and bits[0] == 'nameserver':
+                    out.append(bits[1])
+    except OSError:
+        pass
+    return out or ['127.0.0.1']
+
+
 def dns_ask(name, qtype):
-    """One question to the system's resolvers (the mail's own DNS client):
+    """One question to ACME's DNS servers (the mail's own DNS client):
     [(type, text)] of the answer - CNAME (5), TXT (16), A (1), AAAA (28). []
     for a name that is not there; OSError when no resolver answers."""
     last = None
-    srvs = [x for x in re.split(r'[\s,]+', os.environ.get('OTP_ACME_RESOLVER') or '') if x]
-    for srv in (srvs or dns_servers())[:3]:
+    for srv in (acme_resolvers() or _os_resolvers())[:3]:
         try:
             data = _dns_ask(srv, str(name).rstrip('.'), qtype, 3.0)
         except OSError as e:
@@ -825,6 +900,73 @@ def dns_ask(name, qtype):
     raise OSError('no DNS server answered (%s)' % (last or 'none'))
 
 
+# Names looked up by ACME's DNS servers (1.0.172): in the threads of this page
+# only - the CA, the DNS API, Try port 80 - every other lookup of the daemon
+# as the machine's.
+_ACME_DNS = threading.local()
+_SYS_GETADDRINFO = socket.getaddrinfo
+
+
+def _acme_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers():
+        h = host.decode() if isinstance(host, bytes) else str(host)
+        try:
+            ipaddress.ip_address(h.strip('[]'))
+        except ValueError:
+            if h not in ('localhost',):
+                addrs = []
+                for qtype, kind in ((1, 'A'), (28, 'AAAA')):
+                    if family in (0, socket.AF_INET if kind == 'A' else socket.AF_INET6):
+                        try:
+                            addrs += [a for t, a in dns_ask(h, qtype) if t == kind]
+                        except OSError:
+                            pass
+                if not addrs:
+                    raise socket.gaierror(socket.EAI_NONAME, '%s is not known to %s' % (
+                        h, ', '.join(acme_resolvers())))
+                out = []
+                for a in addrs:
+                    out += _SYS_GETADDRINFO(a, port, family, type, proto,
+                                            flags | socket.AI_NUMERICHOST)
+                return out
+    return _SYS_GETADDRINFO(host, port, family, type, proto, flags)
+
+
+socket.getaddrinfo = _acme_getaddrinfo
+
+
+class acme_dns_scope(object):
+    """with acme_dns_scope(): names looked up by ACME's DNS servers."""
+    def __enter__(self):
+        self.was = getattr(_ACME_DNS, 'on', False)
+        _ACME_DNS.on = True
+
+    def __exit__(self, *a):
+        _ACME_DNS.on = self.was
+
+
+def acme_txt_seen(name, txt, say):
+    """After the wait: whether ACME's DNS servers see the TXT record (through
+    its CNAME) - asked again for up to two minutes; the CA asked either way."""
+    rr = '_acme-challenge.' + name.rstrip('.')
+    end = time.time() + float(os.environ.get('OTP_ACME_SEEN_WAIT') or 120)
+    while True:
+        try:
+            got = [v for t, v in dns_ask(rr, 16) if t == 'TXT']
+        except OSError as e:
+            say('DNS could not be asked whether the record is there (%s): the CA is asked anyway'
+                % str(e)[:80])
+            return False
+        if txt in got:
+            say('%s TXT is seen by %s' % (rr, ', '.join(acme_resolvers()) or 'this machine\'s DNS'))
+            return True
+        if time.time() > end:
+            say('%s TXT is not seen yet by %s - the CA is asked anyway' % (
+                rr, ', '.join(acme_resolvers()) or 'this machine\'s DNS'))
+            return False
+        time.sleep(5)
+
+
 def acme_dns_guide(store):
     """What each certificate asked for needs in your DNS, by how the CA
     checks it - for the card In your DNS."""
@@ -844,7 +986,7 @@ def acme_dns_guide(store):
             where = str(v.get('address') or '').split('/')[0] if t == 'vip' else addr.get(t) or ''
             rows.append({'target': t, 'name': name, 'type': 'A', 'record': name, 'value': where,
                          'why': 'the name points at an address that reaches port 80 of %s' % (
-                             'the web address' if t == 'vip' else t), 'check': 'a'})
+                             'the VIP address' if t == 'vip' else t), 'check': 'a'})
             continue
         rr, cname = acme_dns_where(name)
         own = '_acme-challenge.' + name
@@ -876,12 +1018,14 @@ def acme_dns_check(store):
                 r['said'] = 'there' if r['ok'] else (
                     'it points elsewhere: %s' % r['found'] if got else 'not there yet')
             else:
-                got = sorted({a[4][0] for a in socket.getaddrinfo(r['record'], 80,
-                                                                 proto=socket.IPPROTO_TCP)})
+                with acme_dns_scope():
+                    got = sorted({a[4][0] for a in socket.getaddrinfo(
+                        r['record'], 80, proto=socket.IPPROTO_TCP)})
                 r['found'] = ', '.join(got)
                 r['ok'] = bool(got)
                 r['said'] = 'it points at %s' % r['found'] if got else 'not there'
         except (OSError, socket.gaierror) as e:
             r.update(ok=False, said='could not be looked up: %s' % str(e)[:120])
     g['at'] = time.time()
+    g['resolvers'] = acme_resolvers() or ['this machine\'s DNS']
     return g

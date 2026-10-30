@@ -225,7 +225,7 @@ def alert_problems(store, lang='en'):
                 seen.add(fp)
                 left = (float(c['not_after']) - now) / 86400
                 if left < days:
-                    who = _al(lang, 'webové adresy', 'the web address') if what == 'vip' else n
+                    who = _al(lang, 'webové adresy', 'the VIP address') if what == 'vip' else n
                     add('cert:%s:%s' % (what, n if what == 'node' else 'vip'),
                         'bad' if left < 7 else 'warn', n if what == 'node' else '',
                         _al(lang, 'Certifikát %s %s' % (who, 'vypršel' if left < 0 else

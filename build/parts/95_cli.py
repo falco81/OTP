@@ -627,7 +627,7 @@ def build_parser():
                    'again on both nodes (the steps the other way round; --yes)')
     g.add_argument('--ha-renamed', metavar='OLD', help='this node was called OLD: what was '
                    'kept under that name (its own settings, maintenance, certificate, place in '
-                   'the web address) carried to its name now, and OLD off the list')
+                   'the VIP address) carried to its name now, and OLD off the list')
     g.add_argument('--ha-forget', metavar='NAME', help='take a node off the list for good (one '
                    'that was removed or reinstalled under another name)')
     g.add_argument('--ha-standalone', action='store_true', help='leave the cluster and go on '
@@ -640,9 +640,9 @@ def build_parser():
     g.add_argument('--trusted-proxy', action='append', metavar='CIDR', help='the load '
                    'balancer\'s address: nginx takes the client\'s from X-Forwarded-For when '
                    'it comes from there (again for more)')
-    g = p.add_argument_group('TLS AND THE WEB ADDRESS (VIP)')
+    g = p.add_argument_group('TLS AND THE VIP ADDRESS')
     g.add_argument('--web-status', action='store_true', help='the certificates of the nodes and '
-                   'of the web address, their TLS settings, and where the address is')
+                   'of the VIP address, their TLS settings, and where the address is')
     g.add_argument('--tls-for', metavar='TARGET', help='which: a node\'s name, or vip (the web '
                    'address) [this node]')
     g.add_argument('--tls-import', nargs='+', metavar='FILE', help='a certificate in: PEM '
@@ -654,16 +654,16 @@ def build_parser():
     g.add_argument('--tls-dh', choices=sorted(DH_WORDS), help='the DH parameters')
     g.add_argument('--tls-hsts', type=int, metavar='SECONDS', help='Strict-Transport-Security '
                    '(0 = none)')
-    g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the web address (192.0.2.10/24), '
+    g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the VIP address (192.0.2.10/24), '
                    'with --vip-fqdn, --vip-vrid, --vip-iface')
     g.add_argument('--vip-fqdn', metavar='NAME', help='its host name')
     g.add_argument('--vip-vrid', type=int, metavar='N', help='its VRRP id, 1-255 [51]')
     g.add_argument('--vip-iface', action='append', metavar='NODE=IFACE', help='the interface '
                    'it goes on, on that node (again for the other; default: the one with the '
                    'node\'s address)')
-    g.add_argument('--vip', choices=['on', 'off'], help='the web address on or off')
-    g.add_argument('--vip-move', metavar='NODE', help='the web address to that node')
-    g.add_argument('--vip-return', metavar='NODE|stay', help='where the web address goes back '
+    g.add_argument('--vip', choices=['on', 'off'], help='the VIP address on or off')
+    g.add_argument('--vip-move', metavar='NODE', help='the VIP address to that node')
+    g.add_argument('--vip-return', metavar='NODE|stay', help='where the VIP address goes back '
                    'to when it is well: a node (always back to it), or "stay" (it stays where it '
                    'is until that node fails or it is moved by hand)')
     g.add_argument('--web-retry', action='store_true', help='this node asks root again for what '
@@ -1272,7 +1272,7 @@ def cli_ha_compare(store, pal, as_json=False):
 
 
 def cli_web(args, pal, store):
-    """TLS and the web address on the command line (1.0.47)."""
+    """TLS and the VIP address on the command line (1.0.47)."""
     who = 'command line'
     me = node_name()
     target = args.tls_for or me
@@ -1326,7 +1326,7 @@ def cli_web(args, pal, store):
                                                pol['hsts'] or 'off'))
     if args.vip_set or args.vip or args.vip_move or args.vip_return:
         if not CONFIG.get('ha_mode'):
-            raise ValueError('the web address is for a cluster: otp --ha-setup first')
+            raise ValueError('the VIP address is for a cluster: otp --ha-setup first')
     if args.vip_set:
         v = vip_conf(store)
         ifaces = dict(v.get('ifaces') or {})
@@ -1340,27 +1340,27 @@ def cli_web(args, pal, store):
                            'vrid': args.vip_vrid or v.get('vrid') or 51, 'ifaces': ifaces},
                           store)
         vip_set(store, who, **got)
-        said.append('the web address: %s%s, VRRP id %d' % (
+        said.append('the VIP address: %s%s, VRRP id %d' % (
             got['address'], ' (%s)' % got['fqdn'] if got['fqdn'] else '', got['vrid']))
     if args.vip:
         v = vip_conf(store)
         if args.vip == 'on' and not v.get('address'):
             raise ValueError('give the address first: --vip-set 192.0.2.10/24')
         vip_set(store, who, on=args.vip == 'on')
-        store.add_event('settings', 'the web address was turned %s on the command line'
+        store.add_event('settings', 'the VIP address was turned %s on the command line'
                         % args.vip, 'warn', who=who)
-        said.append('the web address is %s' % args.vip)
+        said.append('the VIP address is %s' % args.vip)
     if args.vip_return:
         if args.vip_return == 'stay':
             vip_set(store, who, mode='stays')
-            said.append('the web address stays where it is: it moves only when that node fails '
+            said.append('the VIP address stays where it is: it moves only when that node fails '
                         'or by hand')
         else:
             if args.vip_return not in {n['name'] for n in ha_nodes(store)}:
                 raise ValueError('there is no node called %s' % args.vip_return)
             vip_set(store, who, mode='back', prefer=args.vip_return)
-            said.append('the web address always goes back to %s' % args.vip_return)
-        store.add_event('settings', 'the web address: %s, on the command line' % said[-1],
+            said.append('the VIP address always goes back to %s' % args.vip_return)
+        store.add_event('settings', 'the VIP address: %s, on the command line' % said[-1],
                         'warn', who=who)
     if args.vip_move:
         names = {n['name']: n for n in ha_nodes(store)}
@@ -1370,9 +1370,9 @@ def cli_web(args, pal, store):
             vip_set(store, who, move_to=args.vip_move, move_at=time.time())
         else:
             vip_set(store, who, prefer=args.vip_move)
-        store.add_event('settings', 'the web address was moved to %s on the command line'
+        store.add_event('settings', 'the VIP address was moved to %s on the command line'
                         % args.vip_move, 'warn', who=who)
-        said.append('the web address goes to %s (when it is healthy)' % args.vip_move)
+        said.append('the VIP address goes to %s (when it is healthy)' % args.vip_move)
     if args.web_retry:
         store.set_meta('web:retry:' + me, str(time.time()))
         said.append('%s asks root again' % me)
@@ -1390,9 +1390,9 @@ def cli_web(args, pal, store):
                           'tls': {t: tls_view(tls_profile(store, t)) for t in tls_targets(store)}},
                          default=str))
         return 0
-    print(pal.head('the web address (VIP)'))
+    print(pal.head('the VIP address'))
     if not CONFIG.get('ha_mode'):
-        print(pal.dim('  one server: no web address (it is for a cluster)'))
+        print(pal.dim('  one server: no VIP address (it is for a cluster)'))
     elif not v.get('address'):
         print(pal.dim('  not set: otp --vip-set 192.0.2.10/24 --vip-fqdn otp.example.cz'))
     else:

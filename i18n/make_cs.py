@@ -190,6 +190,8 @@ from cs_202 import S202, P202, R202
 S.update(S202); P.update(P202); R.update(R202)
 from cs_203 import S203, P203, R203
 S.update(S203); P.update(P203); R.update(R203)
+from cs_204 import S204, P204, R204
+S.update(S204); P.update(P204); R.update(R204)
 P.pop('{0} out', None)    # took 'timed out' (1.0.103)
 for _k in list(S):
     if '<' in _k and re.search(r'</?(b|i|code|kbd|em|strong)>', _k):
@@ -209,14 +211,22 @@ seen=set(open('src_strings.txt').read().split('\n'))
 missing=[s for s in seen if s not in S and not s.startswith('otp --set')]
 print('untranslated crawled:',len(missing))
 for m in missing: print('  ',m)
+# 1.0.172: "the web address" became "the VIP address" in every source - each
+# translation of a text that said it follows it, the old ones kept as they are.
+import vipname
+for _d in (S, P, R):
+    for _k, _v in list(_d.items()):
+        _n = vipname.en(_k)
+        if _n != _k and _n not in _d:
+            _d[_n] = vipname.cs(_v)
 def ids(d,pre):
     out={}
     for i,(k,v) in enumerate(sorted(d.items())):
         out['%s%04d'%(pre,i+1)]={'source':k,'text':v}
     return out
-pack={'_meta':{'code':'cs','name':'Čeština','english':'Czech','version':'1.0.171','made':'2026-10-23',
+pack={'_meta':{'code':'cs','name':'Čeština','english':'Czech','version':'1.0.172','made':'2026-10-23',
   'about':'Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen "text", nikdy "source". Prázdný text znamená: zobrazit anglicky.'},
   'strings':ids(S,'s'),'patterns':ids(P,'p'),'rich':ids(R,'r')}
-out='/home/claude/build/out/otp-1.0.171/web/lang/cs.json'
+out='/home/claude/build/out/otp-1.0.172/web/lang/cs.json'
 json.dump(pack,open(out,'w'),ensure_ascii=False,indent=1)
 print(len(S),len(P),len(R))

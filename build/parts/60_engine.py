@@ -1323,22 +1323,24 @@ SYSLOG_FACILITY = {'auth': 4, 'authpriv': 10, 'local5': 21, 'daemon': 3, 'user':
 
 
 def syslog_targets(text, strict=False):
-    """`host[:port][/udp|/tcp]`, comma separated, as (host, port, proto)."""
+    """`host[:port][/udp|/tcp|/tls]` (or `tls://host:port`), comma separated,
+    as (host, port, proto). TLS (1.0.172): 6514 when no port is given."""
     out = []
     for one in re.split(r'[,;\s]+', str(text or '')):
         one = one.strip()
         if not one:
             continue
-        m = re.match(r'^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.\-]+)(?::(\d+))?(?:/(udp|tcp))?\Z',
-                     one, re.I)
+        m = re.match(r'^(?:(udp|tcp|tls)://)?(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.\-]+)(?::(\d+))?'
+                     r'(?:/(udp|tcp|tls))?/?\Z', one, re.I)
         if not m:
             if strict:
-                raise BadSetting('isemon_targets: %r is not host[:port][/udp|/tcp]' % one)
+                raise BadSetting('isemon_targets: %r is not host[:port][/udp|/tcp|/tls]' % one)
             continue
-        port = int(m.group(2) or 514)
+        proto = (m.group(4) or m.group(1) or 'udp').lower()
+        port = int(m.group(3) or (6514 if proto == 'tls' else 514))
         if strict and not 0 < port < 65536:
             raise BadSetting('isemon_targets: %d is not a port' % port)
-        out.append((m.group(1).strip('[]'), port, (m.group(3) or 'udp').lower()))
+        out.append((m.group(2).strip('[]'), port, proto))
     return out
 
 
@@ -1361,6 +1363,32 @@ def detail_quote(value):
     return '"%s"' % said.replace('\\', '\\\\').replace('"', '\\"')
 
 
+def _conn_alive(sock):
+    """Whether a connection the other side never writes into is still open:
+    readable means closed (or, over TLS, a session ticket - read, and still
+    open)."""
+    try:
+        r, _w, _x = select.select([sock], [], [], 0)
+    except (OSError, ValueError):
+        return False
+    if not r:
+        return True
+    was = sock.gettimeout()
+    try:
+        sock.setblocking(False)
+        got = sock.recv(4096)
+        return bool(got)
+    except (ssl.SSLWantReadError, BlockingIOError):
+        return True
+    except (OSError, ssl.SSLError):
+        return False
+    finally:
+        try:
+            sock.settimeout(was)
+        except OSError:
+            pass
+
+
 class Shipper(object):
     """A queue and a thread that empties it into isemon's receivers and the
     files here. Nothing that answers a VPN ever waits for any of it."""
@@ -1378,6 +1406,7 @@ class Shipper(object):
         self.missed = collections.Counter()
         self.dropped = 0
         self.last_sent = 0.0
+        self.ctx = None
         self.stop_flag = False
         self.thread = threading.Thread(target=self.run, name='shipper', daemon=True)
         self.configure()
@@ -1386,8 +1415,9 @@ class Shipper(object):
     def configure(self):
         self.targets = syslog_targets(CONFIG.get('isemon_targets')) if CONFIG.get('isemon') \
             else []
+        self.ctx = None                 # the TLS settings may have changed (1.0.172)
         for key, sock in list(self.tcp.items()):
-            if (key[0], key[1], 'tcp') not in self.targets:
+            if key not in self.targets:
                 try:
                     sock.close()
                 except OSError:
@@ -1501,12 +1531,26 @@ class Shipper(object):
                 if time.time() < until:
                     self.missed[key] += 1
                     return
-                sock = self.tcp.get((host, port))
+                sock = self.tcp.get(target)
+                if sock is not None and not _conn_alive(sock):
+                    # Closed by the other side - isemon restarted (1.0.172): the
+                    # first line written into it would have been lost unsaid.
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                    sock = None
+                    self.tcp.pop(target, None)
                 for attempt in (1, 2):
                     if sock is None:
                         sock = socket.create_connection((host, port), timeout=5)
+                        if proto == 'tls':
+                            # Encrypted, isemon's certificate checked (1.0.172).
+                            if self.ctx is None:
+                                self.ctx = isemon_tls_ctx()
+                            sock = self.ctx.wrap_socket(sock, server_hostname=host)
                         sock.settimeout(5)
-                        self.tcp[(host, port)] = sock
+                        self.tcp[target] = sock
                     try:
                         sock.sendall(raw + b'\n')
                         break
@@ -1516,14 +1560,14 @@ class Shipper(object):
                         except OSError:
                             pass
                         sock = None
-                        self.tcp.pop((host, port), None)
+                        self.tcp.pop(target, None)
                         if attempt == 2:
                             raise
             self.sent[key] += 1
             self.last_sent = time.time()
             self.trouble.pop(key, None)
             self.down.pop(key, None)
-        except OSError as e:
+        except (OSError, ssl.SSLError, ValueError) as e:
             if key not in self.trouble:
                 log('isemon at %s cannot be sent to: %s' % (key, e), 'warn')
             if proto != 'udp':
@@ -1538,6 +1582,9 @@ class Shipper(object):
     def state(self):
         return {'on': bool(CONFIG.get('isemon')), 'host': self.host(),
                 'targets': ['%s:%d/%s' % t for t in self.targets],
+                'tls': {'verify': bool(CONFIG.get('isemon_verify', 1)),
+                        'mtls': bool(CONFIG.get('isemon_mtls')),
+                        'ca': 'given' if str(CONFIG.get('isemon_ca') or '').strip() else 'system'},
                 'sent': dict(self.sent), 'trouble': dict(self.trouble),
                 'queued': self.q.qsize(), 'dropped': self.dropped,
                 'last_sent': self.last_sent, 'files': bool(CONFIG.get('ship_files')),

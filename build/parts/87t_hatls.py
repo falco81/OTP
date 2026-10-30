@@ -48,6 +48,11 @@ def ha_link_tls(c=None):
     c = CONFIG if c is None else c
     if c.get('ha_tls'):
         return str(c.get('ha_tls')), str(c.get('ha_tls_ca') or '')
+    if str(c.get('db_tls_ca') or '') == str(HA_CA_FILE):
+        # The daemon's own connection encrypted by Settings → The database
+        # (1.0.172): that is this node's PostgreSQL on 127.0.0.1, not the other
+        # node's - the link is not moved with it, nor stopped by it.
+        return '', ''
     return str(c.get('db_tls') or ''), str(c.get('db_tls_ca') or '')
 
 
@@ -153,9 +158,10 @@ def hatls_needs(store):
     return sorted(want)
 
 
-def hatls_issue(store, names):
+def hatls_issue(store, names, eku='serverAuth', days=None, cn=None):
     """A key and a certificate for this node's PostgreSQL, from the newest
-    authority of the cluster."""
+    authority of the cluster - or (1.0.172) another use of otp's authority:
+    isemon's server, a node's client certificate (eku clientAuth)."""
     ca = hatls_ca(store)
     if not ca['cas']:
         raise ValueError('the cluster has no authority yet')
@@ -165,7 +171,7 @@ def hatls_issue(store, names):
         raise ValueError('the authority\'s key cannot be opened on this node (is its '
                          'secrets.key the cluster\'s?)')
     key = new_key('ec')
-    cn = re.sub(r'[^A-Za-z0-9.-]', '', node_name())[:64] or 'otp'
+    cn = re.sub(r'[^A-Za-z0-9.-]', '', cn or node_name())[:64] or 'otp'
     with tempfile.TemporaryDirectory(prefix='otp-crt-') as t:
         for n, v in (('k.pem', key), ('ca.pem', top['cert']), ('cakey.pem', ca_key)):
             with open(os.path.join(t, n), 'w') as f:
@@ -174,14 +180,16 @@ def hatls_issue(store, names):
         with open(os.path.join(t, 'ext.cnf'), 'w') as f:
             f.write('[v3]\nbasicConstraints=critical,CA:FALSE\n'
                     'keyUsage=critical,digitalSignature,keyEncipherment\n'
-                    'extendedKeyUsage=serverAuth\nsubjectAltName=%s\n' % hatls_san(names))
+                    'extendedKeyUsage=%s\n' % eku +
+                    ('subjectAltName=%s\n' % hatls_san(names) if names else ''))
         csr = _openssl(['req', '-new', '-key', os.path.join(t, 'k.pem'), '-subj', '/CN=' + cn],
                        what='the request')
         crt = _openssl(['x509', '-req', '-CA', os.path.join(t, 'ca.pem'), '-CAkey',
                         os.path.join(t, 'cakey.pem'), '-set_serial',
                         str(int.from_bytes(secrets.token_bytes(12), 'big')), '-days',
-                        str(HATLS_CERT_DAYS), '-sha256', '-extfile', os.path.join(t, 'ext.cnf'),
-                        '-extensions', 'v3'], csr, what='the certificate').decode()
+                        str(int(days or HATLS_CERT_DAYS)), '-sha256', '-extfile',
+                        os.path.join(t, 'ext.cnf'), '-extensions', 'v3'], csr,
+                       what='the certificate').decode()
     return key, crt
 
 
@@ -197,6 +205,8 @@ def hatls_put(store, st):
     st['at'] = time.time()
     st['node'] = node_name()
     store.set_meta('hatls:node:' + node_name(), json.dumps(st))
+    if st.get('step') in ('done', 'off_done'):
+        DBTLS_WORK['at'] = 0.0          # the row of Encryption to the database anew (1.0.172)
 
 
 def hatls_want(store):
@@ -303,13 +313,6 @@ def hatls_off(store, by, here=True):
     certificates leave both PostgreSQLs (ssl as it was before otp)."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
-    using = dbtls_in_use_with_ha_ca(store)
-    if using:
-        # Their own connection checks PostgreSQL with the cluster's
-        # certificate (1.0.170): it would stop with it.
-        raise ValueError('the connection of %s to its own database is encrypted with the '
-                         'cluster\'s certificate - switch that off first (Settings → The database '
-                         '→ Encryption to the database server)' % ', '.join(using))
     now = time.time()
     w = {'at': now, 'by': by, 'from': node_name(), 'off': True}
     store.set_meta('hatls:want', json.dumps(w))
@@ -381,13 +384,6 @@ def _hatls_off_tick(store, w, st):
             st['said'] = 'waiting for %s to let this node in without TLS' % (pn or 'the other node')
             hatls_put(store, st)
             return
-        if CONFIG.get('db_tls') and str(CONFIG.get('db_tls_ca') or '') == str(HA_CA_FILE):
-            # Back to Database → TLS would be the cluster's authority, about to
-            # go (1.0.170): stopped here, nothing taken away yet.
-            _hatls_fail(store, st, 'this node\'s own connection to its database is encrypted with '
-                        'the cluster\'s certificate - switch that off first (Settings → The '
-                        'database), then switch TLS off again')
-            return
         write_file_settings({'ha_tls': '', 'ha_tls_ca': ''})
         CONFIG['ha_tls'], CONFIG['ha_tls_ca'] = '', ''
         sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
@@ -411,9 +407,22 @@ def _hatls_off_tick(store, w, st):
             st['said'] = 'waiting for %s to move its link back' % (pn or 'the other node')
             hatls_put(store, st)
             return
-        if not helper({'do': 'server_off'}, 'off_done',
-                      'the cluster\'s certificate leaves this node\'s PostgreSQL'):
+        if CONFIG.get('db_tls') and str(CONFIG.get('db_tls_ca') or '') == str(HA_CA_FILE):
+            # The daemon's own connection checks PostgreSQL with this
+            # certificate (1.0.172): it stays, and Settings → The database
+            # renews it from now on - the link is off all the same.
+            store.set_meta('dbtls:server:' + node_name(), json.dumps(
+                {'cert_end': st.get('cert_end'), 'at': now, 'by': 'kept when the link\'s TLS '
+                 'went off', 'names': hatls_names()}))
+            st.update(step='off_done', said='the certificate stays in this node\'s PostgreSQL: '
+                      'the daemon\'s own connection to it is encrypted with it (Settings → The '
+                      'database)', asked=None)
+        elif not helper({'do': 'server_off'}, 'off_done',
+                        'the cluster\'s certificate leaves this node\'s PostgreSQL'):
             return
+        else:
+            # Nothing else keeps it: not renewed by Settings → The database either.
+            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
         st.update(cert_end=None, done_at=now)
         hatls_put(store, st)
         store.add_event('ha', 'TLS between the databases is off on %s' % node_name(), 'warn')

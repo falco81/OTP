@@ -1,14 +1,14 @@
 
 
 # ---------------------------------------------------------------------------
-# The web side (1.0.47): TLS of each node and of the cluster's web address,
+# The web side (1.0.47): TLS of each node and of the cluster's VIP address,
 # and that address itself (VIP, active/standby, held by keepalived).
 #
 # Everything is kept in the database, so both nodes know all of it:
 #   web:vip          the address, its name, the VRRP id, the node it is meant
 #                    to be on, each node's interface
 #   web:tls:NODE     a node's own certificate, chain, root and TLS settings
-#   web:tls:vip      the same for the web address's own name
+#   web:tls:vip      the same for the VIP address's own name
 # Keys are sealed with the tokens' key. Each node then asks root for its own
 # part of it (otp_web.py, through /var/lib/otp/web/request.json) and keeps
 # /run/otp/vip-state up to date for keepalived: whether this node is healthy
@@ -665,9 +665,9 @@ def local_addresses():
     """Every address on this machine's interfaces, read from the kernel.
 
     Not by binding to it (1.0.55): with net.ipv4.ip_nonlocal_bind on - which
-    the web address turns on since 1.0.51, so nginx can listen on it - a bind
+    the VIP address turns on since 1.0.51, so nginx can listen on it - a bind
     succeeds for an address the machine does not hold, and both nodes said
-    they had the web address."""
+    they had the VIP address."""
     out = set()
     try:
         # IPv4: the local table of the FIB, "/32 host LOCAL" under each address.
@@ -771,7 +771,7 @@ def vip_watch(daemon):
             os.chmod(str(tmp), 0o640)
             os.replace(str(tmp), str(VIP_STATE))
         except Exception as e:                          # noqa: BLE001
-            log_sparing('vip-watch:' + str(e)[:80], 'the web address: %s' % e, 'warn', 600)
+            log_sparing('vip-watch:' + str(e)[:80], 'the VIP address: %s' % e, 'warn', 600)
             daemon.stop_flag.wait(10)
 
 
@@ -780,15 +780,15 @@ def vip_checked(b, store):
     try:
         net = plain_ip(b.get('address'), 'interface')
     except ValueError:
-        raise ValueError('the web address is an address with its prefix, e.g. 192.0.2.10/24')
+        raise ValueError('the VIP address is an address with its prefix, e.g. 192.0.2.10/24')
     if '/' not in str(b.get('address') or ''):
         raise ValueError('give the prefix with the address, e.g. 192.0.2.10/24')
     if net.ip.is_loopback or net.ip.is_multicast or net.ip.is_unspecified:
-        raise ValueError('%s cannot be the web address' % net.ip)
+        raise ValueError('%s cannot be the VIP address' % net.ip)
     nodes = [n for n in ha_nodes(store)]
     for n in nodes:
         if str(n.get('address') or '') == str(net.ip):
-            raise ValueError('%s is the address of %s: the web address is a third one'
+            raise ValueError('%s is the address of %s: the VIP address is a third one'
                              % (net.ip, n['name']))
     fqdn = str(b.get('fqdn') or '').strip().lower().rstrip('.')
     if fqdn and not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
@@ -810,14 +810,14 @@ def vip_checked(b, store):
     a6 = str(b.get('address6') or '').strip()
     if a6:
         if '/' not in a6:
-            raise ValueError('give the prefix with the IPv6 web address, e.g. 2001:db8::10/64')
+            raise ValueError('give the prefix with the IPv6 VIP address, e.g. 2001:db8::10/64')
         try:
             n6 = plain_ip(a6, 'interface')
         except ValueError:
-            raise ValueError('the IPv6 web address is an address with its prefix, e.g. '
+            raise ValueError('the IPv6 VIP address is an address with its prefix, e.g. '
                              '2001:db8::10/64')
         if n6.version != 6 or n6.ip.is_link_local or n6.ip.is_loopback:
-            raise ValueError('the IPv6 web address is a global IPv6 address')
+            raise ValueError('the IPv6 VIP address is a global IPv6 address')
         a6 = str(n6)
     return {'address': str(net), 'fqdn': fqdn, 'vrid': vrid, 'ifaces': ifaces, 'address6': a6}
 
@@ -873,7 +873,7 @@ def node_carry(store, old, new, by='the daemon'):
         changed = True
     if changed:
         store.set_meta('web:vip', json.dumps(v))
-        said.append('its place in the web address')
+        said.append('its place in the VIP address')
     for k in ('node:', 'maint:', 'upgrade:node:', 'web:tls:', 'web:retry:', 'db_job:', 'fw:now:',
               'db_sizes:', 'hatls:node:'):
         store.db.run('DELETE FROM meta WHERE k = ?', (k + old,))
@@ -989,7 +989,7 @@ def access_desired(store, node=None):
         nets = list(one.get('from') or [])
         if not one.get('any'):
             # The cluster first (1.0.59): a list cut at its length cut the
-            # other node and the web address off, not one of somebody's.
+            # other node and the VIP address off, not one of somebody's.
             nets = list(inner) + [x for x in nets if x not in inner]
         out[k] = {'any': bool(one.get('any')), 'from': nets}
     return out
@@ -1063,7 +1063,7 @@ def fw_auto(store, node):
                     'rules': [{'family': _fam(p), 'proto': 'any', 'port': '',
                                'source': p} for p in nodes_only]})
         if v.get('on'):
-            out.append({'key': 'vrrp', 'title': 'VRRP (the web address)', 'fixed': True,
+            out.append({'key': 'vrrp', 'title': 'VRRP (the VIP address)', 'fixed': True,
                         'why': 'keepalived of the other node says it is there',
                         'rules': [{'family': _fam(p), 'proto': 'vrrp', 'port': '', 'source': p}
                                   for p in nodes_only]})
@@ -1192,7 +1192,7 @@ def access_checked_api(b):
 
 
 # ---- what happened to the cluster, written down (1.0.52) -------------------------------
-# Every five seconds this node looks at what it can see - the web address
+# Every five seconds this node looks at what it can see - the VIP address
 # here or not, its own health, the other node, replication both ways - and
 # writes an event (kind 'ha') whenever one of them changes. Settings -
 # High availability - History shows them, with what was changed by hand.
@@ -1224,16 +1224,16 @@ def ha_watch_tick(store):
         held = vip_here(v.get('address')) if role else False
         why = VIP_HEALTH.get('why') or ''
         _ha_change(store, 'vip', 'here' if held else 'not',
-                   ('the web address %s came to %s%s' % (v.get('address'), me,
+                   ('the VIP address %s came to %s%s' % (v.get('address'), me,
                                                            ' (%s)' % role if role else '')) if held
-                   else ('the web address %s left %s%s' % (
+                   else ('the VIP address %s left %s%s' % (
                        v.get('address'), me, ' - %s' % why if why else
                        (' (%s)' % role if role else ''))))
         ok = VIP_HEALTH.get('ok')
         if ok is not None:
             _ha_change(store, 'health', 'ok' if ok else 'bad',
-                       ('%s is healthy again: the web address may come back to it' % me) if ok
-                       else ('%s is not healthy - %s: the web address leaves it' % (me, why or '?')),
+                       ('%s is healthy again: the VIP address may come back to it' % me) if ok
+                       else ('%s is not healthy - %s: the VIP address leaves it' % (me, why or '?')),
                        'info' if ok else 'bad')
     else:
         HA_SEEN.pop('vip', None)
@@ -1293,14 +1293,14 @@ def ha_history(store, limit=300, since=0, until=0):
         args.append(float(until))
     rows = store.db.rows(
         "SELECT ts, kind, node, level, who, words FROM events WHERE (kind = 'ha' OR "
-        "(kind = 'settings' AND (words LIKE '%web address%' OR words LIKE '%replication%' OR "
+        "(kind = 'settings' AND (words LIKE '%VIP address%' OR words LIKE '%replication%' OR "
         "words LIKE '%maintenance%' OR words LIKE '%rebuilt%' OR words LIKE '%cluster%' OR "
         "words LIKE '%upgrade%') AND words NOT LIKE '%certificate%' AND "
         "words NOT LIKE '%TLS%'))" + span +
         " ORDER BY ts DESC LIMIT " + str(int(limit)), args)
     for r in rows:
         w = (r.get('words') or '').lower()
-        r['what'] = ('vip' if 'web address' in w else 'replication' if 'replication' in w
+        r['what'] = ('vip' if 'VIP address' in w else 'replication' if 'replication' in w
                      or 'rebuilt' in w else 'maintenance' if 'maintenance' in w or 'upgrade' in w
                      else 'node')
     return rows

@@ -165,7 +165,7 @@ def _acme_do(h):
                 raise ValueError('certificates by ACME are off - switch them on and save first')
             # Any of them from any node (1.0.170): the CA's question and the
             # certificate are kept in the database, and the node it is for -
-            # every node, for the web address - puts it in. Ordered by hand,
+            # every node, for the VIP address - puts it in. Ordered by hand,
             # ACME looks after it from now on.
             target = str(b.get('target') or '')
             if target not in tls_targets(h.store) or \
@@ -179,6 +179,13 @@ def _acme_do(h):
             return dict(acme_view(h.store), message='the certificate of %s is being ordered' % name)
         if act == 'dns_check':
             return acme_dns_check(h.store)
+        if act == 'put_back':
+            target = str(b.get('target') or '')
+            if target not in tls_targets(h.store):
+                raise ValueError('there is no such certificate')
+            acme_put_back(h.store, target, s['name'])
+            return dict(acme_view(h.store), message='the certificate from before ACME is back; '
+                        'the nodes put it in within a few seconds')
         if act == 'care':
             target = str(b.get('target') or '')
             if target not in tls_targets(h.store):
@@ -189,7 +196,7 @@ def _acme_do(h):
             return acme_probe(h.store, str(b.get('target') or ''))
         if act == 'name':
             # Every certificate's name from one page (1.0.170): the other
-            # node's and the web address's too, not only this node's.
+            # node's and the VIP address's too, not only this node's.
             target = str(b.get('target') or '')
             name = str(b.get('name') or '').strip().lower().rstrip('.')
             if name and not re.match(r'^(?=.{1,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+'
@@ -197,14 +204,14 @@ def _acme_do(h):
                 raise ValueError('%s is not a full DNS name (like otp2.example.cz)' % name[:80])
             if target == 'vip':
                 if not vip_conf(h.store).get('address'):
-                    raise ValueError('the web address is not set up (Settings → High availability)')
+                    raise ValueError('the VIP address is not set up (Settings → High availability)')
                 vip_set(h.store, s['name'], fqdn=name)
             elif target in tls_targets(h.store):
                 h.d.save_settings({'acme_node_name': name}, by=s['name'], node=target)
             else:
                 raise ValueError('there is no such certificate')
             h.store.add_event('settings', '%s: the certificate of %s is for %s' % (
-                s['name'], 'the web address' if target == 'vip' else target,
+                s['name'], 'the VIP address' if target == 'vip' else target,
                 name or 'its full host name'), who=s['name'])
             return acme_view(h.store)
         if act in ('manual_done', 'manual_drop'):

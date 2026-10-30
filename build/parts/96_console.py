@@ -227,7 +227,7 @@ class Console(object):
         threading.Thread(target=look, name='otp-console-status', daemon=True).start()
 
     def vip_where(self):
-        """The web address (VRRP) and which node holds it now (1.0.135):
+        """The VIP address (VRRP) and which node holds it now (1.0.135):
         {'address', 'on', 'holders': [nodes]} - or None when there is none."""
         got = self.out('--web-status') or {}
         vip = got.get('vip') or {}
@@ -328,7 +328,7 @@ class Console(object):
             self._put(1, 1, ' | '.join(bits[:-1] if tok is not None else bits), A['key'])
             y = 2
         if vip_bad:
-            self._put(y, 1, 'the web address %s is held by %s' % (
+            self._put(y, 1, 'the VIP address %s is held by %s' % (
                 vip['address'], ', '.join(vip['holders']) if vip['holders'] else 'no node'),
                 A['bad'])
             y += 1
@@ -508,7 +508,7 @@ class Console(object):
             ('5', 'Accounts of the administration', self.m_accounts),
             ('6', 'Settings', self.m_settings),
             ('7', 'RADIUS clients, realms and directories', self.m_radius),
-            ('8', 'Cluster, web address and maintenance', self.m_cluster),
+            ('8', 'Cluster, VIP address and maintenance', self.m_cluster),
             ('9', 'Backups', self.m_backups),
             ('10', 'Upgrades', self.m_upgrades),
             ('11', 'The service', self.m_service),
@@ -1506,12 +1506,12 @@ class Console(object):
             nodes = self._nodes()
             vip = (self.st or {}).get('_vip') or {}
             if len(nodes) < 2:
-                self.note('Move the web address', 'There is only one node.')
+                self.note('Move the VIP address', 'There is only one node.')
                 return
-            to = self.choose('Move the web address %s' % (vip.get('address') or ''),
+            to = self.choose('Move the VIP address %s' % (vip.get('address') or ''),
                              [(n, n + ('   (holds it now)' if n in (vip.get('holders') or [])
                                        else '')) for n in nodes])
-            if to and self.confirm('Move the web address', 'The web address moves to %s; '
+            if to and self.confirm('Move the VIP address', 'The VIP address moves to %s; '
                                    'the pages are away for a few seconds.' % to, 'Move it'):
                 self.act('--vip-move', to)
                 self.vip_now = self.st_now = True
@@ -1546,12 +1546,12 @@ class Console(object):
                 self.act('--change-keep' if act == 'keep' else '--change-back', x['kind'],
                          *(['--node', x['node']] if x.get('node') else []))
                 self.st_now = True
-        return self.sub('Cluster, web address and maintenance', [
+        return self.sub('Cluster, VIP address and maintenance', [
             ('0', 'Keep or put back a change on trial (network, firewall)', trials),
             ('1', 'The cluster', lambda: self.act('--ha-status')),
-            ('2', 'The web address, certificates, firewall', lambda: self.act('--web-status')),
+            ('2', 'The VIP address, certificates, firewall', lambda: self.act('--web-status')),
             ('3', 'Maintenance of this node', maint),
-            ('4', 'Move the web address to a node', vip_move),
+            ('4', 'Move the VIP address to a node', vip_move),
             ('5', 'Pause replication', sure('--ha-pause', 'Pause replication',
                                             'The nodes stop copying each other\'s changes until '
                                             'it is resumed.')),

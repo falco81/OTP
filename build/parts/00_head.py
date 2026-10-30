@@ -48,6 +48,7 @@ import os
 import queue
 import re
 import secrets
+import select
 
 import shutil
 import signal
@@ -77,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.171'
+__version__ = '1.0.172'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -190,6 +191,9 @@ DEFAULTS = {
     'isemon_detail': 1,
     'isemon_events': 0,
     'isemon_max_bytes': 1800,
+    'isemon_ca': '',
+    'isemon_verify': 1,
+    'isemon_mtls': 0,
     'ship_files': 1,
     # --- sending mail (1.0.20) ----------------------------------------------
     'mail_mode': 'off',
@@ -336,6 +340,7 @@ DEFAULTS = {
     'acme_desec_token': '',
     'acme_dns_alias': '',
     'acme_dns_wait': 30,
+    'acme_resolvers': '',
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -430,6 +435,7 @@ TUNABLE = {
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
+    'isemon_verify': (0, 1), 'isemon_mtls': (0, 1),
     'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
     'retain_radius_days': (0, 36500), 'retain_otp_days': (0, 36500),
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
@@ -488,8 +494,8 @@ CHOICE_WORDS = {
                  'desec': 'deSEC.io (free), with an API token - a CNAME in your DNS'},
     'acme_ca': {'letsencrypt': 'Let\u2019s Encrypt', 'letsencrypt-staging': 'Let\u2019s Encrypt - staging (to try it)',
                 'custom': 'another ACME CA (step-ca, an internal CA...)'},
-    'acme_for': {'vip': 'the web address (or this node, where there is none)',
-                 'node': 'each node\u2019s own name', 'both': 'the web address and each node'},
+    'acme_for': {'vip': 'the VIP address (or this node, where there is none)',
+                 'node': 'each node\u2019s own name', 'both': 'the VIP address and each node'},
     'acme_key': {'ec': 'ECDSA P-256', 'rsa2048': 'RSA 2048'},
     'rbackup_verify': {'off': 'only by hand', 'after': 'after every backup, the one just sent',
                        'weekly': 'once a week, the newest one'},
@@ -667,6 +673,9 @@ NAMES = {
     'isemon_detail': 'Send the RADIUS packets as well (radius-detail)',
     'isemon_events': 'Send this daemon’s own events as well',
     'isemon_max_bytes': 'Longest message (bytes)',
+    'isemon_ca': 'isemon’s certificate authority (TLS)',
+    'isemon_verify': 'Check isemon’s certificate (TLS)',
+    'isemon_mtls': 'Each node shows isemon a certificate of its own (TLS)',
     'ship_files': 'Write the same lines into files here too',
     'retain_radius_days': 'Keep the RADIUS requests (days)',
     'retain_otp_days': 'Keep the token checks (days)',
@@ -753,6 +762,7 @@ NAMES = {
     'acme_dns_key': 'acme-dns key',
     'acme_dns_subdomain': 'acme-dns subdomain',
     'acme_dns_wait': 'Wait for DNS to carry it (s)',
+    'acme_resolvers': 'DNS servers for ACME',
     'acme_desec_domain': 'The domain at deSEC',
     'acme_desec_token': 'The deSEC API token',
     'acme_dns_alias': 'The TXT records go into',
@@ -1100,9 +1110,17 @@ SAYS = {
               'reads it with what it already has (<i>Settings → The OTP logs</i>, with '
               '<i>RADIUS detail</i> switched on).',
     'isemon_targets': 'Where to send them: <code>host</code>, <code>host:port</code>, '
-                      'and <code>/udp</code> or <code>/tcp</code> after it - '
-                      '<code>10.1.2.3:514/tcp</code>. Several, separated by commas. UDP is the '
-                      'default; TCP does not lose a line when the network does.',
+                      'and <code>/udp</code>, <code>/tcp</code> or <code>/tls</code> after it - '
+                      '<code>10.1.2.3:514/tcp</code>, <code>isemon.example.cz:6514/tls</code>. '
+                      'Several, separated by commas. UDP is the default; TCP does not lose a line '
+                      'when the network does; TLS is TCP encrypted - <i>Encrypted sending</i> '
+                      'above sets it up.',
+    'isemon_ca': 'The CA certificate (PEM) isemon’s certificate is signed by - otp’s own '
+                 'authority when <i>Encrypted sending</i> made it. Empty: the system’s.',
+    'isemon_verify': 'isemon’s certificate checked against the authority and its name against the '
+                     'address it is sent to. Off: encrypted, but whoever answers is taken.',
+    'isemon_mtls': 'Each node shows isemon a certificate from otp’s own authority (made and '
+                   'renewed by the node itself), so isemon can take lines from otp’s nodes only.',
     'isemon_hostname': 'The host name on every line, which is the folder isemon’s rsyslog '
                        'files them under: <code>/var/log/remote/<this>/totp.cgi.log</code>. '
                        'isemon looks in <code>/var/log/remote/otp</code> unless told otherwise, '
@@ -1155,7 +1173,7 @@ SAYS = {
                     'replication stopped, the database in trouble, the nodes on different versions.',
     'alerts_backup': 'A nightly copy older than 36 hours; a backup to the destinations that '
                      'failed, or none that went in time.',
-    'alerts_cert_days': 'A certificate of a node or of the web address running out within so '
+    'alerts_cert_days': 'A certificate of a node or of the VIP address running out within so '
                         'many days. 0: never.',
     'alerts_disk_pct': 'A file system otp lives on fuller than this. 0: never.',
     'alerts_time': 'chrony out of sync, or the clock off by more than half a second - the codes '
@@ -1178,7 +1196,7 @@ SAYS = {
                   'for the cards here, the alerts and the report. Nothing is put in.',
     'osup_check_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
     'osup_auto': 'The updates put in by themselves in the window below, one node at a time as '
-                 'by hand - each out of service while it is updated, the web address on the '
+                 'by hand - each out of service while it is updated, the VIP address on the '
                  'other. Off until switched on.',
     'osup_auto_what': 'Only the security updates (dnf --security, unattended-upgrade on apt), '
                       'or every update.',
@@ -1225,7 +1243,7 @@ SAYS = {
     'logs_max_mb': 'A file bigger than this is put aside sooner than once a day.',
     'acme': 'The certificates ordered from the CA by HTTP-01 and renewed by themselves - port 80 '
             'of the name must reach a node. In a cluster the answer is kept in the database, so '
-            'whichever node has the web address gives it. Off until switched on.',
+            'whichever node has the VIP address gives it. Off until switched on.',
     'acme_email': 'Where the CA writes when a certificate runs out unrenewed. Empty: none.',
     'acme_ca': 'Let\u2019s Encrypt, its staging (certificates browsers do not trust - to try '
                'it), or another.',
@@ -1234,7 +1252,7 @@ SAYS = {
     'acme_for': 'Which certificates are ordered.',
     'acme_node_name': 'The name a node\u2019s own certificate is for - each node its own, the others\u2019 '
                       'under the box. Empty: the name of the certificate it has now, else its full host '
-                      'name. The web address\u2019s: <i>Its name\u2026</i> on its card above.',
+                      'name. The VIP address\u2019s: <i>Its name\u2026</i> on its card above.',
     'acme_days': 'Let\u2019s Encrypt\u2019s certificates last 90 days; 30 is what it advises.',
     'acme_key': 'ECDSA is smaller and quicker; RSA for old clients.',
     'acme_challenge': 'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, '
@@ -1255,6 +1273,11 @@ SAYS = {
     'acme_dns_key': 'From the registration at acme-dns. Kept sealed.',
     'acme_dns_subdomain': 'From the registration at acme-dns.',
     'acme_dns_wait': 'How long the record is given to reach every DNS server before the CA is asked.',
+    'acme_resolvers': 'The DNS servers asked for everything on this page: the address of the CA and '
+                      'of the DNS API, <i>Check DNS</i>, <i>Try port 80</i>, and whether the TXT '
+                      'record can be seen before the CA is asked - <code>1.1.1.1, 9.9.9.9</code> '
+                      'to see what the internet sees. Empty: the machine\u2019s own '
+                      '(/etc/resolv.conf).',
     'acme_desec_domain': 'Your domain at deSEC, <code>example.dedyn.io</code> (free) or one of your own '
                          'whose DNS is there. The records go into it; your DNS has a CNAME to it for each '
                          'name - <i>In your DNS</i> above says which.',
@@ -1332,7 +1355,8 @@ PANES = {
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
     'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
-               'isemon_events', 'isemon_max_bytes', 'ship_files'],
+               'isemon_events', 'isemon_max_bytes', 'isemon_verify', 'isemon_mtls',
+               'isemon_ca', 'ship_files'],
     'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
                'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms',
                'admin_directory', 'admin_group_full', 'admin_group_token',
@@ -1358,7 +1382,7 @@ PANES = {
              'acme_dns_server', 'acme_dns_zone', 'acme_dns_tsig_name', 'acme_dns_tsig_alg',
              'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_url', 'acme_dns_user',
              'acme_dns_key', 'acme_dns_subdomain', 'acme_desec_domain', 'acme_desec_token',
-             'acme_dns_alias', 'acme_dns_wait'],
+             'acme_dns_alias', 'acme_dns_wait', 'acme_resolvers'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1393,7 +1417,8 @@ ONLY_WHEN = {
     'portal_wait_min': ['portal', '1'],
     'isemon_targets': ['isemon', '1'], 'isemon_hostname': ['isemon', '1'],
     'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
-    'isemon_max_bytes': ['isemon', '1'],
+    'isemon_max_bytes': ['isemon', '1'], 'isemon_ca': ['isemon', '1'],
+    'isemon_verify': ['isemon', '1'], 'isemon_mtls': ['isemon', '1'],
     'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
     'admin_group_readonly': ['admin_directory', '*'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
@@ -1433,7 +1458,7 @@ ONLY_WHEN = {
     'acme_dns_url': ['acme_dns', 'acmedns'], 'acme_dns_user': ['acme_dns', 'acmedns'],
     'acme_dns_key': ['acme_dns', 'acmedns'], 'acme_dns_subdomain': ['acme_dns', 'acmedns'],
     'acme_desec_domain': ['acme_dns', 'desec'], 'acme_desec_token': ['acme_dns', 'desec'],
-    'acme_dns_alias': ['acme_dns', 'acmedns-not'],
+    'acme_dns_alias': ['acme_dns', 'acmedns-not'], 'acme_resolvers': ['acme', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1517,7 +1542,7 @@ def _coerce(current, value):
 
 
 # Settings of several lines (1.0.103): the rest are one line each.
-SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca', 'acme_ca_pem',
+SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'isemon_ca', 'siem_ca', 'acme_ca_pem',
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
 
@@ -1587,15 +1612,18 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('radius_guard_trusted: %r is not an address or a network' % one)
-    if key == 'mail_dns':
+    if key in ('mail_dns', 'acme_resolvers'):
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
                 ipaddress.ip_address(one)
             except ValueError:
-                raise BadSetting('mail_dns: %r is not the address of a DNS server' % one)
+                raise BadSetting('%s: %r is not the address of a DNS server' % (key, one))
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'isemon_ca' and str(got).strip() and \
+            '-----BEGIN CERTIFICATE-----' not in str(got):
+        raise BadSetting('isemon_ca: a certificate in PEM, -----BEGIN CERTIFICATE-----')
     if key == 'acme_email' and str(got).strip() and \
             not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', str(got).strip()):
         raise BadSetting('acme_email: a mail address')

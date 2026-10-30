@@ -1045,7 +1045,7 @@ class Daemon(object):
     def save_settings(self, changes, by='', node=None, drawn_by=None):
         checked = {}
         # The page's boxes were drawn by one node and the save reached
-        # another through the web address (1.0.110): otp1 took otp2's name
+        # another through the VIP address (1.0.110): otp1 took otp2's name
         # from a page otp2 had drawn. What belongs to one machine is saved
         # only on the machine the page was drawn by.
         drawn_by = str(drawn_by or '').strip()
@@ -1053,7 +1053,7 @@ class Daemon(object):
             local = sorted(k for k in (changes or {}) if k in FILE_ONLY_KEYS and
                            not (k in SECRET_KEYS and is_masked(changes[k])))
             if local:
-                raise NodeMoved('this page was drawn by %s, but %s answers now (the web address '
+                raise NodeMoved('this page was drawn by %s, but %s answers now (the VIP address '
                                 'moved): %s belongs to one machine, so nothing was saved - load '
                                 'the page again' % (drawn_by, node_name(), ', '.join(local)))
             if node is None:
@@ -1384,7 +1384,7 @@ class Daemon(object):
                 except Exception as e:                  # noqa: BLE001
                     log_sparing('mail-queue', 'the outgoing mail: %s' % e, 'warn', every=300)
         threading.Thread(target=mail_queue, name='mail-queue', daemon=True).start()
-        # The cluster's web address: whether this node may hold it (1.0.47).
+        # The cluster's VIP address: whether this node may hold it (1.0.47).
         threading.Thread(target=vip_watch, args=(self,), name='vip-watch', daemon=True).start()
         # A connection on this machine broken by its TLS mended (1.0.170) -
         # its own thread: the loop below waits for the database.
@@ -1442,7 +1442,7 @@ class Daemon(object):
                 try:
                     web_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
-                    log_sparing('tick:web:' + str(e)[:80], 'TLS and the web address: %s' % e, 'warn', 3600)
+                    log_sparing('tick:web:' + str(e)[:80], 'TLS and the VIP address: %s' % e, 'warn', 3600)
                 try:
                     rb_tick(self)               # backups to the destinations (1.0.109)
                 except Exception as e:          # noqa: BLE001
@@ -1496,6 +1496,10 @@ class Daemon(object):
                     acme_tick(self)             # certificates by ACME (1.0.169)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('acme-tick', 'ACME: %s' % e, 'warn', every=600)
+                try:
+                    isemon_tls_tick(self)       # isemon over TLS (1.0.172)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('isemon-tls-tick', 'isemon over TLS: %s' % e, 'warn', every=600)
                 try:
                     dbtls_tick(self)            # the connection to the database (1.0.170)
                 except Exception as e:          # noqa: BLE001
@@ -2085,7 +2089,7 @@ def db_prune(store, days):
     gone = {}
     for t in ('radius_log', 'otp_log'):
         # In batches (1.0.57): one DELETE of millions of rows held RADIUS -
-        # and the health check the web address follows - for minutes.
+        # and the health check the VIP address follows - for minutes.
         gone[t] = store.delete_older(t, edge)
     return gone
 

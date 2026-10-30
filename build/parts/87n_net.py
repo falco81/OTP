@@ -18,7 +18,7 @@
 #   2. this node's ha_address, its own settings that name the old address or
 #      name (RADIUS's address, the mail greeting, the isemon name), and its
 #      self-made certificate are made again with the new ones;
-#   3. maintenance: the web address goes to the other node;
+#   3. maintenance: the VIP address goes to the other node;
 #   4. NetworkManager, the host name and /etc/hosts, then a reboot;
 #   5. back up: the new address checked, the link between the databases made
 #      again for it (hatls), replication both ways, keepalived and nginx
@@ -210,10 +210,10 @@ def net_check(store, node, want, rollback=False):
         except ValueError:
             vnet = None
         if vnet and vnet.ip == a4.ip:
-            raise ValueError('%s is the web address of the cluster' % new_ip)
+            raise ValueError('%s is the VIP address of the cluster' % new_ip)
         if vnet and vnet.ip not in a4.network and not want.get('vip_elsewhere'):
-            raise ValueError('the web address %s is not in %s: the node could not hold it. '
-                             'Change the web address first (High availability), or tick that '
+            raise ValueError('the VIP address %s is not in %s: the node could not hold it. '
+                             'Change the VIP address first (High availability), or tick that '
                              'it is meant to be so' % (vnet.ip, a4.network))
     plan = []
     ip_changed = bool(old_ip) and old_ip != new_ip
@@ -233,7 +233,7 @@ def net_check(store, node, want, rollback=False):
         plan.append('IPv6 %s: RADIUS listens %s' % (
             'on' if on6 else 'off', 'on IPv4 and IPv6 (::)' if on6 else 'on IPv4 only'))
     if many:
-        plan.append('maintenance on %s - the web address goes to the other node' % node)
+        plan.append('maintenance on %s - the VIP address goes to the other node' % node)
     plan.append('NetworkManager (%s): %s via %s, DNS %s%s' % (
         con, a4, gw or 'no gateway', ', '.join(dns) or 'none',
         '' if not on6 else ', IPv6 %s' % (a6 if a6 else 'automatic')))
@@ -507,12 +507,12 @@ def net_job_run(daemon, ask):
             except ValueError as e:
                 _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e,
                          45, ok=False)
-        # 5. Out of the way: the web address to the other node.
+        # 5. Out of the way: the VIP address to the other node.
         if many:
             if not (maintenance_row(store) or {}).get('on'):
                 maintenance_set(store, True, 'the network is being changed', by)
                 job['maint'] = True
-            _job_put(store, job, 'maintenance on - the web address goes to the other node', 55)
+            _job_put(store, job, 'maintenance on - the VIP address goes to the other node', 55)
             v = vip_conf(store)
             end = time.time() + 30
             while v.get('on') and vip_here(v.get('address')) and time.time() < end:
@@ -632,12 +632,12 @@ def net_job_after(daemon, job):
         # restart it failed - the machine did not have the address yet - and a
         # failed request is asked again only when somebody says so.
         ok, said = net_vip_again(store)
-        _job_put(store, job, 'the web address (keepalived) set up for %s: %s' % (
-            w.get('new_ip') or me, said) if ok else 'the web address (keepalived) on this node: %s - '
+        _job_put(store, job, 'the VIP address (keepalived) set up for %s: %s' % (
+            w.get('new_ip') or me, said) if ok else 'the VIP address (keepalived) on this node: %s - '
             'Settings → High availability, Try again' % said, 97, ok=ok)
     if many and job.get('maint'):
         maintenance_set(store, False, '', by)
-        _job_put(store, job, 'out of maintenance - the web address may come back', 98)
+        _job_put(store, job, 'out of maintenance - the VIP address may come back', 98)
     if job.get('trial_min') and job.get('back'):
         net_trial_start(store, job, by)
         return
@@ -885,8 +885,8 @@ def power_go(daemon, plan):
             while v.get('on') and vip_here(v.get('address')) and time.time() < end:
                 time.sleep(1)
             if v.get('on') and vip_here(v.get('address')) and plan.get('keep_service'):
-                # The web address did not move (1.0.165): not restarted under it.
-                raise ValueError('the web address did not move to the other node in 90 s - not '
+                # The VIP address did not move (1.0.165): not restarted under it.
+                raise ValueError('the VIP address did not move to the other node in 90 s - not '
                                  'restarted')
         row['down_at'] = time.time() + 5
         _power_put(store, row, 'going', 'going down')
@@ -968,7 +968,7 @@ def power_view(store):
 
 
 def net_vip_again(store, wait=120):
-    """This node's part of the web address asked of root again, and waited
+    """This node's part of the VIP address asked of root again, and waited
     for."""
     h = web_hash(web_desired(store))
     st = web_status()
