@@ -2482,6 +2482,7 @@ function showPane(name) {
   if (name === 'acme') loadAcme(); else acPoll(false);
   if (name === 'hisec') loadHisec();
   if (name === 'proxy') drawProxy();
+  if (name === 'monitor') drawMonitor();
   if (name === 'logs') loadLogs();
   if (name === 'sshd') loadSshd(); else sdPoll(false);
   if (name === 'osup') loadOsup(); else ouPoll(false);
@@ -14848,4 +14849,63 @@ function isemonTlsWizard() {
       }, 1000);
     }).catch(function (e) { busy(b, false); oops(e); });
   }
+}
+
+
+/* ==== Monitoring: Prometheus (1.0.173) =========================================
+   A token made here and shown once; what prometheus.yml says to ask every
+   node; what this node answers now. */
+function drawMonitor() {
+  var host = $('mon-host');
+  if (!host || !ADMIN) return;
+  host.innerHTML = '';
+  var card = el('div', 'card full');
+  card.appendChild(el('h2', '', 'Prometheus'));
+  card.appendChild(el('p', 'note', 'Each node answers for itself - Prometheus asks every node, by its own address (not the VIP address, which is one node at a time). The token is the same for every node.'));
+  var row = el('div', 'btnrow');
+  var mk = cmdButton('Make a token…', 'key', 'small primary');
+  explain(mk, 'A new token for Prometheus, shown once - the one before stops opening /metrics at once.');
+  mk.onclick = function () {
+    confirmThen('Make a new token for Prometheus?', 'The token used now stops opening /metrics at once - put the new one into Prometheus.', 'Make it', function () {
+      api('metrics', {action: 'token'}).then(function (x) {
+        modal('The token for Prometheus', function (body) {
+          body.appendChild(el('p', 'note', 'Shown only now. Put it into a file Prometheus reads (bearer_token_file below), readable by it alone.'));
+          var pre = noI18n(el('pre', 'wrap mono', x.token));
+          body.appendChild(pre);
+          var cp = cmdButton('Copy', 'copy', 'small');
+          cp.onclick = function () { copyText(x.token, cp); };
+          body.appendChild(cp);
+        });
+        loadSettings();
+      }).catch(oops);
+    }, false);
+  };
+  row.appendChild(mk);
+  var pv = cmdButton('What this node answers now', 'list', 'small');
+  pv.onclick = function () {
+    busy(pv, true);
+    api('metrics', {action: 'preview'}).then(function (x) {
+      busy(pv, false);
+      modal('/metrics of this node, now', function (body) {
+        body.appendChild(noI18n(el('pre', 'mono small mon-pre', x.text)));
+      }, null, 'large');
+    }).catch(function (e) { busy(pv, false); oops(e); });
+  };
+  row.appendChild(pv);
+  card.appendChild(row);
+  card.appendChild(el('h3', 'peek-h', 'prometheus.yml'));
+  var pre = noI18n(el('pre', 'wrap mono small', ''));
+  card.appendChild(pre);
+  var cpy = cmdButton('Copy', 'copy', 'small');
+  card.appendChild(cpy);
+  host.appendChild(card);
+  api('ha').then(function (d) {
+    var targets = (d.nodes || []).map(function (n) { return (n.address || n.name) + ':443'; });
+    if (!targets.length) targets = [location.hostname + ':443'];
+    var y = 'scrape_configs:\n  - job_name: otp\n    scheme: https\n    metrics_path: /metrics\n    bearer_token_file: /etc/prometheus/otp.token\n'
+      + '    tls_config:\n      # the CA of the nodes\' certificates, if not a public one\n      # ca_file: /etc/prometheus/otp-ca.pem\n      insecure_skip_verify: false\n'
+      + '    static_configs:\n      - targets: [' + targets.map(function (t) { return "'" + t + "'"; }).join(', ') + ']\n';
+    pre.textContent = y;
+    cpy.onclick = function () { copyText(y, cpy); };
+  }).catch(function () {});
 }

@@ -753,6 +753,23 @@ if 'location = /healthz' not in text and 'location /assets/' in text:
 """ % (re.search(r'fastcgi_pass\s+([^;]+);', text).group(1))
     text = text.replace('    location /assets/', block + '    location /assets/', 1)
     said.append('GET /healthz for a load balancer')
+# 1.0.173: Prometheus asks /metrics of each node, with its token.
+if 'location = /metrics' not in text and 'location /assets/' in text:
+    zone = re.search(r'limit_req_zone\s+\$binary_remote_addr\s+zone=([A-Za-z0-9_]+):', text)
+    block = """    # Prometheus' scrape of this node, with its token (otp 1.0.173)
+    location = /metrics {
+%s        fastcgi_pass   %s;
+        fastcgi_param  SCRIPT_FILENAME $document_root/metrics.php;
+        fastcgi_param  HTTPS on;
+        include        fastcgi_params;
+        fastcgi_read_timeout 15s;
+        access_log off;
+    }
+
+""" % (('        limit_req zone=%s burst=10 nodelay;\n        limit_req_status 429;\n' % zone.group(1)) if zone else '',
+       re.search(r'fastcgi_pass\s+([^;]+);', text).group(1))
+    text = text.replace('    location /assets/', block + '    location /assets/', 1)
+    said.append('GET /metrics for Prometheus')
 # 1.0.15: the health check rate-limited like everything else (the zone is
 # whichever one the conf keeps for everybody; otp_all, as shipped).
 # Looked for in the whole block (1.0.67): the access lists put in front of

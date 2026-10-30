@@ -78,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.172'
+__version__ = '1.0.173'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -192,6 +192,10 @@ DEFAULTS = {
     'isemon_events': 0,
     'isemon_max_bytes': 1800,
     'isemon_ca': '',
+    # --- Prometheus (1.0.173) ----------------------------------------------------
+    'metrics': 0,
+    'metrics_token': '',
+    'metrics_from': '',
     'isemon_verify': 1,
     'isemon_mtls': 0,
     'ship_files': 1,
@@ -399,13 +403,14 @@ def this_node_name(conf=None):
     return said or (socket.gethostname().split('.')[0] or 'otp')
 
 
+METRICS_TOKEN_RE_HEAD = re.compile(r'^[A-Za-z0-9_.~+/=-]{24,200}\Z')
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
                'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
-               'acme_dns_key', 'acme_desec_token')
+               'acme_dns_key', 'acme_desec_token', 'metrics_token')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
                'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
-               'acme_desec_token')
+               'acme_desec_token', 'metrics_token')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -435,7 +440,7 @@ TUNABLE = {
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
-    'isemon_verify': (0, 1), 'isemon_mtls': (0, 1),
+    'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
     'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
     'retain_radius_days': (0, 36500), 'retain_otp_days': (0, 36500),
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
@@ -674,6 +679,9 @@ NAMES = {
     'isemon_events': 'Send this daemon’s own events as well',
     'isemon_max_bytes': 'Longest message (bytes)',
     'isemon_ca': 'isemon’s certificate authority (TLS)',
+    'metrics': 'Prometheus metrics (/metrics)',
+    'metrics_token': 'Its token (Bearer)',
+    'metrics_from': 'Only from',
     'isemon_verify': 'Check isemon’s certificate (TLS)',
     'isemon_mtls': 'Each node shows isemon a certificate of its own (TLS)',
     'ship_files': 'Write the same lines into files here too',
@@ -1115,6 +1123,14 @@ SAYS = {
                       'Several, separated by commas. UDP is the default; TCP does not lose a line '
                       'when the network does; TLS is TCP encrypted - <i>Encrypted sending</i> '
                       'above sets it up.',
+    'metrics': 'Each node answers <code>https://NODE/metrics</code> in Prometheus\u2019 format - '
+               'RADIUS, the tokens, the database, the cluster, the certificates, the mail, the '
+               'alerts. Asked with the token below.',
+    'metrics_token': 'What Prometheus sends as <code>Authorization: Bearer ...</code>. Kept sealed; '
+                     '<i>Make a token</i> below makes one and shows it once.',
+    'metrics_from': 'The addresses or networks Prometheus asks from, <code>10.0.5.0/24, '
+                    '2001:db8::/64</code>. Empty: from anywhere that reaches the pages, with the '
+                    'token.',
     'isemon_ca': 'The CA certificate (PEM) isemon’s certificate is signed by - otp’s own '
                  'authority when <i>Encrypted sending</i> made it. Empty: the system’s.',
     'isemon_verify': 'isemon’s certificate checked against the authority and its name against the '
@@ -1376,6 +1392,7 @@ PANES = {
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
+    'monitor': ['metrics', 'metrics_token', 'metrics_from'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
              'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
@@ -1418,6 +1435,7 @@ ONLY_WHEN = {
     'isemon_targets': ['isemon', '1'], 'isemon_hostname': ['isemon', '1'],
     'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
     'isemon_max_bytes': ['isemon', '1'], 'isemon_ca': ['isemon', '1'],
+    'metrics_token': ['metrics', '1'], 'metrics_from': ['metrics', '1'],
     'isemon_verify': ['isemon', '1'], 'isemon_mtls': ['isemon', '1'],
     'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
     'admin_group_readonly': ['admin_directory', '*'],
@@ -1621,6 +1639,15 @@ def check_setting(key, value):
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'metrics_from':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('metrics_from: %r is not an address or a network' % one)
+    if key == 'metrics_token' and str(got).strip() and not is_masked(got) and \
+            not METRICS_TOKEN_RE_HEAD.match(str(got).strip()):
+        raise BadSetting('metrics_token: 24 to 200 letters, digits and -_.~+/=')
     if key == 'isemon_ca' and str(got).strip() and \
             '-----BEGIN CERTIFICATE-----' not in str(got):
         raise BadSetting('isemon_ca: a certificate in PEM, -----BEGIN CERTIFICATE-----')
@@ -38328,6 +38355,206 @@ def _dbtls_do(h):
                     'server_off': 'otp\'s certificates out of the PostgreSQLs'}[phase],
         (' (only %s)' % args['only']) if args['only'] else ''), 'info', who=s['name'])
     return node_ask(h.d, 'dbtls_apply', args, s['name'])
+
+
+# ---- Prometheus (1.0.173) ------------------------------------------------------------------
+# https://NODE/metrics - each node's own, in Prometheus' text format: RADIUS
+# since the daemon started, the tokens, the database, the cluster and its
+# replication, the certificates, the mail queue, isemon and syslog, the alerts
+# open now. Asked with the token (Authorization: Bearer ...), kept sealed;
+# from the networks set only, where any are. Off until switched on.
+METRICS_TOKEN_RE = re.compile(r'^[A-Za-z0-9_.~+/=-]{24,200}\Z')
+
+
+def _m_esc(v):
+    return str(v).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+
+
+class _Metrics(object):
+    def __init__(self):
+        self.out = []
+
+    def put(self, name, kind, words, samples):
+        """samples: [(labels dict, value)] - one family, said once."""
+        samples = [(l, v) for l, v in samples if v is not None]
+        if not samples:
+            return
+        self.out.append('# HELP %s %s' % (name, words))
+        self.out.append('# TYPE %s %s' % (name, kind))
+        for labels, v in samples:
+            lab = ','.join('%s="%s"' % (k, _m_esc(x)) for k, x in sorted(labels.items()))
+            self.out.append('%s%s %s' % (name, '{%s}' % lab if lab else '',
+                                         repr(float(v)) if isinstance(v, float) else int(v)))
+
+    def text(self):
+        return '\n'.join(self.out) + '\n'
+
+
+def metrics_text(daemon):
+    store = daemon.store
+    m = _Metrics()
+    began = time.time()
+    me = node_name()
+    m.put('otp_info', 'gauge', 'This otp: its version, node and database engine.',
+          [({'version': __version__, 'node': me, 'site': CONFIG.get('site_name') or short_host(),
+             'engine': store.db.engine}, 1)])
+    m.put('otp_start_time_seconds', 'gauge', 'When the daemon started (unix time).',
+          [({}, float(daemon.started))])
+    # The database: asked once, how long it took.
+    t0 = time.time()
+    try:
+        store.db.value('SELECT 1')
+        db_ok = 1
+    except Exception:                                   # noqa: BLE001
+        db_ok = 0
+    m.put('otp_database_up', 'gauge', 'Whether the database answers.', [({}, db_ok)])
+    m.put('otp_database_seconds', 'gauge', 'How long SELECT 1 took.',
+          [({}, round(time.time() - t0, 6))])
+    r = daemon.radius.state() if daemon.radius else {}
+    m.put('otp_radius_listening', 'gauge', 'Whether RADIUS listens.',
+          [({}, 1 if r.get('listening') else 0)])
+    m.put('otp_radius_requests_total', 'counter',
+          'RADIUS packets since the daemon started, by what became of them.',
+          [({'kind': k}, v) for k, v in sorted((r.get('counts') or {}).items())])
+    m.put('otp_radius_queued', 'gauge', 'RADIUS requests waiting for a worker.',
+          [({}, r.get('queued') or 0)])
+    if not db_ok:
+        return m.text()
+    try:
+        tc = store.token_counts()
+        m.put('otp_tokens', 'gauge', 'Tokens, by state and kind.',
+              [({'state': k}, v) for k, v in sorted(tc.items()) if not k.startswith('kind_')] +
+              [({'kind': k[5:]}, v) for k, v in sorted(tc.items()) if k.startswith('kind_')])
+        m.put('otp_clients', 'gauge', 'RADIUS clients.', [({}, len(store.clients()))])
+        m.put('otp_realms', 'gauge', 'Realms.', [({}, len(store.realms()))])
+        m.put('otp_directories', 'gauge', 'Directories (Active Directory).',
+              [({}, len(daemon.dirs))])
+        day = time.time() - 86400
+        rows = store.db.rows("SELECT result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                             "packet = 'Access-Request' GROUP BY result", (day,))
+        m.put('otp_radius_last_day', 'gauge',
+              'Access-Requests of the last 24 hours in the database (both nodes), by result.',
+              [({'result': x['result'] or '?'}, x['n']) for x in rows])
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('metrics-db', 'Prometheus: %s' % e, 'warn', every=600)
+    # The cluster.
+    if CONFIG.get('ha_mode'):
+        try:
+            nodes = ha_nodes(store)
+            m.put('otp_ha_node_up', 'gauge', 'Whether each node was heard from lately.',
+                  [({'node': n['name']}, 1 if n.get('alive') else 0) for n in nodes])
+            m.put('otp_ha_heartbeat_age_seconds', 'gauge', 'Since each node was last heard from.',
+                  [({'node': n['name']}, round(float(n.get('age') or 0), 1)) for n in nodes])
+            rep = ha_repl_state(store)
+            m.put('otp_ha_replication_running', 'gauge',
+                  'Whether this node takes the other\'s rows (each subscription).',
+                  [({'name': x['name']}, 1 if x.get('running') else 0)
+                   for x in rep.get('incoming') or []])
+            m.put('otp_ha_replication_errors_total', 'counter',
+                  'Errors of this node taking the other\'s rows.',
+                  [({'name': x['name']}, int(x.get('apply_errors') or 0) +
+                    int(x.get('sync_errors') or 0)) for x in rep.get('incoming') or []])
+            m.put('otp_ha_replication_behind_bytes', 'gauge',
+                  'How far the other node is behind in taking this one\'s rows.',
+                  [({'name': x['name']}, int(x.get('behind') or 0))
+                   for x in rep.get('outgoing') or []])
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('metrics-ha', 'Prometheus, the cluster: %s' % e, 'warn', every=600)
+    # The certificates of the pages.
+    try:
+        certs = []
+        for t in tls_targets(store):
+            info = (tls_profile(store, t) or {}).get('info') or {}
+            if info.get('not_after'):
+                certs.append(({'target': 'vip' if t == 'vip' else t,
+                               'name': info.get('cn') or ''}, float(info['not_after'])))
+        m.put('otp_certificate_expiry_timestamp_seconds', 'gauge',
+              'When the certificate of each node and of the VIP address ends (unix time).', certs)
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        q = mailq_counts(store)
+        m.put('otp_mail_queue', 'gauge', 'Mail waiting or failed, by state.',
+              [({'state': k}, v) for k, v in sorted(q.items())])
+    except Exception:                                   # noqa: BLE001
+        pass
+    for what, obj in (('isemon', getattr(daemon, 'shipper', None)),
+                      ('siem', getattr(daemon, 'siem', None))):
+        if not obj:
+            continue
+        st = obj.state()
+        if not st.get('on'):
+            continue
+        m.put('otp_%s_sent_total' % what, 'counter', 'Lines sent since the daemon started.',
+              [({'target': k}, v) for k, v in sorted((st.get('sent') or {}).items())] or
+              [({'target': t}, 0) for t in st.get('targets') or []])
+        m.put('otp_%s_trouble' % what, 'gauge', 'Whether a target is in trouble now.',
+              [({'target': t}, 1 if t in (st.get('trouble') or {}) else 0)
+               for t in st.get('targets') or []])
+        m.put('otp_%s_dropped_total' % what, 'counter', 'Lines dropped, the queue full.',
+              [({}, st.get('dropped') or 0)])
+    try:
+        probs = alert_problems(store, 'en')
+        m.put('otp_alerts_open', 'gauge', 'What the alerts see wrong now, by level.',
+              [({'level': lv}, sum(1 for p in probs.values() if p.get('level') == lv))
+               for lv in ('bad', 'warn')])
+        m.put('otp_alert', 'gauge', 'Each thing wrong now (1), with its key.',
+              [({'key': k, 'level': p.get('level') or ''}, 1) for k, p in sorted(probs.items())])
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('metrics-alerts', 'Prometheus, the alerts: %s' % e, 'warn', every=600)
+    m.put('otp_high_security', 'gauge', 'Whether high security is on.',
+          [({}, 1 if CONFIG.get('high_security') else 0)])
+    m.put('otp_scrape_seconds', 'gauge', 'How long this answer took.',
+          [({}, round(time.time() - began, 6))])
+    return m.text()
+
+
+def metrics_allowed(client):
+    nets = [w for w in re.split(r'[\s,;]+', str(CONFIG.get('metrics_from') or '')) if w]
+    if not nets:
+        return True
+    try:
+        a = ipaddress.ip_address(str(client or '').strip('[]'))
+    except ValueError:
+        return False
+    for n in nets:
+        try:
+            if a in ipaddress.ip_network(n, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+@route('GET', '/api/metrics')
+def _metrics(h):
+    """What metrics.php asks, with the scraper's token - not a session."""
+    if not CONFIG.get('metrics'):
+        raise ApiError(404, 'Prometheus metrics are off (Settings → Monitoring)')
+    want = unseal_secret(CONFIG.get('metrics_token') or '') or ''
+    given = str(h.headers.get('X-Otp-Metrics') or '')
+    if not want or not hmac.compare_digest(given.encode(), want.encode()):
+        raise ApiError(401, 'the token is not the one set (Authorization: Bearer ...)')
+    if not metrics_allowed(h.client_ip()):
+        raise ApiError(403, 'not from the networks Prometheus may ask from')
+    return {'text': metrics_text(h.d)}
+
+
+@route('POST', '/api/metrics')
+def _metrics_do(h):
+    """A new token (shown once), and what the scrape looks like now."""
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    if act == 'token':
+        tok = secrets.token_urlsafe(32)
+        h.d.save_settings({'metrics_token': tok}, by=s['name'])
+        h.store.add_event('settings', '%s made a new token for Prometheus - the one before no '
+                          'longer opens /metrics' % s['name'], 'warn', who=s['name'])
+        return {'token': tok}
+    if act == 'preview':
+        return {'text': metrics_text(h.d)}
+    raise ApiError(400, 'no such thing to do')
 # ---- the console: otp run by its menus, on the server's own screen (1.0.130) --------
 # `otp --console` - and, with `otp --console-at-login on`, what root sees first
 # after signing in at the console or over SSH. Everything is done by the same

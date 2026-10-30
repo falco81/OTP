@@ -78,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.172'
+__version__ = '1.0.173'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -192,6 +192,10 @@ DEFAULTS = {
     'isemon_events': 0,
     'isemon_max_bytes': 1800,
     'isemon_ca': '',
+    # --- Prometheus (1.0.173) ----------------------------------------------------
+    'metrics': 0,
+    'metrics_token': '',
+    'metrics_from': '',
     'isemon_verify': 1,
     'isemon_mtls': 0,
     'ship_files': 1,
@@ -399,13 +403,14 @@ def this_node_name(conf=None):
     return said or (socket.gethostname().split('.')[0] or 'otp')
 
 
+METRICS_TOKEN_RE_HEAD = re.compile(r'^[A-Za-z0-9_.~+/=-]{24,200}\Z')
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
                'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
-               'acme_dns_key', 'acme_desec_token')
+               'acme_dns_key', 'acme_desec_token', 'metrics_token')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
                'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
-               'acme_desec_token')
+               'acme_desec_token', 'metrics_token')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -435,7 +440,7 @@ TUNABLE = {
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
-    'isemon_verify': (0, 1), 'isemon_mtls': (0, 1),
+    'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
     'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
     'retain_radius_days': (0, 36500), 'retain_otp_days': (0, 36500),
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
@@ -674,6 +679,9 @@ NAMES = {
     'isemon_events': 'Send this daemon’s own events as well',
     'isemon_max_bytes': 'Longest message (bytes)',
     'isemon_ca': 'isemon’s certificate authority (TLS)',
+    'metrics': 'Prometheus metrics (/metrics)',
+    'metrics_token': 'Its token (Bearer)',
+    'metrics_from': 'Only from',
     'isemon_verify': 'Check isemon’s certificate (TLS)',
     'isemon_mtls': 'Each node shows isemon a certificate of its own (TLS)',
     'ship_files': 'Write the same lines into files here too',
@@ -1115,6 +1123,14 @@ SAYS = {
                       'Several, separated by commas. UDP is the default; TCP does not lose a line '
                       'when the network does; TLS is TCP encrypted - <i>Encrypted sending</i> '
                       'above sets it up.',
+    'metrics': 'Each node answers <code>https://NODE/metrics</code> in Prometheus\u2019 format - '
+               'RADIUS, the tokens, the database, the cluster, the certificates, the mail, the '
+               'alerts. Asked with the token below.',
+    'metrics_token': 'What Prometheus sends as <code>Authorization: Bearer ...</code>. Kept sealed; '
+                     '<i>Make a token</i> below makes one and shows it once.',
+    'metrics_from': 'The addresses or networks Prometheus asks from, <code>10.0.5.0/24, '
+                    '2001:db8::/64</code>. Empty: from anywhere that reaches the pages, with the '
+                    'token.',
     'isemon_ca': 'The CA certificate (PEM) isemon’s certificate is signed by - otp’s own '
                  'authority when <i>Encrypted sending</i> made it. Empty: the system’s.',
     'isemon_verify': 'isemon’s certificate checked against the authority and its name against the '
@@ -1376,6 +1392,7 @@ PANES = {
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
+    'monitor': ['metrics', 'metrics_token', 'metrics_from'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
              'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
@@ -1418,6 +1435,7 @@ ONLY_WHEN = {
     'isemon_targets': ['isemon', '1'], 'isemon_hostname': ['isemon', '1'],
     'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
     'isemon_max_bytes': ['isemon', '1'], 'isemon_ca': ['isemon', '1'],
+    'metrics_token': ['metrics', '1'], 'metrics_from': ['metrics', '1'],
     'isemon_verify': ['isemon', '1'], 'isemon_mtls': ['isemon', '1'],
     'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
     'admin_group_readonly': ['admin_directory', '*'],
@@ -1621,6 +1639,15 @@ def check_setting(key, value):
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'metrics_from':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('metrics_from: %r is not an address or a network' % one)
+    if key == 'metrics_token' and str(got).strip() and not is_masked(got) and \
+            not METRICS_TOKEN_RE_HEAD.match(str(got).strip()):
+        raise BadSetting('metrics_token: 24 to 200 letters, digits and -_.~+/=')
     if key == 'isemon_ca' and str(got).strip() and \
             '-----BEGIN CERTIFICATE-----' not in str(got):
         raise BadSetting('isemon_ca: a certificate in PEM, -----BEGIN CERTIFICATE-----')
