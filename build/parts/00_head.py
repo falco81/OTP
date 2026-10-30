@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.163'
+__version__ = '1.0.164'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -275,6 +275,20 @@ DEFAULTS = {
     'report_every': 'weekly',
     'report_day': '1',
     'report_at': '07:30',
+    # --- updates and restarts on a schedule (1.0.164) ----------------------
+    'osup_check': 0,
+    'osup_check_at': '06:15',
+    'osup_auto': 0,
+    'osup_auto_what': 'security',
+    'osup_auto_every': 'weekly',
+    'osup_auto_day': '7',
+    'osup_auto_at': '04:45',
+    'osup_auto_reboot': 'auto',
+    'power_auto': 0,
+    'power_auto_every': 'weekly',
+    'power_auto_day': '7',
+    'power_auto_at': '05:40',
+    'power_auto_needed': 1,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -378,6 +392,11 @@ TUNABLE = {
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
     'report_day': ('1', '2', '3', '4', '5', '6', '7'),
     'alerts_lang': ('', 'cs', 'en'), 'report_lang': ('', 'cs', 'en'),
+    'osup_check': (0, 1), 'osup_auto': (0, 1), 'osup_auto_what': ('security', 'all'),
+    'osup_auto_every': ('daily', 'weekly', 'monthly'),
+    'osup_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'osup_auto_reboot': ('ask', 'auto'),
+    'power_auto': (0, 1), 'power_auto_every': ('weekly', 'monthly'),
+    'power_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'power_auto_needed': (0, 1),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -437,6 +456,15 @@ CHOICE_WORDS = {
                      'monthly': 'every month, of the month before'},
     'alerts_lang': {'': 'as the mails (Settings → Mail)', 'cs': 'Čeština', 'en': 'English'},
     'report_lang': {'': 'as the alerts', 'cs': 'Čeština', 'en': 'English'},
+    'osup_auto_what': {'security': 'only the security updates', 'all': 'every update'},
+    'osup_auto_every': {'daily': 'every day', 'weekly': 'every week, on the day below',
+                        'monthly': 'on the first of every month'},
+    'osup_auto_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
+    'osup_auto_reboot': {'auto': 'restarted by itself where an update needs it',
+                         'ask': 'a restart offered on the page'},
+    'power_auto_every': {'weekly': 'every week, on the day below',
+                         'monthly': 'on the first of every month'},
+    'power_auto_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
     'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
                    '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
@@ -589,6 +617,19 @@ NAMES = {
     'alerts_url': 'The administration’s address in the mails',
     'alerts_lang': 'Language of the alerts',
     'report_lang': 'Language of the report',
+    'osup_check': 'Look for updates every day',
+    'osup_check_at': 'At',
+    'osup_auto': 'Updates on a schedule',
+    'osup_auto_what': 'Which',
+    'osup_auto_every': 'How often',
+    'osup_auto_day': 'On the day',
+    'osup_auto_at': 'At',
+    'osup_auto_reboot': 'After the update',
+    'power_auto': 'A restart on a schedule',
+    'power_auto_every': 'How often',
+    'power_auto_day': 'On the day',
+    'power_auto_at': 'At',
+    'power_auto_needed': 'Only the nodes that need one',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1000,6 +1041,26 @@ SAYS = {
     'report_to': 'Addresses, separated by commas. Empty: the ones the alerts go to.',
     'alerts_lang': 'Czech or English, for the alerts and the test. Empty: the language of the mails.',
     'report_lang': 'Czech or English, for the report. Empty: the language of the alerts.',
+    'osup_check': 'Each node looks what dnf (or apt) has waiting, every day at the time below - '
+                  'for the cards here, the alerts and the report. Nothing is put in.',
+    'osup_check_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'osup_auto': 'The updates put in by themselves in the window below, one node at a time as '
+                 'by hand - each out of service while it is updated, the web address on the '
+                 'other. Off until switched on.',
+    'osup_auto_what': 'Only the security updates (dnf --security, unattended-upgrade on apt), '
+                      'or every update.',
+    'osup_auto_every': 'A day, a week or a month.',
+    'osup_auto_day': 'The day a weekly update goes.',
+    'osup_auto_at': 'When, as <code>HH:MM</code> - a quiet hour, away from the backups.',
+    'osup_auto_reboot': 'A node that needs a restart after the update - restarted by itself, '
+                        'one after the other, or offered on the page.',
+    'power_auto': 'The nodes restarted in the window below, one after the other, each out of '
+                  'service while it is. Off until switched on.',
+    'power_auto_every': 'A week or a month.',
+    'power_auto_day': 'The day a weekly restart goes.',
+    'power_auto_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'power_auto_needed': 'Only the nodes an update left waiting for a restart; off: every node, '
+                         'every time.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1080,6 +1141,10 @@ PANES = {
     'ha': ['node_name'],
     'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
                'rbackup_keep_days', 'rbackup_password'],
+    'osup': ['osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_what', 'osup_auto_every',
+             'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
+    'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
+              'power_auto_needed'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1133,6 +1198,11 @@ ONLY_WHEN = {
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
     'report_to': ['report', '1'], 'report_every': ['report', '1'],
     'alerts_lang': ['alerts', '1'], 'report_lang': ['report', '1'],
+    'osup_check_at': ['osup_check', '1'], 'osup_auto_what': ['osup_auto', '1'],
+    'osup_auto_every': ['osup_auto', '1'], 'osup_auto_day': ['osup_auto_every', 'weekly'],
+    'osup_auto_at': ['osup_auto', '1'], 'osup_auto_reboot': ['osup_auto', '1'],
+    'power_auto_every': ['power_auto', '1'], 'power_auto_day': ['power_auto_every', 'weekly'],
+    'power_auto_at': ['power_auto', '1'], 'power_auto_needed': ['power_auto', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1256,7 +1326,8 @@ def check_setting(key, value):
     if key == 'alerts_url' and str(got).strip() and \
             not re.match(r'^https?://[^\s"<>]+\Z', str(got).strip()):
         raise BadSetting('alerts_url: an address starting https://')
-    if key in ('backup_at', 'rbackup_at', 'report_at') and \
+    if key in ('backup_at', 'rbackup_at', 'report_at', 'osup_check_at', 'osup_auto_at',
+               'power_auto_at') and \
             not re.match(r'^([01]?\d|2[0-3]):[0-5]\d\Z', str(got).strip()):
         raise BadSetting('%s is a time of day, written HH:MM' % key)
     # What reaches a command line, an option file or pg_hba.conf (1.0.33):

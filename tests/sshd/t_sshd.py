@@ -4,7 +4,7 @@
 # Usage (as root): python3 t_sshd.py VERSION
 import os, sys, json, time, subprocess, urllib.request, tempfile, threading, atexit, shutil
 
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.163'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.164'
 V = '/home/claude/build/out/otp-%s' % VER
 TOP = tempfile.mkdtemp(prefix='otp-sshd-')
 N = {}
@@ -139,6 +139,9 @@ rules = [r for a in otp.fw_auto(st, 'node1') if a['key'] == 'ssh' for r in a['ru
 ok('the firewall now lets only 2222 in: %s' % sorted({r['port'] for r in rules}), {r['port'] for r in rules} == {'2222'})
 c, x = call('node1', '/api/sshd', {'action': 'save', 'conf': dict(WANT, allow_users='admin')}, S)
 ok('AllowUsers without root refused: %s' % c, c == 400)
+c, x = call('node1', '/api/sshd', {'action': 'save', 'conf': dict(WANT, port=2222, allow_users='root admin', trial_min=0)}, S)
+ok('AllowUsers root admin: put in on both (%s)' % [n['now'].get('error') for n in view()['nodes']],
+   c == 200 and until(lambda: all((x['now'].get('values') or {}).get('allowusers') == 'root admin' for x in view()['nodes'])))
 # A change not kept, put back by asking.
 c, x = call('node1', '/api/sshd', {'action': 'save', 'conf': dict(WANT, port=2200, password=True)}, S)
 until(lambda: all(x['state'] == 'trial' for x in view()['nodes']))

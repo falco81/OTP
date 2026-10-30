@@ -77,7 +77,7 @@ def _osup_do(h):
             return {'message': 'looking for updates on %s' % ', '.join(nodes)}
         if act == 'start':
             plan = osup_start(h.store, b.get('nodes') or None, str(b.get('reboot') or 'ask'),
-                              s['name'])
+                              s['name'], security=bool(b.get('security')))
             return {'message': 'the update starts: %s, one at a time' % ', '.join(plan['order']),
                     'plan': plan}
         if act == 'cancel':

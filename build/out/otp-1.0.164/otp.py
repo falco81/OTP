@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.163'
+__version__ = '1.0.164'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -275,6 +275,20 @@ DEFAULTS = {
     'report_every': 'weekly',
     'report_day': '1',
     'report_at': '07:30',
+    # --- updates and restarts on a schedule (1.0.164) ----------------------
+    'osup_check': 0,
+    'osup_check_at': '06:15',
+    'osup_auto': 0,
+    'osup_auto_what': 'security',
+    'osup_auto_every': 'weekly',
+    'osup_auto_day': '7',
+    'osup_auto_at': '04:45',
+    'osup_auto_reboot': 'auto',
+    'power_auto': 0,
+    'power_auto_every': 'weekly',
+    'power_auto_day': '7',
+    'power_auto_at': '05:40',
+    'power_auto_needed': 1,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -378,6 +392,11 @@ TUNABLE = {
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
     'report_day': ('1', '2', '3', '4', '5', '6', '7'),
     'alerts_lang': ('', 'cs', 'en'), 'report_lang': ('', 'cs', 'en'),
+    'osup_check': (0, 1), 'osup_auto': (0, 1), 'osup_auto_what': ('security', 'all'),
+    'osup_auto_every': ('daily', 'weekly', 'monthly'),
+    'osup_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'osup_auto_reboot': ('ask', 'auto'),
+    'power_auto': (0, 1), 'power_auto_every': ('weekly', 'monthly'),
+    'power_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'power_auto_needed': (0, 1),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -437,6 +456,15 @@ CHOICE_WORDS = {
                      'monthly': 'every month, of the month before'},
     'alerts_lang': {'': 'as the mails (Settings → Mail)', 'cs': 'Čeština', 'en': 'English'},
     'report_lang': {'': 'as the alerts', 'cs': 'Čeština', 'en': 'English'},
+    'osup_auto_what': {'security': 'only the security updates', 'all': 'every update'},
+    'osup_auto_every': {'daily': 'every day', 'weekly': 'every week, on the day below',
+                        'monthly': 'on the first of every month'},
+    'osup_auto_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
+    'osup_auto_reboot': {'auto': 'restarted by itself where an update needs it',
+                         'ask': 'a restart offered on the page'},
+    'power_auto_every': {'weekly': 'every week, on the day below',
+                         'monthly': 'on the first of every month'},
+    'power_auto_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
     'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
                    '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
@@ -589,6 +617,19 @@ NAMES = {
     'alerts_url': 'The administration’s address in the mails',
     'alerts_lang': 'Language of the alerts',
     'report_lang': 'Language of the report',
+    'osup_check': 'Look for updates every day',
+    'osup_check_at': 'At',
+    'osup_auto': 'Updates on a schedule',
+    'osup_auto_what': 'Which',
+    'osup_auto_every': 'How often',
+    'osup_auto_day': 'On the day',
+    'osup_auto_at': 'At',
+    'osup_auto_reboot': 'After the update',
+    'power_auto': 'A restart on a schedule',
+    'power_auto_every': 'How often',
+    'power_auto_day': 'On the day',
+    'power_auto_at': 'At',
+    'power_auto_needed': 'Only the nodes that need one',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1000,6 +1041,26 @@ SAYS = {
     'report_to': 'Addresses, separated by commas. Empty: the ones the alerts go to.',
     'alerts_lang': 'Czech or English, for the alerts and the test. Empty: the language of the mails.',
     'report_lang': 'Czech or English, for the report. Empty: the language of the alerts.',
+    'osup_check': 'Each node looks what dnf (or apt) has waiting, every day at the time below - '
+                  'for the cards here, the alerts and the report. Nothing is put in.',
+    'osup_check_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'osup_auto': 'The updates put in by themselves in the window below, one node at a time as '
+                 'by hand - each out of service while it is updated, the web address on the '
+                 'other. Off until switched on.',
+    'osup_auto_what': 'Only the security updates (dnf --security, unattended-upgrade on apt), '
+                      'or every update.',
+    'osup_auto_every': 'A day, a week or a month.',
+    'osup_auto_day': 'The day a weekly update goes.',
+    'osup_auto_at': 'When, as <code>HH:MM</code> - a quiet hour, away from the backups.',
+    'osup_auto_reboot': 'A node that needs a restart after the update - restarted by itself, '
+                        'one after the other, or offered on the page.',
+    'power_auto': 'The nodes restarted in the window below, one after the other, each out of '
+                  'service while it is. Off until switched on.',
+    'power_auto_every': 'A week or a month.',
+    'power_auto_day': 'The day a weekly restart goes.',
+    'power_auto_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'power_auto_needed': 'Only the nodes an update left waiting for a restart; off: every node, '
+                         'every time.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1080,6 +1141,10 @@ PANES = {
     'ha': ['node_name'],
     'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
                'rbackup_keep_days', 'rbackup_password'],
+    'osup': ['osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_what', 'osup_auto_every',
+             'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
+    'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
+              'power_auto_needed'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1133,6 +1198,11 @@ ONLY_WHEN = {
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
     'report_to': ['report', '1'], 'report_every': ['report', '1'],
     'alerts_lang': ['alerts', '1'], 'report_lang': ['report', '1'],
+    'osup_check_at': ['osup_check', '1'], 'osup_auto_what': ['osup_auto', '1'],
+    'osup_auto_every': ['osup_auto', '1'], 'osup_auto_day': ['osup_auto_every', 'weekly'],
+    'osup_auto_at': ['osup_auto', '1'], 'osup_auto_reboot': ['osup_auto', '1'],
+    'power_auto_every': ['power_auto', '1'], 'power_auto_day': ['power_auto_every', 'weekly'],
+    'power_auto_at': ['power_auto', '1'], 'power_auto_needed': ['power_auto', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1256,7 +1326,8 @@ def check_setting(key, value):
     if key == 'alerts_url' and str(got).strip() and \
             not re.match(r'^https?://[^\s"<>]+\Z', str(got).strip()):
         raise BadSetting('alerts_url: an address starting https://')
-    if key in ('backup_at', 'rbackup_at', 'report_at') and \
+    if key in ('backup_at', 'rbackup_at', 'report_at', 'osup_check_at', 'osup_auto_at',
+               'power_auto_at') and \
             not re.match(r'^([01]?\d|2[0-3]):[0-5]\d\Z', str(got).strip()):
         raise BadSetting('%s is a time of day, written HH:MM' % key)
     # What reaches a command line, an option file or pg_hba.conf (1.0.33):
@@ -13268,6 +13339,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
+                    osup_sched_tick(self)       # updates and restarts on a schedule (1.0.164)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('osup-sched', 'the schedule of updates: %s' % e, 'warn', every=600)
+                try:
                     sshd_tick(self)             # the SSH server and the notices (1.0.163)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshd-tick', 'the SSH server: %s' % e, 'warn', every=600)
@@ -16320,6 +16395,7 @@ MAILQ_DELAYS = (60, 120, 300, 600, 900, 1800)           # then every hour
 MAILQ_CODE_DELAYS = (30, 60)                            # then every minute
 MAILQ_KIND_WORDS = {'token': 'a token (QR code)', 'code': 'a code to sign in',
                     'verify': 'a code to check an address', 'test': 'a test',
+                    'alert': 'an alert', 'report': 'a report',
                     'other': 'a mail'}
 MAILQ_STATES = ('sending', 'waiting', 'sent', 'failed', 'expired')
 MAILQ_LOCK = threading.Lock()
@@ -25266,7 +25342,7 @@ def osup_check_ask(store, nodes, by):
     return nodes
 
 
-def osup_start(store, nodes, reboot, by):
+def osup_start(store, nodes, reboot, by, security=False):
     plan = osup_plan(store)
     if plan.get('state') == 'running':
         raise ValueError('an update is going on already')
@@ -25289,11 +25365,12 @@ def osup_start(store, nodes, reboot, by):
     me = node_name()
     order = sorted(n for n in nodes if n != me) + ([me] if me in nodes else [])
     plan = {'id': secrets.token_hex(6), 'order': order, 'reboot': reboot, 'by': by,
-            'at': time.time(), 'state': 'running', 'from': me}
+            'at': time.time(), 'state': 'running', 'from': me, 'security': bool(security)}
     store.set_meta('host:osup:plan', json.dumps(plan))
-    store.add_event('settings', '%s started the update of the system: %s, one at a time%s'
-                    % (by, ', '.join(order), ', each restarted when it needs it'
-                       if reboot == 'auto' else ''), 'warn', who=by)
+    store.add_event('settings', '%s started the update of the system%s: %s, one at a time%s'
+                    % (by, ' (security updates only)' if security else '', ', '.join(order),
+                       ', each restarted when it needs it' if reboot == 'auto' else ''),
+                    'warn', who=by)
     return plan
 
 
@@ -25307,9 +25384,10 @@ def osup_cancel(store, by):
                     'finishes' % by, 'warn', who=by)
 
 
-def _osup_job(kind):
+def _osup_job(kind, security=False):
     """The helper asked to start the work; its id."""
-    got = root_ask('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind}, 60)
+    got = root_ask('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind,
+                                             'security': bool(security)}, 60)
     return got
 
 
@@ -25432,7 +25510,7 @@ def _osup_go(daemon, what, ctx):
                     return
                 row['maint'] = False
             try:
-                _osup_job('upgrade')
+                _osup_job('upgrade', bool(plan.get('security')))
                 osup_put(store, row, state='updating', began=time.time(), pct=1, lines=[],
                          said='the packages are being updated')
             except ValueError as e:
@@ -25729,6 +25807,73 @@ def sshd_tick(daemon):
         finally:
             HOST_WORK['sshd'] = False
     threading.Thread(target=go, name='otp-sshd', daemon=True).start()
+
+
+# -- on a schedule (1.0.164) ---------------------------------------------------------------
+# Updates in a window of their own - only the security ones, or all - one
+# node at a time as by hand, restarted where needed; a look for updates every
+# day; and a restart of the nodes in a window, one after the other. One node
+# starts each (claim_once on the day); a run that cannot start (a node down,
+# something going on) is said in the events, not tried over and over.
+def _due(every, day, at, now=None):
+    """(due now, the id of this window) for a schedule of HH:MM on a day."""
+    n = datetime.fromtimestamp(now or time.time())
+    try:
+        hh, mm = (int(x) for x in str(at or '04:45').split(':', 1))
+    except ValueError:
+        hh, mm = 4, 45
+    if every == 'weekly' and n.isoweekday() != int(day or 7):
+        return False, ''
+    if every == 'monthly' and n.day != 1:
+        return False, ''
+    return (n.hour, n.minute) >= (hh, mm), n.strftime('%Y-%m-%d')
+
+
+def osup_sched_tick(daemon):
+    store = daemon.store
+    if not alerts_lead(store):
+        return
+    by = 'otp (on a schedule)'
+    if CONFIG.get('osup_check'):
+        due, day = _due('daily', '', CONFIG.get('osup_check_at'))
+        if due and store.get_meta('osup:check:day') != day and \
+                claim_once(store, 'osup:check:day', day):
+            alive = [n for n, a in host_alive(store).items() if a]
+            try:
+                osup_check_ask(store, alive, by)
+            except ValueError as e:
+                log('the daily look for updates: %s' % e, 'warn')
+    if CONFIG.get('osup_auto'):
+        due, day = _due(CONFIG.get('osup_auto_every') or 'weekly', CONFIG.get('osup_auto_day'),
+                        CONFIG.get('osup_auto_at'))
+        if due and store.get_meta('osup:auto:day') != day and \
+                claim_once(store, 'osup:auto:day', day):
+            try:
+                osup_start(store, None, CONFIG.get('osup_auto_reboot') or 'auto', by,
+                           security=(CONFIG.get('osup_auto_what') or 'security') == 'security')
+            except ValueError as e:
+                store.add_event('settings', 'the update of the system on a schedule did not '
+                                'start: %s' % e, 'bad')
+    if CONFIG.get('power_auto'):
+        due, day = _due(CONFIG.get('power_auto_every') or 'weekly', CONFIG.get('power_auto_day'),
+                        CONFIG.get('power_auto_at'))
+        if due and store.get_meta('power:auto:day') != day and \
+                claim_once(store, 'power:auto:day', day):
+            nodes = host_nodes(store)
+            if CONFIG.get('power_auto_needed', 1):
+                nodes = [n['name'] for n in osup_view(store)['nodes'] if n.get('reboot')]
+            if not nodes:
+                store.add_event('settings', 'the restart on a schedule: no node needs one', 'info')
+                return
+            try:
+                if osup_plan(store).get('state') == 'running':
+                    raise ValueError('an update of the system is going on')
+                power_ask(store, 'reboot', nodes, 'rolling', by)
+                store.add_event('settings', 'the restart on a schedule: %s, one after the other'
+                                % ', '.join(nodes), 'warn')
+            except ValueError as e:
+                store.add_event('settings', 'the restart on a schedule did not start: %s' % e,
+                                'bad')
 
 # ---- alerts by mail, and the report (1.0.162) ------------------------------------------
 # Each node writes what only it can see into a row of its own every minute
@@ -26047,8 +26192,8 @@ def _al_page(lang, title, kicker, band, body, foot, width=640):
             '<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
             'bgcolor="#f3f4f6" style="background:#f3f4f6"><tr><td align="center" '
             'style="padding:24px 10px">'
-            '<table role="presentation" width="%d" cellspacing="0" cellpadding="0" border="0" '
-            'bgcolor="#ffffff" style="max-width:%dpx;width:100%%;background:#ffffff;'
+            '<table role="presentation" %s cellspacing="0" cellpadding="0" border="0" '
+            'bgcolor="#ffffff" style="%s;background:#ffffff;'
             'border-radius:14px;overflow:hidden;border:1px solid #e5e7eb">'
             '<tr><td bgcolor="%s" style="background:%s;padding:20px 28px;color:#ffffff;%s">'
             '<p style="margin:0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;'
@@ -26057,7 +26202,11 @@ def _al_page(lang, title, kicker, band, body, foot, width=640):
             '<tr><td style="padding:22px 28px;%s">%s</td></tr>'
             '<tr><td style="padding:14px 28px 22px;font-size:12px;color:#9ca3af;%s'
             'border-top:1px solid #f3f4f6">%s</td></tr></table></td></tr></table></body></html>'
-            % (lang, _h(title), AL_FONT, width, width, band, band, AL_FONT, _h(kicker), _h(title),
+            % (lang, _h(title), AL_FONT,
+               # 0: as wide as what it holds, never less than 1000 px (the report).
+               'width="%d"' % width if width else '',
+               'max-width:%dpx;width:100%%' % width if width else 'min-width:1000px;width:auto',
+               band, band, AL_FONT, _h(kicker), _h(title),
                AL_FONT, body, AL_FONT, foot))
 
 
@@ -26530,7 +26679,7 @@ def report_build(store, since, until, lang='cs'):
               % (node_name(), site, _al_when(time.time())))
     # Wide, and the tables' lines never wrapped or cut (1.0.163).
     page = _al_page(lang, title, 'otp · ' + site, AL_COLORS['info'][2], ''.join(body), foot,
-                    width=1000)
+                    width=0)
     text = ['%s - %s' % (title, site), period, '',
             _al(lang, 'Přihlášení: %d, přijato %d, odmítnuto %d, lidí %d.',
                 'Sign-ins: %d, let in %d, refused %d, people %d.')
@@ -33691,7 +33840,7 @@ def _osup_do(h):
             return {'message': 'looking for updates on %s' % ', '.join(nodes)}
         if act == 'start':
             plan = osup_start(h.store, b.get('nodes') or None, str(b.get('reboot') or 'ask'),
-                              s['name'])
+                              s['name'], security=bool(b.get('security')))
             return {'message': 'the update starts: %s, one at a time' % ', '.join(plan['order']),
                     'plan': plan}
         if act == 'cancel':

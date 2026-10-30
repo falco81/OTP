@@ -1269,6 +1269,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         web address moves to the other node first; restarted one after the other, the service never stops.
         The page follows each node down and up again.</p></div>
     <div id="pw-host"></div>
+    <div class="card full fulladmin-only"><h2>On a schedule</h2><div id="sect-power"></div></div>
   </div>
   <div class="ctl-pane" id="pane-osup" hidden>
     <div class="ctl-head"><h2 class="ctl-title">System updates</h2>
@@ -1277,6 +1278,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         which answers RADIUS meanwhile - and back in service before the next one starts. A restart an update
         needs is offered when it is done, or made by itself, one node after the other.</p></div>
     <div id="ou-host"></div>
+    <div class="card full fulladmin-only"><h2>On a schedule</h2><div id="sect-osup"></div></div>
   </div>
   <div class="ctl-pane" id="pane-sshd" hidden>
     <div class="ctl-head"><h2 class="ctl-title">SSH server and notices</h2>
@@ -1322,7 +1324,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         again by itself; what it refuses for good is shown as failed. Both nodes of a cluster see
         the same list: a mail is sent by the node it was made on, or by the other when that one
         is gone. What a mail held is never kept once it went.</p></div>
-    <div class="card full">
+    <div class="card full held mq-held">
       <div class="mq-chips" id="mq-chips"></div>
       <div class="btnrow filters" style="margin-top:12px">
         <input type="search" id="mq-q" placeholder="an address, a name, what the server said… (to:*@example.cz, state:waiting, kind:code…)" style="flex:1;min-width:260px">
@@ -1340,8 +1342,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         <button class="btn cmd danger tokadmin-only" id="mq-drop-failed" data-icon="trash">Clear the failed ones</button>
       </div>
       <div id="mq-said" class="muted small" style="margin:8px 0 0"></div>
-      <div id="mq-table" style="margin-top:10px"></div>
-      <div id="mq-pager"></div>
+      <div id="mq-table" class="scroll rowsonly" style="margin-top:10px"></div>
+      <div id="mq-pager" class="pager"></div>
     </div>
   </div>
 

@@ -4,6 +4,31 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.164 — 30 October 2026
+
+**Updates and restarts on a schedule**
+- *System updates → On a schedule* (off until switched on): a look for updates
+  every day at a set time - for the cards, the alerts and the report, nothing
+  put in - and the updates put in by themselves in a window: only the security
+  ones (`dnf --security`, `unattended-upgrade` on apt) or all of them, every
+  day, week or month, one node at a time as by hand, each out of service while
+  it is updated, restarted by itself where needed or the restart offered.
+- *Restart and power off → On a schedule*: the nodes restarted in a window, one
+  after the other - only the ones an update left waiting for a restart, or all.
+- One node starts each, once in its window; one that cannot start (a node
+  down, something going on) is said in the events, not tried over and over.
+- An update by hand can be the security updates only, too.
+- *SSH server*: *Who may sign in* with names in it was refused on every node
+  ("['root']" is not a user name) - it is put in now.
+- A switch being switched (the console at login) no longer shows a checkbox
+  over itself for a moment.
+- *Outgoing mail*: 50 mails a page with the pages at the bottom; the counts,
+  the search and the buttons stay where they are and only the mails scroll,
+  under headings that stay. The alerts and the reports are named as such in
+  it, not "a mail".
+- The report as wide as its tables need (1000 px at least), and its window on
+  the page as wide as the screen allows: no scrolling sideways.
+
 ## 1.0.163 — 30 October 2026
 
 **The SSH server and the notices at sign-in; the alerts' and the report's language**

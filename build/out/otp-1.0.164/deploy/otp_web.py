@@ -2812,7 +2812,10 @@ def sshd_checked(c):
     if not 1 <= port <= 65535:
         raise Refused('the port is 1 to 65535')
     out['port'] = port
-    users = [u for u in re.split(r'[\s,]+', str(c.get('allow_users') or '')) if u]
+    raw = c.get('allow_users') or ''
+    # A list from the daemon (1.0.164: read as the text "['root']" before).
+    users = [str(u) for u in raw if u] if isinstance(raw, list) else \
+        [u for u in re.split(r'[\s,]+', str(raw)) if u]
     for u in users:
         if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}$', u):
             raise Refused('%r is not a user name' % u)
@@ -3077,13 +3080,13 @@ def osup_running():
         os.close(fd)
 
 
-def osup_launch(ident, kind):
+def osup_launch(ident, kind, security=False):
     if osup_running():
         raise Refused('an update or a look for updates is going on already')
     if not osup_pm():
         raise Refused('neither dnf nor apt-get is on this machine')
     me = os.path.abspath(__file__)
-    argv = [sys.executable, '-I', me, '--os-job', ident, kind]
+    argv = [sys.executable, '-I', me, '--os-job', ident, kind] + (['security'] if security else [])
     if (shutil.which('systemd-run') and not NO_SERVICES and os.path.isdir('/run/systemd/system')):
         got = subprocess.run(['systemd-run', '--unit', 'otp-os-%s-%s' % (kind, ident[:12]),
                               '--collect', '--quiet', '--property', 'TimeoutStopSec=30min'] + argv,
@@ -3114,9 +3117,9 @@ def osup_part():
         kind = r.get('kind')
         if r.get('do') != 'run' or kind not in ('check', 'upgrade'):
             raise Refused('run: check or upgrade')
-        osup_launch(out['id'], kind)
+        osup_launch(out['id'], kind, bool(r.get('security')) and kind == 'upgrade')
         out['ok'] = True
-        out['data'] = {'started': kind, 'pm': osup_pm()}
+        out['data'] = {'started': kind, 'pm': osup_pm(), 'security': bool(r.get('security'))}
     except Refused as e:
         out['said'] = str(e)[:400]
     except Exception as e:                              # noqa: BLE001
@@ -3157,7 +3160,7 @@ def reboot_now(pm, env, say=None):
     return os.path.exists('/var/run/reboot-required')
 
 
-def osup_job(ident, kind):
+def osup_job(ident, kind, security=False):
     """The work itself, as root, in a process of its own."""
     import fcntl
     fd = os.open(OSUP_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -3272,10 +3275,22 @@ def osup_job(ident, kind):
                     state['pct'] = max(state['pct'], min(97, 10 + int(87 * seen['done'] /
                                                                       seen['total'])))
             state['phase'] = 'asking for what is new'
+            # Only the security updates where asked (1.0.164): dnf's own
+            # --security, unattended-upgrade on apt (it takes the security
+            # sources only, as Debian and Ubuntu set it up).
+            state['security_only'] = bool(security)
             if pm == 'fake':
-                stream([OSUP_PM, 'upgrade'], count)
+                stream([OSUP_PM, 'upgrade'] + (['security'] if security else []), count)
             elif pm == 'dnf':
-                stream(['dnf', '-y', '--refresh', 'upgrade'], count)
+                stream(['dnf', '-y', '--refresh', 'upgrade'] + (['--security'] if security else []),
+                       count)
+            elif security:
+                if not shutil.which('unattended-upgrade'):
+                    raise Refused('only the security updates: unattended-upgrade is not on this '
+                                  'machine (apt install unattended-upgrades)')
+                stream(['apt-get', 'update'])
+                state['pct'] = max(state['pct'], 5)
+                stream(['unattended-upgrade', '-v'], count)
             else:
                 stream(['apt-get', 'update'])
                 state['pct'] = max(state['pct'], 5)
@@ -3391,7 +3406,8 @@ def main(argv):
         sshd_put_back()
         return 0
     if argv[:1] == ['--os-job'] and len(argv) >= 3 and argv[2] in ('check', 'upgrade'):
-        return osup_job(re.sub(r'[^A-Za-z0-9]', '', argv[1])[:40], argv[2])
+        return osup_job(re.sub(r'[^A-Za-z0-9]', '', argv[1])[:40], argv[2],
+                        argv[3:4] == ['security'])
     return serve()
 
 

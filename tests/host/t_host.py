@@ -5,7 +5,7 @@
 # Usage (as root): python3 t_host.py VERSION
 import os, sys, json, time, subprocess, urllib.request, tempfile, threading, atexit, shutil
 
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.161'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.164'
 V = '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = tempfile.mkdtemp(prefix='otp-host-')
@@ -219,4 +219,26 @@ call('node1', '/api/osup', {'action': 'check', 'nodes': ['node2']}, S)
 ok('... what comes after is shown', until(lambda: [n for n in osv()['nodes'] if n['name'] == 'node2'][0]['check'].get('lines')))
 c, x = call('node1', '/api/osup', {'action': 'hide'}, S)
 ok('hidden when done', c == 200 and not x.get('plan'))
+# ---- on a schedule (1.0.164)
+SET = lambda d: call('node1', '/api/settings', {'settings': d}, S)
+t0 = time.time()
+c, x = SET({'osup_check': 1, 'osup_check_at': '00:00'})
+ok('the daily look switched on: %s' % c, c == 200)
+ok('... it looks on both nodes, once', until(lambda: all(float((n.get('check') or {}).get('checked') or 0) > t0
+                                                         for n in osv()['nodes']), 60))
+c, x = SET({'osup_auto': 1, 'osup_auto_every': 'daily', 'osup_auto_at': '00:00', 'osup_auto_what': 'security',
+            'osup_auto_reboot': 'ask'})
+ok('updates on a schedule switched on: %s' % c, c == 200)
+p = until(lambda: (lambda v: v['plan'] if v['plan'].get('by') == 'otp (on a schedule)' else None)(osv()), 30)
+ok('... the update started by itself, security updates only: %s' % (p or {}).get('security'), p and p.get('security'))
+v = until(lambda: (lambda v: v if v['plan'].get('state') in ('done', 'failed') else None)(osv()), 120)
+ok('... and done: %s' % (v or {}).get('plan', {}).get('state'), v and v['plan']['state'] == 'done')
+ok('... dnf asked for the security ones', v and any('security' in ln for n in v['nodes'] for ln in (n.get('row') or {}).get('lines') or []))
+time.sleep(8)
+ok('... once a day: not started again', osv()['plan'].get('id') == p['id'])
+c, x = SET({'power_auto': 1, 'power_auto_every': 'weekly', 'power_auto_day': str(time.localtime().tm_wday + 1),
+            'power_auto_at': '00:00', 'power_auto_needed': 1})
+ok('a restart on a schedule: started for the nodes that need it', until(
+    lambda: 'the restart on a schedule: node1, node2' in json.dumps(call('node1', '/api/events?limit=50', None, S)[1]), 30))
+SET({'osup_check': 0, 'osup_auto': 0, 'power_auto': 0})
 print('ALL %d / %d' % (sum(R), len(R)))

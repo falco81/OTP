@@ -341,7 +341,7 @@ def osup_check_ask(store, nodes, by):
     return nodes
 
 
-def osup_start(store, nodes, reboot, by):
+def osup_start(store, nodes, reboot, by, security=False):
     plan = osup_plan(store)
     if plan.get('state') == 'running':
         raise ValueError('an update is going on already')
@@ -364,11 +364,12 @@ def osup_start(store, nodes, reboot, by):
     me = node_name()
     order = sorted(n for n in nodes if n != me) + ([me] if me in nodes else [])
     plan = {'id': secrets.token_hex(6), 'order': order, 'reboot': reboot, 'by': by,
-            'at': time.time(), 'state': 'running', 'from': me}
+            'at': time.time(), 'state': 'running', 'from': me, 'security': bool(security)}
     store.set_meta('host:osup:plan', json.dumps(plan))
-    store.add_event('settings', '%s started the update of the system: %s, one at a time%s'
-                    % (by, ', '.join(order), ', each restarted when it needs it'
-                       if reboot == 'auto' else ''), 'warn', who=by)
+    store.add_event('settings', '%s started the update of the system%s: %s, one at a time%s'
+                    % (by, ' (security updates only)' if security else '', ', '.join(order),
+                       ', each restarted when it needs it' if reboot == 'auto' else ''),
+                    'warn', who=by)
     return plan
 
 
@@ -382,9 +383,10 @@ def osup_cancel(store, by):
                     'finishes' % by, 'warn', who=by)
 
 
-def _osup_job(kind):
+def _osup_job(kind, security=False):
     """The helper asked to start the work; its id."""
-    got = root_ask('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind}, 60)
+    got = root_ask('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind,
+                                             'security': bool(security)}, 60)
     return got
 
 
@@ -507,7 +509,7 @@ def _osup_go(daemon, what, ctx):
                     return
                 row['maint'] = False
             try:
-                _osup_job('upgrade')
+                _osup_job('upgrade', bool(plan.get('security')))
                 osup_put(store, row, state='updating', began=time.time(), pct=1, lines=[],
                          said='the packages are being updated')
             except ValueError as e:
@@ -804,3 +806,70 @@ def sshd_tick(daemon):
         finally:
             HOST_WORK['sshd'] = False
     threading.Thread(target=go, name='otp-sshd', daemon=True).start()
+
+
+# -- on a schedule (1.0.164) ---------------------------------------------------------------
+# Updates in a window of their own - only the security ones, or all - one
+# node at a time as by hand, restarted where needed; a look for updates every
+# day; and a restart of the nodes in a window, one after the other. One node
+# starts each (claim_once on the day); a run that cannot start (a node down,
+# something going on) is said in the events, not tried over and over.
+def _due(every, day, at, now=None):
+    """(due now, the id of this window) for a schedule of HH:MM on a day."""
+    n = datetime.fromtimestamp(now or time.time())
+    try:
+        hh, mm = (int(x) for x in str(at or '04:45').split(':', 1))
+    except ValueError:
+        hh, mm = 4, 45
+    if every == 'weekly' and n.isoweekday() != int(day or 7):
+        return False, ''
+    if every == 'monthly' and n.day != 1:
+        return False, ''
+    return (n.hour, n.minute) >= (hh, mm), n.strftime('%Y-%m-%d')
+
+
+def osup_sched_tick(daemon):
+    store = daemon.store
+    if not alerts_lead(store):
+        return
+    by = 'otp (on a schedule)'
+    if CONFIG.get('osup_check'):
+        due, day = _due('daily', '', CONFIG.get('osup_check_at'))
+        if due and store.get_meta('osup:check:day') != day and \
+                claim_once(store, 'osup:check:day', day):
+            alive = [n for n, a in host_alive(store).items() if a]
+            try:
+                osup_check_ask(store, alive, by)
+            except ValueError as e:
+                log('the daily look for updates: %s' % e, 'warn')
+    if CONFIG.get('osup_auto'):
+        due, day = _due(CONFIG.get('osup_auto_every') or 'weekly', CONFIG.get('osup_auto_day'),
+                        CONFIG.get('osup_auto_at'))
+        if due and store.get_meta('osup:auto:day') != day and \
+                claim_once(store, 'osup:auto:day', day):
+            try:
+                osup_start(store, None, CONFIG.get('osup_auto_reboot') or 'auto', by,
+                           security=(CONFIG.get('osup_auto_what') or 'security') == 'security')
+            except ValueError as e:
+                store.add_event('settings', 'the update of the system on a schedule did not '
+                                'start: %s' % e, 'bad')
+    if CONFIG.get('power_auto'):
+        due, day = _due(CONFIG.get('power_auto_every') or 'weekly', CONFIG.get('power_auto_day'),
+                        CONFIG.get('power_auto_at'))
+        if due and store.get_meta('power:auto:day') != day and \
+                claim_once(store, 'power:auto:day', day):
+            nodes = host_nodes(store)
+            if CONFIG.get('power_auto_needed', 1):
+                nodes = [n['name'] for n in osup_view(store)['nodes'] if n.get('reboot')]
+            if not nodes:
+                store.add_event('settings', 'the restart on a schedule: no node needs one', 'info')
+                return
+            try:
+                if osup_plan(store).get('state') == 'running':
+                    raise ValueError('an update of the system is going on')
+                power_ask(store, 'reboot', nodes, 'rolling', by)
+                store.add_event('settings', 'the restart on a schedule: %s, one after the other'
+                                % ', '.join(nodes), 'warn')
+            except ValueError as e:
+                store.add_event('settings', 'the restart on a schedule did not start: %s' % e,
+                                'bad')

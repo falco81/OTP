@@ -316,8 +316,8 @@ def _al_page(lang, title, kicker, band, body, foot, width=640):
             '<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
             'bgcolor="#f3f4f6" style="background:#f3f4f6"><tr><td align="center" '
             'style="padding:24px 10px">'
-            '<table role="presentation" width="%d" cellspacing="0" cellpadding="0" border="0" '
-            'bgcolor="#ffffff" style="max-width:%dpx;width:100%%;background:#ffffff;'
+            '<table role="presentation" %s cellspacing="0" cellpadding="0" border="0" '
+            'bgcolor="#ffffff" style="%s;background:#ffffff;'
             'border-radius:14px;overflow:hidden;border:1px solid #e5e7eb">'
             '<tr><td bgcolor="%s" style="background:%s;padding:20px 28px;color:#ffffff;%s">'
             '<p style="margin:0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;'
@@ -326,7 +326,11 @@ def _al_page(lang, title, kicker, band, body, foot, width=640):
             '<tr><td style="padding:22px 28px;%s">%s</td></tr>'
             '<tr><td style="padding:14px 28px 22px;font-size:12px;color:#9ca3af;%s'
             'border-top:1px solid #f3f4f6">%s</td></tr></table></td></tr></table></body></html>'
-            % (lang, _h(title), AL_FONT, width, width, band, band, AL_FONT, _h(kicker), _h(title),
+            % (lang, _h(title), AL_FONT,
+               # 0: as wide as what it holds, never less than 1000 px (the report).
+               'width="%d"' % width if width else '',
+               'max-width:%dpx;width:100%%' % width if width else 'min-width:1000px;width:auto',
+               band, band, AL_FONT, _h(kicker), _h(title),
                AL_FONT, body, AL_FONT, foot))
 
 
@@ -799,7 +803,7 @@ def report_build(store, since, until, lang='cs'):
               % (node_name(), site, _al_when(time.time())))
     # Wide, and the tables' lines never wrapped or cut (1.0.163).
     page = _al_page(lang, title, 'otp · ' + site, AL_COLORS['info'][2], ''.join(body), foot,
-                    width=1000)
+                    width=0)
     text = ['%s - %s' % (title, site), period, '',
             _al(lang, 'Přihlášení: %d, přijato %d, odmítnuto %d, lidí %d.',
                 'Sign-ins: %d, let in %d, refused %d, people %d.')

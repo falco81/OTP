@@ -1,0 +1,36 @@
+# 1.0.164: updates and restarts on a schedule.
+S196 = {
+ "On a schedule": "Podle plánu",
+ "Which": "Které",
+ "Every update": "Všechny aktualizace",
+ "Only the security updates": "Jen bezpečnostní",
+ " · security updates only": " · jen bezpečnostní aktualizace",
+ "Look for updates every day": "Zjišťovat aktualizace každý den",
+ "Updates on a schedule": "Aktualizace podle plánu",
+ "A restart on a schedule": "Restart podle plánu",
+ "Only the nodes that need one": "Jen uzly, které ho potřebují",
+ "only the security updates": "jen bezpečnostní aktualizace",
+ "every update": "všechny aktualizace",
+ "every day": "každý den",
+ "every week, on the day below": "každý týden, v den níže",
+ "on the first of every month": "prvního každý měsíc",
+ "restarted by itself where an update needs it": "restartovat samo, kde to aktualizace potřebuje",
+ "a restart offered on the page": "restart nabídnout na stránce",
+ "Each node looks what dnf (or apt) has waiting, every day at the time below - for the cards here, the alerts and the report. Nothing is put in.": "Každý uzel denně v čase níže zjistí, co čeká v dnf (nebo apt) – pro karty zde, upozornění a report. Nic se neinstaluje.",
+ "The updates put in by themselves in the window below, one node at a time as by hand - each out of service while it is updated, the web address on the other. Off until switched on.": "Aktualizace se nainstalují samy v okně níže, uzel po uzlu jako ručně – každý je mezitím mimo provoz a webová adresa je na druhém. Vypnuté, dokud nezapnete.",
+ "Only the security updates (dnf --security, unattended-upgrade on apt), or every update.": "Jen bezpečnostní aktualizace (dnf --security, na apt unattended-upgrade), nebo všechny.",
+ "A day, a week or a month.": "Den, týden, nebo měsíc.",
+ "The day a weekly update goes.": "Den, kdy proběhne týdenní aktualizace.",
+ "A node that needs a restart after the update - restarted by itself, one after the other, or offered on the page.": "Uzel, který po aktualizaci potřebuje restart – restartuje se sám, jeden po druhém, nebo se restart nabídne na stránce.",
+ "The nodes restarted in the window below, one after the other, each out of service while it is. Off until switched on.": "Uzly se restartují v okně níže, jeden po druhém, každý mezitím mimo provoz. Vypnuté, dokud nezapnete.",
+ "A week or a month.": "Týden, nebo měsíc.",
+ "The day a weekly restart goes.": "Den, kdy proběhne týdenní restart.",
+ "Only the nodes an update left waiting for a restart; off: every node, every time.": "Jen uzly, které po aktualizaci čekají na restart; vypnuto: všechny uzly pokaždé.",
+ "an alert": "upozornění",
+ "a report": "report",
+ "the restart on a schedule: no node needs one": "restart podle plánu: žádný uzel ho nepotřebuje",
+}
+P196 = {}
+R196 = {
+ "When, as <code>HH:MM</code> - a quiet hour, away from the backups.": "Kdy, jako <code>HH:MM</code> – v klidné hodině, mimo zálohy.",
+}
