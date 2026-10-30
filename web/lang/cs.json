@@ -3,7 +3,7 @@
   "code": "cs",
   "name": "Čeština",
   "english": "Czech",
-  "version": "1.0.175",
+  "version": "1.0.176",
   "made": "2026-10-23",
   "about": "Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen \"text\", nikdy \"source\". Prázdný text znamená: zobrazit anglicky."
  },
@@ -21491,3682 +21491,3702 @@
    "text": "node_name: {0} je jméno jiného nodu ({1}, právě odpovídá) – dva stroje s jedním jménem vypadají jako jeden a ten druhý jako zmizelý"
   },
   "p0576": {
+   "source": "none",
+   "text": "žádný"
+  },
+  "p0577": {
    "source": "not answered and not written down one by one in the last minute: {0} packet(s) - {1}",
    "text": "za poslední minutu nezodpovězeno a nezapsáno jednotlivě: {0} {0:paket|pakety|paketů} – {1}"
   },
-  "p0577": {
+  "p0578": {
    "source": "not delegated: the internet does not know {0}",
    "text": "není delegovaná: internet {0} nezná"
   },
-  "p0578": {
+  "p0579": {
    "source": "not heard from for {0} min while {1} - marked failed by {2}",
    "text": "{0} min bez odezvy během kroku {1} – jako neúspěšné označil {2}"
   },
-  "p0579": {
+  "p0580": {
    "source": "not imported: {0}",
    "text": "neimportováno: {0}"
   },
-  "p0580": {
+  "p0581": {
    "source": "not restarted: {0} did not restart and come back",
    "text": "nerestartováno: {0} se nerestartoval a nevrátil"
   },
-  "p0581": {
+  "p0582": {
    "source": "not sent: {0}",
    "text": "neposláno: {0}"
   },
-  "p0582": {
+  "p0583": {
    "source": "not taken yet ({0}) - it waits in the outgoing mail and is tried again",
    "text": "zatím nepřevzato ({0}) – čeká v odchozí poště a zkusí se znovu"
   },
-  "p0583": {
+  "p0584": {
    "source": "not taken yet: {0} - it waits in the outgoing mail and is tried again by itself (Settings → Mail)",
    "text": "zatím nepřevzato: {0} – čeká v odchozí poště a zkusí se znovu samo (Nastavení → Pošta)"
   },
-  "p0584": {
+  "p0585": {
    "source": "not taken: {0}",
    "text": "nepřevzato: {0}"
   },
-  "p0585": {
+  "p0586": {
    "source": "not while high security is on (Settings - High security): {0}",
    "text": "ne při zapnuté vysoké bezpečnosti (Nastavení – Vysoká bezpečnost): {0}"
   },
-  "p0586": {
+  "p0587": {
    "source": "not while the token is blocked: {0}",
    "text": "ne, dokud je token zablokovaný: {0}"
   },
-  "p0587": {
+  "p0588": {
    "source": "nothing in that file is a setting this version keeps (it holds: {0})",
    "text": "nic v tom souboru není nastavení, které tato verze ukládá (obsahuje: {0})"
   },
-  "p0588": {
+  "p0589": {
    "source": "nothing newer than {0}",
    "text": "nic novějšího než {0}"
   },
-  "p0589": {
+  "p0590": {
    "source": "nothing to do: {0}",
    "text": "nic k provedení: {0}"
   },
-  "p0590": {
+  "p0591": {
    "source": "nothing was used up (the phone is {0} step(s) off)",
    "text": "nic se nespotřebovalo (telefon je mimo o {0} {0:krok|kroky|kroků})"
   },
-  "p0591": {
+  "p0592": {
    "source": "older than {0}, the oldest the versions installed on this machine allow",
    "text": "starší než {0}, nejstarší verze, kterou dovolují verze nainstalované na tomto stroji"
   },
-  "p0592": {
+  "p0593": {
    "source": "older than {0}: otp {1}, which ran on this database, wrote what older versions do not read the same (or have holes it fixed)",
    "text": "starší než {0}: otp {1}, která běžela nad touto databází, zapsala data, která starší verze nečtou stejně (nebo mají díry, které opravila)"
   },
-  "p0593": {
+  "p0594": {
    "source": "on {0}",
    "text": "na {0}"
   },
-  "p0594": {
+  "p0595": {
    "source": "on {0} - step {1} of {2}",
    "text": "na {0} – krok {1} z {2}"
   },
-  "p0595": {
+  "p0596": {
    "source": "on {0} - {1} so far, usually about {2} min",
    "text": "na {0} – zatím {1}, obvykle asi {2} min"
   },
-  "p0596": {
+  "p0597": {
    "source": "once, in the zone above it: {0} at deSEC",
    "text": "jednou, v nadřazené zóně: {0} u deSEC"
   },
-  "p0597": {
+  "p0598": {
    "source": "only {0} answers: restarting it would stop the service - bring the other node back first",
    "text": "odpovídá jen {0}: restart by zastavil službu – nejdřív zprovozněte druhý uzel"
   },
-  "p0598": {
+  "p0599": {
    "source": "or sign in to its pages and press Join a cluster… there. The database it will open: {0}.",
    "text": "nebo se přihlaste na jeho stránky a stiskněte tam Připojit ke clusteru…. Databáze, kterou otevře: {0}."
   },
-  "p0599": {
+  "p0600": {
    "source": "or the package your distribution fixed (dnf upgrade 'php*') - and restart php-fpm; ./install.sh --upgrade does it. A distribution that backported the fix keeps the old number: check rpm -q --changelog php-fpm | grep CVE-2026-109618.",
    "text": "nebo balíček opravený vaší distribucí (dnf upgrade 'php*') – a restartujte php-fpm; ./install.sh --upgrade to udělá. Distribuce, která opravu backportovala, ponechává staré číslo: ověřte rpm -q --changelog php-fpm | grep CVE-2026-109618."
   },
-  "p0600": {
+  "p0601": {
    "source": "otp no longer looks after the TLS of {0}; nginx keeps the files it has",
    "text": "otp už nespravuje TLS pro {0}; nginx si ponechá soubory, které má"
   },
-  "p0601": {
+  "p0602": {
    "source": "otp stopped",
    "text": "otp zastaven"
   },
-  "p0602": {
+  "p0603": {
    "source": "otp stopped on {0}",
    "text": "otp zastaven na {0}"
   },
-  "p0603": {
+  "p0604": {
    "source": "otp {0}",
    "text": "otp {0}"
   },
-  "p0604": {
+  "p0605": {
    "source": "otp {0} - older: ready to go back to",
    "text": "otp {0} – starší: připravená k návratu"
   },
-  "p0605": {
+  "p0606": {
    "source": "otp {0} cannot be gone back to: {1}",
    "text": "na otp {0} se nelze vrátit: {1}"
   },
-  "p0606": {
+  "p0607": {
    "source": "otp {0} fetched and checked; going back to it has begun",
    "text": "otp {0} stažená a zkontrolovaná; návrat na ni začal"
   },
-  "p0607": {
+  "p0608": {
    "source": "otp {0} fetched and checked; the upgrade has begun",
    "text": "otp {0} staženo a ověřeno; aktualizace začala"
   },
-  "p0608": {
+  "p0609": {
    "source": "otp {0} is checked and ready",
    "text": "otp {0} je zkontrolován a připraven"
   },
-  "p0609": {
+  "p0610": {
    "source": "otp {0} is fetched, checked and ready",
    "text": "otp {0} je stažené, ověřené a připravené"
   },
-  "p0610": {
+  "p0611": {
    "source": "otp {0} is fetched, checked for this database and ready to go back to",
    "text": "otp {0} je stažená, zkontrolovaná proti této databázi a připravená k návratu"
   },
-  "p0611": {
+  "p0612": {
    "source": "otp {0} is not at {1} any more",
    "text": "otp {0} už na {1} není"
   },
-  "p0612": {
+  "p0613": {
    "source": "otp {0} is out ({1}) - Settings → Upgrades",
    "text": "vyšlo otp {0} ({1}) – Nastavení → Aktualizace"
   },
-  "p0613": {
+  "p0614": {
    "source": "otp {0} is ready to be put in",
    "text": "otp {0} je připraven k nasazení"
   },
-  "p0614": {
+  "p0615": {
    "source": "otp {0} is sent and checked.",
    "text": "otp {0} je poslán a zkontrolován."
   },
-  "p0615": {
+  "p0616": {
    "source": "otp {0} is there - newer than {1}",
    "text": "je k dispozici otp {0} – novější než {1}"
   },
-  "p0616": {
+  "p0617": {
    "source": "otp {0} is there - this server runs {1} (looked {2})",
    "text": "Je k dispozici otp {0} – tento server běží na {1} (zkontrolováno {2})"
   },
-  "p0617": {
+  "p0618": {
    "source": "otp {0} started on {1}, RADIUS on {2}",
    "text": "otp {0} spuštěn na {1}, RADIUS na {2}"
   },
-  "p0618": {
+  "p0619": {
    "source": "otp {0} started, RADIUS on {1}",
    "text": "otp {0} spuštěn, RADIUS na {1}"
   },
-  "p0619": {
+  "p0620": {
    "source": "page {0} of {1}",
    "text": "stránka {0} z {1}"
   },
-  "p0620": {
+  "p0621": {
    "source": "page {0}{1} of more than {2} · more than {3} row(s)",
    "text": "stránka {0}{1} z více než {2} · více než {3} řádků"
   },
-  "p0621": {
+  "p0622": {
    "source": "page {0}{1} of {2} · {3} row(s)",
    "text": "stránka {0}{1} z {2} · {3} {3:řádek|řádky|řádků}"
   },
-  "p0622": {
+  "p0623": {
    "source": "pg_hba.conf already lets {0} in",
    "text": "pg_hba.conf už {0} pouští"
   },
-  "p0623": {
+  "p0624": {
    "source": "pg_hba.conf has no line of otp's for {0} ({1} {2}): it was written by hand - change host to hostssl there yourself",
    "text": "pg_hba.conf nemá řádek otp pro {0} ({1} {2}): byl psán ručně – změňte tam host na hostssl sami"
   },
-  "p0624": {
+  "p0625": {
    "source": "pg_hba.conf lets the other node in from {0}",
    "text": "pg_hba.conf pouští druhý uzel z {0}"
   },
-  "p0625": {
+  "p0626": {
    "source": "pg_hba.conf lets the other node in from {0} (was {1})",
    "text": "pg_hba.conf pouští druhý uzel z {0} (dřív {1})"
   },
-  "p0626": {
+  "p0627": {
    "source": "plain LDAP, {0}",
    "text": "prosté LDAP, {0}"
   },
-  "p0627": {
+  "p0628": {
    "source": "put back: {0}",
    "text": "vráceno: {0}"
   },
-  "p0628": {
+  "p0629": {
    "source": "put in on every node within a few seconds - on trial: Keep it within {0} min, or it goes back",
    "text": "nastaví se na všech uzlech během pár sekund – na zkoušku: potvrďte do {0} min, jinak se vrátí"
   },
-  "p0629": {
+  "p0630": {
    "source": "put right by itself: {0}",
    "text": "opraveno samo: {0}"
   },
-  "p0630": {
+  "p0631": {
    "source": "putting it back failed: {0}",
    "text": "obnova selhala: {0}"
   },
-  "p0631": {
+  "p0632": {
    "source": "radius_bind: {0} is not an address",
    "text": "radius_bind: {0} není adresa"
   },
-  "p0632": {
+  "p0633": {
    "source": "reach the server {0}",
    "text": "spojit se se serverem {0}"
   },
-  "p0633": {
+  "p0634": {
    "source": "reach the server {0} over TLS",
    "text": "spojit se se serverem {0} přes TLS"
   },
-  "p0634": {
+  "p0635": {
    "source": "reach {0}",
    "text": "spojit se s {0}"
   },
-  "p0635": {
+  "p0636": {
    "source": "reach {0} over TLS",
    "text": "spojit se s {0} přes TLS"
   },
-  "p0636": {
+  "p0637": {
    "source": "reached {0}",
    "text": "spojeno s {0}"
   },
-  "p0637": {
+  "p0638": {
    "source": "read the base {0}",
    "text": "přečtena báze {0}"
   },
-  "p0638": {
+  "p0639": {
    "source": "read {0} - Save the changes adds it",
    "text": "{0} načten – přidá se po Uložit změny"
   },
-  "p0639": {
+  "p0640": {
    "source": "read {0} - press Add it",
    "text": "{0} načten – stiskněte Přidat"
   },
-  "p0640": {
+  "p0641": {
    "source": "read {0} - press Import it",
    "text": "{0} načten – stiskněte Importovat"
   },
-  "p0641": {
+  "p0642": {
    "source": "rebuilt from the other node: {0} row(s)",
    "text": "obnoveno z druhého uzlu: {0} {0:řádek|řádky|řádků}"
   },
-  "p0642": {
+  "p0643": {
    "source": "refused{0}",
    "text": "odmítnuto{0}"
   },
-  "p0643": {
+  "p0644": {
    "source": "report_to: {0} is not a mail address",
    "text": "Posílat na: {0} není e-mailová adresa"
   },
-  "p0644": {
+  "p0645": {
    "source": "restarted as {0}",
    "text": "restartován jako {0}"
   },
-  "p0645": {
+  "p0646": {
    "source": "restarting {0} - back in a minute or two at {1}",
    "text": "restartuji {0} – zpět za minutu či dvě na {1}"
   },
-  "p0646": {
+  "p0647": {
    "source": "restarting {0}, one at a time",
    "text": "restartuje se {0}, jeden po druhém"
   },
-  "p0647": {
+  "p0648": {
    "source": "restored (codes by SMS, {0} recovery code(s) left)",
    "text": "obnoveno (kódy SMS, {0:zbývá|zbývají|zbývá} {0} {0:záložní kód|záložní kódy|záložních kódů})"
   },
-  "p0648": {
+  "p0649": {
    "source": "restored (codes by mail, {0} recovery code(s) left)",
    "text": "obnoveno (kódy e-mailem, {0:zbývá|zbývají|zbývá} {0} {0:záložní kód|záložní kódy|záložních kódů})"
   },
-  "p0649": {
+  "p0650": {
    "source": "restored (the app, {0} recovery code(s) left)",
    "text": "obnoveno (aplikace, {0:zbývá|zbývají|zbývá} {0} {0:záložní kód|záložní kódy|záložních kódů})"
   },
-  "p0650": {
+  "p0651": {
    "source": "right: {0}",
    "text": "správně: {0}"
   },
-  "p0651": {
+  "p0652": {
    "source": "root could not put it in: {0}",
    "text": "root ho nedokázal nasadit: {0}"
   },
-  "p0652": {
+  "p0653": {
    "source": "root may sign in to {0} over SSH with a password",
    "text": "root se smí na {0} přihlásit přes SSH heslem"
   },
-  "p0653": {
+  "p0654": {
    "source": "saved on these pages (by {0}, {1})",
    "text": "uloženo na těchto stránkách ({0}, {1})"
   },
-  "p0654": {
+  "p0655": {
    "source": "sending {0}…",
    "text": "posílám {0}…"
   },
-  "p0655": {
+  "p0656": {
    "source": "sent by {0}",
    "text": "poslal {0}"
   },
-  "p0656": {
+  "p0657": {
    "source": "sent to {0}",
    "text": "odesláno na {0}"
   },
-  "p0657": {
+  "p0658": {
    "source": "sent to {0} ({1} of {2})",
    "text": "posílá se do {0} ({1} z {2})"
   },
-  "p0658": {
+  "p0659": {
    "source": "sent to {0} - {1}",
    "text": "posláno na {0} – {1}"
   },
-  "p0659": {
+  "p0660": {
    "source": "sent to {0} in {1} s - {2}",
    "text": "posláno na {0} za {1} s – {2}"
   },
-  "p0660": {
+  "p0661": {
    "source": "sent to {0} with sample values: {1}",
    "text": "odesláno na {0} s ukázkovými hodnotami: {1}"
   },
-  "p0661": {
+  "p0662": {
    "source": "sent, but it is not good: {0}",
    "text": "odesláno, ale není v pořádku: {0}"
   },
-  "p0662": {
+  "p0663": {
    "source": "setting {0}: left out ({1})",
    "text": "nastavení {0}: vynecháno ({1})"
   },
-  "p0663": {
+  "p0664": {
    "source": "setting {0}: set here already ({1}), left as it is",
    "text": "nastavení {0}: už je nastaveno ({1}), ponecháno"
   },
-  "p0664": {
+  "p0665": {
    "source": "siem_targets: {0} is not tls://host:6514, tcp://host:514 or udp://host:514",
    "text": "siem_targets: {0} není tls://host:6514, tcp://host:514 ani udp://host:514"
   },
-  "p0665": {
+  "p0666": {
    "source": "sign in as {0} ({1})",
    "text": "přihlásit se jako {0} ({1})"
   },
-  "p0666": {
+  "p0667": {
    "source": "signed by {0}",
    "text": "podepsal {0}"
   },
-  "p0667": {
+  "p0668": {
    "source": "signed in as {0}",
    "text": "přihlášen jako {0}"
   },
-  "p0668": {
+  "p0669": {
    "source": "signed in from {0}",
    "text": "přihlášen přes {0}"
   },
-  "p0669": {
+  "p0670": {
    "source": "signing in failed: {0}",
    "text": "přihlášení selhalo: {0}"
   },
-  "p0670": {
+  "p0671": {
    "source": "signing in {0} s",
    "text": "přihlášení {0} s"
   },
-  "p0671": {
+  "p0672": {
    "source": "since cleared {0}",
    "text": "od vynulování {0}"
   },
-  "p0672": {
+  "p0673": {
    "source": "since cleared {0} by {1}",
    "text": "od vynulování {0} ({1})"
   },
-  "p0673": {
+  "p0674": {
    "source": "since {0}",
    "text": "od {0}"
   },
-  "p0674": {
+  "p0675": {
    "source": "ssh-keygen does not read it: {0}",
    "text": "ssh-keygen ho nepřečte: {0}"
   },
-  "p0675": {
+  "p0676": {
    "source": "ssh-keygen: {0}",
    "text": "ssh-keygen: {0}"
   },
-  "p0676": {
+  "p0677": {
    "source": "sshd does not take it, so it is as it was: {0}",
    "text": "sshd to nepřijal, takže zůstává, jak bylo: {0}"
   },
-  "p0677": {
+  "p0678": {
    "source": "started - {0}",
    "text": "zahájeno – {0}"
   },
-  "p0678": {
+  "p0679": {
    "source": "started by {0}",
    "text": "spustil {0}"
   },
-  "p0679": {
+  "p0680": {
    "source": "stopped on {0} - what is in use there is as it was",
    "text": "zastaveno na {0} – co se tam používá, zůstalo, jak bylo"
   },
-  "p0680": {
+  "p0681": {
    "source": "stopped: {0}",
    "text": "zastaveno: {0}"
   },
-  "p0681": {
+  "p0682": {
    "source": "stopped: {0} - nothing of the network was changed",
    "text": "zastaveno: {0} – na síti se nic nezměnilo"
   },
-  "p0682": {
+  "p0683": {
    "source": "straight because {0}",
    "text": "přímo, protože {0}"
   },
-  "p0683": {
+  "p0684": {
    "source": "telling the other node {0}",
    "text": "oznamuji druhému nodu {0}"
   },
-  "p0684": {
+  "p0685": {
    "source": "that file is far bigger than any settings file ({0})",
    "text": "ten soubor je mnohem větší než jakýkoli soubor s nastavením ({0})"
   },
-  "p0685": {
+  "p0686": {
    "source": "that is not a .tar.gz: {0}",
    "text": "to není .tar.gz: {0}"
   },
-  "p0686": {
+  "p0687": {
    "source": "that is not a name: a name, or a name@realm - no spaces, commas, semicolons or =, 180 characters at most",
    "text": "to není jméno: jméno nebo jméno@realm – bez mezer, čárek, středníků a =, nejvýše 180 znaků"
   },
-  "p0687": {
+  "p0688": {
    "source": "that is not a phone number - write it as +420 603 123 456",
    "text": "to není telefonní číslo – napište ho jako +420 603 123 456"
   },
-  "p0688": {
+  "p0689": {
    "source": "that is not a phone number: {0}",
    "text": "to není telefonní číslo: {0}"
   },
-  "p0689": {
+  "p0690": {
    "source": "that is {0} codes for this sign-in: sign in again for more",
    "text": "to je {0} kódů pro toto přihlášení: pro další se přihlaste znovu"
   },
-  "p0690": {
+  "p0691": {
    "source": "that key is there already ({0})",
    "text": "ten klíč už tam je ({0})"
   },
-  "p0691": {
+  "p0692": {
    "source": "that layout of the columns is too big to keep (more than {0} characters)",
    "text": "toto rozvržení sloupců je příliš velké na uložení (více než {0} znaků)"
   },
-  "p0692": {
+  "p0693": {
    "source": "the IPv4 and IPv6 settings of {0}",
    "text": "nastavení IPv4 a IPv6 připojení {0}"
   },
-  "p0693": {
+  "p0694": {
    "source": "the PFX / PKCS#12 file: {0} - is the password right?",
    "text": "soubor PFX / PKCS#12: {0} – je heslo správně?"
   },
-  "p0694": {
+  "p0695": {
    "source": "the PostgreSQL on the node given a certificate from otp’s own authority (reloaded, not restarted), then ",
    "text": "PostgreSQL na uzlu dostane certifikát od vlastní autority otp (načte se znovu, nerestartuje se), pak "
   },
-  "p0695": {
+  "p0696": {
    "source": "the SMS gateway is checked against {0} certificate(s)",
    "text": "SMS brána se ověřuje proti {0} certifikátům"
   },
-  "p0696": {
+  "p0697": {
    "source": "the SSH server of {0} has not said yet how it is set",
    "text": "SSH server na {0} ještě neohlásil, jak je nastavený"
   },
-  "p0697": {
+  "p0698": {
    "source": "the TLS of {0} takes {1} ciphers",
    "text": "TLS pro {0} používá šifry {1}"
   },
-  "p0698": {
+  "p0699": {
    "source": "the TLS settings of {0} are kept",
    "text": "nastavení TLS pro {0} je uložené"
   },
-  "p0699": {
+  "p0700": {
    "source": "the TLS settings of {0} are kept; making the DH parameters takes a while",
    "text": "nastavení TLS pro {0} je uložené; generování parametrů DH chvíli trvá"
   },
-  "p0700": {
+  "p0701": {
    "source": "the Teltonika answered HTTP {0}: {1}",
    "text": "Teltonika odpověděla HTTP {0}: {1}"
   },
-  "p0701": {
+  "p0702": {
    "source": "the Teltonika answered {0} {1} with HTTP {2} {3}",
    "text": "Teltonika na {0} {1} odpověděla HTTP {2} {3}"
   },
-  "p0702": {
+  "p0703": {
    "source": "the Teltonika could not be reached: {0}",
    "text": "Teltoniku nelze zastihnout: {0}"
   },
-  "p0703": {
+  "p0704": {
    "source": "the Teltonika gave no token: {0}",
    "text": "Teltonika nevydala token: {0}"
   },
-  "p0704": {
+  "p0705": {
    "source": "the Teltonika let otp in; its modem is {0}",
    "text": "Teltonika otp pustila dovnitř; její modem je {0}"
   },
-  "p0705": {
+  "p0706": {
    "source": "the Teltonika refused {0}: {1}",
    "text": "Teltonika odmítla {0}: {1}"
   },
-  "p0706": {
+  "p0707": {
    "source": "the Teltonika said: {0}",
    "text": "Teltonika odpověděla: {0}"
   },
-  "p0707": {
+  "p0708": {
    "source": "the Teltonika took it ({0})",
    "text": "Teltonika zprávu převzala ({0})"
   },
-  "p0708": {
+  "p0709": {
    "source": "the Teltonika took it ({0}; {1})",
    "text": "Teltonika ho převzala ({0}; {1})"
   },
-  "p0709": {
+  "p0710": {
    "source": "the Teltonika would not let otp in (HTTP {0}) - check its user and password, and that the user may use the API",
    "text": "Teltonika otp nepustila (HTTP {0}) – zkontrolujte uživatele a heslo a že smí používat API"
   },
-  "p0710": {
+  "p0711": {
    "source": "the VIP address (keepalived) on this node: {0} - Settings → High availability, Try again",
    "text": "VIP adresa (keepalived) na tomto nodu: {0} – Nastavení → Vysoká dostupnost, Zkusit znovu"
   },
-  "p0711": {
+  "p0712": {
    "source": "the VIP address (keepalived) set up for {0}: as it was",
    "text": "VIP adresa (keepalived) nastavena pro {0}: beze změny"
   },
-  "p0712": {
+  "p0713": {
    "source": "the VIP address (keepalived) set up for {0}: in place",
    "text": "VIP adresa (keepalived) nastavena pro {0}: na místě"
   },
-  "p0713": {
+  "p0714": {
    "source": "the VIP address ({0}): {1}",
    "text": "VIP adresa ({0}): {1}"
   },
-  "p0714": {
+  "p0715": {
    "source": "the VIP address goes to {0} within a few seconds (if it is healthy)",
    "text": "VIP adresa během několika sekund přejde na {0} (pokud je v pořádku)"
   },
-  "p0715": {
+  "p0716": {
    "source": "the VIP address is on: each node installs keepalived if it has to and the address comes up on {0}",
    "text": "VIP adresa je zapnutá: každý uzel si v případě potřeby nainstaluje keepalived a adresa naběhne na {0}"
   },
-  "p0716": {
+  "p0717": {
    "source": "the VIP address {0} is not in {1}: the node could not hold it. Change the VIP address first (High availability), or tick that it is meant to be so",
    "text": "VIP adresa {0} není v {1}: node by ji nemohl držet. Nejdřív změňte VIP adresu (Vysoká dostupnost), nebo zaškrtněte, že je to záměr"
   },
-  "p0717": {
+  "p0718": {
    "source": "the account may not sign in: {0}",
    "text": "účet se nesmí přihlásit: {0}"
   },
-  "p0718": {
+  "p0719": {
    "source": "the account this reads the directory with ({0}) was refused by {1}: {2}",
    "text": "účet, kterým se čte adresář ({0}), server {1} odmítl: {2}"
   },
-  "p0719": {
+  "p0720": {
    "source": "the account {0} is gone",
    "text": "účet {0} je odebrán"
   },
-  "p0720": {
+  "p0721": {
    "source": "the account {0} is made",
    "text": "účet {0} je vytvořen"
   },
-  "p0721": {
+  "p0722": {
    "source": "the account {0} was made on the command line, as {1}",
    "text": "účet {0} byl založen na příkazové řádce jako {1}"
   },
-  "p0722": {
+  "p0723": {
    "source": "the address could not be read: {0}",
    "text": "adresu se nepodařilo přečíst: {0}"
   },
-  "p0723": {
+  "p0724": {
    "source": "the answer for everybody in the realm: {0}",
    "text": "odpověď pro všechny v realmu: {0}"
   },
-  "p0724": {
+  "p0725": {
    "source": "the answer for the group {0}: {1}",
    "text": "odpověď pro skupinu {0}: {1}"
   },
-  "p0725": {
+  "p0726": {
    "source": "the answer would be longer than a RADIUS packet may be: too many reply attributes in the realm and its groups",
    "text": "odpověď by byla delší, než smí být paket RADIUS: realm a jeho skupiny mají příliš mnoho atributů odpovědi"
   },
-  "p0726": {
+  "p0727": {
    "source": "the backup destination {0} (SMB) is not encrypted",
    "text": "cíl záloh {0} (SMB) není šifrovaný"
   },
-  "p0727": {
+  "p0728": {
    "source": "the backup destination {0} is plain FTP - its password goes unencrypted",
    "text": "cíl záloh {0} je prosté FTP – heslo jde nešifrovaně"
   },
-  "p0728": {
+  "p0729": {
    "source": "the backup is being made here; {0} make theirs within a minute",
    "text": "záloha se vytváří zde; {0} vytvoří své do minuty"
   },
-  "p0729": {
+  "p0730": {
    "source": "the backup is being made here; {0} makes theirs within a minute",
    "text": "záloha se vytváří zde; {0} vytvoří svou do minuty"
   },
-  "p0730": {
+  "p0731": {
    "source": "the backup is not good: {0}",
    "text": "záloha není v pořádku: {0}"
   },
-  "p0731": {
+  "p0732": {
    "source": "the backup {0} at {1} was tried: NOT GOOD - {2}",
    "text": "záloha {0} v {1} vyzkoušena: NENÍ V POŘÁDKU – {2}"
   },
-  "p0732": {
+  "p0733": {
    "source": "the backup {0} at {1} was tried: it can be put back",
    "text": "záloha {0} v {1} vyzkoušena: lze ji obnovit"
   },
-  "p0733": {
+  "p0734": {
    "source": "the backup: {0}",
    "text": "záloha: {0}"
   },
-  "p0734": {
+  "p0735": {
    "source": "the backups at {0} listed",
    "text": "zálohy v {0} vypsány"
   },
-  "p0735": {
+  "p0736": {
    "source": "the built-in default is {0}",
    "text": "vestavěná výchozí hodnota je {0}"
   },
-  "p0736": {
+  "p0737": {
    "source": "the certificate answered on the VIP {0}, whichever node holds it",
    "text": "certifikát, kterým odpovídá VIP {0} – ať ji drží kterýkoli uzel"
   },
-  "p0737": {
+  "p0738": {
    "source": "the certificate answered on {0}'s own name and address",
    "text": "certifikát, kterým odpovídá vlastní jméno a adresa uzlu {0}"
   },
-  "p0738": {
+  "p0739": {
    "source": "the certificate answered on {0}'s own name and address ({1})",
    "text": "certifikát, kterým odpovídá vlastní jméno a adresa uzlu {0} ({1})"
   },
-  "p0739": {
+  "p0740": {
    "source": "the certificate authorities kept for mail cannot be read: {0}",
    "text": "uložené autority pro poštu nelze přečíst: {0}"
   },
-  "p0740": {
+  "p0741": {
    "source": "the certificate authority could not be read: {0}",
    "text": "certifikační autoritu nešlo přečíst: {0}"
   },
-  "p0741": {
+  "p0742": {
    "source": "the certificate authority of {0} is taken away",
    "text": "certifikační autorita adresáře {0} je odebrána"
   },
-  "p0742": {
+  "p0743": {
    "source": "the certificate authority of {0} is {1}",
    "text": "certifikační autorita adresáře {0} je {1}"
   },
-  "p0743": {
+  "p0744": {
    "source": "the certificate nginx has on {0} is not the one saved ({1}): put in again",
    "text": "certifikát, který má nginx na {0}, není ten uložený ({1}): nasazen znovu"
   },
-  "p0744": {
+  "p0745": {
    "source": "the certificate of the backup destination {0} is not checked",
    "text": "certifikát cíle záloh {0} se neověřuje"
   },
-  "p0745": {
+  "p0746": {
    "source": "the certificate of the directory {0} is not checked",
    "text": "certifikát adresáře {0} se neověřuje"
   },
-  "p0746": {
+  "p0747": {
    "source": "the certificate of {0} is being ordered",
    "text": "certifikát {0} se objednává"
   },
-  "p0747": {
+  "p0748": {
    "source": "the certificate of {0} is kept; the node puts it in within a few seconds",
    "text": "certifikát pro {0} je uložený; uzel ho během několika sekund nasadí"
   },
-  "p0748": {
+  "p0749": {
    "source": "the certificate of {0} is kept; the nodes put it in within a few seconds",
    "text": "certifikát pro {0} je uložený; uzly ho během několika sekund nasadí"
   },
-  "p0749": {
+  "p0750": {
    "source": "the certificate of {0} is not trusted - add the authority that signed it, or switch the check off",
    "text": "certifikát {0} není důvěryhodný – přidejte autoritu, která ho podepsala, nebo ověřování vypněte"
   },
-  "p0750": {
+  "p0751": {
    "source": "the certificate of {0}'s database ends {1}: renewed",
    "text": "certifikát databáze {0} končí {1}: obnoven"
   },
-  "p0751": {
+  "p0752": {
    "source": "the certificates kept for the gateway cannot be read: {0}",
    "text": "uložené certifikáty brány nelze přečíst: {0}"
   },
-  "p0752": {
+  "p0753": {
    "source": "the choices in that file: {0}",
    "text": "volby v tom souboru: {0}"
   },
-  "p0753": {
+  "p0754": {
    "source": "the client adds {0} to a name without a realm",
    "text": "klient přidá {0} ke jménu bez realmu"
   },
-  "p0754": {
+  "p0755": {
    "source": "the client {0} is saved",
    "text": "klient {0} je uložen"
   },
-  "p0755": {
+  "p0756": {
    "source": "the client {0} may not use the realm {1}",
    "text": "klient {0} nesmí používat realm {1}"
   },
-  "p0756": {
+  "p0757": {
    "source": "the client {0} was saved on the command line",
    "text": "klient {0} byl uložen z příkazové řádky"
   },
-  "p0757": {
+  "p0758": {
    "source": "the client(s) {0} take only this realm - without it they would take every realm; change them first",
    "text": "klienti {0} berou jen tento realm – bez něj by brali všechny realmy; nejdřív je změňte"
   },
-  "p0758": {
+  "p0759": {
    "source": "the clock is not synchronised to a time server (chrony) - codes from the app are worked out from it: Settings → Time",
    "text": "hodiny nejsou synchronizované s časovým serverem (chrony) – kódy z aplikace se počítají podle nich: Nastavení → Čas"
   },
-  "p0759": {
+  "p0760": {
    "source": "the clock is {0} s off the time servers - codes from the app are worked out from it: Settings → Time",
    "text": "hodiny se liší o {0} s od časových serverů – kódy z aplikace se počítají podle nich: Nastavení → Čas"
   },
-  "p0760": {
+  "p0761": {
    "source": "the cluster is changed on Settings - High availability or with otp --ha-setup / --ha-join / --ha-standalone ({0} not saved)",
    "text": "cluster se mění v Nastavení – Vysoká dostupnost nebo přes otp --ha-setup / --ha-join / --ha-standalone ({0} neuloženo)"
   },
-  "p0761": {
+  "p0762": {
    "source": "the code could not be sent: {0}",
    "text": "kód nešel odeslat: {0}"
   },
-  "p0762": {
+  "p0763": {
    "source": "the code for the token {0}",
    "text": "kód pro token {0}"
   },
-  "p0763": {
+  "p0764": {
    "source": "the code for {0} could not be sent by SMS to {1}: {2}",
    "text": "kód pro {0} se nepodařilo poslat SMS na {1}: {2}"
   },
-  "p0764": {
+  "p0765": {
    "source": "the code for {0} could not be sent by mail to {1}: {2}",
    "text": "kód pro {0} se nepodařilo poslat e-mailem na {1}: {2}"
   },
-  "p0765": {
+  "p0766": {
    "source": "the code from the old token was not taken: {0}",
    "text": "kód ze starého tokenu nebyl přijat: {0}"
   },
-  "p0766": {
+  "p0767": {
    "source": "the code to check {0} for {1} could not be sent: {2}",
    "text": "kód k ověření {0} pro {1} se nepodařilo poslat: {2}"
   },
-  "p0767": {
+  "p0768": {
    "source": "the code was not right: asked again ({0} of {1})",
    "text": "kód nebyl správný: znovu dotázán ({0} z {1})"
   },
-  "p0768": {
+  "p0769": {
    "source": "the code was not taken: {0}",
    "text": "kód nebyl přijat: {0}"
   },
-  "p0769": {
+  "p0770": {
    "source": "the codes of {0} go to {1} now",
    "text": "kódy pro {0} teď chodí na {1}"
   },
-  "p0770": {
+  "p0771": {
    "source": "the columns in that file: {0}",
    "text": "sloupce v tom souboru: {0}"
   },
-  "p0771": {
+  "p0772": {
    "source": "the columns of {0} are back as they come; they see it at their next page load",
    "text": "sloupce uživatele {0} jsou zpět ve výchozím stavu; projeví se mu při příštím načtení stránky"
   },
-  "p0772": {
+  "p0773": {
    "source": "the columns of {0} table(s)",
    "text": "sloupce {0} {0:tabulky|tabulek|tabulek}"
   },
-  "p0773": {
+  "p0774": {
    "source": "the connection to {0} failed: {1}",
    "text": "spojení s {0} selhalo: {1}"
   },
-  "p0774": {
+  "p0775": {
    "source": "the conversation with {0} broke off: {1}",
    "text": "rozhovor s {0} se přerušil: {1}"
   },
-  "p0775": {
+  "p0776": {
    "source": "the copy from the other node did not finish in {0} s",
    "text": "kopie z druhého uzlu nedoběhla za {0} s"
   },
-  "p0776": {
+  "p0777": {
    "source": "the daemon starts again on {0} in a moment",
    "text": "démon se za chvíli znovu spustí nad {0}"
   },
-  "p0777": {
+  "p0778": {
    "source": "the daily copy failed: {0}",
    "text": "denní kopie selhala: {0}"
   },
-  "p0778": {
+  "p0779": {
    "source": "the daily dump failed: {0}",
    "text": "noční dump selhal: {0}"
   },
-  "p0779": {
+  "p0780": {
    "source": "the database could not be used, so nothing was changed: {0}",
    "text": "databázi nešlo použít, nic se tedy nezměnilo: {0}"
   },
-  "p0780": {
+  "p0781": {
    "source": "the database in the bundle cannot be reached from here: {0}",
    "text": "databáze z balíčku není odsud dosažitelná: {0}"
   },
-  "p0781": {
+  "p0782": {
    "source": "the database is changed on Settings - The database with its own steps: Try it, Set it up, Carry everything across, Start using it ({0} not saved)",
    "text": "databáze se mění v Nastavení → Databáze vlastními kroky: Vyzkoušet, Nastavit, Přenést vše, Začít používat ({0} neuloženo)"
   },
-  "p0782": {
+  "p0783": {
    "source": "the database is {0}: a cluster needs PostgreSQL, which both nodes open - move to it first (Settings → The database)",
    "text": "databáze je {0}: cluster potřebuje PostgreSQL, kterou otevírají oba uzly – nejdřív na ni přejděte (Nastavení → Databáze)"
   },
-  "p0783": {
+  "p0784": {
    "source": "the database server was tuned for its machine by {0}: {1}",
    "text": "databázový server vyladil pro jeho stroj {0}: {1}"
   },
-  "p0784": {
+  "p0785": {
    "source": "the database server’s settings were put back by {0}: {1}",
    "text": "nastavení databázového serveru vrátil {0}: {1}"
   },
-  "p0785": {
+  "p0786": {
    "source": "the database was restored; what it replaced is in {0} — {1}",
    "text": "databáze byla obnovena; to, co nahradila, je v {0} – {1}"
   },
-  "p0786": {
+  "p0787": {
    "source": "the directory did not sign {0} in from {1}: {2}",
    "text": "adresář nepřihlásil {0} z {1}: {2}"
   },
-  "p0787": {
+  "p0788": {
    "source": "the directory gives {0} the role {1} now (was {2})",
    "text": "adresář teď dává {0} roli {1} (dříve {2})"
   },
-  "p0788": {
+  "p0789": {
    "source": "the directory has nobody called {0}",
    "text": "adresář nikoho jménem {0} nemá"
   },
-  "p0789": {
+  "p0790": {
    "source": "the directory knows {0}, and none of the groups given a role here holds them",
    "text": "adresář zná {0}, ale není v žádné ze skupin, které tu mají roli"
   },
-  "p0790": {
+  "p0791": {
    "source": "the directory knows {0}, and none of the groups given a role here holds them (from {1})",
    "text": "adresář zná {0}, ale není v žádné skupině, která tu dává roli (z {1})"
   },
-  "p0791": {
+  "p0792": {
    "source": "the directory no longer gives {0} a role here: signed out everywhere",
    "text": "adresář už {0} nedává žádnou roli: odhlášen všude"
   },
-  "p0792": {
+  "p0793": {
    "source": "the directory {0}",
    "text": "adresář {0}"
   },
-  "p0793": {
+  "p0794": {
    "source": "the directory {0} is not set up",
    "text": "adresář {0} není nastavený"
   },
-  "p0794": {
+  "p0795": {
    "source": "the directory {0} is reached over plain LDAP - passwords go over the network unencrypted",
    "text": "adresář {0} se připojuje přes prosté LDAP – hesla jdou sítí nešifrovaně"
   },
-  "p0795": {
+  "p0796": {
    "source": "the directory {0} is saved",
    "text": "adresář {0} je uložen"
   },
-  "p0796": {
+  "p0797": {
    "source": "the directory {0} is spoken to with old, weak TLS",
    "text": "s adresářem {0} se mluví starým, slabým TLS"
   },
-  "p0797": {
+  "p0798": {
    "source": "the disk is given back: {0} → {1}",
    "text": "místo disku vráceno: {0} → {1}"
   },
-  "p0798": {
+  "p0799": {
    "source": "the domain {0} does not exist",
    "text": "doména {0} neexistuje"
   },
-  "p0799": {
+  "p0800": {
    "source": "the domain {0} does not exist (DNS {1})",
    "text": "doména {0} neexistuje (DNS {1})"
   },
-  "p0800": {
+  "p0801": {
    "source": "the file on this machine (SQLite) · {0}",
    "text": "soubor na tomto stroji (SQLite) · {0}"
   },
-  "p0801": {
+  "p0802": {
    "source": "the files are not the ones signed for - missing: {0}",
    "text": "soubory nejsou ty podepsané – chybí: {0}"
   },
-  "p0802": {
+  "p0803": {
    "source": "the files are not the ones signed for - not signed: {0}",
    "text": "soubory nejsou ty podepsané – nepodepsané: {0}"
   },
-  "p0803": {
+  "p0804": {
    "source": "the first sign-in of {0} is made on the other node of the cluster, which could not be reached or has not passed it on yet - try again in a minute, or sign in there",
    "text": "první přihlášení {0} se zakládá na druhém uzlu clusteru, který není dostupný nebo jej ještě nepředal – zkuste to za minutu, nebo se přihlaste tam"
   },
-  "p0804": {
+  "p0805": {
    "source": "the folder says {0} and otp.py says {1}",
    "text": "složka říká {0} a otp.py říká {1}"
   },
-  "p0805": {
+  "p0806": {
    "source": "the folder {0} cannot be made: {1}",
    "text": "složku {0} nejde vytvořit: {1}"
   },
-  "p0806": {
+  "p0807": {
    "source": "the gateway answered {0} without \"{1}\": {2}",
    "text": "brána odpověděla {0} bez „{1}“: {2}"
   },
-  "p0807": {
+  "p0808": {
    "source": "the gateway answered {0}: {1}",
    "text": "brána odpověděla {0}: {1}"
   },
-  "p0808": {
+  "p0809": {
    "source": "the gateway has no modem {0} - it has {1}",
    "text": "brána nemá modem {0} – má {1}"
   },
-  "p0809": {
+  "p0810": {
    "source": "the gateway {0} is not another address in {1}",
    "text": "brána {0} není jiná adresa v {1}"
   },
-  "p0810": {
+  "p0811": {
    "source": "the gateway's certificate did not pass the check ({0}): import its certificate or the authority that signed it under Settings → Codes by e-mail and SMS, or switch Check its certificate off",
    "text": "certifikát brány neprošel kontrolou ({0}): importujte jeho certifikát nebo autoritu, která ho podepsala, v Nastavení → Kódy e-mailem a SMS, nebo vypněte Ověřovat její certifikát"
   },
-  "p0811": {
+  "p0812": {
    "source": "the groups of {0}",
    "text": "skupiny uživatele {0}"
   },
-  "p0812": {
+  "p0813": {
    "source": "the host name {0} → {1} (the node keeps its name in otp: {2})",
    "text": "hostname {0} → {1} (node si v otp ponechá jméno {2})"
   },
-  "p0813": {
+  "p0814": {
    "source": "the key (a wrong or missing password?): {0}",
    "text": "klíč (chybné nebo chybějící heslo?): {0}"
   },
-  "p0814": {
+  "p0815": {
    "source": "the key beside {0} is not the one in use now: download it without the key, and the .key beside it from the machine",
    "text": "klíč vedle {0} není ten, který se teď používá: stáhněte ho bez klíče a soubor .key vedle něj vezměte ze stroje"
   },
-  "p0815": {
+  "p0816": {
    "source": "the key goes onto {0} again",
    "text": "klíč se znovu nahraje na {0}"
   },
-  "p0816": {
+  "p0817": {
    "source": "the key goes onto {0} within a few seconds",
    "text": "klíč se během pár sekund nahraje na {0}"
   },
-  "p0817": {
+  "p0818": {
    "source": "the key goes onto {0} within a few seconds - the private half was not kept",
    "text": "klíč se během pár sekund nahraje na {0} – soukromá část se neuložila"
   },
-  "p0818": {
+  "p0819": {
    "source": "the key is exported as {0}",
    "text": "klíč je exportovaný jako {0}"
   },
-  "p0819": {
+  "p0820": {
    "source": "the key is taken away on {0} within a few seconds",
    "text": "klíč se během pár sekund odebere na {0}"
   },
-  "p0820": {
+  "p0821": {
    "source": "the key that opens the tokens is missing: {0}",
    "text": "chybí klíč, který otevírá tokeny: {0}"
   },
-  "p0821": {
+  "p0822": {
    "source": "the last request {0}",
    "text": "poslední požadavek {0}"
   },
-  "p0822": {
+  "p0823": {
    "source": "the last {0} hours",
    "text": "posledních {0} hodin"
   },
-  "p0823": {
+  "p0824": {
    "source": "the last {0} h{1}{2}",
    "text": "posledních {0} h{1}{2}"
   },
-  "p0824": {
+  "p0825": {
    "source": "the link between the databases is encrypted and checked on {0} (verify-full); its certificate ends {1}",
    "text": "spojení mezi databázemi je na {0} šifrované a ověřované (verify-full); jeho certifikát končí {1}"
   },
-  "p0825": {
+  "p0826": {
    "source": "the link between the databases on {0} is put right by itself: {1}",
    "text": "spojení mezi databázemi na {0} se samo opravilo: {1}"
   },
-  "p0826": {
+  "p0827": {
    "source": "the link between the databases on {0}: {1}",
    "text": "spojení mezi databázemi na {0}: {1}"
   },
-  "p0827": {
+  "p0828": {
    "source": "the link between the databases: {0}",
    "text": "spojení mezi databázemi: {0}"
   },
-  "p0828": {
+  "p0829": {
    "source": "the machine did not restart in an hour and the new address is not on it: the other node was given this one's address back{0}",
    "text": "stroj se do hodiny nerestartoval a nová adresa na něm není: druhý uzel dostal zpět adresu tohoto{0}"
   },
-  "p0829": {
+  "p0830": {
    "source": "the mail server keeps {0} certificate(s)",
    "text": "poštovní server má {0} {0:certifikát|certifikáty|certifikátů}"
   },
-  "p0830": {
+  "p0831": {
    "source": "the mail to {0} ({1}) did not go yet - tried again from the outgoing mail: {2}",
    "text": "mail na {0} ({1}) zatím neodešel – zkusí se znovu z odchozí pošty: {2}"
   },
-  "p0831": {
+  "p0832": {
    "source": "the mail to {0} ({1}) was given up after {2} tries: {3}",
    "text": "mail na {0} ({1}) byl po {2} pokusech vzdán: {3}"
   },
-  "p0832": {
+  "p0833": {
    "source": "the mail to {0} ({1}) was refused for good: {2}",
    "text": "mail na {0} ({1}) byl definitivně odmítnut: {2}"
   },
-  "p0833": {
+  "p0834": {
    "source": "the mail to {0} ({1}) went on try {2}",
    "text": "mail na {0} ({1}) odešel na {2}. pokus"
   },
-  "p0834": {
+  "p0835": {
    "source": "the modem sending it {0} s",
    "text": "odeslání modemem {0} s"
   },
-  "p0835": {
+  "p0836": {
    "source": "the name is read as {0}",
    "text": "jméno se čte jako {0}"
   },
-  "p0836": {
+  "p0837": {
    "source": "the name points at an address that reaches port 80 of {0}",
    "text": "jméno ukazuje na adresu, přes kterou se dá dostat na port 80 {0}"
   },
-  "p0837": {
+  "p0838": {
    "source": "the name {0} has letters of another language ({1}) - only Czech and Slovak ones are taken (Settings - The tokens - Letters of other languages in names)",
    "text": "jméno {0} obsahuje písmena jiného jazyka ({1}) – berou se jen česká a slovenská (Nastavení – Tokeny – Písmena jiných jazyků ve jménech)"
   },
-  "p0838": {
+  "p0839": {
    "source": "the name {0} has letters with accents or of another language ({1}) - only letters without accents are taken (Settings - The tokens - Czech and Slovak letters in names, Letters of other languages in names)",
    "text": "jméno {0} obsahuje znaky s diakritikou nebo jiného jazyka ({1}) – berou se jen písmena bez diakritiky (Nastavení – Tokeny – České a slovenské znaky ve jménech, Písmena jiných jazyků ve jménech)"
   },
-  "p0839": {
+  "p0840": {
    "source": "the network of {0} is changed",
    "text": "síť nodu {0} je změněná"
   },
-  "p0840": {
+  "p0841": {
    "source": "the network of {0} is changed: {1}",
    "text": "síť nodu {0} je změněná: {1}"
   },
-  "p0841": {
+  "p0842": {
    "source": "the network of {0} was not changed",
    "text": "síť nodu {0} nebyla změněna"
   },
-  "p0842": {
+  "p0843": {
    "source": "the node {0} is called {1} now; carried over: {2}",
    "text": "uzel {0} se teď jmenuje {1}; převzato: {2}"
   },
-  "p0843": {
+  "p0844": {
    "source": "the old network comes back - {0} restarts with it",
    "text": "vrací se původní síť – {0} s ní restartuje"
   },
-  "p0844": {
+  "p0845": {
    "source": "the one with {0}",
    "text": "to s adresou {0}"
   },
-  "p0845": {
+  "p0846": {
    "source": "the other node ({0}) is let in with or without TLS again",
    "text": "druhý uzel ({0}) se zase dostane dovnitř s TLS i bez"
   },
-  "p0846": {
+  "p0847": {
    "source": "the other node ({0}) is let into the database over TLS only (hostssl)",
    "text": "druhý uzel ({0}) se do databáze dostane už jen přes TLS (hostssl)"
   },
-  "p0847": {
+  "p0848": {
    "source": "the other node expects {0} now",
    "text": "druhý node teď očekává {0}"
   },
-  "p0848": {
+  "p0849": {
    "source": "the other node is on this machine ({0}): its line in pg_hba.conf is this node's own, left as it is",
    "text": "druhý uzel je na tomto stroji ({0}): jeho řádek v pg_hba.conf patří tomuto uzlu, zůstává beze změny"
   },
-  "p0849": {
+  "p0850": {
    "source": "the other node is told {0}: its pg_hba.conf, its subscription and its ha_peer move to it",
    "text": "druhému nodu se oznámí {0}: jeho pg_hba.conf, subscription a ha_peer se na ni přesunou"
   },
-  "p0850": {
+  "p0851": {
    "source": "the other node runs otp {0}: upgrade it to this version first",
    "text": "druhý uzel běží na otp {0}: nejdřív ho aktualizujte na tuto verzi"
   },
-  "p0851": {
+  "p0852": {
    "source": "the other node's PostgreSQL cannot be reached: {0}",
    "text": "PostgreSQL druhého uzlu není dosažitelný: {0}"
   },
-  "p0852": {
+  "p0853": {
    "source": "the other node's database does not pass verify-full yet: {0}",
    "text": "databáze druhého uzlu zatím neprojde verify-full: {0}"
   },
-  "p0853": {
+  "p0854": {
    "source": "the other node's database does not pass verify-full: {0}",
    "text": "databáze druhého uzlu neprojde verify-full: {0}"
   },
-  "p0854": {
+  "p0855": {
    "source": "the otp account may not write into {0}",
    "text": "účet otp nesmí zapisovat do {0}"
   },
-  "p0855": {
+  "p0856": {
    "source": "the package could not be handed over: {0}",
    "text": "balíček nešlo předat: {0}"
   },
-  "p0856": {
+  "p0857": {
    "source": "the package from {0} was refused: {1}",
    "text": "balíček z {0} byl odmítnut: {1}"
   },
-  "p0857": {
+  "p0858": {
    "source": "the package has a path outside its folder: {0}",
    "text": "balíček obsahuje cestu mimo svou složku: {0}"
   },
-  "p0858": {
+  "p0859": {
    "source": "the package has no {0}",
    "text": "balíček nemá {0}"
   },
-  "p0859": {
+  "p0860": {
    "source": "the package holds something that is not a plain file: {0}",
    "text": "balíček obsahuje něco, co není obyčejný soubor: {0}"
   },
-  "p0860": {
+  "p0861": {
    "source": "the package is not an otp release: its folder is \"{0}\", not otp-X.Y.Z",
    "text": "balíček není vydání otp: jeho složka je „{0}“, ne otp-X.Y.Z"
   },
-  "p0861": {
+  "p0862": {
    "source": "the part before the @: {0}",
    "text": "část před @: {0}"
   },
-  "p0862": {
+  "p0863": {
    "source": "the password of {0} was set on the command line",
    "text": "heslo uživatele {0} bylo nastaveno na příkazové řádce"
   },
-  "p0863": {
+  "p0864": {
    "source": "the picture is {0} - at most 512 KB",
    "text": "obrázek má {0} – nejvýše 512 KB"
   },
-  "p0864": {
+  "p0865": {
    "source": "the proxy looked up ({0})",
    "text": "proxy vyhledána ({0})"
   },
-  "p0865": {
+  "p0866": {
    "source": "the public half goes onto {0}",
    "text": "veřejná část se nahraje na {0}"
   },
-  "p0866": {
+  "p0867": {
    "source": "the public half goes onto {0} - the private half was not kept",
    "text": "veřejná část se nahraje na {0} – soukromá se neuložila"
   },
-  "p0867": {
+  "p0868": {
    "source": "the realm is {0}",
    "text": "realm je {0}"
   },
-  "p0868": {
+  "p0869": {
    "source": "the realm keeps its tokens under @{0}",
    "text": "realm vede své tokeny pod @{0}"
   },
-  "p0869": {
+  "p0870": {
    "source": "the realm {0} already keeps its tokens under the name alone, with the directory {1}: names alone are one person's only within one directory - keep this realm's under the whole name",
    "text": "realm {0} už vede tokeny pod samotným jménem, s adresářem {1}: samotné jméno patří jednomu člověku jen v rámci jednoho adresáře – v tomto realmu veďte tokeny pod celým jménem"
   },
-  "p0870": {
+  "p0871": {
    "source": "the realm {0} is saved",
    "text": "realm {0} je uložen"
   },
-  "p0871": {
+  "p0872": {
    "source": "the realm {0} names the directory {1}, which is neither here nor in the file - nothing was imported",
    "text": "realm {0} odkazuje na adresář {1}, který tu není ani v souboru – nic se neimportovalo"
   },
-  "p0872": {
+  "p0873": {
    "source": "the realm {0} reads another directory ({1}): its people are not this realm's",
    "text": "realm {0} čte jiný adresář ({1}): jeho lidé nepatří tomuto realmu"
   },
-  "p0873": {
+  "p0874": {
    "source": "the realm {0} takes @{1} already",
    "text": "realm {0} už přijímá @{1}"
   },
-  "p0874": {
+  "p0875": {
    "source": "the realm {0} takes @{1} already, as another suffix of its own",
    "text": "realm {0} už přijímá @{1} jako svou další příponu"
   },
-  "p0875": {
+  "p0876": {
    "source": "the realm {0} takes {1} already",
    "text": "realm {0} už bere {1}"
   },
-  "p0876": {
+  "p0877": {
    "source": "the realm(s) {0} look people up in it; change them first",
    "text": "{0} v něm hledá lidi; nejdřív je změňte"
   },
-  "p0877": {
+  "p0878": {
    "source": "the recovery codes of this token were not kept to be sent again; send it without them, or make new ones first",
    "text": "záložní kódy tohoto tokenu nebyly uloženy pro opětovné odeslání; pošlete ho bez nich, nebo nejdřív vytvořte nové"
   },
-  "p0878": {
+  "p0879": {
    "source": "the recovery codes of {0} are not taken for a day: {1} requests in a day had a wrong password or a wrong recovery code - somebody may be guessing them (Unlock it on the token gives them back)",
    "text": "záložní kódy {0} se den nepřijímají: {1} požadavků za den mělo špatné heslo nebo špatný záložní kód – někdo je možná hádá (Odemknout na tokenu je vrátí)"
   },
-  "p0879": {
+  "p0880": {
    "source": "the report went to {0}",
    "text": "report odešel na {0}"
   },
-  "p0880": {
+  "p0881": {
    "source": "the role is one of {0}",
    "text": "role je jedna z {0}"
   },
-  "p0881": {
+  "p0882": {
    "source": "the same account ({0}) in the realm {1}, on the same directory",
    "text": "stejný účet ({0}) v realmu {1}, na stejném adresáři"
   },
-  "p0882": {
+  "p0883": {
    "source": "the second step of {0} is reset: they set it up again at the next sign-in; their sign-ins are ended",
    "text": "druhý krok účtu {0} je resetován: nastaví si ho při příštím přihlášení; jeho přihlášení jsou ukončena"
   },
-  "p0883": {
+  "p0884": {
    "source": "the server did not answer in {0} s",
    "text": "server neodpověděl do {0} s"
   },
-  "p0884": {
+  "p0885": {
    "source": "the server did not answer with anything readable (HTTP {0})",
    "text": "server neodpověděl ničím čitelným (HTTP {0})"
   },
-  "p0885": {
+  "p0886": {
    "source": "the server refused {0}",
    "text": "server odmítl {0}"
   },
-  "p0886": {
+  "p0887": {
    "source": "the server said {0}",
    "text": "server řekl {0}"
   },
-  "p0887": {
+  "p0888": {
    "source": "the server would not take mail for {0}",
    "text": "server nepřijal poštu pro {0}"
   },
-  "p0888": {
+  "p0889": {
    "source": "the server would not take mail from {0}",
    "text": "server nepřijal poštu od {0}"
   },
-  "p0889": {
+  "p0890": {
    "source": "the server’s certificate was not accepted: {0}. Import the certificate authority that signed it, or switch the check off if this is a test.",
    "text": "certifikát serveru nebyl přijat: {0}. Importujte certifikační autoritu, která ho podepsala, nebo kontrolu vypněte, jde-li o test."
   },
-  "p0890": {
+  "p0891": {
    "source": "the server’s certificate was not accepted: {0}. Its key or its signature is older than OpenSSL takes by default (a 1024-bit key, SHA-1): switch on \"Take old, weak certificates\" for this directory - or better, give the server a new certificate.",
    "text": "certifikát serveru nebyl přijat: {0}. Jeho klíč nebo podpis je starší, než OpenSSL ve výchozím stavu přijímá (1024bitový klíč, SHA-1): u tohoto adresáře zapněte „Přijímat staré, slabé certifikáty“ – nebo lépe dejte serveru nový certifikát."
   },
-  "p0891": {
+  "p0892": {
    "source": "the shared secret of the client {0} is shorter than 16 characters",
    "text": "sdílené tajemství klienta {0} je kratší než 16 znaků"
   },
-  "p0892": {
+  "p0893": {
    "source": "the sign-in shows {0} now",
    "text": "přihlášení teď ukazuje {0}"
   },
-  "p0893": {
+  "p0894": {
    "source": "the spool folder {0} is not there",
    "text": "složka spoolu {0} neexistuje"
   },
-  "p0894": {
+  "p0895": {
    "source": "the table {0} has {1}, which otp {2} does not know and every row needs",
    "text": "tabulka {0} má {1}, které otp {2} nezná a každý řádek to potřebuje"
   },
-  "p0895": {
+  "p0896": {
    "source": "the test could not be made on {0}: {1}",
    "text": "test se na {0} nepodařilo provést: {1}"
   },
-  "p0896": {
+  "p0897": {
    "source": "the token cannot be replaced here: {0}",
    "text": "token tu nelze nahradit: {0}"
   },
-  "p0897": {
+  "p0898": {
    "source": "the token for {0} is made",
    "text": "token pro {0} je vytvořen"
   },
-  "p0898": {
+  "p0899": {
    "source": "the token for {0} is made: its codes go by SMS to {1}",
    "text": "token pro {0} je vytvořen: kódy mu chodí přes SMS na {1}"
   },
-  "p0899": {
+  "p0900": {
    "source": "the token for {0} is made: its codes go by mail to {1}",
    "text": "token pro {0} je vytvořen: kódy mu chodí e-mailem na {1}"
   },
-  "p0900": {
+  "p0901": {
    "source": "the token for {0} is made; the QR code was sent to {1}",
    "text": "token pro {0} je vytvořen; QR kód byl odeslán na {1}"
   },
-  "p0901": {
+  "p0902": {
    "source": "the token is now {0}",
    "text": "token je teď {0}"
   },
-  "p0902": {
+  "p0903": {
    "source": "the token is now {0}; its recovery codes were not kept to be made again under the new name, so make new ones",
    "text": "token je teď {0}; jeho záložní kódy nebyly uchovány, aby šly vytvořit znovu pod novým jménem – vytvořte nové"
   },
-  "p0903": {
+  "p0904": {
    "source": "the token is {0}",
    "text": "token je {0}"
   },
-  "p0904": {
+  "p0905": {
    "source": "the token of {0} could not be sent to {1}: {2}",
    "text": "token {0} se nepodařilo poslat na {1}: {2}"
   },
-  "p0905": {
+  "p0906": {
    "source": "the token of {0} is gone",
    "text": "token uživatele {0} je odebrán"
   },
-  "p0906": {
+  "p0907": {
    "source": "the token of {0} is locked out for {1} min after {2} wrong codes in a row",
    "text": "token {0} je zamčený na {1} min po {2} chybných kódech v řadě"
   },
-  "p0907": {
+  "p0908": {
    "source": "the token of {0} is locked out for {1} min after {2} wrong codes in a row - somebody may be guessing its codes",
    "text": "token {0} je zamčený na {1} min po {2} chybných kódech v řadě – někdo možná hádá jeho kódy"
   },
-  "p0908": {
+  "p0909": {
    "source": "the token of {0} was switched {1} on the command line",
    "text": "token uživatele {0} byl z příkazové řádky přepnut: {1}"
   },
-  "p0909": {
+  "p0910": {
    "source": "the token of {0} was taken away on the command line",
    "text": "token uživatele {0} byl odebrán na příkazové řádce"
   },
-  "p0910": {
+  "p0911": {
    "source": "the token server could not decide: {0}",
    "text": "tokenový server nemohl rozhodnout: {0}"
   },
-  "p0911": {
+  "p0912": {
    "source": "the update starts: {0}, one at a time",
    "text": "aktualizace začíná: {0}, jeden po druhém"
   },
-  "p0912": {
+  "p0913": {
    "source": "the upgrade of {0} to {1} failed: the node has not been heard from",
    "text": "upgrade {0} na {1} selhal: uzel se neozývá"
   },
-  "p0913": {
+  "p0914": {
    "source": "the upgrade of {0} to {1} failed: {2}",
    "text": "aktualizace {0} na {1} selhala: {2}"
   },
-  "p0914": {
+  "p0915": {
    "source": "the upgrade to {0} is done on every node",
    "text": "aktualizace na {0} je hotová na všech uzlech"
   },
-  "p0915": {
+  "p0916": {
    "source": "the web address (keepalived) on this node: {0} - Settings → High availability, Try again",
    "text": "webová adresa (keepalived) na tomto nodu: {0} – Nastavení → Vysoká dostupnost, Zkusit znovu"
   },
-  "p0916": {
+  "p0917": {
    "source": "the web address (keepalived) set up for {0}: as it was",
    "text": "webová adresa (keepalived) nastavena pro {0}: beze změny"
   },
-  "p0917": {
+  "p0918": {
    "source": "the web address (keepalived) set up for {0}: in place",
    "text": "webová adresa (keepalived) nastavena pro {0}: na místě"
   },
-  "p0918": {
+  "p0919": {
    "source": "the web address ({0}): {1}",
    "text": "webová adresa ({0}): {1}"
   },
-  "p0919": {
+  "p0920": {
    "source": "the web address goes to {0} within a few seconds (if it is healthy)",
    "text": "webová adresa během několika sekund přejde na {0} (pokud je v pořádku)"
   },
-  "p0920": {
+  "p0921": {
    "source": "the web address is on: each node installs keepalived if it has to and the address comes up on {0}",
    "text": "webová adresa je zapnutá: každý uzel si v případě potřeby nainstaluje keepalived a adresa naběhne na {0}"
   },
-  "p0921": {
+  "p0922": {
    "source": "the web address {0} is not in {1}: the node could not hold it. Change the web address first (High availability), or tick that it is meant to be so",
    "text": "webová adresa {0} není v {1}: node by ji nemohl držet. Nejdřív změňte webovou adresu (Vysoká dostupnost), nebo zaškrtněte, že je to záměr"
   },
-  "p0922": {
+  "p0923": {
    "source": "the whole name: {0}",
    "text": "celé jméno: {0}"
   },
-  "p0923": {
+  "p0924": {
    "source": "the whole profile of {0}",
    "text": "celý profil {0}"
   },
-  "p0924": {
+  "p0925": {
    "source": "there are {0} record(s) in it already. Moving into a database that is not empty would mix two installations; empty it first if it really is spare.",
    "text": "už v ní {0:je|jsou|je} {0} {0:záznam|záznamy|záznamů}. Přesun do neprázdné databáze by smíchal dvě instalace; pokud je opravdu volná, nejdřív ji vyprázdněte."
   },
-  "p0925": {
+  "p0926": {
    "source": "there is a client called {0} already",
    "text": "klient {0} už existuje"
   },
-  "p0926": {
+  "p0927": {
    "source": "there is a directory called {0} already",
    "text": "adresář {0} už existuje"
   },
-  "p0927": {
+  "p0928": {
    "source": "there is a realm called {0} already",
    "text": "realm {0} už existuje"
   },
-  "p0928": {
+  "p0929": {
    "source": "there is a token for {0} already",
    "text": "token pro {0} už existuje"
   },
-  "p0929": {
+  "p0930": {
    "source": "there is an account called {0} already",
    "text": "účet {0} už existuje"
   },
-  "p0930": {
+  "p0931": {
    "source": "there is no account called {0}",
    "text": "účet {0} neexistuje"
   },
-  "p0931": {
+  "p0932": {
    "source": "there is no backup {0} at {1}",
    "text": "v {1} není záloha {0}"
   },
-  "p0932": {
+  "p0933": {
    "source": "there is no directory called {0}",
    "text": "adresář {0} neexistuje"
   },
-  "p0933": {
+  "p0934": {
    "source": "there is no directory called {0} (switched on)",
    "text": "adresář {0} neexistuje (zapnutý)"
   },
-  "p0934": {
+  "p0935": {
    "source": "there is no interface {0} on this node",
    "text": "na tomto uzlu není rozhraní {0}"
   },
-  "p0935": {
+  "p0936": {
    "source": "there is no node called {0}",
    "text": "žádný uzel {0} neexistuje"
   },
-  "p0936": {
+  "p0937": {
    "source": "there is no node or address called {0}",
    "text": "uzel ani adresa {0} neexistuje"
   },
-  "p0937": {
+  "p0938": {
    "source": "there is no node {0}",
    "text": "uzel {0} neexistuje"
   },
-  "p0938": {
+  "p0939": {
    "source": "there is no realm called {0}",
    "text": "realm {0} neexistuje"
   },
-  "p0939": {
+  "p0940": {
    "source": "there is no room for a copy in {0}: {1} MB free, {2} MB needed so that the disk is not filled under the database - take old copies away, or give the disk more room",
    "text": "v {0} není místo na kopii: volno {1} MB, potřeba {2} MB, aby se pod databází nezaplnil disk – smažte staré kopie, nebo disku přidejte místo"
   },
-  "p0940": {
+  "p0941": {
    "source": "there is no such file: {0}",
    "text": "takový soubor neexistuje: {0}"
   },
-  "p0941": {
+  "p0942": {
    "source": "there is no token for {0}",
    "text": "pro {0} neexistuje token"
   },
-  "p0942": {
+  "p0943": {
    "source": "there is no token {0}",
    "text": "token {0} neexistuje"
   },
-  "p0943": {
+  "p0944": {
    "source": "there was no account, so admin was made; its password is in {0}",
    "text": "neexistoval žádný účet, proto byl vytvořen admin; jeho heslo je v {0}"
   },
-  "p0944": {
+  "p0945": {
    "source": "this certificate ran out on {0}",
    "text": "platnost tohoto certifikátu skončila {0}"
   },
-  "p0945": {
+  "p0946": {
    "source": "this copy was sealed with another key than the one both nodes use; in a cluster it cannot be put back - the other node could not open its tokens",
    "text": "tato kopie je zapečetěná jiným klíčem, než používají oba uzly; v clusteru ji nelze vrátit – druhý uzel by její tokeny neotevřel"
   },
-  "p0946": {
+  "p0947": {
    "source": "this machine was never upgraded on the command line to a version that can go back (install.sh --upgrade once)",
    "text": "tento stroj nebyl nikdy z příkazové řádky aktualizován na verzi, která umí návrat (jednou install.sh --upgrade)"
   },
-  "p0947": {
+  "p0948": {
    "source": "this node became the first of two, replicating with {0}; a bundle for the second was made on the command line",
    "text": "tento uzel se stal prvním ze dvou, replikuje s {0}; balíček pro druhý byl vytvořen na příkazové řádce"
   },
-  "p0948": {
+  "p0949": {
    "source": "this node is at the step {0}",
    "text": "tento uzel je v kroku {0}"
   },
-  "p0949": {
+  "p0950": {
    "source": "this node joins the cluster: it starts again on {0}",
    "text": "tento uzel se připojuje ke clusteru: znovu se spouští na {0}"
   },
-  "p0950": {
+  "p0951": {
    "source": "this node takes the other's rows from {0} now",
    "text": "tento uzel teď bere řádky druhého z {0}"
   },
-  "p0951": {
+  "p0952": {
    "source": "this node's certificate does not name {0} yet",
    "text": "certifikát tohoto uzlu zatím neobsahuje {0}"
   },
-  "p0952": {
+  "p0953": {
    "source": "this node's settings that name {0} - and its own certificate, where it was made here - are made again for {1}",
    "text": "nastavení tohoto nodu, která uvádějí {0} – a jeho vlastní certifikát, pokud vznikl tady – se vytvoří znovu pro {1}"
   },
-  "p0953": {
+  "p0954": {
    "source": "this node's settings: {0}",
    "text": "nastavení tohoto nodu: {0}"
   },
-  "p0954": {
+  "p0955": {
    "source": "this node: {0}",
    "text": "tento uzel: {0}"
   },
-  "p0955": {
+  "p0956": {
    "source": "this page is answered by {0}",
    "text": "tuto stránku obsluhuje {0}"
   },
-  "p0956": {
+  "p0957": {
    "source": "this page is answered by {0} now, not {1} (the VIP address moved): the settings are drawn again from {2}",
    "text": "tuto stránku teď obsluhuje {0}, ne {1} (VIP adresa se přesunula): nastavení se znovu načetla z {2}"
   },
-  "p0957": {
+  "p0958": {
    "source": "this page is answered by {0} now, not {1} (the VIP address moved): the settings are drawn again from {2}; {3} change(s) not saved were put aside",
    "text": "tuto stránku teď obsluhuje {0}, ne {1} (VIP adresa se přesunula): nastavení se znovu načetla z {2}; {3} neuložených změn bylo zahozeno"
   },
-  "p0958": {
+  "p0959": {
    "source": "this page is answered by {0} now, not {1} (the web address moved): the settings are drawn again from {2}",
    "text": "tuto stránku teď obsluhuje {0}, ne {1} (webová adresa se přesunula): nastavení se znovu načetla z {2}"
   },
-  "p0959": {
+  "p0960": {
    "source": "this page is answered by {0} now, not {1} (the web address moved): the settings are drawn again from {2}; {3} change(s) not saved were put aside",
    "text": "tuto stránku teď obsluhuje {0}, ne {1} (webová adresa se přesunula): nastavení se znovu načetla z {2}; {3} neuložených změn bylo zahozeno"
   },
-  "p0960": {
+  "p0961": {
    "source": "this page was drawn by {0}, but {1} answers now (the VIP address moved): {2} belongs to one machine, so nothing was saved - load the page again",
    "text": "tuto stránku načetl {0}, ale teď odpovídá {1} (VIP adresa se přesunula): {2} patří jednomu stroji, takže se nic neuložilo – načtěte stránku znovu"
   },
-  "p0961": {
+  "p0962": {
    "source": "this page was drawn by {0}, but {1} answers now (the web address moved): {2} belongs to one machine, so nothing was saved - load the page again",
    "text": "tuto stránku načetl {0}, ale teď odpovídá {1} (webová adresa se přesunula): {2} patří jednomu stroji, takže se nic neuložilo – načtěte stránku znovu"
   },
-  "p0962": {
+  "p0963": {
    "source": "this program may not restart {0}: run  systemctl restart {1}  as root",
    "text": "tento program nesmí restartovat {0}: spusťte  systemctl restart {1}  jako root"
   },
-  "p0963": {
+  "p0964": {
    "source": "this request reached {0}, not {1}: open the page of {2} itself (its own address) to rebuild it",
    "text": "tento požadavek došel na {0}, ne na {1}: pro obnovu otevřete stránku přímo na {2} (jeho vlastní adresou)"
   },
-  "p0964": {
+  "p0965": {
    "source": "tidied: {0}",
    "text": "uklizeno: {0}"
   },
-  "p0965": {
+  "p0966": {
    "source": "to {0}",
    "text": "na {0}"
   },
-  "p0966": {
+  "p0967": {
    "source": "token: {0}",
    "text": "token: {0}"
   },
-  "p0967": {
+  "p0968": {
    "source": "too many codes sent for this name: try again in {0}",
    "text": "pro toto jméno odešlo příliš mnoho kódů: zkuste to znovu za {0}"
   },
-  "p0968": {
+  "p0969": {
    "source": "too many codes sent from {0}: try again in {1}",
    "text": "z {0} odešlo příliš mnoho kódů: zkuste to znovu za {1}"
   },
-  "p0969": {
+  "p0970": {
    "source": "too many codes were sent - wait {0} min and try again",
    "text": "bylo posláno příliš mnoho kódů – počkejte {0} min a zkuste to znovu"
   },
-  "p0970": {
+  "p0971": {
    "source": "too many wrong codes for this name: try again in {0}",
    "text": "příliš mnoho špatných kódů pro toto jméno: zkuste to znovu za {0}"
   },
-  "p0971": {
+  "p0972": {
    "source": "too many wrong codes from {0}: try again in {1}",
    "text": "příliš mnoho špatných kódů z {0}: zkuste to znovu za {1}"
   },
-  "p0972": {
+  "p0973": {
    "source": "too many wrong passwords for this name: try again in {0}",
    "text": "příliš mnoho chybných hesel pro toto jméno: zkuste to znovu za {0}"
   },
-  "p0973": {
+  "p0974": {
    "source": "too many wrong passwords from {0}: try again in {1}",
    "text": "příliš mnoho chybných hesel z {0}: zkuste to znovu za {1}"
   },
-  "p0974": {
+  "p0975": {
    "source": "too many wrong passwords or codes for this name: try again in {0}",
    "text": "příliš mnoho špatných hesel nebo kódů pro toto jméno: zkuste to znovu za {0}"
   },
-  "p0975": {
+  "p0976": {
    "source": "too many wrong passwords or codes from {0}: try again in {1}",
    "text": "příliš mnoho špatných hesel nebo kódů z {0}: zkuste to znovu za {1}"
   },
-  "p0976": {
+  "p0977": {
    "source": "too many wrong passwords {0}: try again in {1}",
    "text": "příliš mnoho chybných hesel {0}: zkuste to znovu za {1}"
   },
-  "p0977": {
+  "p0978": {
    "source": "totpcgi files imported from {0}: {1}",
    "text": "soubory totpcgi importovány z {0}: {1}"
   },
-  "p0978": {
+  "p0979": {
    "source": "two machines call themselves {0}: this one and {1} ({2}) - each node needs a name of its own (otp --set node_name=NAME on one of them, then systemctl restart otp)",
    "text": "dva stroje si říkají {0}: tento a {1} ({2}) – každý node potřebuje vlastní jméno (otp --set node_name=JMÉNO na jednom z nich, pak systemctl restart otp)"
   },
-  "p0979": {
+  "p0980": {
    "source": "until {0}",
    "text": "do {0}"
   },
-  "p0980": {
+  "p0981": {
    "source": "up {0}",
    "text": "běží {0}"
   },
-  "p0981": {
+  "p0982": {
    "source": "updated; the restart was not started: {0}",
    "text": "aktualizováno; restart se nespustil: {0}"
   },
-  "p0982": {
+  "p0983": {
    "source": "upgrade to {0}",
    "text": "aktualizace na {0}"
   },
-  "p0983": {
+  "p0984": {
    "source": "used {0}",
    "text": "použit {0}"
   },
-  "p0984": {
+  "p0985": {
    "source": "used {0} · {1}",
    "text": "použit {0} · {1}"
   },
-  "p0985": {
+  "p0986": {
    "source": "vendor {0}",
    "text": "výrobce {0}"
   },
-  "p0986": {
+  "p0987": {
    "source": "verify-full needs a certificate that names the address the nodes reach the server by ({0}).",
    "text": "verify-full potřebuje certifikát, který jmenuje adresu, přes kterou uzly server dosáhnou ({0})."
   },
-  "p0987": {
+  "p0988": {
+   "source": "waiting for deSEC's name servers to have the record - {0} so far, {1} s",
+   "text": "čekám, až záznam budou mít jmenné servery deSEC – zatím {0}, {1} s"
+  },
+  "p0989": {
    "source": "waiting for {0} to be in service",
    "text": "čeká, až bude {0} v provozu"
   },
-  "p0988": {
+  "p0990": {
    "source": "waiting for {0} to give its database a certificate",
    "text": "čekám, až {0} dá své databázi certifikát"
   },
-  "p0989": {
+  "p0991": {
    "source": "waiting for {0} to let this node in without TLS",
    "text": "čekám, až {0} pustí tento uzel i bez TLS"
   },
-  "p0990": {
+  "p0992": {
    "source": "waiting for {0} to move its link back",
    "text": "čekám, až {0} vrátí své spojení"
   },
-  "p0991": {
+  "p0993": {
    "source": "waiting for {0} to move its link over",
    "text": "čekám, až {0} převede své spojení"
   },
-  "p0992": {
+  "p0994": {
    "source": "waiting for {0} to start",
    "text": "čekám, až začne {0}"
   },
-  "p0993": {
+  "p0995": {
+   "source": "waiting {0} s for DNS to carry it",
+   "text": "čekám {0} s, než se záznam v DNS rozšíří"
+  },
+  "p0996": {
    "source": "what the machine has now kept, to go back to: {0}",
    "text": "co stroj má teď, je uložené pro návrat: {0}"
   },
-  "p0994": {
+  "p0997": {
    "source": "what the node has now could not be read ({0}) - it cannot be put back by itself",
    "text": "nešlo zjistit, co uzel teď má ({0}) – sám se vrátit nemůže"
   },
-  "p0995": {
+  "p0998": {
    "source": "what was kept could not be put back ({0}) - the old addresses are asked for instead",
    "text": "uložený stav nešlo vrátit ({0}) – místo toho se nastaví původní adresy"
   },
-  "p0996": {
+  "p0999": {
    "source": "written into {0} as {1}",
    "text": "zapsáno do {0} jako {1}"
   },
-  "p0997": {
+  "p1000": {
    "source": "written {0}",
    "text": "zapsáno {0}"
   },
-  "p0998": {
+  "p1001": {
    "source": "wrong: {0}",
    "text": "chybně: {0}"
   },
-  "p0999": {
+  "p1002": {
    "source": "your columns could not be kept: {0}",
    "text": "vaše sloupce nelze uložit: {0}"
   },
-  "p1000": {
+  "p1003": {
    "source": "your own address ({0}) is not among the networks that may reach the administration: you would be shut out. Add it, or let everybody in",
    "text": "vaše vlastní adresa ({0}) není mezi sítěmi, které smí do administrace: zamkl byste se venku. Přidejte ji, nebo povolte všechny"
   },
-  "p1001": {
+  "p1004": {
    "source": "your settings were saved to {0} ({1} table layout(s))",
    "text": "vaše nastavení bylo uloženo do {0} ({1} {1:rozvržení|rozvržení|rozvržení} tabulek)"
   },
-  "p1002": {
+  "p1005": {
    "source": "{0} % full - {1} free.",
    "text": "Zaplněno {0} % – volných {1}."
   },
-  "p1003": {
+  "p1006": {
    "source": "{0} % · {1} of {2} node(s) done",
    "text": "{0} % · hotovo {1} z {2} uzlů"
   },
-  "p1004": {
+  "p1007": {
    "source": "{0} (+{1} step)",
    "text": "{0} (+{1} krok)"
   },
-  "p1005": {
+  "p1008": {
    "source": "{0} (a test by {1} on {2})",
    "text": "{0} (test od {1} na {2})"
   },
-  "p1006": {
+  "p1009": {
    "source": "{0} (a test by {1})",
    "text": "{0} (test – {1})"
   },
-  "p1007": {
+  "p1010": {
    "source": "{0} (confirming a new token)",
    "text": "{0} (potvrzení nového tokenu)"
   },
-  "p1008": {
+  "p1011": {
    "source": "{0} (no such realm)",
    "text": "{0} (takový realm není)"
   },
-  "p1009": {
+  "p1012": {
    "source": "{0} (not answering)",
    "text": "{0} (neodpovídá)"
   },
-  "p1010": {
+  "p1013": {
    "source": "{0} (nothing used up)",
    "text": "{0} (nic se nespotřebovalo)"
   },
-  "p1011": {
+  "p1014": {
    "source": "{0} (the newest)",
    "text": "{0} (nejnovější)"
   },
-  "p1012": {
+  "p1015": {
    "source": "{0} (this one)",
    "text": "{0} (tento)"
   },
-  "p1013": {
+  "p1016": {
    "source": "{0} ({1} step)",
    "text": "{0} ({1} krok)"
   },
-  "p1014": {
+  "p1017": {
    "source": "{0} - good until {1} ({2} days).",
    "text": "{0} – platí do {1} ({2} dní)."
   },
-  "p1015": {
+  "p1018": {
    "source": "{0} - imported before it stopped: {1}",
    "text": "{0} – než se import zastavil, naimportovalo se: {1}"
   },
-  "p1016": {
+  "p1019": {
    "source": "{0} - keep the passphrase apart from the file",
    "text": "{0} – heslo uchovávejte odděleně od souboru"
   },
-  "p1017": {
+  "p1020": {
    "source": "{0} - left in maintenance: it runs {1}, which did not pass its checks",
    "text": "{0} – ponecháno v údržbě: běží na {1}, která neprošla kontrolami"
   },
-  "p1018": {
+  "p1021": {
    "source": "{0} - not answering",
    "text": "{0} – neodpovídá"
   },
-  "p1019": {
+  "p1022": {
    "source": "{0} - nothing was used up",
    "text": "{0} – nic se nespotřebovalo"
   },
-  "p1020": {
+  "p1023": {
    "source": "{0} - refused, since it cannot be sent whole",
    "text": "{0} – odmítnuto, protože ji nelze poslat celou"
   },
-  "p1021": {
+  "p1024": {
    "source": "{0} - the last 8 tries",
    "text": "{0} – posledních 8 pokusů"
   },
-  "p1022": {
+  "p1025": {
    "source": "{0} - the server said: {1}",
    "text": "{0} – server odpověděl: {1}"
   },
-  "p1023": {
+  "p1026": {
    "source": "{0} - what?",
    "text": "{0} – co?"
   },
-  "p1024": {
+  "p1027": {
    "source": "{0} - {1} clears it within a few seconds",
    "text": "{0} – {1} to zruší během několika sekund"
   },
-  "p1025": {
+  "p1028": {
    "source": "{0} / {1} names",
    "text": "{0} / {1} jmen"
   },
-  "p1026": {
+  "p1029": {
    "source": "{0} SMS from {1} failed in a row: {2}",
    "text": "{0} SMS z {1} za sebou se nepovedlo: {2}"
   },
-  "p1027": {
+  "p1030": {
    "source": "{0} TXT is not seen yet by {1} - the CA is asked anyway",
    "text": "{0} TXT zatím nevidí {1} – CA se zeptá i tak"
   },
-  "p1028": {
+  "p1031": {
+   "source": "{0} TXT is on {1} after {2} s; {3} s more for deSEC's other places",
+   "text": "{0} TXT je na {1} po {2} s; ještě {3} s pro ostatní místa deSEC"
+  },
+  "p1032": {
    "source": "{0} TXT is on {1}; {2} s more for deSEC's other places",
    "text": "{0} TXT je na {1}; ještě {2} s pro ostatní místa deSEC"
   },
-  "p1029": {
+  "p1033": {
    "source": "{0} TXT is seen by {1}",
    "text": "{0} TXT vidí {1}"
   },
-  "p1030": {
+  "p1034": {
    "source": "{0} The filters above stay as they are.",
    "text": "{0} Filtry nahoře zůstávají, jak jsou."
   },
-  "p1031": {
+  "p1035": {
    "source": "{0} a page",
    "text": "{0} na stránku"
   },
-  "p1032": {
+  "p1036": {
    "source": "{0} accounts",
    "text": "{0} {0:účet|účty|účtů}"
   },
-  "p1033": {
+  "p1037": {
    "source": "{0} added the backup destination {1} ({2})",
    "text": "{0} přidal(a) úložiště záloh {1} ({2})"
   },
-  "p1034": {
+  "p1038": {
    "source": "{0} added to the certificate authorities of the mail server",
    "text": "{0} přidal certifikační autoritu poštovního serveru"
   },
-  "p1035": {
+  "p1039": {
    "source": "{0} added to the certificates of the SMS gateway",
    "text": "{0} přidal(a) certifikát brány SMS"
   },
-  "p1036": {
+  "p1040": {
    "source": "{0} added {1} certificate(s) to the certificate authorities of {2} ({3} kept)",
    "text": "{0} přidal {1} certifikát(ů) k autoritám adresáře {2} (uloženo {3})"
   },
-  "p1037": {
+  "p1041": {
    "source": "{0} addresses",
    "text": "{0} {0:adresa|adresy|adres}"
   },
-  "p1038": {
+  "p1042": {
    "source": "{0} ago",
    "text": "před {0}"
   },
-  "p1039": {
+  "p1043": {
    "source": "{0} already has a token in use: only a full administrator replaces it (or the person, on the enrolment pages)",
    "text": "{0} už má používaný token: nahradit ho může jen plný administrátor (nebo sám člověk na stránkách registrace)"
   },
-  "p1040": {
+  "p1044": {
    "source": "{0} answers again (seen from {1})",
    "text": "{0} znovu odpovídá (z pohledu {1})"
   },
-  "p1041": {
+  "p1045": {
    "source": "{0} asked for a code by SMS to {1}, to check it",
    "text": "{0} si nechal(a) poslat kód SMS na {1} pro ověření"
   },
-  "p1042": {
+  "p1046": {
    "source": "{0} asked for a code by mail to {1}, to check it",
    "text": "{0} si nechal(a) poslat kód e-mailem na {1} pro ověření"
   },
-  "p1043": {
+  "p1047": {
    "source": "{0} asked for a power-off of {1}",
    "text": "{0} zadal(a) vypnutí {1}"
   },
-  "p1044": {
+  "p1048": {
    "source": "{0} asked for a power-off of {1} at once",
    "text": "{0} zadal(a) vypnutí {1} najednou"
   },
-  "p1045": {
+  "p1049": {
    "source": "{0} asked for a restart of {1}",
    "text": "{0} zadal(a) restart {1}"
   },
-  "p1046": {
+  "p1050": {
    "source": "{0} asked for a restart of {1} at once",
    "text": "{0} zadal(a) restart {1} najednou"
   },
-  "p1047": {
+  "p1051": {
    "source": "{0} asked for a restart of {1} one after the other",
    "text": "{0} zadal(a) restart {1} jeden po druhém"
   },
-  "p1048": {
+  "p1052": {
    "source": "{0} asked for {1} mail(s) of the outgoing mail to be sent again now",
    "text": "{0} požádal(a) o opětovné odeslání {1} {1:mailu|mailů|mailů} z odchozí pošty"
   },
-  "p1049": {
+  "p1053": {
    "source": "{0} asked {1} for a new network: {2}",
    "text": "{0} zadal(a) nodu {1} novou síť: {2}"
   },
-  "p1050": {
+  "p1054": {
    "source": "{0} asked {1} to step its clock to the time servers now",
    "text": "{0} požádal(a) {1} o okamžité srovnání hodin"
   },
-  "p1051": {
+  "p1055": {
    "source": "{0} at {1} is ready",
    "text": "{0} na {1} je připravena"
   },
-  "p1052": {
+  "p1056": {
    "source": "{0} backed up {1} token(s) (not locked)",
    "text": "{0} zálohoval(a) {1} {1:token|tokeny|tokenů} (nezamčeno)"
   },
-  "p1053": {
+  "p1057": {
    "source": "{0} backed up {1} token(s) locked with a passphrase",
    "text": "{0} zálohoval(a) {1} {1:token|tokeny|tokenů} zamčené heslem"
   },
-  "p1054": {
+  "p1058": {
    "source": "{0} becomes the preferred node: the address goes back to it after a failover.",
    "text": "{0} se stane preferovaným uzlem: adresa se na něj po failoveru vrací."
   },
-  "p1055": {
+  "p1059": {
    "source": "{0} belongs to the machine {1} and is saved on it (its own address), not from {2}",
    "text": "{0} patří stroji {1} a ukládá se na něm (přes jeho vlastní adresu), ne z {2}"
   },
-  "p1056": {
+  "p1060": {
    "source": "{0} between it and the root",
    "text": "{0} mezi ním a kořenem"
   },
-  "p1057": {
+  "p1061": {
    "source": "{0} came out of maintenance",
    "text": "{0} vyšel z údržby"
   },
-  "p1058": {
+  "p1062": {
    "source": "{0} cannot be empty",
    "text": "{0} nesmí být prázdné"
   },
-  "p1059": {
+  "p1063": {
    "source": "{0} cannot be read by the service (made by root on the command line?): chown otp:otp it, then again",
    "text": "{0} služba nemůže přečíst (vytvořil ho root na příkazové řádce?): změňte vlastníka na otp:otp a zkuste znovu"
   },
-  "p1060": {
+  "p1064": {
    "source": "{0} cannot be the address of a machine in {1}",
    "text": "{0} nemůže být adresou stroje v {1}"
   },
-  "p1061": {
+  "p1065": {
    "source": "{0} certificate(s) kept",
    "text": "{0} {0:certifikát uložen|certifikáty uloženy|certifikátů uloženo}"
   },
-  "p1062": {
+  "p1066": {
    "source": "{0} change(s) asked of it more than five minutes ago are not written - is otp-web.path running there?",
    "text": "{0} {0:změna zadaná|změny zadané|změn zadaných} před více než pěti minutami {0:není zapsaná|nejsou zapsané|není zapsáno} – běží tam otp-web.path?"
   },
-  "p1063": {
+  "p1067": {
    "source": "{0} change(s) not saved yet",
    "text": "{0} {0:změna|změny|změn} zatím {0:neuložena|neuloženy|neuloženo}"
   },
-  "p1064": {
+  "p1068": {
    "source": "{0} changed the backup destination {1} ({2})",
    "text": "{0} změnil(a) úložiště záloh {1} ({2})"
   },
-  "p1065": {
+  "p1069": {
    "source": "{0} changed the note of {1}",
    "text": "{0} změnil poznámku u {1}"
   },
-  "p1066": {
+  "p1070": {
    "source": "{0} changed the texts of “{1}” ({2})",
    "text": "{0} změnil(a) texty zprávy „{1}“ ({2})"
   },
-  "p1067": {
+  "p1071": {
    "source": "{0} changed their own password",
    "text": "{0} si změnil heslo"
   },
-  "p1068": {
+  "p1072": {
    "source": "{0} changed these words meanwhile ({1}) - load them again",
    "text": "{0} tyto texty mezitím změnil(a) ({1}) – načtěte je znovu"
   },
-  "p1069": {
+  "p1073": {
    "source": "{0} changed where the codes of {1} go: {2}",
    "text": "{0} změnil(a), kam chodí kódy {1}: {2}"
   },
-  "p1070": {
+  "p1074": {
    "source": "{0} checked the database: {1}",
    "text": "{0} zkontroloval databázi: {1}"
   },
-  "p1071": {
+  "p1075": {
    "source": "{0} cleared every lockout and count of wrong attempts on {1} ({2})",
    "text": "{0} zrušil(a) všechna zablokování a počty chybných pokusů na {1} ({2})"
   },
-  "p1072": {
+  "p1076": {
    "source": "{0} cleared the cluster's history",
    "text": "{0} vymazal(a) historii clusteru"
   },
-  "p1073": {
+  "p1077": {
    "source": "{0} cleared the count of codes sent to {1}",
    "text": "{0} zrušil(a) počet kódů odeslaných {1}"
   },
-  "p1074": {
+  "p1078": {
    "source": "{0} cleared the count of wrong attempts of the address {1} ({2}) on {3}",
    "text": "{0} zrušil(a) počet chybných pokusů adresy {1} ({2}) na {3}"
   },
-  "p1075": {
+  "p1079": {
    "source": "{0} cleared the count of wrong attempts of the name {1} ({2}) on {3}",
    "text": "{0} zrušil(a) počet chybných pokusů jména {1} ({2}) na {3}"
   },
-  "p1076": {
+  "p1080": {
    "source": "{0} cleared the list of backups sent ({1} line(s)); the backups stay where they went",
    "text": "{0} vymazal(a) seznam odeslaných záloh ({1} řádků); zálohy zůstávají tam, kam došly"
   },
-  "p1077": {
+  "p1081": {
    "source": "{0} closed the connection",
    "text": "{0} ukončil spojení"
   },
-  "p1078": {
+  "p1082": {
    "source": "{0} confirmed the token of {1}",
    "text": "{0} potvrdil token uživatele {1}"
   },
-  "p1079": {
+  "p1083": {
    "source": "{0} confirmed their token",
    "text": "{0} potvrdil svůj token"
   },
-  "p1080": {
+  "p1084": {
    "source": "{0} could not be reached: {1}",
    "text": "{0} není dostupný: {1}"
   },
-  "p1081": {
+  "p1085": {
    "source": "{0} could not be read",
    "text": "{0} nejde přečíst"
   },
-  "p1082": {
+  "p1086": {
    "source": "{0} could not be read: {1}",
    "text": "{0} nešlo přečíst: {1}"
   },
-  "p1083": {
+  "p1087": {
    "source": "{0} could not sign in from {1}: {2}",
    "text": "{0} se nemohl přihlásit z {1}: {2}"
   },
-  "p1084": {
+  "p1088": {
    "source": "{0} could not sign in to the enrolment pages from {1}: {2}",
    "text": "{0} se nemohl přihlásit na stránky registrace z {1}: {2}"
   },
-  "p1085": {
+  "p1089": {
    "source": "{0} days ago",
    "text": "před {0} dny"
   },
-  "p1086": {
+  "p1090": {
    "source": "{0} days left",
    "text": "zbývá {0} {0:den|dny|dní}"
   },
-  "p1087": {
+  "p1091": {
    "source": "{0} days {1} h",
    "text": "{0} dní {1} h"
   },
-  "p1088": {
+  "p1092": {
    "source": "{0} dead row(s)",
    "text": "{0} {0:mrtvý řádek|mrtvé řádky|mrtvých řádků}"
   },
-  "p1089": {
+  "p1093": {
    "source": "{0} deleted the backup {1} at {2}",
    "text": "{0} smazal(a) zálohu {1} v {2}"
   },
-  "p1090": {
+  "p1094": {
    "source": "{0} deleted {1}",
    "text": "{0} smazal {1}"
   },
-  "p1091": {
+  "p1095": {
    "source": "{0} did not answer the test within {1} s",
    "text": "{0} na test neodpověděl do {1} s"
   },
-  "p1092": {
+  "p1096": {
    "source": "{0} did not answer within {1} s",
    "text": "{0} neodpověděl do {1} s"
   },
-  "p1093": {
+  "p1097": {
    "source": "{0} did not finish answering within {1} s",
    "text": "{0} nedokončil odpověď do {1} s"
   },
-  "p1094": {
+  "p1098": {
    "source": "{0} did not finish the search within {1} s",
    "text": "{0} nedokončil hledání do {1} s"
   },
-  "p1095": {
+  "p1099": {
    "source": "{0} digits, a new one every {1} s",
    "text": "{0} číslic, nový každých {1} s"
   },
-  "p1096": {
+  "p1100": {
    "source": "{0} digits, {1} s, {2}",
    "text": "{0} číslic, {1} s, {2}"
   },
-  "p1097": {
+  "p1101": {
    "source": "{0} does not hold the newest authority",
    "text": "{0} neobsahuje nejnovější autoritu"
   },
-  "p1098": {
+  "p1102": {
    "source": "{0} does not offer STARTTLS - choose TLS from the start, or none",
    "text": "{0} nenabízí STARTTLS – zvolte TLS od začátku, nebo žádné"
   },
-  "p1099": {
+  "p1103": {
    "source": "{0} downloaded the backup {1}",
    "text": "{0} stáhl(a) zálohu {1}"
   },
-  "p1100": {
+  "p1104": {
    "source": "{0} downloaded {1}",
    "text": "{0} stáhl(a) {1}"
   },
-  "p1101": {
+  "p1105": {
    "source": "{0} downloaded {1} WITH the key that opens its tokens, locked with a passphrase",
    "text": "{0} stáhl(a) {1} S klíčem, který otevírá jeho tokeny, zamčeným heslem"
   },
-  "p1102": {
+  "p1106": {
    "source": "{0} downloaded {1}, made for it",
    "text": "{0} stáhl(a) {1}, vytvořenou pro stažení"
   },
-  "p1103": {
+  "p1107": {
    "source": "{0} downloaded {1}, made for it - with the key that opens the tokens in it",
    "text": "{0} stáhl(a) {1}, vytvořenou pro stažení – s klíčem, který otevírá tokeny"
   },
-  "p1104": {
+  "p1108": {
    "source": "{0} downloaded {1}, made for it - without the key that opens the tokens (showing keys is switched off)",
    "text": "{0} stáhl(a) {1}, vytvořenou pro stažení – bez klíče, který otevírá tokeny (zobrazování klíčů je vypnuté)"
   },
-  "p1105": {
+  "p1109": {
    "source": "{0} downloaded {1}, made for it, without the key that opens its tokens",
    "text": "{0} stáhl(a) {1}, vytvořené pro stažení, bez klíče, který otevírá jeho tokeny"
   },
-  "p1106": {
+  "p1110": {
    "source": "{0} downloaded {1}, without the key that opens its tokens",
    "text": "{0} stáhl(a) {1} bez klíče, který otevírá jeho tokeny"
   },
-  "p1107": {
+  "p1111": {
    "source": "{0} emptied the certificate authorities of the mail server",
    "text": "{0} vyprázdnil certifikační autority poštovního serveru"
   },
-  "p1108": {
+  "p1112": {
    "source": "{0} emptied the certificates of the SMS gateway",
    "text": "{0} vyprázdnil(a) certifikáty brány SMS"
   },
-  "p1109": {
+  "p1113": {
    "source": "{0} emptied {1} at {2}",
    "text": "{0} vyprázdnil {1} na {2}"
   },
-  "p1110": {
+  "p1114": {
    "source": "{0} ended a sign-in",
    "text": "{0} ukončil přihlášení"
   },
-  "p1111": {
+  "p1115": {
    "source": "{0} ended the sign-in of {1}",
    "text": "{0} ukončil přihlášení {1}"
   },
-  "p1112": {
+  "p1116": {
    "source": "{0} ended the sign-in of {1} from {2}",
    "text": "{0} ukončil přihlášení {1} z {2}"
   },
-  "p1113": {
+  "p1117": {
    "source": "{0} enrolled a token for themselves",
    "text": "{0} si zaregistroval token"
   },
-  "p1114": {
+  "p1118": {
    "source": "{0} enrolled a token for themselves, waiting for a code",
    "text": "{0} si zaregistroval token, čeká se na kód"
   },
-  "p1115": {
+  "p1119": {
    "source": "{0} erased {1} (a copy was made first: {2})",
    "text": "{0} vymazal {1} (nejdřív byla vytvořena kopie: {2})"
   },
-  "p1116": {
+  "p1120": {
    "source": "{0} error(s)",
    "text": "{0} {0:chyba|chyby|chyb}"
   },
-  "p1117": {
+  "p1121": {
    "source": "{0} exception(s): not enforced.",
    "text": "{0} výjimek: nevynucují se."
   },
-  "p1118": {
+  "p1122": {
    "source": "{0} exported the token of {1} as a .totp file",
    "text": "{0} exportoval token {1} jako soubor .totp"
   },
-  "p1119": {
+  "p1123": {
    "source": "{0} exported {1} token(s) as .totp files",
    "text": "{0} exportoval {1} {1:token|tokeny|tokenů} jako soubory .totp"
   },
-  "p1120": {
+  "p1124": {
    "source": "{0} exported {1} token(s) as .totp files (filter: {2})",
    "text": "{0} exportoval {1} {1:token|tokeny|tokenů} jako soubory .totp (filtr: {2})"
   },
-  "p1121": {
+  "p1125": {
    "source": "{0} failed (SERVFAIL)",
    "text": "{0} selhal (SERVFAIL)"
   },
-  "p1122": {
+  "p1126": {
    "source": "{0} failed: {1}",
    "text": "{0} selhalo: {1}"
   },
-  "p1123": {
+  "p1127": {
    "source": "{0} fetched otp {1} from {2} (signed by {3}), ready to be put in",
    "text": "{0} stáhl(a) otp {1} z {2} (podepsal {3}), připraveno k instalaci"
   },
-  "p1124": {
+  "p1128": {
    "source": "{0} file(s) read",
    "text": "{0} {0:soubor načten|soubory načteny|souborů načteno}"
   },
-  "p1125": {
+  "p1129": {
    "source": "{0} forgot the requests and checks older than {1} day(s): {2}",
    "text": "{0} zapomněl požadavky a kontroly starší než {1} dní: {2}"
   },
-  "p1126": {
+  "p1130": {
    "source": "{0} free inside",
    "text": "{0} volných uvnitř"
   },
-  "p1127": {
+  "p1131": {
    "source": "{0} free inside it, which the engine uses again; Give the disk back hands it to the operating system.",
    "text": "{0} volného místa uvnitř, které databáze znovu využije; Vrátit disk ho předá operačnímu systému."
   },
-  "p1128": {
+  "p1132": {
    "source": "{0} free of {1}",
    "text": "volných {0} z {1}"
   },
-  "p1129": {
+  "p1133": {
    "source": "{0} free, {1} used",
    "text": "{0} volných, {1} použitých"
   },
-  "p1130": {
+  "p1134": {
    "source": "{0} from {1} is signed out at once.",
    "text": "{0} z {1} bude okamžitě odhlášen."
   },
-  "p1131": {
+  "p1135": {
    "source": "{0} gave the disk back: {1} -> {2}",
    "text": "{0} vrátil místo na disku: {1} -> {2}"
   },
-  "p1132": {
+  "p1136": {
    "source": "{0} gave the second step ({1}) from {2}",
    "text": "{0} zadal(a) druhý krok ({1}) z {2}"
   },
-  "p1133": {
+  "p1137": {
    "source": "{0} goes back to its old network and restarts.",
    "text": "{0} se vrátí ke své původní síti a restartuje."
   },
-  "p1134": {
+  "p1138": {
    "source": "{0} goes into maintenance, the VIP address moves to the other node, and it restarts; back up, it comes back into service by itself.",
    "text": "{0} přejde do údržby, VIP adresa se přesune na druhý node a restartuje se; po naběhnutí se sám vrátí do provozu."
   },
-  "p1135": {
+  "p1139": {
    "source": "{0} goes into maintenance, the web address moves to the other node, and it restarts; back up, it comes back into service by itself.",
    "text": "{0} přejde do údržby, webová adresa se přesune na druhý node a restartuje se; po naběhnutí se sám vrátí do provozu."
   },
-  "p1136": {
+  "p1140": {
    "source": "{0} gone",
    "text": "{0} {0:chybí|chybí|chybí}"
   },
-  "p1137": {
+  "p1141": {
    "source": "{0} group(s)",
    "text": "{0} {0:skupina|skupiny|skupin}"
   },
-  "p1138": {
+  "p1142": {
    "source": "{0} group(s) added - take out the ones that should not let in",
    "text": "{0} {0:skupina přidána|skupiny přidány|skupin přidáno} – vyjměte ty, které nemají pouštět"
   },
-  "p1139": {
+  "p1143": {
    "source": "{0} group(s) found",
    "text": "{0} {0:skupina nalezena|skupiny nalezeny|skupin nalezeno}"
   },
-  "p1140": {
+  "p1144": {
    "source": "{0} group(s) under the base",
    "text": "{0} {0:skupina|skupiny|skupin} pod bází"
   },
-  "p1141": {
+  "p1145": {
    "source": "{0} group(s). Press a role beside one to put it in that role; press it again to take it out. More than one group may hold a role, and somebody in several gets the highest.",
    "text": "{0} {0:skupina|skupiny|skupin}. Stiskem role vedle skupiny ji do role přidáte; dalším stiskem ji vyjmete. Roli může mít víc skupin a kdo je v několika, dostane nejvyšší."
   },
-  "p1142": {
+  "p1146": {
    "source": "{0} h ago",
    "text": "před {0} h"
   },
-  "p1143": {
+  "p1147": {
    "source": "{0} had no second step set up",
    "text": "{0} neměl druhý krok nastavený"
   },
-  "p1144": {
+  "p1148": {
    "source": "{0} has every table as it comes: nothing to put back.",
    "text": "{0} má všechny tabulky ve výchozím stavu: není co vracet."
   },
-  "p1145": {
+  "p1149": {
    "source": "{0} has laid out {1} table(s) by hand. Put every one of them back as it comes: the widths, the order and the hidden columns. Nothing else of theirs changes.",
    "text": "{0} si ručně upravil {1} {1:tabulku|tabulky|tabulek}. Vrátit všechny do výchozího stavu: šířky, pořadí i skryté sloupce. Nic jiného se nezmění."
   },
-  "p1146": {
+  "p1150": {
    "source": "{0} has no second step set up: nothing to reset.",
    "text": "{0} nemá druhý krok nastavený: není co resetovat."
   },
-  "p1147": {
+  "p1151": {
    "source": "{0} has no token",
    "text": "{0} nemá token"
   },
-  "p1148": {
+  "p1152": {
    "source": "{0} has no token to replace",
    "text": "{0} nemá token k nahrazení"
   },
-  "p1149": {
+  "p1153": {
    "source": "{0} has no token.",
    "text": "{0} nemá token."
   },
-  "p1150": {
+  "p1154": {
    "source": "{0} has no token: they cannot sign in to the VPN until they enrol one on the enrolment pages, or one is made here.",
    "text": "{0} nemá token: do VPN se nepřihlásí, dokud si ho nezaregistruje na stránkách registrace nebo ho nevytvoříte zde."
   },
-  "p1151": {
+  "p1155": {
    "source": "{0} has no value: an attribute is never sent empty",
    "text": "{0} nemá hodnotu: prázdný atribut se nikdy neposílá"
   },
-  "p1152": {
+  "p1156": {
    "source": "{0} has nobody by that name.",
    "text": "{0} nikoho takového jména nemá."
   },
-  "p1153": {
+  "p1157": {
    "source": "{0} has nobody called {1}",
    "text": "{0} nikoho jménem {1} nemá"
   },
-  "p1154": {
+  "p1158": {
    "source": "{0} has not been heard from for {1} s",
    "text": "{0} se neozval {1} s"
   },
-  "p1155": {
+  "p1159": {
    "source": "{0} has not been heard from for {1} s - bring it back, or forget it (Settings - High availability)",
    "text": "{0} se neozval {1} s – vraťte ho, nebo ho zapomeňte (Nastavení → Vysoká dostupnost)"
   },
-  "p1156": {
+  "p1160": {
    "source": "{0} has not said what its network is yet - Read it again.",
    "text": "{0} zatím neřekl, jakou má síť – načtěte znovu."
   },
-  "p1157": {
+  "p1161": {
    "source": "{0} here already",
    "text": "{0} už tu je"
   },
-  "p1158": {
+  "p1162": {
    "source": "{0} imported a configuration: {1}",
    "text": "{0} importoval konfiguraci: {1}"
   },
-  "p1159": {
+  "p1163": {
    "source": "{0} imported {1} token file(s)",
    "text": "{0} importoval {1} {1:soubor|soubory|souborů} tokenů"
   },
-  "p1160": {
+  "p1164": {
    "source": "{0} in 24 hours",
    "text": "{0} za 24 hodin"
   },
-  "p1161": {
+  "p1165": {
    "source": "{0} in 3 days",
    "text": "{0} za 3 dny"
   },
-  "p1162": {
+  "p1166": {
    "source": "{0} in 6 hours",
    "text": "{0} za 6 hodin"
   },
-  "p1163": {
+  "p1167": {
    "source": "{0} in a month",
    "text": "{0} za měsíc"
   },
-  "p1164": {
+  "p1168": {
    "source": "{0} in a week",
    "text": "{0} za týden"
   },
-  "p1165": {
+  "p1169": {
    "source": "{0} in all",
    "text": "{0} celkem"
   },
-  "p1166": {
+  "p1170": {
    "source": "{0} in maintenance",
    "text": "{0} v údržbě"
   },
-  "p1167": {
+  "p1171": {
    "source": "{0} in that file: {1}",
    "text": "{0} v tom souboru: {1}"
   },
-  "p1168": {
+  "p1172": {
    "source": "{0} in the directory",
    "text": "{0} v adresáři"
   },
-  "p1169": {
+  "p1173": {
    "source": "{0} in this window",
    "text": "{0} v tomto časovém okně"
   },
-  "p1170": {
+  "p1174": {
    "source": "{0} in use",
    "text": "{0} se používá"
   },
-  "p1171": {
+  "p1175": {
    "source": "{0} in use · {1} never used",
    "text": "{0} v provozu · {1} nikdy nepoužito"
   },
-  "p1172": {
+  "p1176": {
    "source": "{0} in use · {1} never used · {2} app · {3} e-mail · {4} SMS",
    "text": "{0} v provozu · {1} nikdy nepoužito · {2} aplikace · {3} e-mail · {4} SMS"
   },
-  "p1173": {
+  "p1177": {
    "source": "{0} is a number - {1} is not one",
    "text": "{0} je číslo – {1} jím není"
   },
-  "p1174": {
+  "p1178": {
    "source": "{0} is a piece of text",
    "text": "{0} je text"
   },
-  "p1175": {
+  "p1179": {
    "source": "{0} is a piece of text here",
    "text": "{0} je zde text"
   },
-  "p1176": {
+  "p1180": {
    "source": "{0} is a salted key (MS-MPPE): it cannot be sent by number",
    "text": "{0} je solený klíč (MS-MPPE): podle čísla ho poslat nejde"
   },
-  "p1177": {
+  "p1181": {
    "source": "{0} is at the step {1}",
    "text": "{0} je v kroku {1}"
   },
-  "p1178": {
+  "p1182": {
    "source": "{0} is at {1}",
    "text": "{0} je na {1}"
   },
-  "p1179": {
+  "p1183": {
    "source": "{0} is back up",
    "text": "{0} znovu běží"
   },
-  "p1180": {
+  "p1184": {
    "source": "{0} is bigger than 5 MB: split it",
    "text": "{0} je větší než 5 MB: rozdělte ho"
   },
-  "p1181": {
+  "p1185": {
    "source": "{0} is changing its network already",
    "text": "{0} už mění svou síť"
   },
-  "p1182": {
+  "p1186": {
    "source": "{0} is deleted",
    "text": "{0} je smazán"
   },
-  "p1183": {
+  "p1187": {
    "source": "{0} is far bigger than any certificate file",
    "text": "{0} je mnohem větší než jakýkoli soubor s certifikátem"
   },
-  "p1184": {
+  "p1188": {
    "source": "{0} is going on already",
    "text": "{0} už probíhá"
   },
-  "p1185": {
+  "p1189": {
    "source": "{0} is in the list reached straight",
    "text": "{0} je v seznamu dostupných přímo"
   },
-  "p1186": {
+  "p1190": {
    "source": "{0} is locked - its passphrase opens it",
    "text": "{0} je zamčený – otevře ho jeho heslo"
   },
-  "p1187": {
+  "p1191": {
    "source": "{0} is locked the old ZipCrypto way - only AES is read",
    "text": "{0} je zamčený starým ZipCrypto – čte se jen AES"
   },
-  "p1188": {
+  "p1192": {
    "source": "{0} is not a certificate",
    "text": "{0} není certifikát"
   },
-  "p1189": {
+  "p1193": {
    "source": "{0} is not a folder of .totp files",
    "text": "{0} není složka se soubory .totp"
   },
-  "p1190": {
+  "p1194": {
    "source": "{0} is not a full DNS name (like otp2.example.cz)",
    "text": "{0} není plné DNS jméno (např. otp2.example.cz)"
   },
-  "p1191": {
+  "p1195": {
    "source": "{0} is not a host name",
    "text": "{0} není název hostitele"
   },
-  "p1192": {
+  "p1196": {
    "source": "{0} is not a list",
    "text": "{0} není seznam"
   },
-  "p1193": {
+  "p1197": {
    "source": "{0} is not a list of objects",
    "text": "{0} není seznam objektů"
   },
-  "p1194": {
+  "p1198": {
    "source": "{0} is not a mail address",
    "text": "{0} není e-mailová adresa"
   },
-  "p1195": {
+  "p1199": {
    "source": "{0} is not a name or an address",
    "text": "{0} není jméno ani adresa"
   },
-  "p1196": {
+  "p1200": {
    "source": "{0} is not a number",
    "text": "{0} není číslo"
   },
-  "p1197": {
+  "p1201": {
    "source": "{0} is not a server name or address",
    "text": "{0} není jméno ani adresa serveru"
   },
-  "p1198": {
+  "p1202": {
    "source": "{0} is not a setting this version knows",
    "text": "{0} není nastavení, které tato verze zná"
   },
-  "p1199": {
+  "p1203": {
    "source": "{0} is not a user name",
    "text": "{0} není jméno účtu"
   },
-  "p1200": {
+  "p1204": {
    "source": "{0} is not an address (one address, not a range or a name)",
    "text": "{0} není adresa (jedna adresa, ne rozsah ani jméno)"
   },
-  "p1201": {
+  "p1205": {
    "source": "{0} is not an address or a range of them",
    "text": "{0} není adresa ani rozsah adres"
   },
-  "p1202": {
+  "p1206": {
    "source": "{0} is not an attribute this server sends (Ctrl+Space lists them)",
    "text": "{0} není atribut, který tento server posílá (Ctrl+Space je vypíše)"
   },
-  "p1203": {
+  "p1207": {
    "source": "{0} is not answering.",
    "text": "{0} neodpovídá."
   },
-  "p1204": {
+  "p1208": {
    "source": "{0} is not answering: the address cannot go there",
    "text": "{0} neodpovídá: adresa tam nemůže přejít"
   },
-  "p1205": {
+  "p1209": {
    "source": "{0} is not heard from",
    "text": "{0} neodpovídá"
   },
-  "p1206": {
+  "p1210": {
    "source": "{0} is not heard from: bring it back first",
    "text": "{0} neodpovídá: nejdřív ho zprovozněte"
   },
-  "p1207": {
+  "p1211": {
    "source": "{0} is not older than {1}, which runs here - that is an upgrade",
    "text": "{0} není starší než {1}, která tu běží – to je aktualizace"
   },
-  "p1208": {
+  "p1212": {
    "source": "{0} is not on this machine",
    "text": "{0} na tomto stroji není"
   },
-  "p1209": {
+  "p1213": {
    "source": "{0} is not on this machine (dnf install openssh-clients)",
    "text": "{0} na tomto stroji není (dnf install openssh-clients)"
   },
-  "p1210": {
+  "p1214": {
    "source": "{0} is not something that can come after the @ - example.local",
    "text": "{0} nemůže následovat za @ – např. example.local"
   },
-  "p1211": {
+  "p1215": {
    "source": "{0} is not something this setting can hold",
    "text": "{0} toto nastavení nemůže obsahovat"
   },
-  "p1212": {
+  "p1216": {
    "source": "{0} is not the file that was signed",
    "text": "{0} není soubor, který byl podepsán"
   },
-  "p1213": {
+  "p1217": {
    "source": "{0} is not there",
    "text": "{0} chybí"
   },
-  "p1214": {
+  "p1218": {
    "source": "{0} is not yes or no",
    "text": "{0} není ano ani ne"
   },
-  "p1215": {
+  "p1219": {
    "source": "{0} is off",
    "text": "{0} je vypnuto"
   },
-  "p1216": {
+  "p1220": {
    "source": "{0} is older than {1}, which runs here: going back is done on the command line",
    "text": "{0} je starší než {1}, která tu běží: návrat zpět se dělá z příkazové řádky"
   },
-  "p1217": {
+  "p1221": {
    "source": "{0} is replacing their token",
    "text": "{0} nahrazuje svůj token"
   },
-  "p1218": {
+  "p1222": {
    "source": "{0} is replacing their token with the app",
    "text": "{0} nahrazuje svůj token aplikací"
   },
-  "p1219": {
+  "p1223": {
    "source": "{0} is running out of room ({1})",
    "text": "Na {0} dochází místo ({1})"
   },
-  "p1220": {
+  "p1224": {
    "source": "{0} is signed out at once.",
    "text": "{0} bude okamžitě odhlášen."
   },
-  "p1221": {
+  "p1225": {
    "source": "{0} is switched off; the VIP address moves to the other node, which goes on answering alone. It has to be switched on again at the machine.",
    "text": "{0} se vypne; VIP adresa přejde na druhý node, který odpovídá sám. Znovu se musí zapnout u stroje."
   },
-  "p1222": {
+  "p1226": {
    "source": "{0} is switched off; the web address moves to the other node, which goes on answering alone. It has to be switched on again at the machine.",
    "text": "{0} se vypne; webová adresa přejde na druhý node, který odpovídá sám. Znovu se musí zapnout u stroje."
   },
-  "p1223": {
+  "p1227": {
    "source": "{0} is the VIP address of the cluster",
    "text": "{0} je VIP adresa clusteru"
   },
-  "p1224": {
+  "p1228": {
    "source": "{0} is the address of {1}",
    "text": "{0} je adresa {1}"
   },
-  "p1225": {
+  "p1229": {
    "source": "{0} is the address of {1}: the VIP address is a third one",
    "text": "{0} je adresa uzlu {1}: VIP adresa musí být třetí"
   },
-  "p1226": {
+  "p1230": {
    "source": "{0} is the address of {1}: the web address is a third one",
    "text": "{0} je adresa uzlu {1}: webová adresa musí být třetí"
   },
-  "p1227": {
+  "p1231": {
    "source": "{0} is the web address of the cluster",
    "text": "{0} je webová adresa clusteru"
   },
-  "p1228": {
+  "p1232": {
    "source": "{0} is up again after the restart",
    "text": "{0} po restartu znovu běží"
   },
-  "p1229": {
+  "p1233": {
    "source": "{0} is upgraded to {1}",
    "text": "{0} je aktualizován na {1}"
   },
-  "p1230": {
+  "p1234": {
    "source": "{0} is {1} - at most 512 KB",
    "text": "{0} má {1} – nejvýše 512 KB"
   },
-  "p1231": {
+  "p1235": {
    "source": "{0} joined this node to the cluster of {1}; it starts again on {2}",
    "text": "{0} připojil tento uzel ke clusteru uzlu {1}; znovu se spouští na {2}"
   },
-  "p1232": {
+  "p1236": {
    "source": "{0} keeps",
    "text": "{0} drží"
   },
-  "p1233": {
+  "p1237": {
    "source": "{0} keeps {1} certificate(s)",
    "text": "{0} má {1} {1:certifikát|certifikáty|certifikátů}"
   },
-  "p1234": {
+  "p1238": {
    "source": "{0} kept as they are here",
    "text": "{0} {0:zůstane|zůstanou|zůstane}, jak tu {0:je|jsou|je}"
   },
-  "p1235": {
+  "p1239": {
    "source": "{0} left",
    "text": "zbývá {0}"
   },
-  "p1236": {
+  "p1240": {
    "source": "{0} left · each works once, in place of a code from the phone",
    "text": "zbývá {0} · každý platí jednou, místo kódu z telefonu"
   },
-  "p1237": {
+  "p1241": {
    "source": "{0} left. Each works once, in place of a code from the phone.",
    "text": "Zbývá {0}. Každý platí jednou, místo kódu z telefonu."
   },
-  "p1238": {
+  "p1242": {
    "source": "{0} let {1} try again at once",
    "text": "{0} dovolil(a) {1} hned zkusit znovu"
   },
-  "p1239": {
+  "p1243": {
    "source": "{0} line(s)",
    "text": "{0} {0:řádek|řádky|řádků}"
   },
-  "p1240": {
+  "p1244": {
    "source": "{0} line(s) taken out",
    "text": "{0} {0:řádek vyjmut|řádky vyjmuty|řádků vyjmuto}"
   },
-  "p1241": {
+  "p1245": {
    "source": "{0} locked out",
    "text": "zablokováno: {0}"
   },
-  "p1242": {
+  "p1246": {
    "source": "{0} looked at the code the token of {1} shows now",
    "text": "{0} si zobrazil aktuální kód tokenu uživatele {1}"
   },
-  "p1243": {
+  "p1247": {
    "source": "{0} looked at the key of the token of {1}",
    "text": "{0} si zobrazil klíč tokenu uživatele {1}"
   },
-  "p1244": {
+  "p1248": {
    "source": "{0} looked at the key of the waiting token of {1}",
    "text": "{0} si zobrazil klíč čekajícího tokenu uživatele {1}"
   },
-  "p1245": {
+  "p1249": {
    "source": "{0} looked at the recovery codes of {1}",
    "text": "{0} zobrazil záložní kódy uživatele {1}"
   },
-  "p1246": {
+  "p1250": {
    "source": "{0} looked at the shared secret of {1}",
    "text": "{0} zobrazil sdílené heslo klienta {1}"
   },
-  "p1247": {
+  "p1251": {
    "source": "{0} looked at their recovery codes from {1}",
    "text": "{0} si zobrazil(a) záložní kódy z {1}"
   },
-  "p1248": {
+  "p1252": {
    "source": "{0} looked up",
    "text": "{0} vyhledáno"
   },
-  "p1249": {
+  "p1253": {
    "source": "{0} made a bundle for a second node to join this one (the database at {1})",
    "text": "{0} vytvořil balíček pro připojení druhého uzlu (databáze na {1})"
   },
-  "p1250": {
+  "p1254": {
    "source": "{0} made a bundle for a second node to join this one (the database at {1}) - it carries the key that opens every token",
    "text": "{0} vytvořil(a) balíček pro připojení druhého uzlu (databáze na {1}) – nese klíč, který otevírá všechny tokeny"
   },
-  "p1251": {
+  "p1255": {
    "source": "{0} made a token for {1}",
    "text": "{0} vytvořil token pro {1}"
   },
-  "p1252": {
+  "p1256": {
    "source": "{0} made a token for {1}: codes by SMS to {2}",
    "text": "{0} vytvořil(a) token pro {1}: kódy SMS na {2}"
   },
-  "p1253": {
+  "p1257": {
    "source": "{0} made a token for {1}: codes by mail to {2}",
    "text": "{0} vytvořil(a) token pro {1}: kódy e-mailem na {2}"
   },
-  "p1254": {
+  "p1258": {
    "source": "{0} made an exception to high security: {1}",
    "text": "{0} udělal výjimku z vysoké bezpečnosti: {1}"
   },
-  "p1255": {
+  "p1259": {
    "source": "{0} made new recovery codes for {1}",
    "text": "{0} vytvořil nové záložní kódy pro {1}"
   },
-  "p1256": {
+  "p1260": {
    "source": "{0} made the account {1} ({2})",
    "text": "{0} vytvořil účet {1} ({2})"
   },
-  "p1257": {
+  "p1261": {
    "source": "{0} mail(s) are being sent again now",
    "text": "{0} {0:mail se právě posílá|maily se právě posílají|mailů se právě posílá} znovu"
   },
-  "p1258": {
+  "p1262": {
    "source": "{0} mail(s) are being sent again now - {1} code(s) to sign in with are past their time and no good any more",
    "text": "{0} {0:mail se právě posílá|maily se právě posílají|mailů se právě posílá} znovu – {1} {1:kód|kódy|kódů} k přihlášení už neplatí (prošla doba)"
   },
-  "p1259": {
+  "p1263": {
    "source": "{0} mail(s) are being sent again now - {1} could not be (sent already, or what they held is gone)",
    "text": "{0} {0:mail se právě posílá|maily se právě posílají|mailů se právě posílá} znovu – {1} nešlo (už odeslané, nebo jejich obsah už není)"
   },
-  "p1260": {
+  "p1264": {
    "source": "{0} mail(s) taken out of the outgoing mail",
    "text": "{0} {0:mail odebrán|maily odebrány|mailů odebráno} z odchozí pošty"
   },
-  "p1261": {
+  "p1265": {
    "source": "{0} matching",
    "text": "{0} odpovídá"
   },
-  "p1262": {
+  "p1266": {
    "source": "{0} may not enrol a token: in none of the groups",
    "text": "{0} se nesmí registrovat: není v žádné ze skupin"
   },
-  "p1263": {
+  "p1267": {
    "source": "{0} may not enrol a token: in none of the groups ({1})",
    "text": "{0} se nesmí registrovat: není v žádné ze skupin ({1})"
   },
-  "p1264": {
+  "p1268": {
    "source": "{0} min ago",
    "text": "před {0} min"
   },
-  "p1265": {
+  "p1269": {
    "source": "{0} modem(s)",
    "text": "modemů: {0}"
   },
-  "p1266": {
+  "p1270": {
    "source": "{0} more",
    "text": "a {0} dalších"
   },
-  "p1267": {
+  "p1271": {
    "source": "{0} more in Settings → The database",
    "text": "dalších {0} v Nastavení → Databáze"
   },
-  "p1268": {
+  "p1272": {
    "source": "{0} moved the token of {1} to {2}",
    "text": "{0} přesunul token uživatele {1} na {2}"
   },
-  "p1269": {
+  "p1273": {
    "source": "{0} moved {1} token(s) under @{2} in the realm {3}",
    "text": "{0} přesunul(a) {1} tokenů pod @{2} v realmu {3}"
   },
-  "p1270": {
+  "p1274": {
    "source": "{0} must be between {1} and {2}",
    "text": "{0} musí být mezi {1} a {2}"
   },
-  "p1271": {
+  "p1275": {
    "source": "{0} need a restart after this update: {1}.",
    "text": "{0} budou po této aktualizaci potřebovat restart: {1}."
   },
-  "p1272": {
+  "p1276": {
    "source": "{0} needs a restart",
    "text": "{0} potřebuje restart"
   },
-  "p1273": {
+  "p1277": {
    "source": "{0} needs a restart after this update: {1}.",
    "text": "{0} bude po této aktualizaci potřebovat restart: {1}."
   },
-  "p1274": {
+  "p1278": {
    "source": "{0} never used",
    "text": "{0} nikdy nepoužito"
   },
-  "p1275": {
+  "p1279": {
    "source": "{0} never used yet · {1} locked out after wrong codes.",
    "text": "{0} zatím {0:nepoužit|nepoužity|nepoužito} · {1} {1:zablokován|zablokovány|zablokováno} po chybných kódech."
   },
-  "p1276": {
+  "p1280": {
    "source": "{0} never used yet.",
    "text": "{0} zatím {0:nepoužit|nepoužity|nepoužito}."
   },
-  "p1277": {
+  "p1281": {
    "source": "{0} new recovery codes",
    "text": "{0} {0:nový záložní kód|nové záložní kódy|nových záložních kódů}"
   },
-  "p1278": {
+  "p1282": {
    "source": "{0} now · locked until {1} {2}.",
    "text": "teď {0} · zamčeno do {1} {2}."
   },
-  "p1279": {
+  "p1283": {
    "source": "{0} now.",
    "text": "teď {0}."
   },
-  "p1280": {
+  "p1284": {
    "source": "{0} of ours",
    "text": "{0} našich"
   },
-  "p1281": {
+  "p1285": {
    "source": "{0} of {1}",
    "text": "{0} z {1}"
   },
-  "p1282": {
+  "p1286": {
    "source": "{0} of {1} answering · this page from {2}",
    "text": "{0} z {1} odpovídá · tuto stránku obsloužil {2}"
   },
-  "p1283": {
+  "p1287": {
    "source": "{0} of {1} picked",
    "text": "vybráno {0} z {1}"
   },
-  "p1284": {
+  "p1288": {
    "source": "{0} of {1} switched on",
    "text": "{0} z {1} zapnuto"
   },
-  "p1285": {
+  "p1289": {
    "source": "{0} of {1} tried",
    "text": "{0} z {1} vyzkoušeno"
   },
-  "p1286": {
+  "p1290": {
    "source": "{0} off",
    "text": "{0} vypnuto"
   },
-  "p1287": {
+  "p1291": {
    "source": "{0} offered no STARTTLS, and the password is not sent in plain text - choose STARTTLS (required) or TLS from the start, or Security none if a plain connection is meant",
    "text": "{0} nenabídl STARTTLS a heslo se nešifrovaně neposílá – zvolte STARTTLS (vyžadováno) nebo TLS od začátku, případně Zabezpečení žádné, je-li nešifrované spojení záměr"
   },
-  "p1288": {
+  "p1292": {
    "source": "{0} older version(s) it may not go back to",
    "text": "{0} starších verzí, na které se nelze vrátit"
   },
-  "p1289": {
+  "p1293": {
    "source": "{0} older version(s) it may not go back to - below {1}",
    "text": "{0} starších verzí, na které se nelze vrátit – pod {1}"
   },
-  "p1290": {
+  "p1294": {
    "source": "{0} only",
    "text": "jen {0}"
   },
-  "p1291": {
+  "p1295": {
    "source": "{0} or later,",
    "text": "{0} nebo novější,"
   },
-  "p1292": {
+  "p1296": {
    "source": "{0} or later, or the package your distribution fixed (dnf upgrade 'php*') - and restart php-fpm; ./install.sh --upgrade does it. A distribution that backported the fix keeps the old number: check rpm -q --changelog php-fpm | grep CVE-2026-109618.",
    "text": "{0} nebo novější, nebo balíček opravený vaší distribucí (dnf upgrade 'php*') – a restartujte php-fpm; ./install.sh --upgrade to udělá. Distribuce, která opravu backportovala, ponechává staré číslo: ověřte rpm -q --changelog php-fpm | grep CVE-2026-109618."
   },
-  "p1293": {
+  "p1297": {
    "source": "{0} out of service",
    "text": "{0} mimo provoz"
   },
-  "p1294": {
+  "p1298": {
    "source": "{0} proved their token and may set up another way",
    "text": "{0} prokázal(a) svůj token a může nastavit jiný způsob"
   },
-  "p1295": {
+  "p1299": {
    "source": "{0} put back the backup {1} (made {2} on {3}, otp {4})",
    "text": "{0} obnovil(a) zálohu {1} (vytvořenou {2} na {3}, otp {4})"
   },
-  "p1296": {
+  "p1300": {
    "source": "{0} put the columns of every table back as they come",
    "text": "{0} vrátil sloupce všech tabulek do výchozího stavu"
   },
-  "p1297": {
+  "p1301": {
    "source": "{0} put the columns of every table back as they come for {1}",
    "text": "{0} vrátil sloupce všech tabulek do výchozího stavu uživateli {1}"
   },
-  "p1298": {
+  "p1302": {
    "source": "{0} put the database back from the page ({1}); what it replaced is in {2}",
    "text": "{0} vrátil databázi ze souboru nahraného na stránce ({1}); to, co nahradila, je v {2}"
   },
-  "p1299": {
+  "p1303": {
    "source": "{0} put the database back from {1} ({2}); what it replaced is in {3}",
    "text": "{0} vrátil databázi z {1} ({2}); to, co nahradila, je v {3}"
   },
-  "p1300": {
+  "p1304": {
    "source": "{0} put the texts of “{1}” ({2}) back as it comes",
    "text": "{0} vrátil(a) texty zprávy „{1}“ ({2}) na výchozí"
   },
-  "p1301": {
+  "p1305": {
    "source": "{0} px",
    "text": "{0} px"
   },
-  "p1302": {
+  "p1306": {
    "source": "{0} reaches this node as {1}, which its certificate did not name: a new one is made",
    "text": "{0} hledá tento uzel jako {1}, což jeho certifikát neuváděl: vystavuje se nový"
   },
-  "p1303": {
+  "p1307": {
    "source": "{0} read the replication errors in PostgreSQL's log",
    "text": "{0} přečetl(a) chyby replikace v logu PostgreSQL"
   },
-  "p1304": {
+  "p1308": {
    "source": "{0} read their own settings back from a file ({1})",
    "text": "{0} načetl svá nastavení ze souboru ({1})"
   },
-  "p1305": {
+  "p1309": {
    "source": "{0} rebuilt this node from the other: {1} row(s); what it held is in {2}",
    "text": "{0} obnovil tento uzel z druhého: {1} {1:řádek|řádky|řádků}; to, co držel, je v {2}"
   },
-  "p1306": {
+  "p1310": {
    "source": "{0} recovery code(s) left",
    "text": "{0:zbývá|zbývají|zbývá} {0} {0:záložní kód|záložní kódy|záložních kódů}"
   },
-  "p1307": {
+  "p1311": {
    "source": "{0} refused",
    "text": "{0} odmítnuto"
   },
-  "p1308": {
+  "p1312": {
    "source": "{0} refused to answer",
    "text": "{0} odmítl odpovědět"
   },
-  "p1309": {
+  "p1313": {
    "source": "{0} removed the account {1}",
    "text": "{0} odebral účet {1}"
   },
-  "p1310": {
+  "p1314": {
    "source": "{0} replace the one here",
    "text": "{0} nahradí zdejší"
   },
-  "p1311": {
+  "p1315": {
    "source": "{0} replaced a token for {1}",
    "text": "{0} nahradil token pro {1}"
   },
-  "p1312": {
+  "p1316": {
    "source": "{0} replaced the token of {1}: codes by SMS to {2}",
    "text": "{0} nahradil(a) token {1}: kódy SMS na {2}"
   },
-  "p1313": {
+  "p1317": {
    "source": "{0} replaced the token of {1}: codes by mail to {2}",
    "text": "{0} nahradil(a) token {1}: kódy e-mailem na {2}"
   },
-  "p1314": {
+  "p1318": {
    "source": "{0} request(s) taken out",
    "text": "{0} {0:požadavek vyjmut|požadavky vyjmuty|požadavků vyjmuto}"
   },
-  "p1315": {
+  "p1319": {
    "source": "{0} reset the second step of signing in of {1}{2}",
    "text": "{0} resetoval(a) druhý krok přihlášení účtu {1}{2}"
   },
-  "p1316": {
+  "p1320": {
    "source": "{0} restarted {1} for the settings waiting for it: {2}",
    "text": "{0} restartoval {1} kvůli nastavením, která na to čekala: {2}"
   },
-  "p1317": {
+  "p1321": {
    "source": "{0} restored {1} token(s) from a backup",
    "text": "{0} obnovil(a) ze zálohy {1} {1:token|tokeny|tokenů}"
   },
-  "p1318": {
+  "p1322": {
    "source": "{0} row(s)",
    "text": "{0} {0:řádek|řádky|řádků}"
   },
-  "p1319": {
+  "p1323": {
    "source": "{0} row(s) deleted and not yet given back to the disk.",
    "text": "{0} {0:smazaný řádek|smazané řádky|smazaných řádků} zatím nevrácených disku."
   },
-  "p1320": {
+  "p1324": {
    "source": "{0} runs {1}, newer than {2}",
    "text": "{0} běží na {1}, novější než {2}"
   },
-  "p1321": {
+  "p1325": {
    "source": "{0} s ago",
    "text": "před {0} s"
   },
-  "p1322": {
+  "p1326": {
+   "source": "{0} s more for deSEC's other places of the world, then the CA is asked",
+   "text": "ještě {0} s pro ostatní místa deSEC ve světě, pak se zeptá CA"
+  },
+  "p1327": {
    "source": "{0} said it is closing the connection",
    "text": "{0} oznámil, že spojení zavírá"
   },
-  "p1323": {
+  "p1328": {
    "source": "{0} saved the RADIUS client {1}",
    "text": "{0} uložil RADIUS klienta {1}"
   },
-  "p1324": {
+  "p1329": {
    "source": "{0} saved the RADIUS client {1} ({2})",
    "text": "{0} uložil RADIUS klienta {1} ({2})"
   },
-  "p1325": {
+  "p1330": {
    "source": "{0} saved the directory {1}",
    "text": "{0} uložil adresář {1}"
   },
-  "p1326": {
+  "p1331": {
    "source": "{0} saved the realm {1}",
    "text": "{0} uložil realm {1}"
   },
-  "p1327": {
+  "p1332": {
    "source": "{0} saved the realm {1}; taken into it: {2} - their suffixes are its own now, their groups follow its own",
    "text": "{0} uložil(a) realm {1}; sloučeno do něj: {2} – jejich přípony jsou teď jeho, jejich skupiny následují za jeho"
   },
-  "p1328": {
+  "p1333": {
    "source": "{0} says it again within a few seconds",
    "text": "{0} to během pár sekund řekne znovu"
   },
-  "p1329": {
+  "p1334": {
    "source": "{0} security updates of {1} waiting (looked {2}).",
    "text": "Čeká {0} bezpečnostních z {1} aktualizací (zjištěno {2})."
   },
-  "p1330": {
+  "p1335": {
    "source": "{0} sent",
    "text": "odesláno {0}"
   },
-  "p1331": {
+  "p1336": {
    "source": "{0} sent a package that was refused: {1}",
    "text": "{0} poslal balíček, který byl odmítnut: {1}"
   },
-  "p1332": {
+  "p1337": {
    "source": "{0} sent a sample of “{1}” ({2}) to {3}",
    "text": "{0} poslal(a) ukázku zprávy „{1}“ ({2}) na {3}"
   },
-  "p1333": {
+  "p1338": {
    "source": "{0} sent a test SMS to {1}",
    "text": "{0} poslal(a) zkušební SMS na {1}"
   },
-  "p1334": {
+  "p1339": {
    "source": "{0} sent a test mail shaped as a sign-in code's to {1}",
    "text": "{0} poslal(a) zkušební e-mail ve tvaru kódu k přihlášení na {1}"
   },
-  "p1335": {
+  "p1340": {
    "source": "{0} sent a test mail shaped as a token's to {1}",
    "text": "{0} poslal ukázkový e-mail s tokenem na {1}"
   },
-  "p1336": {
+  "p1341": {
    "source": "{0} sent a test mail shaped as an address check's to {1}",
    "text": "{0} poslal(a) zkušební e-mail ve tvaru ověření adresy na {1}"
   },
-  "p1337": {
+  "p1342": {
    "source": "{0} sent a test mail to {1}",
    "text": "{0} poslal zkušební e-mail na {1}"
   },
-  "p1338": {
+  "p1343": {
    "source": "{0} sent a test message to where the codes of {1} go",
    "text": "{0} poslal(a) zkušební zprávu tam, kam chodí kódy {1}"
   },
-  "p1339": {
+  "p1344": {
    "source": "{0} sent an answer that does not read: {1}",
    "text": "{0} poslal odpověď, která se nedá přečíst: {1}"
   },
-  "p1340": {
+  "p1345": {
    "source": "{0} sent otp {1} (signed by {2}), ready to be put in",
    "text": "{0} poslal otp {1} (podepsal {2}), připraveno k nasazení"
   },
-  "p1341": {
+  "p1346": {
    "source": "{0} sent the token of {1} to {2}",
    "text": "{0} poslal token uživatele {1} na {2}"
   },
-  "p1342": {
+  "p1347": {
    "source": "{0} sent the token of {1} to {2} - the server said: {3}",
    "text": "{0} poslal token {1} na {2} – server odpověděl: {3}"
   },
-  "p1343": {
+  "p1348": {
    "source": "{0} sent the token of {1} to {2} again",
    "text": "{0} znovu poslal token uživatele {1} na {2}"
   },
-  "p1344": {
+  "p1349": {
    "source": "{0} sent the token of {1} to {2} again - the server said: {3}",
    "text": "{0} znovu poslal token {1} na {2} – server odpověděl: {3}"
   },
-  "p1345": {
+  "p1350": {
    "source": "{0} sent the token of {1} to {2} again with its recovery codes",
    "text": "{0} znovu poslal token uživatele {1} se záložními kódy na {2}"
   },
-  "p1346": {
+  "p1351": {
    "source": "{0} sent the token of {1} to {2} again with its recovery codes - the server said: {3}",
    "text": "{0} znovu poslal token {1} na {2} i se záložními kódy – server odpověděl: {3}"
   },
-  "p1347": {
+  "p1352": {
    "source": "{0} sent the token of {1} to {2} again{3}",
    "text": "{0} znovu poslal token {1} na {2}{3}"
   },
-  "p1348": {
+  "p1353": {
    "source": "{0} sent the token of {1} to {2} with its recovery codes",
    "text": "{0} poslal token uživatele {1} se záložními kódy na {2}"
   },
-  "p1349": {
+  "p1354": {
    "source": "{0} sent the token of {1} to {2} with its recovery codes - the server said: {3}",
    "text": "{0} poslal token {1} na {2} i se záložními kódy – server odpověděl: {3}"
   },
-  "p1350": {
+  "p1355": {
    "source": "{0} set a new password for {1}",
    "text": "{0} nastavil nové heslo pro {1}"
   },
-  "p1351": {
+  "p1356": {
    "source": "{0} set a new password for {1}; their sign-ins are ended",
    "text": "{0} nastavil nové heslo pro {1}; jeho přihlášení jsou ukončena"
   },
-  "p1352": {
+  "p1357": {
    "source": "{0} set the clock drift of {1} to the setting",
    "text": "{0} nastavil u {1} odchylku hodin podle nastavení"
   },
-  "p1353": {
+  "p1358": {
    "source": "{0} set the clock drift of {1} to {2} step(s)",
    "text": "{0} nastavil u {1} povolenou odchylku hodin na {2} {2:krok|kroky|kroků}"
   },
-  "p1354": {
+  "p1359": {
    "source": "{0} set the language of {1}: {2}",
    "text": "{0} nastavil(a) jazyk {1}: {2}"
   },
-  "p1355": {
+  "p1360": {
    "source": "{0} set the mail format of {1}: {2}",
    "text": "{0} nastavil(a) formát mailu {1}: {2}"
   },
-  "p1356": {
+  "p1361": {
    "source": "{0} set the time: {1}",
    "text": "{0} nastavil(a) čas: {1}"
   },
-  "p1357": {
+  "p1362": {
    "source": "{0} set up the second step of signing in: {1}",
    "text": "{0} si nastavil(a) druhý krok přihlášení: {1}"
   },
-  "p1358": {
+  "p1363": {
    "source": "{0} set up their sign-in: codes by SMS to {1}",
    "text": "{0} si nastavil(a) přihlášení: kódy SMS na {1}"
   },
-  "p1359": {
+  "p1364": {
    "source": "{0} set up their sign-in: codes by mail to {1}",
    "text": "{0} si nastavil(a) přihlášení: kódy e-mailem na {1}"
   },
-  "p1360": {
+  "p1365": {
    "source": "{0} set up {1} at {2}",
    "text": "{0} nastavil {1} na {2}"
   },
-  "p1361": {
+  "p1366": {
    "source": "{0} shown",
    "text": "{0} zobrazeno"
   },
-  "p1362": {
+  "p1367": {
    "source": "{0} signed in",
    "text": "{0} přihlášeno"
   },
-  "p1363": {
+  "p1368": {
    "source": "{0} signed in as {1}: the token {2} is theirs already",
    "text": "{0} se přihlásil jako {1}: token {2} už mu patří"
   },
-  "p1364": {
+  "p1369": {
    "source": "{0} signed in from {1}",
    "text": "{0} se přihlásil z {1}"
   },
-  "p1365": {
+  "p1370": {
    "source": "{0} signed in from {1} - the second step to give",
    "text": "{0} se přihlásil(a) z {1} – zbývá druhý krok"
   },
-  "p1366": {
+  "p1371": {
    "source": "{0} signed in from {1} - the second step to set up",
    "text": "{0} se přihlásil(a) z {1} – zbývá nastavit druhý krok"
   },
-  "p1367": {
+  "p1372": {
    "source": "{0} signed in to the enrolment pages from {1}",
    "text": "{0} se přihlásil na stránky registrace z {1}"
   },
-  "p1368": {
+  "p1373": {
    "source": "{0} started again: every setting is in effect",
    "text": "{0} znovu spuštěn: všechna nastavení platí"
   },
-  "p1369": {
+  "p1374": {
    "source": "{0} started again; still waiting: {1}",
    "text": "{0} znovu spuštěn; stále čeká: {1}"
   },
-  "p1370": {
+  "p1375": {
    "source": "{0} started the upgrade to {1}: {2}, one at a time",
    "text": "{0} spustil aktualizaci na {1}: {2}, jeden po druhém"
   },
-  "p1371": {
+  "p1376": {
    "source": "{0} step(s) either way",
    "text": "{0} {0:krok|kroky|kroků} na každou stranu"
   },
-  "p1372": {
+  "p1377": {
    "source": "{0} steps",
    "text": "{0} kroků"
   },
-  "p1373": {
+  "p1378": {
    "source": "{0} still reaches a database with TLS - perhaps this one: switch them off first",
    "text": "{0} se stále připojuje k databázi přes TLS – možná k této: nejdřív ho vypněte"
   },
-  "p1374": {
+  "p1379": {
    "source": "{0} stopped answering (seen from {1}, last heard {2} s ago)",
    "text": "{0} přestal odpovídat (z pohledu {1}, naposledy před {2} s)"
   },
-  "p1375": {
+  "p1380": {
    "source": "{0} stopped replacing their token",
    "text": "{0} přestal měnit svůj token"
   },
-  "p1376": {
+  "p1381": {
    "source": "{0} stopped the upgrade to {1}: the nodes not begun stay as they are",
    "text": "{0} zastavil aktualizaci na {1}: nezačaté uzly zůstanou, jak jsou"
   },
-  "p1377": {
+  "p1382": {
    "source": "{0} switched off the otp console at login on {1}",
    "text": "{0} vypnul konzoli otp po přihlášení na {1}"
   },
-  "p1378": {
+  "p1383": {
    "source": "{0} switched on the otp console at login on {1}",
    "text": "{0} zapnul konzoli otp po přihlášení na {1}"
   },
-  "p1379": {
+  "p1384": {
    "source": "{0} switched the database to {1} at {2}; the daemon starts again on it",
    "text": "{0} přepnul databázi na {1} na {2}; démon se nad ní znovu spouští"
   },
-  "p1380": {
+  "p1385": {
    "source": "{0} switched the token of {1} off",
    "text": "{0} vypnul token uživatele {1}"
   },
-  "p1381": {
+  "p1386": {
    "source": "{0} switched the token of {1} on",
    "text": "{0} zapnul token uživatele {1}"
   },
-  "p1382": {
+  "p1387": {
    "source": "{0} switched {1} off",
    "text": "{0} vypnul {1}"
   },
-  "p1383": {
+  "p1388": {
    "source": "{0} switched {1} on",
    "text": "{0} zapnul {1}"
   },
-  "p1384": {
+  "p1389": {
    "source": "{0} table(s) laid out",
    "text": "{0} {0:tabulka uspořádána|tabulky uspořádány|tabulek uspořádáno}"
   },
-  "p1385": {
+  "p1390": {
    "source": "{0} table(s) laid out by you",
    "text": "{0} {0:tabulka|tabulky|tabulek} s vaším rozvržením"
   },
-  "p1386": {
+  "p1391": {
    "source": "{0} tables, {1} tokens, {2} accounts",
    "text": "{0} tabulek, {1} tokenů, {2} účtů"
   },
-  "p1387": {
+  "p1392": {
    "source": "{0} takes a number",
    "text": "{0} bere číslo"
   },
-  "p1388": {
+  "p1393": {
    "source": "{0} takes a number from 0 to 16777215, not {1}",
    "text": "{0} bere číslo od 0 do 16777215, ne {1}"
   },
-  "p1389": {
+  "p1394": {
    "source": "{0} takes a number or one of: {1}",
    "text": "{0} bere číslo nebo jedno z: {1}"
   },
-  "p1390": {
+  "p1395": {
    "source": "{0} takes an IPv4 address",
    "text": "{0} bere IPv4 adresu"
   },
-  "p1391": {
+  "p1396": {
    "source": "{0} takes no mail (its MX record is a null MX)",
    "text": "{0} poštu nepřijímá (její MX je null MX)"
   },
-  "p1392": {
+  "p1397": {
    "source": "{0} text(s) changed, not saved yet",
    "text": "{0} {0:text změněn|texty změněny|textů změněno}, zatím neuloženo"
   },
-  "p1393": {
+  "p1398": {
    "source": "{0} thing(s) are not as high security wants them - set before it was on, or on a node: put them right.",
    "text": "{0} věc(í) není podle vysoké bezpečnosti – nastaveno před zapnutím nebo na uzlu: opravte je."
   },
-  "p1394": {
+  "p1399": {
    "source": "{0} thing(s) stand against it. Set them as said - then switch it on again.",
    "text": "Brání tomu {0} věc(í). Nastavte je podle popisu – pak ji zapněte znovu."
   },
-  "p1395": {
+  "p1400": {
    "source": "{0} thing(s) stand against it. Set them as said, or make one an exception with its switch - then switch it on again.",
    "text": "Brání tomu {0} věc(í). Nastavte je podle popisu, nebo z některé udělejte výjimku jejím přepínačem – pak ji zapněte znovu."
   },
-  "p1396": {
+  "p1401": {
    "source": "{0} thing(s) stand against switching it on.",
    "text": "Zapnutí brání {0} věc(í)."
   },
-  "p1397": {
+  "p1402": {
    "source": "{0} threw away the replacement waiting for {1}",
    "text": "{0} zahodil čekající náhradu pro {1}"
   },
-  "p1398": {
+  "p1403": {
    "source": "{0} threw away the token they had not confirmed",
    "text": "{0} zahodil token, který nepotvrdil"
   },
-  "p1399": {
+  "p1404": {
    "source": "{0} to go",
    "text": "zbývá {0}"
   },
-  "p1400": {
+  "p1405": {
    "source": "{0} token(s) are kept under another suffix - made before it was one of this realm. They go on working as they are.",
    "text": "{0} tokenů je vedeno pod jinou příponou – vznikly dřív, než patřila tomuto realmu. Fungují dál, jak jsou."
   },
-  "p1401": {
+  "p1406": {
    "source": "{0} token(s) given their owner's name; {1} not found in the directory, {2} with no directory to ask, {3} could not be asked",
    "text": "{0} {0:token dostal|tokeny dostaly|tokenů dostalo} jméno vlastníka; {1} nenalezeno v adresáři, {2} bez adresáře, {3} nešlo zjistit"
   },
-  "p1402": {
+  "p1407": {
    "source": "{0} token(s) in {1}, locked",
    "text": "{0} tokenů v {1}, zamčeno"
   },
-  "p1403": {
+  "p1408": {
    "source": "{0} token(s) in {1}, not locked",
    "text": "{0} tokenů v {1}, nezamčeno"
   },
-  "p1404": {
+  "p1409": {
    "source": "{0} token(s) moved under @{1}",
    "text": "{0} tokenů přesunuto pod @{1}"
   },
-  "p1405": {
+  "p1410": {
    "source": "{0} token(s) moved under @{1}; {2} left as they are - a token is there under the new name already",
    "text": "{0} tokenů přesunuto pod @{1}; {2} zůstává – pod novým jménem už token je"
   },
-  "p1406": {
+  "p1411": {
    "source": "{0} token(s) read",
    "text": "{0:načten|načteny|načteno} {0} {0:token|tokeny|tokenů}"
   },
-  "p1407": {
+  "p1412": {
    "source": "{0} token(s) · made {1}",
    "text": "{0} tokenů · vytvořeno {1}"
   },
-  "p1408": {
+  "p1413": {
    "source": "{0} token(s) · made {1} on {2} by {3} · otp {4}",
    "text": "{0} tokenů · vytvořeno {1} na {2}, kdo: {3} · otp {4}"
   },
-  "p1409": {
+  "p1414": {
    "source": "{0} token(s), {1} RADIUS request(s)",
    "text": "{0} {0:token|tokeny|tokenů}, {1} {1:RADIUS požadavek|RADIUS požadavky|RADIUS požadavků}"
   },
-  "p1410": {
+  "p1415": {
    "source": "{0} took a certificate out of the certificate authorities of {1} ({2} kept)",
    "text": "{0} odebral certifikát z autorit adresáře {1} (uloženo {2})"
   },
-  "p1411": {
+  "p1416": {
    "source": "{0} took away a directory",
    "text": "{0} odebral adresář"
   },
-  "p1412": {
+  "p1417": {
    "source": "{0} took away a realm",
    "text": "{0} odebral realm"
   },
-  "p1413": {
+  "p1418": {
    "source": "{0} took away the RADIUS client {1}",
    "text": "{0} odebral(a) RADIUS klienta {1}"
   },
-  "p1414": {
+  "p1419": {
    "source": "{0} took away the backup destination {1}",
    "text": "{0} odebral(a) úložiště záloh {1}"
   },
-  "p1415": {
+  "p1420": {
    "source": "{0} took away the certificate authorities of {1} ({2} kept)",
    "text": "{0} odebral(a) autority {1} (ponecháno: {2})"
   },
-  "p1416": {
+  "p1421": {
    "source": "{0} took away the directory {1}",
    "text": "{0} odebral(a) adresář {1}"
   },
-  "p1417": {
+  "p1422": {
    "source": "{0} took away the realm {1}",
    "text": "{0} odebral(a) realm {1}"
   },
-  "p1418": {
+  "p1423": {
    "source": "{0} took away the token of {1}",
    "text": "{0} odebral token uživatele {1}"
   },
-  "p1419": {
+  "p1424": {
    "source": "{0} took back an exception to high security: {1}",
    "text": "{0} zrušil výjimku z vysoké bezpečnosti: {1}"
   },
-  "p1420": {
+  "p1425": {
    "source": "{0} took longer than {1} s and was stopped",
    "text": "{0} trvalo déle než {1} s a bylo zastaveno"
   },
-  "p1421": {
+  "p1426": {
    "source": "{0} took one out of the certificate authorities of the mail server",
    "text": "{0} odebral jednu z certifikačních autorit poštovního serveru"
   },
-  "p1422": {
+  "p1427": {
    "source": "{0} took one out of the certificates of the SMS gateway",
    "text": "{0} odebral(a) jeden certifikát brány SMS"
   },
-  "p1423": {
+  "p1428": {
    "source": "{0} took the node {1} off the list",
    "text": "{0} vyřadil uzel {1} ze seznamu"
   },
-  "p1424": {
+  "p1429": {
    "source": "{0} took {1} line(s) out of the log of codes",
    "text": "{0} vyjmul {1} řádků z logu kódů"
   },
-  "p1425": {
+  "p1430": {
    "source": "{0} took {1} mail(s) out of the outgoing mail",
    "text": "{0} odebral(a) {1} {1:mail|maily|mailů} z odchozí pošty"
   },
-  "p1426": {
+  "p1431": {
    "source": "{0} took {1} off the list of backups sent; the backup stays where it went",
    "text": "{0} odebral(a) {1} ze seznamu odeslaných záloh; záloha zůstává tam, kam došla"
   },
-  "p1427": {
+  "p1432": {
    "source": "{0} took {1} request(s) out of the RADIUS log",
    "text": "{0} vyjmul {1} požadavků z RADIUS logu"
   },
-  "p1428": {
+  "p1433": {
    "source": "{0} tried the SMS gateway {1}: {2}",
    "text": "{0} vyzkoušel(a) SMS bránu {1}: {2}"
   },
-  "p1429": {
+  "p1434": {
    "source": "{0} tried the backup destination {1}: {2}",
    "text": "{0} vyzkoušel(a) úložiště záloh {1}: {2}"
   },
-  "p1430": {
+  "p1435": {
    "source": "{0} tries again within a few seconds",
    "text": "{0} to během několika sekund zkusí znovu"
   },
-  "p1431": {
+  "p1436": {
    "source": "{0} used in 30 days",
    "text": "{0} použito za 30 dní"
   },
-  "p1432": {
+  "p1437": {
    "source": "{0} versions there are newer than this one - choose which to go to; the newest is chosen.",
    "text": "Na adrese je {0} verzí novějších než tato – vyberte, na kterou přejít; vybraná je nejnovější."
   },
-  "p1433": {
+  "p1438": {
    "source": "{0} waiting",
    "text": "{0} čeká"
   },
-  "p1434": {
+  "p1439": {
    "source": "{0} waiting · {1} failed",
    "text": "{0} čeká · {1} selhalo"
   },
-  "p1435": {
+  "p1440": {
    "source": "{0} waits for a restart",
    "text": "{0} čeká na restart"
   },
-  "p1436": {
+  "p1441": {
    "source": "{0} was asked to restart and has not answered yet - look again in a minute",
    "text": "{0} byl požádán o restart a ještě neodpověděl – podívejte se znovu za minutu"
   },
-  "p1437": {
+  "p1442": {
    "source": "{0} was made ({1}): {2}",
    "text": "vznikl(a) {0} ({1}): {2}"
   },
-  "p1438": {
+  "p1443": {
    "source": "{0} was not restarted: {1} - run  systemctl restart {2}  as root",
    "text": "{0} nebyl restartován: {1} – spusťte  systemctl restart {2}  jako root"
   },
-  "p1439": {
+  "p1444": {
    "source": "{0} was not restarted: {1} did not come back - the service goes on here",
    "text": "{0} nebyl restartován: {1} se nevrátil – služba běží dál tady"
   },
-  "p1440": {
+  "p1445": {
    "source": "{0} went into maintenance",
    "text": "{0} přešel do údržby"
   },
-  "p1441": {
+  "p1446": {
    "source": "{0} will be restored",
    "text": "{0:obnoví se|obnoví se|obnoví se} {0}"
   },
-  "p1442": {
+  "p1447": {
    "source": "{0} wrong code(s)",
    "text": "{0} {0:chybný kód|chybné kódy|chybných kódů}"
   },
-  "p1443": {
+  "p1448": {
    "source": "{0} wrong in a row",
    "text": "{0} chybně za sebou"
   },
-  "p1444": {
+  "p1449": {
    "source": "{0} · DNS {1}",
    "text": "{0} · DNS {1}"
   },
-  "p1445": {
+  "p1450": {
    "source": "{0} · {1}",
    "text": "{0} · {1}"
   },
-  "p1446": {
+  "p1451": {
    "source": "{0} · {1} · up {2}",
    "text": "{0} · {1} · běží {2}"
   },
-  "p1447": {
+  "p1452": {
    "source": "{0} × the VIP address moved",
    "text": "{0} × přesun VIP adresy"
   },
-  "p1448": {
+  "p1453": {
    "source": "{0} × the web address moved",
    "text": "{0} × přesun webové adresy"
   },
-  "p1449": {
+  "p1454": {
    "source": "{0} × trouble",
    "text": "{0} × potíže"
   },
-  "p1450": {
+  "p1455": {
    "source": "{0} — not kept by this version, left alone",
    "text": "{0} — tato verze neukládá, ponecháno beze změny"
   },
-  "p1451": {
+  "p1456": {
    "source": "{0} → now",
    "text": "{0} → teď"
   },
-  "p1452": {
+  "p1457": {
    "source": "{0}% of it is used",
    "text": "{0} % je obsazeno"
   },
-  "p1453": {
+  "p1458": {
    "source": "{0}, checked, back in service",
    "text": "{0}, zkontrolováno, zpět v provozu"
   },
-  "p1454": {
+  "p1459": {
    "source": "{0}, slot {1}, the other node {2}",
    "text": "{0}, slot {1}, druhý uzel {2}"
   },
-  "p1455": {
+  "p1460": {
    "source": "{0}, switched off, tried to sign in from {1}",
    "text": "{0}, vypnutý účet, se pokusil přihlásit z {1}"
   },
-  "p1456": {
+  "p1461": {
    "source": "{0}: TLS between the databases is being switched off on both nodes",
    "text": "{0}: TLS mezi databázemi se vypíná na obou uzlech"
   },
-  "p1457": {
+  "p1462": {
    "source": "{0}: a host name, an address, or the path of a socket",
    "text": "{0}: jméno hostitele, adresa nebo cesta k soketu"
   },
-  "p1458": {
+  "p1463": {
    "source": "{0}: a { or } on its own - write it twice, {{ or }}",
    "text": "{0}: samotná { nebo } – napište ji dvakrát, {{ nebo }}"
   },
-  "p1459": {
+  "p1464": {
    "source": "{0}: at most {1} characters",
    "text": "{0}: nejvýš {1} znaků"
   },
-  "p1460": {
+  "p1465": {
    "source": "{0}: back in service",
    "text": "{0}: zpět v provozu"
   },
-  "p1461": {
+  "p1466": {
    "source": "{0}: in maintenance",
    "text": "{0}: v údržbě"
   },
-  "p1462": {
+  "p1467": {
    "source": "{0}: in maintenance - {1}",
    "text": "{0}: v údržbě – {1}"
   },
-  "p1463": {
+  "p1468": {
    "source": "{0}: letters, digits and _ only, starting with a letter",
    "text": "{0}: jen písmena, číslice a _, na začátku písmeno"
   },
-  "p1464": {
+  "p1469": {
    "source": "{0}: longer than RADIUS carries (253 bytes)",
    "text": "{0}: delší, než RADIUS přenese (253 bajtů)"
   },
-  "p1465": {
+  "p1470": {
    "source": "{0}: maintenance off",
    "text": "{0}: údržba vypnuta"
   },
-  "p1466": {
+  "p1471": {
    "source": "{0}: maintenance on",
    "text": "{0}: údržba zapnuta"
   },
-  "p1467": {
+  "p1472": {
    "source": "{0}: no driver — install {1}",
    "text": "{0}: chybí ovladač – nainstalujte {1}"
   },
-  "p1468": {
+  "p1473": {
    "source": "{0}: no line breaks or other control characters",
    "text": "{0}: bez zalomení řádků a jiných řídicích znaků"
   },
-  "p1469": {
+  "p1474": {
    "source": "{0}: not while high security is on - {1}",
    "text": "{0}: ne při zapnuté vysoké bezpečnosti – {1}"
   },
-  "p1470": {
+  "p1475": {
    "source": "{0}: replication - {1}",
    "text": "{0}: replikace – {1}"
   },
-  "p1471": {
+  "p1476": {
    "source": "{0}: signed out everywhere",
    "text": "{0}: odhlášen všude"
   },
-  "p1472": {
+  "p1477": {
    "source": "{0}: sshd does not let root sign in at all (PermitRootLogin no) - the keys below are not used there until it does.",
    "text": "{0}: sshd rootovi přihlášení vůbec nepovoluje (PermitRootLogin no) – klíče níže se tam nepoužijí, dokud to nepovolí."
   },
-  "p1473": {
+  "p1478": {
    "source": "{0}: sshd takes no keys (PubkeyAuthentication no).",
    "text": "{0}: sshd nepřijímá klíče (PubkeyAuthentication no)."
   },
-  "p1474": {
+  "p1479": {
    "source": "{0}: the addresses of the cluster changed on {1} - {2}",
    "text": "{0}: adresy clusteru se na {1} změnily – {2}"
   },
-  "p1475": {
+  "p1480": {
    "source": "{0}: the backup destination {1} - {2}",
    "text": "{0}: úložiště záloh {1} – {2}"
   },
-  "p1476": {
+  "p1481": {
    "source": "{0}: the driver is installed",
    "text": "{0}: ovladač je nainstalovaný"
   },
-  "p1477": {
+  "p1482": {
    "source": "{0}: the link between the databases is being encrypted and checked (verify-full) on both nodes",
    "text": "{0}: spojení mezi databázemi se na obou uzlech šifruje a ověřuje (verify-full)"
   },
-  "p1478": {
+  "p1483": {
    "source": "{0}: there is no such account",
    "text": "{0}: takový účet neexistuje"
   },
-  "p1479": {
+  "p1484": {
    "source": "{0}: write {{1}} with nothing after its name",
    "text": "{0}: pište {{1}} bez ničeho za jménem"
   },
-  "p1480": {
+  "p1485": {
    "source": "{0}: {1} attributes are not laid out as one byte of type and one of length - this server cannot send them by number",
    "text": "{0}: atributy {1} nemají jeden bajt typu a jeden bajt délky – tento server je podle čísla poslat neumí"
   },
-  "p1481": {
+  "p1486": {
    "source": "{0}: {1} characters at most",
    "text": "{0}: nejvýš {1} znaků"
   },
-  "p1482": {
+  "p1487": {
    "source": "{0}: {1} is not one of {2}",
    "text": "{0}: {1} není jedno z {2}"
   },
-  "p1483": {
+  "p1488": {
    "source": "{0}: {1} line(s) sent",
    "text": "{0}: {1:odeslán|odeslány|odesláno} {1} {1:řádek|řádky|řádků}"
   },
-  "p1484": {
+  "p1489": {
    "source": "{0}: {1} row(s) read",
    "text": "{0}: {1:přečten|přečteny|přečteno} {1} {1:řádek|řádky|řádků}"
   },
-  "p1485": {
+  "p1490": {
    "source": "{0}: {1} — install {2}",
    "text": "{0}: {1} – nainstalujte {2}"
   },
-  "p1486": {
+  "p1491": {
    "source": "{0}:{1} could not be reached: {2}",
    "text": "{0}:{1} není dosažitelný: {2}"
   },
-  "p1487": {
+  "p1492": {
    "source": "{0}:{1} left",
    "text": "zbývá {0}:{1}"
   },
-  "p1488": {
+  "p1493": {
    "source": "{0}{1} right now.",
    "text": "{0}{1} právě teď."
   },
-  "p1489": {
+  "p1494": {
    "source": "· running: {0}",
    "text": "· běží: {0}"
   },
-  "p1490": {
+  "p1495": {
    "source": "· {0} not read",
    "text": "· {0} nenačteno"
   },
-  "p1491": {
+  "p1496": {
    "source": "· {0} refused",
    "text": "· {0} odmítnuto"
   },
-  "p1492": {
+  "p1497": {
    "source": "· {0}s later",
    "text": "· o {0} s později"
   },
-  "p1493": {
+  "p1498": {
    "source": "— {0}% is in use",
    "text": "– {0} % je obsazeno"
   },
-  "p1494": {
+  "p1499": {
    "source": "… and {0} more",
    "text": "… a dalších {0}"
   },
-  "p1495": {
+  "p1500": {
    "source": "✓ last sent {0} · {1}",
    "text": "✓ naposledy odesláno {0} · {1}"
   }

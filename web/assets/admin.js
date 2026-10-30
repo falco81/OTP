@@ -14067,7 +14067,14 @@ function drawAcme() {
     if (d.work && d.work.busy) {
       var g = el('div', 'going wide');
       g.innerHTML = '<div class="bar"><span style="width:60%"></span></div>';
-      g.appendChild(el('div', 'says', d.work.says || 'ordering…'));
+      /* Which certificate, and what is being waited for now (1.0.176). */
+      var w = el('div', 'says');
+      if (d.work.target) {
+        w.appendChild(el('b', '', d.work.target === 'vip' ? 'the VIP address' : d.work.target));
+        w.appendChild(document.createTextNode(': '));
+      }
+      w.appendChild(el('span', '', d.work.says || 'ordering…'));
+      g.appendChild(w);
       host.appendChild(g);
     }
     /* By hand (DNS-01): the record to put in, and the order waiting for it. */

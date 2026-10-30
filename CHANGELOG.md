@@ -4,6 +4,15 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.176 — 30 October 2026
+
+**ACME: what is being waited for, said as it goes**
+- While a certificate is ordered, the line above the cards says which one and
+  what is waited for now - *Wait for DNS to carry it* (the seconds set), then
+  deSEC's name servers (which have the record so far, how long), then the minute
+  for deSEC's other places, with the seconds left. It said "waited 5 s for DNS to
+  carry it" for minutes, as if the setting were not kept.
+
 ## 1.0.175 — 30 October 2026
 
 **ACME by deSEC: the CA asked only once deSEC has the record everywhere**

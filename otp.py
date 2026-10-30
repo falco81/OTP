@@ -78,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.175'
+__version__ = '1.0.176'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -24871,7 +24871,7 @@ def _dns_wait(say, least=0):
     w = max(int(CONFIG.get('acme_dns_wait') or 0),
             int(os.environ.get('OTP_ACME_DNS_LEAST', least)))
     if w:
-        say('waited %d s for DNS to carry it' % w)
+        say('waiting %d s for DNS to carry it' % w)
         time.sleep(w)
 
 
@@ -24950,7 +24950,8 @@ def _desec_seen(rr, txt, say):
         say('deSEC\'s name servers not found - waited %d s instead' % 120)
         _dns_wait(say, 120)
         return
-    end = time.time() + float(os.environ.get('OTP_DESEC_PROPAGATION') or 300)
+    began = time.time()
+    end = began + float(os.environ.get('OTP_DESEC_PROPAGATION') or 300)
     while True:
         seen = []
         for ns, a in addrs:
@@ -24966,10 +24967,19 @@ def _desec_seen(rr, txt, say):
             say('%s TXT not on every deSEC name server yet (%s) - the CA is asked anyway'
                 % (rr, ', '.join(seen) or 'none'))
             return
+        # What is waited for, said as it goes (1.0.176): the line said "waited
+        # 5 s" for minutes while deSEC was being asked.
+        ACME_WORK['says'] = 'waiting for deSEC\'s name servers to have the record - %s so far, %d s' % (
+            ', '.join(seen) or 'none', int(time.time() - began))
         time.sleep(5)
     settle = float(os.environ.get('OTP_DESEC_SETTLE') or 60)
-    say('%s TXT is on %s; %d s more for deSEC\'s other places' % (rr, ', '.join(seen), settle))
-    time.sleep(settle)
+    say('%s TXT is on %s after %d s; %d s more for deSEC\'s other places' % (
+        rr, ', '.join(seen), int(time.time() - began), settle))
+    left = settle
+    while left > 0:
+        ACME_WORK['says'] = '%d s more for deSEC\'s other places of the world, then the CA is asked' % left
+        time.sleep(min(5, left))
+        left -= 5
 
 
 def _dns_rfc2136(rr, txt):
