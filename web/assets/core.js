@@ -545,6 +545,7 @@ var ICONS = {
   out: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="M10 16l4-4-4-4"/>'
     + '<path d="M14 12H3"/>',
   pulse: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  bell: '<path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15L6 16z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   flag: '<path d="M5 21V4"/><path d="M5 5h11l-2 3.5L16 12H5z"/>',
   pin: '<path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/>',
   broom: '<path d="M14 3l7 7"/><path d="M12.5 5.5L18.5 11.5"/>'

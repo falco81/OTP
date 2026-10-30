@@ -311,7 +311,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup',
@@ -326,7 +326,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -773,6 +773,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="backup" data-icon="archive" title="Backups of everything to another machine - FTP, FTPS, SFTP, SCP, SMB or a folder - locked with a password, on a schedule, and putting one back.">Backups</button>
     <button type="button" data-pane="carry" data-icon="download" title="Everything that makes this installation what it is, as one file to carry to another machine.">Export and import</button>
     <div class="ctl-group">Monitoring and updates</div>
+    <button type="button" class="fulladmin-only" data-pane="alerts" data-icon="bell" title="A mail when something is wrong, and a report of the week by mail.">Alerts and reports</button>
     <button type="button" data-pane="isemon" data-icon="pulse" title="Sending every check of a code and every RADIUS packet to isemon, in the shape isemon already reads.">isemon</button>
     <button type="button" class="fulladmin-only" data-pane="upgrade" data-icon="up" title="A new version, put in from here; nodes in and out of service.">Upgrades</button>
     <button type="button" data-pane="about" data-icon="info" title="Version, what is running, the language, the debug log.">About</button>
@@ -938,6 +939,16 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     </div>
   </div>
 
+  <div class="ctl-pane" id="pane-alerts" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Alerts and reports</h2>
+      <p class="ctl-lede">A mail when something is wrong - a node or the replication, a backup, a certificate,
+        a disk, the clock, the directory, the SMS gateway - and again when it is over; and a report of the
+        week (or the day, or the month) with the sign-ins, who was refused and why, and everything else.
+        One node of a cluster looks at both and sends them. Both are off until switched on below.</p></div>
+    <div id="al-host"></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-alerts"></div></div>
+    <div id="al-log"></div>
+  </div>
   <div class="ctl-pane" id="pane-isemon" hidden>
     <div class="ctl-head"><h2 class="ctl-title">isemon</h2>
       <p class="ctl-lede">Every check of a code goes to isemon as a <span class="mono">totp.cgi</span>

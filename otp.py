@@ -70,14 +70,14 @@ import urllib.parse
 import urllib.request
 import zipfile
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.161'
+__version__ = '1.0.162'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -252,6 +252,27 @@ DEFAULTS = {
     'rbackup_keep': 30,
     'rbackup_keep_days': 0,
     'rbackup_password': '',
+    # --- alerts by mail, and the report (1.0.162) -----------------------------
+    'alerts': 0,
+    'alerts_to': '',
+    'alerts_delay_min': 5,
+    'alerts_repeat_h': 24,
+    'alerts_resolved': 1,
+    'alerts_nodes': 1,
+    'alerts_backup': 1,
+    'alerts_cert_days': 21,
+    'alerts_disk_pct': 85,
+    'alerts_time': 1,
+    'alerts_updates': 1,
+    'alerts_dir': 1,
+    'alerts_sms': 1,
+    'alerts_guard': 0,
+    'alerts_url': '',
+    'report': 0,
+    'report_to': '',
+    'report_every': 'weekly',
+    'report_day': '1',
+    'report_at': '07:30',
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -348,6 +369,12 @@ TUNABLE = {
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
     'rbackup': (0, 1), 'rbackup_every': ('daily', 'weekly'), 'rbackup_day': (1, 7),
     'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650),
+    'alerts': (0, 1), 'alerts_delay_min': (0, 120), 'alerts_repeat_h': (0, 168),
+    'alerts_resolved': (0, 1), 'alerts_nodes': (0, 1), 'alerts_backup': (0, 1),
+    'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
+    'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
+    'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
+    'report_day': ('1', '2', '3', '4', '5', '6', '7'),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -402,6 +429,11 @@ CHOICE_WORDS = {
     'db_engine': {'sqlite': 'a file on this machine (SQLite)', 'mariadb': 'MariaDB / MySQL',
                   'postgres': 'PostgreSQL'},
     'ui_lang': {'cs': 'Čeština', 'en': 'English'},
+    'report_every': {'daily': 'every day, of the day before',
+                     'weekly': 'every week, of the week before',
+                     'monthly': 'every month, of the month before'},
+    'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
+                   '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
 
 NAMES = {
@@ -535,6 +567,26 @@ NAMES = {
     'rbackup_keep': 'Backups kept at each destination',
     'rbackup_keep_days': 'And none older than (days)',
     'rbackup_password': 'The password of the backups',
+    'alerts': 'Alerts by mail',
+    'alerts_to': 'Send them to',
+    'alerts_delay_min': 'Only once it has lasted (min)',
+    'alerts_repeat_h': 'Remind every (hours)',
+    'alerts_resolved': 'Say when it is over',
+    'alerts_nodes': 'A node, RADIUS, the replication or the database down',
+    'alerts_backup': 'A backup that failed or did not come',
+    'alerts_cert_days': 'A certificate running out within (days)',
+    'alerts_disk_pct': 'A disk fuller than (%)',
+    'alerts_time': 'A clock that is off',
+    'alerts_updates': 'Security updates and a restart waiting',
+    'alerts_dir': 'Active Directory out of reach',
+    'alerts_sms': 'The SMS gateway failing',
+    'alerts_guard': 'A source blocked for guessing',
+    'alerts_url': 'The administration’s address in the mails',
+    'report': 'A report by mail',
+    'report_to': 'Send it to',
+    'report_every': 'How often',
+    'report_day': 'On the day',
+    'report_at': 'At',
     'backup_at': 'At',
     'db_engine': 'The database',
     'db_host': 'Server',
@@ -910,6 +962,38 @@ SAYS = {
                         'without it nobody, you included, opens them. Empty: the backups are '
                         'not locked, and anybody with one has every token.',
     'backup_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'alerts': 'A mail when something is wrong - a node, the replication, a backup, a '
+              'certificate, a disk, the clock, the directory, the SMS gateway - and when it is '
+              'over. One node of a cluster sends them for both. Off until switched on.',
+    'alerts_to': 'Addresses, separated by commas. The mail goes the way Settings → Mail says.',
+    'alerts_delay_min': 'A problem shorter than this is not mailed - a node restarted by an '
+                        'update is back in a few minutes. 0: at once.',
+    'alerts_repeat_h': 'While it lasts, said again this often. 0: once only.',
+    'alerts_resolved': 'A mail when what was mailed is over.',
+    'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS, the '
+                    'replication stopped, the database in trouble, the nodes on different versions.',
+    'alerts_backup': 'A nightly copy older than 36 hours; a backup to the destinations that '
+                     'failed, or none that went in time.',
+    'alerts_cert_days': 'A certificate of a node or of the web address running out within so '
+                        'many days. 0: never.',
+    'alerts_disk_pct': 'A file system otp lives on fuller than this. 0: never.',
+    'alerts_time': 'chrony out of sync, or the clock off by more than half a second - the codes '
+                   'from the phones are worked out from it.',
+    'alerts_updates': 'Security updates waiting, or a restart an update left - as System '
+                      'updates last found them.',
+    'alerts_dir': 'None of the servers of a directory answers a node.',
+    'alerts_sms': 'Three SMS in a row that did not go.',
+    'alerts_guard': 'Each source Sign-in protection blocks, as it is blocked.',
+    'alerts_url': 'Where the links in the mails lead, <code>https://otp.example.cz/admin/</code>. '
+                  'Empty: this machine’s name.',
+    'report': 'A report of the period by mail: the sign-ins by day, who was refused and why, '
+              'who signed in most, the clients, the blocked sources, the sign-ins to the '
+              'administration, the events worth a look, the tokens, the servers and what is '
+              'wrong now. One node of a cluster sends it.',
+    'report_to': 'Addresses, separated by commas. Empty: the ones the alerts go to.',
+    'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
+    'report_day': 'The day a weekly report goes.',
+    'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
     'db_engine': 'Where everything is kept: the tokens, the clients, the realms, the '
                  'settings, the logs. A file on this machine needs nothing; MariaDB and '
                  'PostgreSQL need their server and their Python driver.',
@@ -987,6 +1071,10 @@ PANES = {
     'ha': ['node_name'],
     'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
                'rbackup_keep_days', 'rbackup_password'],
+    'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
+               'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
+               'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
+               'alerts_url', 'report', 'report_to', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
               'code_send_window_min', 'code_lang', 'code_mail_fmt', 'sms_mode', 'sms_url', 'sms_method',
               'sms_body', 'sms_headers', 'sms_token', 'sms_spool_dir', 'sms_prefix',
@@ -1028,6 +1116,14 @@ ONLY_WHEN = {
     'backup_keep': ['backup_daily', '1'], 'backup_at': ['backup_daily', '1'],
     'rbackup_at': ['rbackup', '1'], 'rbackup_every': ['rbackup', '1'],
     'rbackup_day': ['rbackup_every', 'weekly'],
+    'alerts_to': ['alerts', '1'], 'alerts_delay_min': ['alerts', '1'],
+    'alerts_repeat_h': ['alerts', '1'], 'alerts_resolved': ['alerts', '1'],
+    'alerts_nodes': ['alerts', '1'], 'alerts_backup': ['alerts', '1'],
+    'alerts_cert_days': ['alerts', '1'], 'alerts_disk_pct': ['alerts', '1'],
+    'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
+    'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
+    'report_to': ['report', '1'], 'report_every': ['report', '1'],
+    'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
     'smtp_security': ['mail_mode', 'smtp'], 'smtp_auth': ['mail_mode', 'smtp'],
@@ -1141,7 +1237,16 @@ def check_setting(key, value):
             raise BadSetting('%s: %d characters at most' % (key, most))
         if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' if tall else r'[\x00-\x1f\x7f]', got):
             raise BadSetting('%s: no line breaks or other control characters' % key)
-    if key in ('backup_at', 'rbackup_at') and \
+    if key in ('alerts_to', 'report_to'):
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            if not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', one):
+                raise BadSetting('%s: %r is not a mail address' % (key, one))
+        if len([w for w in re.split(r'[\s,;]+', str(got)) if w]) > 20:
+            raise BadSetting('%s: 20 addresses at most' % key)
+    if key == 'alerts_url' and str(got).strip() and \
+            not re.match(r'^https?://[^\s"<>]+\Z', str(got).strip()):
+        raise BadSetting('alerts_url: an address starting https://')
+    if key in ('backup_at', 'rbackup_at', 'report_at') and \
             not re.match(r'^([01]?\d|2[0-3]):[0-5]\d\Z', str(got).strip()):
         raise BadSetting('%s is a time of day, written HH:MM' % key)
     # What reaches a command line, an option file or pg_hba.conf (1.0.33):
@@ -9983,7 +10088,10 @@ def code_send(store, kind, to, code, purpose='signin', name='', lang=None, fmt=N
     def hide(t):
         return str(t).replace(str(code), '******') if code else str(t)
     try:
-        return hide(code_send_now(store, kind, to, code, purpose, name, lang, fmt, display))
+        got = hide(code_send_now(store, kind, to, code, purpose, name, lang, fmt, display))
+        if kind == 'sms':
+            sms_health(True)                    # for the alerts (1.0.162)
+        return got
     except MailError as e:
         new = MailError(hide(e), steps=e.steps, permanent=e.permanent)
         for k, v in vars(e).items():
@@ -9991,6 +10099,7 @@ def code_send(store, kind, to, code, purpose='signin', name='', lang=None, fmt=N
                 setattr(new, k, v)
         raise new
     except SmsError as e:
+        sms_health(False, hide(e))
         raise SmsError(hide(e))
 
 
@@ -13148,6 +13257,10 @@ class Daemon(object):
                     sshkeys_tick(self)          # root's SSH keys (1.0.158)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
+                try:
+                    alerts_tick(self)           # alerts by mail, the report (1.0.162)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('alerts-tick', 'the alerts: %s' % e, 'warn', every=600)
                 try:
                     osup_tick(self)             # the updates of the system (1.0.158)
                 except Exception as e:          # noqa: BLE001
@@ -25394,6 +25507,884 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
         plan.update(state='done', ended=time.time())
         store.set_meta('host:osup:plan', json.dumps(plan))
 
+# ---- alerts by mail, and the report (1.0.162) ------------------------------------------
+# Each node writes what only it can see into a row of its own every minute
+# ('host:health:NODE': its disks, the directories it cannot reach, the SMS
+# gateway as it last found it, its last nightly copy). The node that does
+# what one node does for both (alerts_lead) looks at everything - those rows, the
+# heartbeats, the certificates, the backups, the clocks, the updates, the
+# replication - and mails what is wrong: once when it has lasted
+# alerts_delay_min, again every alerts_repeat_h while it lasts, and once more
+# when it is over. Its state is one row only it writes ('alerts:state'); the
+# other node takes it over as it is when it becomes the one.
+ALERT_WORK = {'at': 0.0, 'health_at': 0.0, 'busy': False}
+SMS_HEALTH = {'ok_at': 0.0, 'fail_at': 0.0, 'fails': 0, 'said': ''}
+ALERT_LEVELS = ('bad', 'warn')
+ALERTS_EVERY = float(os.environ.get('OTP_ALERTS_EVERY') or 60)    # tests look more often
+
+
+def sms_health(ok, said=''):
+    """What the last SMS did, for the alerts: called where codes go out."""
+    if ok:
+        SMS_HEALTH.update(ok_at=time.time(), fails=0, said='')
+    else:
+        SMS_HEALTH.update(fail_at=time.time(), fails=SMS_HEALTH['fails'] + 1,
+                          said=str(said)[:200])
+
+
+def disks_now():
+    """The file systems otp lives on: each once, with how full it is."""
+    seen, out = set(), []
+    for p in ('/', str(STATE_DIR), str(LOG_DIR), '/var/lib/pgsql', '/var/lib/mysql',
+              '/var/log', '/var', '/tmp', '/boot'):
+        try:
+            st = os.statvfs(p)
+            dev = os.stat(p).st_dev
+        except OSError:
+            continue
+        if dev in seen or not st.f_blocks:
+            continue
+        seen.add(dev)
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        used = total - st.f_bfree * st.f_frsize
+        inodes = (100.0 * (st.f_files - st.f_ffree) / st.f_files) if st.f_files else 0.0
+        out.append({'path': p, 'total': total, 'free': free, 'used': used,
+                    'pct': round(100.0 * (total - free) / total, 1), 'inodes': round(inodes, 1)})
+    return out
+
+
+def alerts_lead(store):
+    """The node that looks and sends: the first by name of the nodes heard
+    from, in every kind of cluster - ha_lead is every node of a shared one."""
+    if not CONFIG.get('ha_mode'):
+        return True
+    alive = sorted(n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me'))
+    return not alive or alive[0] == node_name()
+
+
+def health_publish(daemon):
+    """This node's own row: what the node that sends the alerts cannot see."""
+    now = time.time()
+    dead = []
+    for name, d in list((getattr(daemon, 'dirs', None) or {}).items()):
+        hosts = [h.lower() for h in (getattr(d, 'hosts', None) or [])]
+        if not hosts or not int(d.row.get('enabled') if d.row.get('enabled') is not None else 1):
+            continue
+        with Directory.DEAD_LOCK:
+            if all(float(Directory.DEAD.get(h) or 0) > now for h in hosts):
+                dead.append(d.name)
+    last = None
+    try:
+        kept = backups()
+        try:
+            kept = kept + kept_dumps(daemon.store.db.engine)
+        except Exception:                               # noqa: BLE001
+            pass
+        last = max([float(b.get('at') or b.get('mtime') or 0) for b in kept] or [0]) or None
+    except Exception:                                   # noqa: BLE001
+        pass
+    row = {'at': now, 'disks': disks_now(), 'dirs_down': dead, 'sms': dict(SMS_HEALTH),
+           'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
+                                                       'bound', []) or [])}
+    daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
+    return row
+
+
+def _al(lang, cs, en):
+    return cs if lang == 'cs' else en
+
+
+def _al_ago(t, lang):
+    s = max(0, int(time.time() - float(t or 0)))
+    if s < 90:
+        return _al(lang, '%d s' % s, '%d s' % s)
+    if s < 5400:
+        return _al(lang, '%d min' % (s // 60), '%d min' % (s // 60))
+    if s < 2 * 86400:
+        return _al(lang, '%d h' % (s // 3600), '%d h' % (s // 3600))
+    return _al(lang, '%d dní' % (s // 86400), '%d days' % (s // 86400))
+
+
+def _al_when(t):
+    return time.strftime('%d.%m.%Y %H:%M', time.localtime(float(t))) if t else '–'
+
+
+def alert_problems(store, lang='en'):
+    """What is wrong now, every node together: {key: {level, node, title, said, pane}}."""
+    out = {}
+    now = time.time()
+
+    def add(key, level, node, title, said, pane):
+        out[key] = {'level': level, 'node': node or '', 'title': title, 'said': said,
+                    'pane': pane}
+    cluster = bool(CONFIG.get('ha_mode'))
+    nodes = ha_nodes(store) if cluster else []
+    names = [n['name'] for n in nodes] or [node_name()]
+    beats = {n['name']: n for n in nodes}
+    if not beats:
+        try:
+            beats[node_name()] = json.loads(store.get_meta('node:' + node_name()) or '{}')
+        except ValueError:
+            beats[node_name()] = {}
+    health = {n: _meta_json(store, 'host:health:' + n) or {} for n in names}
+    # The nodes, RADIUS, the replication, the database.
+    if CONFIG.get('alerts_nodes', 1):
+        for n in nodes:
+            if not n.get('me') and not n.get('alive'):
+                add('node:' + n['name'], 'bad', n['name'],
+                    _al(lang, 'Uzel %s neodpovídá' % n['name'], '%s is not heard from' % n['name']),
+                    _al(lang, 'Naposledy se ozval před %s. RADIUS obsluhuje druhý uzel - je-li '
+                              'naživu, nebo nefunguje replikace.' % _al_ago(now - n['age'], lang),
+                        'Last heard from %s ago. The other node answers RADIUS - if it is up, '
+                        'or the replication is down.' % _al_ago(now - n['age'], lang)), 'ha')
+        for n in names:
+            b = beats.get(n) or {}
+            alive = b.get('alive', True) or b.get('me')
+            if alive and b and not (b.get('radius') or (health.get(n) or {}).get('radius')):
+                add('radius:' + n, 'bad', n,
+                    _al(lang, 'RADIUS na %s neposlouchá' % n, 'RADIUS is not listening on %s' % n),
+                    _al(lang, 'Server nemá otevřený port RADIUS - přihlášení přes tento uzel '
+                              'neprojdou.', 'The server holds no RADIUS port - sign-ins through '
+                              'this node do not pass.'), 'radius')
+        vers = sorted({str(b.get('version')) for b in beats.values()
+                       if b.get('version') and b.get('alive', True)})
+        if len(vers) > 1:
+            add('versions', 'warn', '', _al(lang, 'Uzly mají různé verze', 'The nodes run '
+                                                  'different versions'),
+                ', '.join('%s %s' % (k, b.get('version')) for k, b in sorted(beats.items())),
+                'upgrade')
+        if CONFIG.get('ha_mode') == 'replicated':
+            try:
+                rs = ha_repl_state(store)
+            except Exception:                           # noqa: BLE001
+                rs = {}
+            if rs and not rs.get('healthy', True):
+                add('repl', 'bad', node_name(),
+                    _al(lang, 'Replikace databáze neběží', 'The database replication is down'),
+                    _al(lang, 'Změny z jednoho uzlu se nedostávají na druhý%s.',
+                        'Changes on one node do not reach the other%s.') % (
+                        ' (%s)' % rs['trouble'] if rs.get('trouble') else ''), 'ha')
+        try:
+            trouble = db_trouble()
+        except Exception:                               # noqa: BLE001
+            trouble = ''
+        if trouble:
+            add('db', 'bad', node_name(), _al(lang, 'Potíže s databází', 'The database is in '
+                                                    'trouble'), str(trouble)[:300], 'db')
+    # Backups: the nightly copy of each node, and the backups sent away.
+    if CONFIG.get('alerts_backup', 1):
+        if CONFIG.get('backup_daily'):
+            for n in names:
+                h = health.get(n) or {}
+                if not h:
+                    continue
+                last = float(h.get('last_backup') or 0)
+                if now - last > 36 * 3600:
+                    add('backup:' + n, 'warn', n,
+                        _al(lang, 'Noční záloha na %s chybí' % n, 'No nightly copy on %s' % n),
+                        _al(lang, 'Poslední je z %s.' % _al_when(last) if last else
+                            'Žádná tam není.', 'The last one is from %s.' % _al_when(last)
+                            if last else 'There is none.'), 'db')
+        if CONFIG.get('rbackup'):
+            runs = rb_history(store)
+            span = (8 * 86400 if CONFIG.get('rbackup_every') == 'weekly' else 36 * 3600)
+            for n in names:
+                mine = [r for r in runs if r.get('node') == n]
+                if mine and not mine[0].get('ok'):
+                    bad = [x for x in mine[0].get('targets') or [] if not x.get('ok')]
+                    add('rbackup:' + n, 'bad', n,
+                        _al(lang, 'Záloha z %s se nepovedla' % n, 'The backup of %s failed' % n),
+                        '; '.join('%s: %s' % (x.get('name'), x.get('error')) for x in bad)
+                        or str(mine[0].get('error') or '')[:300], 'backup')
+                elif not any(r.get('ok') and now - float(r.get('at') or 0) < span for r in mine):
+                    ok = [r for r in mine if r.get('ok')]
+                    add('rbackup:' + n, 'warn', n,
+                        _al(lang, 'Z %s neodešla včas žádná záloha' % n,
+                            'No backup of %s went out in time' % n),
+                        _al(lang, 'Poslední úspěšná: %s.', 'The last good one: %s.')
+                        % (_al_when(ok[0]['at']) if ok else '–'), 'backup')
+    # Certificates running out.
+    days = int(CONFIG.get('alerts_cert_days') or 0)
+    if days:
+        seen = set()
+        for n, b in sorted(beats.items()):
+            web = b.get('web') or {}
+            for what, c in (('node', web.get('cert_now')), ('vip', web.get('vip_cert_now'))):
+                if not isinstance(c, dict) or not c.get('not_after'):
+                    continue
+                fp = c.get('fingerprint') or ''
+                if what == 'vip' and fp in seen:
+                    continue
+                seen.add(fp)
+                left = (float(c['not_after']) - now) / 86400
+                if left < days:
+                    who = _al(lang, 'webové adresy', 'the web address') if what == 'vip' else n
+                    add('cert:%s:%s' % (what, n if what == 'node' else 'vip'),
+                        'bad' if left < 7 else 'warn', n if what == 'node' else '',
+                        _al(lang, 'Certifikát %s %s' % (who, 'vypršel' if left < 0 else
+                                                       'brzy vyprší'),
+                            'The certificate of %s %s' % (who, 'ran out' if left < 0 else
+                                                          'runs out soon')),
+                        _al(lang, '%s - platí do %s (%d dní).', '%s - good until %s (%d days).')
+                        % (c.get('cn') or c.get('subject') or '?', _al_when(c['not_after']),
+                           int(left)), 'web')
+    # Disks.
+    pct = int(CONFIG.get('alerts_disk_pct') or 0)
+    if pct:
+        for n in names:
+            for d in (health.get(n) or {}).get('disks') or []:
+                if float(d.get('pct') or 0) >= pct or float(d.get('inodes') or 0) >= pct:
+                    add('disk:%s:%s' % (n, d['path']), 'bad' if d['pct'] >= 95 else 'warn', n,
+                        _al(lang, 'Na %s dochází místo (%s)' % (n, d['path']),
+                            '%s is running out of room (%s)' % (n, d['path'])),
+                        _al(lang, 'Zaplněno %s %% - volných %s.', '%s %% full - %s free.')
+                        % (d['pct'], human_bytes(d.get('free') or 0)), 'osup')
+    # The clocks: codes are worked out from them.
+    if CONFIG.get('alerts_time', 1):
+        for n in names:
+            data = ((_meta_json(store, 'ntp:now:' + n) or {}).get('data') or {})
+            tr = data.get('tracking') or {}
+            if not data.get('chrony') or not tr:
+                continue
+            off = abs(float(tr.get('offset') or 0))
+            unsynced = str(tr.get('leap') or '').lower().startswith('not')
+            if unsynced or off > 0.5:
+                add('time:' + n, 'bad' if off > 5 or unsynced else 'warn', n,
+                    _al(lang, 'Hodiny na %s nejdou přesně' % n, 'The clock of %s is off' % n),
+                    _al(lang, 'chrony %s, odchylka %.2f s - kódy z telefonu se počítají z hodin.',
+                        'chrony %s, off by %.2f s - the codes from the phones are worked out '
+                        'from the clock.') % (_al(lang, 'není synchronizované', 'is not in sync')
+                                              if unsynced else 'OK', off), 'time')
+    # The updates of the system.
+    if CONFIG.get('alerts_updates', 1):
+        for n in names:
+            ck = _meta_json(store, 'host:osup:check:' + n) or {}
+            if ck.get('state') != 'done':
+                continue
+            if int(ck.get('security') or 0):
+                add('sec:' + n, 'warn', n,
+                    _al(lang, 'Bezpečnostní aktualizace na %s' % n,
+                        'Security updates waiting on %s' % n),
+                    _al(lang, 'Čeká %d bezpečnostních z %d aktualizací (zjištěno %s).',
+                        '%d security updates of %d waiting (looked %s).')
+                    % (int(ck['security']), int(ck.get('count') or 0),
+                       _al_when(ck.get('checked'))), 'osup')
+            if ck.get('reboot_now'):
+                add('reboot:' + n, 'warn', n,
+                    _al(lang, '%s čeká na restart' % n, '%s waits for a restart' % n),
+                    _al(lang, 'Nové jádro nebo knihovny se použijí až po restartu.',
+                        'A new kernel or libraries come into use only after a restart.'), 'osup')
+    # The directories and the SMS gateway, as the nodes found them.
+    if CONFIG.get('alerts_dir', 1):
+        for n in names:
+            for d in (health.get(n) or {}).get('dirs_down') or []:
+                add('dir:%s:%s' % (n, d), 'bad', n,
+                    _al(lang, 'Active Directory %s je nedostupná' % d,
+                        'The directory %s cannot be reached' % d),
+                    _al(lang, 'Z uzlu %s neodpovídá žádný její server - přihlášení přes ni '
+                              'neprojdou.' % n, 'None of its servers answers %s - sign-ins '
+                              'through it do not pass.' % n), 'dir')
+    if CONFIG.get('alerts_sms', 1) and (CONFIG.get('sms_mode') or 'off') != 'off':
+        for n in names:
+            s = (health.get(n) or {}).get('sms') or {}
+            if int(s.get('fails') or 0) >= 3 and now - float(s.get('fail_at') or 0) < 6 * 3600:
+                add('sms:' + n, 'bad', n,
+                    _al(lang, 'SMS brána neposílá', 'The SMS gateway does not send'),
+                    _al(lang, '%d SMS z %s za sebou se nepovedlo: %s',
+                        '%d SMS from %s failed in a row: %s') % (int(s['fails']), n,
+                                                              s.get('said') or '?'), 'codes')
+    return out
+
+
+def _alerts_to(key='alerts_to'):
+    raw = str(CONFIG.get(key) or '')
+    if key == 'report_to' and not raw.strip():
+        raw = str(CONFIG.get('alerts_to') or '')
+    return [a for a in re.split(r'[\s,;]+', raw) if a][:20]
+
+
+def alerts_link():
+    url = str(CONFIG.get('alerts_url') or '').strip()
+    return url or 'https://%s/admin/' % socket.getfqdn()
+
+
+# -- the mails ------------------------------------------------------------------------------
+AL_FONT = "font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
+AL_COLORS = {'bad': ('#dc2626', '#fef2f2', '#991b1b'), 'warn': ('#d97706', '#fffbeb', '#92400e'),
+             'good': ('#16a34a', '#f0fdf4', '#166534'), 'info': ('#2563eb', '#eff6ff', '#1e3a8a')}
+
+
+def _al_page(lang, title, kicker, band, body, foot):
+    """The frame every alert and report mail has: tables and styles on each
+    element, as the token's mail - what every mail program draws the same."""
+    return ('<!doctype html><html lang="%s"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>'
+            '</head><body style="margin:0;padding:0;background:#f3f4f6;%s">'
+            '<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
+            'bgcolor="#f3f4f6" style="background:#f3f4f6"><tr><td align="center" '
+            'style="padding:24px 10px">'
+            '<table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" '
+            'bgcolor="#ffffff" style="max-width:640px;width:100%%;background:#ffffff;'
+            'border-radius:14px;overflow:hidden;border:1px solid #e5e7eb">'
+            '<tr><td bgcolor="%s" style="background:%s;padding:20px 28px;color:#ffffff;%s">'
+            '<p style="margin:0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;'
+            'color:#ffffff;opacity:.85">%s</p><p style="margin:4px 0 0;font-size:21px;'
+            'font-weight:700;color:#ffffff">%s</p></td></tr>'
+            '<tr><td style="padding:22px 28px;%s">%s</td></tr>'
+            '<tr><td style="padding:14px 28px 22px;font-size:12px;color:#9ca3af;%s'
+            'border-top:1px solid #f3f4f6">%s</td></tr></table></td></tr></table></body></html>'
+            % (lang, _h(title), AL_FONT, band, band, AL_FONT, _h(kicker), _h(title), AL_FONT,
+               body, AL_FONT, foot))
+
+
+def _al_card(level, title, lines, link=''):
+    edge, back, ink = AL_COLORS.get(level, AL_COLORS['info'])
+    rows = ''.join('<div style="margin-top:4px;font-size:13.5px;line-height:1.5;color:#374151">'
+                   '%s</div>' % ln for ln in lines if ln)
+    if link:
+        rows += ('<div style="margin-top:8px;font-size:13px"><a href="%s" style="color:#1d4ed8;'
+                 'text-decoration:none;font-weight:600">%s</a></div>' % (_h(link[0]), _h(link[1])))
+    return ('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
+            'border="0" style="margin:0 0 10px"><tr><td bgcolor="%s" style="background:%s;'
+            'border-left:4px solid %s;border-radius:8px;padding:12px 16px;%s">'
+            '<div style="font-size:15px;font-weight:700;color:%s">%s</div>%s</td></tr></table>'
+            % (back, back, edge, AL_FONT, ink, _h(title), rows))
+
+
+def _al_h(text):
+    return ('<p style="margin:18px 0 8px;font-size:12px;font-weight:700;letter-spacing:1px;'
+            'text-transform:uppercase;color:#6b7280">%s</p>' % _h(text))
+
+
+def _al_msg(subject, page, text, to):
+    sender = str(CONFIG.get('mail_from') or '').strip()
+    if not sender:
+        raise MailError('no sender address is set - Settings → Mail → From (address)')
+    site = str(CONFIG.get('site_name') or socket.gethostname())
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = formataddr((str(CONFIG.get('mail_from_name') or site), sender))
+    msg['To'] = ', '.join(to)
+    msg['Date'] = formatdate(localtime=True)
+    msg['Message-ID'] = make_msgid(domain=sender.rsplit('@', 1)[-1] or None)
+    msg['Auto-Submitted'] = 'auto-generated'
+    msg.set_content(text)
+    msg.add_alternative(page, subtype='html')
+    return msg
+
+
+def alert_mail(new, still, gone, events, to, lang, test=False, left=0):
+    """One mail: what went wrong, what still is, what is over, what happened."""
+    site = str(CONFIG.get('site_name') or socket.gethostname())
+    link = alerts_link()
+    bad = [p for p in new + still if p['level'] == 'bad']
+    if test:
+        subject = _al(lang, '[otp] Zkušební upozornění - %s', '[otp] A test alert - %s') % site
+        band = AL_COLORS['info'][0]
+        title = _al(lang, 'Upozornění chodí', 'Alerts come through')
+    elif new or still:
+        n = len(new) + len(still)
+        subject = (_al(lang, '[otp] %s %d %s - %s', '[otp] %s %d %s - %s')
+                   % ('✖' if bad else '⚠', n, _al(lang, 'problém' if n == 1 else
+                                                     ('problémy' if n < 5 else 'problémů'),
+                                                     'problem' if n == 1 else 'problems'), site))
+        band = AL_COLORS['bad' if bad else 'warn'][0]
+        title = _al(lang, 'Něco není v pořádku', 'Something is wrong')
+    elif gone and left:
+        subject = (_al(lang, '[otp] ✔ %d vyřešeno, %d trvá - %s', '[otp] ✔ %d over, %d still so - %s')
+                   % (len(gone), left, site))
+        band = AL_COLORS['good'][0]
+        title = _al(lang, 'Něco je vyřešeno', 'Some of it is over')
+    elif gone:
+        subject = _al(lang, '[otp] ✔ Vyřešeno - %s', '[otp] ✔ Back to normal - %s') % site
+        band = AL_COLORS['good'][0]
+        title = _al(lang, 'Vše je zase v pořádku', 'All is well again')
+    else:
+        subject = _al(lang, '[otp] Události - %s', '[otp] Events - %s') % site
+        band = AL_COLORS['info'][0]
+        title = _al(lang, 'Co se stalo', 'What happened')
+    body, text = [], [title, '']
+
+    def section(head, items, level=None):
+        if not items:
+            return
+        body.append(_al_h(head))
+        text.append(head.upper())
+        for p in items:
+            lv = level or p['level']
+            lines = [_h(p['said'])]
+            if p.get('node'):
+                lines.append('<span style="color:#6b7280">%s %s</span>' % (
+                    _h(_al(lang, 'Uzel:', 'Node:')), _h(p['node'])))
+            if p.get('since'):
+                lines.append('<span style="color:#6b7280">%s %s</span>' % (
+                    _h(_al(lang, 'Od:', 'Since:')), _h(_al_when(p['since']))))
+            body.append(_al_card(lv, p['title'], lines,
+                                 (link + '#settings/' + p['pane'], _al(lang, 'Otevřít v administraci →',
+                                                                      'Open in the administration →'))
+                                 if p.get('pane') and lv != 'good' else ''))
+            text.append('- %s: %s%s' % (p['title'], p['said'],
+                                        (' [%s]' % p['node']) if p.get('node') else ''))
+        text.append('')
+    if test:
+        body.append(_al_card('info', _al(lang, 'Toto je zkouška', 'This is a test'), [
+            _h(_al(lang, 'Upozornění z %s dorazí sem. Teď je hlášeno problémů: %d.',
+                   'The alerts of %s arrive here. Problems now: %d.') % (site, len(still)))]))
+        section(_al(lang, 'Co je teď špatně', 'What is wrong now'), still)
+    else:
+        allp = new + still
+        body.append(_rep_tiles([
+            (_al(lang, 'nefunguje', 'down'), str(len([p for p in allp if p['level'] == 'bad'])),
+             'bad' if any(p['level'] == 'bad' for p in allp) else 'good'),
+            (_al(lang, 'varování', 'warnings'), str(len([p for p in allp if p['level'] != 'bad'])),
+             'warn' if any(p['level'] != 'bad' for p in allp) else 'good'),
+            (_al(lang, 'vyřešeno', 'over'), str(len(gone)), 'good')]))
+        section(_al(lang, 'Nové', 'New'), new)
+        section(_al(lang, 'Pořád trvá', 'Still so'), still)
+        section(_al(lang, 'Vyřešeno', 'Over'), [dict(p, said=p['said'] + _al(
+            lang, ' (trvalo %s)', ' (it lasted %s)') % _al_ago(p.get('since') or time.time(), lang))
+            for p in gone], 'good')
+        section(_al(lang, 'Události', 'Events'), events, 'info')
+    foot = _h(_al(lang, 'Poslal %s z %s, %s. Nastavení → Upozornění a reporty.',
+                  'Sent by %s from %s, %s. Settings → Alerts and reports.')
+              % (node_name(), site, _al_when(time.time())))
+    text += ['-- ', html.unescape(re.sub('<[^>]+>', '', foot)), link]
+    return _al_msg(subject, _al_page(lang, title, 'otp · ' + site, band, ''.join(body), foot),
+                   '\n'.join(text), to)
+
+
+def _alert_state(store):
+    st = _meta_json(store, 'alerts:state') or {}
+    st.setdefault('problems', {})
+    st.setdefault('log', [])
+    return st
+
+
+def alert_send(store, msg, to, kind, keys):
+    st = _alert_state(store)
+    entry = {'at': time.time(), 'kind': kind, 'keys': keys[:20], 'to': to, 'ok': True,
+             'subject': str(msg.get('Subject') or '')[:200], 'node': node_name()}
+    try:
+        mail_deliver(store, msg, to, kind='alert', purpose=kind)
+    except MailError as e:
+        # Waiting for another try in the outgoing mail is sent as far as the
+        # alerts go: it is not made again every minute.
+        entry.update(ok=False, said=str(e)[:200], queued=getattr(e, 'queued', '') or '')
+    st = _alert_state(store)
+    if not entry['ok'] and entry.get('queued') != 'waiting':
+        st['fail_at'] = entry['at']
+    st['log'] = ([entry] + st['log'])[:50]
+    store.set_meta('alerts:state', json.dumps(st))
+    return entry
+
+
+def alerts_evaluate(store, force=False):
+    """The alerts' turn: what is wrong compared with what was said, mailed."""
+    lang = CONFIG.get('mail_lang') or 'cs'
+    now = time.time()
+    cur = alert_problems(store, lang)
+    st = _alert_state(store)
+    known = st['problems']
+    delay = 60 * int(CONFIG.get('alerts_delay_min') or 0)
+    repeat = 3600 * int(CONFIG.get('alerts_repeat_h') or 0)
+    new, still, gone = [], [], []
+    for k, p in cur.items():
+        was = known.get(k) or {}
+        p['key'] = k
+        p['since'] = was.get('since') or now
+        p['sent'] = bool(was.get('sent'))
+        p['sent_at'] = was.get('sent_at')
+        if not p['sent'] and now - p['since'] >= delay:
+            new.append(p)
+        elif p['sent'] and repeat and now - float(was.get('sent_at') or 0) >= repeat:
+            still.append(p)
+        elif p['sent'] and was.get('level') == 'warn' and p['level'] == 'bad':
+            new.append(p)                               # worse than said
+        known[k] = dict(p)
+    for k in list(known):
+        if k not in cur:
+            p = known.pop(k)
+            if p.get('sent') and CONFIG.get('alerts_resolved', 1):
+                gone.append(p)
+    # Events: a source blocked for guessing, as it happens.
+    events = []
+    if CONFIG.get('alerts_guard'):
+        last = int(st.get('event_id') or 0)
+        try:
+            rows = store.db.rows("SELECT id, ts, words, node FROM events WHERE id > ? AND "
+                                 "kind = 'radius' AND words LIKE '% is blocked for %' "
+                                 "ORDER BY id LIMIT 20", (last,))
+        except Exception:                               # noqa: BLE001
+            rows = []
+        if not last:
+            try:
+                st['event_id'] = int(store.db.value('SELECT MAX(id) FROM events', (), 0) or 0)
+            except Exception:                           # noqa: BLE001
+                st['event_id'] = 0
+            rows = []
+        for r in rows:
+            st['event_id'] = max(int(st.get('event_id') or 0), int(r['id']))
+            events.append({'level': 'info', 'node': r.get('node') or '',
+                           'title': _al(lang, 'Zablokovaný zdroj', 'A source blocked'),
+                           'said': str(r.get('words') or '')[:300], 'pane': 'guard',
+                           'since': r.get('ts')})
+    st['problems'] = known
+    st['checked'] = now
+    store.set_meta('alerts:state', json.dumps(st))
+    to = _alerts_to()
+    if (new or still or gone or events) and to and CONFIG.get('alerts') and \
+            now - float(st.get('fail_at') or 0) > 900:
+        said = {p['key'] for p in new + still}
+        # A mail about something new names what else is still wrong too.
+        others = [p for p in cur.values() if p['key'] not in said and p['sent']] \
+            if new or gone else []
+        msg = alert_mail(new, still + others, gone, events, to, lang,
+                         left=len([p for p in cur.values() if p['sent'] or p['key'] in said]))
+        entry = alert_send(store, msg, to, 'alert', sorted(said) +
+                           ['over:' + str(p.get('key') or '') for p in gone])
+        if entry['ok'] or entry.get('queued') == 'waiting':
+            st = _alert_state(store)
+            for k in said | {p['key'] for p in others}:
+                if k in st['problems']:
+                    st['problems'][k].update(sent=True, sent_at=now)
+            store.set_meta('alerts:state', json.dumps(st))
+    return {'now': cur, 'new': len(new), 'still': len(still), 'over': len(gone),
+            'events': len(events)}
+
+
+# -- the report ------------------------------------------------------------------------------
+def report_period(now=None):
+    """(since, until, id) of the last period that has ended, as report_every says."""
+    now = datetime.fromtimestamp(now or time.time())
+    every = CONFIG.get('report_every') or 'weekly'
+    day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if every == 'daily':
+        until = day0
+        since = until - timedelta(days=1)
+    elif every == 'monthly':
+        until = day0.replace(day=1)
+        since = (until - timedelta(days=1)).replace(day=1)
+    else:
+        until = day0 - timedelta(days=(day0.isoweekday() - 1))
+        since = until - timedelta(days=7)
+    return time.mktime(since.timetuple()), time.mktime(until.timetuple()), \
+        '%s:%s' % (every, since.strftime('%Y-%m-%d'))
+
+
+def report_due(now=None):
+    n = datetime.fromtimestamp(now or time.time())
+    try:
+        hh, mm = (int(x) for x in str(CONFIG.get('report_at') or '07:30').split(':', 1))
+    except ValueError:
+        hh, mm = 7, 30
+    every = CONFIG.get('report_every') or 'weekly'
+    if every == 'weekly' and n.isoweekday() != int(CONFIG.get('report_day') or 1):
+        return False
+    if every == 'monthly' and n.day != 1:
+        return False
+    return (n.hour, n.minute) >= (hh, mm)
+
+
+def _rep_table(head, rows, widths=None):
+    th = ''.join('<td style="padding:6px 8px;font-size:11.5px;font-weight:700;'
+                 'letter-spacing:.5px;text-transform:uppercase;color:#6b7280;'
+                 'border-bottom:1px solid #e5e7eb;%s">%s</td>'
+                 % ('text-align:right;' if i and str(h).startswith('#') else '', _h(str(h).lstrip('#')))
+                 for i, h in enumerate(head))
+    trs = []
+    for r in rows:
+        trs.append('<tr>%s</tr>' % ''.join(
+            '<td style="padding:6px 8px;font-size:13px;color:#111827;border-bottom:1px solid '
+            '#f3f4f6;%s">%s</td>' % ('text-align:right;white-space:nowrap;' if i and
+                                     str(head[i]).startswith('#') else '', c)
+            for i, c in enumerate(r)))
+    if not rows:
+        trs.append('<tr><td colspan="%d" style="padding:8px;font-size:13px;color:#9ca3af">–</td>'
+                   '</tr>' % len(head))
+    return ('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
+            'style="margin:0 0 6px;%s"><tr>%s</tr>%s</table>' % (AL_FONT, th, ''.join(trs)))
+
+
+def _rep_tiles(tiles):
+    cells = ''.join(
+        '<td width="%d%%" valign="top" style="padding:4px"><table role="presentation" '
+        'width="100%%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="%s" '
+        'style="background:%s;border-radius:10px;padding:12px 12px;%s">'
+        '<div style="font-size:22px;font-weight:700;color:%s">%s</div>'
+        '<div style="margin-top:2px;font-size:12px;color:#4b5563">%s</div></td></tr></table></td>'
+        % (100 // len(tiles), AL_COLORS[lv][1], AL_COLORS[lv][1], AL_FONT, AL_COLORS[lv][2],
+           _h(v), _h(k)) for k, v, lv in tiles)
+    return ('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
+            'style="margin:0 0 8px"><tr>%s</tr></table>' % cells)
+
+
+def _rep_bars(series, lang):
+    """The sign-ins per day as bars: a table of cells, which every mail
+    program draws (no pictures, no SVG)."""
+    if not series:
+        return ''
+    top = max([s['accept'] + s['reject'] for s in series] or [1]) or 1
+    cols = []
+    for s in series:
+        a = int(round(80.0 * s['accept'] / top))
+        r = int(round(80.0 * s['reject'] / top))
+        day = time.strftime('%d.%m.', time.localtime(s['t']))
+        cols.append(
+            '<td align="center" valign="bottom" style="padding:0 2px;%s">'
+            '<div style="font-size:10px;color:#6b7280">%d</div>'
+            '%s%s<div style="font-size:10px;color:#6b7280;margin-top:3px">%s</div></td>'
+            % (AL_FONT, s['accept'] + s['reject'],
+               ('<div style="height:%dpx;background:#dc2626;border-radius:3px 3px 0 0;'
+                'line-height:%dpx;font-size:1px">&nbsp;</div>' % (r, r)) if r else '',
+               '<div style="height:%dpx;background:#16a34a;%sline-height:%dpx;font-size:1px">'
+               '&nbsp;</div>' % (max(a, 1), '' if r else 'border-radius:3px 3px 0 0;', max(a, 1)),
+               _h(day)))
+    legend = ('<div style="margin-top:6px;font-size:11.5px;color:#6b7280;%s">'
+              '<span style="color:#16a34a">■</span> %s &nbsp; <span style="color:#dc2626">■</span>'
+              ' %s</div>' % (AL_FONT, _h(_al(lang, 'přijato', 'let in')),
+                             _h(_al(lang, 'odmítnuto', 'refused'))))
+    return ('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
+            'style="margin:4px 0 4px;table-layout:fixed"><tr>%s</tr></table>%s'
+            % (''.join(cols), legend))
+
+
+def report_build(store, since, until, lang='cs'):
+    """The report of a period, as a mail: (subject, html, text)."""
+    site = str(CONFIG.get('site_name') or socket.gethostname())
+    db = store.db
+    ov = store.overview_now(since=since, until=until)
+    days = max(1, int(round((until - since) / 86400)))
+    # By day, whatever the period (the overview bars by 6 h over 3 days).
+    # Counted by the database, a day a row (never the rows themselves read in).
+    slot = ('CAST((ts - ?) / 86400 AS INTEGER)' if db.engine == 'sqlite'
+            else 'FLOOR((ts - ?) / 86400)')
+    rows = db.rows("SELECT %s AS d, result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                   "ts < ? AND packet = 'Access-Request' AND result IN ('accept', 'reject', "
+                   "'drop') GROUP BY 1, 2" % slot, (since, since, until)) if days <= 62 else []
+    per = collections.OrderedDict()
+    for i in range(min(days, 62)):
+        per[i] = {'t': since + i * 86400, 'accept': 0, 'reject': 0}
+    for r in rows:
+        i = int(r['d'] or 0)
+        if i in per:
+            per[i]['accept' if r['result'] == 'accept' else 'reject'] += int(r['n'] or 0)
+    acc, rej = int(ov.get('accepted') or 0), int(ov.get('refused') or 0)
+    total = acc + rej
+    users_bad = db.rows(
+        "SELECT username AS who, COUNT(*) AS n, MAX(ts) AS last FROM radius_log WHERE ts >= ? "
+        "AND ts < ? AND packet = 'Access-Request' AND result <> 'accept' AND result <> 'acct' "
+        "GROUP BY username ORDER BY n DESC LIMIT 15", (since, until))
+    for u in users_bad:
+        r = db.rows("SELECT reason FROM radius_log WHERE username = ? AND ts >= ? AND ts < ? AND "
+                    "result <> 'accept' ORDER BY ts DESC LIMIT 1", (u['who'], since, until))
+        u['why'] = (r[0].get('reason') if r else '') or ''
+        u['good'] = int(db.value("SELECT COUNT(*) FROM radius_log WHERE username = ? AND ts >= ? "
+                                 "AND ts < ? AND result = 'accept'", (u['who'], since, until), 0)
+                        or 0)
+    users_top = db.rows(
+        "SELECT username AS who, COUNT(*) AS n, MAX(ts) AS last FROM radius_log WHERE ts >= ? "
+        "AND ts < ? AND result = 'accept' GROUP BY username ORDER BY n DESC LIMIT 10",
+        (since, until))
+    tokens = int(db.value('SELECT COUNT(*) FROM tokens', (), 0) or 0)
+    tok_new = int(db.value('SELECT COUNT(*) FROM tokens WHERE created >= ? AND created < ?',
+                           (since, until), 0) or 0)
+    tok_locked = int(db.value('SELECT COUNT(*) FROM tokens WHERE locked_until > ?',
+                              (time.time(),), 0) or 0)
+    tok_idle = int(db.value('SELECT COUNT(*) FROM tokens WHERE (last_used IS NULL OR last_used '
+                            '< ?) AND created < ?', (time.time() - 90 * 86400,
+                                                     time.time() - 90 * 86400), 0) or 0)
+    admins = db.rows("SELECT words, ts, level FROM events WHERE ts >= ? AND ts < ? AND "
+                     "kind = 'sign-ins' ORDER BY ts DESC LIMIT 400", (since, until))
+    adm_bad = [a for a in admins if a.get('level') in ('warn', 'bad')]
+    blocks = db.rows("SELECT words, ts FROM events WHERE ts >= ? AND ts < ? AND kind = 'radius' "
+                     "AND words LIKE '% is blocked for %' ORDER BY ts DESC LIMIT 20", (since, until))
+    important = db.rows("SELECT ts, kind, level, who, words FROM events WHERE ts >= ? AND ts < ? "
+                        "AND level IN ('warn', 'bad') AND kind <> 'sign-ins' ORDER BY ts DESC "
+                        "LIMIT 25", (since, until))
+    kinds = db.rows("SELECT kind, COUNT(*) AS n FROM events WHERE ts >= ? AND ts < ? GROUP BY "
+                    "kind ORDER BY n DESC", (since, until))
+    probs = alert_problems(store, lang)
+    period = '%s – %s' % (time.strftime('%d.%m.%Y', time.localtime(since)),
+                          time.strftime('%d.%m.%Y', time.localtime(until - 1)))
+    every = CONFIG.get('report_every') or 'weekly'
+    kind_w = {'daily': _al(lang, 'Denní', 'Daily'), 'weekly': _al(lang, 'Týdenní', 'Weekly'),
+              'monthly': _al(lang, 'Měsíční', 'Monthly')}.get(every, '')
+    title = _al(lang, '%s report', '%s report') % kind_w
+    body = []
+    body.append('<p style="margin:0 0 12px;font-size:14px;color:#374151">%s <b>%s</b></p>'
+                % (_h(_al(lang, 'Období:', 'Period:')), _h(period)))
+    body.append(_rep_tiles([
+        (_al(lang, 'přihlášení', 'sign-ins'), str(total), 'info'),
+        (_al(lang, 'přijato', 'let in'), str(acc), 'good'),
+        (_al(lang, 'odmítnuto', 'refused'), str(rej), 'bad' if rej else 'good'),
+        (_al(lang, 'lidí', 'people'), str(int(ov.get('people') or 0)), 'info')]))
+    body.append(_rep_tiles([
+        (_al(lang, 'tokenů', 'tokens'), str(tokens), 'info'),
+        (_al(lang, 'nových', 'new'), str(tok_new), 'info'),
+        (_al(lang, 'zamčených teď', 'locked now'), str(tok_locked), 'warn' if tok_locked else 'good'),
+        (_al(lang, 'problémů teď', 'problems now'), str(len(probs)), 'bad' if probs else 'good')]))
+    if per:
+        body.append(_al_h(_al(lang, 'Přihlášení po dnech', 'Sign-ins by day')))
+        body.append(_rep_bars(list(per.values()), lang))
+    if probs:
+        body.append(_al_h(_al(lang, 'Co je teď špatně', 'What is wrong now')))
+        for p in probs.values():
+            body.append(_al_card(p['level'], p['title'], [_h(p['said'])] + (
+                ['<span style="color:#6b7280">%s %s</span>' % (_h(_al(lang, 'Uzel:', 'Node:')),
+                                                                _h(p['node']))]
+                if p.get('node') else [])))
+    body.append(_al_h(_al(lang, 'Kdo byl odmítnut', 'Who was refused')))
+    body.append(_rep_table([_al(lang, 'Uživatel', 'User'), '#' + _al(lang, 'Odmítnuto', 'Refused'),
+                            '#' + _al(lang, 'Přijato', 'Let in'), _al(lang, 'Poslední důvod', 'Last reason'),
+                            '#' + _al(lang, 'Naposledy', 'Last')],
+                           [[_h(u['who'] or '?'), str(u['n']), str(u['good']),
+                             '<span style="color:#6b7280">%s</span>' % _h(str(u['why'])[:80]),
+                             _h(_al_when(u['last']))] for u in users_bad]))
+    body.append(_al_h(_al(lang, 'Proč odmítnuto', 'Why refused')))
+    body.append(_rep_table([_al(lang, 'Důvod', 'Reason'), '#' + _al(lang, 'Kolikrát', 'Times')],
+                           [[_h(str(r.get('said') or '?')[:100]), str(r['n'])]
+                            for r in ov.get('top_reasons') or []]))
+    body.append(_al_h(_al(lang, 'Nejčastěji přihlášení', 'Signed in most')))
+    body.append(_rep_table([_al(lang, 'Uživatel', 'User'), '#' + _al(lang, 'Přihlášení', 'Sign-ins'),
+                            '#' + _al(lang, 'Naposledy', 'Last')],
+                           [[_h(u['who'] or '?'), str(u['n']), _h(_al_when(u['last']))]
+                            for u in users_top]))
+    body.append(_al_h(_al(lang, 'Odkud (klienti RADIUS)', 'From where (RADIUS clients)')))
+    body.append(_rep_table([_al(lang, 'Klient', 'Client'), '#' + _al(lang, 'Požadavků', 'Requests')],
+                           [[_h(r.get('said') or '?'), str(r['n'])]
+                            for r in ov.get('top_clients') or []]))
+    body.append(_al_h(_al(lang, 'Ochrana přihlášení', 'Sign-in protection')))
+    body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Zablokováno', 'Blocked')],
+                           [[_h(_al_when(b['ts'])), _h(str(b['words'])[:160])] for b in blocks]))
+    body.append(_al_h(_al(lang, 'Přihlášení do administrace', 'Sign-ins to the administration')))
+    body.append('<p style="margin:0 0 6px;font-size:13.5px;color:#374151">%s</p>' % _h(
+        _al(lang, 'Celkem %d záznamů, z toho %d neúspěšných nebo s varováním.',
+            '%d in all, %d of them failed or warned about.') % (len(admins), len(adm_bad))))
+    body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Co', 'What')],
+                           [[_h(_al_when(a['ts'])), _h(str(a['words'])[:160])] for a in adm_bad[:10]]))
+    body.append(_al_h(_al(lang, 'Důležité události', 'Events worth a look')))
+    body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Druh', 'Kind'), _al(lang, 'Co', 'What')],
+                           [[_h(_al_when(e['ts'])), _h(e.get('kind') or ''),
+                             '<span style="color:%s">%s</span>' % (
+                                 AL_COLORS['bad' if e.get('level') == 'bad' else 'warn'][2],
+                                 _h(str(e.get('words') or '')[:180]))] for e in important]))
+    body.append('<p style="margin:4px 0 0;font-size:12.5px;color:#6b7280">%s %s</p>' % (
+        _h(_al(lang, 'Všechny události podle druhu:', 'All events by kind:')),
+        _h(', '.join('%s %d' % (k['kind'], int(k['n'])) for k in kinds) or '–')))
+    # The servers.
+    srows = []
+    cluster = ha_nodes(store) if CONFIG.get('ha_mode') else []
+    for n in [x['name'] for x in cluster] or [node_name()]:
+        h = _meta_json(store, 'host:health:' + n) or {}
+        ck = _meta_json(store, 'host:osup:check:' + n) or {}
+        tr = (((_meta_json(store, 'ntp:now:' + n) or {}).get('data') or {}).get('tracking') or {})
+        disk = max([d.get('pct') or 0 for d in h.get('disks') or []] or [0])
+        srows.append([_h(n), '%s %%' % disk, ('%.3f s' % float(tr['offset'])) if tr else '–',
+                      ('%s / %s' % (ck.get('count', '–'), ck.get('security', '–'))) if ck else '–',
+                      _h(_al_when(h.get('last_backup')))])
+    body.append(_al_h(_al(lang, 'Servery', 'The servers')))
+    body.append(_rep_table([_al(lang, 'Uzel', 'Node'), '#' + _al(lang, 'Disk', 'Disk'),
+                            '#' + _al(lang, 'Čas', 'Clock'),
+                            '#' + _al(lang, 'Aktualizace / bezp.', 'Updates / security'),
+                            '#' + _al(lang, 'Noční záloha', 'Nightly copy')], srows))
+    runs = [r for r in rb_history(store) if since <= float(r.get('at') or 0) < until]
+    if CONFIG.get('rbackup') or runs:
+        ok = len([r for r in runs if r.get('ok')])
+        body.append('<p style="margin:8px 0 0;font-size:13.5px;color:#374151">%s</p>' % _h(
+            _al(lang, 'Zálohy pryč: %d, z toho %d v pořádku.', 'Backups sent: %d, %d of them good.')
+            % (len(runs), ok)))
+    foot = _h(_al(lang, 'Poslal %s z %s, %s. Nastavení → Upozornění a reporty.',
+                  'Sent by %s from %s, %s. Settings → Alerts and reports.')
+              % (node_name(), site, _al_when(time.time())))
+    page = _al_page(lang, title, 'otp · ' + site, AL_COLORS['info'][2], ''.join(body), foot)
+    text = ['%s - %s' % (title, site), period, '',
+            _al(lang, 'Přihlášení: %d, přijato %d, odmítnuto %d, lidí %d.',
+                'Sign-ins: %d, let in %d, refused %d, people %d.')
+            % (total, acc, rej, int(ov.get('people') or 0)),
+            _al(lang, 'Tokeny: %d, nových %d, zamčených %d.', 'Tokens: %d, new %d, locked %d.')
+            % (tokens, tok_new, tok_locked), '']
+    if probs:
+        text.append(_al(lang, 'Co je teď špatně:', 'What is wrong now:'))
+        text += ['- %s: %s' % (p['title'], p['said']) for p in probs.values()]
+        text.append('')
+    text.append(_al(lang, 'Kdo byl odmítnut:', 'Who was refused:'))
+    text += ['- %s: %d (%s)' % (u['who'], u['n'], u['why']) for u in users_bad] or ['-']
+    text += ['', _al(lang, 'Neaktivní tokeny (90 dní): %d', 'Tokens idle for 90 days: %d') % tok_idle]
+    subject = _al(lang, '[otp] %s report %s - %s', '[otp] %s report %s - %s') % (kind_w, period,
+                                                                                 site)
+    return subject, page, '\n'.join(text)
+
+
+def report_send(store, since=None, until=None, to=None, by='', reader=None):
+    """`reader`: the pages' own connection for the long counts (1.0.162) -
+    never the one every sign-in shares."""
+    lang = CONFIG.get('mail_lang') or 'cs'
+    if since is None:
+        since, until, _ = report_period()
+    to = to or _alerts_to('report_to')
+    if not to:
+        raise ValueError('no address to send the report to - Report to, or Alerts to')
+    subject, page, text = report_build(reader or store, since, until, lang)
+    msg = _al_msg(subject, page, text, to)
+    entry = alert_send(store, msg, to, 'report', [])
+    if by:
+        store.add_event('settings', '%s sent the report (%s) to %s%s' % (
+            by, time.strftime('%d.%m.%Y', time.localtime(since)), ', '.join(to),
+            '' if entry['ok'] else ' - it did not go: %s' % entry.get('said')), 'info', who=by)
+    return entry
+
+
+def alerts_tick(daemon):
+    """Every minute: this node's own row; on the node that sends them, the
+    alerts and the report when it is due. In a thread of its own - a mail
+    server that takes its time holds nothing up."""
+    if time.time() - ALERT_WORK['at'] < ALERTS_EVERY or ALERT_WORK['busy']:
+        return
+    ALERT_WORK['at'] = time.time()
+    ALERT_WORK['busy'] = True
+
+    def go():
+        store = daemon.store
+        try:
+            try:
+                health_publish(daemon)
+            except Exception as e:                      # noqa: BLE001
+                log_sparing('health', 'this node\'s health row: %s' % e, 'warn', every=900)
+            if not alerts_lead(store):
+                return
+            if CONFIG.get('alerts') or CONFIG.get('report'):
+                alerts_evaluate(store)
+            if CONFIG.get('report') and report_due():
+                since, until, pid = report_period()
+                if store.get_meta('report:sent') != pid and claim_once(store, 'report:sent', pid):
+                    try:
+                        report_send(store, since, until, reader=daemon.reader())
+                    except (ValueError, MailError) as e:
+                        log('the report did not go: %s' % e, 'warn')
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('alerts', 'the alerts: %s' % e, 'warn', every=900)
+        finally:
+            ALERT_WORK['busy'] = False
+    threading.Thread(target=go, name='otp-alerts', daemon=True).start()
+
+
+def alerts_view(store):
+    lang = CONFIG.get('ui_lang') or 'en'
+    st = _alert_state(store)
+    now = alert_problems(store, 'en')
+    nodes = [n['name'] for n in ha_nodes(store)] if CONFIG.get('ha_mode') else [node_name()]
+    since, until, pid = report_period()
+    return {'problems': [dict(p, key=k, since=(st['problems'].get(k) or {}).get('since'),
+                              sent=bool((st['problems'].get(k) or {}).get('sent')))
+                         for k, p in sorted(now.items(), key=lambda kv: (kv[1]['level'] != 'bad', kv[0]))],
+            'log': st['log'][:30], 'checked': st.get('checked'),
+            'health': {n: _meta_json(store, 'host:health:' + n) or {} for n in nodes},
+            'to': _alerts_to(), 'report_to': _alerts_to('report_to'),
+            'mail': (CONFIG.get('mail_mode') or 'off') != 'off', 'lead': alerts_lead(store),
+            'report': {'since': since, 'until': until, 'sent': store.get_meta('report:sent') == pid},
+            'link': alerts_link(), 'lang': lang}
+
 
 # ---------------------------------------------------------------------------
 # From opt to otp (1.0.37): the database's own names
@@ -31925,7 +32916,6 @@ def _mfa_do(h):
         return {'message': 'signed in', 'done': True, 'token': token}
     raise ApiError(400, 'no such thing to do')
 
-from datetime import timedelta
 
 
 # ---- the pages ----------------------------------------------------------------------
@@ -32490,6 +33480,67 @@ def _osup_do(h):
                              s['name'])
             return {'message': 'restarting %s, one at a time' % ', '.join(nodes), 'plan': plan}
     except ValueError as e:
+        raise ApiError(400, str(e))
+    raise ApiError(400, 'no such thing to do')
+
+
+# ---- alerts and the report on the pages (1.0.162) --------------------------------------
+def _report_span(which):
+    """The period asked for: the last one ended, or the one going on so far."""
+    since, until, _ = report_period()
+    if which == 'now':
+        return until, time.time()
+    return since, until
+
+
+@route('GET', '/api/alerts')
+def _alerts(h):
+    h.me('fulladmin')
+    return alerts_view(h.store)
+
+
+@route('POST', '/api/alerts')
+def _alerts_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    lang = CONFIG.get('mail_lang') or 'cs'
+    try:
+        if act == 'check':
+            alerts_evaluate(h.store)
+            return alerts_view(h.store)
+        if act == 'test':
+            to = _alerts_to()
+            if not to:
+                raise ValueError('no address to send it to - Send them to')
+            now = alert_problems(h.store, lang)
+            msg = alert_mail([], [dict(p, key=k) for k, p in now.items()], [], [], to, lang,
+                             test=True)
+            entry = alert_send(h.store, msg, to, 'test', [])
+            h.store.add_event('settings', '%s sent a test alert to %s%s' % (
+                s['name'], ', '.join(to), '' if entry['ok'] else ' - %s' % entry.get('said')),
+                'info', who=s['name'])
+            if not entry['ok'] and entry.get('queued') != 'waiting':
+                raise ValueError('it did not go: %s' % entry.get('said'))
+            return dict(alerts_view(h.store), message='a test alert went to %s' % ', '.join(to)
+                        if entry['ok'] else 'it waits in the outgoing mail: %s' % entry.get('said'))
+        if act == 'preview':
+            since, until = _report_span(str(b.get('period') or 'last'))
+            subject, page, _ = report_build(h.reader, since, until, lang)
+            return {'subject': subject, 'html': page}
+        if act == 'report':
+            since, until = _report_span(str(b.get('period') or 'last'))
+            entry = report_send(h.store, since, until, by=s['name'], reader=h.reader)
+            if not entry['ok'] and entry.get('queued') != 'waiting':
+                raise ValueError('it did not go: %s' % entry.get('said'))
+            return dict(alerts_view(h.store), message='the report went to %s' % ', '.join(entry['to'])
+                        if entry['ok'] else 'it waits in the outgoing mail: %s' % entry.get('said'))
+        if act == 'forget':
+            st = _alert_state(h.store)
+            st['log'] = []
+            h.store.set_meta('alerts:state', json.dumps(st))
+            return alerts_view(h.store)
+    except (ValueError, MailError) as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
 # ---- the console: otp run by its menus, on the server's own screen (1.0.130) --------

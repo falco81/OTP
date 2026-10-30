@@ -4,6 +4,34 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.162 — 30 October 2026
+
+**Alerts by mail, and a report by mail**
+- *Settings → Alerts and reports* (off until switched on): a mail when something
+  is wrong - the other node not heard from, a node not listening for RADIUS,
+  the replication stopped, the database in trouble, the nodes on different
+  versions; a nightly copy that did not come, a backup that failed or none
+  sent in time; a certificate running out; a disk filling up; a clock out of
+  sync; security updates or a restart waiting; a directory out of reach; the
+  SMS gateway failing; and, if wanted, each source Sign-in protection blocks.
+  Mailed once it has lasted a few minutes, said again while it lasts (every
+  24 h by default) and once more when it is over - laid out as cards, red for
+  what is down and amber for warnings, with a link to the page to fix it.
+- In a cluster one node looks at everything and sends - the first by name of
+  the nodes heard from; when it is gone, the other node says so and sends
+  from then on. Each node writes what only it can see (its disks, the
+  directories it cannot reach, the SMS gateway, its nightly copy) into a row
+  of its own every minute.
+- A report by mail - every day, week or month, of the one that has just ended:
+  the sign-ins by day as bars, who was refused (with how often, how often let
+  in, and the last reason), why, who signed in most, the RADIUS clients, the
+  blocked sources, the sign-ins to the administration, the events worth a
+  look, the tokens (new, locked, idle), the servers (disk, clock, updates,
+  nightly copy) and what is wrong now. Sent once for the whole cluster; it
+  can be looked at on the page and sent at once by hand.
+- The page shows what the alerts see now, each node's disks, the report and
+  the mails that went; *Send a test alert*.
+
 ## 1.0.161 — 29 October 2026
 
 **SSH keys of root: one place for a key of one's own, the key made not repeated**
