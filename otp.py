@@ -78,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.176'
+__version__ = '1.0.177'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -30156,7 +30156,7 @@ def alert_problems(store, lang='en'):
                 seen.add(fp)
                 left = (float(c['not_after']) - now) / 86400
                 if left < days:
-                    who = _al(lang, 'webové adresy', 'the VIP address') if what == 'vip' else n
+                    who = _al(lang, 'VIP adresy', 'the VIP address') if what == 'vip' else n
                     add('cert:%s:%s' % (what, n if what == 'node' else 'vip'),
                         'bad' if left < 7 else 'warn', n if what == 'node' else '',
                         _al(lang, 'Certifikát %s %s' % (who, 'vypršel' if left < 0 else
