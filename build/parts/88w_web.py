@@ -403,6 +403,7 @@ def tls_policy_checked(b):
         out['hsts'] = max(0, min(63072000, int(hv) if hv not in (None, '') else 63072000))
     except (TypeError, ValueError):
         raise ValueError('HSTS is a number of seconds')
+    hisec_tls(out)                          # 1.0.168
     return out
 
 
@@ -1179,6 +1180,10 @@ def access_checked_api(b):
             raise ApiError(400, '%s would be for nobody: give a network, or let everybody in'
                            % words)
         out[k] = {'any': bool(one.get('any')), 'from': nets}
+    try:
+        hisec_access(out)                   # 1.0.168
+    except ValueError as e:
+        raise ApiError(400, str(e))
     return out
 
 

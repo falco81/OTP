@@ -174,3 +174,23 @@ keep it with the password, apart from the backups.
 | *the server did not take the account and password (NT_STATUS_LOGON_FAILURE)* | SMB: account, password or domain |
 | *... is not on this machine* | `dnf install openssh-clients` or `dnf install samba-client` |
 | *the password does not open it* | the backup was locked with another password than the one set now: type that one when putting it back |
+
+## Trying a backup (1.0.168)
+
+*Try the newest* (and the setting *Try the backups*: only by hand, after every
+backup - the one just sent - or once a week) fetches the newest backup of this
+node from the first destination switched on into a folder of its own, and:
+
+- opens it with the password of the backups and checks every file against
+  the SHA-256 its manifest has;
+- reads the copy of the database to its last line, counts its tables, tokens
+  and accounts, and compares the tokens with the manifest;
+- checks that a full administrator can sign in after it;
+- tries the tokens in it (a sample of 50) against the key in it - each
+  token's sealed key must carry that key's tag;
+- reads config.json;
+- reads the newest nightly copy on this machine through as well.
+
+Nothing is put back and the database in use is not touched. Each try is
+listed under *Backups tried* with every check, is an event, and one that fails
+is an alert (*A backup that failed or did not come*).

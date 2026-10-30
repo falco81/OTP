@@ -1222,6 +1222,7 @@ class Storage(object):
             if len(secret) > 128:
                 raise ValueError('a shared secret of more than 128 characters is more than '
                                  'RADIUS hides properly')
+            hisec_client_secret(secret)     # 1.0.168
             row['secret'] = seal_secret(secret)
         elif not old:
             raise ValueError('a client needs a shared secret')
@@ -1646,6 +1647,7 @@ class Storage(object):
                'note': str(data.get('note') or '')[:400]}
         if 'ca' in data:
             row['ca'] = ca
+        hisec_directory(row)                # 1.0.168
         pw = data.get('bind_pw')
         if pw is not None and not is_masked(pw):
             row['bind_pw'] = seal_secret(pw) if str(pw) else ''

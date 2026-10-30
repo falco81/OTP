@@ -227,6 +227,7 @@ def rb_save(store, data, by):
         if data.get('id') and not old:
             raise ValueError('no such destination')
         t = rb_checked(data, old)
+        hisec_backup_target(t)              # 1.0.168
         if old:
             targets = [t if x['id'] == t['id'] else x for x in targets]
         else:
@@ -1303,6 +1304,15 @@ def rb_job_start(store, by, only=None):
             RB_JOB['result'] = rb_run(store, by, only, progress)
             if RB_JOB['result'].get('error'):
                 RB_JOB['error'] = RB_JOB['result']['error']
+            elif RB_JOB['result'].get('ok') and CONFIG.get('rbackup_verify') == 'after':
+                # Tried at once, at the first destination it went to (1.0.169).
+                RB_JOB.update(what='verify', says='the backup just sent is tried', done=0, whole=4)
+                sent = RB_JOB['result']
+                v = rb_verify(store, by, sent['targets'][0]['id'], sent.get('file'), progress)
+                sent['verified'] = v
+                if not v['ok']:
+                    RB_JOB['error'] = 'sent, but it is not good: ' + '; '.join(
+                        c['what'] for c in v['checks'] if not c['ok'])
         except Exception as e:                          # noqa: BLE001
             RB_JOB['error'] = scrub_secret(str(e))[:400]
             log('remote backup failed: %s' % e, 'error')
@@ -1384,6 +1394,13 @@ def rb_tick(daemon):
         except Exception as e:                          # noqa: BLE001
             log_sparing('rb-now:' + str(e)[:60], 'Back up now asked by the other node: %s'
                         % e, 'warn', 600)
+    if not RB_JOB['running'] and rb_verify_due(store) and \
+            time.time() - float(getattr(daemon, '_rb_verify_at', 0)) > 3600:
+        daemon._rb_verify_at = time.time()          # once an hour at most, if it fails to start
+        try:
+            rb_verify_start(store, 'otp (weekly)')
+        except ValueError:
+            pass
     day = rb_due(store, getattr(daemon, '_rb_day', ''))
     if not day or RB_JOB['running']:
         return

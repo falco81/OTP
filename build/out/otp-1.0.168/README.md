@@ -83,6 +83,7 @@ Bringing the old totpcgi + FreeRADIUS server over: [docs/migration-from-totpcgi.
 Mailing tokens out: [docs/mail.md](docs/mail.md).
 Sending the logs to isemon: [docs/isemon.md](docs/isemon.md).
 Syslog and SIEM, the proxy, the disks and the logs: [docs/syslog-proxy-and-logs.md](docs/syslog-proxy-and-logs.md).
+High security: [docs/high-security.md](docs/high-security.md).
 The database, and moving into MariaDB or PostgreSQL: [docs/the-database.md](docs/the-database.md).
 PHP and php2shell (CVE-2026-109618 / CVE-2026-109619): [docs/php2shell.md](docs/php2shell.md).
 The pages in another language: [docs/languages.md](docs/languages.md).

@@ -4,6 +4,57 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.168 — 30 October 2026
+
+**High security - and a whole backup not locked when chosen**
+- *Settings → High security* (off by default): every way of doing something
+  less safely switched off, on every node. It is switched on only once nothing
+  stands against it: switching it on first looks over everything and lists
+  what does, each with what to set and a link to where - and refuses until
+  the list is empty. While it is on, all of it is refused wherever it is
+  changed (the pages, the API, the command line) and greyed out on the pages:
+  - a directory over plain LDAP, its certificate not checked, old weak TLS;
+  - RADIUS without the Message-Authenticator (answers, and a client that sent
+    one), without Sign-in protection; a client's secret under 16 characters;
+  - mail to the server unencrypted or only if offered, its certificate not
+    checked; direct delivery without TLS required;
+  - the SMS gateway over http://, the telephone gateway without HTTPS or
+    without checking its certificate;
+  - the database or the replication without TLS that checks the certificate;
+  - backups over plain FTP, FTPS not checking the certificate, SMB not
+    encrypted;
+  - syslog over UDP or TCP (only tls://), its certificate not checked;
+    isemon (plain syslog);
+  - the pages' TLS other than standard (ECDHE, AEAD) or modern (TLS 1.3);
+    the administration reachable from everybody;
+  - SSH with passwords, root with a password, more than 4 tries;
+  - debugging, a window of codes wider than one step, a code used again;
+  - tokens exported not locked.
+  Advised beside it, stopping nothing: the administration without a second
+  step from an app (or with one by mail or SMS), administrators showing a
+  token's key, the enrolment page showing the key as text, recovery codes
+  under 10 digits, codes by mail, enrolment for anyone, sign-ins to the
+  administration over 8 hours or idle over 30 minutes, a proxy without a
+  password.
+- *Backups → Try the newest* (and *Try the backups*: by hand, after every
+  backup, or weekly): the newest backup of the node fetched back from a
+  destination, opened with the password, every file checked against its
+  manifest, the database read to its last line and counted, the tokens tried
+  against the key in it, config.json read - nothing is put back, the database
+  in use untouched. The newest nightly copy is read through too. Each try is
+  listed with every check, written down, and alerted when it fails.
+- The security check: the *High security* page also lists, as advice, what
+  is not as it should be now - the firewall off, no backup going to another
+  machine or none ever tried, a backup that cannot be put back, security
+  updates or a restart waiting, certificates running out.
+- A restart on a schedule waits while an update of the system, or a node's
+  look for updates after it, is still going on - it used to be given up for
+  the day when its time came during an update.
+- *Export and import → a whole backup (.json)*: locked with a passphrase as
+  before, or - chosen at the export, and never under high security - not
+  locked: a plain file otp reads back with no passphrase. The event says NOT
+  LOCKED.
+
 ## 1.0.167 — 30 October 2026
 
 **The .totp export locked with a passphrase - or, when chosen, not**

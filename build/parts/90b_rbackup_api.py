@@ -15,6 +15,7 @@ def rb_page(store):
     for r in rb_history(store):
         nodes.setdefault(r.get('node') or '?', r)
     return {'targets': [rb_view(t) for t in rb_targets(store)], 'runs': rb_history(store)[:40],
+            'verified': rb_verified(store)[:20],
             'last_by_node': nodes, 'job': {k: v for k, v in RB_JOB.items()},
             'kinds': [{'kind': k, 'words': RB_KIND_WORDS[k], 'port': RB_PORTS.get(k)}
                       for k in RB_KINDS],
@@ -184,6 +185,13 @@ def _rbackup_do(h):
                 'job': job, 'others': others}
         if act == 'job':
             return {'job': dict(RB_JOB)}
+        if act == 'verify':
+            # Tried without being put back (1.0.169), followed as a backup is.
+            job = rb_verify_start(h.store, by, str(b.get('id') or '') or None,
+                                  str(b.get('name') or '') or None)
+            return {'message': 'the backup is being tried', 'job': job}
+        if act == 'verified':
+            return {'verified': rb_verified(h.store)[:40]}
         if act == 'list':
             return {'files': rb_remote_list(h.store, b.get('id'))}
         if act == 'delete_file':

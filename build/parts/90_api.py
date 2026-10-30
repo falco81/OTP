@@ -1594,6 +1594,9 @@ def _tokens_export(h):
     b = h.body()
     lock = b.get('lock', True) is not False
     phrase = str(b.get('passphrase') or '')
+    if not lock and CONFIG.get('high_security'):
+        raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
+                            'locked with a passphrase')
     if lock and len(phrase) < 8:
         raise ApiError(400, 'a passphrase of 8 characters at least - or choose not locked')
     arg = lambda k: str(b.get(k) or '')     # noqa: E731
@@ -2256,12 +2259,19 @@ def _tokens_backup(h):
                              limit=1000000, kind=kind if kind in ('totp', 'mail', 'sms') else '')
     data = tokens_backup(h.store, [r['name'] for r in rows], s['name'])
     phrase = str(b.get('passphrase') or '')
-    # Always locked (1.0.136): every key and recovery code is in it.
-    if len(phrase) < 8:
+    # Locked unless asked otherwise in so many words, and never under high
+    # security (1.0.168): every key and recovery code is in it.
+    lock = b.get('lock', True) is not False
+    if not lock and CONFIG.get('high_security'):
+        raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
+                            'locked with a passphrase')
+    if lock and len(phrase) < 8:
         raise ApiError(400, 'a passphrase of 8 characters at least: the file holds every key')
-    text = json.dumps(bundle_lock(data, phrase, kind=TOKENS_KIND), indent=1)
+    if not lock:
+        phrase = ''
+    text = json.dumps(bundle_lock(data, phrase, kind=TOKENS_KIND) if phrase else data, indent=1)
     h.store.add_event('tokens', '%s backed up %d token(s)%s%s' % (
-        s['name'], data['count'], ' locked with a passphrase' if phrase else ' (not locked)',
+        s['name'], data['count'], ' locked with a passphrase' if phrase else ' - NOT LOCKED',
         (' - %d left out, their keys cannot be opened here' % len(data['lost']))
         if data['lost'] else ''), 'warn', who=s['name'])
     return {'file': text, 'count': data['count'], 'lost': data['lost'], 'locked': bool(phrase),
@@ -3036,8 +3046,16 @@ def _settings_do(h):
         return got
     except NodeMoved as e:
         raise ApiError(409, str(e))
+    except HiSecConflict as e:
+        raise ApiError(409, str(e), detail={'hisec': e.findings})
     except BadSetting as e:
         raise ApiError(400, str(e))
+
+
+@route('GET', '/api/hisec')
+def _hisec(h):
+    h.me('fulladmin')
+    return hisec_view(h.store)
 
 
 @route('POST', '/api/isemon')

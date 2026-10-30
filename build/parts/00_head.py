@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.167'
+__version__ = '1.0.168'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -137,6 +137,7 @@ DEFAULTS = {
     'totp_algorithm': 'SHA1',
     'totp_window': 1,
     'admin_show_key': 1,
+    'high_security': 0,
     'totp_disallow_reuse': 1,
     # --- upgrades from the web (1.0.123) ----------------------------------
     'upgrade_check': 1,
@@ -251,6 +252,7 @@ DEFAULTS = {
     'rbackup_day': 7,
     'rbackup_keep': 30,
     'rbackup_keep_days': 0,
+    'rbackup_verify': 'off',
     'rbackup_password': '',
     # --- alerts by mail, and the report (1.0.162) -----------------------------
     'alerts': 0,
@@ -381,7 +383,7 @@ TUNABLE = {
     'radius_unknown_log': (0, 1), 'radius_reject_delay_ms': (0, 10000),
     'totp_digits': (6, 8), 'totp_period': (15, 120),
     'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
-    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'totp_disallow_reuse': (0, 1),
+    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'high_security': (0, 1), 'totp_disallow_reuse': (0, 1),
     'upgrade_check': (0, 1), 'upgrade_downgrade': (0, 1),
     'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
@@ -406,6 +408,7 @@ TUNABLE = {
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
     'rbackup': (0, 1), 'rbackup_every': ('daily', 'weekly'), 'rbackup_day': (1, 7),
     'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650),
+    'rbackup_verify': ('off', 'after', 'weekly'),
     'alerts': (0, 1), 'alerts_delay_min': (0, 120), 'alerts_repeat_h': (0, 168),
     'alerts_resolved': (0, 1), 'alerts_nodes': (0, 1), 'alerts_backup': (0, 1),
     'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
@@ -443,6 +446,8 @@ TUNABLE = {
 }
 
 CHOICE_WORDS = {
+    'rbackup_verify': {'off': 'only by hand', 'after': 'after every backup, the one just sent',
+                       'weekly': 'once a week, the newest one'},
     'mail_mode': {'off': 'off - no mail is sent',
                   'smtp': 'through a mail server (SMTP relay)',
                   'direct': 'straight to the recipient’s mail server (MX), no relay'},
@@ -559,6 +564,7 @@ NAMES = {
     'totp_algorithm': 'The hash',
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
+    'high_security': 'High security',
     'upgrade_check': 'Look for a new version every day',
     'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
@@ -628,6 +634,7 @@ NAMES = {
     'rbackup_day': 'On (1 Monday - 7 Sunday)',
     'rbackup_keep': 'Backups kept at each destination',
     'rbackup_keep_days': 'And none older than (days)',
+    'rbackup_verify': 'Try the backups',
     'rbackup_password': 'The password of the backups',
     'alerts': 'Alerts by mail',
     'alerts_to': 'Send them to',
@@ -830,6 +837,10 @@ SAYS = {
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
                    'service\'s environment.',
+    'high_security': 'Every way of doing something less safely switched off - plain LDAP, unencrypted '
+                     'mail, syslog and backups, certificates not checked, weak TLS, SSH with '
+                     'passwords, exports not locked and the rest listed above. Switched on only '
+                     'once nothing stands against it; off by default.',
     'admin_show_key': 'A full administrator may open a token and show its QR code and key - '
                       'for somebody whose phone cannot scan the page, or to set the same '
                       'token up again. Whoever has the key can make the codes, so every look '
@@ -1054,6 +1065,9 @@ SAYS = {
     'rbackup_keep': 'How many of this node’s backups each destination keeps; the oldest go '
                     'first, the newest never.',
     'rbackup_keep_days': 'Older ones are taken away too - 0: only the count above decides.',
+    'rbackup_verify': 'The newest backup fetched back, opened with the password, every file checked, '
+                      'the database read through and the tokens tried against the key in it - '
+                      'nothing is put back. After every backup, or once a week.',
     'rbackup_password': 'Every backup is locked with it (AES-256, opened with otp or with openssl '
                         'alone). Keep it apart from the backups as well - in a password vault: '
                         'without it nobody, you included, opens them. Empty: the backups are '
@@ -1218,11 +1232,12 @@ PANES = {
            'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
     'ha': ['node_name'],
     'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
-               'rbackup_keep_days', 'rbackup_password'],
+               'rbackup_keep_days', 'rbackup_password', 'rbackup_verify'],
     'osup': ['osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_what', 'osup_auto_every',
              'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
     'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
               'power_auto_needed'],
+    'hisec': ['high_security'],
     'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',

@@ -197,6 +197,18 @@ def alert_problems(store, lang='en'):
                             'No backup of %s went out in time' % n),
                         _al(lang, 'Poslední úspěšná: %s.', 'The last good one: %s.')
                         % (_al_when(ok[0]['at']) if ok else '–'), 'backup')
+        # The last try of a backup (1.0.169): one that cannot be put back.
+        tried = rb_verified(store)
+        for n in names:
+            mine = [r for r in tried if r.get('node') == n]
+            if mine and not mine[0].get('ok'):
+                bad = [c for c in mine[0].get('checks') or [] if not c.get('ok')]
+                add('rbverify:' + n, 'bad', n,
+                    _al(lang, 'Záloha z %s nejde obnovit' % n,
+                        'The backup of %s cannot be put back' % n),
+                    '%s: %s' % (mine[0].get('file') or '?', '; '.join(
+                        c['what'] + (' (%s)' % c['said'] if c.get('said') else '')
+                        for c in bad)[:400]), 'backup')
     # Certificates running out.
     days = int(CONFIG.get('alerts_cert_days') or 0)
     if days:

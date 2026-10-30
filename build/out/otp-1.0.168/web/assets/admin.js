@@ -2479,6 +2479,7 @@ function showPane(name) {
   if (name === 'sshkeys') loadSshKeys(); else skPoll(false);
   if (name === 'alerts') loadAlerts();
   if (name === 'siem') loadSiem();
+  if (name === 'hisec') loadHisec();
   if (name === 'proxy') drawProxy();
   if (name === 'logs') loadLogs();
   if (name === 'sshd') loadSshd(); else sdPoll(false);
@@ -2964,6 +2965,8 @@ function settingItemBare(s) {
     label.setAttribute('for', input._input.id);
     item.appendChild(input);
     if (s.says) item.appendChild(saysClamped(s.short || s.says));   /* the whole on the (i) (1.0.156) */
+    hsDress(item, s, input);
+    if (s.key === 'high_security') hsSwitch(input, s);
     return item;
   }
   if (s.choices && s.choices.some(function (c) {
@@ -3014,7 +3017,83 @@ function settingItemBare(s) {
     item.appendChild(pickRow);
   }
   if (s.says) item.appendChild(saysClamped(s.short || s.says));   /* the whole on the (i) (1.0.156) */
+  hsDress(item, s, input);
   return item;
+}
+
+/* ---- High security (1.0.168) --------------------------------------------------
+   While it is on, what it stands against is greyed out: a switch that may not
+   go back, the choices that may not be chosen, a number's highest; the daemon
+   refuses them anyway. Switched on only once nothing stands against it - what
+   does is listed in a window, each with where it is set. */
+function hsOn() { return !!(STATUS && STATUS.high_security); }
+function hsOptions(sel, bad) {
+  if (!hsOn()) return;
+  Array.prototype.forEach.call(sel.options, function (o) {
+    if (bad.indexOf(o.value) >= 0) { o.disabled = true; o.title = 'not under high security'; }
+  });
+}
+function hsDress(item, s, input) {
+  var r = s.hisec;
+  if (!r || !hsOn()) return;
+  if (isBool(s)) {
+    var on = s.value === true || String(s.value) === '1';
+    if ((r.forbid || []).indexOf(on ? 0 : 1) >= 0) input._input.disabled = true;
+  } else if (input && input.tagName === 'SELECT') {
+    Array.prototype.forEach.call(input.options, function (o) {
+      if ((r.forbid || []).indexOf(o.value) >= 0) { o.disabled = true; o.title = 'not under high security'; }
+    });
+  } else if (input && typeof r.most === 'number') {
+    input.max = r.most;
+  }
+  var n = el('div', 'says hs-note', 'High security: ' + r.why + ' - not allowed.');
+  (item.querySelector('.set-tail') || item).appendChild(n);
+}
+function hsSwitch(box, s) {
+  box._input.addEventListener('change', function () {
+    if (!box._input.checked || (s.value === true || String(s.value) === '1')) return;
+    api('hisec').then(function (d) {
+      if ((d.block || []).length) {
+        box._input.checked = false;
+        box._input.dispatchEvent(new Event('change'));
+      }
+      hsWindow(d, !(d.block || []).length);
+    }).catch(oops);
+  });
+}
+function hsWindow(d, may) {
+  modal(may ? 'High security' : 'High security cannot be switched on yet', function (body) {
+    var block = d.block || [], warn = d.warn || [];
+    body.appendChild(el('p', 'note' + (may ? '' : ' warn'), may
+      ? 'Nothing stands against it. Save the settings to switch it on: from then on every way of doing something less safely is refused.'
+      : num(block.length) + ' thing(s) stand against it. Set them as said - then switch it on again.'));
+    var list = function (rows, cls, title) {
+      if (!rows.length) return;
+      body.appendChild(el('h4', 'hs-h ' + cls, title));
+      var ul = el('div', 'hs-list');
+      rows.forEach(function (x) {
+        var it = el('div', 'hs-item ' + cls);
+        it.appendChild(el('span', 'dot ' + (cls === 'bad' ? 'bad' : 'warn')));
+        var t = el('div', 'hs-t');
+        t.appendChild(el('div', 'hs-what', x.what));
+        var f = el('div', 'muted small');
+        if (x.kind !== 'check') { f.appendChild(el('span', '', 'Set:')); f.appendChild(document.createTextNode(' ')); } f.appendChild(el('span', '', x.fix));
+        if (x.pane) {
+          var a = el('a', '', 'Open it →');
+          a.href = '#settings/' + x.pane;
+          a.onclick = function () { closeModal(); };
+          f.appendChild(document.createTextNode(' · '));
+          f.appendChild(a);
+        }
+        t.appendChild(f);
+        it.appendChild(t);
+        ul.appendChild(it);
+      });
+      body.appendChild(ul);
+    };
+    list(block, 'bad', 'Stands against it');
+    list(warn, 'warn', 'Advised - does not stop it');
+  }, [{words: 'Close', close: true}]);
 }
 
 /** The groups that may enrol, found in the directory: each one's button
@@ -3231,6 +3310,7 @@ $('set-save').onclick = function () {
       tick();
       return true;
     }).catch(function (e) {
+      if (e.detail && e.detail.hisec) { hsWindow(e.detail.hisec, false); return false; }
       var said = String(e.message || e);
       /* The longest key the message starts with (1.0.57): portal before portal_help was taken. */
       var hit = SETTINGS.settings.filter(function (one) {
@@ -3811,10 +3891,12 @@ function editDir(a) {
     var name = textBox(a.name, 'AD', '');
     var hosts = textBox(a.hosts, 'dc1.example.local, dc2.example.local', 'mono');
     var tls = selectBox([['ldaps', 'LDAPS (636)'], ['starttls', 'StartTLS (389)'], ['none', 'plain LDAP (389) - a test only']], a.tls);
+    hsOptions(tls, ['none']);
     var port = textBox(a.port, '636', 'mono');
     tls.onchange = function () { port.value = tls.value === 'ldaps' ? '636' : '389'; };
     var verify = switchBox(a.verify);
     var weak = switchBox(!!a.weak);                  /* old, weak certificates (1.0.77) */
+    if (hsOn()) { if (a.verify || a.verify === undefined) verify._input.disabled = true; if (!a.weak) weak._input.disabled = true; }
     var base = textBox(a.base, 'DC=example,DC=local', 'mono');
     var bind = textBox(a.bind_dn, 'otp@example.local', 'mono');
     var pw = secretBox(a.id ? a.bind_pw : '', a.id ? 'set - leave as it is to keep it' : '', 'mono');
@@ -6073,10 +6155,12 @@ if ($('exp-go')) {
   qSuggest($('exp-q'), 'tokens');
   var expPaint = function () {
     var whole = $('exp-format').value === 'backup';
-    /* A whole backup is always locked; the .totp ZIP locked unless chosen
-       otherwise (1.0.167). */
-    $('exp-lock').hidden = whole;
-    var lock = whole || $('exp-lock').value === 'lock';
+    /* Locked unless chosen otherwise (1.0.167); under high security always
+       (1.0.168) - the choice is not even offered. */
+    var high = !!(STATUS && STATUS.high_security);
+    if (high) $('exp-lock').value = 'lock';
+    $('exp-lock').hidden = high;
+    var lock = $('exp-lock').value === 'lock';
     $('exp-pass').hidden = $('exp-gen').hidden = !lock;
     $('exp-kind').disabled = !whole;
   };
@@ -6095,13 +6179,14 @@ if ($('exp-go')) {
   $('exp-go').onclick = function () {
     var q = $('exp-q').value.trim(), st = $('exp-state').value;
     if ($('exp-format').value === 'backup') {
-      var pass = $('exp-pass').value;
-      if (pass.length < 8) { toast('a passphrase of 8 characters at least: the file holds every key', 'bad'); return; }
+      var bLock = $('exp-lock').value === 'lock' || !!(STATUS && STATUS.high_security);
+      var pass = bLock ? $('exp-pass').value : '';
+      if (bLock && pass.length < 8) { toast('a passphrase of 8 characters at least: the file holds every key', 'bad'); return; }
       confirmThen('Back the tokens up', 'One file with ' + (q || st || $('exp-kind').value ? 'the tokens that match' : '<b>every</b> token')
         + ': keys, recovery codes, where codes go. ' + (pass ? 'Locked with the passphrase.' : '<b>Not locked</b> - whoever has the file can sign in as any of them.'),
         'Download it', function () {
           busy($('exp-go'), true);
-          api('tokens-backup', {q: q, state: st, kind: $('exp-kind').value, passphrase: pass}).then(function (d) {
+          api('tokens-backup', {q: q, state: st, kind: $('exp-kind').value, passphrase: pass, lock: bLock}).then(function (d) {
             saveFile(d.name, d.file);
             $('exp-said').className = 'small ' + (d.lost && d.lost.length ? 'warn' : 'good');
             $('exp-said').textContent = num(d.count) + ' token(s) in ' + d.name + (d.locked ? ', locked' : ', not locked')
@@ -6146,7 +6231,7 @@ function tokenExport(name) {
     body.appendChild(el('p', 'note', 'A .totp file with its key and its unused recovery codes. Whoever has the file can sign in as ' + name + '.'));
     var how = {v: 'lock', value: function () { return this.v; }};
     var sg = el('div', 'seg');
-    [['lock', 'Locked with a passphrase'], ['open', 'Not locked']].forEach(function (o) {
+    [['lock', 'Locked with a passphrase'], ['open', 'Not locked']].filter(function (o) { return o[0] === 'lock' || !(STATUS && STATUS.high_security); }).forEach(function (o) {
       var bt = el('button', o[0] === how.v ? 'on' : '', o[1]);
       bt.type = 'button';
       bt.onclick = function () {
@@ -8308,6 +8393,7 @@ function certPolicy(target, prof, d) {
       t.appendChild(el('div', 'tls-tile-prot', p[2]));
       t.appendChild(el('div', 'tls-tile-s', p[3]));
       t.onclick = function () { st.preset = p[0]; paint(); };
+      if (hsOn() && (p[0] === 'intermediate' || p[0] === 'custom')) { t.disabled = true; t.appendChild(el('div', 'small hs-note', 'not under high security')); }
       tiles.appendChild(t);
     });
     body.appendChild(tiles);
@@ -8763,7 +8849,8 @@ function drawFwAccess(d) {
     [[true, 'Everybody'], [false, 'Only from']].forEach(function (o) {
       var b = el('button', '', o[1]);
       b.type = 'button';
-      b.disabled = !d.may;
+      b.disabled = !d.may || (o[0] && p[0] === 'admin' && hsOn());
+      if (o[0] && p[0] === 'admin' && hsOn()) b.title = 'not under high security';
       b.onclick = function () {
         st[p[0]].any = o[0];
         Array.prototype.forEach.call(seg.children, function (x) { x.classList.toggle('on', x === b); });
@@ -10823,6 +10910,9 @@ function drawRbTop() {
   fact('Next', d.next ? new Date(d.next).toLocaleString(numLang(), {weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'}) : 'by hand only', d.next ? '' : 'warn');
   fact('Locked', d.locked ? 'with the password (AES-256)' : 'NOT locked - set the password', d.locked ? 'good' : 'bad');
   fact('Destinations', num(on.length) + ' of ' + num((d.targets || []).length) + ' switched on');
+  /* The last try (1.0.169): whether the newest backup can be put back. */
+  var tried = (d.verified || []).filter(function (v) { return v.node === d.node; })[0];
+  fact('Tried', tried ? (tried.ok ? 'can be put back' : 'NOT GOOD') + ' · ' + ago(tried.at) : 'never', tried ? (tried.ok ? 'good' : 'bad') : 'warn');
   words.appendChild(facts);
   if (mine && !mine.ok) {
     var bad = (mine.targets || []).filter(function (x) { return !x.ok; });
@@ -10842,6 +10932,15 @@ function drawRbTop() {
       .catch(function (e) { busy(now, false); oops(e); });
   };
   acts.appendChild(now);
+  var tryb = cmdButton('Try the newest', 'check', '');
+  tryb.disabled = !on.length || (d.job && d.job.running);
+  explain(tryb, 'The newest backup of this node fetched back from the first destination, opened with the password, every file checked, the database read through and the tokens tried against the key in it - nothing is put back. And the newest nightly copy here read through.');
+  tryb.onclick = function () {
+    busy(tryb, true);
+    api('rbackup', {action: 'verify'}).then(function (x) { toast(x.message, 'good'); RB.job = x.job; rbWatch(); })
+      .catch(function (e) { busy(tryb, false); oops(e); });
+  };
+  acts.appendChild(tryb);
   var dl = cmdButton('Download one here', 'download', '');
   explain(dl, 'A backup made now, saved on the computer you are sitting at - locked with the password as the others.');
   dl.onclick = function () {
@@ -10869,6 +10968,36 @@ function drawRbTop() {
   card.appendChild(going);
   if (!d.tools.openssl) card.appendChild(el('p', 'note bad', 'openssl is not on this machine: backups cannot be locked (dnf install openssl).'));
   host.appendChild(card);
+  if ((d.verified || []).length) host.appendChild(rbTriedCard(d.verified));
+}
+/* The backups tried (1.0.169): each try, every check of it. */
+function rbTriedCard(rows) {
+  var c = el('div', 'card full');
+  c.appendChild(el('h2', '', 'Backups tried'));
+  var list = el('div', 'rb-tried');
+  rows.slice(0, 8).forEach(function (v, i) {
+    var it = el('details', 'rb-try ' + (v.ok ? 'good' : 'bad'));
+    if (i === 0 && !v.ok) it.open = true;
+    var sm = el('summary');
+    sm.appendChild(el('span', 'dot ' + (v.ok ? 'ok' : 'bad')));
+    sm.appendChild(el('b', '', v.ok ? 'Can be put back' : 'Not good'));
+    sm.appendChild(noI18n(el('span', 'mono small', ' ' + (v.file || '?'))));
+    sm.appendChild(el('span', 'muted small', '·')); sm.appendChild(el('span', 'muted small', ago(v.at))); sm.appendChild(el('span', 'muted small', '·'));
+    sm.appendChild(noI18n(el('span', 'muted small', (v.node || '') + ' → ' + (v.target_name || ''))));
+    it.appendChild(sm);
+    var ul = el('div', 'rb-checks');
+    (v.checks || []).forEach(function (k) {
+      var row = el('div', 'rb-check');
+      row.appendChild(el('span', 'dot ' + (k.ok ? 'ok' : 'bad')));
+      row.appendChild(el('span', '', k.what));
+      if (k.said) row.appendChild(noI18n(el('span', 'muted small', ' - ' + k.said)));
+      ul.appendChild(row);
+    });
+    it.appendChild(ul);
+    list.appendChild(it);
+  });
+  c.appendChild(list);
+  return c;
 }
 /* RESTORE.md on the pages (1.0.110): read here, downloaded as the file. */
 function rbGuide() {
@@ -11141,6 +11270,7 @@ function rbPickKind() {
         b.appendChild(el('span', 'small bad', 'missing here: ' + missing.join(', ') + (k.kind === 'smb' ? ' (dnf install samba-client)' : ' (dnf install openssh-clients)')));
       }
       b.onclick = function () { closeModal(); setTimeout(function () { rbEdit({kind: k.kind, enabled: 1, port: k.port}); }, 30); };
+      if (hsOn() && k.kind === 'ftp') { b.disabled = true; b.appendChild(el('span', 'small hs-note', 'not under high security')); }
       g.appendChild(b);
     });
     body.appendChild(g);
@@ -11200,6 +11330,7 @@ function rbEdit(t) {
         f.domain = textBox(t.domain || '', 'CORP', 'mono');
         g2.appendChild(formField('Domain (workgroup)', f.domain));
         f.smb_encrypt = switchBox(t.smb_encrypt === undefined ? 1 : t.smb_encrypt);
+        if (hsOn() && f.smb_encrypt._get()) f.smb_encrypt._input.disabled = true;
         g2.appendChild(formField('SMB3 encryption required', f.smb_encrypt, 'Everything on the wire encrypted; a server that cannot is refused.'));
       }
       if (t.kind === 'ftp' || t.kind === 'ftps') {
@@ -11417,6 +11548,7 @@ function rbFtpsBlock(body, t, f, cur) {
   f.implicit.onchange = function () { if (f.port && (!f.port.value || f.port.value === '21' || f.port.value === '990')) f.port.value = f.implicit.value === '1' ? '990' : '21'; };
   g.appendChild(formField('TLS', f.implicit));
   f.tls_check = selectBox([['system', 'against the authorities this machine trusts'], ['ca', 'against an authority of my own'], ['pin', 'pinned: exactly this certificate'], ['none', 'not checked (not safe)']], t.tls_check || 'system');
+  hsOptions(f.tls_check, ['none']);
   g.appendChild(formField('The server’s certificate is checked', f.tls_check));
   s.appendChild(g);
   f.ca = el('textarea', 'mono rb-area small');
@@ -13263,13 +13395,14 @@ function drawSshd(live) {
     var seg = el('div', 'seg');
     [['prohibit-password', 'With a key only'], ['yes', 'With a key or a password'], ['no', 'Not at all']].forEach(function (o) {
       var b = el('button', dr.permit_root === o[0] ? 'on' : '', o[1]);
+      if (hsOn() && o[0] === 'yes') { b.disabled = true; b.title = 'not under high security'; }
       b.type = 'button'; b.disabled = !dr.manage;
       b.onclick = function () { dr.permit_root = o[0]; sdDirty(); drawSshd(); };
       seg.appendChild(b);
     });
     g.appendChild(formField('Root signs in', seg));
     var pw = switchBox(dr.password);
-    pw._input.disabled = !dr.manage;
+    pw._input.disabled = !dr.manage || (hsOn() && !dr.password);
     pw._input.onchange = function () { dr.password = !!pw._get(); sdDirty(); drawSshd(); };
     g.appendChild(formField('Passwords', pw, 'Off: only keys sign in, for everybody.'));
     var port = textBox(String(dr.port || 22), '22', 'mono');
@@ -13475,4 +13608,56 @@ function drawLogs() {
     c.appendChild(grid);
     host.appendChild(c);
   });
+}
+
+/* Settings → High security (1.0.168): what stands against it now, and what is advised. */
+function loadHisec() {
+  api('hisec').then(function (d) { drawHisec(d); }).catch(oops);
+}
+function drawHisec(d) {
+  var host = $('hs-host');
+  if (!host) return;
+  clear(host);
+  var c = el('div', 'card full');
+  var h = el('h2', '', d.on ? 'High security is on' : 'High security is off');
+  var tl = el('span', 'right');
+  var look = cmdButton('Look again', 'refresh', 'small');
+  look.onclick = function () { liveLetGo(host); loadHisec(); };
+  tl.appendChild(look);
+  h.appendChild(tl);
+  c.appendChild(h);
+  var block = d.block || [], warn = d.warn || [];
+  var top = el('div', 'al-ok');
+  top.appendChild(el('span', 'dot ' + (block.length ? 'bad' : 'ok')));
+  top.appendChild(el('span', '', block.length
+    ? (d.on ? num(block.length) + ' thing(s) are not as high security wants them - set before it was on, or on a node: put them right.'
+            : num(block.length) + ' thing(s) stand against switching it on.')
+    : (d.on ? 'Everything is as high security wants it.' : 'Nothing stands against it - it can be switched on below.')));
+  c.appendChild(top);
+  var box = el('div');
+  [[block, 'bad', 'Stands against it'], [warn, 'warn', 'Advised - does not stop it']].forEach(function (g) {
+    if (!g[0].length) return;
+    box.appendChild(el('h4', 'hs-h ' + g[1], g[2]));
+    var ul = el('div', 'hs-list');
+    g[0].forEach(function (x) {
+      var it = el('div', 'hs-item');
+      it.appendChild(el('span', 'dot ' + g[1]));
+      var t = el('div', 'hs-t');
+      t.appendChild(el('div', 'hs-what', x.what));
+      var f = el('div', 'muted small');
+      if (x.kind !== 'check') { f.appendChild(el('span', '', 'Set:')); f.appendChild(document.createTextNode(' ')); } f.appendChild(el('span', '', x.fix));
+      if (x.pane) {
+        var a = el('a', '', 'Open it →');
+        a.href = '#settings/' + x.pane;
+        f.appendChild(document.createTextNode(' · '));
+        f.appendChild(a);
+      }
+      t.appendChild(f);
+      it.appendChild(t);
+      ul.appendChild(it);
+    });
+    box.appendChild(ul);
+  });
+  c.appendChild(box);
+  host.appendChild(c);
 }

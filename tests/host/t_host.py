@@ -239,6 +239,7 @@ ok('... once a day: not started again', osv()['plan'].get('id') == p['id'])
 c, x = SET({'power_auto': 1, 'power_auto_every': 'weekly', 'power_auto_day': str(time.localtime().tm_wday + 1),
             'power_auto_at': '00:00', 'power_auto_needed': 1})
 ok('a restart on a schedule: started for the nodes that need it', until(
-    lambda: 'the restart on a schedule: node1, node2' in json.dumps(call('node1', '/api/events?limit=50', None, S)[1]), 30))
+    lambda: (lambda t: 'the restart on a schedule: node1, node2' in t or 'the restart on a schedule: node2, node1' in t)(
+        json.dumps(call('node1', '/api/events?limit=50', None, S)[1])), 30))
 SET({'osup_check': 0, 'osup_auto': 0, 'power_auto': 0})
 print('ALL %d / %d' % (sum(R), len(R)))

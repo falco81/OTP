@@ -1076,6 +1076,7 @@ class Daemon(object):
             # (1.0.20): a copy of the database alone does not give it away.
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
+        hisec_guard_settings(self.store, checked)        # 1.0.168
         if 'node_name' in checked:
             taken = node_name_taken(self.store, checked['node_name'])
             if taken:
@@ -1160,7 +1161,7 @@ class Daemon(object):
                    'in_file': key in FILE_KEYS,
                    'file': FILE_CONFIG.get(key) if key in FILE_KEYS else None,
                    'file_only': key in FILE_ONLY_KEYS,
-                   'node_key': key in NODE_KEYS}
+                   'node_key': key in NODE_KEYS, 'hisec': hisec_ui(key)}
             if key in NODE_KEYS:
                 one['per_node'] = {k.split('@', 1)[1]: v for k, v in saved.items()
                                    if k.startswith(key + '@')}
@@ -1241,6 +1242,7 @@ class Daemon(object):
             'last': last, 'serial': '%s/%s' % (serial, ev), 'problems': problems,
             'database': {'engine': self.store.db.engine, 'where': self.store.db.where()},
             'lang': CONFIG.get('ui_lang') or 'cs', 'php': php_state(), 'admin_show_key': bool(CONFIG.get('admin_show_key')),
+            'high_security': bool(CONFIG.get('high_security')),
             'default_realm': CONFIG.get('default_realm') or '',
             'node': node_name(),
             'nodes': [{'name': n['name'], 'alive': n['alive'], 'age': n['age'],

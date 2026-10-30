@@ -670,6 +670,7 @@ def sshd_hash(c, at):
 
 def sshd_save(store, b, by):
     c = sshd_checked_conf(b)
+    hisec_sshd(c)                           # 1.0.168
     if c['manage'] and c['allow_users'] and c['permit_root'] != 'no' and \
             not any(u in ('root', '*') for u in c['allow_users']) and not b.get('ok_no_root'):
         raise ValueError('AllowUsers without root lets nobody in as root - add root to it, or '
@@ -831,6 +832,26 @@ def _due(every, day, at, now=None):
     return (n.hour, n.minute) >= (hh, mm), n.strftime('%Y-%m-%d')
 
 
+def osup_settling(store):
+    """An update going on, or a node still looking (again) for updates - what
+    says which node needs a restart is not known yet (1.0.168)."""
+    if osup_plan(store).get('state') == 'running':
+        return True
+    for n in host_nodes(store):
+        chk = _meta_json(store, 'host:osup:check:' + n) or {}
+        if chk.get('state') == 'running':
+            return True
+        for r in node_key_rows(store, 'host:osup:checkwant', n):
+            try:
+                a = json.loads(r['v'] or '{}')
+            except ValueError:
+                continue
+            if a.get('id') and a['id'] not in (chk.get('asked') or []) and \
+                    time.time() - float(a.get('at') or 0) < 900:
+                return True
+    return False
+
+
 def osup_sched_tick(daemon):
     store = daemon.store
     if not alerts_lead(store):
@@ -859,7 +880,9 @@ def osup_sched_tick(daemon):
     if CONFIG.get('power_auto'):
         due, day = _due(CONFIG.get('power_auto_every') or 'weekly', CONFIG.get('power_auto_day'),
                         CONFIG.get('power_auto_at'))
-        if due and store.get_meta('power:auto:day') != day and \
+        # Not while an update or a look for updates is still going on: the
+        # nodes that need a restart are known only after it (1.0.168).
+        if due and store.get_meta('power:auto:day') != day and not osup_settling(store) and \
                 claim_once(store, 'power:auto:day', day):
             nodes = host_nodes(store)
             if CONFIG.get('power_auto_needed', 1):
@@ -868,8 +891,6 @@ def osup_sched_tick(daemon):
                 store.add_event('settings', 'the restart on a schedule: no node needs one', 'info')
                 return
             try:
-                if osup_plan(store).get('state') == 'running':
-                    raise ValueError('an update of the system is going on')
                 power_ask(store, 'reboot', nodes, 'rolling', by, keep_service=True)
                 store.add_event('settings', 'the restart on a schedule: %s, one after the other'
                                 % ', '.join(nodes), 'warn')
