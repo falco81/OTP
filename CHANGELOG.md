@@ -4,6 +4,13 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.180 — 30 October 2026
+
+- More room around buttons, in every window and card: a row of buttons right
+  under a field, a note or a table had it pressed against it, and what came after
+  the row (the results of *Try it on every node* in the isemon wizard) stood
+  right under it. A place that sets its own spacing keeps it.
+
 ## 1.0.179 — 30 October 2026
 
 - isemon's *Send a test sign-in…*: Success or Failure is a switch, green or red
