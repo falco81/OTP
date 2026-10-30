@@ -170,7 +170,13 @@ class H(http.server.BaseHTTPRequestHandler):
             a = AUTHZ[aid]
             want = b64e(hashlib.sha256((a['token'] + '.' + thumb(ACCTS[a['kid']]['jwk'])).encode()).digest())
             try:
-                txt = json.load(open(W + '/dns.json')).get('_acme-challenge.' + a['name'], [])
+                zone = json.load(open(W + '/dns.json'))
+                rr = '_acme-challenge.' + a['name']
+                for _ in range(5):              # a CNAME followed, as a resolver does
+                    if 'CNAME ' + rr not in zone:
+                        break
+                    rr = zone['CNAME ' + rr].rstrip('.')
+                txt = zone.get(rr, [])
             except (OSError, ValueError):
                 txt = []
             LOG.append({'dns': a['name'], 'txt': txt})

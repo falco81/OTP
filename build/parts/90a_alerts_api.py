@@ -163,15 +163,50 @@ def _acme_do(h):
         if act == 'order':
             if not CONFIG.get('acme'):
                 raise ValueError('certificates by ACME are off - switch them on and save first')
-            mine = dict(acme_targets(h.store))
+            # Any of them from any node (1.0.170): the CA's question and the
+            # certificate are kept in the database, and the node it is for -
+            # every node, for the web address - puts it in. Ordered by hand,
+            # ACME looks after it from now on.
             target = str(b.get('target') or '')
-            if target not in mine:
-                raise ValueError('%s is not ordered from this node - the web address\'s is ordered '
-                                 'by %s, a node\'s by that node' % (target, 'the first node by name'))
-            acme_start(h.store, [(target, mine[target])], s['name'])
-            return dict(acme_view(h.store), message='the certificate of %s is being ordered' % mine[target])
+            if target not in tls_targets(h.store) or \
+                    (target == 'vip' and not vip_conf(h.store).get('address')):
+                raise ValueError('there is no such certificate')
+            name = acme_name_of(h.store, target)
+            if not name:
+                raise ValueError('the name of this certificate is not known - give it (Its name…)')
+            acme_care_set(h.store, target, True, s['name'], 'ordered by hand')
+            acme_start(h.store, [(target, name)], s['name'])
+            return dict(acme_view(h.store), message='the certificate of %s is being ordered' % name)
+        if act == 'dns_check':
+            return acme_dns_check(h.store)
+        if act == 'care':
+            target = str(b.get('target') or '')
+            if target not in tls_targets(h.store):
+                raise ValueError('there is no such certificate')
+            acme_care_set(h.store, target, bool(b.get('on')), s['name'])
+            return acme_view(h.store)
         if act == 'probe':
             return acme_probe(h.store, str(b.get('target') or ''))
+        if act == 'name':
+            # Every certificate's name from one page (1.0.170): the other
+            # node's and the web address's too, not only this node's.
+            target = str(b.get('target') or '')
+            name = str(b.get('name') or '').strip().lower().rstrip('.')
+            if name and not re.match(r'^(?=.{1,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+'
+                                     r'[a-z]{2,63}\Z', name):
+                raise ValueError('%s is not a full DNS name (like otp2.example.cz)' % name[:80])
+            if target == 'vip':
+                if not vip_conf(h.store).get('address'):
+                    raise ValueError('the web address is not set up (Settings → High availability)')
+                vip_set(h.store, s['name'], fqdn=name)
+            elif target in tls_targets(h.store):
+                h.d.save_settings({'acme_node_name': name}, by=s['name'], node=target)
+            else:
+                raise ValueError('there is no such certificate')
+            h.store.add_event('settings', '%s: the certificate of %s is for %s' % (
+                s['name'], 'the web address' if target == 'vip' else target,
+                name or 'its full host name'), who=s['name'])
+            return acme_view(h.store)
         if act in ('manual_done', 'manual_drop'):
             # The TXT record put in by hand (1.0.169) - or the order given up.
             got = _meta_json(h.store, 'acme:manual') or {}
@@ -194,3 +229,54 @@ def _acme_do(h):
     except (ValueError, AcmeError) as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+@route('GET', '/api/dbtls')
+def _dbtls(h):
+    h.me('fulladmin')
+    return dbtls_view(h.store)
+
+
+@route('POST', '/api/dbtls')
+def _dbtls_do(h):
+    """The wizard of Encryption to the database server (1.0.170): 'probe' and
+    'apply' asked of every node, 'result' what each said so far."""
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    if act == 'result':
+        kind = 'dbtls_probe' if b.get('of') == 'probe' else 'dbtls_apply'
+        return {'nodes': node_ask_results(h.store, kind, str(b.get('id') or '')),
+                'view': dbtls_view(h.store)}
+    mode = str(b.get('mode') or '')
+    if mode not in DBTLS_MODES:
+        raise ApiError(400, 'the mode is require, verify-ca or verify-full')
+    src = str(b.get('ca_source') or 'given')
+    if src not in ('given', 'system', 'otp', 'keep'):
+        raise ApiError(400, 'the authority is given, the system\'s, otp\'s or the one kept')
+    pem = str(b.get('ca_pem') or '').strip()
+    if pem and (len(pem) > 20000 or not re.match(
+            r'^(-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----\s*)+\Z',
+            pem)):
+        raise ApiError(400, 'the server\'s authority is one or more PEM certificates')
+    args = {'mode': mode, 'ca_source': src, 'ca_pem': pem, 'by': s['name'],
+            'only': str(b.get('node') or '')}
+    if act == 'probe':
+        return node_ask(h.d, 'dbtls_probe', args, s['name'])
+    if act != 'apply':
+        raise ApiError(400, 'no such thing to do')
+    phase = str(b.get('phase') or '')
+    if phase not in ('server', 'connect', 'server_off'):
+        raise ApiError(400, 'the phase is server, connect or server_off')
+    if phase == 'connect' and mode not in ('verify-ca', 'verify-full') and \
+            dbtls_kind() not in ('sqlite', 'socket') and hisec_enforced('db:tls', h.store):
+        raise ApiError(409, 'high security is on: the database is reached with TLS that checks '
+                       'its certificate (verify-ca or verify-full) - or make db:tls an '
+                       'exception there first')
+    args.update(phase=phase, renew=bool(b.get('renew')))
+    h.store.add_event('settings', '%s: encryption to the database server - %s%s' % (
+        s['name'], {'server': 'the certificates of the PostgreSQLs on the nodes',
+                    'connect': 'every node\'s connection to %s' % (mode or 'no TLS'),
+                    'server_off': 'otp\'s certificates out of the PostgreSQLs'}[phase],
+        (' (only %s)' % args['only']) if args['only'] else ''), 'info', who=s['name'])
+    return node_ask(h.d, 'dbtls_apply', args, s['name'])

@@ -1181,12 +1181,13 @@ def cli_ha_standalone(args, pal):
             print(pal.warn_line('the replication: %s' % str(e).split('\n')[0][:200]))
         # Whatever is left of it here - the other node gone for good, or
         # names from before - taken away too.
-        for r in store.db.rows("SELECT subname FROM pg_subscription WHERE subname LIKE "
-                               "'o__!_from!_%' ESCAPE '!'"):
+        for r in store.db.rows("SELECT subname FROM pg_subscription WHERE subdbid = (SELECT oid "
+                               "FROM pg_database WHERE datname = current_database()) AND subname "
+                               "LIKE 'o__!_from!_%' ESCAPE '!'"):
             ha_drop_sub(store.db, r['subname'])
             say('the subscription %s is gone' % r['subname'])
         for r in store.db.rows("SELECT slot_name FROM pg_replication_slots WHERE slot_name "
-                               "LIKE 'o__!_from!_%' ESCAPE '!'"):
+                               "LIKE 'o__!_from!_%' ESCAPE '!' AND database = current_database()"):
             try:
                 _ha_drop_slot(store.db, r['slot_name'])
                 say('the replication slot %s is gone (nothing is kept for the other node '

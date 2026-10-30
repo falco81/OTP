@@ -32,6 +32,12 @@
 HA_KIND = 'otp-ha-join'
 HA_STORE = {'store': None}
 HEARTBEAT_S = 15
+# One subscription of this database by its name (1.0.170): pg_subscription is
+# the whole server's catalog - a second database on the same PostgreSQL (or one
+# left from before) has subscriptions of the same names, and they were taken
+# for this one's: ALTER SUBSCRIPTION ... does not exist.
+SUB_HERE_SQL = ('SELECT 1 FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database '
+                'WHERE datname = current_database()) AND subname = ?')
 
 
 def node_name():
@@ -603,7 +609,7 @@ def ha_sub_names(slot):
 def ha_sub_here(db, slot):
     """The subscription for node `slot` as it is called in `db`."""
     for name in ha_sub_names(slot):
-        if db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (name,)):
+        if db.value(SUB_HERE_SQL, (name,)):
             return name
     return ha_sub_name(slot)
 
@@ -769,7 +775,7 @@ def ha_drop_sub(db, sub):
     names = ha_sub_names(sub.rsplit('_', 1)[1]) if sub[:9] in ('otp_from_', 'opt_from_') \
         else [sub]
     for one in names:
-        if db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (one,)):
+        if db.value(SUB_HERE_SQL, (one,)):
             db.run('ALTER SUBSCRIPTION %s DISABLE' % one)
             db.run('ALTER SUBSCRIPTION %s SET (slot_name = NONE)' % one)
             db.run('DROP SUBSCRIPTION %s' % one)
@@ -785,8 +791,10 @@ def ha_drop_slot(db, slot_name):
 
 
 def _ha_drop_slot(db, slot_name):
-    got = db.row('SELECT active, active_pid FROM pg_replication_slots WHERE slot_name = ?',
-                 (slot_name,))
+    # This database's only (1.0.170): the catalog is the server's, and a slot
+    # of the same name may be another database's - in use by it.
+    got = db.row('SELECT active, active_pid FROM pg_replication_slots WHERE slot_name = ? '
+                 'AND database = current_database()', (slot_name,))
     if not got:
         return False
     if got.get('active') and got.get('active_pid'):
@@ -1190,7 +1198,7 @@ def ha_control(store, act, by=''):
             far.close()
 
     def has(db, sub):
-        return bool(db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)))
+        return bool(db.value(SUB_HERE_SQL, (sub,)))
 
     if act in ('pause_in', 'pause'):
         if has(here, sub_in):

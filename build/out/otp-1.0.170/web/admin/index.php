@@ -1052,6 +1052,14 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         folder - and every copy and every dump is kept with that key beside it.</p></div>
     <div class="card full"><div id="sect-db"></div></div>
 
+    <div class="card full" id="db-tls-card" hidden>
+      <h2>Encryption to the database server</h2>
+      <p class="note">This daemon’s own connection to its database - on every node, moved over
+        on the live database without stopping anything: tried apart first, then switched, and
+        put back at once if the first statement on the new one does not go.</p>
+      <div id="db-tls"></div>
+    </div>
+
     <div class="card full" id="db-dump-card">
       <h2>The dumps it keeps <span class="right" id="db-dump-now"></span></h2>
       <p class="note">Every night at the time above, the database in use is dumped

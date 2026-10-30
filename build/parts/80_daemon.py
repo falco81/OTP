@@ -1386,6 +1386,9 @@ class Daemon(object):
         threading.Thread(target=mail_queue, name='mail-queue', daemon=True).start()
         # The cluster's web address: whether this node may hold it (1.0.47).
         threading.Thread(target=vip_watch, args=(self,), name='vip-watch', daemon=True).start()
+        # A connection on this machine broken by its TLS mended (1.0.170) -
+        # its own thread: the loop below waits for the database.
+        threading.Thread(target=dbtls_watch, args=(self,), name='dbtls-watch', daemon=True).start()
         try:
             upgrade_tick(self)
         except Exception as e:                          # noqa: BLE001
@@ -1493,6 +1496,11 @@ class Daemon(object):
                     acme_tick(self)             # certificates by ACME (1.0.169)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('acme-tick', 'ACME: %s' % e, 'warn', every=600)
+                try:
+                    dbtls_tick(self)            # the connection to the database (1.0.170)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('dbtls-tick', 'the encryption to the database: %s' % e, 'warn',
+                                every=600)
                 try:
                     sshd_tick(self)             # the SSH server and the notices (1.0.163)
                 except Exception as e:          # noqa: BLE001

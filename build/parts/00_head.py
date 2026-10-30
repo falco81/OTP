@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.169'
+__version__ = '1.0.170'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -332,6 +332,9 @@ DEFAULTS = {
     'acme_dns_user': '',
     'acme_dns_key': '',
     'acme_dns_subdomain': '',
+    'acme_desec_domain': '',
+    'acme_desec_token': '',
+    'acme_dns_alias': '',
     'acme_dns_wait': 30,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
@@ -393,10 +396,11 @@ def this_node_name(conf=None):
 
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
                'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
-               'acme_dns_key')
+               'acme_dns_key', 'acme_desec_token')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
-               'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key')
+               'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
+               'acme_desec_token')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -451,7 +455,8 @@ TUNABLE = {
     'logs_max_mb': (1, 100000),
     'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
     'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('ec', 'rsa2048'),
-    'acme_challenge': ('http-01', 'dns-01'), 'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns'),
+    'acme_challenge': ('http-01', 'dns-01'), 'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns',
+                                                                             'desec'),
     'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384', 'hmac-sha224', 'hmac-sha1',
                           'hmac-md5'),
     'acme_dns_wait': (0, 600),
@@ -479,7 +484,8 @@ CHOICE_WORDS = {
                        'dns-01': 'DNS-01 - a TXT record in DNS (no port open to the internet)'},
     'acme_dns': {'manual': 'by hand - the record is shown here, you put it in',
                  'rfc2136': 'RFC 2136 dynamic update with a TSIG key (BIND, PowerDNS, Knot...)',
-                 'cloudflare': 'Cloudflare, with an API token', 'acmedns': 'an acme-dns server'},
+                 'cloudflare': 'Cloudflare, with an API token', 'acmedns': 'an acme-dns server',
+                 'desec': 'deSEC.io (free), with an API token - a CNAME in your DNS'},
     'acme_ca': {'letsencrypt': 'Let\u2019s Encrypt', 'letsencrypt-staging': 'Let\u2019s Encrypt - staging (to try it)',
                 'custom': 'another ACME CA (step-ca, an internal CA...)'},
     'acme_for': {'vip': 'the web address (or this node, where there is none)',
@@ -747,6 +753,9 @@ NAMES = {
     'acme_dns_key': 'acme-dns key',
     'acme_dns_subdomain': 'acme-dns subdomain',
     'acme_dns_wait': 'Wait for DNS to carry it (s)',
+    'acme_desec_domain': 'The domain at deSEC',
+    'acme_desec_token': 'The deSEC API token',
+    'acme_dns_alias': 'The TXT records go into',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1244,6 +1253,14 @@ SAYS = {
     'acme_dns_key': 'From the registration at acme-dns. Kept sealed.',
     'acme_dns_subdomain': 'From the registration at acme-dns.',
     'acme_dns_wait': 'How long the record is given to reach every DNS server before the CA is asked.',
+    'acme_desec_domain': 'Your domain at deSEC, <code>example.dedyn.io</code> (free) or one of your own '
+                         'whose DNS is there. The records go into it; your DNS has a CNAME to it for each '
+                         'name - <i>In your DNS</i> above says which.',
+    'acme_desec_token': 'A token from deSEC (Token management) - one that may change this domain\u2019s '
+                        'records. Kept sealed.',
+    'acme_dns_alias': 'A zone the records go into instead of the name\u2019s own '
+                      '(<code>acme.example.net</code>), each name with a CNAME to it in your DNS - '
+                      '<i>In your DNS</i> above says which. Empty: _acme-challenge.NAME itself.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1338,7 +1355,8 @@ PANES = {
              'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
              'acme_dns_server', 'acme_dns_zone', 'acme_dns_tsig_name', 'acme_dns_tsig_alg',
              'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_url', 'acme_dns_user',
-             'acme_dns_key', 'acme_dns_subdomain', 'acme_dns_wait'],
+             'acme_dns_key', 'acme_dns_subdomain', 'acme_desec_domain', 'acme_desec_token',
+             'acme_dns_alias', 'acme_dns_wait'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1412,6 +1430,8 @@ ONLY_WHEN = {
     'acme_dns_tsig_secret': ['acme_dns', 'rfc2136'], 'acme_dns_token': ['acme_dns', 'cloudflare'],
     'acme_dns_url': ['acme_dns', 'acmedns'], 'acme_dns_user': ['acme_dns', 'acmedns'],
     'acme_dns_key': ['acme_dns', 'acmedns'], 'acme_dns_subdomain': ['acme_dns', 'acmedns'],
+    'acme_desec_domain': ['acme_dns', 'desec'], 'acme_desec_token': ['acme_dns', 'desec'],
+    'acme_dns_alias': ['acme_dns', 'acmedns-not'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1587,6 +1607,13 @@ def check_setting(key, value):
     if key in ('acme_dns_server',) and str(got).strip() and \
             not re.match(r'^[A-Za-z0-9.\-:\[\]]{1,260}\Z', str(got).strip()):
         raise BadSetting('acme_dns_server: a name or an address, :port if not 53')
+    if key in ('acme_desec_domain', 'acme_dns_alias') and str(got).strip() and \
+            not re.match(r'^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}\.?\Z',
+                         str(got).strip()):
+        raise BadSetting('%s: a DNS name, like example.dedyn.io' % key)
+    if key == 'acme_desec_token' and str(got).strip() and not is_masked(got) and \
+            not re.match(r'^[A-Za-z0-9_.-]{20,100}\Z', str(got).strip()):
+        raise BadSetting('acme_desec_token: the token as deSEC shows it')
     if key in ('acme_dns_zone', 'acme_dns_tsig_name') and str(got).strip() and \
             not re.match(r'^[A-Za-z0-9][A-Za-z0-9.\-_]{0,252}\Z', str(got).strip()):
         raise BadSetting('%s: a DNS name' % key)

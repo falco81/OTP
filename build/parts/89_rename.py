@@ -181,13 +181,14 @@ def _ha_rename(c, say):
             say('replication: the publication is now %s' % HA_PUB)
     # This node's subscription, bringing the other's rows: its name.
     old_in, new_in = 'opt_from_%d' % peer_slot, ha_sub_name(peer_slot)
-    if pg_admin("SELECT 1 FROM pg_subscription WHERE subname = '%s'" % old_in, port, db) == '1':
+    if pg_admin("SELECT 1 FROM pg_subscription WHERE subdbid = (SELECT oid FROM pg_database "
+                "WHERE datname = current_database()) AND subname = '%s'" % old_in, port, db) == '1':
         pg_admin('ALTER SUBSCRIPTION %s RENAME TO %s' % (old_in, new_in), port, db)
         say('replication: this node\'s subscription is now %s' % new_in)
     # The slot here, and the other node's subscription that reads it.
     old_slot, new_slot = 'opt_from_%d' % slot, ha_sub_name(slot)
-    have_old = pg_admin("SELECT 1 FROM pg_replication_slots WHERE slot_name = '%s'" % old_slot,
-                        port) == '1'
+    have_old = pg_admin("SELECT 1 FROM pg_replication_slots WHERE slot_name = '%s' AND "
+                        "database = '%s'" % (old_slot, db), port) == '1'
     far = None
     for name, user in ((RENAME_NEW, RENAME_NEW), (RENAME_OLD, RENAME_OLD),
                        (c.get('db_name'), c.get('db_user'))):
@@ -206,7 +207,7 @@ def _ha_rename(c, say):
     try:
         sub = None
         for one in ha_sub_names(slot):
-            if far.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (one,)):
+            if far.value(SUB_HERE_SQL, (one,)):
                 sub = one
                 break
         if not sub:
@@ -218,7 +219,7 @@ def _ha_rename(c, say):
         time.sleep(2)
         try:
             if have_old and pg_admin("SELECT 1 FROM pg_replication_slots WHERE slot_name = "
-                                     "'%s'" % new_slot, port) != '1':
+                                     "'%s' AND database = '%s'" % (new_slot, db), port) != '1':
                 # Copied at the same place: what the other node had not yet
                 # taken is still there for it under the new name.
                 pg_admin("SELECT pg_copy_logical_replication_slot('%s', '%s')"
@@ -239,7 +240,8 @@ def _ha_rename(c, say):
             far.run('ALTER SUBSCRIPTION %s ENABLE' % sub)
         if have_old:
             pg_admin("SELECT pg_drop_replication_slot('%s') FROM pg_replication_slots WHERE "
-                     "slot_name = '%s' AND NOT active" % (old_slot, old_slot), port)
+                     "slot_name = '%s' AND database = '%s' AND NOT active"
+                     % (old_slot, old_slot, db), port)
         say('replication: the other node reads this one as %s, from where it was' % new_slot)
     finally:
         far.close()

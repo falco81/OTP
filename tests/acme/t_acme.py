@@ -2,7 +2,7 @@
 # that checks every signature and really fetches HTTP-01): port 80 played by
 # a little server that does what acme.php does - asks the daemon.
 # Usage (as root): python3 t_acme.py VERSION
-import os, sys, json, time, subprocess, urllib.request, tempfile, atexit, threading, http.server, socketserver
+import os, re, socket, struct, sys, json, time, subprocess, urllib.request, tempfile, atexit, threading, http.server, socketserver
 
 VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.169'
 V = '/home/claude/build/out/otp-%s' % VER
@@ -25,7 +25,8 @@ for _ in range(100):
 DNSJSON = CAW + '/dns.json'
 env = dict(os.environ, OTP_STATE=D, OTP_CONFIG=D + '/config.json', OTP_LOGDIR=D, OTP_RUN=D + '/run', OTP_STAY_ROOT='1',
            OTP_ACME_EVERY='5', OTP_ACME_SETTLE='0.5', OTP_NSUPDATE=HERE + '/fake_nsupdate.sh', DNSJSON=DNSJSON,
-           OTP_CF_API='http://127.0.0.1:36780/client/v4')
+           OTP_CF_API='http://127.0.0.1:36780/client/v4', OTP_DESEC_API='http://127.0.0.1:36780/api/v1',
+           OTP_ACME_DNS_LEAST='0', OTP_ACME_RESOLVER='127.0.0.2')
 json.dump({'db_engine': 'sqlite', 'radius_bind': '127.0.0.1', 'radius_auth_port': 36710, 'radius_acct_port': 36711,
            'api_port': APORT, 'node_name': 'otp1'}, open(D + '/config.json', 'w'))
 os.environ.update(env); sys.path.insert(0, V); sys.argv = ['x']
@@ -167,7 +168,22 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def body(self):
         return json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
 
+    desec = {}
+    desec_429 = [1]
+
+    def desec_ok(self):
+        return self.headers.get('Authorization') == 'Token desec-token-170-abcdefghijklmnop'
+
     def do_GET(self):
+        if self.path.startswith('/api/v1/'):
+            if not self.desec_ok():
+                return self.reply(401, {'detail': 'Invalid token.'})
+            if self.path == '/api/v1/domains/otpdesec.dedyn.io/':
+                return self.reply(200, {'name': 'otpdesec.dedyn.io', 'minimum_ttl': 3600})
+            m = re.match(r'^/api/v1/domains/otpdesec\.dedyn\.io/rrsets/([^/]+)/TXT/$', self.path)
+            if m and m.group(1) in Fake.desec:
+                return self.reply(200, {'subname': m.group(1), 'type': 'TXT', 'records': Fake.desec[m.group(1)]})
+            return self.reply(404, {'detail': 'Not found.'})
         if self.path.startswith('/client/v4/zones?name='):
             ok_ = self.headers.get('Authorization') == 'Bearer cf-token-169'
             z = self.path.split('=', 1)[1]
@@ -189,6 +205,23 @@ class Fake(http.server.BaseHTTPRequestHandler):
             return self.reply(200, {'txt': b['txt']})
         self.reply(404, {})
 
+    def do_PATCH(self):
+        if not self.path.startswith('/api/v1/domains/otpdesec.dedyn.io/rrsets/') or not self.desec_ok():
+            return self.reply(401, {'detail': 'no'})
+        if Fake.desec_429[0]:
+            Fake.desec_429[0] = 0
+            self.send_response(429); self.send_header('Retry-After', '1'); self.send_header('Content-Length', '0'); self.end_headers()
+            return
+        for rr in self.body():
+            assert rr['type'] == 'TXT' and rr['ttl'] >= 3600
+            full = rr['subname'] + '.otpdesec.dedyn.io'
+            for v in Fake.desec.get(rr['subname'], []):
+                dns_put(full, v.strip('"'), False)
+            Fake.desec[rr['subname']] = rr['records']
+            for v in rr['records']:
+                dns_put(full, v.strip('"'))
+        self.reply(200, [])
+
     def do_DELETE(self):
         rid = self.path.rsplit('/', 1)[-1]
         r = Fake.recs.pop(rid, None)
@@ -201,6 +234,30 @@ class Fake(http.server.BaseHTTPRequestHandler):
 
 
 threading.Thread(target=TS(('127.0.0.1', 36780), Fake).serve_forever, daemon=True).start()
+
+
+def fake_dns():
+    """A resolver on 127.0.0.2:53 that knows the CNAMEs of dns.json - as the
+    check of In your DNS asks."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(('127.0.0.2', 53))
+    while True:
+        q, peer = s.recvfrom(4096)
+        i, labels = 12, []
+        while q[i]:
+            labels.append(q[i + 1:i + 1 + q[i]].decode()); i += 1 + q[i]
+        qend = i + 5
+        name = '.'.join(labels)
+        target = dns().get('CNAME ' + name)
+        head = q[:2] + struct.pack('!HHHHH', 0x8180 if target else 0x8183, 1, 1 if target else 0, 0, 0)
+        out = head + q[12:qend]
+        if target:
+            rd = b''.join(bytes([len(x)]) + x.encode() for x in target.rstrip('.').split('.')) + b'\0'
+            out += b'\xc0\x0c' + struct.pack('!HHIH', 5, 1, 60, len(rd)) + rd
+        s.sendto(out, peer)
+
+
+threading.Thread(target=fake_dns, daemon=True).start()
 SET({'acme_node_name': NAME})
 
 
@@ -245,4 +302,55 @@ v = until(lambda: (lambda x: x if [t for t in mine(x) if (t['state'].get('at') o
 ok('... said it is in DNS: the certificate came (%s)' % (mine(v)[0]['state'] if v else None), v and mine(v)[0]['state'].get('ok'))
 ev = json.dumps(call('/api/events?limit=60', None, S)[1])
 ok('in the events: came from the CA, and the one that did not', 'came from the CA' in ev and 'no certificate for' in ev)
+
+# Certificates and TLS beside it (1.0.170): one put in by hand is kept.
+c, x = call('/api/web', {'action': 'tls_selfsigned', 'target': 'otp1', 'cn': NAME, 'names': '', 'days': 30}, S)
+ok('a self-signed one put in by hand (%s)' % c, c == 200)
+v = call('/api/acme', None, S)[1]
+ok('... ACME no longer renews it', mine(v) and mine(v)[0]['care'] is False and 'otp1' not in v.get('mine', []))
+w = call('/api/web', None, S)[1]
+ok('... and Certificates and TLS says so', w.get('acme', {}).get('care', {}).get('otp1') is False)
+c, v = call('/api/acme', {'action': 'care', 'target': 'otp1', 'on': True}, S)
+ok('Look after it: ACME renews it again', c == 200 and mine(v)[0]['care'] is True and 'otp1' in v.get('mine', []))
+c, v = call('/api/acme', {'action': 'name', 'target': 'otp1', 'name': 'Other.OTP.test.'}, S)
+ok('its name given from the page: kept as a DNS name', c == 200 and mine(v)[0]['name'] == 'other.otp.test')
+c, v = call('/api/acme', {'action': 'name', 'target': 'otp1', 'name': 'not a name'}, S)
+ok('... a wrong one refused', c == 400)
+c, v = call('/api/acme', {'action': 'name', 'target': 'vip', 'name': 'otp.otp.test'}, S)
+ok('... the web address\'s refused while there is none', c == 400)
+c, v = call('/api/acme', {'action': 'name', 'target': 'otp1', 'name': NAME}, S)
+
+# deSEC (1.0.170): its domain, a CNAME in your DNS, the guide and its check.
+json.dump({}, open(DNSJSON, 'w'))
+c, x = SET({'acme_challenge': 'dns-01', 'acme_dns': 'desec', 'acme_desec_domain': 'otpdesec.dedyn.io',
+            'acme_desec_token': 'desec-token-170-abcdefghijklmnop', 'acme_dns_wait': 0})
+ok('deSEC chosen (%s)' % c, c == 200)
+saved = json.dumps(st.db.rows('SELECT * FROM settings'))
+ok('... its token kept sealed', 'desec-token-170' not in saved)
+v = call('/api/acme', None, S)[1]
+row = [r for r in v['dns_guide']['rows'] if r['target'] == 'otp1'][0]
+ok('In your DNS: _acme-challenge.%s CNAME to the deSEC domain (%s)' % (NAME, row), row['type'] == 'CNAME' and
+   row['record'] == '_acme-challenge.' + NAME and row['value'] == '_acme-challenge.acme1.otpdesec.dedyn.io.')
+c, g = call('/api/acme', {'action': 'dns_check'}, S)
+r1 = [r for r in g['rows'] if r['target'] == 'otp1'][0]
+ok('... checked: not there yet (%s)' % r1.get('said'), c == 200 and r1.get('ok') is False and 'not there' in r1.get('said', ''))
+c, stt, v = order_now('desec without its CNAME')
+ok('... ordered without it: the CA did not find it, said why (%s)' % (stt.get('said') or '')[:90], stt.get('ok') is False)
+ok('... the TXT record taken away again from deSEC', not any(Fake.desec.values()))
+d0 = dns(); d0['CNAME _acme-challenge.' + NAME] = '_acme-challenge.acme1.otpdesec.dedyn.io.'; json.dump(d0, open(DNSJSON, 'w'))
+c, g = call('/api/acme', {'action': 'dns_check'}, S)
+r1 = [r for r in g['rows'] if r['target'] == 'otp1'][0]
+ok('the CNAME put in: the check finds it (%s)' % r1.get('said'), r1.get('ok') is True)
+c, stt, v = order_now('desec')
+ok('DNS-01 by deSEC through the CNAME: the certificate came (%s)' % (stt.get('said') or 'ok'), stt.get('ok'))
+ok('... a 429 waited out, and the record taken away again', Fake.desec_429[0] == 0 and not any(Fake.desec.values()))
+SET({'acme_dns': 'rfc2136', 'acme_dns_alias': 'acme.otp.test'})
+v = call('/api/acme', None, S)[1]
+row = [r for r in v['dns_guide']['rows'] if r['target'] == 'otp1'][0]
+ok('another zone for the records with RFC 2136 too: a CNAME asked for (%s)' % row.get('value'),
+   row['type'] == 'CNAME' and row['value'] == '_acme-challenge.acme1.acme.otp.test.')
+SET({'acme_dns_alias': '', 'acme_challenge': 'http-01'})
+v = call('/api/acme', None, S)[1]
+row = [r for r in v['dns_guide']['rows'] if r['target'] == 'otp1'][0]
+ok('HTTP-01: the name is to point at the node (%s)' % row, row['type'] == 'A' and row['record'] == NAME)
 print('ALL %d / %d' % (sum(R), len(R)))

@@ -4,6 +4,50 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.170 — 30 October 2026
+
+**Encryption to the database server, as a wizard; ACME beside Certificates and TLS**
+- *Settings → The database → Encryption to the database server*: the daemon's
+  own connection to its database encrypted and checked on every node, on the
+  live database, nothing stopped - a card like the link between the databases
+  (each node, its state, its certificate). PostgreSQL on the same machine is
+  given a certificate from otp's own authority (reloaded, not restarted),
+  renewed by itself 45 days before it ends and made again when the machine's
+  names or addresses change; two nodes replicating use the cluster's
+  certificate once the link between the databases is encrypted; a server
+  elsewhere (or a node's PostgreSQL that another node shares) is checked with
+  its authority given in the wizard, the system's, or otp's own. *Try it on
+  every node* first; each move is tried apart, then switched, and put back at
+  once if the first statement on the new connection does not go. Switched off
+  the other way round. A connection on the same machine that stops working
+  because of its TLS goes back to no TLS by itself, with an alert, so RADIUS
+  keeps answering (not under high security). The link's TLS (High
+  availability) cannot be switched off while the daemons' connections use its
+  certificate.
+- *Automatic certificates* and *Certificates and TLS* side by side: each
+  certificate says who renews it. One put in by hand (uploaded, answered to a
+  request, self-signed) is kept - ACME does not replace it, switched on or not -
+  until *Look after it* or *Order it now*; a certificate from your own CA is
+  never overwritten by switching ACME on. Its TLS settings stay as they are.
+- Every certificate's name from one page: *Its name…* on each card - the other
+  node's and the web address's too. Unsaid, the name is the one of the
+  certificate it has now, or the full host name the node says of itself (the
+  other node's card said "for –" and *Try port 80* asked `http://?/`).
+  *Order it now* works for any of them from any node.
+- DNS-01 by **deSEC.io** (free): its domain and an API token (sealed) - and for
+  any DNS-01 way a zone of its own for the records (*The TXT records go into*),
+  each name with one CNAME in your DNS, once: a domain whose DNS has no API gets
+  certificates and renewals by itself. The card **In your DNS** lists what each
+  certificate needs there - the CNAMEs, or for HTTP-01 where the names point -
+  with the steps of the way chosen and **Check DNS**, looked up from the node as
+  the CA will.
+- A node's own setting shows the other nodes' values under its box, each
+  changed from there - not only in *High availability*.
+- High availability on a PostgreSQL with other databases: the replication's
+  subscriptions and slots are looked up in otp's database only (the catalog is
+  the server's - a second database's, or one left from before, was taken for
+  otp's).
+
 ## 1.0.169 — 30 October 2026
 
 **Automatic certificates, every node a card, the exceptions of high security**

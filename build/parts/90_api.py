@@ -5528,6 +5528,9 @@ def _web(h):
             'vip': dict(v, prefer_now=vip_prefer(store, v) if CONFIG.get('ha_mode') else '',
                         holder=holder),
             'tls': {t: tls_view(tls_profile(store, t)) for t in tls_targets(store)},
+            'acme': {'on': bool(CONFIG.get('acme')), 'care': {
+                t: acme_care(store, t) and t in acme_wanted(store) for t in tls_targets(store)},
+                     'state': {t: acme_state(store, t) for t in tls_targets(store)}},
             'presets': TLS_PRESETS, 'dh': DH_WORDS,
             'may': me.get('role') == 'fulladmin'}
 
@@ -5579,6 +5582,9 @@ def _web_do(h):
         prof.setdefault('preset', 'standard')
         prof.setdefault('dh', 'none')
         tls_save(store, target, prof, who)
+        # One put in by hand is kept (1.0.170): ACME does not replace it at its
+        # next renewal - Automatic certificates → Look after it gives it back.
+        acme_care_set(store, target, False, who, 'a certificate was put in by hand')
         store.add_event('settings', '%s put a certificate in for %s: %s (until %s)' % (
             who, words, info.get('subject'), stamp(info.get('not_after')) if info.get('not_after') else '?'), 'warn', who=who)
         return {'message': 'the certificate of %s is kept; the node%s put%s it in within a few '
@@ -5615,6 +5621,7 @@ def _web_do(h):
                 'tls': tls_view(prof)}
     if act == 'tls_forget':
         store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + target,))
+        acme_care_set(store, target, False, who, 'otp lets its TLS go')
         store.add_event('settings', '%s: otp no longer looks after the TLS of %s (nginx keeps '
                         'what it has)' % (who, words), 'warn', who=who)
         return {'message': 'otp no longer looks after the TLS of %s; nginx keeps the files it '

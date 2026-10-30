@@ -2915,8 +2915,50 @@ function settingItem(s) {
   var item = settingItemBare(s);
   var tail = el('div', 'set-tail');
   Array.prototype.slice.call(item.children, 2).forEach(function (c) { tail.appendChild(c); });
+  var others = nodeOthers(s);
+  if (others) tail.appendChild(others);
   item.appendChild(tail);
   return item;
+}
+/* A node's own setting, in a cluster (1.0.170): the other nodes' values under
+   the box, each changed from here - the box is this node's, and the others'
+   were only in Settings → High availability (the name of otp2's certificate
+   could not be given on the page of the ACME certificates). */
+function nodeOthers(s) {
+  if (!s.node_key || !SETTINGS || !SETTINGS.cluster || s.secret) return null;
+  var names = (SETTINGS.nodes || []).filter(function (n) { return n !== SETTINGS.node; });
+  if (!names.length) return null;
+  var box = el('div', 'node-others small');
+  names.forEach(function (n) {
+    var has = s.per_node && Object.prototype.hasOwnProperty.call(s.per_node, n);
+    var val = has ? s.per_node[n] : s.shared;
+    var row = el('div', 'node-other');
+    row.appendChild(noI18n(el('span', 'tag dim', n)));
+    var redraw = function () { loadSettings(); };
+    if (isBool(s)) {
+      var sw = switchBox(nodeValWords(s, val) === 'on');
+      sw.classList.add('small');
+      sw._input.disabled = !ADMIN;
+      if (!has) sw.classList.add('inherited');
+      sw._input.addEventListener('change', function () { nodeSave(s, n, !!sw._get(), redraw); });
+      row.appendChild(sw);
+    } else {
+      row.appendChild(nodeValEl(s, val, 'mono small' + (has ? '' : ' muted')));
+    }
+    row.appendChild(el('span', 'muted', has ? 'its own' : 'the cluster’s'));
+    if (ADMIN && !isBool(s)) {
+      var eb = iconButton('edit', 'Change it for ' + n);
+      eb.onclick = function () { nodeEdit(s, n, has ? val : null, redraw); };
+      row.appendChild(eb);
+    }
+    if (ADMIN && has) {
+      var back = iconButton('undo', 'Back to the cluster’s value');
+      back.onclick = function () { nodeSave(s, n, s.shared, redraw); };
+      row.appendChild(back);
+    }
+    box.appendChild(row);
+  });
+  return box;
 }
 function settingItemBare(s) {
   var item = el('div', 'set-item' + (isBool(s) ? ' set-bool' : ''));
@@ -2939,7 +2981,7 @@ function settingItemBare(s) {
        ? '<br><span class="same">the built-in default is ' + asText(s.default) + '</span>' : '') + '</span>';
   var whole = s.says || 'No words have been written for this one yet.';
   if (s.node_key && SETTINGS.cluster) {
-    story += '<br><span class="diff">' + richText('this node’s own - every node of the cluster has one of its own; the others’ are in Settings → High availability') + '</span>';
+    story += '<br><span class="diff">' + richText('this node’s own - every node of the cluster has one of its own; the others’ are under the box, and all of them in Settings → High availability') + '</span>';
   }
   explain(info, whole, story);
   explain(label, whole, story);
@@ -4024,6 +4066,7 @@ function askInModal(title, lede, fields, words, icon, go) {
       if (f.type !== 'password') input.type = f.type || 'text';
       input.placeholder = f.placeholder || '';
       input.autocomplete = 'off';
+      if (f.value && f.type !== 'password') input.value = f.value;
       if (f.mono) input.className = 'mono';
       input.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); $('modal-foot').querySelector('.btn.primary').click(); }
@@ -4773,6 +4816,7 @@ function loadDb() {
         + 'that opens the tokens beside it. Copy them off it if they are to survive the machine.'
     });
     dumpCard(d);
+    loadDbTls();                                        /* encryption to the server (1.0.170) */
     drawTune(d);
     drawErasable(d.erasable || {});
     if (d.job && d.job.running && ADMIN) dbWatch();     /* its progress is a full administrator's (1.0.146) */
@@ -8242,6 +8286,19 @@ function certCard(d, target) {
   if (prof && prof.dh && prof.dh !== 'none') chips.appendChild(noI18n(el('span', 'cchip', 'DH ' + prof.dh)));
   if (prof && prof.hsts) chips.appendChild(el('span', 'cchip', 'HSTS ' + Math.round(prof.hsts / 86400) + ' days'));
   if (prof && prof.pending) chips.appendChild(el('span', 'cchip warn', 'a request waits for its certificate'));
+  /* Automatic certificates beside it (1.0.170): who renews this one. */
+  var ac = d.acme || {};
+  if (ac.on) {
+    var acare = (ac.care || {})[target];
+    var ach = el('span', 'cchip' + (acare ? '' : ' dim'), acare ? 'renewed by ACME' : 'ACME leaves it alone');
+    explain(ach, acare ? 'Settings → Automatic certificates renews it before it runs out. Uploading one here, or making one self-signed, takes it out of ACME’s care - it is kept as it is.'
+      : 'Kept as it is: Automatic certificates does not replace it (Look after it there gives it to ACME).');
+    ach.style.cursor = 'pointer';
+    ach.onclick = function () { location.hash = '#settings/acme'; };
+    chips.appendChild(ach);
+    var ast = (ac.state || {})[target] || {};
+    if (acare && ast.ok === false && ast.said) chips.appendChild(el('span', 'cchip warn', 'the last order failed'));
+  }
   if (!prof && target !== 'vip') chips.appendChild(el('span', 'cchip dim', 'as install.sh made it'));
   card.appendChild(chips);
   /* Is it in place on the node? */
@@ -8270,14 +8327,21 @@ function certCard(d, target) {
   }
   if (d.may) {
     var tools = el('div', 'cert-tools');
+    /* Put in by hand while ACME renews it (1.0.170): said first - it leaves
+       ACME's care, or ACME would replace it at its next renewal. */
+    var byHand = function (go) {
+      if (!(d.acme && d.acme.on && (d.acme.care || {})[target])) { go(); return; }
+      confirmThen('ACME renews this certificate', 'One put in here by hand takes ' + webTargetWords(target)
+        + ' out of ACME’s care: it is kept as it is, not replaced at the next renewal. Settings → Automatic certificates → Look after it gives it back.', 'Go on',go, false);
+    };
     var up = cmdButton('Upload', 'upload', 'small');
-    up.onclick = function () { certUpload(target, prof); };
+    up.onclick = function () { byHand(function () { certUpload(target, prof); }); };
     tools.appendChild(up);
     var req = cmdButton(prof && prof.pending ? 'The waiting request' : 'Request (CSR)', 'list', 'small');
     req.onclick = function () { certRequest(target, prof); };
     tools.appendChild(req);
     var ss = cmdButton('Self-signed', 'key', 'small');
-    ss.onclick = function () { certSelf(target, d); };
+    ss.onclick = function () { byHand(function () { certSelf(target, d); }); };
     tools.appendChild(ss);
     var pol = cmdButton('TLS settings', 'gear', 'small');
     pol.onclick = function () { certPolicy(target, prof, d); };
@@ -13998,6 +14062,14 @@ function drawAcme() {
       var c = nodeCard({node: t.target === 'vip' ? 'the web address' : t.target, me: t.target === d.node}, dot,
         acme ? (st.ok === false ? 'the last try failed' : 'from the CA') : (t.how ? 'not from the CA' : 'no certificate'),
         acme ? (st.ok === false ? 'warn' : 'ok') : 'dim');
+      /* Who looks after it (1.0.170): ACME, or the certificate put in on
+         Certificates and TLS is kept as it is. */
+      var care = el('span', 'tag ' + (t.care && t.wanted ? 'info' : 'dim'),
+        !t.wanted ? 'not asked for' : (t.care ? 'ACME renews it' : 'its own certificate is kept'));
+      explain(care, !t.wanted ? 'For (Settings below) does not take this one in.'
+        : (t.care ? 'Renewed by ACME before it runs out. A certificate put in by hand on Certificates and TLS takes it out of ACME’s care.'
+          : 'The certificate put in on Certificates and TLS (uploaded, from a request, self-signed) stays: ACME does not replace it. Look after it, or Order it now, gives it to ACME.'));
+      c.querySelector('.pw-head') ? c.querySelector('.pw-head').appendChild(care) : c.appendChild(care);
       nodeBig(c, left !== null ? num(left) : '–', left !== null ? 'days left' : '');
       c.appendChild(netFacts([
         ['For', t.name || '', true], ['Issued by', t.issuer || '', true],
@@ -14011,7 +14083,8 @@ function drawAcme() {
       var row = el('div', 'btnrow');
       var probe = cmdButton('Try port 80', 'play', 'small');
       probe.hidden = d.challenge === 'dns-01';
-      explain(probe, 'http://' + (t.name || '?') + '/.well-known/acme-challenge/ asked from this node, as the CA will ask it - whether it reaches otp. A firewall in front of the servers may still stop the CA from outside.');
+      explain(probe, t.name ? 'http://' + t.name + '/.well-known/acme-challenge/ asked from this node, as the CA will ask it - whether it reaches otp. A firewall in front of the servers may still stop the CA from outside.'
+        : 'The name of this certificate is not known yet: give it in Settings below (This node’s DNS name, on that node) - or wait until that node says its own full name.');
       probe.disabled = !t.name;
       probe.onclick = function () {
         busy(probe, true);
@@ -14020,23 +14093,441 @@ function drawAcme() {
         }).catch(function (e) { busy(probe, false); oops(e); });
       };
       var order = cmdButton('Order it now', 'download', 'small primary');
-      var may = (d.mine || []).indexOf(t.target) >= 0;
-      order.disabled = !d.on || !may || (d.work && d.work.busy);
-      explain(order, may ? 'Ordered from the CA now, and put in by every node that serves it.' : (d.on ? 'Not ordered from this node - the web address\'s by the first node by name, a node\'s by that node; or not asked for (Settings below).' : 'Switch it on below first.'));
+      order.disabled = !d.on || !t.name || (d.work && d.work.busy);
+      explain(order, !d.on ? 'Switch it on below first.' : (!t.name ? 'Give its name first (Its name…).'
+        : 'Ordered from the CA now - from this node for any of them: the CA’s question and the certificate are kept in the database, and ' + (t.target === 'vip' ? 'every node' : t.target) + ' puts it in. ACME renews it from then on.'));
       order.onclick = function () {
-        busy(order, true);
-        api('acme', {action: 'order', target: t.target}).then(function (x) { busy(order, false); toast(x.message, 'good'); AC.d = x; drawAcme(); acPoll(true); })
-          .catch(function (e) { busy(order, false); oops(e); });
+        var go = function () {
+          busy(order, true);
+          api('acme', {action: 'order', target: t.target}).then(function (x) { busy(order, false); toast(x.message, 'good'); AC.d = x; drawAcme(); acPoll(true); })
+            .catch(function (e) { busy(order, false); oops(e); });
+        };
+        if (t.how && !acme) {
+          confirmThen('Replace the certificate of ' + (t.target === 'vip' ? 'the web address' : t.target) + '?',
+            'It has one put in on Certificates and TLS (' + t.how + (t.issuer ? ', ' + t.issuer.replace(/^CN=/, '').split(',')[0] : '') + '). The one from the CA takes its place once it comes, and ACME renews it from then on. Its TLS settings stay as they are.',
+            'Order it', go, false);
+        } else go();
       };
-      row.appendChild(probe); row.appendChild(order);
+      var cb = cmdButton(t.care ? 'Leave it alone' : 'Look after it', t.care ? 'cancel' : 'refresh', 'small');
+      cb.disabled = !t.wanted;
+      explain(cb, t.care ? 'ACME stops renewing this one; the certificate it has stays.'
+        : 'ACME renews this one from now on - at the next look (within the hour) if it is not from the CA yet.');
+      cb.onclick = function () {
+        busy(cb, true);
+        api('acme', {action: 'care', target: t.target, on: !t.care}).then(function (x) { AC.d = x; drawAcme(); })
+          .catch(function (e) { busy(cb, false); oops(e); });
+      };
+      /* Every certificate's name from here (1.0.170) - the other node's and
+         the web address's too. */
+      var nm = cmdButton('Its name…', 'edit', 'small');
+      explain(nm, t.target === 'vip' ? 'The DNS name of the web address - the one people type. It is the web address’s own (Settings → High availability) and its certificate is for it.'
+        : 'The DNS name the certificate of ' + t.target + ' is for. Empty: the full host name of ' + t.target + '.');
+      nm.onclick = function () {
+        askInModal(t.target === 'vip' ? 'The name of the web address' : 'The name of ' + t.target,
+          'The full DNS name its certificate is for - it goes into the certificate as its name (CN) and in its alternative names (SAN). The CA gives it only for a name that points at it (HTTP-01) or whose TXT record can be put in (DNS-01).',
+          [{label: 'DNS name', placeholder: t.target === 'vip' ? 'otp.example.cz' : t.target + '.example.cz', mono: true, value: t.name || '',
+            says: t.target === 'vip' ? 'Empty: the web address has no name.' : 'Empty: its full host name, as ' + t.target + ' says it.'}],
+          'Keep it', 'save', function (v, b) {
+            busy(b, true);
+            api('acme', {action: 'name', target: t.target, name: v[0].trim()}).then(function (x) {
+              closeModal(); AC.d = x; drawAcme(); toast('kept', 'good');
+            }).catch(function (e) { busy(b, false); oops(e); });
+          });
+      };
+      row.appendChild(probe); row.appendChild(order); row.appendChild(cb); row.appendChild(nm);
       c.appendChild(row);
       grid.appendChild(c);
     });
     host.appendChild(grid);
+    if (d.on && d.dns_guide) host.appendChild(acmeDnsGuide(d));
     if (d.account && d.account.kid) {
       var a = el('p', 'muted small', 'The account at the CA: ');
       a.appendChild(noI18n(el('span', 'mono', d.account.kid)));
       host.appendChild(a);
     }
   });
+}
+
+/* In your DNS (1.0.170): what each certificate asked for needs there - by the
+   way the CA checks it - the steps of the way chosen, and a check that looks
+   each record up from this node. */
+var AC_DNS = {at: 0, rows: null};
+var ACME_DNS_STEPS = {
+  'http-01': ['Each name points at the address that reaches port 80 of its node (or of the web address) - from the internet, or from your own CA.',
+              'Port 80 is open to it - the firewall in front of the servers, and Firewall and access here.',
+              'Try port 80 on each card, then Order it now.'],
+  desec: ['Sign up at desec.io (free) and confirm the mail.',
+          'Add a domain there: a free one - yourname.dedyn.io - or one of your own whose DNS is at deSEC.',
+          'Token management: make a token. Give it below as The deSEC API token, with The domain at deSEC, and save.',
+          'In the DNS of your own domain put the CNAME records below - once; they stay for every renewal.',
+          'Check DNS here, then Order it now. Renewals go by themselves.'],
+  cloudflare: ['A token at Cloudflare (My Profile → API Tokens) with Zone - DNS - Edit for the zone, given below.',
+               'Where the DNS of your domain is not at Cloudflare: a zone that is, as The TXT records go into, and the CNAME records below in your DNS.',
+               'Order it now. Renewals go by themselves.'],
+  rfc2136: ['A TSIG key the DNS server lets update the _acme-challenge records (tsig-keygen), given below with the server and the zone.',
+            'With The TXT records go into: the CNAME records below in your DNS, and the key allowed in that zone.',
+            'Order it now. Renewals go by themselves.'],
+  acmedns: ['Register at the acme-dns server (POST /register) - it gives a user, a key and a subdomain; give them below.',
+            'In your DNS put the CNAME records below - once.',
+            'Check DNS here, then Order it now. Renewals go by themselves.'],
+  manual: ['At every order - renewals too - the TXT record is shown here: put it in your DNS, then say It is in DNS.',
+           'Better: a CNAME once in your DNS to a zone otp can write to (deSEC is free) - then nothing is by hand any more.']
+};
+function acmeDnsGuide(d) {
+  var g = d.dns_guide;
+  var key = g.challenge === 'http-01' ? 'http-01' : g.dns;
+  var card = el('div', 'card full acme-dns');
+  var h = el('h2', '', 'In your DNS');
+  card.appendChild(h);
+  card.appendChild(el('p', 'note', g.challenge === 'http-01'
+    ? 'HTTP-01: the CA asks port 80 of each name - so each name points at the node, or the web address, and port 80 is open to the CA.'
+    : (g.dns === 'manual' ? 'DNS-01 by hand: the CA reads a TXT record you put in at every order.'
+      : 'DNS-01: the CA reads a TXT record otp puts in. What has to be in your DNS for it - once - is below.')));
+  var ol = el('ol', 'acme-steps');
+  (ACME_DNS_STEPS[key] || []).forEach(function (w) { ol.appendChild(el('li', '', w)); });
+  card.appendChild(ol);
+  var checked = AC_DNS.rows && Date.now() / 1000 - AC_DNS.at < 600 ? AC_DNS.rows : null;
+  var rows = (g.rows || []).map(function (r, i) {
+    var c = checked && checked[i] && checked[i].record === r.record ? checked[i] : {};
+    return Object.assign({}, r, {ok: c.ok, said: c.said});
+  });
+  var t = listTable(['Certificate', 'Record', 'Type', 'Points at / value', 'In DNS now'], rows, function (r) {
+    var tr = el('tr');
+    tr.appendChild(noI18n(el('td', '', r.target === 'vip' ? '' : r.target)));
+    if (r.target === 'vip') tr.firstChild.appendChild(el('span', '', 'the web address'));
+    var rec = el('td', 'mono small');
+    if (r.record) {
+      rec.appendChild(noI18n(el('span', '', r.record)));
+      var cp = iconButton('copy', 'Copy');
+      cp.onclick = function () { copyText(r.record, cp); };
+      rec.appendChild(cp);
+    } else rec.appendChild(el('span', 'muted', r.why || ''));
+    tr.appendChild(rec);
+    tr.appendChild(noI18n(el('td', 'mono small', r.type || '')));
+    var val = el('td', 'mono small');
+    if (r.type === 'CNAME' || (r.type === 'A' && r.value)) {
+      val.appendChild(noI18n(el('span', '', r.value)));
+      var cv = iconButton('copy', 'Copy');
+      cv.onclick = function () { copyText(r.value, cv); };
+      val.appendChild(cv);
+      if (r.type === 'A') val.appendChild(el('div', 'muted', 'or the public address in front of it'));
+    } else val.appendChild(el('span', 'muted', r.type === 'TXT' ? (r.value || r.why) : ''));
+    tr.appendChild(val);
+    var st = el('td', 'small');
+    if (r.check) {
+      if (r.ok === undefined) st.appendChild(el('span', 'muted', 'not checked yet'));
+      else {
+        var tag = el('span', 'tag ' + (r.ok ? 'ok' : 'warn'), r.ok ? 'there' : 'not yet');
+        st.appendChild(tag);
+        if (r.said && !r.ok) st.appendChild(el('div', 'muted', r.said));
+      }
+    } else st.appendChild(el('span', 'muted', r.type === 'TXT' && !r.value ? 'otp puts it in' : '–'));
+    tr.appendChild(st);
+    return tr;
+  });
+  card.appendChild(t);
+  var row = el('div', 'btnrow');
+  var chk = cmdButton('Check DNS', 'search', 'small');
+  explain(chk, 'Each record looked up from this node now, through its DNS servers - as the CA will look. A record just put in may take a while to show (its TTL).');
+  chk.disabled = !(g.rows || []).some(function (r) { return r.check; });
+  chk.onclick = function () {
+    busy(chk, true);
+    api('acme', {action: 'dns_check'}).then(function (x) {
+      AC_DNS = {at: Date.now() / 1000, rows: x.rows};
+      busy(chk, false); drawAcme();
+    }).catch(function (e) { busy(chk, false); oops(e); });
+  };
+  row.appendChild(chk);
+  if (checked) {
+    var when = el('span', 'muted small');
+    when.appendChild(el('span', '', 'checked'));
+    when.appendChild(document.createTextNode(' '));
+    when.appendChild(el('span', '', ago(AC_DNS.at)));
+    row.appendChild(when);
+  }
+  card.appendChild(row);
+  return card;
+}
+
+/* ==== Encryption to the database server (1.0.170) =============================
+   The daemon's own connection to its database, as a wizard like the link
+   between the databases: every node, in phases - the certificate of a
+   PostgreSQL on the node itself first, then every node's connection - and
+   back the other way round. Each node says how it went. */
+var DBT = {d: null, run: null, said: {}};
+function loadDbTls() {
+  if (!ADMIN) return;
+  api('dbtls').then(function (d) { DBT.d = d; drawDbTls(); }).catch(function () {});
+}
+function dbtKindWords(k) {
+  return {sqlite: 'a file on this machine', socket: 'over a Unix socket', local: 'PostgreSQL on this machine',
+          replicated: 'its own PostgreSQL, replicated', remote: 'a database server over the network'}[k] || k;
+}
+function dbtPoll(of, id, nodes, onEach) {
+  return new Promise(function (resolve) {
+    var left = nodes.slice(), began = Date.now(), got = {};
+    var timer = setInterval(function () {
+      api('dbtls', {action: 'result', id: id, of: of}).then(function (r) {
+        left = left.filter(function (n) {
+          var x = (r.nodes || {})[n];
+          if (x) { got[n] = x; if (onEach) onEach(n, x); return false; }
+          return true;
+        });
+        if (r.view) DBT.d = r.view;
+        if (!left.length || Date.now() - began > 150000) {
+          clearInterval(timer);
+          left.forEach(function (n) { got[n] = {ok: false, error: 'did not answer in two and a half minutes - is it running?'}; });
+          resolve(got);
+        }
+      }).catch(function () {});
+    }, 1000);
+  });
+}
+/* One phase on every node (or one): resolves with each node's answer. */
+function dbtPhase(body) {
+  return api('dbtls', body).then(function (x) {
+    return dbtPoll(body.action === 'probe' ? 'probe' : 'apply', x.id, x.nodes || [], function (n, r) {
+      DBT.said[n] = {phase: body.phase || 'probe', r: r};
+      drawDbTls();
+    });
+  });
+}
+function dbtFailed(got) {
+  return Object.keys(got).filter(function (n) { return got[n] && got[n].ok === false; });
+}
+/* The steps, one after the other; the first that fails on any node stops there. */
+function dbtSteps(steps, done) {
+  DBT.run = {steps: steps.map(function (s) { return s.label; }), at: 0};
+  DBT.said = {};
+  drawDbTls();
+  var i = 0;
+  var next = function () {
+    if (i >= steps.length) { DBT.run = null; toast('done on every node', 'good'); loadDbTls(); if (done) done(true); return; }
+    DBT.run.at = i;
+    drawDbTls();
+    dbtPhase(steps[i].body).then(function (got) {
+      var bad = dbtFailed(got);
+      if (bad.length) {
+        DBT.run = null;
+        toast('stopped on ' + bad.join(', ') + ' - what is in use there is as it was', 'bad');
+        loadDbTls();
+        if (done) done(false);
+        return;
+      }
+      i++; next();
+    }).catch(function (e) { DBT.run = null; oops(e); loadDbTls(); });
+  };
+  next();
+}
+function drawDbTls() {
+  var card = $('db-tls-card'), host = $('db-tls');
+  if (!card || !host || !DBT.d) return;
+  var d = DBT.d;
+  var kinds = {};
+  (d.nodes || []).forEach(function (n) { kinds[n.kind || d.kind] = 1; });
+  var net = (d.nodes || []).some(function (n) { return ['local', 'replicated', 'remote'].indexOf(n.kind || d.kind) >= 0; });
+  card.hidden = d.kind === 'sqlite' && !net;
+  if (card.hidden) return;
+  host.innerHTML = '';
+  var nodes = d.nodes || [];
+  var on = nodes.filter(function (n) { return n.mode; });
+  var checked = nodes.length && nodes.every(function (n) { return ['verify-ca', 'verify-full'].indexOf(n.mode) >= 0 && n.ssl; });
+  var rescued = nodes.filter(function (n) { return n.rescued; });
+  var running = !!DBT.run;
+  var box = el('div', 'hal ' + (running ? 'run' : (checked && !rescued.length ? 'good' : 'warn')));
+  var head = el('div', 'hal-head');
+  var ic = el('span', 'hal-ic');
+  ic.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+    + ICONS[running ? 'refresh' : (checked ? 'lock' : 'shield')] + '</svg>';
+  head.appendChild(ic);
+  var words = el('div', 'hal-words');
+  var title, sub;
+  if (running) {
+    title = 'Moving every node’s connection over…';
+    sub = 'Step ' + (DBT.run.at + 1) + ' of ' + DBT.run.steps.length + ': ' + DBT.run.steps[DBT.run.at] + '. RADIUS goes on all the time; this page follows it.';
+  } else if (d.kind === 'sqlite') {
+    title = 'Nothing to encrypt here: the database is a file on this machine';
+    sub = '';
+  } else if (d.kind === 'socket' && !on.length) {
+    title = 'Nothing goes over a network: the database is reached over a Unix socket';
+    sub = '';
+  } else if (rescued.length) {
+    title = 'The connection of ' + rescued.map(function (n) { return n.name; }).join(', ') + ' was moved back to no TLS by itself';
+    sub = 'It stopped working with TLS (' + (rescued[0].rescued.why || '') + ') - the database is on the same machine, so it went on without it and RADIUS kept answering. Put it right and encrypt it again.';
+  } else if (checked) {
+    title = 'Every node reaches its database encrypted and checked';
+    sub = d.kind === 'local' ? 'PostgreSQL here has a certificate from otp’s own authority, renewed by itself 45 days before it ends - and made again when the machine’s names change.'
+      : (d.kind === 'replicated' ? 'Each node checks its own PostgreSQL with the cluster’s authority (the link between the databases has it, High availability).'
+        : 'The server’s certificate is checked with the authority given.');
+  } else if (on.length) {
+    title = 'Encrypted, but whose certificate answers is not checked on ' + on.filter(function (n) { return n.mode === 'require'; }).map(function (n) { return n.name; }).join(', ');
+    sub = 'require encrypts but takes any certificate. verify-full also checks that it is the server’s.';
+  } else {
+    title = 'The connection to the database is not encrypted';
+    sub = d.kind === 'remote' ? 'Whoever is on the network between this node and the database server reads every row going over - the tokens sealed, but who signs in, when and from where - and can change them.'
+      : 'It does not leave the machine, so this matters less - but high security and the security check ask for it, and it is a few clicks.';
+  }
+  words.appendChild(el('b', '', title));
+  if (sub) words.appendChild(el('div', 'small', sub));
+  head.appendChild(words);
+  var acts = el('div', 'btnrow');
+  if (ME.role === 'fulladmin' && !running && d.kind !== 'sqlite') {
+    var replNotReady = nodes.some(function (n) { return n.kind === 'replicated'; }) && !d.link_done;
+    if (replNotReady && !on.length) {
+      var go = el('a', 'btn cmd small primary', 'High availability → Repair first');
+      go.href = '#settings/ha';
+      explain(go, 'Each node’s PostgreSQL gets its certificate from the cluster’s authority when the link between the databases is encrypted. Then this moves each node’s own connection over.');
+      acts.appendChild(go);
+    } else {
+      var b = cmdButton(checked ? 'Again…' : 'Encrypt…', checked ? 'refresh' : 'lock', checked ? 'small' : 'small primary');
+      b.id = 'dbt-on';
+      b.onclick = function () { dbtWizard(); };
+      acts.appendChild(b);
+      if ((d.servers || []).length && checked) {
+        var rn = cmdButton('Renew the certificate', 'refresh', 'small');
+        explain(rn, 'A new certificate for the PostgreSQL on ' + d.servers.join(', ') + ' now, not 45 days before the end. The connections go on.');
+        rn.onclick = function () { dbtSteps([{label: 'a new certificate', body: {action: 'apply', phase: 'server', renew: true}}]); };
+        acts.appendChild(rn);
+      }
+      if (on.length) {
+        var off = cmdButton('Switch it off…', 'cancel', 'small danger');
+        off.id = 'dbt-off';
+        off.disabled = !!d.hisec;
+        explain(off, d.hisec ? 'High security is on: the database is reached with TLS that checks its certificate (or make db:tls an exception there).'
+          : 'Every node back to no TLS, then otp’s certificates out of the PostgreSQLs on the nodes (ssl as postgresql.conf says).');
+        off.onclick = function () {
+          confirmThen('Switch the encryption to the database off?',
+            (d.kind === 'remote' ? '<b>Whoever is on the network between the nodes and the database server will read every row going over.</b><br>' : '')
+            + 'Every node’s connection moves back to no TLS first, then otp’s certificates leave the PostgreSQLs on the nodes. Nothing stops meanwhile.',
+            'Switch it off', function () {
+              dbtSteps([{label: 'every connection back to no TLS', body: {action: 'apply', phase: 'connect', mode: ''}},
+                        {label: 'otp’s certificates out of PostgreSQL', body: {action: 'apply', phase: 'server_off'}}]);
+            });
+        };
+        acts.appendChild(off);
+      }
+    }
+  }
+  head.appendChild(acts);
+  box.appendChild(head);
+  var list = el('div', 'hal-nodes');
+  nodes.forEach(function (n) {
+    var row = el('div', 'hal-node');
+    var nm = noI18n(el('b', 'hal-name', n.name));
+    row.appendChild(nm);
+    var steps = el('div', 'hal-steps');
+    var kind = n.kind || d.kind;
+    steps.appendChild(el('span', 'hal-step', dbtKindWords(kind)));
+    if (kind === 'local') steps.appendChild(el('span', 'hal-step ' + (n.server ? 'ok' : ''), 'its certificate'));
+    steps.appendChild(el('span', 'hal-step ' + (n.mode ? (n.ssl ? 'ok' : 'bad') : ''), n.mode ? n.mode : 'no TLS'));
+    if (n.ssl) steps.appendChild(noI18n(el('span', 'hal-step ok', (n.version || 'TLS') + (n.cipher ? ' · ' + n.cipher : ''))));
+    row.appendChild(steps);
+    var said = [];
+    if (n.ca_said) said.push('checked with ' + n.ca_said);
+    if (n.cert_end) said.push('its certificate ends ' + new Date(n.cert_end * 1000).toLocaleDateString(numLang()) + ' · in ' + num(Math.max(0, Math.round((n.cert_end * 1000 - Date.now()) / 86400000))) + ' days');
+    if (!n.alive && !n.me) said.push('not heard from');
+    var now = DBT.said[n.name];
+    var bad = false;
+    if (now && now.r) {
+      var r = now.r;
+      if (r.ok === false) { bad = true; said = [r.error || r.said || 'it did not go']; }
+      else if (r.said) said.unshift(r.said);
+      else if (r.ms !== undefined && now.phase === 'probe') said.unshift('it goes (' + r.ms + ' ms' + (r.version ? ', ' + r.version : '') + ')');
+    }
+    /* Each part its own, so each is said in the page's language. */
+    var sd = el('div', 'hal-said small ' + (bad ? 'bad' : 'muted'));
+    said.forEach(function (w, i) {
+      if (i) sd.appendChild(document.createTextNode(' · '));
+      sd.appendChild(el('span', '', w));
+    });
+    row.appendChild(sd);
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+  host.appendChild(box);
+}
+/* What to switch to: for a server elsewhere its authority and the mode; for a
+   PostgreSQL on the nodes nothing to choose - otp's (or the cluster's)
+   authority and verify-full. Tried on every node before anything moves. */
+function dbtWizard() {
+  var d = DBT.d;
+  var remote = (d.nodes || []).some(function (n) { return (n.kind || d.kind) === 'remote'; });
+  var locals = (d.nodes || []).some(function (n) { return (n.kind || d.kind) === 'local'; });
+  var mode, src, pem, out;
+  var on = (d.nodes || []).some(function (n) { return n.mode; });
+  modal('Encrypt the connection to the database', function (body) {
+    body.appendChild(el('p', 'note', 'Every node, one step after the other: ' + (locals ? 'the PostgreSQL on the node given a certificate from otp’s own authority (reloaded, not restarted), then ' : '')
+      + 'each node’s connection tried apart with the new settings and moved over - put back at once on any node where the first statement does not go.'));
+    if (remote) {
+      var g = el('div', 'formgrid');
+      var modes = [['verify-full', 'verify-full - encrypted, the certificate and its name checked']];
+      modes.push(['verify-ca', 'verify-ca - encrypted, the certificate checked, not its name']);
+      if (!d.hisec) modes.push(['require', 'require - encrypted, any certificate taken']);
+      mode = selectBox(modes, 'verify-full');
+      var far = (d.nodes || []).filter(function (n) { return (n.kind || d.kind) === 'remote' && n.host; }).map(function (n) { return n.host; });
+      far = far.filter(function (h, i) { return far.indexOf(h) === i; });
+      g.appendChild(formField('How', mode, 'verify-full needs a certificate that names the address the nodes reach the server by' + (far.length ? ' (' + far.join(', ') + ')' : '') + '.'));
+      var srcs = [['given', 'its authority, given here (PEM)'], ['system', 'the system’s authorities (a public CA)']];
+      if (d.own_ca) srcs.push(['otp', 'otp’s own authority (the server is a node’s PostgreSQL given one here)']);
+      if (on && d.mode && d.mode !== 'require') srcs.push(['keep', 'the one in use now']);
+      src = selectBox(srcs, d.own_ca && (d.servers || []).length ? 'otp' : 'given');
+      var sf = formField('The server’s authority', src, 'Who signed the database server’s certificate.');
+      g.appendChild(sf);
+      body.appendChild(g);
+      pem = el('textarea', 'mono');
+      pem.rows = 6;
+      pem.placeholder = '-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----';
+      var pf = formField('The authority (PEM)', pem, 'The CA certificate of the database server - from its administrator, or the server’s root.crt / ca.pem. Nothing secret.');
+      body.appendChild(pf);
+      var sync = function () {
+        var m = val(mode);
+        sf.hidden = m === 'require';
+        pf.hidden = m === 'require' || val(src) !== 'given';
+      };
+      [mode, src].forEach(function (x) { x.addEventListener('change', sync); });
+      sync();
+    }
+    out = el('div', 'dbt-try');
+    body.appendChild(out);
+  }, [{words: 'Close', close: true},
+      {words: 'Try it on every node', icon: 'play', go: function (b) { dbtTry(b); }},
+      {words: 'Switch over', cls: 'primary', icon: 'lock', go: function (b) {
+        var args = dbtArgs();
+        var steps = [];
+        if (locals || (d.servers || []).length) steps.push({label: 'the certificates of the PostgreSQLs on the nodes', body: {action: 'apply', phase: 'server'}});
+        steps.push({label: 'every node’s connection moved over', body: dbtObj({action: 'apply', phase: 'connect'}, args)});
+        closeModal();
+        dbtSteps(steps);
+      }}], 'large');
+  function val(x) { return x ? (x._get ? x._get() : x.value) : ''; }
+  function dbtArgs() {
+    if (!remote) return {mode: 'verify-full'};
+    var m = val(mode);
+    return {mode: m, ca_source: m === 'require' ? '' : val(src), ca_pem: m !== 'require' && val(src) === 'given' ? pem.value.trim() : ''};
+  }
+  function dbtObj(a, b) { Object.keys(b).forEach(function (k) { a[k] = b[k]; }); return a; }
+  function dbtTry(b) {
+    busy(b, true);
+    out.innerHTML = '';
+    var grid = nodeGrid();
+    out.appendChild(grid);
+    var cards = {};
+    api('dbtls', dbtObj({action: 'probe'}, dbtArgs())).then(function (x) {
+      (x.nodes || []).forEach(function (n) {
+        var c = nodeCard({node: n, me: !!(STATUS && n === STATUS.node)}, 'dim', 'being tried', 'info');
+        c.appendChild(el('p', 'muted small', 'Connecting to the database from ' + n + ' with the new settings…'));
+        grid.appendChild(c); cards[n] = c;
+      });
+      return dbtPoll('probe', x.id, x.nodes || [], function (n, r) {
+        var old = cards[n];
+        var good = r.ok !== false;
+        var c = nodeCard({node: n, me: !!(STATUS && n === STATUS.node)}, good ? 'ok' : 'crit', good ? (r.needs_server ? 'a certificate first' : 'it goes') : 'it does not go', good ? 'ok' : 'crit');
+        c.appendChild(netFacts([['Its database', dbtKindWords(r.kind)], ['The server speaks TLS', r.server_tls ? 'yes' : 'no'],
+                                ['Encrypted', r.ssl ? (r.version || 'yes') : (r.needs_server ? 'after its certificate' : 'no')],
+                                ['Cipher', r.cipher || '–', true], ['Took', r.ms !== undefined ? r.ms + ' ms' : '–']]));
+        if (!good || r.said) c.appendChild(nodeSaid({ok: good, error: good ? '' : (r.said || r.error), at: r.at || Date.now() / 1000}, good ? r.said : ''));
+        if (old) grid.replaceChild(c, old); else grid.appendChild(c);
+      });
+    }).then(function () { busy(b, false); }).catch(function (e) { busy(b, false); oops(e); });
+  }
 }

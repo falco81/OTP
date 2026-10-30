@@ -303,6 +303,13 @@ def hatls_off(store, by, here=True):
     certificates leave both PostgreSQLs (ssl as it was before otp)."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
+    using = dbtls_in_use_with_ha_ca(store)
+    if using:
+        # Their own connection checks PostgreSQL with the cluster's
+        # certificate (1.0.170): it would stop with it.
+        raise ValueError('the connection of %s to its own database is encrypted with the '
+                         'cluster\'s certificate - switch that off first (Settings → The database '
+                         '→ Encryption to the database server)' % ', '.join(using))
     now = time.time()
     w = {'at': now, 'by': by, 'from': node_name(), 'off': True}
     store.set_meta('hatls:want', json.dumps(w))
@@ -374,10 +381,17 @@ def _hatls_off_tick(store, w, st):
             st['said'] = 'waiting for %s to let this node in without TLS' % (pn or 'the other node')
             hatls_put(store, st)
             return
+        if CONFIG.get('db_tls') and str(CONFIG.get('db_tls_ca') or '') == str(HA_CA_FILE):
+            # Back to Database → TLS would be the cluster's authority, about to
+            # go (1.0.170): stopped here, nothing taken away yet.
+            _hatls_fail(store, st, 'this node\'s own connection to its database is encrypted with '
+                        'the cluster\'s certificate - switch that off first (Settings → The '
+                        'database), then switch TLS off again')
+            return
         write_file_settings({'ha_tls': '', 'ha_tls_ca': ''})
         CONFIG['ha_tls'], CONFIG['ha_tls_ca'] = '', ''
         sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
-        if store.db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)):
+        if store.db.value(SUB_HERE_SQL, (sub,)):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
@@ -750,7 +764,7 @@ def _hatls_tick(store):
         write_file_settings({'ha_tls': 'verify-full', 'ha_tls_ca': str(HA_CA_FILE)})
         CONFIG['ha_tls'], CONFIG['ha_tls_ca'] = 'verify-full', str(HA_CA_FILE)
         sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
-        if store.db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)):
+        if store.db.value(SUB_HERE_SQL, (sub,)):
             conninfo = ha_conninfo(CONFIG.get('ha_peer'), int(CONFIG.get('ha_peer_port') or 5432),
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))

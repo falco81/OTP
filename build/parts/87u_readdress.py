@@ -88,7 +88,7 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
             CONFIG['ha_peer'] = peer
             done.append('ha_peer = %s (was %s)' % (peer, had_peer))
             sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
-            if store.db.value('SELECT 1 FROM pg_subscription WHERE subname = ?', (sub,)):
+            if store.db.value(SUB_HERE_SQL, (sub,)):
                 conninfo = ha_conninfo(peer, int(CONFIG.get('ha_peer_port') or 5432),
                                        CONFIG.get('db_name'), CONFIG.get('db_user'),
                                        CONFIG.get('db_password'))
