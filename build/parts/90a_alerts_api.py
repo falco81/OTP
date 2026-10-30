@@ -20,7 +20,7 @@ def _alerts_do(h):
     s = h.me('fulladmin')
     b = h.body()
     act = str(b.get('action') or '')
-    lang = CONFIG.get('mail_lang') or 'cs'
+    lang = alerts_lang()
     try:
         if act == 'check':
             alerts_evaluate(h.store)
@@ -42,7 +42,7 @@ def _alerts_do(h):
                         if entry['ok'] else 'it waits in the outgoing mail: %s' % entry.get('said'))
         if act == 'preview':
             since, until = _report_span(str(b.get('period') or 'last'))
-            subject, page, _ = report_build(h.reader, since, until, lang)
+            subject, page, _ = report_build(h.reader, since, until, report_lang())
             return {'subject': subject, 'html': page}
         if act == 'report':
             since, until = _report_span(str(b.get('period') or 'last'))

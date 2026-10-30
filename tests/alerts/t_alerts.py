@@ -5,7 +5,7 @@
 import os, sys, json, time, subprocess, urllib.request, tempfile, atexit, glob, email, signal
 from email import policy
 
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.162'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.163'
 V = '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = tempfile.mkdtemp(prefix='otp-alerts-')
@@ -143,10 +143,13 @@ until(lambda: [x for x in mails()[n0:] if 'Back to normal' in x['subject'] or 'O
 # A test, the report.
 c, x = call('node1', '/api/alerts', {'action': 'test'}, S)
 ok('a test alert: %s %s' % (c, x.get('message')), c == 200 and until(lambda: [y for y in mails() if 'A test alert' in y['subject']], 20))
+SET('node1', {'alerts_lang': 'cs', 'report_lang': 'en'})
+c, x = call('node1', '/api/alerts', {'action': 'test'}, S)
+ok('the alerts in Czech: %s' % c, c == 200 and until(lambda: [y for y in mails() if 'Zkušební upozornění' in y['subject']], 20))
 c, x = call('node1', '/api/alerts', {'action': 'preview', 'period': 'last'}, S)
 c2, x2 = call('node1', '/api/alerts', {'action': 'preview', 'period': 'now'}, S)
 h = (x.get('html') or '') + (x2.get('html') or '')
-ok('the report looked at: %s' % x.get('subject'), c == 200 and 'report' in (x.get('subject') or ''))
+ok('the report looked at, in English as asked: %s' % x.get('subject'), c == 200 and 'Weekly report' in (x.get('subject') or ''))
 ok('... who was refused and why', 'novak' in h and 'svoboda' in h and 'wrong code' in h)
 ok('... the sign-ins by day, the servers', 'Sign-ins by day' in h and 'The servers' in h)
 c, x = call('node1', '/api/alerts', {'action': 'report', 'period': 'last'}, S)

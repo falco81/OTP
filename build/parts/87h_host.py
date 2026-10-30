@@ -598,3 +598,209 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
     if order and order[-1] == me:
         plan.update(state='done', ended=time.time())
         store.set_meta('host:osup:plan', json.dumps(plan))
+
+
+# -- the SSH server and the notices at sign-in (1.0.163) --------------------------------------
+# One wish for the whole cluster ('host:sshd:conf', with its hash); each node
+# puts it in through its root helper and says what it has in a row of its own
+# ('host:sshd:now:NODE'). A change is on trial on each node - its helper's
+# own timer puts the one before back - until Keep it ('host:sshd:keep').
+SSHD_DEFAULT = {'manage': False, 'permit_root': 'prohibit-password', 'password': True,
+                'port': 22, 'allow_users': [], 'tries': 4, 'notice': '', 'notice_ssh': False,
+                'notice_console': False, 'notice_motd': False, 'trial_min': 5}
+HOST_WORK.update(sshd=False, sshd_read=0.0)
+
+
+def sshd_conf(store):
+    c = dict(SSHD_DEFAULT)
+    c.update(_meta_json(store, 'host:sshd:conf') or {})
+    return c
+
+
+def sshd_checked_conf(b):
+    """The page's wish, made whole; the root helper checks it again."""
+    c = dict(SSHD_DEFAULT)
+    c['manage'] = bool(b.get('manage'))
+    if str(b.get('permit_root') or 'prohibit-password') not in ('yes', 'prohibit-password', 'no'):
+        raise ValueError('root signs in with: yes, prohibit-password or no')
+    c['permit_root'] = str(b.get('permit_root') or 'prohibit-password')
+    c['password'] = bool(b.get('password'))
+    try:
+        c['port'] = int(b.get('port') or 22)
+    except (TypeError, ValueError):
+        raise ValueError('the port is a number')
+    if not 1 <= c['port'] <= 65535:
+        raise ValueError('the port is 1 to 65535')
+    if c['port'] != 22 and c['port'] < 1024 and c['port'] in (25, 53, 80, 123, 443, 1812, 1813):
+        raise ValueError('port %d is another service\'s' % c['port'])
+    users = [u for u in re.split(r'[\s,]+', str(b.get('allow_users') or '')) if u] \
+        if not isinstance(b.get('allow_users'), list) else [str(u) for u in b['allow_users'] if u]
+    for u in users:
+        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}$', u):
+            raise ValueError('%r is not a user name' % u)
+    c['allow_users'] = users[:50]
+    try:
+        c['tries'] = max(1, min(10, int(b.get('tries') or 4)))
+        c['trial_min'] = max(0, min(60, int(b.get('trial_min') if b.get('trial_min') is not None
+                                            else 5)))
+    except (TypeError, ValueError):
+        raise ValueError('a number is wanted')
+    text = str(b.get('notice') or '').replace('\r\n', '\n')
+    if len(text) > 4000:
+        raise ValueError('the notice is 4000 characters at most')
+    if re.search(r'[\x00-\x08\x0b-\x1f\x7f]', text):
+        raise ValueError('no control characters in the notice')
+    c['notice'] = text
+    for k in ('notice_ssh', 'notice_console', 'notice_motd'):
+        c[k] = bool(b.get(k)) and bool(text.strip())
+    return c
+
+
+def sshd_hash(c, at):
+    """Each save a wish of its own: saved again, it is put in again - after
+    one went back, too."""
+    return hashlib.sha256((json.dumps({k: c.get(k) for k in SSHD_DEFAULT}, sort_keys=True) +
+                           repr(at)).encode()).hexdigest()[:24]
+
+
+def sshd_save(store, b, by):
+    c = sshd_checked_conf(b)
+    if c['manage'] and c['allow_users'] and c['permit_root'] != 'no' and \
+            not any(u in ('root', '*') for u in c['allow_users']) and not b.get('ok_no_root'):
+        raise ValueError('AllowUsers without root lets nobody in as root - add root to it, or '
+                         'let root not sign in at all')
+    at = time.time()
+    c.update(hash=sshd_hash(c, at), at=at, by=by)
+    store.set_meta('host:sshd:conf', json.dumps(c))
+    what = ('root %s, passwords %s, port %d%s' % (
+        c['permit_root'], 'on' if c['password'] else 'off', c['port'],
+        ', AllowUsers ' + ' '.join(c['allow_users']) if c['allow_users'] else '')
+        if c['manage'] else 'the SSH server as the system has it')
+    notes = [w for k, w in (('notice_ssh', 'SSH'), ('notice_console', 'console'),
+                            ('notice_motd', 'after sign-in')) if c[k]]
+    store.add_event('settings', '%s set the SSH server: %s%s%s' % (
+        by, what, '; the notice %s' % ', '.join(notes) if notes else '',
+        '; on trial for %d min on each node' % c['trial_min'] if c['manage'] and c['trial_min']
+        else ''), 'warn', who=by)
+    return c
+
+
+def sshd_now(store, n):
+    return _meta_json(store, 'host:sshd:now:' + n) or {}
+
+
+def sshd_view(store):
+    c = sshd_conf(store)
+    alive = host_alive(store)
+    nodes = []
+    for n in host_nodes(store):
+        now = sshd_now(store, n)
+        keys = len((_meta_json(store, 'host:sshkeys:now:' + n) or {}).get('keys') or [])
+        nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
+                      'now': now, 'keys': keys,
+                      'state': ('failed' if now.get('failed') == c.get('hash') and c.get('hash')
+                                else 'back' if now.get('back_hash') == c.get('hash') and c.get('hash')
+                                else 'trial' if (now.get('trial') or {}).get('until')
+                                else 'done' if now.get('hash') == c.get('hash') or not c.get('hash')
+                                else 'waiting')})
+    return {'conf': c, 'nodes': nodes, 'helper': WEB_DIR.is_dir()}
+
+
+def sshd_ports_open(store):
+    """The SSH ports the firewall lets in: the one wished for, and while a
+    change is not kept everywhere, the one each node has now too."""
+    c = sshd_conf(store)
+    ports = {int(c.get('port') or 22) if c.get('manage') else 22}
+    for n in host_nodes(store):
+        now = sshd_now(store, n)
+        if (now.get('trial') or {}).get('until') or now.get('hash') != c.get('hash'):
+            for p in ((now.get('values') or {}).get('port'), now.get('before_port')):
+                try:
+                    if p:
+                        ports.add(int(p))
+                except ValueError:
+                    pass
+    return sorted(ports)
+
+
+def sshd_tick(daemon):
+    store = daemon.store
+    me = node_name()
+    if HOST_WORK['sshd']:
+        return
+    c = sshd_conf(store)
+    now = sshd_now(store, me)
+    keep = _meta_json(store, 'host:sshd:keep') or {}
+    back = _meta_json(store, 'host:sshd:back') or {}
+    try:
+        gone = json.loads((WEB_DIR / 'sshd-back.json').read_text())
+    except (OSError, ValueError):
+        gone = {}
+    todo = []
+    if gone.get('at') and float(gone['at']) > float(now.get('back_at') or 0):
+        todo.append(('went-back', gone))
+    if c.get('hash') and c['hash'] != now.get('hash') and c['hash'] != now.get('failed') and \
+            c['hash'] != now.get('back_hash'):
+        todo.append(('apply', None))
+    if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
+            float(keep.get('at') or 0) > float(now.get('kept_at') or 0):
+        todo.append(('keep', None))
+    if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
+        todo.append(('back', back))
+    if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
+        return
+    HOST_WORK['sshd'] = True
+
+    def go():
+        row = dict(now)
+        try:
+            for what, extra in todo or [('read', None)]:
+                try:
+                    if what == 'went-back':
+                        row.update(back_at=extra['at'], back_hash=extra.get('hash') or '',
+                                   hash='', trial={})
+                        store.add_event('settings', 'the change of the SSH server went back on '
+                                        '%s (%s)' % (me, extra.get('why') or 'not kept in time'),
+                                        'warn')
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
+                    elif what == 'apply':
+                        got = root_ask('sshd.ask', 'sshd.json', {
+                            'do': 'apply', 'conf': c, 'trial_min': c.get('trial_min') or 0,
+                            'hash': c['hash'], 'id': secrets.token_hex(4)}, 90)
+                        row.update(hash=c['hash'], failed='', error='', applied_at=time.time(),
+                                   # Changed again while on trial: the helper
+                                   # goes back to the first, so its port stays open.
+                                   before_port=(row.get('before_port') if
+                                                (row.get('trial') or {}).get('until') else None)
+                                   or (row.get('values') or {}).get('port') or '22')
+                    elif what == 'keep':
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'keep'}, 60)
+                        row['kept_at'] = time.time()
+                        store.add_event('settings', 'the change of the SSH server is kept on %s'
+                                        % me, 'info')
+                    elif what == 'back':
+                        row['back_id'] = extra['id']
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'back', 'why': 'asked'}, 60)
+                        continue
+                    else:
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
+                    row.update(values=got.get('values') or {}, there=got.get('there'),
+                               dropins=got.get('dropins'), keys=got.get('keys'),
+                               trial=got.get('trial') or {}, selinux=got.get('selinux') or '')
+                    if what != 'apply':
+                        row['error'] = '' if what != 'read' else row.get('error', '')
+                except ValueError as e:
+                    if what == 'apply':
+                        row.update(failed=c['hash'], error=str(e)[:300])
+                        store.add_event('settings', 'the SSH server was not changed on %s: %s'
+                                        % (me, e), 'bad')
+                    else:
+                        row['error'] = str(e)[:300]
+            HOST_WORK['sshd_read'] = time.time()
+            row['at'] = time.time()
+            store.set_meta('host:sshd:now:' + me, json.dumps(row))
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('sshd', 'the SSH server: %s' % e, 'warn', every=600)
+        finally:
+            HOST_WORK['sshd'] = False
+    threading.Thread(target=go, name='otp-sshd', daemon=True).start()

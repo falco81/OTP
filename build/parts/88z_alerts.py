@@ -307,7 +307,7 @@ AL_COLORS = {'bad': ('#dc2626', '#fef2f2', '#991b1b'), 'warn': ('#d97706', '#fff
              'good': ('#16a34a', '#f0fdf4', '#166534'), 'info': ('#2563eb', '#eff6ff', '#1e3a8a')}
 
 
-def _al_page(lang, title, kicker, band, body, foot):
+def _al_page(lang, title, kicker, band, body, foot, width=640):
     """The frame every alert and report mail has: tables and styles on each
     element, as the token's mail - what every mail program draws the same."""
     return ('<!doctype html><html lang="%s"><head><meta charset="utf-8">'
@@ -316,8 +316,8 @@ def _al_page(lang, title, kicker, band, body, foot):
             '<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
             'bgcolor="#f3f4f6" style="background:#f3f4f6"><tr><td align="center" '
             'style="padding:24px 10px">'
-            '<table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" '
-            'bgcolor="#ffffff" style="max-width:640px;width:100%%;background:#ffffff;'
+            '<table role="presentation" width="%d" cellspacing="0" cellpadding="0" border="0" '
+            'bgcolor="#ffffff" style="max-width:%dpx;width:100%%;background:#ffffff;'
             'border-radius:14px;overflow:hidden;border:1px solid #e5e7eb">'
             '<tr><td bgcolor="%s" style="background:%s;padding:20px 28px;color:#ffffff;%s">'
             '<p style="margin:0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;'
@@ -326,8 +326,8 @@ def _al_page(lang, title, kicker, band, body, foot):
             '<tr><td style="padding:22px 28px;%s">%s</td></tr>'
             '<tr><td style="padding:14px 28px 22px;font-size:12px;color:#9ca3af;%s'
             'border-top:1px solid #f3f4f6">%s</td></tr></table></td></tr></table></body></html>'
-            % (lang, _h(title), AL_FONT, band, band, AL_FONT, _h(kicker), _h(title), AL_FONT,
-               body, AL_FONT, foot))
+            % (lang, _h(title), AL_FONT, width, width, band, band, AL_FONT, _h(kicker), _h(title),
+               AL_FONT, body, AL_FONT, foot))
 
 
 def _al_card(level, title, lines, link=''):
@@ -471,9 +471,17 @@ def alert_send(store, msg, to, kind, keys):
     return entry
 
 
+def alerts_lang():
+    return CONFIG.get('alerts_lang') or CONFIG.get('mail_lang') or 'cs'
+
+
+def report_lang():
+    return CONFIG.get('report_lang') or alerts_lang()
+
+
 def alerts_evaluate(store, force=False):
     """The alerts' turn: what is wrong compared with what was said, mailed."""
-    lang = CONFIG.get('mail_lang') or 'cs'
+    lang = alerts_lang()
     now = time.time()
     cur = alert_problems(store, lang)
     st = _alert_state(store)
@@ -579,7 +587,7 @@ def report_due(now=None):
 
 
 def _rep_table(head, rows, widths=None):
-    th = ''.join('<td style="padding:6px 8px;font-size:11.5px;font-weight:700;'
+    th = ''.join('<td style="padding:6px 10px;white-space:nowrap;font-size:11.5px;font-weight:700;'
                  'letter-spacing:.5px;text-transform:uppercase;color:#6b7280;'
                  'border-bottom:1px solid #e5e7eb;%s">%s</td>'
                  % ('text-align:right;' if i and str(h).startswith('#') else '', _h(str(h).lstrip('#')))
@@ -587,9 +595,9 @@ def _rep_table(head, rows, widths=None):
     trs = []
     for r in rows:
         trs.append('<tr>%s</tr>' % ''.join(
-            '<td style="padding:6px 8px;font-size:13px;color:#111827;border-bottom:1px solid '
-            '#f3f4f6;%s">%s</td>' % ('text-align:right;white-space:nowrap;' if i and
-                                     str(head[i]).startswith('#') else '', c)
+            '<td style="padding:6px 10px;font-size:13px;color:#111827;border-bottom:1px solid '
+            '#f3f4f6;white-space:nowrap;%s">%s</td>' % ('text-align:right;' if i and
+                                                         str(head[i]).startswith('#') else '', c)
             for i, c in enumerate(r)))
     if not rows:
         trs.append('<tr><td colspan="%d" style="padding:8px;font-size:13px;color:#9ca3af">–</td>'
@@ -731,11 +739,11 @@ def report_build(store, since, until, lang='cs'):
                             '#' + _al(lang, 'Přijato', 'Let in'), _al(lang, 'Poslední důvod', 'Last reason'),
                             '#' + _al(lang, 'Naposledy', 'Last')],
                            [[_h(u['who'] or '?'), str(u['n']), str(u['good']),
-                             '<span style="color:#6b7280">%s</span>' % _h(str(u['why'])[:80]),
+                             '<span style="color:#6b7280">%s</span>' % _h(str(u['why'])[:400]),
                              _h(_al_when(u['last']))] for u in users_bad]))
     body.append(_al_h(_al(lang, 'Proč odmítnuto', 'Why refused')))
     body.append(_rep_table([_al(lang, 'Důvod', 'Reason'), '#' + _al(lang, 'Kolikrát', 'Times')],
-                           [[_h(str(r.get('said') or '?')[:100]), str(r['n'])]
+                           [[_h(str(r.get('said') or '?')[:400]), str(r['n'])]
                             for r in ov.get('top_reasons') or []]))
     body.append(_al_h(_al(lang, 'Nejčastěji přihlášení', 'Signed in most')))
     body.append(_rep_table([_al(lang, 'Uživatel', 'User'), '#' + _al(lang, 'Přihlášení', 'Sign-ins'),
@@ -748,19 +756,19 @@ def report_build(store, since, until, lang='cs'):
                             for r in ov.get('top_clients') or []]))
     body.append(_al_h(_al(lang, 'Ochrana přihlášení', 'Sign-in protection')))
     body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Zablokováno', 'Blocked')],
-                           [[_h(_al_when(b['ts'])), _h(str(b['words'])[:160])] for b in blocks]))
+                           [[_h(_al_when(b['ts'])), _h(str(b['words'])[:600])] for b in blocks]))
     body.append(_al_h(_al(lang, 'Přihlášení do administrace', 'Sign-ins to the administration')))
     body.append('<p style="margin:0 0 6px;font-size:13.5px;color:#374151">%s</p>' % _h(
         _al(lang, 'Celkem %d záznamů, z toho %d neúspěšných nebo s varováním.',
             '%d in all, %d of them failed or warned about.') % (len(admins), len(adm_bad))))
     body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Co', 'What')],
-                           [[_h(_al_when(a['ts'])), _h(str(a['words'])[:160])] for a in adm_bad[:10]]))
+                           [[_h(_al_when(a['ts'])), _h(str(a['words'])[:600])] for a in adm_bad[:10]]))
     body.append(_al_h(_al(lang, 'Důležité události', 'Events worth a look')))
     body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Druh', 'Kind'), _al(lang, 'Co', 'What')],
                            [[_h(_al_when(e['ts'])), _h(e.get('kind') or ''),
                              '<span style="color:%s">%s</span>' % (
                                  AL_COLORS['bad' if e.get('level') == 'bad' else 'warn'][2],
-                                 _h(str(e.get('words') or '')[:180]))] for e in important]))
+                                 _h(str(e.get('words') or '')[:600]))] for e in important]))
     body.append('<p style="margin:4px 0 0;font-size:12.5px;color:#6b7280">%s %s</p>' % (
         _h(_al(lang, 'Všechny události podle druhu:', 'All events by kind:')),
         _h(', '.join('%s %d' % (k['kind'], int(k['n'])) for k in kinds) or '–')))
@@ -789,7 +797,9 @@ def report_build(store, since, until, lang='cs'):
     foot = _h(_al(lang, 'Poslal %s z %s, %s. Nastavení → Upozornění a reporty.',
                   'Sent by %s from %s, %s. Settings → Alerts and reports.')
               % (node_name(), site, _al_when(time.time())))
-    page = _al_page(lang, title, 'otp · ' + site, AL_COLORS['info'][2], ''.join(body), foot)
+    # Wide, and the tables' lines never wrapped or cut (1.0.163).
+    page = _al_page(lang, title, 'otp · ' + site, AL_COLORS['info'][2], ''.join(body), foot,
+                    width=1000)
     text = ['%s - %s' % (title, site), period, '',
             _al(lang, 'Přihlášení: %d, přijato %d, odmítnuto %d, lidí %d.',
                 'Sign-ins: %d, let in %d, refused %d, people %d.')
@@ -811,7 +821,7 @@ def report_build(store, since, until, lang='cs'):
 def report_send(store, since=None, until=None, to=None, by='', reader=None):
     """`reader`: the pages' own connection for the long counts (1.0.162) -
     never the one every sign-in shares."""
-    lang = CONFIG.get('mail_lang') or 'cs'
+    lang = report_lang()
     if since is None:
         since, until, _ = report_period()
     to = to or _alerts_to('report_to')

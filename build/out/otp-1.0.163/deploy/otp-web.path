@@ -11,6 +11,7 @@ PathExists=/var/lib/otp/web/ntp.ask
 PathExists=/var/lib/otp/web/console.ask
 PathExists=/var/lib/otp/web/sshkeys.ask
 PathExists=/var/lib/otp/web/osup.ask
+PathExists=/var/lib/otp/web/sshd.ask
 Unit=otp-web.service
 TriggerLimitIntervalSec=0
 

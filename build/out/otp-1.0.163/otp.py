@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.162'
+__version__ = '1.0.163'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -268,6 +268,8 @@ DEFAULTS = {
     'alerts_sms': 1,
     'alerts_guard': 0,
     'alerts_url': '',
+    'alerts_lang': '',
+    'report_lang': '',
     'report': 0,
     'report_to': '',
     'report_every': 'weekly',
@@ -375,6 +377,7 @@ TUNABLE = {
     'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
     'report_day': ('1', '2', '3', '4', '5', '6', '7'),
+    'alerts_lang': ('', 'cs', 'en'), 'report_lang': ('', 'cs', 'en'),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -432,6 +435,8 @@ CHOICE_WORDS = {
     'report_every': {'daily': 'every day, of the day before',
                      'weekly': 'every week, of the week before',
                      'monthly': 'every month, of the month before'},
+    'alerts_lang': {'': 'as the mails (Settings → Mail)', 'cs': 'Čeština', 'en': 'English'},
+    'report_lang': {'': 'as the alerts', 'cs': 'Čeština', 'en': 'English'},
     'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
                    '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
@@ -582,6 +587,8 @@ NAMES = {
     'alerts_sms': 'The SMS gateway failing',
     'alerts_guard': 'A source blocked for guessing',
     'alerts_url': 'The administration’s address in the mails',
+    'alerts_lang': 'Language of the alerts',
+    'report_lang': 'Language of the report',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -991,6 +998,8 @@ SAYS = {
               'administration, the events worth a look, the tokens, the servers and what is '
               'wrong now. One node of a cluster sends it.',
     'report_to': 'Addresses, separated by commas. Empty: the ones the alerts go to.',
+    'alerts_lang': 'Czech or English, for the alerts and the test. Empty: the language of the mails.',
+    'report_lang': 'Czech or English, for the report. Empty: the language of the alerts.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1074,7 +1083,7 @@ PANES = {
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
-               'alerts_url', 'report', 'report_to', 'report_every', 'report_day', 'report_at'],
+               'alerts_lang', 'alerts_url', 'report', 'report_to', 'report_lang', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
               'code_send_window_min', 'code_lang', 'code_mail_fmt', 'sms_mode', 'sms_url', 'sms_method',
               'sms_body', 'sms_headers', 'sms_token', 'sms_spool_dir', 'sms_prefix',
@@ -1123,6 +1132,7 @@ ONLY_WHEN = {
     'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
     'report_to': ['report', '1'], 'report_every': ['report', '1'],
+    'alerts_lang': ['alerts', '1'], 'report_lang': ['report', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -13258,6 +13268,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
+                    sshd_tick(self)             # the SSH server and the notices (1.0.163)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('sshd-tick', 'the SSH server: %s' % e, 'warn', every=600)
+                try:
                     alerts_tick(self)           # alerts by mail, the report (1.0.162)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('alerts-tick', 'the alerts: %s' % e, 'warn', every=600)
@@ -22053,7 +22067,10 @@ def fw_auto(store, node):
     v = vip_conf(store)
     out = [{'key': 'ssh', 'title': 'SSH', 'why': 'to manage the machine - turned off, '
             'take care to keep a rule of your own for it',
-            'rules': [{'family': f, 'proto': 'tcp', 'port': '22', 'source': ''} for f in (4, 6)]},
+            # The port Settings - SSH server says, and while a change is on
+            # trial the one before as well (1.0.163).
+            'rules': [{'family': f, 'proto': 'tcp', 'port': str(p), 'source': ''}
+                      for p in sshd_ports_open(store) for f in (4, 6)]},
            {'key': 'icmp', 'title': 'ICMP / ICMPv6', 'why': 'ping, and IPv6 cannot work without '
             'ICMPv6 (neighbour discovery)',
             'rules': [{'family': f, 'proto': 'icmp', 'port': '', 'source': ''} for f in (4, 6)]},
@@ -25507,6 +25524,212 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
         plan.update(state='done', ended=time.time())
         store.set_meta('host:osup:plan', json.dumps(plan))
 
+
+# -- the SSH server and the notices at sign-in (1.0.163) --------------------------------------
+# One wish for the whole cluster ('host:sshd:conf', with its hash); each node
+# puts it in through its root helper and says what it has in a row of its own
+# ('host:sshd:now:NODE'). A change is on trial on each node - its helper's
+# own timer puts the one before back - until Keep it ('host:sshd:keep').
+SSHD_DEFAULT = {'manage': False, 'permit_root': 'prohibit-password', 'password': True,
+                'port': 22, 'allow_users': [], 'tries': 4, 'notice': '', 'notice_ssh': False,
+                'notice_console': False, 'notice_motd': False, 'trial_min': 5}
+HOST_WORK.update(sshd=False, sshd_read=0.0)
+
+
+def sshd_conf(store):
+    c = dict(SSHD_DEFAULT)
+    c.update(_meta_json(store, 'host:sshd:conf') or {})
+    return c
+
+
+def sshd_checked_conf(b):
+    """The page's wish, made whole; the root helper checks it again."""
+    c = dict(SSHD_DEFAULT)
+    c['manage'] = bool(b.get('manage'))
+    if str(b.get('permit_root') or 'prohibit-password') not in ('yes', 'prohibit-password', 'no'):
+        raise ValueError('root signs in with: yes, prohibit-password or no')
+    c['permit_root'] = str(b.get('permit_root') or 'prohibit-password')
+    c['password'] = bool(b.get('password'))
+    try:
+        c['port'] = int(b.get('port') or 22)
+    except (TypeError, ValueError):
+        raise ValueError('the port is a number')
+    if not 1 <= c['port'] <= 65535:
+        raise ValueError('the port is 1 to 65535')
+    if c['port'] != 22 and c['port'] < 1024 and c['port'] in (25, 53, 80, 123, 443, 1812, 1813):
+        raise ValueError('port %d is another service\'s' % c['port'])
+    users = [u for u in re.split(r'[\s,]+', str(b.get('allow_users') or '')) if u] \
+        if not isinstance(b.get('allow_users'), list) else [str(u) for u in b['allow_users'] if u]
+    for u in users:
+        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}$', u):
+            raise ValueError('%r is not a user name' % u)
+    c['allow_users'] = users[:50]
+    try:
+        c['tries'] = max(1, min(10, int(b.get('tries') or 4)))
+        c['trial_min'] = max(0, min(60, int(b.get('trial_min') if b.get('trial_min') is not None
+                                            else 5)))
+    except (TypeError, ValueError):
+        raise ValueError('a number is wanted')
+    text = str(b.get('notice') or '').replace('\r\n', '\n')
+    if len(text) > 4000:
+        raise ValueError('the notice is 4000 characters at most')
+    if re.search(r'[\x00-\x08\x0b-\x1f\x7f]', text):
+        raise ValueError('no control characters in the notice')
+    c['notice'] = text
+    for k in ('notice_ssh', 'notice_console', 'notice_motd'):
+        c[k] = bool(b.get(k)) and bool(text.strip())
+    return c
+
+
+def sshd_hash(c, at):
+    """Each save a wish of its own: saved again, it is put in again - after
+    one went back, too."""
+    return hashlib.sha256((json.dumps({k: c.get(k) for k in SSHD_DEFAULT}, sort_keys=True) +
+                           repr(at)).encode()).hexdigest()[:24]
+
+
+def sshd_save(store, b, by):
+    c = sshd_checked_conf(b)
+    if c['manage'] and c['allow_users'] and c['permit_root'] != 'no' and \
+            not any(u in ('root', '*') for u in c['allow_users']) and not b.get('ok_no_root'):
+        raise ValueError('AllowUsers without root lets nobody in as root - add root to it, or '
+                         'let root not sign in at all')
+    at = time.time()
+    c.update(hash=sshd_hash(c, at), at=at, by=by)
+    store.set_meta('host:sshd:conf', json.dumps(c))
+    what = ('root %s, passwords %s, port %d%s' % (
+        c['permit_root'], 'on' if c['password'] else 'off', c['port'],
+        ', AllowUsers ' + ' '.join(c['allow_users']) if c['allow_users'] else '')
+        if c['manage'] else 'the SSH server as the system has it')
+    notes = [w for k, w in (('notice_ssh', 'SSH'), ('notice_console', 'console'),
+                            ('notice_motd', 'after sign-in')) if c[k]]
+    store.add_event('settings', '%s set the SSH server: %s%s%s' % (
+        by, what, '; the notice %s' % ', '.join(notes) if notes else '',
+        '; on trial for %d min on each node' % c['trial_min'] if c['manage'] and c['trial_min']
+        else ''), 'warn', who=by)
+    return c
+
+
+def sshd_now(store, n):
+    return _meta_json(store, 'host:sshd:now:' + n) or {}
+
+
+def sshd_view(store):
+    c = sshd_conf(store)
+    alive = host_alive(store)
+    nodes = []
+    for n in host_nodes(store):
+        now = sshd_now(store, n)
+        keys = len((_meta_json(store, 'host:sshkeys:now:' + n) or {}).get('keys') or [])
+        nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
+                      'now': now, 'keys': keys,
+                      'state': ('failed' if now.get('failed') == c.get('hash') and c.get('hash')
+                                else 'back' if now.get('back_hash') == c.get('hash') and c.get('hash')
+                                else 'trial' if (now.get('trial') or {}).get('until')
+                                else 'done' if now.get('hash') == c.get('hash') or not c.get('hash')
+                                else 'waiting')})
+    return {'conf': c, 'nodes': nodes, 'helper': WEB_DIR.is_dir()}
+
+
+def sshd_ports_open(store):
+    """The SSH ports the firewall lets in: the one wished for, and while a
+    change is not kept everywhere, the one each node has now too."""
+    c = sshd_conf(store)
+    ports = {int(c.get('port') or 22) if c.get('manage') else 22}
+    for n in host_nodes(store):
+        now = sshd_now(store, n)
+        if (now.get('trial') or {}).get('until') or now.get('hash') != c.get('hash'):
+            for p in ((now.get('values') or {}).get('port'), now.get('before_port')):
+                try:
+                    if p:
+                        ports.add(int(p))
+                except ValueError:
+                    pass
+    return sorted(ports)
+
+
+def sshd_tick(daemon):
+    store = daemon.store
+    me = node_name()
+    if HOST_WORK['sshd']:
+        return
+    c = sshd_conf(store)
+    now = sshd_now(store, me)
+    keep = _meta_json(store, 'host:sshd:keep') or {}
+    back = _meta_json(store, 'host:sshd:back') or {}
+    try:
+        gone = json.loads((WEB_DIR / 'sshd-back.json').read_text())
+    except (OSError, ValueError):
+        gone = {}
+    todo = []
+    if gone.get('at') and float(gone['at']) > float(now.get('back_at') or 0):
+        todo.append(('went-back', gone))
+    if c.get('hash') and c['hash'] != now.get('hash') and c['hash'] != now.get('failed') and \
+            c['hash'] != now.get('back_hash'):
+        todo.append(('apply', None))
+    if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
+            float(keep.get('at') or 0) > float(now.get('kept_at') or 0):
+        todo.append(('keep', None))
+    if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
+        todo.append(('back', back))
+    if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
+        return
+    HOST_WORK['sshd'] = True
+
+    def go():
+        row = dict(now)
+        try:
+            for what, extra in todo or [('read', None)]:
+                try:
+                    if what == 'went-back':
+                        row.update(back_at=extra['at'], back_hash=extra.get('hash') or '',
+                                   hash='', trial={})
+                        store.add_event('settings', 'the change of the SSH server went back on '
+                                        '%s (%s)' % (me, extra.get('why') or 'not kept in time'),
+                                        'warn')
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
+                    elif what == 'apply':
+                        got = root_ask('sshd.ask', 'sshd.json', {
+                            'do': 'apply', 'conf': c, 'trial_min': c.get('trial_min') or 0,
+                            'hash': c['hash'], 'id': secrets.token_hex(4)}, 90)
+                        row.update(hash=c['hash'], failed='', error='', applied_at=time.time(),
+                                   # Changed again while on trial: the helper
+                                   # goes back to the first, so its port stays open.
+                                   before_port=(row.get('before_port') if
+                                                (row.get('trial') or {}).get('until') else None)
+                                   or (row.get('values') or {}).get('port') or '22')
+                    elif what == 'keep':
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'keep'}, 60)
+                        row['kept_at'] = time.time()
+                        store.add_event('settings', 'the change of the SSH server is kept on %s'
+                                        % me, 'info')
+                    elif what == 'back':
+                        row['back_id'] = extra['id']
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'back', 'why': 'asked'}, 60)
+                        continue
+                    else:
+                        got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
+                    row.update(values=got.get('values') or {}, there=got.get('there'),
+                               dropins=got.get('dropins'), keys=got.get('keys'),
+                               trial=got.get('trial') or {}, selinux=got.get('selinux') or '')
+                    if what != 'apply':
+                        row['error'] = '' if what != 'read' else row.get('error', '')
+                except ValueError as e:
+                    if what == 'apply':
+                        row.update(failed=c['hash'], error=str(e)[:300])
+                        store.add_event('settings', 'the SSH server was not changed on %s: %s'
+                                        % (me, e), 'bad')
+                    else:
+                        row['error'] = str(e)[:300]
+            HOST_WORK['sshd_read'] = time.time()
+            row['at'] = time.time()
+            store.set_meta('host:sshd:now:' + me, json.dumps(row))
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('sshd', 'the SSH server: %s' % e, 'warn', every=600)
+        finally:
+            HOST_WORK['sshd'] = False
+    threading.Thread(target=go, name='otp-sshd', daemon=True).start()
+
 # ---- alerts by mail, and the report (1.0.162) ------------------------------------------
 # Each node writes what only it can see into a row of its own every minute
 # ('host:health:NODE': its disks, the directories it cannot reach, the SMS
@@ -25815,7 +26038,7 @@ AL_COLORS = {'bad': ('#dc2626', '#fef2f2', '#991b1b'), 'warn': ('#d97706', '#fff
              'good': ('#16a34a', '#f0fdf4', '#166534'), 'info': ('#2563eb', '#eff6ff', '#1e3a8a')}
 
 
-def _al_page(lang, title, kicker, band, body, foot):
+def _al_page(lang, title, kicker, band, body, foot, width=640):
     """The frame every alert and report mail has: tables and styles on each
     element, as the token's mail - what every mail program draws the same."""
     return ('<!doctype html><html lang="%s"><head><meta charset="utf-8">'
@@ -25824,8 +26047,8 @@ def _al_page(lang, title, kicker, band, body, foot):
             '<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
             'bgcolor="#f3f4f6" style="background:#f3f4f6"><tr><td align="center" '
             'style="padding:24px 10px">'
-            '<table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" '
-            'bgcolor="#ffffff" style="max-width:640px;width:100%%;background:#ffffff;'
+            '<table role="presentation" width="%d" cellspacing="0" cellpadding="0" border="0" '
+            'bgcolor="#ffffff" style="max-width:%dpx;width:100%%;background:#ffffff;'
             'border-radius:14px;overflow:hidden;border:1px solid #e5e7eb">'
             '<tr><td bgcolor="%s" style="background:%s;padding:20px 28px;color:#ffffff;%s">'
             '<p style="margin:0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;'
@@ -25834,8 +26057,8 @@ def _al_page(lang, title, kicker, band, body, foot):
             '<tr><td style="padding:22px 28px;%s">%s</td></tr>'
             '<tr><td style="padding:14px 28px 22px;font-size:12px;color:#9ca3af;%s'
             'border-top:1px solid #f3f4f6">%s</td></tr></table></td></tr></table></body></html>'
-            % (lang, _h(title), AL_FONT, band, band, AL_FONT, _h(kicker), _h(title), AL_FONT,
-               body, AL_FONT, foot))
+            % (lang, _h(title), AL_FONT, width, width, band, band, AL_FONT, _h(kicker), _h(title),
+               AL_FONT, body, AL_FONT, foot))
 
 
 def _al_card(level, title, lines, link=''):
@@ -25979,9 +26202,17 @@ def alert_send(store, msg, to, kind, keys):
     return entry
 
 
+def alerts_lang():
+    return CONFIG.get('alerts_lang') or CONFIG.get('mail_lang') or 'cs'
+
+
+def report_lang():
+    return CONFIG.get('report_lang') or alerts_lang()
+
+
 def alerts_evaluate(store, force=False):
     """The alerts' turn: what is wrong compared with what was said, mailed."""
-    lang = CONFIG.get('mail_lang') or 'cs'
+    lang = alerts_lang()
     now = time.time()
     cur = alert_problems(store, lang)
     st = _alert_state(store)
@@ -26087,7 +26318,7 @@ def report_due(now=None):
 
 
 def _rep_table(head, rows, widths=None):
-    th = ''.join('<td style="padding:6px 8px;font-size:11.5px;font-weight:700;'
+    th = ''.join('<td style="padding:6px 10px;white-space:nowrap;font-size:11.5px;font-weight:700;'
                  'letter-spacing:.5px;text-transform:uppercase;color:#6b7280;'
                  'border-bottom:1px solid #e5e7eb;%s">%s</td>'
                  % ('text-align:right;' if i and str(h).startswith('#') else '', _h(str(h).lstrip('#')))
@@ -26095,9 +26326,9 @@ def _rep_table(head, rows, widths=None):
     trs = []
     for r in rows:
         trs.append('<tr>%s</tr>' % ''.join(
-            '<td style="padding:6px 8px;font-size:13px;color:#111827;border-bottom:1px solid '
-            '#f3f4f6;%s">%s</td>' % ('text-align:right;white-space:nowrap;' if i and
-                                     str(head[i]).startswith('#') else '', c)
+            '<td style="padding:6px 10px;font-size:13px;color:#111827;border-bottom:1px solid '
+            '#f3f4f6;white-space:nowrap;%s">%s</td>' % ('text-align:right;' if i and
+                                                         str(head[i]).startswith('#') else '', c)
             for i, c in enumerate(r)))
     if not rows:
         trs.append('<tr><td colspan="%d" style="padding:8px;font-size:13px;color:#9ca3af">–</td>'
@@ -26239,11 +26470,11 @@ def report_build(store, since, until, lang='cs'):
                             '#' + _al(lang, 'Přijato', 'Let in'), _al(lang, 'Poslední důvod', 'Last reason'),
                             '#' + _al(lang, 'Naposledy', 'Last')],
                            [[_h(u['who'] or '?'), str(u['n']), str(u['good']),
-                             '<span style="color:#6b7280">%s</span>' % _h(str(u['why'])[:80]),
+                             '<span style="color:#6b7280">%s</span>' % _h(str(u['why'])[:400]),
                              _h(_al_when(u['last']))] for u in users_bad]))
     body.append(_al_h(_al(lang, 'Proč odmítnuto', 'Why refused')))
     body.append(_rep_table([_al(lang, 'Důvod', 'Reason'), '#' + _al(lang, 'Kolikrát', 'Times')],
-                           [[_h(str(r.get('said') or '?')[:100]), str(r['n'])]
+                           [[_h(str(r.get('said') or '?')[:400]), str(r['n'])]
                             for r in ov.get('top_reasons') or []]))
     body.append(_al_h(_al(lang, 'Nejčastěji přihlášení', 'Signed in most')))
     body.append(_rep_table([_al(lang, 'Uživatel', 'User'), '#' + _al(lang, 'Přihlášení', 'Sign-ins'),
@@ -26256,19 +26487,19 @@ def report_build(store, since, until, lang='cs'):
                             for r in ov.get('top_clients') or []]))
     body.append(_al_h(_al(lang, 'Ochrana přihlášení', 'Sign-in protection')))
     body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Zablokováno', 'Blocked')],
-                           [[_h(_al_when(b['ts'])), _h(str(b['words'])[:160])] for b in blocks]))
+                           [[_h(_al_when(b['ts'])), _h(str(b['words'])[:600])] for b in blocks]))
     body.append(_al_h(_al(lang, 'Přihlášení do administrace', 'Sign-ins to the administration')))
     body.append('<p style="margin:0 0 6px;font-size:13.5px;color:#374151">%s</p>' % _h(
         _al(lang, 'Celkem %d záznamů, z toho %d neúspěšných nebo s varováním.',
             '%d in all, %d of them failed or warned about.') % (len(admins), len(adm_bad))))
     body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Co', 'What')],
-                           [[_h(_al_when(a['ts'])), _h(str(a['words'])[:160])] for a in adm_bad[:10]]))
+                           [[_h(_al_when(a['ts'])), _h(str(a['words'])[:600])] for a in adm_bad[:10]]))
     body.append(_al_h(_al(lang, 'Důležité události', 'Events worth a look')))
     body.append(_rep_table([_al(lang, 'Kdy', 'When'), _al(lang, 'Druh', 'Kind'), _al(lang, 'Co', 'What')],
                            [[_h(_al_when(e['ts'])), _h(e.get('kind') or ''),
                              '<span style="color:%s">%s</span>' % (
                                  AL_COLORS['bad' if e.get('level') == 'bad' else 'warn'][2],
-                                 _h(str(e.get('words') or '')[:180]))] for e in important]))
+                                 _h(str(e.get('words') or '')[:600]))] for e in important]))
     body.append('<p style="margin:4px 0 0;font-size:12.5px;color:#6b7280">%s %s</p>' % (
         _h(_al(lang, 'Všechny události podle druhu:', 'All events by kind:')),
         _h(', '.join('%s %d' % (k['kind'], int(k['n'])) for k in kinds) or '–')))
@@ -26297,7 +26528,9 @@ def report_build(store, since, until, lang='cs'):
     foot = _h(_al(lang, 'Poslal %s z %s, %s. Nastavení → Upozornění a reporty.',
                   'Sent by %s from %s, %s. Settings → Alerts and reports.')
               % (node_name(), site, _al_when(time.time())))
-    page = _al_page(lang, title, 'otp · ' + site, AL_COLORS['info'][2], ''.join(body), foot)
+    # Wide, and the tables' lines never wrapped or cut (1.0.163).
+    page = _al_page(lang, title, 'otp · ' + site, AL_COLORS['info'][2], ''.join(body), foot,
+                    width=1000)
     text = ['%s - %s' % (title, site), period, '',
             _al(lang, 'Přihlášení: %d, přijato %d, odmítnuto %d, lidí %d.',
                 'Sign-ins: %d, let in %d, refused %d, people %d.')
@@ -26319,7 +26552,7 @@ def report_build(store, since, until, lang='cs'):
 def report_send(store, since=None, until=None, to=None, by='', reader=None):
     """`reader`: the pages' own connection for the long counts (1.0.162) -
     never the one every sign-in shares."""
-    lang = CONFIG.get('mail_lang') or 'cs'
+    lang = report_lang()
     if since is None:
         since, until, _ = report_period()
     to = to or _alerts_to('report_to')
@@ -33484,6 +33717,44 @@ def _osup_do(h):
     raise ApiError(400, 'no such thing to do')
 
 
+@route('GET', '/api/sshd')
+def _sshd(h):
+    h.me('fulladmin')
+    return sshd_view(h.store)
+
+
+@route('POST', '/api/sshd')
+def _sshd_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    try:
+        if act == 'save':
+            c = sshd_save(h.store, b.get('conf') or {}, s['name'])
+            return dict(sshd_view(h.store), message='put in on every node within a few seconds' +
+                        (' - on trial: Keep it within %d min, or it goes back' % c['trial_min']
+                         if c['manage'] and c['trial_min'] else ''))
+        if act == 'keep':
+            c = sshd_conf(h.store)
+            h.store.set_meta('host:sshd:keep', json.dumps({'hash': c.get('hash'), 'at': time.time(),
+                                                           'by': s['name']}))
+            h.store.add_event('settings', '%s kept the change of the SSH server' % s['name'],
+                              'info', who=s['name'])
+            return dict(sshd_view(h.store), message='kept')
+        if act == 'back':
+            h.store.set_meta('host:sshd:back', json.dumps({'id': secrets.token_hex(6),
+                                                           'at': time.time(), 'by': s['name']}))
+            h.store.add_event('settings', '%s put the SSH server back as it was' % s['name'],
+                              'warn', who=s['name'])
+            return dict(sshd_view(h.store), message='it goes back within a few seconds')
+        if act == 'refresh':
+            HOST_WORK['sshd_read'] = 0.0
+            return sshd_view(h.store)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    raise ApiError(400, 'no such thing to do')
+
+
 # ---- alerts and the report on the pages (1.0.162) --------------------------------------
 def _report_span(which):
     """The period asked for: the last one ended, or the one going on so far."""
@@ -33504,7 +33775,7 @@ def _alerts_do(h):
     s = h.me('fulladmin')
     b = h.body()
     act = str(b.get('action') or '')
-    lang = CONFIG.get('mail_lang') or 'cs'
+    lang = alerts_lang()
     try:
         if act == 'check':
             alerts_evaluate(h.store)
@@ -33526,7 +33797,7 @@ def _alerts_do(h):
                         if entry['ok'] else 'it waits in the outgoing mail: %s' % entry.get('said'))
         if act == 'preview':
             since, until = _report_span(str(b.get('period') or 'last'))
-            subject, page, _ = report_build(h.reader, since, until, lang)
+            subject, page, _ = report_build(h.reader, since, until, report_lang())
             return {'subject': subject, 'html': page}
         if act == 'report':
             since, until = _report_span(str(b.get('period') or 'last'))

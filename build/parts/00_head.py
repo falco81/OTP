@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.162'
+__version__ = '1.0.163'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -268,6 +268,8 @@ DEFAULTS = {
     'alerts_sms': 1,
     'alerts_guard': 0,
     'alerts_url': '',
+    'alerts_lang': '',
+    'report_lang': '',
     'report': 0,
     'report_to': '',
     'report_every': 'weekly',
@@ -375,6 +377,7 @@ TUNABLE = {
     'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
     'report_day': ('1', '2', '3', '4', '5', '6', '7'),
+    'alerts_lang': ('', 'cs', 'en'), 'report_lang': ('', 'cs', 'en'),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -432,6 +435,8 @@ CHOICE_WORDS = {
     'report_every': {'daily': 'every day, of the day before',
                      'weekly': 'every week, of the week before',
                      'monthly': 'every month, of the month before'},
+    'alerts_lang': {'': 'as the mails (Settings → Mail)', 'cs': 'Čeština', 'en': 'English'},
+    'report_lang': {'': 'as the alerts', 'cs': 'Čeština', 'en': 'English'},
     'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
                    '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
@@ -582,6 +587,8 @@ NAMES = {
     'alerts_sms': 'The SMS gateway failing',
     'alerts_guard': 'A source blocked for guessing',
     'alerts_url': 'The administration’s address in the mails',
+    'alerts_lang': 'Language of the alerts',
+    'report_lang': 'Language of the report',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -991,6 +998,8 @@ SAYS = {
               'administration, the events worth a look, the tokens, the servers and what is '
               'wrong now. One node of a cluster sends it.',
     'report_to': 'Addresses, separated by commas. Empty: the ones the alerts go to.',
+    'alerts_lang': 'Czech or English, for the alerts and the test. Empty: the language of the mails.',
+    'report_lang': 'Czech or English, for the report. Empty: the language of the alerts.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1074,7 +1083,7 @@ PANES = {
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
-               'alerts_url', 'report', 'report_to', 'report_every', 'report_day', 'report_at'],
+               'alerts_lang', 'alerts_url', 'report', 'report_to', 'report_lang', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
               'code_send_window_min', 'code_lang', 'code_mail_fmt', 'sms_mode', 'sms_url', 'sms_method',
               'sms_body', 'sms_headers', 'sms_token', 'sms_spool_dir', 'sms_prefix',
@@ -1123,6 +1132,7 @@ ONLY_WHEN = {
     'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
     'report_to': ['report', '1'], 'report_every': ['report', '1'],
+    'alerts_lang': ['alerts', '1'], 'report_lang': ['report', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],

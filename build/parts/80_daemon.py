@@ -1469,6 +1469,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
+                    sshd_tick(self)             # the SSH server and the notices (1.0.163)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('sshd-tick', 'the SSH server: %s' % e, 'warn', every=600)
+                try:
                     alerts_tick(self)           # alerts by mail, the report (1.0.162)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('alerts-tick', 'the alerts: %s' % e, 'warn', every=600)

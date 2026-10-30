@@ -101,3 +101,41 @@ def _osup_do(h):
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+@route('GET', '/api/sshd')
+def _sshd(h):
+    h.me('fulladmin')
+    return sshd_view(h.store)
+
+
+@route('POST', '/api/sshd')
+def _sshd_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    try:
+        if act == 'save':
+            c = sshd_save(h.store, b.get('conf') or {}, s['name'])
+            return dict(sshd_view(h.store), message='put in on every node within a few seconds' +
+                        (' - on trial: Keep it within %d min, or it goes back' % c['trial_min']
+                         if c['manage'] and c['trial_min'] else ''))
+        if act == 'keep':
+            c = sshd_conf(h.store)
+            h.store.set_meta('host:sshd:keep', json.dumps({'hash': c.get('hash'), 'at': time.time(),
+                                                           'by': s['name']}))
+            h.store.add_event('settings', '%s kept the change of the SSH server' % s['name'],
+                              'info', who=s['name'])
+            return dict(sshd_view(h.store), message='kept')
+        if act == 'back':
+            h.store.set_meta('host:sshd:back', json.dumps({'id': secrets.token_hex(6),
+                                                           'at': time.time(), 'by': s['name']}))
+            h.store.add_event('settings', '%s put the SSH server back as it was' % s['name'],
+                              'warn', who=s['name'])
+            return dict(sshd_view(h.store), message='it goes back within a few seconds')
+        if act == 'refresh':
+            HOST_WORK['sshd_read'] = 0.0
+            return sshd_view(h.store)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    raise ApiError(400, 'no such thing to do')

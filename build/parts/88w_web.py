@@ -996,7 +996,10 @@ def fw_auto(store, node):
     v = vip_conf(store)
     out = [{'key': 'ssh', 'title': 'SSH', 'why': 'to manage the machine - turned off, '
             'take care to keep a rule of your own for it',
-            'rules': [{'family': f, 'proto': 'tcp', 'port': '22', 'source': ''} for f in (4, 6)]},
+            # The port Settings - SSH server says, and while a change is on
+            # trial the one before as well (1.0.163).
+            'rules': [{'family': f, 'proto': 'tcp', 'port': str(p), 'source': ''}
+                      for p in sshd_ports_open(store) for f in (4, 6)]},
            {'key': 'icmp', 'title': 'ICMP / ICMPv6', 'why': 'ping, and IPv6 cannot work without '
             'ICMPv6 (neighbour discovery)',
             'rules': [{'family': f, 'proto': 'icmp', 'port': '', 'source': ''} for f in (4, 6)]},

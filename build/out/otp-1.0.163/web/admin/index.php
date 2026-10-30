@@ -311,7 +311,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup',
@@ -326,7 +326,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -768,6 +768,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the web address moved out of the way first.">Restart and power off</button>
     <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the web address moved out of the way first; a restart offered when one is needed.">System updates</button>
     <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node as root over SSH: made here, added or taken away.">SSH keys of root</button>
+    <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
     <div class="ctl-group">Data</div>
     <button type="button" data-pane="db" data-icon="db" title="Which database everything lives in, how big it is, copies of it, and how long things are kept.">The database</button>
     <button type="button" data-pane="backup" data-icon="archive" title="Backups of everything to another machine - FTP, FTPS, SFTP, SCP, SMB or a folder - locked with a password, on a schedule, and putting one back.">Backups</button>
@@ -1276,6 +1277,14 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         which answers RADIUS meanwhile - and back in service before the next one starts. A restart an update
         needs is offered when it is done, or made by itself, one node after the other.</p></div>
     <div id="ou-host"></div>
+  </div>
+  <div class="ctl-pane" id="pane-sshd" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">SSH server and notices</h2>
+      <p class="ctl-lede">How each node's SSH server lets people in - root with a key or a password, the port,
+        who may sign in - and the notice shown before signing in over SSH, at the console and after signing in.
+        Put in by each node's root helper as a file of otp's own beside the system's, checked by sshd before it
+        is used, and on trial: unless it is kept in time, each node puts back what it had by itself.</p></div>
+    <div id="sd-host"></div>
   </div>
   <div class="ctl-pane" id="pane-sshkeys" hidden>
     <div class="ctl-head"><h2 class="ctl-title">SSH keys of root</h2>
