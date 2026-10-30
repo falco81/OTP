@@ -4,6 +4,50 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.172 — 30 October 2026
+
+**isemon over TLS, the database's TLS and the link's each by itself, ACME beside your own certificates**
+- *Settings → The database → Encryption to the database server* shows on the
+  page: its calls were not let through by the pages' own proxy, so the card
+  never came - and an answer that does not come is now said on the card.
+- The daemon's own connection to its PostgreSQL and the link between the two
+  databases (High availability) are encrypted and switched off **each by
+  itself**, in any order: the connection gets a certificate from otp's
+  authority where the link has none, uses the link's where it has one; the link
+  switched off leaves the certificate where the connection uses it (renewed from
+  then on by *The database*), the connection switched off leaves it where the
+  link does; it goes from PostgreSQL only when neither uses it. The link no
+  longer follows the connection's TLS settings. Tested on two replicating nodes in
+  every order, with renewals, replication and RADIUS all the time.
+- *Settings → isemon → Encrypted sending (TLS)*: the lines to isemon over TLS
+  (6514/tcp, `host:6514/tls` in the targets), isemon's certificate checked. A
+  wizard: where isemon is; its certificate - one otp's own authority makes for it,
+  given once in a ZIP locked with your passphrase together with the rsyslog
+  configuration (gtls) and the steps, or isemon's own CA's, or a public CA's;
+  **mutual TLS** - each node shows isemon a certificate of its own, made and
+  renewed by the node itself, so isemon takes lines from otp's nodes only; *Try it
+  on every node* (connected, TLS, isemon's certificate, whether isemon kept the
+  connection); *Switch over*. What to do on the isemon machine:
+  `docs/isemon-tls.md`. A connection isemon closed (rsyslog restarted) is noticed
+  before the next line, not after it was lost. High security: isemon over TLS only,
+  its certificate checked.
+- *Automatic certificates*: **DNS servers for ACME** - public ones (`1.1.1.1,
+  9.9.9.9`) for everything on the page: the address of the CA and of the DNS API,
+  *Check DNS*, *Try port 80*; empty, the machine's own. After the wait, the TXT
+  record is looked for there before the CA is asked.
+- A certificate of your own replaced by ACME is kept: **Back to the one
+  before…** on its card (and on *Certificates and TLS*) puts it back, its key as
+  it was; ACME then leaves it alone. The TLS settings (protocols, ciphers, DH,
+  HSTS) are set on *Certificates and TLS* whoever gave the certificate, and kept
+  through ACME's renewals.
+- "The web address" is called **the VIP address** everywhere.
+- The names of the settings: the tags of a node's own setting stay one block at
+  the right, only the name wraps - the boxes along a row in line. The copy buttons
+  of *In your DNS* right after the records, one under the other. An empty name of
+  another node's certificate says the name it stands for.
+- High availability on a PostgreSQL with other databases: the replication slots
+  looked up in otp's database only.
+
 ## 1.0.171 — 30 October 2026
 
 **Fixes to 1.0.170: secrets saved, the other nodes' values in line, the names**

@@ -3287,7 +3287,14 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 /* the records and their copy buttons: the text left, the button at the column's right edge, one under the other */
 .acme-dns td{vertical-align:middle}
 .acme-dns .dns-val{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.acme-dns .dns-val > span:first-child{overflow-wrap:anywhere;min-width:0;flex:1}
-.acme-dns .dns-val > button{margin-left:auto;flex:none}
+.acme-dns .dns-val > span:first-child{overflow-wrap:anywhere;min-width:0;flex:0 1 auto}
+.acme-dns .dns-val > button{flex:none}
 .acme-dns .dns-val > div{flex-basis:100%}
 .node-other .node-now{font-size:12px}
+/* A setting's name: the words wrap, the (i) and the tags of a node stay one
+   block at the right (1.0.172) */
+.set-item label:has(> .lbl-txt){flex-wrap:nowrap;align-items:flex-start}
+.set-item label > .lbl-txt{flex:1 1 auto;min-width:0}
+.set-item label > .iinfo{margin-top:1px}
+.set-item label > .node-tags{flex:none;display:inline-flex;gap:4px;white-space:nowrap;align-items:center}
+.hal-nodes.wide .hal-node{grid-template-columns:minmax(110px,max-content) auto 1fr}

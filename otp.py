@@ -48,6 +48,7 @@ import os
 import queue
 import re
 import secrets
+import select
 
 import shutil
 import signal
@@ -77,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.171'
+__version__ = '1.0.172'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -190,6 +191,9 @@ DEFAULTS = {
     'isemon_detail': 1,
     'isemon_events': 0,
     'isemon_max_bytes': 1800,
+    'isemon_ca': '',
+    'isemon_verify': 1,
+    'isemon_mtls': 0,
     'ship_files': 1,
     # --- sending mail (1.0.20) ----------------------------------------------
     'mail_mode': 'off',
@@ -336,6 +340,7 @@ DEFAULTS = {
     'acme_desec_token': '',
     'acme_dns_alias': '',
     'acme_dns_wait': 30,
+    'acme_resolvers': '',
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -430,6 +435,7 @@ TUNABLE = {
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
+    'isemon_verify': (0, 1), 'isemon_mtls': (0, 1),
     'isemon_max_bytes': (480, 65000), 'ship_files': (0, 1),
     'retain_radius_days': (0, 36500), 'retain_otp_days': (0, 36500),
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
@@ -488,8 +494,8 @@ CHOICE_WORDS = {
                  'desec': 'deSEC.io (free), with an API token - a CNAME in your DNS'},
     'acme_ca': {'letsencrypt': 'Let\u2019s Encrypt', 'letsencrypt-staging': 'Let\u2019s Encrypt - staging (to try it)',
                 'custom': 'another ACME CA (step-ca, an internal CA...)'},
-    'acme_for': {'vip': 'the web address (or this node, where there is none)',
-                 'node': 'each node\u2019s own name', 'both': 'the web address and each node'},
+    'acme_for': {'vip': 'the VIP address (or this node, where there is none)',
+                 'node': 'each node\u2019s own name', 'both': 'the VIP address and each node'},
     'acme_key': {'ec': 'ECDSA P-256', 'rsa2048': 'RSA 2048'},
     'rbackup_verify': {'off': 'only by hand', 'after': 'after every backup, the one just sent',
                        'weekly': 'once a week, the newest one'},
@@ -667,6 +673,9 @@ NAMES = {
     'isemon_detail': 'Send the RADIUS packets as well (radius-detail)',
     'isemon_events': 'Send this daemon’s own events as well',
     'isemon_max_bytes': 'Longest message (bytes)',
+    'isemon_ca': 'isemon’s certificate authority (TLS)',
+    'isemon_verify': 'Check isemon’s certificate (TLS)',
+    'isemon_mtls': 'Each node shows isemon a certificate of its own (TLS)',
     'ship_files': 'Write the same lines into files here too',
     'retain_radius_days': 'Keep the RADIUS requests (days)',
     'retain_otp_days': 'Keep the token checks (days)',
@@ -753,6 +762,7 @@ NAMES = {
     'acme_dns_key': 'acme-dns key',
     'acme_dns_subdomain': 'acme-dns subdomain',
     'acme_dns_wait': 'Wait for DNS to carry it (s)',
+    'acme_resolvers': 'DNS servers for ACME',
     'acme_desec_domain': 'The domain at deSEC',
     'acme_desec_token': 'The deSEC API token',
     'acme_dns_alias': 'The TXT records go into',
@@ -1100,9 +1110,17 @@ SAYS = {
               'reads it with what it already has (<i>Settings → The OTP logs</i>, with '
               '<i>RADIUS detail</i> switched on).',
     'isemon_targets': 'Where to send them: <code>host</code>, <code>host:port</code>, '
-                      'and <code>/udp</code> or <code>/tcp</code> after it - '
-                      '<code>10.1.2.3:514/tcp</code>. Several, separated by commas. UDP is the '
-                      'default; TCP does not lose a line when the network does.',
+                      'and <code>/udp</code>, <code>/tcp</code> or <code>/tls</code> after it - '
+                      '<code>10.1.2.3:514/tcp</code>, <code>isemon.example.cz:6514/tls</code>. '
+                      'Several, separated by commas. UDP is the default; TCP does not lose a line '
+                      'when the network does; TLS is TCP encrypted - <i>Encrypted sending</i> '
+                      'above sets it up.',
+    'isemon_ca': 'The CA certificate (PEM) isemon’s certificate is signed by - otp’s own '
+                 'authority when <i>Encrypted sending</i> made it. Empty: the system’s.',
+    'isemon_verify': 'isemon’s certificate checked against the authority and its name against the '
+                     'address it is sent to. Off: encrypted, but whoever answers is taken.',
+    'isemon_mtls': 'Each node shows isemon a certificate from otp’s own authority (made and '
+                   'renewed by the node itself), so isemon can take lines from otp’s nodes only.',
     'isemon_hostname': 'The host name on every line, which is the folder isemon’s rsyslog '
                        'files them under: <code>/var/log/remote/<this>/totp.cgi.log</code>. '
                        'isemon looks in <code>/var/log/remote/otp</code> unless told otherwise, '
@@ -1155,7 +1173,7 @@ SAYS = {
                     'replication stopped, the database in trouble, the nodes on different versions.',
     'alerts_backup': 'A nightly copy older than 36 hours; a backup to the destinations that '
                      'failed, or none that went in time.',
-    'alerts_cert_days': 'A certificate of a node or of the web address running out within so '
+    'alerts_cert_days': 'A certificate of a node or of the VIP address running out within so '
                         'many days. 0: never.',
     'alerts_disk_pct': 'A file system otp lives on fuller than this. 0: never.',
     'alerts_time': 'chrony out of sync, or the clock off by more than half a second - the codes '
@@ -1178,7 +1196,7 @@ SAYS = {
                   'for the cards here, the alerts and the report. Nothing is put in.',
     'osup_check_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
     'osup_auto': 'The updates put in by themselves in the window below, one node at a time as '
-                 'by hand - each out of service while it is updated, the web address on the '
+                 'by hand - each out of service while it is updated, the VIP address on the '
                  'other. Off until switched on.',
     'osup_auto_what': 'Only the security updates (dnf --security, unattended-upgrade on apt), '
                       'or every update.',
@@ -1225,7 +1243,7 @@ SAYS = {
     'logs_max_mb': 'A file bigger than this is put aside sooner than once a day.',
     'acme': 'The certificates ordered from the CA by HTTP-01 and renewed by themselves - port 80 '
             'of the name must reach a node. In a cluster the answer is kept in the database, so '
-            'whichever node has the web address gives it. Off until switched on.',
+            'whichever node has the VIP address gives it. Off until switched on.',
     'acme_email': 'Where the CA writes when a certificate runs out unrenewed. Empty: none.',
     'acme_ca': 'Let\u2019s Encrypt, its staging (certificates browsers do not trust - to try '
                'it), or another.',
@@ -1234,7 +1252,7 @@ SAYS = {
     'acme_for': 'Which certificates are ordered.',
     'acme_node_name': 'The name a node\u2019s own certificate is for - each node its own, the others\u2019 '
                       'under the box. Empty: the name of the certificate it has now, else its full host '
-                      'name. The web address\u2019s: <i>Its name\u2026</i> on its card above.',
+                      'name. The VIP address\u2019s: <i>Its name\u2026</i> on its card above.',
     'acme_days': 'Let\u2019s Encrypt\u2019s certificates last 90 days; 30 is what it advises.',
     'acme_key': 'ECDSA is smaller and quicker; RSA for old clients.',
     'acme_challenge': 'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, '
@@ -1255,6 +1273,11 @@ SAYS = {
     'acme_dns_key': 'From the registration at acme-dns. Kept sealed.',
     'acme_dns_subdomain': 'From the registration at acme-dns.',
     'acme_dns_wait': 'How long the record is given to reach every DNS server before the CA is asked.',
+    'acme_resolvers': 'The DNS servers asked for everything on this page: the address of the CA and '
+                      'of the DNS API, <i>Check DNS</i>, <i>Try port 80</i>, and whether the TXT '
+                      'record can be seen before the CA is asked - <code>1.1.1.1, 9.9.9.9</code> '
+                      'to see what the internet sees. Empty: the machine\u2019s own '
+                      '(/etc/resolv.conf).',
     'acme_desec_domain': 'Your domain at deSEC, <code>example.dedyn.io</code> (free) or one of your own '
                          'whose DNS is there. The records go into it; your DNS has a CNAME to it for each '
                          'name - <i>In your DNS</i> above says which.',
@@ -1332,7 +1355,8 @@ PANES = {
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
     'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
-               'isemon_events', 'isemon_max_bytes', 'ship_files'],
+               'isemon_events', 'isemon_max_bytes', 'isemon_verify', 'isemon_mtls',
+               'isemon_ca', 'ship_files'],
     'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
                'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms',
                'admin_directory', 'admin_group_full', 'admin_group_token',
@@ -1358,7 +1382,7 @@ PANES = {
              'acme_dns_server', 'acme_dns_zone', 'acme_dns_tsig_name', 'acme_dns_tsig_alg',
              'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_url', 'acme_dns_user',
              'acme_dns_key', 'acme_dns_subdomain', 'acme_desec_domain', 'acme_desec_token',
-             'acme_dns_alias', 'acme_dns_wait'],
+             'acme_dns_alias', 'acme_dns_wait', 'acme_resolvers'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1393,7 +1417,8 @@ ONLY_WHEN = {
     'portal_wait_min': ['portal', '1'],
     'isemon_targets': ['isemon', '1'], 'isemon_hostname': ['isemon', '1'],
     'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
-    'isemon_max_bytes': ['isemon', '1'],
+    'isemon_max_bytes': ['isemon', '1'], 'isemon_ca': ['isemon', '1'],
+    'isemon_verify': ['isemon', '1'], 'isemon_mtls': ['isemon', '1'],
     'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
     'admin_group_readonly': ['admin_directory', '*'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
@@ -1433,7 +1458,7 @@ ONLY_WHEN = {
     'acme_dns_url': ['acme_dns', 'acmedns'], 'acme_dns_user': ['acme_dns', 'acmedns'],
     'acme_dns_key': ['acme_dns', 'acmedns'], 'acme_dns_subdomain': ['acme_dns', 'acmedns'],
     'acme_desec_domain': ['acme_dns', 'desec'], 'acme_desec_token': ['acme_dns', 'desec'],
-    'acme_dns_alias': ['acme_dns', 'acmedns-not'],
+    'acme_dns_alias': ['acme_dns', 'acmedns-not'], 'acme_resolvers': ['acme', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1517,7 +1542,7 @@ def _coerce(current, value):
 
 
 # Settings of several lines (1.0.103): the rest are one line each.
-SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca', 'acme_ca_pem',
+SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'isemon_ca', 'siem_ca', 'acme_ca_pem',
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
 
@@ -1587,15 +1612,18 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('radius_guard_trusted: %r is not an address or a network' % one)
-    if key == 'mail_dns':
+    if key in ('mail_dns', 'acme_resolvers'):
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
                 ipaddress.ip_address(one)
             except ValueError:
-                raise BadSetting('mail_dns: %r is not the address of a DNS server' % one)
+                raise BadSetting('%s: %r is not the address of a DNS server' % (key, one))
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'isemon_ca' and str(got).strip() and \
+            '-----BEGIN CERTIFICATE-----' not in str(got):
+        raise BadSetting('isemon_ca: a certificate in PEM, -----BEGIN CERTIFICATE-----')
     if key == 'acme_email' and str(got).strip() and \
             not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', str(got).strip()):
         raise BadSetting('acme_email: a mail address')
@@ -8997,22 +9025,24 @@ SYSLOG_FACILITY = {'auth': 4, 'authpriv': 10, 'local5': 21, 'daemon': 3, 'user':
 
 
 def syslog_targets(text, strict=False):
-    """`host[:port][/udp|/tcp]`, comma separated, as (host, port, proto)."""
+    """`host[:port][/udp|/tcp|/tls]` (or `tls://host:port`), comma separated,
+    as (host, port, proto). TLS (1.0.172): 6514 when no port is given."""
     out = []
     for one in re.split(r'[,;\s]+', str(text or '')):
         one = one.strip()
         if not one:
             continue
-        m = re.match(r'^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.\-]+)(?::(\d+))?(?:/(udp|tcp))?\Z',
-                     one, re.I)
+        m = re.match(r'^(?:(udp|tcp|tls)://)?(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.\-]+)(?::(\d+))?'
+                     r'(?:/(udp|tcp|tls))?/?\Z', one, re.I)
         if not m:
             if strict:
-                raise BadSetting('isemon_targets: %r is not host[:port][/udp|/tcp]' % one)
+                raise BadSetting('isemon_targets: %r is not host[:port][/udp|/tcp|/tls]' % one)
             continue
-        port = int(m.group(2) or 514)
+        proto = (m.group(4) or m.group(1) or 'udp').lower()
+        port = int(m.group(3) or (6514 if proto == 'tls' else 514))
         if strict and not 0 < port < 65536:
             raise BadSetting('isemon_targets: %d is not a port' % port)
-        out.append((m.group(1).strip('[]'), port, (m.group(3) or 'udp').lower()))
+        out.append((m.group(2).strip('[]'), port, proto))
     return out
 
 
@@ -9035,6 +9065,32 @@ def detail_quote(value):
     return '"%s"' % said.replace('\\', '\\\\').replace('"', '\\"')
 
 
+def _conn_alive(sock):
+    """Whether a connection the other side never writes into is still open:
+    readable means closed (or, over TLS, a session ticket - read, and still
+    open)."""
+    try:
+        r, _w, _x = select.select([sock], [], [], 0)
+    except (OSError, ValueError):
+        return False
+    if not r:
+        return True
+    was = sock.gettimeout()
+    try:
+        sock.setblocking(False)
+        got = sock.recv(4096)
+        return bool(got)
+    except (ssl.SSLWantReadError, BlockingIOError):
+        return True
+    except (OSError, ssl.SSLError):
+        return False
+    finally:
+        try:
+            sock.settimeout(was)
+        except OSError:
+            pass
+
+
 class Shipper(object):
     """A queue and a thread that empties it into isemon's receivers and the
     files here. Nothing that answers a VPN ever waits for any of it."""
@@ -9052,6 +9108,7 @@ class Shipper(object):
         self.missed = collections.Counter()
         self.dropped = 0
         self.last_sent = 0.0
+        self.ctx = None
         self.stop_flag = False
         self.thread = threading.Thread(target=self.run, name='shipper', daemon=True)
         self.configure()
@@ -9060,8 +9117,9 @@ class Shipper(object):
     def configure(self):
         self.targets = syslog_targets(CONFIG.get('isemon_targets')) if CONFIG.get('isemon') \
             else []
+        self.ctx = None                 # the TLS settings may have changed (1.0.172)
         for key, sock in list(self.tcp.items()):
-            if (key[0], key[1], 'tcp') not in self.targets:
+            if key not in self.targets:
                 try:
                     sock.close()
                 except OSError:
@@ -9175,12 +9233,26 @@ class Shipper(object):
                 if time.time() < until:
                     self.missed[key] += 1
                     return
-                sock = self.tcp.get((host, port))
+                sock = self.tcp.get(target)
+                if sock is not None and not _conn_alive(sock):
+                    # Closed by the other side - isemon restarted (1.0.172): the
+                    # first line written into it would have been lost unsaid.
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                    sock = None
+                    self.tcp.pop(target, None)
                 for attempt in (1, 2):
                     if sock is None:
                         sock = socket.create_connection((host, port), timeout=5)
+                        if proto == 'tls':
+                            # Encrypted, isemon's certificate checked (1.0.172).
+                            if self.ctx is None:
+                                self.ctx = isemon_tls_ctx()
+                            sock = self.ctx.wrap_socket(sock, server_hostname=host)
                         sock.settimeout(5)
-                        self.tcp[(host, port)] = sock
+                        self.tcp[target] = sock
                     try:
                         sock.sendall(raw + b'\n')
                         break
@@ -9190,14 +9262,14 @@ class Shipper(object):
                         except OSError:
                             pass
                         sock = None
-                        self.tcp.pop((host, port), None)
+                        self.tcp.pop(target, None)
                         if attempt == 2:
                             raise
             self.sent[key] += 1
             self.last_sent = time.time()
             self.trouble.pop(key, None)
             self.down.pop(key, None)
-        except OSError as e:
+        except (OSError, ssl.SSLError, ValueError) as e:
             if key not in self.trouble:
                 log('isemon at %s cannot be sent to: %s' % (key, e), 'warn')
             if proto != 'udp':
@@ -9212,6 +9284,9 @@ class Shipper(object):
     def state(self):
         return {'on': bool(CONFIG.get('isemon')), 'host': self.host(),
                 'targets': ['%s:%d/%s' % t for t in self.targets],
+                'tls': {'verify': bool(CONFIG.get('isemon_verify', 1)),
+                        'mtls': bool(CONFIG.get('isemon_mtls')),
+                        'ca': 'given' if str(CONFIG.get('isemon_ca') or '').strip() else 'system'},
                 'sent': dict(self.sent), 'trouble': dict(self.trouble),
                 'queued': self.q.qsize(), 'dropped': self.dropped,
                 'last_sent': self.last_sent, 'files': bool(CONFIG.get('ship_files')),
@@ -13458,7 +13533,7 @@ class Daemon(object):
     def save_settings(self, changes, by='', node=None, drawn_by=None):
         checked = {}
         # The page's boxes were drawn by one node and the save reached
-        # another through the web address (1.0.110): otp1 took otp2's name
+        # another through the VIP address (1.0.110): otp1 took otp2's name
         # from a page otp2 had drawn. What belongs to one machine is saved
         # only on the machine the page was drawn by.
         drawn_by = str(drawn_by or '').strip()
@@ -13466,7 +13541,7 @@ class Daemon(object):
             local = sorted(k for k in (changes or {}) if k in FILE_ONLY_KEYS and
                            not (k in SECRET_KEYS and is_masked(changes[k])))
             if local:
-                raise NodeMoved('this page was drawn by %s, but %s answers now (the web address '
+                raise NodeMoved('this page was drawn by %s, but %s answers now (the VIP address '
                                 'moved): %s belongs to one machine, so nothing was saved - load '
                                 'the page again' % (drawn_by, node_name(), ', '.join(local)))
             if node is None:
@@ -13797,7 +13872,7 @@ class Daemon(object):
                 except Exception as e:                  # noqa: BLE001
                     log_sparing('mail-queue', 'the outgoing mail: %s' % e, 'warn', every=300)
         threading.Thread(target=mail_queue, name='mail-queue', daemon=True).start()
-        # The cluster's web address: whether this node may hold it (1.0.47).
+        # The cluster's VIP address: whether this node may hold it (1.0.47).
         threading.Thread(target=vip_watch, args=(self,), name='vip-watch', daemon=True).start()
         # A connection on this machine broken by its TLS mended (1.0.170) -
         # its own thread: the loop below waits for the database.
@@ -13855,7 +13930,7 @@ class Daemon(object):
                 try:
                     web_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
-                    log_sparing('tick:web:' + str(e)[:80], 'TLS and the web address: %s' % e, 'warn', 3600)
+                    log_sparing('tick:web:' + str(e)[:80], 'TLS and the VIP address: %s' % e, 'warn', 3600)
                 try:
                     rb_tick(self)               # backups to the destinations (1.0.109)
                 except Exception as e:          # noqa: BLE001
@@ -13909,6 +13984,10 @@ class Daemon(object):
                     acme_tick(self)             # certificates by ACME (1.0.169)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('acme-tick', 'ACME: %s' % e, 'warn', every=600)
+                try:
+                    isemon_tls_tick(self)       # isemon over TLS (1.0.172)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('isemon-tls-tick', 'isemon over TLS: %s' % e, 'warn', every=600)
                 try:
                     dbtls_tick(self)            # the connection to the database (1.0.170)
                 except Exception as e:          # noqa: BLE001
@@ -14498,7 +14577,7 @@ def db_prune(store, days):
     gone = {}
     for t in ('radius_log', 'otp_log'):
         # In batches (1.0.57): one DELETE of millions of rows held RADIUS -
-        # and the health check the web address follows - for minutes.
+        # and the health check the VIP address follows - for minutes.
         gone[t] = store.delete_older(t, edge)
     return gone
 
@@ -17792,7 +17871,7 @@ import tarfile
 # ---------------------------------------------------------------------------
 # One file that brings any loss back - one server or a cluster, onto a
 # machine installed from nothing: the whole database (an engine-independent
-# copy: tokens, settings, accounts, certificates, the web address, the
+# copy: tokens, settings, accounts, certificates, the VIP address, the
 # firewall, the texts, the logs), the key that opens the tokens, the machine's
 # config.json and the files it names, a manifest with the checksum of each,
 # and RESTORE.md - the exact steps. Locked with a password kept in the
@@ -18733,7 +18812,7 @@ def rb_restore_md(m):
         '| Tokens | %s |' % m.get('tokens', '?'),
         '', 'Everything is in it: the whole database (tokens and their recovery codes, the RADIUS',
         'clients, realms, directories, accounts, every setting, the certificates and keys of the',
-        'pages, the web address, the firewall, the message texts, the logs), the key that opens',
+        'pages, the VIP address, the firewall, the message texts, the logs), the key that opens',
         'the tokens (`secrets.key`) and this machine\'s `/etc/otp/config.json`.', '',
         'Keep the password of the backups apart from the backups (a password vault): without it',
         'the file cannot be opened - by anybody.', '',
@@ -18788,7 +18867,7 @@ def rb_restore_md(m):
             '  one server with everything. Move it to PostgreSQL (step 2), then make it two again:',
             '  `otp --ha-setup --ha-peer ADDRESS-OF-THE-SECOND --node-name %s` on it; on the' % node,
             '  second `./install.sh --with-db postgres --yes` and `otp --ha-join FILE`',
-            '  (docs/high-availability.md, "Building it - replicated"). The web address, the',
+            '  (docs/high-availability.md, "Building it - replicated"). The VIP address, the',
             '  firewall, the certificates of the pages and the encrypted link between the',
             '  databases come back by themselves from the database.',
             '- Each node sends its own backups; either node\'s newest is the whole cluster\'s data.',
@@ -19698,7 +19777,7 @@ def heartbeat(store, daemon=None):
     except Exception:                                   # noqa: BLE001
         pass
     try:
-        beat['web'] = web_state(store)          # TLS and the web address (1.0.47)
+        beat['web'] = web_state(store)          # TLS and the VIP address (1.0.47)
         # The whole firewall goes in a row of its own, when it changed
         # (1.0.67) - not into a heartbeat written every 15 s.
         for k in ('full', 'full_at', 'full_backend'):
@@ -19713,7 +19792,7 @@ def heartbeat(store, daemon=None):
 
 
 # Two machines with one name (1.0.110): both wrote the same heartbeat row, so
-# the other looked gone and the web address "on both". Each row now carries
+# the other looked gone and the VIP address "on both". Each row now carries
 # the machine it came from; a row from another machine, fresh, under this
 # node's name is said loudly - in the log, on every page and in --ha-status.
 NAME_CLASH = {}
@@ -22164,8 +22243,12 @@ HISEC_SETTINGS = {
     'siem_targets': {'pane': 'siem', 'when': lambda c: bool(c.get('siem')),
                      'test': lambda v, c: any(p != 'tls' for _h, _p, p in siem_targets(v)),
                      'why': 'syslog goes over UDP or TCP unencrypted - only tls:// servers'},
-    'isemon': {'forbid': [1], 'pane': 'isemon',
-               'why': 'isemon is sent plain syslog (UDP/TCP), unencrypted'},
+    'isemon': {'pane': 'isemon', 'when': lambda c: bool(c.get('isemon')),
+               'test': lambda v, c: any(p != 'tls' for _h, _p, p in
+                                        syslog_targets(c.get('isemon_targets'))),
+               'why': 'isemon is sent plain syslog (UDP/TCP) - only over TLS (1.0.172)'},
+    'isemon_verify': {'forbid': [0], 'pane': 'isemon', 'when': lambda c: bool(c.get('isemon')),
+                      'why': 'isemon\'s certificate is not checked'},
     'debug': {'forbid': [1, True], 'pane': 'about',
               'why': 'debugging writes the details of requests into the log'},
     'totp_window': {'most': 1, 'pane': 'tokens',
@@ -22794,14 +22877,14 @@ def downgrade_changelog(version):
 
 
 # ---------------------------------------------------------------------------
-# The web side (1.0.47): TLS of each node and of the cluster's web address,
+# The web side (1.0.47): TLS of each node and of the cluster's VIP address,
 # and that address itself (VIP, active/standby, held by keepalived).
 #
 # Everything is kept in the database, so both nodes know all of it:
 #   web:vip          the address, its name, the VRRP id, the node it is meant
 #                    to be on, each node's interface
 #   web:tls:NODE     a node's own certificate, chain, root and TLS settings
-#   web:tls:vip      the same for the web address's own name
+#   web:tls:vip      the same for the VIP address's own name
 # Keys are sealed with the tokens' key. Each node then asks root for its own
 # part of it (otp_web.py, through /var/lib/otp/web/request.json) and keeps
 # /run/otp/vip-state up to date for keepalived: whether this node is healthy
@@ -23458,9 +23541,9 @@ def local_addresses():
     """Every address on this machine's interfaces, read from the kernel.
 
     Not by binding to it (1.0.55): with net.ipv4.ip_nonlocal_bind on - which
-    the web address turns on since 1.0.51, so nginx can listen on it - a bind
+    the VIP address turns on since 1.0.51, so nginx can listen on it - a bind
     succeeds for an address the machine does not hold, and both nodes said
-    they had the web address."""
+    they had the VIP address."""
     out = set()
     try:
         # IPv4: the local table of the FIB, "/32 host LOCAL" under each address.
@@ -23564,7 +23647,7 @@ def vip_watch(daemon):
             os.chmod(str(tmp), 0o640)
             os.replace(str(tmp), str(VIP_STATE))
         except Exception as e:                          # noqa: BLE001
-            log_sparing('vip-watch:' + str(e)[:80], 'the web address: %s' % e, 'warn', 600)
+            log_sparing('vip-watch:' + str(e)[:80], 'the VIP address: %s' % e, 'warn', 600)
             daemon.stop_flag.wait(10)
 
 
@@ -23573,15 +23656,15 @@ def vip_checked(b, store):
     try:
         net = plain_ip(b.get('address'), 'interface')
     except ValueError:
-        raise ValueError('the web address is an address with its prefix, e.g. 192.0.2.10/24')
+        raise ValueError('the VIP address is an address with its prefix, e.g. 192.0.2.10/24')
     if '/' not in str(b.get('address') or ''):
         raise ValueError('give the prefix with the address, e.g. 192.0.2.10/24')
     if net.ip.is_loopback or net.ip.is_multicast or net.ip.is_unspecified:
-        raise ValueError('%s cannot be the web address' % net.ip)
+        raise ValueError('%s cannot be the VIP address' % net.ip)
     nodes = [n for n in ha_nodes(store)]
     for n in nodes:
         if str(n.get('address') or '') == str(net.ip):
-            raise ValueError('%s is the address of %s: the web address is a third one'
+            raise ValueError('%s is the address of %s: the VIP address is a third one'
                              % (net.ip, n['name']))
     fqdn = str(b.get('fqdn') or '').strip().lower().rstrip('.')
     if fqdn and not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
@@ -23603,14 +23686,14 @@ def vip_checked(b, store):
     a6 = str(b.get('address6') or '').strip()
     if a6:
         if '/' not in a6:
-            raise ValueError('give the prefix with the IPv6 web address, e.g. 2001:db8::10/64')
+            raise ValueError('give the prefix with the IPv6 VIP address, e.g. 2001:db8::10/64')
         try:
             n6 = plain_ip(a6, 'interface')
         except ValueError:
-            raise ValueError('the IPv6 web address is an address with its prefix, e.g. '
+            raise ValueError('the IPv6 VIP address is an address with its prefix, e.g. '
                              '2001:db8::10/64')
         if n6.version != 6 or n6.ip.is_link_local or n6.ip.is_loopback:
-            raise ValueError('the IPv6 web address is a global IPv6 address')
+            raise ValueError('the IPv6 VIP address is a global IPv6 address')
         a6 = str(n6)
     return {'address': str(net), 'fqdn': fqdn, 'vrid': vrid, 'ifaces': ifaces, 'address6': a6}
 
@@ -23666,7 +23749,7 @@ def node_carry(store, old, new, by='the daemon'):
         changed = True
     if changed:
         store.set_meta('web:vip', json.dumps(v))
-        said.append('its place in the web address')
+        said.append('its place in the VIP address')
     for k in ('node:', 'maint:', 'upgrade:node:', 'web:tls:', 'web:retry:', 'db_job:', 'fw:now:',
               'db_sizes:', 'hatls:node:'):
         store.db.run('DELETE FROM meta WHERE k = ?', (k + old,))
@@ -23782,7 +23865,7 @@ def access_desired(store, node=None):
         nets = list(one.get('from') or [])
         if not one.get('any'):
             # The cluster first (1.0.59): a list cut at its length cut the
-            # other node and the web address off, not one of somebody's.
+            # other node and the VIP address off, not one of somebody's.
             nets = list(inner) + [x for x in nets if x not in inner]
         out[k] = {'any': bool(one.get('any')), 'from': nets}
     return out
@@ -23856,7 +23939,7 @@ def fw_auto(store, node):
                     'rules': [{'family': _fam(p), 'proto': 'any', 'port': '',
                                'source': p} for p in nodes_only]})
         if v.get('on'):
-            out.append({'key': 'vrrp', 'title': 'VRRP (the web address)', 'fixed': True,
+            out.append({'key': 'vrrp', 'title': 'VRRP (the VIP address)', 'fixed': True,
                         'why': 'keepalived of the other node says it is there',
                         'rules': [{'family': _fam(p), 'proto': 'vrrp', 'port': '', 'source': p}
                                   for p in nodes_only]})
@@ -23985,7 +24068,7 @@ def access_checked_api(b):
 
 
 # ---- what happened to the cluster, written down (1.0.52) -------------------------------
-# Every five seconds this node looks at what it can see - the web address
+# Every five seconds this node looks at what it can see - the VIP address
 # here or not, its own health, the other node, replication both ways - and
 # writes an event (kind 'ha') whenever one of them changes. Settings -
 # High availability - History shows them, with what was changed by hand.
@@ -24017,16 +24100,16 @@ def ha_watch_tick(store):
         held = vip_here(v.get('address')) if role else False
         why = VIP_HEALTH.get('why') or ''
         _ha_change(store, 'vip', 'here' if held else 'not',
-                   ('the web address %s came to %s%s' % (v.get('address'), me,
+                   ('the VIP address %s came to %s%s' % (v.get('address'), me,
                                                            ' (%s)' % role if role else '')) if held
-                   else ('the web address %s left %s%s' % (
+                   else ('the VIP address %s left %s%s' % (
                        v.get('address'), me, ' - %s' % why if why else
                        (' (%s)' % role if role else ''))))
         ok = VIP_HEALTH.get('ok')
         if ok is not None:
             _ha_change(store, 'health', 'ok' if ok else 'bad',
-                       ('%s is healthy again: the web address may come back to it' % me) if ok
-                       else ('%s is not healthy - %s: the web address leaves it' % (me, why or '?')),
+                       ('%s is healthy again: the VIP address may come back to it' % me) if ok
+                       else ('%s is not healthy - %s: the VIP address leaves it' % (me, why or '?')),
                        'info' if ok else 'bad')
     else:
         HA_SEEN.pop('vip', None)
@@ -24086,14 +24169,14 @@ def ha_history(store, limit=300, since=0, until=0):
         args.append(float(until))
     rows = store.db.rows(
         "SELECT ts, kind, node, level, who, words FROM events WHERE (kind = 'ha' OR "
-        "(kind = 'settings' AND (words LIKE '%web address%' OR words LIKE '%replication%' OR "
+        "(kind = 'settings' AND (words LIKE '%VIP address%' OR words LIKE '%replication%' OR "
         "words LIKE '%maintenance%' OR words LIKE '%rebuilt%' OR words LIKE '%cluster%' OR "
         "words LIKE '%upgrade%') AND words NOT LIKE '%certificate%' AND "
         "words NOT LIKE '%TLS%'))" + span +
         " ORDER BY ts DESC LIMIT " + str(int(limit)), args)
     for r in rows:
         w = (r.get('words') or '').lower()
-        r['what'] = ('vip' if 'web address' in w else 'replication' if 'replication' in w
+        r['what'] = ('vip' if 'VIP address' in w else 'replication' if 'replication' in w
                      or 'rebuilt' in w else 'maintenance' if 'maintenance' in w or 'upgrade' in w
                      else 'node')
     return rows
@@ -24158,13 +24241,13 @@ def repl_errors_clear(store, by):
 
 
 # ---- certificates by ACME: Let's Encrypt and the like (1.0.169) --------------------------
-# Settings → Automatic certificates: the certificate of the web address (and,
+# Settings → Automatic certificates: the certificate of the VIP address (and,
 # where asked, each node's own) ordered from an ACME CA - Let's Encrypt, its
 # staging, or one of your own (step-ca, an internal CA) - by HTTP-01, and
 # renewed when fewer than acme_days are left. The answer to the challenge is
 # kept in the database, so whichever node the CA reaches on port 80 gives it
 # (nginx sends /.well-known/acme-challenge/ to acme.php, which asks the
-# daemon): in a cluster the web address may be on either node. The web
+# daemon): in a cluster the VIP address may be on either node. The web
 # address's certificate is ordered by the one node that does what one node
 # does for both (alerts_lead); a node's own by that node. Signed with openssl;
 # done in a thread of its own, never on the way of a sign-in.
@@ -24438,6 +24521,42 @@ def acme_name_of(store, target):
     return name
 
 
+def acme_before(store, target):
+    """The certificate a target had before ACME replaced it, as the page may
+    see it (no key)."""
+    got = _meta_json(store, 'acme:before:' + target) or {}
+    if not got.get('cert'):
+        return None
+    info = got.get('info') or {}
+    return {'how': got.get('how'), 'subject': info.get('subject'), 'issuer': info.get('issuer'),
+            'not_after': info.get('not_after'), 'at': got.get('at'),
+            'ran_out': float(info.get('not_after') or 0) < time.time()}
+
+
+def acme_put_back(store, target, by):
+    """The certificate from before ACME back in place, ACME no longer renewing
+    it; its TLS settings (protocols, ciphers, DH, HSTS) stay as they are now."""
+    got = _meta_json(store, 'acme:before:' + target) or {}
+    if not got.get('cert'):
+        raise ValueError('there is no certificate from before ACME for this one')
+    info = got.get('info') or {}
+    if float(info.get('not_after') or 0) < time.time():
+        raise ValueError('the certificate from before ACME ran out on %s - put a new one in on '
+                         'Certificates and TLS' % stamp(info.get('not_after')))
+    prof = tls_profile(store, target) or {}
+    prof.update({k: got.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
+                                         'root_info', 'verify', 'how')})
+    prof.pop('pending_key', None)
+    prof.pop('csr', None)
+    tls_save(store, target, prof, by)
+    store.set_meta('acme:care:' + target, json.dumps({'on': False, 'at': time.time(), 'by': by}))
+    store.db.run('DELETE FROM meta WHERE k = ?', ('acme:before:' + target,))
+    store.add_event('settings', '%s put the certificate of %s from before ACME back (%s, until %s); '
+                    'ACME no longer renews it' % (by, 'the VIP address' if target == 'vip' else
+                                                  target, info.get('issuer') or '?',
+                                                  stamp(info.get('not_after'))), 'warn', who=by)
+
+
 def acme_care(store, target):
     """Whether ACME looks after this certificate (1.0.170). Said on either page;
     unsaid: yes for one from the CA, a self-signed one and none at all - never
@@ -24457,7 +24576,7 @@ def acme_care_set(store, target, on, by, why=''):
                                                      'by': by}))
     if was != bool(on) and CONFIG.get('acme'):
         store.add_event('settings', '%s: ACME %s the certificate of %s%s' % (
-            by, 'looks after' if on else 'no longer renews', 'the web address' if target == 'vip'
+            by, 'looks after' if on else 'no longer renews', 'the VIP address' if target == 'vip'
             else target, (' - ' + why) if why else ''), 'info' if on else 'warn', who=by)
 
 
@@ -24478,7 +24597,7 @@ def acme_host_publish(store):
 
 
 def acme_targets(store):
-    """[(target, name)] this node orders: the web address's on the lead, and
+    """[(target, name)] this node orders: the VIP address's on the lead, and
     its own where asked."""
     if not CONFIG.get('acme'):
         return []
@@ -24538,6 +24657,14 @@ def acme_order(store, target, name, by, say=None):
         got = cert_bundle(chain, key)
         info = got['info']
         prof = tls_profile(store, target) or {}
+        if prof.get('cert') and prof.get('how') != 'ACME':
+            # The certificate it had - uploaded, from your own CA - kept to go
+            # back to (1.0.172): ACME switched off or left alone, it is put
+            # back with a click, its key as sealed as it was.
+            store.set_meta('acme:before:' + target, json.dumps(
+                {k: prof.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
+                                          'root_info', 'verify', 'how')}
+                | {'at': time.time()}))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
@@ -24551,7 +24678,7 @@ def acme_order(store, target, name, by, say=None):
                   ordered_at=time.time())
         store.set_meta('acme:state:' + target, json.dumps(st))
         store.add_event('settings', 'a certificate for %s (%s) came from the CA, good until %s'
-                        % (name, 'the web address' if target == 'vip' else target,
+                        % (name, 'the VIP address' if target == 'vip' else target,
                            stamp(info.get('not_after')) if info.get('not_after') else '?'),
                         'info', who=by)
         return st
@@ -24593,6 +24720,7 @@ def acme_start(store, which, by):
     ACME_WORK.update(busy=True, says='starting')
 
     def go():
+        _ACME_DNS.on = True
         try:
             for t, n in which:
                 ACME_WORK['target'] = t
@@ -24626,6 +24754,7 @@ def acme_view(store):
                     'how': prof.get('how') or '', 'subject': info.get('subject'),
                     'issuer': info.get('issuer'), 'not_after': info.get('not_after'),
                     'care': acme_care(store, t), 'wanted': t in acme_wanted(store),
+                    'before': acme_before(store, t),
                     'named': bool(str(store.settings_saved().get('acme_node_name@' + t) or '')
                                   .strip()) if t != 'vip' else bool(vip_conf(store).get('fqdn'))})
     mine = [t for t, _ in acme_targets(store)]
@@ -24654,6 +24783,8 @@ def acme_probe(store, target):
     url = 'http://%s/.well-known/acme-challenge/%s' % (name, token)
     began = time.time()
     out = {'name': name, 'url': url, 'ok': False}
+    scope = acme_dns_scope()
+    scope.__enter__()
     try:
         time.sleep(float(os.environ.get('OTP_ACME_SETTLE') or 3))
         req = urllib.request.Request(url, headers={'User-Agent': 'otp/%s (acme probe)' % __version__})
@@ -24668,6 +24799,7 @@ def acme_probe(store, target):
     except (OSError, ValueError) as e:
         out['said'] = 'port 80 of %s cannot be reached: %s' % (name, getattr(e, 'reason', e))
     finally:
+        scope.__exit__()
         store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
     out['ms'] = int((time.time() - began) * 1000)
     return out
@@ -24751,6 +24883,8 @@ def acme_dns_put(store, name, txt, say):
     else:
         undo = _dns_manual(store, rr, txt, say)
     _dns_wait(say, 60 if how == 'desec' else 0)
+    if how != 'manual':
+        acme_txt_seen(name, txt, say)
     return undo
 
 
@@ -24945,13 +25079,37 @@ def _dns_manual(store, rr, txt, say):
 
 
 # ---- what goes into your DNS, and whether it is there (1.0.170) -------------------------
+def acme_resolvers():
+    """The DNS servers ACME asks (1.0.172): its own setting, else the
+    machine's (/etc/resolv.conf) - never the mail's."""
+    out = []
+    for w in re.split(r'[\s,;]+', str(CONFIG.get('acme_resolvers') or '')):
+        try:
+            out.append(str(ipaddress.ip_address(w)))
+        except ValueError:
+            pass
+    return out
+
+
+def _os_resolvers():
+    out = []
+    try:
+        with open('/etc/resolv.conf') as f:
+            for line in f:
+                bits = line.split()
+                if len(bits) >= 2 and bits[0] == 'nameserver':
+                    out.append(bits[1])
+    except OSError:
+        pass
+    return out or ['127.0.0.1']
+
+
 def dns_ask(name, qtype):
-    """One question to the system's resolvers (the mail's own DNS client):
+    """One question to ACME's DNS servers (the mail's own DNS client):
     [(type, text)] of the answer - CNAME (5), TXT (16), A (1), AAAA (28). []
     for a name that is not there; OSError when no resolver answers."""
     last = None
-    srvs = [x for x in re.split(r'[\s,]+', os.environ.get('OTP_ACME_RESOLVER') or '') if x]
-    for srv in (srvs or dns_servers())[:3]:
+    for srv in (acme_resolvers() or _os_resolvers())[:3]:
         try:
             data = _dns_ask(srv, str(name).rstrip('.'), qtype, 3.0)
         except OSError as e:
@@ -24982,6 +25140,73 @@ def dns_ask(name, qtype):
     raise OSError('no DNS server answered (%s)' % (last or 'none'))
 
 
+# Names looked up by ACME's DNS servers (1.0.172): in the threads of this page
+# only - the CA, the DNS API, Try port 80 - every other lookup of the daemon
+# as the machine's.
+_ACME_DNS = threading.local()
+_SYS_GETADDRINFO = socket.getaddrinfo
+
+
+def _acme_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers():
+        h = host.decode() if isinstance(host, bytes) else str(host)
+        try:
+            ipaddress.ip_address(h.strip('[]'))
+        except ValueError:
+            if h not in ('localhost',):
+                addrs = []
+                for qtype, kind in ((1, 'A'), (28, 'AAAA')):
+                    if family in (0, socket.AF_INET if kind == 'A' else socket.AF_INET6):
+                        try:
+                            addrs += [a for t, a in dns_ask(h, qtype) if t == kind]
+                        except OSError:
+                            pass
+                if not addrs:
+                    raise socket.gaierror(socket.EAI_NONAME, '%s is not known to %s' % (
+                        h, ', '.join(acme_resolvers())))
+                out = []
+                for a in addrs:
+                    out += _SYS_GETADDRINFO(a, port, family, type, proto,
+                                            flags | socket.AI_NUMERICHOST)
+                return out
+    return _SYS_GETADDRINFO(host, port, family, type, proto, flags)
+
+
+socket.getaddrinfo = _acme_getaddrinfo
+
+
+class acme_dns_scope(object):
+    """with acme_dns_scope(): names looked up by ACME's DNS servers."""
+    def __enter__(self):
+        self.was = getattr(_ACME_DNS, 'on', False)
+        _ACME_DNS.on = True
+
+    def __exit__(self, *a):
+        _ACME_DNS.on = self.was
+
+
+def acme_txt_seen(name, txt, say):
+    """After the wait: whether ACME's DNS servers see the TXT record (through
+    its CNAME) - asked again for up to two minutes; the CA asked either way."""
+    rr = '_acme-challenge.' + name.rstrip('.')
+    end = time.time() + float(os.environ.get('OTP_ACME_SEEN_WAIT') or 120)
+    while True:
+        try:
+            got = [v for t, v in dns_ask(rr, 16) if t == 'TXT']
+        except OSError as e:
+            say('DNS could not be asked whether the record is there (%s): the CA is asked anyway'
+                % str(e)[:80])
+            return False
+        if txt in got:
+            say('%s TXT is seen by %s' % (rr, ', '.join(acme_resolvers()) or 'this machine\'s DNS'))
+            return True
+        if time.time() > end:
+            say('%s TXT is not seen yet by %s - the CA is asked anyway' % (
+                rr, ', '.join(acme_resolvers()) or 'this machine\'s DNS'))
+            return False
+        time.sleep(5)
+
+
 def acme_dns_guide(store):
     """What each certificate asked for needs in your DNS, by how the CA
     checks it - for the card In your DNS."""
@@ -25001,7 +25226,7 @@ def acme_dns_guide(store):
             where = str(v.get('address') or '').split('/')[0] if t == 'vip' else addr.get(t) or ''
             rows.append({'target': t, 'name': name, 'type': 'A', 'record': name, 'value': where,
                          'why': 'the name points at an address that reaches port 80 of %s' % (
-                             'the web address' if t == 'vip' else t), 'check': 'a'})
+                             'the VIP address' if t == 'vip' else t), 'check': 'a'})
             continue
         rr, cname = acme_dns_where(name)
         own = '_acme-challenge.' + name
@@ -25033,14 +25258,16 @@ def acme_dns_check(store):
                 r['said'] = 'there' if r['ok'] else (
                     'it points elsewhere: %s' % r['found'] if got else 'not there yet')
             else:
-                got = sorted({a[4][0] for a in socket.getaddrinfo(r['record'], 80,
-                                                                 proto=socket.IPPROTO_TCP)})
+                with acme_dns_scope():
+                    got = sorted({a[4][0] for a in socket.getaddrinfo(
+                        r['record'], 80, proto=socket.IPPROTO_TCP)})
                 r['found'] = ', '.join(got)
                 r['ok'] = bool(got)
                 r['said'] = 'it points at %s' % r['found'] if got else 'not there'
         except (OSError, socket.gaierror) as e:
             r.update(ok=False, said='could not be looked up: %s' % str(e)[:120])
     g['at'] = time.time()
+    g['resolvers'] = acme_resolvers() or ['this machine\'s DNS']
     return g
 
 
@@ -25092,6 +25319,11 @@ def ha_link_tls(c=None):
     c = CONFIG if c is None else c
     if c.get('ha_tls'):
         return str(c.get('ha_tls')), str(c.get('ha_tls_ca') or '')
+    if str(c.get('db_tls_ca') or '') == str(HA_CA_FILE):
+        # The daemon's own connection encrypted by Settings → The database
+        # (1.0.172): that is this node's PostgreSQL on 127.0.0.1, not the other
+        # node's - the link is not moved with it, nor stopped by it.
+        return '', ''
     return str(c.get('db_tls') or ''), str(c.get('db_tls_ca') or '')
 
 
@@ -25197,9 +25429,10 @@ def hatls_needs(store):
     return sorted(want)
 
 
-def hatls_issue(store, names):
+def hatls_issue(store, names, eku='serverAuth', days=None, cn=None):
     """A key and a certificate for this node's PostgreSQL, from the newest
-    authority of the cluster."""
+    authority of the cluster - or (1.0.172) another use of otp's authority:
+    isemon's server, a node's client certificate (eku clientAuth)."""
     ca = hatls_ca(store)
     if not ca['cas']:
         raise ValueError('the cluster has no authority yet')
@@ -25209,7 +25442,7 @@ def hatls_issue(store, names):
         raise ValueError('the authority\'s key cannot be opened on this node (is its '
                          'secrets.key the cluster\'s?)')
     key = new_key('ec')
-    cn = re.sub(r'[^A-Za-z0-9.-]', '', node_name())[:64] or 'otp'
+    cn = re.sub(r'[^A-Za-z0-9.-]', '', cn or node_name())[:64] or 'otp'
     with tempfile.TemporaryDirectory(prefix='otp-crt-') as t:
         for n, v in (('k.pem', key), ('ca.pem', top['cert']), ('cakey.pem', ca_key)):
             with open(os.path.join(t, n), 'w') as f:
@@ -25218,14 +25451,16 @@ def hatls_issue(store, names):
         with open(os.path.join(t, 'ext.cnf'), 'w') as f:
             f.write('[v3]\nbasicConstraints=critical,CA:FALSE\n'
                     'keyUsage=critical,digitalSignature,keyEncipherment\n'
-                    'extendedKeyUsage=serverAuth\nsubjectAltName=%s\n' % hatls_san(names))
+                    'extendedKeyUsage=%s\n' % eku +
+                    ('subjectAltName=%s\n' % hatls_san(names) if names else ''))
         csr = _openssl(['req', '-new', '-key', os.path.join(t, 'k.pem'), '-subj', '/CN=' + cn],
                        what='the request')
         crt = _openssl(['x509', '-req', '-CA', os.path.join(t, 'ca.pem'), '-CAkey',
                         os.path.join(t, 'cakey.pem'), '-set_serial',
                         str(int.from_bytes(secrets.token_bytes(12), 'big')), '-days',
-                        str(HATLS_CERT_DAYS), '-sha256', '-extfile', os.path.join(t, 'ext.cnf'),
-                        '-extensions', 'v3'], csr, what='the certificate').decode()
+                        str(int(days or HATLS_CERT_DAYS)), '-sha256', '-extfile',
+                        os.path.join(t, 'ext.cnf'), '-extensions', 'v3'], csr,
+                       what='the certificate').decode()
     return key, crt
 
 
@@ -25241,6 +25476,8 @@ def hatls_put(store, st):
     st['at'] = time.time()
     st['node'] = node_name()
     store.set_meta('hatls:node:' + node_name(), json.dumps(st))
+    if st.get('step') in ('done', 'off_done'):
+        DBTLS_WORK['at'] = 0.0          # the row of Encryption to the database anew (1.0.172)
 
 
 def hatls_want(store):
@@ -25347,13 +25584,6 @@ def hatls_off(store, by, here=True):
     certificates leave both PostgreSQLs (ssl as it was before otp)."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
-    using = dbtls_in_use_with_ha_ca(store)
-    if using:
-        # Their own connection checks PostgreSQL with the cluster's
-        # certificate (1.0.170): it would stop with it.
-        raise ValueError('the connection of %s to its own database is encrypted with the '
-                         'cluster\'s certificate - switch that off first (Settings → The database '
-                         '→ Encryption to the database server)' % ', '.join(using))
     now = time.time()
     w = {'at': now, 'by': by, 'from': node_name(), 'off': True}
     store.set_meta('hatls:want', json.dumps(w))
@@ -25425,13 +25655,6 @@ def _hatls_off_tick(store, w, st):
             st['said'] = 'waiting for %s to let this node in without TLS' % (pn or 'the other node')
             hatls_put(store, st)
             return
-        if CONFIG.get('db_tls') and str(CONFIG.get('db_tls_ca') or '') == str(HA_CA_FILE):
-            # Back to Database → TLS would be the cluster's authority, about to
-            # go (1.0.170): stopped here, nothing taken away yet.
-            _hatls_fail(store, st, 'this node\'s own connection to its database is encrypted with '
-                        'the cluster\'s certificate - switch that off first (Settings → The '
-                        'database), then switch TLS off again')
-            return
         write_file_settings({'ha_tls': '', 'ha_tls_ca': ''})
         CONFIG['ha_tls'], CONFIG['ha_tls_ca'] = '', ''
         sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
@@ -25455,9 +25678,22 @@ def _hatls_off_tick(store, w, st):
             st['said'] = 'waiting for %s to move its link back' % (pn or 'the other node')
             hatls_put(store, st)
             return
-        if not helper({'do': 'server_off'}, 'off_done',
-                      'the cluster\'s certificate leaves this node\'s PostgreSQL'):
+        if CONFIG.get('db_tls') and str(CONFIG.get('db_tls_ca') or '') == str(HA_CA_FILE):
+            # The daemon's own connection checks PostgreSQL with this
+            # certificate (1.0.172): it stays, and Settings → The database
+            # renews it from now on - the link is off all the same.
+            store.set_meta('dbtls:server:' + node_name(), json.dumps(
+                {'cert_end': st.get('cert_end'), 'at': now, 'by': 'kept when the link\'s TLS '
+                 'went off', 'names': hatls_names()}))
+            st.update(step='off_done', said='the certificate stays in this node\'s PostgreSQL: '
+                      'the daemon\'s own connection to it is encrypted with it (Settings → The '
+                      'database)', asked=None)
+        elif not helper({'do': 'server_off'}, 'off_done',
+                        'the cluster\'s certificate leaves this node\'s PostgreSQL'):
             return
+        else:
+            # Nothing else keeps it: not renewed by Settings → The database either.
+            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
         st.update(cert_end=None, done_at=now)
         hatls_put(store, st)
         store.add_event('ha', 'TLS between the databases is off on %s' % node_name(), 'warn')
@@ -26063,7 +26299,7 @@ def readdress_addresses():
     """The addresses this machine has, without loopback and link-local - from
     local_addresses() (88w_web), never a second function of that name: one
     here (1.0.106) took its place everywhere, found no `ip` in the service's
-    PATH, and the web address showed "on no node" though a node held it."""
+    PATH, and the VIP address showed "on no node" though a node held it."""
     out = []
     for a in sorted(local_addresses()):
         try:
@@ -26094,7 +26330,7 @@ def readdress_addresses():
 #   2. this node's ha_address, its own settings that name the old address or
 #      name (RADIUS's address, the mail greeting, the isemon name), and its
 #      self-made certificate are made again with the new ones;
-#   3. maintenance: the web address goes to the other node;
+#   3. maintenance: the VIP address goes to the other node;
 #   4. NetworkManager, the host name and /etc/hosts, then a reboot;
 #   5. back up: the new address checked, the link between the databases made
 #      again for it (hatls), replication both ways, keepalived and nginx
@@ -26286,10 +26522,10 @@ def net_check(store, node, want, rollback=False):
         except ValueError:
             vnet = None
         if vnet and vnet.ip == a4.ip:
-            raise ValueError('%s is the web address of the cluster' % new_ip)
+            raise ValueError('%s is the VIP address of the cluster' % new_ip)
         if vnet and vnet.ip not in a4.network and not want.get('vip_elsewhere'):
-            raise ValueError('the web address %s is not in %s: the node could not hold it. '
-                             'Change the web address first (High availability), or tick that '
+            raise ValueError('the VIP address %s is not in %s: the node could not hold it. '
+                             'Change the VIP address first (High availability), or tick that '
                              'it is meant to be so' % (vnet.ip, a4.network))
     plan = []
     ip_changed = bool(old_ip) and old_ip != new_ip
@@ -26309,7 +26545,7 @@ def net_check(store, node, want, rollback=False):
         plan.append('IPv6 %s: RADIUS listens %s' % (
             'on' if on6 else 'off', 'on IPv4 and IPv6 (::)' if on6 else 'on IPv4 only'))
     if many:
-        plan.append('maintenance on %s - the web address goes to the other node' % node)
+        plan.append('maintenance on %s - the VIP address goes to the other node' % node)
     plan.append('NetworkManager (%s): %s via %s, DNS %s%s' % (
         con, a4, gw or 'no gateway', ', '.join(dns) or 'none',
         '' if not on6 else ', IPv6 %s' % (a6 if a6 else 'automatic')))
@@ -26583,12 +26819,12 @@ def net_job_run(daemon, ask):
             except ValueError as e:
                 _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e,
                          45, ok=False)
-        # 5. Out of the way: the web address to the other node.
+        # 5. Out of the way: the VIP address to the other node.
         if many:
             if not (maintenance_row(store) or {}).get('on'):
                 maintenance_set(store, True, 'the network is being changed', by)
                 job['maint'] = True
-            _job_put(store, job, 'maintenance on - the web address goes to the other node', 55)
+            _job_put(store, job, 'maintenance on - the VIP address goes to the other node', 55)
             v = vip_conf(store)
             end = time.time() + 30
             while v.get('on') and vip_here(v.get('address')) and time.time() < end:
@@ -26708,12 +26944,12 @@ def net_job_after(daemon, job):
         # restart it failed - the machine did not have the address yet - and a
         # failed request is asked again only when somebody says so.
         ok, said = net_vip_again(store)
-        _job_put(store, job, 'the web address (keepalived) set up for %s: %s' % (
-            w.get('new_ip') or me, said) if ok else 'the web address (keepalived) on this node: %s - '
+        _job_put(store, job, 'the VIP address (keepalived) set up for %s: %s' % (
+            w.get('new_ip') or me, said) if ok else 'the VIP address (keepalived) on this node: %s - '
             'Settings → High availability, Try again' % said, 97, ok=ok)
     if many and job.get('maint'):
         maintenance_set(store, False, '', by)
-        _job_put(store, job, 'out of maintenance - the web address may come back', 98)
+        _job_put(store, job, 'out of maintenance - the VIP address may come back', 98)
     if job.get('trial_min') and job.get('back'):
         net_trial_start(store, job, by)
         return
@@ -26961,8 +27197,8 @@ def power_go(daemon, plan):
             while v.get('on') and vip_here(v.get('address')) and time.time() < end:
                 time.sleep(1)
             if v.get('on') and vip_here(v.get('address')) and plan.get('keep_service'):
-                # The web address did not move (1.0.165): not restarted under it.
-                raise ValueError('the web address did not move to the other node in 90 s - not '
+                # The VIP address did not move (1.0.165): not restarted under it.
+                raise ValueError('the VIP address did not move to the other node in 90 s - not '
                                  'restarted')
         row['down_at'] = time.time() + 5
         _power_put(store, row, 'going', 'going down')
@@ -27044,7 +27280,7 @@ def power_view(store):
 
 
 def net_vip_again(store, wait=120):
-    """This node's part of the web address asked of root again, and waited
+    """This node's part of the VIP address asked of root again, and waited
     for."""
     h = web_hash(web_desired(store))
     st = web_status()
@@ -28189,7 +28425,7 @@ def _osup_go(daemon, what, ctx):
             plan, row = ctx['plan'], ctx['row']
             if what == 'upgrade':
                 # Out of service first where another node answers meanwhile:
-                # the web address moves to it, RADIUS is answered there.
+                # the VIP address moves to it, RADIUS is answered there.
                 many = any(n.get('alive') and not n.get('me') for n in ha_nodes(store))
                 if many:
                     maintenance_set(store, True, 'the system is being updated', by)
@@ -28696,10 +28932,12 @@ def _ask_dircheck(daemon, args):
 # ---- the daemon's own connection to its database: encrypted and checked (1.0.170) -------
 # Settings → The database → Encryption to the database server, as a wizard, on
 # the running installation - every node, nothing stopped:
-#   replicated - each node's own PostgreSQL has the cluster's certificate once
-#                the link between the databases is encrypted (High availability):
-#                it names localhost and 127.0.0.1, so each node only moves its
-#                own connection over to verify-full with the cluster's authority;
+#   replicated - each node's own PostgreSQL: the certificate the link between
+#                the databases gave it (High availability) when that is on, or
+#                one from the same authority given here when it is not - the
+#                two are on and off each by itself (1.0.172): the link's TLS
+#                switched off leaves the certificate where the connection uses
+#                it, and this one switched off leaves it where the link does;
 #   local      - PostgreSQL on this machine, no cluster: it is given a
 #                certificate from otp's own authority (renewed by itself 45 days
 #                before it ends, and made again when the machine's names or
@@ -28947,6 +29185,20 @@ def _dbtls_ca_for(store, kind, mode, args):
     return str(DBTLS_CA)
 
 
+def _dbtls_link_has(store):
+    """Whether the link between the databases has this node's PostgreSQL
+    certificate in place and renews it (High availability → Repair done)."""
+    return CONFIG.get('ha_mode') == 'replicated' and \
+        hatls_state(store).get('step') == 'done' and \
+        CONFIG.get('ha_tls') == 'verify-full' and HA_CA_FILE.exists()
+
+
+def _dbtls_has_server(store):
+    """This node's PostgreSQL has a certificate from otp's authority."""
+    return HA_CA_FILE.exists() and (_dbtls_link_has(store) or bool(
+        _meta_json(store, 'dbtls:server:' + node_name())))
+
+
 def dbtls_apply(daemon, args):
     """What every node does in one phase of the wizard."""
     store = daemon.store
@@ -28955,9 +29207,12 @@ def dbtls_apply(daemon, args):
     kind = dbtls_kind()
     base = {'kind': kind, 'phase': phase}
     if phase == 'server':
-        if kind != 'local':
+        if kind == 'replicated' and _dbtls_link_has(store) and not args.get('renew'):
+            return dict(base, ok=True, skip=True,
+                        said='its PostgreSQL has the certificate of the link between the '
+                             'databases, renewed with it')
+        if kind not in ('local', 'replicated'):
             return dict(base, ok=True, skip=True, said={
-                'replicated': 'its PostgreSQL has the cluster\'s certificate',
                 'remote': 'its database server is elsewhere',
                 'sqlite': 'its database is a file on this machine',
                 'socket': 'it reaches its database over a Unix socket'}.get(kind, ''))
@@ -28981,16 +29236,8 @@ def dbtls_apply(daemon, args):
             raise ValueError('the mode is require, verify-ca or verify-full')
         if kind in ('sqlite', 'socket'):
             return dict(base, ok=True, skip=True, said='nothing of it goes over a network')
-        if mode and kind == 'replicated':
-            st = hatls_state(store)
-            if st.get('step') != 'done' or not HA_CA_FILE.exists():
-                raise ValueError('this node\'s PostgreSQL has no certificate from the cluster yet - '
-                                 'encrypt the link between the databases first (High '
-                                 'availability → Repair)')
-            mode = 'verify-full'
-        elif mode and kind == 'local':
-            if not (_meta_json(store, 'dbtls:server:' + node_name()) or {}) or \
-                    not HA_CA_FILE.exists():
+        if mode and kind in ('replicated', 'local'):
+            if not _dbtls_has_server(store):
                 raise ValueError('this node\'s PostgreSQL has no certificate from otp yet')
             mode = 'verify-full'
         ca = _dbtls_ca_for(store, kind, mode, args)
@@ -29015,10 +29262,20 @@ def dbtls_apply(daemon, args):
         return dict(got, **dict(base, ok=True, said='it was so already' if
                                 got.get('changed') is False else ''))
     if phase == 'server_off':
-        if kind != 'local' or not (_meta_json(store, 'dbtls:server:' + node_name()) or {}):
+        if kind not in ('local', 'replicated') or \
+                not (_meta_json(store, 'dbtls:server:' + node_name()) or {}):
             return dict(base, ok=True, skip=True, said='nothing of otp\'s in its PostgreSQL')
         if CONFIG.get('db_tls'):
             raise ValueError('this node\'s connection still uses TLS - it moves back first')
+        if kind == 'replicated' and (_dbtls_link_has(store) or
+                                     hatls_state(store).get('step') not in (None, 'off_done',
+                                                                            'failed')):
+            # The link between the databases uses the certificate (1.0.172):
+            # it stays, renewed by the link.
+            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+            dbtls_publish(daemon, force=True)
+            return dict(base, ok=True, said='the certificate stays: the link between the '
+                        'databases uses it and renews it')
         others = [n for n, r in _dbtls_rows(store).items()
                   if n != node_name() and r.get('mode') and r.get('kind') == 'remote']
         if others:
@@ -29060,11 +29317,14 @@ def dbtls_publish(daemon, force=False):
     except Exception as e:                              # noqa: BLE001
         row['said'] = scrub_secret(str(e))[:200]
     srv = _meta_json(store, 'dbtls:server:' + node_name()) or {}
-    if row['kind'] == 'local' and srv:
+    link = row['kind'] == 'replicated' and _dbtls_link_has(store)
+    if link:
+        row['cert_end'] = hatls_state(store).get('cert_end')
+        row['server_by'] = 'link'
+    elif row['kind'] in ('local', 'replicated') and srv:
         row['cert_end'] = srv.get('cert_end')
         row['server'] = True
-    elif row['kind'] == 'replicated':
-        row['cert_end'] = hatls_state(store).get('cert_end')
+        row['server_by'] = 'here'
     if DBTLS_WORK.get('rescued'):
         row['rescued'] = DBTLS_WORK['rescued']
     try:
@@ -29137,11 +29397,11 @@ def dbtls_tick(daemon):
     (kind local) made again 45 days before it ends or when the machine's
     names change - in a thread, the connection keeps going."""
     dbtls_publish(daemon)
-    if dbtls_kind() != 'local':
+    if dbtls_kind() not in ('local', 'replicated'):
         return
     srv = _meta_json(daemon.store, 'dbtls:server:' + node_name()) or {}
-    if not srv:
-        return
+    if not srv or _dbtls_link_has(daemon.store):
+        return                          # none of its own, or the link renews it
     t = DBTLS_WORK.get('renew')
     if t is not None and t.is_alive():
         return
@@ -29186,16 +29446,6 @@ def dbtls_view(store):
             'hisec': hisec_enforced('db:tls', store)}
 
 
-def dbtls_in_use_with_ha_ca(store):
-    """Nodes whose connection checks with the cluster's authority - the link's
-    TLS cannot be switched off under them."""
-    out = [n for n, r in _dbtls_rows(store).items()
-           if r.get('mode') and r.get('kind') == 'replicated']
-    if CONFIG.get('db_tls') and dbtls_kind() == 'replicated' and node_name() not in out:
-        out.append(node_name())
-    return out
-
-
 @node_ask_kind('dbtls_probe')
 def _ask_dbtls_probe(daemon, args):
     """What a mode would do on this node - nothing changed."""
@@ -29207,13 +29457,7 @@ def _ask_dbtls_probe(daemon, args):
     out = {'kind': kind, 'server_tls': bool(plain.get('ok')),
            'server_said': plain.get('said') or ''}
     if kind in ('replicated', 'local') and mode:
-        has = HA_CA_FILE.exists() and (
-            (kind == 'replicated' and hatls_state(daemon.store).get('step') == 'done') or
-            (kind == 'local' and bool(_meta_json(daemon.store, 'dbtls:server:' + node_name()))))
-        if not has:
-            if kind == 'replicated':
-                return dict(out, ok=False, said='the link between the databases is not encrypted '
-                            'yet - High availability → Repair first')
+        if not _dbtls_has_server(daemon.store):
             return dict(out, ok=True, needs_server=True,
                         said='its PostgreSQL is given a certificate from otp first')
         return dict(out, **{k: v for k, v in dbtls_probe('verify-full', str(HA_CA_FILE)).items()
@@ -29250,6 +29494,314 @@ def _ask_dbtls_probe(daemon, args):
 @node_ask_kind('dbtls_apply')
 def _ask_dbtls_apply(daemon, args):
     return dbtls_apply(daemon, args)
+
+
+# ---- isemon over TLS (1.0.172) -----------------------------------------------------------
+# Settings → isemon → Encrypted sending: the syslog lines to isemon over TLS
+# (6514/tcp, rsyslog's gtls on the other side), isemon's certificate checked.
+# Where isemon has none, otp's own authority (the one of the link between the
+# databases and of the database's TLS) makes one for it, given away once as a
+# locked ZIP with the rsyslog configuration that takes it. Mutual TLS: each node
+# shows isemon a certificate of its own from the same authority - made and
+# renewed by the node itself - so isemon takes lines from otp's nodes only.
+ISEMON_CLIENT_DAYS = 825
+ISEMON_CLIENT_RENEW_DAYS = 60
+ISEMON_SERVER_DAYS = 1825
+ISEMON_CLIENT_CRT = STATE_DIR / 'isemon-client.crt'
+ISEMON_CLIENT_KEY = STATE_DIR / 'isemon-client.key'
+ISEMON_TLS_WORK = {'at': 0.0, 'said': 0.0}
+
+
+def isemon_tls_ctx():
+    """The TLS context the shipper speaks to isemon with."""
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ca = str(CONFIG.get('isemon_ca') or '').strip()
+    if ca:
+        ctx.load_verify_locations(cadata=ca)
+    if not CONFIG.get('isemon_verify', 1):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    if CONFIG.get('isemon_mtls') and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists():
+        ctx.load_cert_chain(str(ISEMON_CLIENT_CRT), str(ISEMON_CLIENT_KEY))
+    return ctx
+
+
+def _isemon_peer_names(store):
+    """The names of the nodes as isemon's PermittedPeer lists them."""
+    return [re.sub(r'[^A-Za-z0-9.-]', '', n)[:64] or 'otp'
+            for n in sorted(set(host_nodes(store)))]
+
+
+def isemon_client_cert(store, force=False):
+    """This node's own certificate for isemon (mutual TLS): made from otp's
+    authority, renewed 60 days before it ends, kept sealed in the database and
+    as two files only otp reads. Returns its end."""
+    k = 'isemon:client:' + node_name()
+    got = _meta_json(store, k) or {}
+    end = float(got.get('end') or 0)
+    fresh = end - time.time() > ISEMON_CLIENT_RENEW_DAYS * 86400
+    if not force and fresh and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists():
+        return end
+    if not force and fresh and got.get('cert') and got.get('key'):
+        key = unseal_secret(got['key'], bind=k)       # files gone: written again
+        crt = got['cert']
+    else:
+        with HATLS_LOCK:
+            ca = hatls_ca(store)
+            if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
+                    HATLS_CA_ROLL_DAYS * 86400:
+                hatls_ca_make(store, 'otp (isemon)')
+        name = re.sub(r'[^A-Za-z0-9.-]', '', node_name())[:64] or 'otp'
+        key, crt = hatls_issue(store, [name], eku='clientAuth', days=ISEMON_CLIENT_DAYS, cn=name)
+        end = _cert_end(crt)
+        store.set_meta(k, json.dumps({'cert': crt, 'key': seal_secret(key, bind=k), 'end': end,
+                                      'at': time.time()}))
+        store.add_event('settings', 'a certificate of %s for isemon was made from otp\'s '
+                        'authority, good until %s' % (node_name(), stamp(end)))
+    for path, text, mode in ((ISEMON_CLIENT_KEY, key, 0o600), (ISEMON_CLIENT_CRT, crt, 0o644)):
+        tmp = str(path) + '.new'
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+        with os.fdopen(fd, 'w') as f:
+            f.write(text.strip() + '\n')
+        os.chmod(tmp, mode)
+        os.replace(tmp, str(path))
+    return end
+
+
+def isemon_tls_tick(daemon):
+    """Every few minutes: this node's own certificate for isemon where mutual
+    TLS is on, renewed in time; isemon's certificate made here said before it
+    runs out."""
+    now = time.time()
+    if now - ISEMON_TLS_WORK['at'] < 300:
+        return
+    ISEMON_TLS_WORK['at'] = now
+    store = daemon.store
+    if CONFIG.get('isemon') and CONFIG.get('isemon_mtls'):
+        before = ISEMON_CLIENT_CRT.stat().st_mtime if ISEMON_CLIENT_CRT.exists() else 0
+        isemon_client_cert(store)
+        after = ISEMON_CLIENT_CRT.stat().st_mtime if ISEMON_CLIENT_CRT.exists() else 0
+        sh = getattr(daemon, 'shipper', None)
+        if sh is not None and after != before:
+            sh.ctx = None
+            for key in list(sh.tcp):
+                try:
+                    sh.tcp.pop(key).close()
+                except (OSError, KeyError):
+                    pass
+    srv = _meta_json(store, 'isemon:server') or {}
+    left = (float(srv.get('end') or 0) - now) / 86400 if srv else None
+    if left is not None and left < 60 and now - ISEMON_TLS_WORK['said'] > 86400 and \
+            alerts_lead(store):
+        ISEMON_TLS_WORK['said'] = now
+        store.add_event('settings', 'isemon\'s certificate from otp\'s authority (%s) ends in %d '
+                        'days - make a new bundle for isemon (Settings → isemon → Encrypted '
+                        'sending)' % (', '.join(srv.get('names') or []), max(0, int(left))),
+                        'warn')
+
+
+def isemon_rsyslog_conf(port, mtls, peers):
+    """What isemon's rsyslog takes it with: its own input on the port, the
+    files of the bundle. Per-input stream settings: rsyslog 8.2106 or later
+    (AlmaLinux/RHEL 9); the plain input on 514 stays as it is."""
+    peer = ('\n      StreamDriver.AuthMode="x509/name"\n      PermittedPeer=[%s]'
+            % ', '.join('"%s"' % p for p in peers)) if mtls else \
+        '\n      StreamDriver.AuthMode="anon"'
+    return ('# /etc/rsyslog.d/10-otp-tls.conf - made by otp %s on %s\n'
+            '# The otp nodes send over TLS to %d/tcp. Needs: dnf install rsyslog-gnutls\n'
+            'global(\n'
+            '  DefaultNetstreamDriverCAFile="/etc/pki/rsyslog/otp/ca.pem"\n'
+            '  DefaultNetstreamDriverCertFile="/etc/pki/rsyslog/otp/isemon.crt"\n'
+            '  DefaultNetstreamDriverKeyFile="/etc/pki/rsyslog/otp/isemon.key"\n'
+            ')\n'
+            '# imtcp loaded once in the whole configuration - take this line out if\n'
+            '# /etc/rsyslog.conf loads it already.\n'
+            'module(load="imtcp")\n'
+            'input(type="imtcp" port="%d" name="otp-tls"\n'
+            '      StreamDriver.Name="gtls"\n'
+            '      StreamDriver.Mode="1"%s)\n'
+            % (__version__, time.strftime('%Y-%m-%d'), int(port), int(port), peer))
+
+
+def isemon_tls_bundle(store, names, port, mtls, passphrase, by):
+    """isemon's certificate from otp's authority, its key, the authority, the
+    rsyslog configuration and what to do - one ZIP locked with the passphrase
+    (the key is in it). The key is not kept here."""
+    names = [n.strip().rstrip('.') for n in names if n.strip()]
+    if not names:
+        raise ValueError('the name isemon is reached by (as in its address here) is needed')
+    for n in names:
+        _san_ext([n])
+    if len(str(passphrase or '')) < 12:
+        raise ValueError('the passphrase is 12 characters at least - the key of isemon\'s '
+                         'certificate is in the file')
+    with HATLS_LOCK:
+        ca = hatls_ca(store)
+        if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
+                HATLS_CA_ROLL_DAYS * 86400:
+            hatls_ca_make(store, by)
+    key, crt = hatls_issue(store, names, eku='serverAuth', days=ISEMON_SERVER_DAYS,
+                           cn=names[0][:64])
+    trust = hatls_trust(hatls_ca(store))
+    end = _cert_end(crt)
+    peers = _isemon_peer_names(store)
+    readme = (
+        'isemon over TLS - from otp %s, %s\n\n'
+        'isemon.crt  isemon\'s certificate for %s, good until %s\n'
+        'isemon.key  its key - for rsyslog alone (0600, root)\n'
+        'ca.pem      otp\'s own authority: it signed isemon.crt%s\n'
+        '10-otp-tls.conf  the rsyslog configuration\n\n'
+        'On the isemon machine, as root:\n'
+        '  dnf install rsyslog-gnutls\n'
+        '  install -d -m 0750 /etc/pki/rsyslog/otp\n'
+        '  install -m 0644 ca.pem isemon.crt /etc/pki/rsyslog/otp/\n'
+        '  install -m 0600 isemon.key /etc/pki/rsyslog/otp/\n'
+        '  restorecon -R /etc/pki/rsyslog\n'
+        '  install -m 0644 10-otp-tls.conf /etc/rsyslog.d/\n'
+        '  rsyslogd -N1 && systemctl restart rsyslog\n'
+        '  firewall-cmd --permanent --add-port=%d/tcp && firewall-cmd --reload\n\n'
+        '11-otp.conf (the rule that files totp.cgi and radius-detail) stays as it is: it\n'
+        'files the lines that come over TLS the same way.\n'
+        'Then on otp: Settings -> isemon -> Encrypted sending -> Try it on every node,\n'
+        'then Switch over.\n' % (
+            __version__, time.strftime('%Y-%m-%d'), ', '.join(names), stamp(end),
+            ' - and, with mutual TLS, the\n             certificates of the otp nodes (%s)'
+            % ', '.join(peers) if mtls else '', int(port)))
+    files = [('ca.pem', trust.encode()), ('isemon.crt', (crt.strip() + '\n').encode()),
+             ('isemon.key', (key.strip() + '\n').encode()),
+             ('10-otp-tls.conf', isemon_rsyslog_conf(port, mtls, peers).encode()),
+             ('README.txt', readme.encode())]
+    blob = zip_aes_write(files, str(passphrase))
+    store.set_meta('isemon:server', json.dumps({'names': names, 'end': end, 'at': time.time(),
+                                                'by': by, 'mtls': bool(mtls), 'port': int(port)}))
+    store.add_event('settings', '%s made a certificate for isemon (%s) from otp\'s authority, '
+                    'good until %s, and took it away in a locked file' % (
+                        by, ', '.join(names), stamp(end)), 'warn', who=by)
+    return blob
+
+
+def isemon_tls_probe(store, host, port, ca_pem, verify, mtls):
+    """A TLS connection to isemon from this node, with these settings: how far
+    it went, isemon's certificate, and - with mutual TLS - whether isemon kept
+    the connection after seeing this node's."""
+    out = {'host': host, 'port': port, 'steps': []}
+    began = time.time()
+
+    def step(what, ok, said=''):
+        out['steps'].append({'what': what, 'ok': ok, 'said': said,
+                             'ms': int((time.time() - began) * 1000)})
+    if mtls:
+        try:
+            isemon_client_cert(store)
+            step('this node\'s certificate', True, 'from otp\'s authority')
+        except Exception as e:                          # noqa: BLE001
+            step('this node\'s certificate', False, str(e)[:200])
+            return dict(out, ok=False)
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    if ca_pem:
+        try:
+            ctx.load_verify_locations(cadata=ca_pem)
+        except (ssl.SSLError, ValueError) as e:
+            step('the authority', False, 'not a PEM certificate: %s' % str(e)[:120])
+            return dict(out, ok=False)
+    if not verify:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    if mtls:
+        ctx.load_cert_chain(str(ISEMON_CLIENT_CRT), str(ISEMON_CLIENT_KEY))
+    try:
+        raw = socket.create_connection((host, int(port)), timeout=6)
+    except OSError as e:
+        step('connected', False, str(e)[:200])
+        return dict(out, ok=False)
+    step('connected', True, '%s:%d' % (host, int(port)))
+    try:
+        try:
+            t = ctx.wrap_socket(raw, server_hostname=host)
+        except ssl.SSLCertVerificationError as e:
+            step('TLS, isemon\'s certificate checked', False, str(e.verify_message or e)[:200])
+            return dict(out, ok=False)
+        except (ssl.SSLError, OSError) as e:
+            step('TLS', False, str(e)[:200])
+            return dict(out, ok=False)
+        cert = t.getpeercert() or {}
+        out.update(version=t.version(), cipher=(t.cipher() or ('',))[0])
+        if cert:
+            out['cert'] = {
+                'subject': ', '.join('%s=%s' % x[0] for x in cert.get('subject') or ()),
+                'issuer': ', '.join('%s=%s' % x[0] for x in cert.get('issuer') or ()),
+                'end': ssl.cert_time_to_seconds(cert['notAfter']) if cert.get('notAfter')
+                else None,
+                'names': [v for _k, v in cert.get('subjectAltName') or ()]}
+        step('TLS, isemon\'s certificate checked' if verify else 'TLS (the certificate not '
+             'checked)', True, '%s, %s' % (out['version'], out['cipher']))
+        # A line isemon files as any other test line; with mutual TLS a server
+        # that does not take this node's certificate closes the connection.
+        line = '<29>%s %s otp[%d]: a TLS test from otp %s on %s - isemon reads nothing from ' \
+               'this line\n' % (syslog_stamp(), (str(CONFIG.get('isemon_hostname') or '').strip()
+                                                or short_host()), os.getpid(), __version__,
+                                node_name())
+        try:
+            t.sendall(line.encode())
+            t.settimeout(1.5)
+            try:
+                got = t.recv(1)
+                if got == b'':
+                    step('isemon kept the connection', False, 'it closed it' + (
+                        ' - it did not take this node\'s certificate?' if mtls else ''))
+                    return dict(out, ok=False)
+            except socket.timeout:
+                pass
+            except ssl.SSLError as e:
+                step('isemon kept the connection', False, str(e)[:200])
+                return dict(out, ok=False)
+        except (OSError, ssl.SSLError) as e:
+            step('a test line sent', False, str(e)[:200])
+            return dict(out, ok=False)
+        step('isemon kept the connection', True, 'a test line sent' + (
+            ', this node\'s certificate taken' if mtls else ''))
+        try:
+            t.close()
+        except OSError:
+            pass
+    finally:
+        try:
+            raw.close()
+        except OSError:
+            pass
+    return dict(out, ok=True)
+
+
+def isemon_tls_view(store):
+    targets = syslog_targets(CONFIG.get('isemon_targets'))
+    nodes = {}
+    for n in host_nodes(store):
+        c = _meta_json(store, 'isemon:client:' + n) or {}
+        nodes[n] = {'client_end': c.get('end')}
+    srv = _meta_json(store, 'isemon:server') or {}
+    return {'on': bool(CONFIG.get('isemon')),
+            'targets': [{'host': h, 'port': p, 'proto': pr} for h, p, pr in targets],
+            'tls': any(pr == 'tls' for _h, _p, pr in targets),
+            'plain': any(pr != 'tls' for _h, _p, pr in targets),
+            'verify': bool(CONFIG.get('isemon_verify', 1)), 'mtls': bool(CONFIG.get('isemon_mtls')),
+            'ca': 'given' if str(CONFIG.get('isemon_ca') or '').strip() else 'system',
+            'ca_is_otp': bool(str(CONFIG.get('isemon_ca') or '').strip()) and
+            str(CONFIG.get('isemon_ca') or '').strip() == hatls_trust(hatls_ca(store)).strip(),
+            'server': {k: srv.get(k) for k in ('names', 'end', 'at', 'by', 'mtls', 'port')}
+            if srv else None,
+            'nodes': nodes, 'peers': _isemon_peer_names(store),
+            'hisec': hisec_enforced('isemon', store)}
+
+
+@node_ask_kind('isemon_tls')
+def _ask_isemon_tls(daemon, args):
+    ca = str(args.get('ca_pem') or '')
+    if args.get('ca_source') == 'otp':
+        ca = hatls_trust(hatls_ca(daemon.store))
+    return isemon_tls_probe(daemon.store, str(args.get('host') or ''), int(args.get('port') or 6514),
+                            ca, bool(args.get('verify', True)), bool(args.get('mtls')))
 
 # ---- alerts by mail, and the report (1.0.162) ------------------------------------------
 # Each node writes what only it can see into a row of its own every minute
@@ -29477,7 +30029,7 @@ def alert_problems(store, lang='en'):
                 seen.add(fp)
                 left = (float(c['not_after']) - now) / 86400
                 if left < days:
-                    who = _al(lang, 'webové adresy', 'the web address') if what == 'vip' else n
+                    who = _al(lang, 'webové adresy', 'the VIP address') if what == 'vip' else n
                     add('cert:%s:%s' % (what, n if what == 'node' else 'vip'),
                         'bad' if left < 7 else 'warn', n if what == 'node' else '',
                         _al(lang, 'Certifikát %s %s' % (who, 'vypršel' if left < 0 else
@@ -31253,7 +31805,7 @@ def _health(h):
     account exists at all (the sign-in page says how to make the first one
     otherwise), the language and this node's name. No version, no count."""
     # The database asked at most once a second (1.0.57): /healthz is public,
-    # and every load balancer, monitor and the web address's own check ask it.
+    # and every load balancer, monitor and the VIP address's own check ask it.
     got = HEALTH_SEEN.get('db')
     if got and time.time() - got[0] < 1.0:
         users, db_ok, maint = got[1]
@@ -33548,13 +34100,87 @@ def _hisec_do(h):
 def _isemon_do(h):
     s = h.me('fulladmin')
     b = h.body()
-    if str(b.get('action') or '') == 'result':
+    act = str(b.get('action') or '')
+    if act == 'result':
         return {'nodes': node_ask_results(h.store, 'isemon', str(b.get('id') or ''))}
+    if act.startswith('tls_'):
+        try:
+            return _isemon_tls_do(h, s, b, act)
+        except (ValueError, BadSetting) as e:
+            raise ApiError(400, str(e))
     if not CONFIG.get('isemon'):
         raise ApiError(400, 'sending to isemon is off')
     # From every node (1.0.169): each sends its own test line.
     return node_ask(h.d, 'isemon', {'by': s['name'], 'only': str(b.get('node') or '')},
                     s['name'])
+
+
+def _isemon_tls_target(b):
+    host = str(b.get('host') or '').strip().strip('[]')
+    if not re.match(r'^[A-Za-z0-9.:\-]{1,253}\Z', host):
+        raise ValueError('isemon\'s address is a name or an address')
+    try:
+        port = int(b.get('port') or 6514)
+    except (TypeError, ValueError):
+        raise ValueError('the port is a number')
+    if not 0 < port < 65536:
+        raise ValueError('the port is 1 to 65535')
+    return host, port
+
+
+def _isemon_tls_do(h, s, b, act):
+    """Encrypted sending to isemon (1.0.172): try it on every node, the
+    bundle for isemon, switch over, switch off."""
+    store = h.store
+    if act == 'tls_result':
+        return {'nodes': node_ask_results(store, 'isemon_tls', str(b.get('id') or '')),
+                'tls': isemon_tls_view(store)}
+    src = str(b.get('ca_source') or 'otp')
+    if src not in ('otp', 'given', 'system'):
+        raise ValueError('the authority is otp\'s, given, or the system\'s')
+    pem = str(b.get('ca_pem') or '').strip()
+    if src == 'given' and '-----BEGIN CERTIFICATE-----' not in pem:
+        raise ValueError('isemon\'s authority is a PEM certificate (-----BEGIN CERTIFICATE-----)')
+    if act == 'tls_probe':
+        host, port = _isemon_tls_target(b)
+        return node_ask(h.d, 'isemon_tls', {'host': host, 'port': port, 'ca_source': src,
+                                            'ca_pem': pem if src == 'given' else '',
+                                            'verify': bool(b.get('verify', True)),
+                                            'mtls': bool(b.get('mtls'))}, s['name'])
+    if act == 'tls_bundle':
+        _host, port = _isemon_tls_target(b)
+        names = [x for x in re.split(r'[\s,;]+', str(b.get('names') or '')) if x]
+        blob = isemon_tls_bundle(store, names, port, bool(b.get('mtls')),
+                                 str(b.get('passphrase') or ''), s['name'])
+        return {'name': 'isemon-tls.zip', 'file': base64.b64encode(blob).decode(),
+                'tls': isemon_tls_view(store)}
+    if act == 'tls_apply':
+        host, port = _isemon_tls_target(b)
+        verify = bool(b.get('verify', True))
+        if not verify and hisec_enforced('isemon', store):
+            raise ValueError('high security is on: isemon\'s certificate is checked')
+        keep = [t for t in syslog_targets(CONFIG.get('isemon_targets')) if t[0] != host]
+        targets = ['%s:%d/%s' % t for t in keep] + ['%s:%d/tls' % (host, port)]
+        ca = hatls_trust(hatls_ca(store)) if src == 'otp' else (pem if src == 'given' else '')
+        h.d.save_settings({'isemon': 1, 'isemon_targets': ', '.join(targets), 'isemon_ca': ca,
+                           'isemon_verify': 1 if verify else 0,
+                           'isemon_mtls': 1 if b.get('mtls') else 0}, by=s['name'])
+        store.add_event('settings', '%s: isemon at %s:%d is sent to over TLS%s' % (
+            s['name'], host, port, ', each node showing its own certificate' if b.get('mtls')
+            else ''), 'info', who=s['name'])
+        return {'message': 'isemon at %s:%d is sent to over TLS from now on' % (host, port),
+                'tls': isemon_tls_view(store)}
+    if act == 'tls_off':
+        host = str(b.get('host') or '').strip().strip('[]')
+        targets = ['%s:%d/%s' % ((t[0], 514, 'tcp') if t[2] == 'tls' and (not host or t[0] == host)
+                                 else t) for t in syslog_targets(CONFIG.get('isemon_targets'))]
+        if hisec_enforced('isemon', store):
+            raise ValueError('high security is on: isemon is sent to over TLS only')
+        h.d.save_settings({'isemon_targets': ', '.join(targets), 'isemon_mtls': 0}, by=s['name'])
+        store.add_event('settings', '%s: isemon is sent to over plain TCP again' % s['name'],
+                        'warn', who=s['name'])
+        return {'message': 'isemon is sent to over plain TCP (514) again', 'tls': isemon_tls_view(store)}
+    raise ValueError('no such thing to do')
 
 
 @route('GET', '/api/isemon')
@@ -33570,7 +34196,8 @@ def _isemon(h):
             (row.get('isemon') or {})
         out.append(dict(st, node=n, me=n == node_name(),
                         at=time.time() if n == node_name() else row.get('at')))
-    return {'nodes': out, 'on': bool(CONFIG.get('isemon'))}
+    return {'nodes': out, 'on': bool(CONFIG.get('isemon')),
+            'tls': isemon_tls_view(h.store) if h.me().get('role') == 'fulladmin' else None}
 
 
 @route('GET', '/api/users')
@@ -34344,8 +34971,8 @@ def _import(h):
 # ---- the whole configuration as one file (1.0.62) ------------------------------------
 # Everything that is set up rather than recorded: the settings (those of each
 # node too), the RADIUS clients, the realms, the directories, the accounts of
-# the pages, the certificates and keys of the pages and the web address, the
-# web address itself, who may reach which page, the firewall and the mail
+# the pages, the certificates and keys of the pages and the VIP address, the
+# VIP address itself, who may reach which page, the firewall and the mail
 # server's authorities. Not the tokens - they are in the copies of the
 # database. With the secrets it carries what opens all of it in the clear.
 CONFIG_FORMAT = 2
@@ -34494,7 +35121,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         try:
             vip_in.update(vip_checked(vip_in, store))
         except (ValueError, TypeError) as e:
-            raise ApiError(400, 'the web address in the file: %s' % e)
+            raise ApiError(400, 'the VIP address in the file: %s' % e)
     logos_in = {}
     for slot, k in (('portal', 'logo'), ('admin', 'admin_logo')):
         one = conf.get(k)
@@ -34645,9 +35272,9 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         if isinstance(web.get('vip'), dict):
             vip = dict(web['vip'])
             if not CONFIG.get('ha_mode'):
-                vip['on'] = False       # a web address is a cluster's
+                vip['on'] = False       # a VIP address is a cluster's
             store.set_meta('web:vip', json.dumps(dict(vip, at=time.time(), by=by)))
-            said['web address'] += 1
+            said['VIP address'] += 1
         if fw is not None:
             fw_trial_begin(store, by)
             store.set_meta('fw:conf', json.dumps(dict(fw, at=time.time(), by=by)))
@@ -35973,7 +36600,7 @@ def _ha_do(h):
     raise ApiError(400, 'no such thing to do')
 
 
-# ---- TLS and the cluster's web address (1.0.47) ------------------------------------
+# ---- TLS and the cluster's VIP address (1.0.47) ------------------------------------
 @route('GET', '/api/web')
 def _web(h):
     me = h.me()
@@ -35995,7 +36622,8 @@ def _web(h):
             'tls': {t: tls_view(tls_profile(store, t)) for t in tls_targets(store)},
             'acme': {'on': bool(CONFIG.get('acme')), 'care': {
                 t: acme_care(store, t) and t in acme_wanted(store) for t in tls_targets(store)},
-                     'state': {t: acme_state(store, t) for t in tls_targets(store)}},
+                     'state': {t: acme_state(store, t) for t in tls_targets(store)},
+                     'before': {t: acme_before(store, t) for t in tls_targets(store)}},
             'presets': TLS_PRESETS, 'dh': DH_WORDS,
             'may': me.get('role') == 'fulladmin'}
 
@@ -36012,7 +36640,7 @@ def _web_do(h):
         if target not in tls_targets(store):
             raise ApiError(400, 'there is no node or address called %s' % target)
         prof = tls_profile(store, target) or {}
-        words = 'the web address' if target == 'vip' else target
+        words = 'the VIP address' if target == 'vip' else target
     if act in ('tls_upload', 'tls_selfsigned'):
         if act == 'tls_upload':
             pfx = b''
@@ -36097,13 +36725,13 @@ def _web_do(h):
         return {'pem': prof['cert'] + (prof.get('chain') or ''), 'csr': prof.get('csr') or ''}
     if act in ('vip_save', 'vip_on', 'vip_off', 'vip_move'):
         if not CONFIG.get('ha_mode'):
-            raise ApiError(409, 'the web address is for a cluster: make this node one of two '
+            raise ApiError(409, 'the VIP address is for a cluster: make this node one of two '
                                 'first (Settings - High availability)')
     if act == 'vip_save':
         v = vip_set(store, who, **vip_checked(b, store))
-        store.add_event('settings', '%s set the web address: %s%s, VRRP id %d' % (
+        store.add_event('settings', '%s set the VIP address: %s%s, VRRP id %d' % (
             who, v['address'], ' (%s)' % v['fqdn'] if v['fqdn'] else '', v['vrid']), who=who)
-        return {'message': 'the web address is kept%s' % (
+        return {'message': 'the VIP address is kept%s' % (
             '; each node puts it in within a few seconds' if v.get('on') else
             ' - turn it on when ready')}
     if act == 'vip_on':
@@ -36111,14 +36739,14 @@ def _web_do(h):
         if not v.get('address'):
             raise ApiError(400, 'give the address first')
         vip_set(store, who, on=True)
-        store.add_event('settings', '%s turned the web address %s on' % (who, v['address']),
+        store.add_event('settings', '%s turned the VIP address %s on' % (who, v['address']),
                         'warn', who=who)
-        return {'message': 'the web address is on: each node installs keepalived if it has to '
+        return {'message': 'the VIP address is on: each node installs keepalived if it has to '
                            'and the address comes up on %s' % vip_prefer(store)}
     if act == 'vip_off':
         vip_set(store, who, on=False)
-        store.add_event('settings', '%s turned the web address off' % who, 'warn', who=who)
-        return {'message': 'the web address is off: keepalived stops on both nodes'}
+        store.add_event('settings', '%s turned the VIP address off' % who, 'warn', who=who)
+        return {'message': 'the VIP address is off: keepalived stops on both nodes'}
     if act == 'vip_mode':
         mode = str(b.get('mode') or '')
         if mode not in ('back', 'stays'):
@@ -36132,7 +36760,7 @@ def _web_do(h):
                 changes['prefer'] = to
         vip_set(store, who, **changes)
         v = vip_conf(store)
-        store.add_event('settings', '%s: the web address %s' % (who, (
+        store.add_event('settings', '%s: the VIP address %s' % (who, (
             'always goes back to %s' % vip_prefer(store, v)) if mode == 'back' else
             'stays where it is - it moves only when that node fails or by hand'), 'warn',
             who=who)
@@ -36146,13 +36774,13 @@ def _web_do(h):
             raise ApiError(409, '%s is not answering: the address cannot go there' % to)
         if vip_conf(store).get('mode') == 'stays':
             vip_set(store, who, move_to=to, move_at=time.time())
-            store.add_event('settings', '%s moved the web address to %s (it stays there)'
+            store.add_event('settings', '%s moved the VIP address to %s (it stays there)'
                             % (who, to), 'warn', who=who)
-            return {'message': 'the web address goes to %s within a few seconds and stays '
+            return {'message': 'the VIP address goes to %s within a few seconds and stays '
                                'there' % to}
         vip_set(store, who, prefer=to)
-        store.add_event('settings', '%s moved the web address to %s' % (who, to), 'warn', who=who)
-        return {'message': 'the web address goes to %s within a few seconds (if it is healthy)'
+        store.add_event('settings', '%s moved the VIP address to %s' % (who, to), 'warn', who=who)
+        return {'message': 'the VIP address goes to %s within a few seconds (if it is healthy)'
                            % to}
     if act == 'retry':
         node = str(b.get('node') or node_name())
@@ -36391,7 +37019,7 @@ def _firewall_do(h):
             '%s %s' % (k, 'everybody' if v['any'] else ', '.join(v['from'])) for k, v in a.items())),
             'warn', who=who)
         return {'message': 'kept; each node\'s nginx takes it within a few seconds (the other '
-                           'node and the web address are always let in)'}
+                           'node and the VIP address are always let in)'}
     raise ApiError(400, 'no such thing to do')
 
 
@@ -37578,7 +38206,7 @@ def _acme_do(h):
                 raise ValueError('certificates by ACME are off - switch them on and save first')
             # Any of them from any node (1.0.170): the CA's question and the
             # certificate are kept in the database, and the node it is for -
-            # every node, for the web address - puts it in. Ordered by hand,
+            # every node, for the VIP address - puts it in. Ordered by hand,
             # ACME looks after it from now on.
             target = str(b.get('target') or '')
             if target not in tls_targets(h.store) or \
@@ -37592,6 +38220,13 @@ def _acme_do(h):
             return dict(acme_view(h.store), message='the certificate of %s is being ordered' % name)
         if act == 'dns_check':
             return acme_dns_check(h.store)
+        if act == 'put_back':
+            target = str(b.get('target') or '')
+            if target not in tls_targets(h.store):
+                raise ValueError('there is no such certificate')
+            acme_put_back(h.store, target, s['name'])
+            return dict(acme_view(h.store), message='the certificate from before ACME is back; '
+                        'the nodes put it in within a few seconds')
         if act == 'care':
             target = str(b.get('target') or '')
             if target not in tls_targets(h.store):
@@ -37602,7 +38237,7 @@ def _acme_do(h):
             return acme_probe(h.store, str(b.get('target') or ''))
         if act == 'name':
             # Every certificate's name from one page (1.0.170): the other
-            # node's and the web address's too, not only this node's.
+            # node's and the VIP address's too, not only this node's.
             target = str(b.get('target') or '')
             name = str(b.get('name') or '').strip().lower().rstrip('.')
             if name and not re.match(r'^(?=.{1,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+'
@@ -37610,14 +38245,14 @@ def _acme_do(h):
                 raise ValueError('%s is not a full DNS name (like otp2.example.cz)' % name[:80])
             if target == 'vip':
                 if not vip_conf(h.store).get('address'):
-                    raise ValueError('the web address is not set up (Settings → High availability)')
+                    raise ValueError('the VIP address is not set up (Settings → High availability)')
                 vip_set(h.store, s['name'], fqdn=name)
             elif target in tls_targets(h.store):
                 h.d.save_settings({'acme_node_name': name}, by=s['name'], node=target)
             else:
                 raise ValueError('there is no such certificate')
             h.store.add_event('settings', '%s: the certificate of %s is for %s' % (
-                s['name'], 'the web address' if target == 'vip' else target,
+                s['name'], 'the VIP address' if target == 'vip' else target,
                 name or 'its full host name'), who=s['name'])
             return acme_view(h.store)
         if act in ('manual_done', 'manual_drop'):
@@ -37922,7 +38557,7 @@ class Console(object):
         threading.Thread(target=look, name='otp-console-status', daemon=True).start()
 
     def vip_where(self):
-        """The web address (VRRP) and which node holds it now (1.0.135):
+        """The VIP address (VRRP) and which node holds it now (1.0.135):
         {'address', 'on', 'holders': [nodes]} - or None when there is none."""
         got = self.out('--web-status') or {}
         vip = got.get('vip') or {}
@@ -38023,7 +38658,7 @@ class Console(object):
             self._put(1, 1, ' | '.join(bits[:-1] if tok is not None else bits), A['key'])
             y = 2
         if vip_bad:
-            self._put(y, 1, 'the web address %s is held by %s' % (
+            self._put(y, 1, 'the VIP address %s is held by %s' % (
                 vip['address'], ', '.join(vip['holders']) if vip['holders'] else 'no node'),
                 A['bad'])
             y += 1
@@ -38203,7 +38838,7 @@ class Console(object):
             ('5', 'Accounts of the administration', self.m_accounts),
             ('6', 'Settings', self.m_settings),
             ('7', 'RADIUS clients, realms and directories', self.m_radius),
-            ('8', 'Cluster, web address and maintenance', self.m_cluster),
+            ('8', 'Cluster, VIP address and maintenance', self.m_cluster),
             ('9', 'Backups', self.m_backups),
             ('10', 'Upgrades', self.m_upgrades),
             ('11', 'The service', self.m_service),
@@ -39201,12 +39836,12 @@ class Console(object):
             nodes = self._nodes()
             vip = (self.st or {}).get('_vip') or {}
             if len(nodes) < 2:
-                self.note('Move the web address', 'There is only one node.')
+                self.note('Move the VIP address', 'There is only one node.')
                 return
-            to = self.choose('Move the web address %s' % (vip.get('address') or ''),
+            to = self.choose('Move the VIP address %s' % (vip.get('address') or ''),
                              [(n, n + ('   (holds it now)' if n in (vip.get('holders') or [])
                                        else '')) for n in nodes])
-            if to and self.confirm('Move the web address', 'The web address moves to %s; '
+            if to and self.confirm('Move the VIP address', 'The VIP address moves to %s; '
                                    'the pages are away for a few seconds.' % to, 'Move it'):
                 self.act('--vip-move', to)
                 self.vip_now = self.st_now = True
@@ -39241,12 +39876,12 @@ class Console(object):
                 self.act('--change-keep' if act == 'keep' else '--change-back', x['kind'],
                          *(['--node', x['node']] if x.get('node') else []))
                 self.st_now = True
-        return self.sub('Cluster, web address and maintenance', [
+        return self.sub('Cluster, VIP address and maintenance', [
             ('0', 'Keep or put back a change on trial (network, firewall)', trials),
             ('1', 'The cluster', lambda: self.act('--ha-status')),
-            ('2', 'The web address, certificates, firewall', lambda: self.act('--web-status')),
+            ('2', 'The VIP address, certificates, firewall', lambda: self.act('--web-status')),
             ('3', 'Maintenance of this node', maint),
-            ('4', 'Move the web address to a node', vip_move),
+            ('4', 'Move the VIP address to a node', vip_move),
             ('5', 'Pause replication', sure('--ha-pause', 'Pause replication',
                                             'The nodes stop copying each other\'s changes until '
                                             'it is resumed.')),
@@ -41228,7 +41863,7 @@ def build_parser():
                    'again on both nodes (the steps the other way round; --yes)')
     g.add_argument('--ha-renamed', metavar='OLD', help='this node was called OLD: what was '
                    'kept under that name (its own settings, maintenance, certificate, place in '
-                   'the web address) carried to its name now, and OLD off the list')
+                   'the VIP address) carried to its name now, and OLD off the list')
     g.add_argument('--ha-forget', metavar='NAME', help='take a node off the list for good (one '
                    'that was removed or reinstalled under another name)')
     g.add_argument('--ha-standalone', action='store_true', help='leave the cluster and go on '
@@ -41241,9 +41876,9 @@ def build_parser():
     g.add_argument('--trusted-proxy', action='append', metavar='CIDR', help='the load '
                    'balancer\'s address: nginx takes the client\'s from X-Forwarded-For when '
                    'it comes from there (again for more)')
-    g = p.add_argument_group('TLS AND THE WEB ADDRESS (VIP)')
+    g = p.add_argument_group('TLS AND THE VIP ADDRESS')
     g.add_argument('--web-status', action='store_true', help='the certificates of the nodes and '
-                   'of the web address, their TLS settings, and where the address is')
+                   'of the VIP address, their TLS settings, and where the address is')
     g.add_argument('--tls-for', metavar='TARGET', help='which: a node\'s name, or vip (the web '
                    'address) [this node]')
     g.add_argument('--tls-import', nargs='+', metavar='FILE', help='a certificate in: PEM '
@@ -41255,16 +41890,16 @@ def build_parser():
     g.add_argument('--tls-dh', choices=sorted(DH_WORDS), help='the DH parameters')
     g.add_argument('--tls-hsts', type=int, metavar='SECONDS', help='Strict-Transport-Security '
                    '(0 = none)')
-    g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the web address (192.0.2.10/24), '
+    g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the VIP address (192.0.2.10/24), '
                    'with --vip-fqdn, --vip-vrid, --vip-iface')
     g.add_argument('--vip-fqdn', metavar='NAME', help='its host name')
     g.add_argument('--vip-vrid', type=int, metavar='N', help='its VRRP id, 1-255 [51]')
     g.add_argument('--vip-iface', action='append', metavar='NODE=IFACE', help='the interface '
                    'it goes on, on that node (again for the other; default: the one with the '
                    'node\'s address)')
-    g.add_argument('--vip', choices=['on', 'off'], help='the web address on or off')
-    g.add_argument('--vip-move', metavar='NODE', help='the web address to that node')
-    g.add_argument('--vip-return', metavar='NODE|stay', help='where the web address goes back '
+    g.add_argument('--vip', choices=['on', 'off'], help='the VIP address on or off')
+    g.add_argument('--vip-move', metavar='NODE', help='the VIP address to that node')
+    g.add_argument('--vip-return', metavar='NODE|stay', help='where the VIP address goes back '
                    'to when it is well: a node (always back to it), or "stay" (it stays where it '
                    'is until that node fails or it is moved by hand)')
     g.add_argument('--web-retry', action='store_true', help='this node asks root again for what '
@@ -41873,7 +42508,7 @@ def cli_ha_compare(store, pal, as_json=False):
 
 
 def cli_web(args, pal, store):
-    """TLS and the web address on the command line (1.0.47)."""
+    """TLS and the VIP address on the command line (1.0.47)."""
     who = 'command line'
     me = node_name()
     target = args.tls_for or me
@@ -41927,7 +42562,7 @@ def cli_web(args, pal, store):
                                                pol['hsts'] or 'off'))
     if args.vip_set or args.vip or args.vip_move or args.vip_return:
         if not CONFIG.get('ha_mode'):
-            raise ValueError('the web address is for a cluster: otp --ha-setup first')
+            raise ValueError('the VIP address is for a cluster: otp --ha-setup first')
     if args.vip_set:
         v = vip_conf(store)
         ifaces = dict(v.get('ifaces') or {})
@@ -41941,27 +42576,27 @@ def cli_web(args, pal, store):
                            'vrid': args.vip_vrid or v.get('vrid') or 51, 'ifaces': ifaces},
                           store)
         vip_set(store, who, **got)
-        said.append('the web address: %s%s, VRRP id %d' % (
+        said.append('the VIP address: %s%s, VRRP id %d' % (
             got['address'], ' (%s)' % got['fqdn'] if got['fqdn'] else '', got['vrid']))
     if args.vip:
         v = vip_conf(store)
         if args.vip == 'on' and not v.get('address'):
             raise ValueError('give the address first: --vip-set 192.0.2.10/24')
         vip_set(store, who, on=args.vip == 'on')
-        store.add_event('settings', 'the web address was turned %s on the command line'
+        store.add_event('settings', 'the VIP address was turned %s on the command line'
                         % args.vip, 'warn', who=who)
-        said.append('the web address is %s' % args.vip)
+        said.append('the VIP address is %s' % args.vip)
     if args.vip_return:
         if args.vip_return == 'stay':
             vip_set(store, who, mode='stays')
-            said.append('the web address stays where it is: it moves only when that node fails '
+            said.append('the VIP address stays where it is: it moves only when that node fails '
                         'or by hand')
         else:
             if args.vip_return not in {n['name'] for n in ha_nodes(store)}:
                 raise ValueError('there is no node called %s' % args.vip_return)
             vip_set(store, who, mode='back', prefer=args.vip_return)
-            said.append('the web address always goes back to %s' % args.vip_return)
-        store.add_event('settings', 'the web address: %s, on the command line' % said[-1],
+            said.append('the VIP address always goes back to %s' % args.vip_return)
+        store.add_event('settings', 'the VIP address: %s, on the command line' % said[-1],
                         'warn', who=who)
     if args.vip_move:
         names = {n['name']: n for n in ha_nodes(store)}
@@ -41971,9 +42606,9 @@ def cli_web(args, pal, store):
             vip_set(store, who, move_to=args.vip_move, move_at=time.time())
         else:
             vip_set(store, who, prefer=args.vip_move)
-        store.add_event('settings', 'the web address was moved to %s on the command line'
+        store.add_event('settings', 'the VIP address was moved to %s on the command line'
                         % args.vip_move, 'warn', who=who)
-        said.append('the web address goes to %s (when it is healthy)' % args.vip_move)
+        said.append('the VIP address goes to %s (when it is healthy)' % args.vip_move)
     if args.web_retry:
         store.set_meta('web:retry:' + me, str(time.time()))
         said.append('%s asks root again' % me)
@@ -41991,9 +42626,9 @@ def cli_web(args, pal, store):
                           'tls': {t: tls_view(tls_profile(store, t)) for t in tls_targets(store)}},
                          default=str))
         return 0
-    print(pal.head('the web address (VIP)'))
+    print(pal.head('the VIP address'))
     if not CONFIG.get('ha_mode'):
-        print(pal.dim('  one server: no web address (it is for a cluster)'))
+        print(pal.dim('  one server: no VIP address (it is for a cluster)'))
     elif not v.get('address'):
         print(pal.dim('  not set: otp --vip-set 192.0.2.10/24 --vip-fqdn otp.example.cz'))
     else:

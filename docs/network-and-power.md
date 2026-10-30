@@ -1,7 +1,7 @@
 # The network of a node, restarting and switching off
 
 *Settings → Network* and *Settings → Restart and power off*. Both work the same
-on one server and in a cluster, from the web address or a node's own address.
+on one server and in a cluster, from the VIP address or a node's own address.
 The node a change is for does it itself. Either node's pages follow it.
 
 ## Settings → Network
@@ -33,7 +33,7 @@ page says so and the network is set by hand.
 4. **Its own certificate** (Certificates and TLS), where it was made here, is
    made again with the new address and name in it. A certificate from an
    authority is not changed: the page says what it names, and you get a new one.
-5. **Maintenance.** The web address moves to the other node.
+5. **Maintenance.** The VIP address moves to the other node.
 6. **NetworkManager** (`nmcli connection modify`), the host name
    (`hostnamectl`) and this machine's lines in `/etc/hosts` (the old file is
    kept as `/etc/hosts.otp-before`) - then a **reboot** 8 seconds later.
@@ -57,7 +57,7 @@ stays in maintenance. The network is then put right at its console
 (`nmtui`, or `nmcli connection modify …`). The settings it had before are kept in
 the job and in `/etc/hosts.otp-before`.
 
-**Change one node at a time.** Change the web address (High availability)
+**Change one node at a time.** Change the VIP address (High availability)
 first when it moves to another network too. A new address outside the web
 address's network is refused unless you tick that it is meant to be so.
 
@@ -70,7 +70,7 @@ Switched on for a node, by hand (address/prefix, gateway, DNS) or automatically
   has no IPv6 after all, it falls back to IPv4 and says so in the log.
 - nginx answers on IPv6 too (`listen [::]:…` is in otp.conf).
 - The firewall (Firewall and access) covers IPv4 and IPv6 alike.
-- The web address takes an IPv6 address of its own under *High availability →
+- The VIP address takes an IPv6 address of its own under *High availability →
   …and its IPv6 address*. The same VRRP instance moves it with the IPv4 one
   (`virtual_ipaddress_excluded` - the nodes keep speaking VRRP over IPv4), and
   nginx listens on it.
@@ -83,14 +83,14 @@ version) with **Restart** and **Power off**. In a cluster:
 
 | | |
 |---|---|
-| **Restart one after the other** | the other node first, then this one. Each goes into maintenance (the web address moves away), restarts, and comes back into service before the next starts. RADIUS and the pages never stop. |
+| **Restart one after the other** | the other node first, then this one. Each goes into maintenance (the VIP address moves away), restarts, and comes back into service before the next starts. RADIUS and the pages never stop. |
 | **Restart both at once** | both at the same moment: a minute or two with nothing answering. |
 | **Power off both** | both switched off; someone switches them on at the machines. |
 
 A single node restarted in a cluster goes into maintenance first, the same way.
 The page follows each node (*going down*, *restarting*, *starting*, *up again*)
 with a countdown. It reloads when its own node is back. The page answers through
-the other node meanwhile when it was opened at the web address, and waits when
+the other node meanwhile when it was opened at the VIP address, and waits when
 it was opened at the restarting node itself.
 
 Each node's own part is written in the database, so a node that restarts picks
@@ -126,4 +126,4 @@ exactly that back - not the old values worked out again:
 - **Checked after the reboot**, each a step of the job: the address,
   replication both ways, the link between the databases encrypted and checked
   (verify-full) on both nodes with this node's certificate naming the old
-  address, and the web address (keepalived) set up again.
+  address, and the VIP address (keepalived) set up again.

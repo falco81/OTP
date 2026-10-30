@@ -9,9 +9,9 @@ the cluster at once:
    of the three has an allow list in `/etc/nginx/conf.d/otp.conf`, between
    `# PORTAL-ALLOW-BEGIN/END`, `# ADMIN-ALLOW-BEGIN/END` and
    `# HEALTH-ALLOW-BEGIN/END`. Each is *everybody* or *only from* a list of
-   addresses and networks (IPv4 and IPv6). The other node, the web address
+   addresses and networks (IPv4 and IPv6). The other node, the VIP address
    (VIP) and the machine itself (127.0.0.1, ::1) are always let in, so
-   everything inside the cluster keeps working. The web address's server
+   everything inside the cluster keeps working. The VIP address's server
    (`otp_vip.conf`) is a copy of the node's and has the same lists.
 
 2. **The machine's firewall** - iptables and ip6tables (the
@@ -52,9 +52,9 @@ and nothing else.
 | HTTP / HTTPS | both | tcp 80,443 - from everybody when one of the three page lists is for everybody, else from the networks of the three lists | yes |
 | RADIUS | as the client | udp 1812 (and 1813 for accounting) from each enabled RADIUS client, only from them | yes |
 | The other node | as the node | everything from the other node (replication, its pages, the health check, its answers) | no |
-| VRRP | as the node | IP protocol 112 from the other node, while the web address is on | no |
+| VRRP | as the node | IP protocol 112 from the other node, while the VIP address is on | no |
 
-They follow what is set up: a client added, the cluster made, the web address
+They follow what is set up: a client added, the cluster made, the VIP address
 turned on - and the rules change within a few seconds.
 
 ### Rules of your own

@@ -1096,7 +1096,7 @@ var PEEK = 0;
 function showTab(name) { if (typeof window.optShowTab === 'function') window.optShowTab(name); }
 
 /** Ask the daemon, through this page's PHP. A body makes it a POST. */
-/* Every question has a deadline (1.0.66): behind the web address, an answer
+/* Every question has a deadline (1.0.66): behind the VIP address, an answer
    on its way when the address moved to the other node never came, the
    connection waited for good, and a page that asks again only after an
    answer - the upgrade's progress among them - stood still until F5.
@@ -1165,7 +1165,7 @@ function api(what, body, wait) {
   }).then(function (r) {
     clearTimeout(timer);
     if (r.status === 401 && !/^(login|portal-login)/.test(what)) {
-      /* Asked again before the page is left (1.0.73): behind the web address
+      /* Asked again before the page is left (1.0.73): behind the VIP address
          a node that is restarting, or that has just got the address, may say
          401 for a moment - and reloading then broke the page in the middle
          of an upgrade. Meanwhile the answer is "not reached", so whatever

@@ -4,8 +4,8 @@ Two otp nodes both answer everything - the pages, the administration and
 RADIUS - so any load balancer can spread the traffic over both, round robin,
 **without sticky sessions** (a sign-in and everything half done is in the
 database). Instead of a load balancer of your own, the pages can also use the
-built-in web address (VIP, active/standby): [tls-and-vip.md](tls-and-vip.md).
-Use one or the other for the pages; with the web address off, a load
+built-in VIP address (VIP, active/standby): [tls-and-vip.md](tls-and-vip.md).
+Use one or the other for the pages; with the VIP address off, a load
 balancer works exactly as described here.
 
 In the examples: the nodes `otp1` 192.0.2.11 and `otp2` 192.0.2.12, the

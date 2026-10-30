@@ -1,20 +1,20 @@
-# Certificates, TLS, and the web address (VIP)
+# Certificates, TLS, and the VIP address
 
-Certificates and TLS: *Settings → Certificates and TLS*. The web address:
-*Settings → High availability → The web address (VIP)*. A full
+Certificates and TLS: *Settings → Certificates and TLS*. The VIP address:
+*Settings → High availability → The VIP address*. A full
 administrator, or the command line. From 1.0.47.
 
 - **Certificates and TLS** for each node's own name, and for the web
   address's name: upload a certificate (PEM, PFX / PKCS#12, with or without a
   password), make a request (CSR) here, or make a self-signed one; choose the
   protocols, the ciphers, the DH parameters and HSTS.
-- **The web address (VIP)**: in a cluster of two, one more IP address for
+- **The VIP address**: in a cluster of two, one more IP address for
   the pages and the administration that is on one node at a time
   (active/standby) and moves to the other node by itself when the node
   holding it is not well. **RADIUS never uses it**: both nodes keep answering
   RADIUS on their own addresses, active/active, exactly as before.
 
-With the web address off, everything works as before - including a load
+With the VIP address off, everything works as before - including a load
 balancer of your own ([load-balancers.md](load-balancers.md)).
 
 ---
@@ -33,7 +33,7 @@ systemd (`otp-web.path`) starts `otp-web.service`, which runs
   openssl, the key must be the certificate's own);
 - writes the files: `/etc/nginx/certs/otp.pem` (certificate + chain),
   `otp.key`, `otp-ca.pem` (the root, for `ssl_trusted_certificate`),
-  `otp-dh.pem`; for the web address `otp-vip.*` and
+  `otp-dh.pem`; for the VIP address `otp-vip.*` and
   `/etc/nginx/conf.d/otp_vip.conf`; `/etc/keepalived/keepalived.conf`;
 - asks nginx (`nginx -t`) and keepalived (`keepalived -t`) before reloading
   them, and **puts every file back as it was** when either says no;
@@ -49,7 +49,7 @@ says so). `install.sh` (1.0.47 and later) installs the helper and the units.
 
 ### Upload
 
-On the pages: *Upload…* on the node's (or the web address's) card. Drop the
+On the pages: *Upload…* on the node's (or the VIP address's) card. Drop the
 files, or paste PEM:
 
 | You have | Send |
@@ -69,7 +69,7 @@ Command line:
 ```bash
 otp --tls-import /root/otp1.pfx --tls-for otp1                    # OTP_TLS_PASSWORD=... for its password
 otp --tls-import cert.pem key.pem chain.pem root.pem --tls-for otp1
-otp --tls-import otp.pfx --tls-for vip                            # the web address's own
+otp --tls-import otp.pfx --tls-for vip                            # the VIP address's own
 ```
 
 ### Request (CSR)
@@ -89,14 +89,14 @@ it is trusted by hand.
 
 - **A node's own**: what is answered on `https://otp1.example.cz/` - the
   node's own name. Without one, the self-signed certificate `install.sh` made.
-- **The web address's own**: answered on the web address itself - for its
+- **The VIP address's own**: answered on the VIP address itself - for its
   name (`otp.example.cz`), for its IP address typed in the browser, and for
   a client that sends no name at all. nginx listens on the address on both
   nodes (`net.ipv4.ip_nonlocal_bind = 1`, in `/etc/sysctl.d/90-otp-vip.conf`),
   so the node that takes the address over answers on it at once. Without a
-  certificate of its own, the web address answers with the certificate of
+  certificate of its own, the VIP address answers with the certificate of
   the node it is on - so either give each node a certificate that also names
-  `otp.example.cz`, or give the web address its own.
+  `otp.example.cz`, or give the VIP address its own.
 - A certificate is put in when the node's helper has finished everything
   asked of it - including DH parameters, which made on the node take
   minutes (4096 bits up to ten). The card shows how far it is.
@@ -130,7 +130,7 @@ node's TLS; nginx keeps the files it has.
 
 ---
 
-## The web address (VIP)
+## The VIP address
 
 ### How it works
 
@@ -227,7 +227,7 @@ the same for any keepalived pair.
 ## What to open in the firewall
 
 `install.sh` opens HTTPS/HTTP and RADIUS in firewalld; `otp --ha-setup` and
-`--ha-join` open PostgreSQL to the other node; turning the web address on
+`--ha-join` open PostgreSQL to the other node; turning the VIP address on
 opens VRRP from the other node. Other firewalls in the path (between the
 VLANs, in front of the servers) need the same.
 
@@ -238,7 +238,7 @@ VLANs, in front of the servers) need the same.
 | browsers, the load balancer | TCP 443 (and 80, redirected to 443) | the pages, the administration, `/healthz` |
 | the VPN concentrators (RADIUS clients) | UDP 1812 (authentication), UDP 1813 (accounting) | RADIUS |
 | the other node | TCP 5432 | PostgreSQL replication (replicated cluster) |
-| the other node | IP protocol 112 (VRRP) | the web address (when on) |
+| the other node | IP protocol 112 (VRRP) | the VIP address (when on) |
 | administrators | TCP 22 | SSH |
 | monitoring | TCP 443 `/healthz`, ICMP | |
 
@@ -313,8 +313,8 @@ table inet otp {
 ### A firewall between the nodes and the VPN, or between VLANs
 
 - UDP 1812/1813 from each VPN concentrator to **both** nodes' own addresses
-  (not to the web address).
-- TCP 443 from the users' and administrators' networks to the web address
+  (not to the VIP address).
+- TCP 443 from the users' and administrators' networks to the VIP address
   **and** to both nodes (a browser may be sent to a node's own name).
 - Stateful firewalls: RADIUS answers come from the address the request was
   sent to.
@@ -335,9 +335,9 @@ table inet otp {
 | the browser still sees the old certificate | it may be shown the other node's; check both cards, and the name it asks for |
 
 
-## Where the web address goes back to (1.0.52)
+## Where the VIP address goes back to (1.0.52)
 
-Settings → High availability → The web address, *When the node it left is
+Settings → High availability → The VIP address, *When the node it left is
 well again*:
 
 - **always back to NODE** (the default; the first node unless chosen): the

@@ -37,7 +37,7 @@ On the restart the node carries over everything kept under its old name:
 - its own settings (the values marked *its own*);
 - its maintenance, if it was in maintenance;
 - its certificate and TLS settings of the pages;
-- its place in the web address (preferred node, interface);
+- its place in the VIP address (preferred node, interface);
 - the encrypted link between the databases - its progress is started again
   under the new name and its database certificate is renewed by itself.
 
@@ -59,11 +59,11 @@ another node than the one the page was drawn by, the page draws itself again
 from the node answering now.
 
 If two machines did end up with one name (seen in 1.0.109: the name of the
-node holding the web address was saved from a page the other node had drawn),
+node holding the VIP address was saved from a page the other node had drawn),
 then:
 
 - both write the same heartbeat, so the other node is shown as *gone*;
-- the web address is shown *on both nodes at once*;
+- the VIP address is shown *on both nodes at once*;
 - every page and `otp --ha-status` say *two machines call themselves NAME*,
   and the log says it every ten minutes.
 
@@ -138,7 +138,7 @@ What happens, in order:
    192.0.2.22 now*. It writes `ha_address` into its `config.json`, makes its
    database a new certificate for the new address (when the link is
    encrypted) and carries on. Replication to it starts again.
-4. The firewall rules, keepalived (the web address) and nginx follow on both
+4. The firewall rules, keepalived (the VIP address) and nginx follow on both
    nodes by themselves - they are made from these settings.
 
 ### Both nodes got new addresses
@@ -168,8 +168,8 @@ warns when `config.json` names an address this machine no longer has.
 - **The RADIUS clients** (the VPN, the firewalls, the load balancer) still
   send to the old address: change the RADIUS server's address there.
 - **DNS** names pointing at the old address.
-- **The web address (VIP)** itself, if it has to move to another network:
-  *Settings → High availability → The web address*, or
+- **The VIP address** itself, if it has to move to another network:
+  *Settings → High availability → The VIP address*, or
   `otp --vip-set NEW/PREFIX`.
 - A **load balancer** in front of the pages: its list of nodes.
 
@@ -192,7 +192,7 @@ on all addresses and the pages are served by nginx on all of them. Change:
 
 The certificate of the pages is for a name (and sometimes an address). After
 a rename or a new address that people use in the browser, give the node (or
-the web address) a certificate for the new name: *Settings → Certificates and
+the VIP address) a certificate for the new name: *Settings → Certificates and
 TLS → Upload*, *Request (CSR)* or *Self-signed*, or on the command line:
 
 ```bash
@@ -239,7 +239,7 @@ Then try a sign-in through the VPN.
 | the link bar stays at *link verify-full* | the other node's certificate does not name the address yet - it makes a new one by itself within a minute; *Repair* in the bar starts both nodes again |
 | replication says *needs a look* for long | *The errors...* on the Replication card shows PostgreSQL's own words |
 | *two machines call themselves NAME* | one node took the other's name - section 1, *Two machines with one name* |
-| *this page was drawn by X, but Y answers now* | the web address moved while the page was open: load the page again, or open the node's own address to change its own settings |
+| *this page was drawn by X, but Y answers now* | the VIP address moved while the page was open: load the page again, or open the node's own address to change its own settings |
 | nothing helps | the old way still works: `otp --ha-standalone --yes` on one node, then `otp --ha-setup --ha-peer NEW` and `otp --ha-join` (operations.md, section 11) - the joining node's database is replaced with the other's |
 
 Every change is written into *Events* on the node that made it, with who did

@@ -291,6 +291,7 @@ if (isset($_GET['api'])) {
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'dbtls' => '/api/dbtls',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -306,6 +307,7 @@ if (isset($_GET['api'])) {
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'dbtls' => '/api/dbtls',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -739,7 +741,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" class="fulladmin-only" data-pane="hisec" data-icon="shield" title="Every way of doing something less safely switched off - and what stands against it now.">High security</button>
-    <button type="button" data-pane="web" data-icon="lock" title="The certificates of the nodes and of the cluster's web address, and how TLS is spoken.">Certificates and TLS</button>
+    <button type="button" data-pane="web" data-icon="lock" title="The certificates of the nodes and of the cluster's VIP address, and how TLS is spoken.">Certificates and TLS</button>
     <button type="button" class="fulladmin-only" data-pane="acme" data-icon="lock" title="The certificates ordered from Let's Encrypt (or another ACME CA) and renewed by themselves.">Automatic certificates</button>
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
     <div class="ctl-group">Server</div>
@@ -747,8 +749,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy for what otp asks of the web - new versions, the SMS gateway, the system updates.">Proxy</button>
     <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of each node: chrony, its time servers, how far off it is - codes from the app are worked out from it.">Time</button>
     <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
-    <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the web address moved out of the way first.">Restart and power off</button>
-    <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the web address moved out of the way first; a restart offered when one is needed.">System updates</button>
+    <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the VIP address moved out of the way first.">Restart and power off</button>
+    <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the VIP address moved out of the way first; a restart offered when one is needed.">System updates</button>
     <button type="button" class="fulladmin-only" data-pane="logs" data-icon="chart" title="Each node's disks, and how much the system journal and otp's own logs may take.">Disks and logs</button>
     <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node as root over SSH: made here, added or taken away.">SSH keys of root</button>
     <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
@@ -949,10 +951,10 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   </div>
   <div class="ctl-pane" id="pane-acme" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Automatic certificates</h2>
-      <p class="ctl-lede">The certificate of the web address - and, where asked, each node's own - ordered from Let's
+      <p class="ctl-lede">The certificate of the VIP address - and, where asked, each node's own - ordered from Let's
         Encrypt or another ACME CA and renewed by itself well before it runs out. The CA checks the name by asking
         it on port 80 (HTTP-01), or by a record in DNS (DNS-01) for servers it cannot see from the internet. In a
-        cluster the answer is kept in the database, so whichever node has the web address gives it.</p></div>
+        cluster the answer is kept in the database, so whichever node has the VIP address gives it.</p></div>
     <div id="ac-host"></div>
     <div class="card full"><h2>Settings</h2><div id="sect-acme"></div></div>
   </div>
@@ -987,6 +989,15 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         what a totpcgi token server and its FreeRADIUS send it - so isemon reads this server with
         what it already has.</p></div>
     <div id="isemon-state"></div>
+    <div class="card full fulladmin-only" id="isemon-tls-card" hidden>
+      <h2>Encrypted sending (TLS)</h2>
+      <p class="note">The lines to isemon over TLS on 6514/tcp, isemon's certificate checked - from
+        every node. Where isemon has no certificate, otp's own authority makes one for it, given
+        away once in a locked file with the rsyslog configuration that takes it; with mutual TLS
+        each node shows isemon a certificate of its own, so isemon takes lines from otp's nodes
+        only.</p>
+      <div id="isemon-tls"></div>
+    </div>
     <div class="card full"><h2>Settings</h2><div id="sect-isemon"></div></div>
     <div class="card full" id="isemon-guide"></div>
   </div>
@@ -1290,7 +1301,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="ctl-head"><h2 class="ctl-title">Network</h2>
       <p class="ctl-lede">Each node's address, gateway, DNS servers, host name and - switched on - IPv6.
         A change is put in by the node itself: in a cluster the other node is told the new address
-        first, the web address moves away, the network is set and the node restarts; back up, it
+        first, the VIP address moves away, the network is set and the node restarts; back up, it
         checks its address, replication and the link between the databases, and comes back into service.</p></div>
     <div id="net-host"></div>
     <div class="card full fulladmin-only"><h2>Taken back unless kept</h2><div id="sect-network"></div></div>
@@ -1305,7 +1316,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   <div class="ctl-pane" id="pane-power" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Restart and power off</h2>
       <p class="ctl-lede">This node, the other or both, restarted or switched off from here. In a cluster the
-        web address moves to the other node first; restarted one after the other, the service never stops.
+        VIP address moves to the other node first; restarted one after the other, the service never stops.
         The page follows each node down and up again.</p></div>
     <div id="pw-host"></div>
     <div class="card full fulladmin-only"><h2>On a schedule</h2><div id="sect-power"></div></div>
@@ -1313,7 +1324,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   <div class="ctl-pane" id="pane-osup" hidden>
     <div class="ctl-head"><h2 class="ctl-title">System updates</h2>
       <p class="ctl-lede">The operating system's packages, updated by dnf (or apt) on each node. In a cluster one
-        node at a time: each is out of service while it is updated - the web address moves to the other,
+        node at a time: each is out of service while it is updated - the VIP address moves to the other,
         which answers RADIUS meanwhile - and back in service before the next one starts. A restart an update
         needs is offered when it is done, or made by itself, one node after the other.</p></div>
     <div id="ou-host"></div>
@@ -1338,7 +1349,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   <div class="ctl-pane" id="pane-backup" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Backups</h2>
       <p class="ctl-lede">A backup is everything: the whole database (tokens, clients, realms,
-        accounts, every setting, the certificates, the web address, the firewall, the texts, the
+        accounts, every setting, the certificates, the VIP address, the firewall, the texts, the
         logs), the key that opens the tokens and this machine's config.json - with RESTORE.md, the
         exact steps to bring it all back on a machine installed from nothing, one server or a
         cluster. Locked with the password below; sent to every destination switched on - a
@@ -1390,7 +1401,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   <div class="ctl-pane" id="pane-ha" hidden>
     <div class="ctl-head"><h2 class="ctl-title">High availability
         <button type="button" class="btn cmd small ha-hist-btn" id="ha-history" data-icon="history"
-                title="What happened to the cluster: the web address moving, a node stopping and coming back, replication stopping, errors - and what was done by hand.">History</button></h2>
+                title="What happened to the cluster: the VIP address moving, a node stopping and coming back, replication stopping, errors - and what was done by hand.">History</button></h2>
       <p class="ctl-lede" id="ha-lede-shared">Two servers, both answering - active/active. Both open the same
         PostgreSQL and keep nothing that matters anywhere else, so a load balancer may send any
         request to either, round robin and without stickiness: a sign-in, an enrolment half done
@@ -1454,7 +1465,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       <div id="ha-addr"></div>
     </div>
     <div class="card full" id="ha-vip-card">
-      <h2>The web address (VIP)</h2>
+      <h2>The VIP address</h2>
       <p class="note">An address for the pages that is on one node at a time - active and
         standby - held by keepalived. It leaves a node by itself when the node goes into
         maintenance, is upgraded or rebuilt, or when its pages stop answering their own
@@ -1502,7 +1513,7 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
       <p class="note">Each of these has its button above; the command does the same thing from a shell on the node, as root, and works when the pages do not.</p>
       <!-- Folded away until asked for (1.0.75), as the balancers' guides. -->
       <details class="lb-guide ha-cli-fold" id="ha-cli-fold">
-        <summary><b>The commands</b><span class="tag dim">replication · the web address (VRRP) · maintenance</span></summary>
+        <summary><b>The commands</b><span class="tag dim">replication · the VIP address (VRRP) · maintenance</span></summary>
         <div class="ha-cli-in">
       <table class="plain ha-cli">
         <thead><tr><th>Command</th><th>What it does</th></tr></thead>
@@ -1525,19 +1536,19 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
             <td>Putting a dump back is refused while replication runs. Switch it off, restore the dump on one node, then rebuild the <b>other</b> node from it with <code>--ha-resync</code> run there.</td></tr>
           <tr><td data-no-i18n>otp --trusted-proxy CIDR</td>
             <td>The load balancer's address, on both nodes: nginx then takes the client's own address from X-Forwarded-For sent by that one address.</td></tr>
-          <tr class="ha-cli-group"><td colspan="2">The web address (VRRP)</td></tr>
+          <tr class="ha-cli-group"><td colspan="2">The VIP address (VRRP)</td></tr>
           <tr><td data-no-i18n>otp --web-status</td>
-            <td>Where the web address is now and how each node sees it (VRRP: master or backup), its settings, and the certificates of the nodes and of the address. <code>--json</code> for a script.</td></tr>
+            <td>Where the VIP address is now and how each node sees it (VRRP: master or backup), its settings, and the certificates of the nodes and of the address. <code>--json</code> for a script.</td></tr>
           <tr><td data-no-i18n>otp --vip-set 192.0.2.10/24 --vip-fqdn NAME<br>&nbsp;&nbsp;[--vip-vrid N] [--vip-iface NODE=IFACE]</td>
             <td>The address itself: with its prefix, its host name, the VRRP id (1-255, default 51; another id for every cluster on the same network) and on each node the interface it goes on (default: the one with the node's own address). Run on one node; the other takes it within a few seconds.</td></tr>
           <tr><td data-no-i18n>otp --vip on<br>otp --vip off</td>
-            <td>The web address on or off: root writes keepalived's configuration and starts it, or stops it and takes the address away - on both nodes.</td></tr>
+            <td>The VIP address on or off: root writes keepalived's configuration and starts it, or stops it and takes the address away - on both nodes.</td></tr>
           <tr><td data-no-i18n>otp --vip-move NODE</td>
             <td>Move the address to that node now, by hand - it goes once the node is healthy (its pages answer, RADIUS listens, not in maintenance).</td></tr>
           <tr><td data-no-i18n>otp --vip-return NODE<br>otp --vip-return stay</td>
             <td>Where it goes after a failure is over: always back to that node, or <i>stay</i> - it stays where it is until that node fails or it is moved by hand.</td></tr>
           <tr><td data-no-i18n>otp --maintenance on|off|status [--node NAME]</td>
-            <td>A node out of service and back: RADIUS is not answered, its /healthz says 503 - and the web address leaves it for the other node by itself.</td></tr>
+            <td>A node out of service and back: RADIUS is not answered, its /healthz says 503 - and the VIP address leaves it for the other node by itself.</td></tr>
           <tr><td data-no-i18n>otp --web-retry</td>
             <td>This node asks root again for what failed (keepalived's configuration, a certificate for nginx, the firewall).</td></tr>
           <tr><td data-no-i18n>systemctl status keepalived<br>journalctl -u keepalived -n 50<br>ip -br addr</td>
@@ -1558,7 +1569,7 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
     <div class="ctl-head"><h2 class="ctl-title">Export and import</h2>
       <p class="ctl-lede">The whole configuration as one file: the settings (each node's own
         too), the RADIUS clients, the realms, the directories, the accounts of these pages, the
-        certificates of the pages and the web address, the web address, who may reach which page,
+        certificates of the pages and the VIP address, the VIP address, who may reach which page,
         the firewall and the mail server's authorities. The tokens are not in it: they move with a
         copy of the database and its key. On the command line: otp --export-config FILE
         [--with-secrets] and otp --import-config FILE --yes.</p></div>
@@ -1575,11 +1586,11 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
   <div class="ctl-pane" id="pane-web" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Certificates and TLS</h2>
       <p class="ctl-lede">How the pages and the administration speak HTTPS: on each node,
-        and on the cluster's web address (Settings → High availability) - the certificate
+        and on the cluster's VIP address (Settings → High availability) - the certificate
         with its chain, the protocols, the ciphers.</p></div>
     <div class="card full">
       <h2>Certificates</h2>
-      <p class="note">One for each node's own name and one for the web address's. A
+      <p class="note">One for each node's own name and one for the VIP address's. A
         certificate is sent as PEM files (the certificate, its key, the chain, the root - in
         any order, or all in one file) or as a PFX / PKCS#12 file, with its password or
         without; or the request is made here and only what the authority sends back is
@@ -1598,7 +1609,7 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
       <h2>Who may reach the pages</h2>
       <p class="note">The enrolment pages, the administration and the health check share
         ports 80 and 443, so who sees which is said by nginx, page by page; the firewall
-        below opens the ports only to these networks. The other node and the web address
+        below opens the ports only to these networks. The other node and the VIP address
         are always let in, and so is the machine itself.</p>
       <div id="fw-access"></div>
     </div>

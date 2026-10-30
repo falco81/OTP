@@ -35,8 +35,8 @@ the machine.
 | Settings (the cluster's and each node's own) | database | yes | with the copy |
 | RADIUS clients and their secrets, realms, directories (passwords, CAs) | database | yes | with the copy |
 | Accounts of the administration pages | database | yes | with the copy |
-| Certificates and private keys of the pages and of the web address, TLS settings | database (keys sealed) | yes | with the copy; nginx is rewritten from it within seconds |
-| The web address (VIP), who may reach which page, the firewall, the mail server's CAs | database | yes | with the copy; keepalived, nginx and iptables are rewritten from it within seconds |
+| Certificates and private keys of the pages and of the VIP address, TLS settings | database (keys sealed) | yes | with the copy; nginx is rewritten from it within seconds |
+| The VIP address, who may reach which page, the firewall, the mail server's CAs | database | yes | with the copy; keepalived, nginx and iptables are rewritten from it within seconds |
 | The link between the two databases: the cluster's authority (key sealed) and what each node wants | database | yes | with the copy; each node gives its PostgreSQL a certificate again by itself within ten minutes (1.0.104) |
 | PostgreSQL's certificate of each node, `/etc/pki/otp/ha-ca.pem`, `hostssl` lines in pg_hba.conf | the operating system | no - made from the database | by each node itself, through its root helper (1.0.104) |
 | Logs: RADIUS requests, code checks, events | database | yes | with the copy |
@@ -556,7 +556,7 @@ machines**. You build one server from the copy, then the second node from it.
    otp --ha-join /root/otp-join-otp1.json --node-name otp2
    ```
 
-   The web address, kept in the copy, comes back by itself once there are two
+   The VIP address, kept in the copy, comes back by itself once there are two
    nodes; each node takes its certificate from the database.
 4. `otp --ha-status ; otp --ha-compare`, and [section 8](#8-after-every-recovery-the-checks).
 
@@ -613,7 +613,7 @@ and keep the key.
 2. `otp --ha-setup --ha-peer ADDRESS-OF-OTP2 --node-name otp1` on otp1.
 3. otp2: `./install.sh --with-db postgres ...` and
    `otp --ha-join /root/otp-join-otp1.json --node-name otp2`.
-4. In front of the pair: the web address (*Settings → High availability*) or a
+4. In front of the pair: the VIP address (*Settings → High availability*) or a
    load balancer ([load-balancers.md](load-balancers.md)); both nodes as RADIUS
    servers on the VPN.
 5. Backups: each node makes its own copies; take those of one node off the
@@ -631,7 +631,7 @@ otp --check                    # every part: the key, the database, RADIUS, the 
 otp --tokens | tail -1         # as many tokens as expected
 otp --clients                  # the VPN concentrators
 otp --radtest someone@example.cz 123456   # with a real code from a phone
-otp --web-status               # certificates, days left, where the web address is
+otp --web-status               # certificates, days left, where the VIP address is
 # a cluster:
 otp --ha-status                # both directions running, little or nothing behind
 otp --ha-compare               # "both nodes hold the same rows"

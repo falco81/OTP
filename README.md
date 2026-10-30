@@ -72,7 +72,7 @@ And the real thing, from anywhere a client is allowed:
 - [docs/admin-second-step.md](docs/admin-second-step.md) - a code after the password for the administration pages: app, e-mail or SMS, reset
 - [docs/time.md](docs/time.md) - the clock of each node (chrony): how far off, its sources, the time servers for the whole cluster, the time zone
 - [docs/renaming-and-readdressing.md](docs/renaming-and-readdressing.md) - a node renamed or given a new address: putting the cluster right, from the pages or the command line
-- [docs/tls-and-vip.md](docs/tls-and-vip.md) - certificates, TLS, the web address (VIP), the firewall
+- [docs/tls-and-vip.md](docs/tls-and-vip.md) - certificates, TLS, the VIP address, the firewall
 - [docs/load-balancers.md](docs/load-balancers.md) - HAProxy, nginx, Apache, F5, NetScaler, LVS, with real health checks
 - [docs/sign-in-protection.md](docs/sign-in-protection.md) - guessing from one place blocked (RADIUS), and network and firewall changes that go back by themselves unless kept
 - [docs/firewall.md](docs/firewall.md) - the firewall (iptables / ip6tables) and who may reach which pages, from Settings
@@ -86,6 +86,7 @@ Syslog and SIEM, the proxy, the disks and the logs: [docs/syslog-proxy-and-logs.
 High security: [docs/high-security.md](docs/high-security.md).
 Automatic certificates (ACME, HTTP-01 and DNS-01): [docs/acme.md](docs/acme.md).
 Encryption to the database server, every node: [docs/database-tls.md](docs/database-tls.md).
+isemon over TLS, and what to do on the isemon machine: [docs/isemon-tls.md](docs/isemon-tls.md).
 The database, and moving into MariaDB or PostgreSQL: [docs/the-database.md](docs/the-database.md).
 PHP and php2shell (CVE-2026-109618 / CVE-2026-109619): [docs/php2shell.md](docs/php2shell.md).
 The pages in another language: [docs/languages.md](docs/languages.md).

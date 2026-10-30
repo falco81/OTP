@@ -10,7 +10,7 @@ One file, `otp-backup-SITE-NODE-YYYYMMDD-HHMMSS.tar.gz.enc`:
 
 | File inside | What |
 |---|---|
-| `otp-copy.json.gz` | the whole database, in a shape SQLite, MariaDB and PostgreSQL all take: the tokens with their keys and recovery codes, the RADIUS clients, realms, directories, accounts, every setting (the cluster's and each node's own), the certificates and private keys of the pages, the web address, the firewall and who may reach which page, the message texts, the cluster's authority for the link between the databases, the logs |
+| `otp-copy.json.gz` | the whole database, in a shape SQLite, MariaDB and PostgreSQL all take: the tokens with their keys and recovery codes, the RADIUS clients, realms, directories, accounts, every setting (the cluster's and each node's own), the certificates and private keys of the pages, the VIP address, the firewall and who may reach which page, the message texts, the cluster's authority for the link between the databases, the logs |
 | `secrets.key` | the key that opens the tokens and every other sealed secret |
 | `config.json` | this machine's `/etc/otp/config.json`: which database it opens, its node name, its place in a cluster |
 | `files/` | files config.json names outside the database (the authority of a database on another machine) |
@@ -154,7 +154,7 @@ PostgreSQL can be chosen afterwards (*Settings → The database*).
 install the lost node and join it (`otp --ha-bundle` / `otp --ha-join`), it copies
 everything from the living one. Both lost - put the newest backup back on one new
 machine as above, move it to PostgreSQL, and build the pair again
-(`otp --ha-setup`, `otp --ha-join` - high-availability.md). The web address, the
+(`otp --ha-setup`, `otp --ha-join` - high-availability.md). The VIP address, the
 firewall, the certificates and the encrypted link between the databases come
 back by themselves from the database.
 

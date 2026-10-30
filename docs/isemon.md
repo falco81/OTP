@@ -78,3 +78,9 @@ Then `otp --isemon-test` on the otp server, and
   higher up that matched first — `11-otp.conf` must come before a catch-all.
 - **permissions:** the folder and files must be readable by the group
   `isemon`; the rule creates them so.
+
+## Encrypted (TLS)
+
+Settings → isemon → *Encrypted sending (TLS)*: the lines over TLS on 6514/tcp,
+isemon's certificate checked, mutual TLS if wanted - and what to do on the isemon
+machine: [isemon-tls.md](isemon-tls.md).

@@ -35,7 +35,7 @@ otp --maintenance off                     # back in service
 otp --maintenance on --node otp2          # another node of the cluster
 ```
 
-With the web address on ([tls-and-vip.md](tls-and-vip.md)), a node in
+With the VIP address on ([tls-and-vip.md](tls-and-vip.md)), a node in
 maintenance also gives the address up to the other node.
 
 On the pages: *Settings → Upgrades → The nodes*, or the *Maintenance and

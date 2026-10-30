@@ -2576,13 +2576,13 @@ function loadSettings(redraw) {
   api('settings').then(function (d) {
     SETTINGS = d;
     /* Another node answers than the one that drew the boxes (1.0.110): the
-       web address moved. Measured against that node, its own settings looked
+       VIP address moved. Measured against that node, its own settings looked
        changed - otp1 took the name otp2 from a page otp2 had drawn. Drawn
        again from the node answering now; what was typed and not saved is put
        aside, said so. */
     if (DRAWN_NODE && d.node && d.node !== DRAWN_NODE) {
       var aside = Object.keys(DIRTY).length;
-      toast('this page is answered by ' + d.node + ' now, not ' + DRAWN_NODE + ' (the web address moved): the settings are drawn again from ' + d.node
+      toast('this page is answered by ' + d.node + ' now, not ' + DRAWN_NODE + ' (the VIP address moved): the settings are drawn again from ' + d.node
         + (aside ? '; ' + aside + ' change(s) not saved were put aside' : ''), 'warn');
       DIRTY = {};
       drawSettings(); markDirtyCount();
@@ -2999,12 +2999,20 @@ function settingItemBare(s) {
   label.appendChild(info);
   /* A node's own setting, in a cluster (1.0.37): said beside its name. */
   if (s.node_key && SETTINGS.cluster) {
-    label.appendChild(document.createTextNode(' '));
+    /* The tags one block at the right, never broken over two lines: only the
+       name wraps (1.0.172) - "otp1" went under the name on one box and stood
+       beside it on the next. */
+    var tags = el('span', 'node-tags');
     var nt = el('span', 'tag info', 'this node');
     nt.title = SETTINGS.node;
-    label.appendChild(nt);
-    label.appendChild(document.createTextNode(' '));
-    label.appendChild(noI18n(el('span', 'tag dim', SETTINGS.node)));
+    tags.appendChild(nt);
+    tags.appendChild(noI18n(el('span', 'tag dim', SETTINGS.node)));
+    label.appendChild(tags);
+  }
+  if (label.firstChild && label.firstChild.nodeType === 3) {
+    var txt = el('span', 'lbl-txt');
+    txt.appendChild(label.firstChild);
+    label.insertBefore(txt, label.firstChild);
   }
   item.appendChild(label);
   var input;
@@ -3279,13 +3287,13 @@ function markDirty(item, s) {
   markDirtyCount();
   applyOnlyWhen();
 }
-/* Changes that are not settings (1.0.56) - the firewall, the web address,
+/* Changes that are not settings (1.0.56) - the firewall, the VIP address,
    a certificate authority pasted in - wait for the same save bar:
    PENDING[key] = {save: function () -> Promise (false: not done), reset}. */
 var PENDING = {};
 function pendingSet(key, p) { p.pane = p.pane || PANE; PENDING[key] = p; markDirtyCount(); }
 /* The one save bar, at the bottom (1.0.123): on every pane where something
-   is saved - settings, the firewall, the web address, the time servers, the
+   is saved - settings, the firewall, the VIP address, the time servers, the
    message texts, the pages' looks - and on no other. A pane that does
    something at once (Network, Restart and power off, Backups…) has its own
    buttons for it and no save bar. */
@@ -4398,7 +4406,7 @@ function askNodes(what, body, onEach, onDone) {
 /* ---- isemon --------------------------------------------------------------- */
 var IS = {d: null, said: {}};
 function loadIsemon() {
-  api('isemon').then(function (d) { IS.d = d; drawIsemon(); }).catch(oops);
+  api('isemon').then(function (d) { IS.d = d; drawIsemon(); drawIsemonTls(); }).catch(oops);
   drawIsemonGuide();
 }
 function drawIsemon() {
@@ -5880,7 +5888,7 @@ $('ex-file').onchange = function () {
         noI18n(phrase);
         body.appendChild(formField('Passphrase', phrase));
       }
-      body.appendChild(el('p', 'note', 'Clients, realms, directories and accounts of the same name are replaced; the settings, the certificates, the web address, who may reach the pages, the firewall and the mail server\'s authorities in it are saved. Your own account is left as it is.'));
+      body.appendChild(el('p', 'note', 'Clients, realms, directories and accounts of the same name are replaced; the settings, the certificates, the VIP address, who may reach the pages, the firewall and the mail server\'s authorities in it are saved. Your own account is left as it is.'));
       body.appendChild(el('p', 'note', 'Add to what is here: anything not in the file stays. Exactly the file: clients, realms, directories and accounts not in it are taken away, and settings not in it go back to their defaults - as when a whole configuration is put back.'));
     }, [{words: 'Close', close: true},
         {words: 'Exactly the file', cls: 'danger', icon: 'upload', close: true, go: function () {
@@ -7265,7 +7273,7 @@ function drawHaLb(d) {
     tls: LB_UI.tls || 'end', hc: LB_UI.hc || '/healthz', secret: LB_UI.secret || '<the shared secret>'};
   host.appendChild(el('p', 'note', 'Both nodes answer everything, so any balancer spreads the pages round robin, without sticky sessions. Each node says GET /healthz: 200 "ok NODE" while it really works (the daemon, its database), 503 in maintenance or an upgrade - so the balancer takes it out by itself. Pick yours below: the configuration is filled in with this cluster\'s own names, addresses and ports, marked in colour, and follows what you type here.'));
   if (lb.vip && lb.vip.on) {
-    host.appendChild(el('p', 'note warn', 'The built-in web address (VIP) ' + lb.vip.address + ' is on: the pages need no balancer of yours. Use one or the other.'));
+    host.appendChild(el('p', 'note warn', 'The built-in VIP address ' + lb.vip.address + ' is on: the pages need no balancer of yours. Use one or the other.'));
   }
   /* The values. */
   var form = el('div', 'lb-form');
@@ -7570,7 +7578,7 @@ function haWatch() {
       if (j.result && j.result.rows !== undefined) toast('rebuilt from the other node: ' + num(j.result.rows) + ' row(s)', 'good');
       loadHa();
     }).catch(function (e) {
-      /* Not reachable for a moment - a restart, the web address moving
+      /* Not reachable for a moment - a restart, the VIP address moving
          (1.0.66): asked again, the job goes on regardless. */
       if (e && e.unreachable && ++HA_MISSES < 100) { HA_WATCHING = setTimeout(step, 3000); return; }
       HA_MISSES = 0; HA_WATCHING = null; oops(e);
@@ -7706,7 +7714,7 @@ function maintenanceAsk(n, on, then) {
           .then(function (r) { toast(r.message, 'good'); then(r); }).catch(oops);
       }}], true);
 }
-/* Behind the web address the answers come from either node, and while one
+/* Behind the VIP address the answers come from either node, and while one
    is restarting or the address moves, the other's copy of a step may be a
    moment behind (1.0.70): what was shown is never taken back by an older
    answer - each node's step only goes forward. */
@@ -8053,7 +8061,7 @@ function drawUpgrade(d) {
   });
   $('up-cancel').hidden = !running;
   /* Each node's own install.sh output (1.0.70), kept as it comes - the
-     answering node changes behind the web address, and the one card showed
+     answering node changes behind the VIP address, and the one card showed
      one node's, then the other's. */
   UP.logs = UP.logs || {};
   if (d.node) UP.logs[d.node] = d.log || [];
@@ -8118,7 +8126,7 @@ var VERSION_LOADED = (function () {
 }());
 function loadUpgrade(live) {
   /* A short deadline while an upgrade runs (1.0.66): the node answering may
-     be restarting, or the web address moving to the other one. */
+     be restarting, or the VIP address moving to the other one. */
   var running = upRunning();
   clearTimeout(UP.timer);
   var mine = UP.ask = (UP.ask || 0) + 1;
@@ -8131,12 +8139,12 @@ function loadUpgrade(live) {
   }).catch(function (e) {
     if (mine !== UP.ask) return;
     /* The node that answers these pages may be the one being restarted, or
-       the web address may be moving to the other node: asked again, always
+       the VIP address may be moving to the other node: asked again, always
        (1.0.73) - not only while the last answer said "running", and without
        a limit. Said once, in a line of its own that is always there. */
     UP.misses = (UP.misses || 0) + 1;
     if (running || e.unreachable || UP.misses <= 3) {
-      if ($('up-retry')) $('up-retry').textContent = ('A node is restarting or the web address is moving to the other node - asking again…');
+      if ($('up-retry')) $('up-retry').textContent = ('A node is restarting or the VIP address is moving to the other node - asking again…');
       upgradeAgain(Math.min(2000 * UP.misses, 6000));
       return;
     }
@@ -8146,7 +8154,7 @@ function loadUpgrade(live) {
 }
 /* Whether an upgrade is under way, as far as this page knows (1.0.73): the
    plan says so, or a step is not finished, or it ended a short while ago -
-   behind the web address the next answer may come from the node whose copy
+   behind the VIP address the next answer may come from the node whose copy
    is a moment behind. */
 function upRunning() {
   var p = UP.last && UP.last.plan;
@@ -8218,7 +8226,7 @@ if ($('up-drop')) {
 }
 
 /* ==========================================================================
-   Certificates and the web address (1.0.47)
+   Certificates and the VIP address (1.0.47)
    ========================================================================== */
 var WEB = {last: null, timer: null};
 function loadWeb() {
@@ -8233,7 +8241,7 @@ function loadWeb() {
 }
 function daysLeft(ts) { return ts ? Math.floor((ts - Date.now() / 1000) / 86400) : null; }
 function certTone(days) { return days === null ? 'dim' : (days < 0 ? 'crit' : (days < 21 ? 'warn' : 'ok')); }
-function webTargetWords(t) { return t === 'vip' ? 'the web address' : t; }
+function webTargetWords(t) { return t === 'vip' ? 'the VIP address' : t; }
 
 function certCard(d, target) {
   var prof = d.tls[target];
@@ -8247,7 +8255,7 @@ function certCard(d, target) {
   var card = el('section', 'cert-card');
   var head = el('header', 'cert-h');
   var title = el('div', 'cert-title');
-  title.appendChild(el('span', 'cert-target', target === 'vip' ? 'The web address (VIP) of the cluster' : 'Node'));
+  title.appendChild(el('span', 'cert-target', target === 'vip' ? 'The VIP address of the cluster' : 'Node'));
   title.appendChild(noI18n(el('b', '', target === 'vip' ? (d.vip.fqdn || d.vip.address || '–') : target)));
   if (target === 'vip') {
     /* Said plainly what this card is (1.0.50). */
@@ -8297,7 +8305,7 @@ function certCard(d, target) {
     card.appendChild(b);
   } else {
     card.appendChild(el('p', 'note', target === 'vip'
-      ? 'None of its own: the web address answers with the certificate of the node it is on.'
+      ? 'None of its own: the VIP address answers with the certificate of the node it is on.'
       : 'Not known yet.'));
   }
   /* How TLS is spoken, as chips. */
@@ -8324,7 +8332,7 @@ function certCard(d, target) {
   card.appendChild(chips);
   /* Is it in place on the node? */
   if (target === 'vip' && prof && d.vip && d.vip.on) {
-    /* The web address's certificate is put in on every node (1.0.51). */
+    /* The VIP address's certificate is put in on every node (1.0.51). */
     (d.nodes || []).forEach(function (n) {
       var nw = n.web || {};
       if (nw.progress) { card.appendChild(certProgress(nw.progress, n.name)); return; }
@@ -8335,7 +8343,7 @@ function certCard(d, target) {
       card.appendChild(st2);
     });
   } else if (target === 'vip' && prof && d.vip && !d.vip.on) {
-    card.appendChild(el('p', 'note small', 'Put in on the nodes once the web address is turned on (Settings → High availability).'));
+    card.appendChild(el('p', 'note small', 'Put in on the nodes once the VIP address is turned on (Settings → High availability).'));
   }
   if (target !== 'vip' && w && w.progress) {
     card.appendChild(certProgress(w.progress, target));
@@ -8366,7 +8374,12 @@ function certCard(d, target) {
     tools.appendChild(ss);
     var pol = cmdButton('TLS settings', 'gear', 'small');
     pol.onclick = function () { certPolicy(target, prof, d); };
+    /* Whoever gave the certificate - ACME too - its protocols, ciphers, DH
+       and HSTS are set here and kept when it is renewed (1.0.172). */
+    explain(pol, 'The protocols, the ciphers, the DH parameters and HSTS of ' + webTargetWords(target) + ' - kept as they are whichever way the certificate came, ACME and its renewals too.');
     tools.appendChild(pol);
+    var bef = (d.acme && d.acme.before || {})[target];
+    if (bef && !bef.ran_out) tools.appendChild(acmePutBackButton(target, bef, function () { loadWeb(); }));
     if (prof && prof.cert) {
       var dl = cmdButton('Download', 'download', 'small');
       dl.title = 'The certificate and its chain, as PEM - without the key';
@@ -8703,7 +8716,7 @@ function drawWeb(d) {
   }, undefined, function () { explainWhatWasDrawn($('pane-web')); });
 }
 
-/* The web address lives on the High availability pane (1.0.49), kept up to
+/* The VIP address lives on the High availability pane (1.0.49), kept up to
    date there every five seconds while it is open. */
 var VIP_TIMER = null;
 function loadVip(live) {
@@ -8746,7 +8759,7 @@ function vipSave() {
   if (dr.on !== was.on) {
     if (dr.on) steps.push(function () { return api('web', {action: 'vip_on'}); });
     else {
-      ask = askThen('Turn the web address off', 'keepalived stops on both nodes and the address is on neither. The nodes keep answering on their own addresses, and a load balancer of your own works as before.', 'Turn it off');
+      ask = askThen('Turn the VIP address off', 'keepalived stops on both nodes and the address is on neither. The nodes keep answering on their own addresses, and a load balancer of your own works as before.', 'Turn it off');
       steps.push(function () { return api('web', {action: 'vip_off'}); });
     }
   }
@@ -8769,7 +8782,7 @@ function drawVip(d) {
   var host = $('web-vip');
   liveFill(host, function (host) {
   if (!d.cluster) {
-    host.appendChild(el('p', 'note', 'The web address is for a cluster of two: make this node one of two first (High availability).'));
+    host.appendChild(el('p', 'note', 'The VIP address is for a cluster of two: make this node one of two first (High availability).'));
     return;
   }
   var v = d.vip || {};
@@ -8848,7 +8861,7 @@ function drawVip(d) {
       var mv = cmdButton('Move it here', 'next', 'small');
       mv.onclick = function () {
         var nn = htmlText(n.name);
-        confirmThen('Move the web address to ' + n.name, 'Whoever is on the pages through it is answered by ' + nn + ' within a few seconds; sign-ins stay (they are in the database). ' + (v.mode === 'stays' ? 'It then stays on ' + nn + '.' : nn + ' becomes the preferred node: the address goes back to it after a failover.'), 'Move it', function () {
+        confirmThen('Move the VIP address to ' + n.name, 'Whoever is on the pages through it is answered by ' + nn + ' within a few seconds; sign-ins stay (they are in the database). ' + (v.mode === 'stays' ? 'It then stays on ' + nn + '.' : nn + ' becomes the preferred node: the address goes back to it after a failover.'), 'Move it', function () {
           api('web', {action: 'vip_move', to: n.name}).then(function (x) { toast(x.message, 'good'); setTimeout(loadVip, 4000); }).catch(oops);
         });
       };
@@ -8886,7 +8899,7 @@ function drawVip(d) {
   sw._input.disabled = !dr.address && !dr.on;
   sw._input.onchange = function () { dr.on = !!sw._get(); vipDirty(); drawVip(d); };
   onrow.appendChild(sw);
-  onrow.appendChild(el('span', '', dr.on ? 'the web address is on' : 'the web address is off'));
+  onrow.appendChild(el('span', '', dr.on ? 'the VIP address is on' : 'the VIP address is off'));
   host.appendChild(onrow);
   host.appendChild(el('p', 'muted small', 'Each node needs keepalived (put in by itself from AlmaLinux\'s own repository), VRRP (IP protocol 112) let in from the other node, and the address in the same network as its own - docs/tls-and-vip.md says what to open in a firewall.'));
   });
@@ -9175,7 +9188,7 @@ function drawFwBody(d) {
   h2.appendChild(el('h3', '', 'What otp lets in by itself'));
   h2.appendChild(noI18n(el('span', 'tag dim', n.name || '')));
   body.appendChild(h2);
-  body.appendChild(el('p', 'note', 'Worked out from what is set up, and changed with it: a RADIUS client added, the cluster made, the web address turned on. What keeps the cluster working cannot be turned off.'));
+  body.appendChild(el('p', 'note', 'Worked out from what is set up, and changed with it: a RADIUS client added, the cluster made, the VIP address turned on. What keeps the cluster working cannot be turned off.'));
   var grid = el('div', 'fw-auto');
   (n.auto || []).forEach(function (item) {
     var card = el('div', 'fw-auto-card' + (item.on ? '' : ' off'));
@@ -9422,14 +9435,14 @@ function haHistory() {
 function drawHaHistory(host, d) {
   clear(host);
   var rows = d.rows || [];
-  var KINDS = [['all', 'Everything'], ['vip', 'The web address'], ['node', 'Nodes and health'], ['replication', 'Replication'], ['maintenance', 'Maintenance and upgrades']];
+  var KINDS = [['all', 'Everything'], ['vip', 'The VIP address'], ['node', 'Nodes and health'], ['replication', 'Replication'], ['maintenance', 'Maintenance and upgrades']];
   var bar = el('div', 'ha-hist-bar');
   var tph = el('span'); tph.id = 'ha-hist-time';
   var seg = el('div', 'seg');
   var counts = el('div', 'ha-hist-counts');
   var bad = rows.filter(function (r) { return r.level === 'bad'; }).length;
   var moved = rows.filter(function (r) { return r.what === 'vip' && r.kind === 'ha' && /came to/.test(r.words); }).length;
-  counts.appendChild(el('span', 'cchip', moved + ' × the web address moved'));
+  counts.appendChild(el('span', 'cchip', moved + ' × the VIP address moved'));
   counts.appendChild(el('span', 'cchip' + (bad ? ' warn' : ''), bad + ' × trouble'));
   var list = el('div', 'ha-hist-list');
   var paint = function () {
@@ -9445,7 +9458,7 @@ function drawHaHistory(host, d) {
       var t = el('div', 'ha-hist-t');
       var top = el('div', 'ha-hist-top');
       top.appendChild(noI18n(el('span', 'mono muted', String(stamp(r.ts)).slice(11))));
-      top.appendChild(el('span', 'tag dim', {vip: 'web address', node: 'node', replication: 'replication', maintenance: 'maintenance'}[r.what] || r.what));
+      top.appendChild(el('span', 'tag dim', {vip: 'VIP address', node: 'node', replication: 'replication', maintenance: 'maintenance'}[r.what] || r.what));
       if (r.node) top.appendChild(noI18n(el('span', 'tag', r.node)));
       top.appendChild(el('span', 'muted', r.kind === 'ha' ? 'seen by itself' : 'done by ' + (r.who || 'hand')));
       t.appendChild(top);
@@ -12255,7 +12268,7 @@ function netFormCard(n) {
   g2.appendChild(formField('Search domains', search));
   s1._body.appendChild(g2);
   card.appendChild(s1);
-  var s2 = msect('IPv6 (dual stack)', 'Switched on, the node takes IPv6 beside IPv4: RADIUS listens on both, nginx answers on both, the firewall is set for both. Replication between the databases stays on IPv4. The web address takes an IPv6 address of its own on High availability.');
+  var s2 = msect('IPv6 (dual stack)', 'Switched on, the node takes IPv6 beside IPv4: RADIUS listens on both, nginx answers on both, the firewall is set for both. Replication between the databases stays on IPv4. The VIP address takes an IPv6 address of its own on High availability.');
   var r6 = el('div', 'formgrid');
   r6.appendChild(formField('IPv6', s6));
   var g6 = el('div', 'formgrid');
@@ -12274,7 +12287,7 @@ function netFormCard(n) {
   };
   s6._input.addEventListener('change', paint6);
   mode6.addEventListener('change', paint6);
-  /* Shown only when the new address is outside the web address's network
+  /* Shown only when the new address is outside the VIP address's network
      (1.0.120): the node could not hold it there - on purpose only while a
      whole cluster moves to another network, one node at a time. */
   var elsewhere = null;
@@ -12284,8 +12297,8 @@ function netFormCard(n) {
     var lab = el('label', 'check small');
     var cb = el('input'); cb.type = 'checkbox';
     lab.appendChild(cb);
-    lab.appendChild(el('span', '', 'The web address (' + NET.d.vip.address + ') is meant to be in another network than the new address'));
-    elsewhere.appendChild(el('div', 'small', 'The new address is not in the network of the web address: keepalived could not put the web address on this node. Tick it only while the whole cluster moves to another network - this node now, the other next, the web address last (High availability).'));
+    lab.appendChild(el('span', '', 'The VIP address (' + NET.d.vip.address + ') is meant to be in another network than the new address'));
+    elsewhere.appendChild(el('div', 'small', 'The new address is not in the network of the VIP address: keepalived could not put the VIP address on this node. Tick it only while the whole cluster moves to another network - this node now, the other next, the VIP address last (High availability).'));
     elsewhere.appendChild(lab);
     elsewhere._get = function () { return cb.checked && !elsewhere.hidden; };
     elsewhere.hidden = true;
@@ -12341,8 +12354,8 @@ function netFormCard(n) {
   setTimeout(paint6, 0);
   return card;
 }
-/* Is the address (with its prefix) outside the network of the web address?
-   IPv4 only - the web address and the nodes speak VRRP over IPv4. */
+/* Is the address (with its prefix) outside the network of the VIP address?
+   IPv4 only - the VIP address and the nodes speak VRRP over IPv4. */
 function ipOutside(addr, vip) {
   var p = function (t) {
     var m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:\/(\d+))?$/.exec(String(t || '').trim());
@@ -12521,7 +12534,7 @@ function drawPower(live) {
     var all = d.nodes.map(function (n) { return n.name; });
     var row2 = el('div', 'btnrow');
     var r1 = cmdButton('Restart one after the other', 'refresh', 'primary');
-    explain(r1, 'The other node first, then this one - each in maintenance while it restarts, so the web address and the service never stop.');
+    explain(r1, 'The other node first, then this one - each in maintenance while it restarts, so the VIP address and the service never stop.');
     var r2 = cmdButton('Restart both at once', 'refresh', '');
     var r3 = cmdButton('Power off both', 'power', 'danger');
     [r1, r2, r3].forEach(function (b) { b.disabled = !!d.busy; });
@@ -12539,10 +12552,10 @@ function pwAsk(how, targets, order, n) {
   var who = targets.join(', ');
   var words;
   if (how === 'poweroff') words = targets.length > 1 ? 'Both nodes are switched off. Nothing answers - RADIUS, the pages - until somebody switches them on again at the machines.'
-    : (d.cluster ? n.name + ' is switched off; the web address moves to the other node, which goes on answering alone. It has to be switched on again at the machine.' : 'The server is switched off. Nothing answers until somebody switches it on again at the machine.');
-  else if (order === 'rolling') words = 'One after the other: each goes into maintenance, the web address moves to the other node, it restarts and comes back into service - then the next. RADIUS and the pages go on answering all the time.';
-  else if (targets.length > 1) words = 'Both restart at the same moment: for a minute or two nothing answers - RADIUS, the pages, the web address.';
-  else words = d.cluster ? n.name + ' goes into maintenance, the web address moves to the other node, and it restarts; back up, it comes back into service by itself.' : 'The server restarts: for a minute or two nothing answers.';
+    : (d.cluster ? n.name + ' is switched off; the VIP address moves to the other node, which goes on answering alone. It has to be switched on again at the machine.' : 'The server is switched off. Nothing answers until somebody switches it on again at the machine.');
+  else if (order === 'rolling') words = 'One after the other: each goes into maintenance, the VIP address moves to the other node, it restarts and comes back into service - then the next. RADIUS and the pages go on answering all the time.';
+  else if (targets.length > 1) words = 'Both restart at the same moment: for a minute or two nothing answers - RADIUS, the pages, the VIP address.';
+  else words = d.cluster ? n.name + ' goes into maintenance, the VIP address moves to the other node, and it restarts; back up, it comes back into service by itself.' : 'The server restarts: for a minute or two nothing answers.';
   confirmThen((how === 'reboot' ? 'Restart ' : 'Power off ') + who + '?', htmlText(words), how === 'reboot' ? 'Restart' : 'Power off', function () {
     api('power', {how: how, targets: targets, order: order}).then(function (r) {
       toast(r.message, 'good');
@@ -13218,7 +13231,7 @@ function drawOsup(live) {
   liveFill(real, function (host) {
     var d = OU.d, plan = d.plan || {}, nodes = d.nodes || [];
     var running = plan.state === 'running';
-    if (OU.away) host.appendChild(el('p', 'note warn', 'This page\'s server is not answering for ' + span(Math.round((Date.now() - OU.away) / 1000)) + ' - restarting, or the web address moving; asked again every few seconds.'));
+    if (OU.away) host.appendChild(el('p', 'note warn', 'This page\'s server is not answering for ' + span(Math.round((Date.now() - OU.away) / 1000)) + ' - restarting, or the VIP address moving; asked again every few seconds.'));
     /* A restart the update left to do. */
     var need = nodes.filter(function (n) { return n.reboot; });
     if (need.length && !(d.power && d.power.id)) {
@@ -13281,7 +13294,7 @@ function drawOsup(live) {
       var uc = el('div', 'card full');
       uc.appendChild(el('h2', '', d.cluster ? 'Update the nodes' : 'Update this server'));
       uc.appendChild(el('p', 'note', d.cluster
-        ? 'The other node first, then this one - each out of service while it is updated, the web address on the other, RADIUS answered there; back in service before the next one starts.'
+        ? 'The other node first, then this one - each out of service while it is updated, the VIP address on the other, RADIUS answered there; back in service before the next one starts.'
         : 'dnf (or apt) updates every package. RADIUS goes on answering meanwhile; a restart it needs is offered at the end.'));
       var segb = el('div', 'seg');
       [['ask', 'Ask me when a restart is needed'], ['auto', 'Restart by itself when needed' + (d.cluster ? ', one at a time' : '')]].forEach(function (o) {
@@ -14030,7 +14043,7 @@ function drawHisec(d) {
 }
 
 /* ---- Settings → Automatic certificates (1.0.169) -------------------------------
-   One card a certificate - the web address's, each node's - who orders it, what
+   One card a certificate - the VIP address's, each node's - who orders it, what
    it has now, the last try; port 80 tried as the CA will try it. */
 var AC = {d: null, probe: {}, poll: null};
 function loadAcme() {
@@ -14080,7 +14093,7 @@ function drawAcme() {
       var left = t.not_after ? Math.floor((t.not_after - Date.now() / 1000) / 86400) : null;
       var acme = t.how === 'ACME';
       var dot = !acme ? 'dim' : (st.ok === false ? 'warn' : (left !== null && left < 14 ? 'warn' : 'ok'));
-      var c = nodeCard({node: t.target === 'vip' ? 'the web address' : t.target, me: t.target === d.node}, dot,
+      var c = nodeCard({node: t.target === 'vip' ? 'the VIP address' : t.target, me: t.target === d.node}, dot,
         acme ? (st.ok === false ? 'the last try failed' : 'from the CA') : (t.how ? 'not from the CA' : 'no certificate'),
         acme ? (st.ok === false ? 'warn' : 'ok') : 'dim');
       /* Who looks after it (1.0.170): ACME, or the certificate put in on
@@ -14124,7 +14137,7 @@ function drawAcme() {
             .catch(function (e) { busy(order, false); oops(e); });
         };
         if (t.how && !acme) {
-          confirmThen('Replace the certificate of ' + (t.target === 'vip' ? 'the web address' : t.target) + '?',
+          confirmThen('Replace the certificate of ' + (t.target === 'vip' ? 'the VIP address' : t.target) + '?',
             'It has one put in on Certificates and TLS (' + t.how + (t.issuer ? ', ' + t.issuer.replace(/^CN=/, '').split(',')[0] : '') + '). The one from the CA takes its place once it comes, and ACME renews it from then on. Its TLS settings stay as they are.',
             'Order it', go, false);
         } else go();
@@ -14139,12 +14152,13 @@ function drawAcme() {
           .catch(function (e) { busy(cb, false); oops(e); });
       };
       /* Every certificate's name from here (1.0.170) - the other node's and
-         the web address's too. */
+         the VIP address's too. */
       var nm = cmdButton('Its name…', 'edit', 'small');
-      explain(nm, t.target === 'vip' ? 'The DNS name of the web address - the one people type. It is the web address’s own (Settings → High availability) and its certificate is for it.'
+      explain(nm, t.target === 'vip' ? 'The DNS name of the VIP address - the one people type. It is the VIP address’s own (Settings → High availability) and its certificate is for it.'
         : 'The DNS name the certificate of ' + t.target + ' is for. Empty: the full host name of ' + t.target + '.');
       nm.onclick = function () { acmeNameAsk(t); };
       row.appendChild(probe); row.appendChild(order); row.appendChild(cb); row.appendChild(nm);
+      if (t.before && !t.before.ran_out) row.appendChild(acmePutBackButton(t.target, t.before, function (x) { AC.d = x; drawAcme(); }));
       c.appendChild(row);
       grid.appendChild(c);
     });
@@ -14159,9 +14173,25 @@ function drawAcme() {
   });
 }
 
+/* The certificate from before ACME (1.0.172): kept when ACME replaced it,
+   put back with its key as it was; ACME then leaves it alone. */
+function acmePutBackButton(target, before, then) {
+  var b = cmdButton('Back to the one before…', 'undo', 'small');
+  var words = (before.issuer || '').replace(/^CN=/, '').split(',')[0];
+  explain(b, 'The certificate it had before ACME replaced it' + (words ? ' - from ' + words : '') + (before.not_after ? ', good until ' + new Date(before.not_after * 1000).toLocaleDateString(numLang()) : '') + '. Put back as it was; ACME no longer renews this one. The TLS settings stay.');
+  b.onclick = function () {
+    confirmThen('Put the certificate from before ACME back?', 'The one from the CA is taken out and the one it had before - ' + (words || before.how || '') + ' - put back, on every node that serves it. ACME no longer renews this one (Look after it gives it back).', 'Put it back', function () {
+      busy(b, true);
+      api('acme', {action: 'put_back', target: target}).then(function (x) { toast(x.message, 'good'); then(x); })
+        .catch(function (e) { busy(b, false); oops(e); });
+    }, false);
+  };
+  return b;
+}
+
 /* The names of the certificates beside their box (1.0.170): what each node's
-   certificate is for now when its box is empty, and the web address's name -
-   it is the web address's own (High availability), changed from here too. */
+   certificate is for now when its box is empty, and the VIP address's name -
+   it is the VIP address's own (High availability), changed from here too. */
 function acmeNamesInSettings(d) {
   var item = document.querySelector('.set-item[data-key="acme_node_name"]');
   if (!item) return;
@@ -14170,17 +14200,16 @@ function acmeNamesInSettings(d) {
   var input = $('set-acme_node_name');
   if (input && now[d.node]) input.placeholder = now[d.node];
   Array.prototype.forEach.call(item.querySelectorAll('.node-other[data-node]'), function (row) {
-    var old = row.querySelector('.node-now');
-    if (old) old.remove();
+    /* An empty one says the name it stands for, in the place of "(empty)"
+       (1.0.172): the words did not fit in a narrow box. */
     var n = row.dataset.node;
-    var shown = row.querySelector('.mono');
-    if (now[n] && !(shown && shown.textContent.trim() === now[n])) {
-      var w = el('span', 'node-now muted');
-      w.appendChild(el('span', '', 'now'));
-      w.appendChild(document.createTextNode(' '));
-      w.appendChild(noI18n(el('span', 'mono', now[n])));
-      var acts = row.querySelector('button');
-      row.insertBefore(w, acts || null);
+    var empty = row.querySelector('.node-empty');
+    if (empty && now[n]) {
+      var v = noI18n(el('span', 'mono small muted', now[n]));
+      v.title = 'none of its own: the name of its certificate, else its full host name';
+      row.replaceChild(v, empty);
+      var note = row.querySelector('span.muted:not(.mono)');
+      if (note) note.textContent = 'by itself';
     }
   });
   var vip = (d.targets || []).filter(function (t) { return t.target === 'vip'; })[0];
@@ -14193,21 +14222,21 @@ function acmeNamesInSettings(d) {
     (item.querySelector('.set-tail') || item).appendChild(box);
   }
   vr = el('div', 'node-other vip');
-  vr.appendChild(el('span', 'tag dim', 'the web address'));
+  vr.appendChild(el('span', 'tag dim', 'VIP'));
   vr.appendChild(vip.name ? noI18n(el('span', 'mono small', vip.name)) : el('span', 'node-empty small', '(empty)'));
-  vr.appendChild(el('span', 'muted', 'its own (High availability)'));
+  vr.appendChild(el('span', 'muted', 'High availability'));
   if (ADMIN) {
-    var eb = iconButton('edit', 'Change the name of the web address');
+    var eb = iconButton('edit', 'Change the name of the VIP address');
     eb.onclick = function () { acmeNameAsk({target: 'vip', name: vip.name}); };
     vr.appendChild(eb);
   }
   box.appendChild(vr);
 }
 function acmeNameAsk(t) {
-  askInModal(t.target === 'vip' ? 'The name of the web address' : 'The name of ' + t.target,
+  askInModal(t.target === 'vip' ? 'The name of the VIP address' : 'The name of ' + t.target,
     'The full DNS name its certificate is for - it goes into the certificate as its name (CN) and in its alternative names (SAN). The CA gives it only for a name that points at it (HTTP-01) or whose TXT record can be put in (DNS-01).',
     [{label: 'DNS name', placeholder: t.target === 'vip' ? 'otp.example.cz' : t.target + '.example.cz', mono: true, value: t.name || '',
-      says: t.target === 'vip' ? 'Empty: the web address has no name.' : 'Empty: its full host name, as ' + t.target + ' says it.'}],
+      says: t.target === 'vip' ? 'Empty: the VIP address has no name.' : 'Empty: its full host name, as ' + t.target + ' says it.'}],
     'Keep it', 'save', function (v, b) {
       busy(b, true);
       api('acme', {action: 'name', target: t.target, name: v[0].trim()}).then(function (x) {
@@ -14222,7 +14251,7 @@ function acmeNameAsk(t) {
    each record up from this node. */
 var AC_DNS = {at: 0, rows: null};
 var ACME_DNS_STEPS = {
-  'http-01': ['Each name points at the address that reaches port 80 of its node (or of the web address) - from the internet, or from your own CA.',
+  'http-01': ['Each name points at the address that reaches port 80 of its node (or of the VIP address) - from the internet, or from your own CA.',
               'Port 80 is open to it - the firewall in front of the servers, and Firewall and access here.',
               'Try port 80 on each card, then Order it now.'],
   desec: ['Sign up at desec.io (free) and confirm the mail.',
@@ -14249,7 +14278,7 @@ function acmeDnsGuide(d) {
   var h = el('h2', '', 'In your DNS');
   card.appendChild(h);
   card.appendChild(el('p', 'note', g.challenge === 'http-01'
-    ? 'HTTP-01: the CA asks port 80 of each name - so each name points at the node, or the web address, and port 80 is open to the CA.'
+    ? 'HTTP-01: the CA asks port 80 of each name - so each name points at the node, or the VIP address, and port 80 is open to the CA.'
     : (g.dns === 'manual' ? 'DNS-01 by hand: the CA reads a TXT record you put in at every order.'
       : 'DNS-01: the CA reads a TXT record otp puts in. What has to be in your DNS for it - once - is below.')));
   var ol = el('ol', 'acme-steps');
@@ -14262,7 +14291,7 @@ function acmeDnsGuide(d) {
   });
   var t = listTable(['Certificate', 'Record', 'Type', 'Points at / value', 'In DNS now'], rows, function (r) {
     var tr = el('tr');
-    tr.appendChild(r.target === 'vip' ? el('td', '', 'the web address') : noI18n(el('td', '', r.target)));
+    tr.appendChild(r.target === 'vip' ? el('td', '', 'the VIP address') : noI18n(el('td', '', r.target)));
     var rec = el('td', 'mono small dns-cell');
     if (r.record) {
       rec.appendChild(noI18n(el('span', '', r.record)));
@@ -14300,6 +14329,19 @@ function acmeDnsGuide(d) {
     return tr;
   });
   card.appendChild(t);
+  /* The copy buttons right after the text, one under the other: the text of
+     a column as wide as its longest (1.0.172). */
+  setTimeout(function () {
+    [1, 3].forEach(function (col) {
+      var spans = Array.prototype.map.call(t.querySelectorAll('tbody tr'), function (tr) {
+        var td = tr.children[col];
+        return td && td.querySelector('.dns-val > span:first-child');
+      }).filter(Boolean);
+      var w = 0;
+      spans.forEach(function (sp) { sp.style.width = ''; w = Math.max(w, sp.getBoundingClientRect().width); });
+      spans.forEach(function (sp) { sp.style.width = Math.ceil(w) + 'px'; });
+    });
+  }, 0);
   var row = el('div', 'btnrow');
   var chk = cmdButton('Check DNS', 'search', 'small');
   explain(chk, 'Each record looked up from this node now, through its DNS servers - as the CA will look. A record just put in may take a while to show (its TTL).');
@@ -14331,7 +14373,15 @@ function acmeDnsGuide(d) {
 var DBT = {d: null, run: null, said: {}};
 function loadDbTls() {
   if (!ADMIN) return;
-  api('dbtls').then(function (d) { DBT.d = d; drawDbTls(); }).catch(function () {});
+  /* Not answered: said on the card, not left out of the page (1.0.172). */
+  api('dbtls').then(function (d) { DBT.d = d; DBT.err = ''; drawDbTls(); }).catch(function (e) {
+    DBT.err = String((e && e.message) || e);
+    var card = $('db-tls-card'), host = $('db-tls');
+    if (!card || !host) return;
+    card.hidden = false;
+    host.innerHTML = '';
+    host.appendChild(el('div', 'note bad', 'The encryption to the database server could not be read: ' + DBT.err));
+  });
 }
 function dbtKindWords(k) {
   return {sqlite: 'a file on this machine', socket: 'over a Unix socket', local: 'PostgreSQL on this machine',
@@ -14430,8 +14480,8 @@ function drawDbTls() {
     sub = 'It stopped working with TLS (' + (rescued[0].rescued.why || '') + ') - the database is on the same machine, so it went on without it and RADIUS kept answering. Put it right and encrypt it again.';
   } else if (checked) {
     title = 'Every node reaches its database encrypted and checked';
-    sub = d.kind === 'local' ? 'PostgreSQL here has a certificate from otp’s own authority, renewed by itself 45 days before it ends - and made again when the machine’s names change.'
-      : (d.kind === 'replicated' ? 'Each node checks its own PostgreSQL with the cluster’s authority (the link between the databases has it, High availability).'
+    sub = d.kind === 'local' || (d.kind === 'replicated' && !d.link_done) ? 'PostgreSQL here has a certificate from otp’s own authority, renewed by itself 45 days before it ends - and made again when the machine’s names change.'
+      : (d.kind === 'replicated' ? 'Each node checks its own PostgreSQL with otp’s own authority - its certificate the one the link between the databases has, renewed with it. Either is switched off without the other.'
         : 'The server’s certificate is checked with the authority given.');
   } else if (on.length) {
     title = 'Encrypted, but whose certificate answers is not checked on ' + on.filter(function (n) { return n.mode === 'require'; }).map(function (n) { return n.name; }).join(', ');
@@ -14446,13 +14496,7 @@ function drawDbTls() {
   head.appendChild(words);
   var acts = el('div', 'btnrow');
   if (ME.role === 'fulladmin' && !running && d.kind !== 'sqlite') {
-    var replNotReady = nodes.some(function (n) { return n.kind === 'replicated'; }) && !d.link_done;
-    if (replNotReady && !on.length) {
-      var go = el('a', 'btn cmd small primary', 'High availability → Repair first');
-      go.href = '#settings/ha';
-      explain(go, 'Each node’s PostgreSQL gets its certificate from the cluster’s authority when the link between the databases is encrypted. Then this moves each node’s own connection over.');
-      acts.appendChild(go);
-    } else {
+    {
       var b = cmdButton(checked ? 'Again…' : 'Encrypt…', checked ? 'refresh' : 'lock', checked ? 'small' : 'small primary');
       b.id = 'dbt-on';
       b.onclick = function () { dbtWizard(); };
@@ -14472,7 +14516,7 @@ function drawDbTls() {
         off.onclick = function () {
           confirmThen('Switch the encryption to the database off?',
             (d.kind === 'remote' ? '<b>Whoever is on the network between the nodes and the database server will read every row going over.</b><br>' : '')
-            + 'Every node’s connection moves back to no TLS first, then otp’s certificates leave the PostgreSQLs on the nodes. Nothing stops meanwhile.',
+            + 'Every node’s connection moves back to no TLS first, then otp’s certificates leave the PostgreSQLs on the nodes - not where the link between the databases uses them. Nothing stops meanwhile.',
             'Switch it off', function () {
               dbtSteps([{label: 'every connection back to no TLS', body: {action: 'apply', phase: 'connect', mode: ''}},
                         {label: 'otp’s certificates out of PostgreSQL', body: {action: 'apply', phase: 'server_off'}}]);
@@ -14492,7 +14536,10 @@ function drawDbTls() {
     var steps = el('div', 'hal-steps');
     var kind = n.kind || d.kind;
     steps.appendChild(el('span', 'hal-step', dbtKindWords(kind)));
-    if (kind === 'local') steps.appendChild(el('span', 'hal-step ' + (n.server ? 'ok' : ''), 'its certificate'));
+    if (kind === 'local' || kind === 'replicated') {
+      var cs = el('span', 'hal-step ' + (n.server || n.server_by ? 'ok' : ''), n.server_by === 'link' ? 'the link’s certificate' : 'its certificate');
+      steps.appendChild(cs);
+    }
     steps.appendChild(el('span', 'hal-step ' + (n.mode ? (n.ssl ? 'ok' : 'bad') : ''), n.mode ? n.mode : 'no TLS'));
     if (n.ssl) steps.appendChild(noI18n(el('span', 'hal-step ok', (n.version || 'TLS') + (n.cipher ? ' · ' + n.cipher : ''))));
     row.appendChild(steps);
@@ -14526,7 +14573,7 @@ function drawDbTls() {
 function dbtWizard() {
   var d = DBT.d;
   var remote = (d.nodes || []).some(function (n) { return (n.kind || d.kind) === 'remote'; });
-  var locals = (d.nodes || []).some(function (n) { return (n.kind || d.kind) === 'local'; });
+  var locals = (d.nodes || []).some(function (n) { return (n.kind || d.kind) === 'local' || ((n.kind || d.kind) === 'replicated' && !d.link_done); });
   var mode, src, pem, out;
   var on = (d.nodes || []).some(function (n) { return n.mode; });
   modal('Encrypt the connection to the database', function (body) {
@@ -14568,7 +14615,10 @@ function dbtWizard() {
       {words: 'Switch over', cls: 'primary', icon: 'lock', go: function (b) {
         var args = dbtArgs();
         var steps = [];
-        if (locals || (d.servers || []).length) steps.push({label: 'the certificates of the PostgreSQLs on the nodes', body: {action: 'apply', phase: 'server'}});
+        /* Each node gives its own PostgreSQL a certificate where it has none
+           of otp's yet - the link's is used where that is on. */
+        if (locals || (d.nodes || []).some(function (n) { return (n.kind || d.kind) === 'replicated'; }) || (d.servers || []).length)
+          steps.push({label: 'the certificates of the PostgreSQLs on the nodes', body: {action: 'apply', phase: 'server'}});
         steps.push({label: 'every node’s connection moved over', body: dbtObj({action: 'apply', phase: 'connect'}, args)});
         closeModal();
         dbtSteps(steps);
@@ -14603,5 +14653,199 @@ function dbtWizard() {
         if (old) grid.replaceChild(c, old); else grid.appendChild(c);
       });
     }).then(function () { busy(b, false); }).catch(function (e) { busy(b, false); oops(e); });
+  }
+}
+
+
+/* ==== isemon over TLS (1.0.172) ================================================
+   The state of the encrypted sending, and the wizard: where isemon is, whose
+   certificate it has (one otp makes for it, its own CA's, a public CA's),
+   mutual TLS, tried from every node, then switched over. */
+function drawIsemonTls() {
+  var card = $('isemon-tls-card'), host = $('isemon-tls');
+  if (!card || !host || !IS.d || !IS.d.tls || !ADMIN) return;
+  var t = IS.d.tls;
+  card.hidden = false;
+  host.innerHTML = '';
+  var tls = (t.targets || []).filter(function (x) { return x.proto === 'tls'; });
+  var plain = (t.targets || []).filter(function (x) { return x.proto !== 'tls'; });
+  var good = tls.length && !plain.length && t.verify;
+  var box = el('div', 'hal ' + (good ? 'good' : 'warn'));
+  var head = el('div', 'hal-head');
+  var ic = el('span', 'hal-ic');
+  ic.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + ICONS[good ? 'lock' : 'shield'] + '</svg>';
+  head.appendChild(ic);
+  var words = el('div', 'hal-words');
+  words.appendChild(el('b', '', !t.on ? 'Sending to isemon is off' : (good ? 'isemon is sent to over TLS, its certificate checked'
+    : (tls.length ? (plain.length ? 'Part of it goes to isemon unencrypted' : 'Encrypted, but whoever answers is taken (its certificate not checked)')
+      : 'isemon is sent plain syslog - whoever is on the network reads who signs in, when and from where'))));
+  var sub = [];
+  if (tls.length) {
+    sub.push(t.ca_is_otp ? 'isemon’s certificate from otp’s own authority' : (t.ca === 'given' ? 'isemon’s certificate checked with the authority given' : 'isemon’s certificate checked with the system’s authorities'));
+    if (t.mtls) sub.push('each node shows its own certificate (mutual TLS)');
+  }
+  if (sub.length) words.appendChild(el('div', 'small', sub.join(' · ')));
+  head.appendChild(words);
+  var acts = el('div', 'btnrow');
+  var go = cmdButton(tls.length ? 'Change…' : 'Encrypt…', 'lock', tls.length ? 'small' : 'small primary');
+  go.id = 'ise-tls-on';
+  go.onclick = function () { isemonTlsWizard(); };
+  acts.appendChild(go);
+  if (tls.length) {
+    var off = cmdButton('Switch TLS off…', 'cancel', 'small danger');
+    off.disabled = !!t.hisec;
+    explain(off, t.hisec ? 'High security is on: isemon is sent to over TLS only (or make isemon an exception there).' : 'Back to plain TCP on 514 - isemon’s rsyslog has to take that again.');
+    off.onclick = function () {
+      confirmThen('Send isemon plain syslog again?', '<b>Whoever is on the network between the nodes and isemon will read every line.</b><br>Every TLS target goes back to plain TCP on 514.', 'Switch it off', function () {
+        api('isemon', {action: 'tls_off'}).then(function (x) { toast(x.message, 'good'); loadIsemon(); loadSettings(); }).catch(oops);
+      });
+    };
+    acts.appendChild(off);
+  }
+  head.appendChild(acts);
+  box.appendChild(head);
+  var list = el('div', 'hal-nodes wide');
+  (t.targets || []).forEach(function (x) {
+    var row = el('div', 'hal-node');
+    row.appendChild(noI18n(el('b', 'hal-name', x.host + ':' + x.port)));
+    var steps = el('div', 'hal-steps');
+    steps.appendChild(el('span', 'hal-step ' + (x.proto === 'tls' ? 'ok' : 'bad'), x.proto === 'tls' ? 'TLS' : (x.proto === 'tcp' ? 'TCP, unencrypted' : 'UDP, unencrypted')));
+    if (x.proto === 'tls') steps.appendChild(el('span', 'hal-step ' + (t.verify ? 'ok' : 'bad'), t.verify ? 'its certificate checked' : 'its certificate not checked'));
+    if (x.proto === 'tls' && t.mtls) steps.appendChild(el('span', 'hal-step ok', 'mutual TLS'));
+    row.appendChild(steps);
+    list.appendChild(row);
+  });
+  if (t.server && t.server.end) {
+    var row = el('div', 'hal-node');
+    row.appendChild(el('b', 'hal-name', 'isemon’s certificate'));
+    var left = Math.round((t.server.end * 1000 - Date.now()) / 86400000);
+    var sd = el('div', 'hal-said small ' + (left < 60 ? 'bad' : 'muted'));
+    sd.appendChild(noI18n(el('span', 'mono', (t.server.names || []).join(', '))));
+    sd.appendChild(document.createTextNode(' · '));
+    sd.appendChild(el('span', '', 'ends ' + new Date(t.server.end * 1000).toLocaleDateString(numLang())));
+    sd.appendChild(document.createTextNode(' · '));
+    sd.appendChild(el('span', '', 'in ' + num(Math.max(0, left)) + ' days'));
+    row.appendChild(sd);
+    list.appendChild(row);
+  }
+  if (t.mtls) Object.keys(t.nodes || {}).forEach(function (n) {
+    var c = t.nodes[n] || {};
+    var row = el('div', 'hal-node');
+    row.appendChild(noI18n(el('b', 'hal-name', n)));
+    row.appendChild(el('div', 'hal-said small muted', c.client_end ? 'its own certificate ends ' + new Date(c.client_end * 1000).toLocaleDateString(numLang()) + ' - renewed by itself' : 'its own certificate is made at the next look (within 5 minutes)'));
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+  host.appendChild(box);
+}
+function isemonTlsWizard() {
+  var t = IS.d.tls || {};
+  var cur = (t.targets || [])[0] || {};
+  var hostI, portI, srcI, pemI, namesI, mtlsI, verI, out, pemF, namesF, bundleRow;
+  modal('Encrypt the sending to isemon', function (body) {
+    body.appendChild(el('p', 'note', 'Step by step: where isemon is and whose certificate it has; for one made here, the locked file for isemon with what to do there; then tried from every node; then switched over.'));
+    var g = el('div', 'formgrid');
+    hostI = textBox(cur.host || '', 'isemon.example.cz', 'mono');
+    g.appendChild(formField('isemon’s address', hostI, 'As the nodes reach it - the name or the address its certificate is for.'));
+    portI = textBox(String(cur.proto === 'tls' ? cur.port : 6514), '6514', 'mono');
+    g.appendChild(formField('Port', portI, '6514 is syslog over TLS.'));
+    srcI = selectBox([['otp', 'otp makes isemon a certificate - a locked file for isemon'], ['given', 'isemon has one from its own CA (PEM)'], ['system', 'isemon has one from a public CA']],
+      t.ca_is_otp || !t.tls ? 'otp' : (t.ca === 'given' ? 'given' : 'system'));
+    g.appendChild(formField('isemon’s certificate', srcI, 'Who signed the certificate isemon’s rsyslog answers with.'));
+    mtlsI = switchBox(t.tls ? t.mtls : true);
+    g.appendChild(formField('isemon takes otp’s nodes only (mutual TLS)', mtlsI, 'Each node shows isemon a certificate of its own from otp’s authority, made and renewed by itself; isemon’s rsyslog lets in only those (PermittedPeer).'));
+    verI = switchBox(t.tls ? t.verify : true);
+    verI._input.disabled = !!t.hisec;
+    g.appendChild(formField('Check isemon’s certificate', verI, 'Off only to try it: encrypted, but whoever answers is taken.'));
+    body.appendChild(g);
+    pemI = el('textarea', 'mono'); pemI.rows = 5; pemI.placeholder = '-----BEGIN CERTIFICATE-----';
+    pemF = formField('isemon’s authority (PEM)', pemI, 'The CA certificate that signed isemon’s certificate. Nothing secret.');
+    body.appendChild(pemF);
+    namesI = textBox(cur.host || '', 'isemon.example.cz, 10.1.2.3', 'mono');
+    namesF = formField('Names in isemon’s certificate', namesI, 'Every name and address the nodes reach isemon by, separated by commas.');
+    body.appendChild(namesF);
+    bundleRow = el('div', 'btnrow');
+    var mk = cmdButton('Make the file for isemon…', 'download', 'small');
+    explain(mk, 'isemon’s certificate and its key from otp’s authority, otp’s authority, the rsyslog configuration and what to do - one ZIP locked with a passphrase you give now (the key is in it). otp does not keep the key. Open it with 7-Zip (7z x isemon-tls.zip).');
+    mk.onclick = function () {
+      askInModal('The file for isemon', 'A passphrase for the file: 12 characters at least. You need it to open the file on the isemon machine - otp does not keep it.',
+        [{label: 'Passphrase', type: 'password'}, {label: 'Again', type: 'password'}], 'Make it', 'download', function (v, b) {
+          if (v[0] !== v[1]) { toast('the two are not the same', 'bad'); return; }
+          busy(b, true);
+          api('isemon', {action: 'tls_bundle', host: hostI.value.trim(), port: Number(portI.value) || 6514, names: namesI.value, mtls: !!mtlsI._get(), passphrase: v[0]}).then(function (d) {
+            var bin = atob(d.file), bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            var a = el('a');
+            a.href = URL.createObjectURL(new Blob([bytes], {type: 'application/zip'}));
+            a.download = d.name;
+            document.body.appendChild(a); a.click();
+            setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+            closeModal();
+            toast('the file for isemon is saved - put it in on the isemon machine (README.txt in it), then Try it on every node', 'good');
+          }).catch(function (e) { busy(b, false); oops(e); });
+        });
+    };
+    bundleRow.appendChild(mk);
+    body.appendChild(bundleRow);
+    var sync = function () {
+      var src = srcI.value;
+      pemF.hidden = src !== 'given';
+      namesF.hidden = bundleRow.hidden = src !== 'otp';
+    };
+    srcI.addEventListener('change', sync);
+    sync();
+    out = el('div', 'dbt-try');
+    body.appendChild(out);
+  }, [{words: 'Close', close: true},
+      {words: 'Try it on every node', icon: 'play', go: function (b) { isemonTlsTry(b); }},
+      {words: 'Switch over', cls: 'primary', icon: 'lock', go: function (b) {
+        busy(b, true);
+        api('isemon', isemonTlsArgs('tls_apply')).then(function (x) {
+          closeModal(); toast(x.message, 'good'); loadIsemon(); loadSettings();
+        }).catch(function (e) { busy(b, false); oops(e); });
+      }}], 'large');
+  function isemonTlsArgs(action) {
+    return {action: action, host: hostI.value.trim(), port: Number(portI.value) || 6514, ca_source: srcI.value,
+            ca_pem: srcI.value === 'given' ? pemI.value.trim() : '', mtls: !!mtlsI._get(), verify: !!verI._get()};
+  }
+  function isemonTlsTry(b) {
+    busy(b, true);
+    out.innerHTML = '';
+    var grid = nodeGrid();
+    out.appendChild(grid);
+    var cards = {};
+    api('isemon', isemonTlsArgs('tls_probe')).then(function (x) {
+      (x.nodes || []).forEach(function (n) {
+        var c = nodeCard({node: n, me: !!(STATUS && n === STATUS.node)}, 'dim', 'being tried', 'info');
+        c.appendChild(el('p', 'muted small', 'Connecting to isemon from ' + n + '…'));
+        grid.appendChild(c); cards[n] = c;
+      });
+      var left = (x.nodes || []).slice(), began = Date.now();
+      var timer = setInterval(function () {
+        api('isemon', {action: 'tls_result', id: x.id}).then(function (r) {
+          left = left.filter(function (n) {
+            var g = (r.nodes || {})[n];
+            if (!g) return true;
+            var c = nodeCard({node: n, me: !!(STATUS && n === STATUS.node)}, g.ok ? 'ok' : 'crit', g.ok ? 'it goes' : 'it does not go', g.ok ? 'ok' : 'crit');
+            var steps = el('div', 'pt-steps');
+            (g.steps || []).forEach(function (s) {
+              var row = el('div', 'si-row');
+              row.appendChild(el('span', 'dot ' + (s.ok ? 'ok' : 'bad')));
+              row.appendChild(el('span', '', s.what));
+              if (s.said) row.appendChild(el('span', 'muted small', s.said));
+              row.appendChild(noI18n(el('span', 'muted small', s.ms + ' ms')));
+              steps.appendChild(row);
+            });
+            c.appendChild(steps);
+            if (g.cert) c.appendChild(netFacts([['isemon’s certificate', g.cert.subject || '', true], ['Issued by', g.cert.issuer || '', true],
+              ['Names', (g.cert.names || []).join(', '), true], ['Good until', g.cert.end ? new Date(g.cert.end * 1000).toLocaleDateString(numLang()) : '']]));
+            if (g.error) c.appendChild(nodeSaid({ok: false, error: g.error, at: Date.now() / 1000}, ''));
+            grid.replaceChild(c, cards[n]);
+            return false;
+          });
+          if (!left.length || Date.now() - began > 60000) { clearInterval(timer); busy(b, false); }
+        }).catch(function () {});
+      }, 1000);
+    }).catch(function (e) { busy(b, false); oops(e); });
   }
 }

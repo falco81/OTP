@@ -9,7 +9,7 @@ Commands are run **as root** on the node named in the step. In the examples:
 |---|---|
 | first node | `otp1`, `192.0.2.11` |
 | second node | `otp2`, `192.0.2.12` |
-| web address (VIP) or load balancer | `192.0.2.10`, `otp.example.cz` |
+| VIP address or load balancer | `192.0.2.10`, `otp.example.cz` |
 | network | `192.0.2.0/24` |
 | VPN concentrators (RADIUS clients) | `198.51.100.1`, `198.51.100.2` |
 | operating system | AlmaLinux 9.4 or later (9.x) |
@@ -20,7 +20,7 @@ Put your own names and addresses in.
 Related documents:
 [high-availability.md](high-availability.md) (how the cluster works),
 [upgrades.md](upgrades.md), [the-database.md](the-database.md),
-[tls-and-vip.md](tls-and-vip.md) (certificates, the web address, the
+[tls-and-vip.md](tls-and-vip.md) (certificates, the VIP address, the
 firewall), [load-balancers.md](load-balancers.md) (HAProxy, nginx, Apache,
 F5, NetScaler, keepalived/LVS).
 
@@ -46,7 +46,7 @@ F5, NetScaler, keepalived/LVS).
 16. [Back from PostgreSQL to SQLite](#16-back-from-postgresql-to-sqlite)
 17. [The key of the tokens](#17-the-key-of-the-tokens)
 18. [Lost administrator password](#18-lost-administrator-password)
-19. [Certificates and the web address](#19-certificates-and-the-web-address)
+19. [Certificates and the VIP address](#19-certificates-and-the-web-address)
 20. [The picture on the sign-in](#20-the-picture-on-the-sign-in)
 21. [Troubleshooting](#21-troubleshooting)
 
@@ -59,7 +59,7 @@ otp                         # what it is doing (= otp --status)
 otp --check                 # every part checked: key, copies, PHP, clients, realms, directories
 otp --ha-status             # the nodes, and both directions of replication
 otp --ha-compare            # every table counted here and on the other node
-otp --web-status            # certificates, TLS settings, where the web address is
+otp --web-status            # certificates, TLS settings, where the VIP address is
 otp --maintenance status    # in service or not (exit 3 while in maintenance)
 otp --maintenance on --why "reason"   /   otp --maintenance off
 otp --backup                # a copy of the database now (with the key beside it)
@@ -90,7 +90,7 @@ What lives where:
   `timedatectl` must say `System clock synchronized: yes` (chrony). TOTP codes
   are time based: a clock that is off by more than about 30 s refuses codes.
 - A DNS name for the server (`otp1.example.cz`), and later one for the
-  cluster's web address (`otp.example.cz`).
+  cluster's VIP address (`otp.example.cz`).
 - A read-only account in Active Directory and LDAPS to the domain
   controllers (with the CA certificate if it is your own CA).
 - Firewall openings: see [tls-and-vip.md, "What to open"](tls-and-vip.md#what-to-open-in-the-firewall).
@@ -269,7 +269,7 @@ for how it works.
 - The first node already on PostgreSQL 16 ([sections 3](#3-postgresql-16-on-almalinux-9)
   and [4](#4-moving-from-sqlite-to-postgresql)).
 - Between the nodes: TCP 5432 both ways (the wizard opens it in firewalld);
-  for the web address also VRRP (IP protocol 112). See
+  for the VIP address also VRRP (IP protocol 112). See
   [tls-and-vip.md](tls-and-vip.md#what-to-open-in-the-firewall).
 - A copy first: `otp --backup` on the first node.
 
@@ -312,7 +312,7 @@ On the pages, *Test → On the node* asks either node.
 
 **In front of the nodes** - one of:
 
-- the built-in web address (VIP) for the pages: [section 19](#19-certificates-and-the-web-address);
+- the built-in VIP address for the pages: [section 19](#19-certificates-and-the-web-address);
 - your own load balancer: [load-balancers.md](load-balancers.md); then tell
   both nodes its address: `otp --trusted-proxy 192.0.2.5/32` (on each node).
 
@@ -327,7 +327,7 @@ The clients' addresses and secrets are entered once and are used by both nodes.
 ```bash
 otp --ha-status            # both directions running, little or nothing "behind"
 otp --ha-compare           # the same rows on both (logs may differ for a second)
-otp --web-status           # certificates: how many days left; where the web address is
+otp --web-status           # certificates: how many days left; where the VIP address is
 otp --check
 ```
 
@@ -363,7 +363,7 @@ sign in to the VPN meanwhile).
 
 *Settings → Upgrades*: send the package, press *Upgrade*. The nodes are done
 one at a time, the other node first: each goes into maintenance (RADIUS not
-answered, `/healthz` 503, **the web address moves to the other node**),
+answered, `/healthz` 503, **the VIP address moves to the other node**),
 root installs the package, the node comes back, is checked, leaves
 maintenance - then the next one. A node does not start until the other one
 is alive and in service. Follow it there or with `otp --upgrade-status`.
@@ -380,7 +380,7 @@ otp --ha-status ; otp --check              # both directions running again
 ```
 
 `install.sh --upgrade` puts the node in maintenance first (and waits 20 s for
-the balancer and the VPN, and the web address moves away), and back in
+the balancer and the VPN, and the VIP address moves away), and back in
 service when the new version answers. If it fails half way, it starts the
 daemon again and brings the node back into service.
 
@@ -404,7 +404,7 @@ the database, put back the copy you made before upgrading
 release), one node at a time:
 
 ```bash
-otp --maintenance on --why "OS updates"     # RADIUS and the web address go to the other node
+otp --maintenance on --why "OS updates"     # RADIUS and the VIP address go to the other node
 dnf -y upgrade
 reboot
 # after the reboot:
@@ -430,7 +430,7 @@ A reboot, a network cut, a power failure - hours, or days.
 **What happens by itself**
 
 - The other node goes on answering RADIUS and the pages alone. The VPN uses
-  the RADIUS server that answers; the web address (if on) moves to it within
+  the RADIUS server that answers; the VIP address (if on) moves to it within
   a few seconds; a load balancer stops sending to the node that fails `/healthz`.
 - Everything written meanwhile on the working node waits for the other in a
   replication slot, up to 16 GB of changes (far more than months of normal use).
@@ -478,7 +478,7 @@ back, both streams of changes flow again; a row changed on both sides ends
 up as whichever change arrived last on each node - the two may disagree.
 
 1. Decide which node holds the truth - usually the one that answered most
-   (the VPN's primary server, or the one holding the web address).
+   (the VPN's primary server, or the one holding the VIP address).
 2. On **the other** node:
 
    ```bash
@@ -493,7 +493,7 @@ up as whichever change arrived last on each node - the two may disagree.
 Tokens enrolled or changed only on the rebuilt node during the split are in
 its safety copy, not in the cluster: enrol them again.
 
-If the web address was on both nodes during the split, see
+If the VIP address was on both nodes during the split, see
 [tls-and-vip.md, "On both nodes at once"](tls-and-vip.md#on-both-nodes-at-once-split-brain).
 
 ---
@@ -545,7 +545,7 @@ otp --ha-join /root/otp-join-otp2.json --node-name otp1
 otp --ha-status ; otp --ha-compare
 ```
 
-While the survivor is alone, the web address is released (it is for a
+While the survivor is alone, the VIP address is released (it is for a
 cluster); it comes back by itself once the pair is built again, and the new
 node takes part in it. The new node's own certificate and TLS settings are
 kept in the database: the new node puts them into its nginx by itself
@@ -597,7 +597,7 @@ otp1).
 3. On **otp2**, either uninstall it (`./install.sh --uninstall`), or make it a
    server of its own: `otp --ha-standalone --yes` - it then goes on with a
    copy of everything as it was at that moment, and the two drift apart.
-4. The web address belongs to a cluster: on a single server it is released
+4. The VIP address belongs to a cluster: on a single server it is released
    by itself (keepalived stops). Point DNS for `otp.example.cz` at otp1's own
    address, and give otp1 the certificate for that name
    ([section 19](#19-certificates-and-the-web-address)). It comes back by
@@ -624,7 +624,7 @@ otp --ha-status                   # the new name; the old one is gone from the l
 
 On the restart the node carries over everything kept under its old name -
 its own settings (*Each node's own settings*), its maintenance, its
-certificate and TLS settings, its place in the web address - and the old
+certificate and TLS settings, its place in the VIP address - and the old
 name leaves the list of nodes. A rename made before 1.0.48 (or by editing
 `/etc/otp/config.json` by hand while otp was stopped) is carried over once
 with `otp --ha-renamed OLD-NAME` on that node. The machine's own host name
@@ -694,7 +694,7 @@ where it was made: the node, its database, its place in a cluster and its
 it is never put back, as it belongs to the machine, not to the data.
 
 A copy holds **everything**: tokens, settings, clients, realms, directories,
-accounts, the certificates of the pages and the web address with their keys,
+accounts, the certificates of the pages and the VIP address with their keys,
 the firewall and who may reach which page. Put back on a new machine with its
 `.key` file beside it, the new machine is the old one. On the command line a
 copy without a full administrator in it can be put back too (an account is
@@ -732,7 +732,7 @@ passphrase; on the command line `otp --import-config FILE --yes` asks for it
 too (or reads `--passphrase-file FILE`, or `OTP_PASSPHRASE`). In it: the settings
 (each node's own too), the RADIUS clients, the realms, the directories, the
 accounts of the pages, the certificates and keys of the pages and the web
-address, the web address, who may reach which page, the firewall and the mail
+address, the VIP address, who may reach which page, the firewall and the mail
 server's authorities. Without `--with-secrets` the client secrets, passwords,
 password hashes and private keys stay out: clients new to the other
 installation are skipped, new accounts come in switched off, certificates keep
@@ -796,11 +796,11 @@ load-balancers.md.
 
 ---
 
-## 19. Certificates and the web address
+## 19. Certificates and the VIP address
 
 Everything here is also on the pages: certificates and TLS in *Settings →
-Certificates and TLS*, the web address in *Settings → High availability →
-The web address (VIP)*. Details, and what to open in the firewall: [tls-and-vip.md](tls-and-vip.md).
+Certificates and TLS*, the VIP address in *Settings → High availability →
+The VIP address*. Details, and what to open in the firewall: [tls-and-vip.md](tls-and-vip.md).
 
 **A node's own certificate**
 
@@ -811,7 +811,7 @@ otp --tls-preset intermediate --tls-dh ffdhe2048 --tls-hsts 31536000 --tls-for o
 otp --web-status
 ```
 
-**The web address (VIP)** - in a cluster only:
+**The VIP address** - in a cluster only:
 
 ```bash
 otp --vip-set 192.0.2.10/24 --vip-fqdn otp.example.cz --vip-vrid 51
@@ -875,7 +875,7 @@ and in the exported configuration (`art`, `logo`, `admin_art`, `admin_logo`).
 | codes refused for everybody | `timedatectl` | the clock is off: chrony |
 | VPN times out | `otp --log`, `otp --events` | the client's address or secret; the firewall (UDP 1812) |
 | pages 502 | `systemctl status otp php-fpm nginx` | the daemon or PHP-FPM not running |
-| web address on no node | `otp --web-status` | both nodes unhealthy, or keepalived failed: the reason is shown per node |
-| web address on both | [tls-and-vip.md](tls-and-vip.md#on-both-nodes-at-once-split-brain) | VRRP blocked between the nodes |
+| VIP address on no node | `otp --web-status` | both nodes unhealthy, or keepalived failed: the reason is shown per node |
+| VIP address on both | [tls-and-vip.md](tls-and-vip.md#on-both-nodes-at-once-split-brain) | VRRP blocked between the nodes |
 | upgrade from the pages stuck | `otp --upgrade-status`, `/var/lib/otp/upgrade/last.log`, `journalctl -u otp-upgrade` | `otp --upgrade-cancel`; a node that began is finished and brought back |
 | disk filling on one node | `otp --ha-status` ("behind") | the other node is away for long: bring it back, or `otp --ha-standalone --yes` if it is gone for good |

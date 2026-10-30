@@ -208,7 +208,7 @@ makes first.
 
 ## The load balancer
 
-Two ways for the pages: the built-in **web address** (one address,
+Two ways for the pages: the built-in **VIP address** (one address,
 active/standby, keepalived - [tls-and-vip.md](tls-and-vip.md)), or a **load
 balancer of your own** - HAProxy, nginx, Apache, F5, NetScaler, LVS, with
 health checks that really look at each node: [load-balancers.md](load-balancers.md).

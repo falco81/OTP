@@ -19,7 +19,7 @@ It opens on the **live log** (every line); Esc goes to the main menu.
      5  Accounts of the administration
      6  Settings
      7  RADIUS clients, realms and directories
-     8  Cluster, web address and maintenance
+     8  Cluster, VIP address and maintenance
      9  Backups
     10  Upgrades
     11  The service
@@ -28,7 +28,7 @@ It opens on the **live log** (every line); Esc goes to the main menu.
 ```
 
 - **The bar at the top**: the version, the machine, whether the service runs,
-  this node, the cluster and replication, **which node holds the web address
+  this node, the cluster and replication, **which node holds the VIP address
   (VRRP VIP)** - `VIP off` when it is switched off; a red line under the bar
   when no node holds it, or two do - and the tokens. Too narrow a window
   shortens it (the tokens go first); asked again every 20 s without holding
@@ -68,7 +68,7 @@ It opens on the **live log** (every line); Esc goes to the main menu.
   window with its help, what it is now and as it comes, and what it may be;
   checked as the daemon checks it before it is saved. **Change one by its
   key** opens the same window for a key typed.
-- **Cluster**: maintenance of this node (on / off, why), the web address moved
+- **Cluster**: maintenance of this node (on / off, why), the VIP address moved
   to a node picked from the list (the one holding it marked), replication
   paused / resumed. **Upgrades → from the web**: what is newer at
   upgrade_url, a version picked, Yes, then every node upgraded one at a time
