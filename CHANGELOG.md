@@ -4,6 +4,34 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.181 — 30 October 2026
+
+**SSH with a code: SSH tokens of their own**
+- The codes for SSH no longer come from the VPN's tokens: *Settings → SSH server →
+  SSH tokens* - an account's name as on the nodes and an app's secret, made there
+  (the QR code shown once), made anew, removed; kept apart as the second step of
+  the administration is. In no realm, asked by no RADIUS client, not in the RADIUS
+  log; every sign-in an event. A code is good once; five wrong ones in five
+  minutes and the name waits five.
+- An SSH token gets its codes from an app, or by mail or SMS where sending is set
+  up: Enter at the first prompt of `ssh`, the code is sent and asked for in a
+  second prompt (Access-Challenge); at most one every 20 s and five in 15 minutes
+  per account. The mail and the SMS have words of their own (*Settings → Message
+  texts → SSH*).
+- pam_radius asks otp's own gate on 127.0.0.1 of its node - a listener of its
+  own, in a thread of its own, with a secret of its own (sealed). Each node finds
+  a free port for it in 18129-18199 (never the kernel's ports for outgoing
+  connections, never one taken), remembers it and tells its pam_radius; the
+  node's card shows it.
+- From 1.0.178-1.0.180: the RADIUS client *SSH of the nodes - pam_radius* goes by
+  itself and pam_radius is told the gate - make an SSH token for each account.
+
+**Encryption to the database server: renewal said outright**
+- The card and `docs/database-tls.md` say what was already so: the certificate
+  is renewed by itself 45 days before it ends, while everything runs - a reload
+  of PostgreSQL, no restart, the connections go on; in a cluster with the link's
+  TLS, with the link's certificate. A server elsewhere renews its own.
+
 ## 1.0.180 — 30 October 2026
 
 - More room around buttons, in every window and card: a row of buttons right

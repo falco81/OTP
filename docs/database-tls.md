@@ -37,7 +37,14 @@ certificates out of the PostgreSQLs (`ALTER SYSTEM RESET`, ssl as
 
 - The certificate of a PostgreSQL on the same machine is renewed 45 days before
   it ends, and made again when the machine's names or addresses change (a new
-  address, a node renamed). The connections go on.
+  address, a node renamed). The connections go on: PostgreSQL takes the new
+  certificate with a reload (`pg_reload_conf()`), never a restart - the
+  connections open keep going, new ones get the new certificate, RADIUS does not
+  notice. In a cluster whose link between the databases has its TLS on, the
+  certificate is the link's and is renewed with it (45 days before it ends, the
+  cluster's authority two years before), the same way. A database server
+  elsewhere (*remote*) renews its certificate as its administrator does it -
+  otp only checks it.
 - A connection on the same machine that stops working because of its TLS - the
   certificate gone, PostgreSQL set up again, `ssl` switched off by hand - is moved
   back to no TLS within seconds, said in the events and on the card, so RADIUS

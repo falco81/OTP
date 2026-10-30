@@ -78,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.180'
+__version__ = '1.0.181'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -194,6 +194,7 @@ DEFAULTS = {
     'isemon_ca': '',
     # --- Prometheus (1.0.173) ----------------------------------------------------
     'metrics': 0,
+    'ssh_gate_port': 18129,
     'metrics_token': '',
     'metrics_from': '',
     'isemon_verify': 1,
@@ -9629,6 +9630,9 @@ CODE_PURPOSES = {
     'admin_verify': {'p': 'av_', 'subject': 'admin_verify_subject', 'body': 'admin_verify_body',
                      'sms': 'admin_sms_verify', 'warn': False, 'note': 'h_av_note',
                      'queue': 'verify'},
+    # Signing in over SSH to the nodes (1.0.181): words of its own.
+    'ssh': {'p': 's_', 'subject': 'ssh_subject', 'body': 'ssh_body', 'sms': 'ssh_sms',
+            'warn': True, 'note': 'h_s_warn', 'queue': 'code'},
 }
 
 
@@ -9695,6 +9699,19 @@ CODE_TEXTS = {
         'h_av_facts': 'Zadejte ho na přihlašovací stránce administrace. Platí {minutes} min.',
         'h_av_note': 'Pokud jste o nic nežádali, e-mail smažte – bez kódu se nic nezmění.',
         'h_av_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
+        'ssh_subject': 'Kód pro přihlášení přes SSH: {code}',
+        'ssh_body': ('Váš kód pro přihlášení přes SSH na server {site} je\n\n    {code}\n\nPlatí '
+                     '{minutes} min a jen jednou. Pokud se právě nepřihlašujete, kód nikomu '
+                     'nesdělujte - někdo zkouší váš účet.\n\n-- \n{site}'),
+        'ssh_sms': '{code} je váš kód pro přihlášení přes SSH ({site}). Platí {minutes} min. '
+                   'Nikomu ho nesdělujte.',
+        'h_s_title': 'SSH · Přihlášení s kódem',
+        'h_s_hello': 'Dobrý den, {name},', 'h_s_hello_anon': 'Dobrý den,',
+        'h_s_lede': 'váš kód pro přihlášení přes SSH k účtu <b>{account}</b>:',
+        'h_s_lede_anon': 'váš kód pro přihlášení přes SSH:',
+        'h_s_facts': 'Zadejte ho tam, kde se SSH ptá na kód. Platí {minutes} min a jen jednou.',
+        'h_s_warn': 'Pokud se právě nepřihlašujete, kód nikomu nesdělujte – někdo zkouší váš účet.',
+        'h_s_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
         'ask_mail': 'Zadejte kód, který přišel e-mailem na {dest}',
         'ask_sms': 'Zadejte kód z SMS poslané na {dest}',
         'ask_totp': 'Zadejte kód z aplikace v telefonu',
@@ -9763,6 +9780,19 @@ CODE_TEXTS = {
         'h_av_note': 'If you asked for nothing, delete this mail - without the code nothing '
                      'changes.',
         'h_av_foot': 'Sent automatically by {site}. Do not reply to this mail.',
+        'ssh_subject': 'Your SSH sign-in code: {code}',
+        'ssh_body': ('Your code for signing in over SSH to {site} is\n\n    {code}\n\nIt is good '
+                     'for {minutes} min and once. If you are not signing in just now, tell '
+                     'nobody the code - somebody is trying your account.\n\n-- \n{site}'),
+        'ssh_sms': '{code} is your SSH sign-in code ({site}). Good for {minutes} min. Tell nobody.',
+        'h_s_title': 'SSH · Signing in with a code',
+        'h_s_hello': 'Hello {name},', 'h_s_hello_anon': 'Hello,',
+        'h_s_lede': 'your code for signing in over SSH as <b>{account}</b>:',
+        'h_s_lede_anon': 'your code for signing in over SSH:',
+        'h_s_facts': 'Type it where SSH asks for the code. It is good for {minutes} min and once.',
+        'h_s_warn': 'If you are not signing in just now, tell nobody the code - somebody is '
+                    'trying your account.',
+        'h_s_foot': 'Sent automatically by {site}. Do not reply to this mail.',
         'ask_mail': 'Type the code mailed to {dest}',
         'ask_sms': 'Type the code sent by SMS to {dest}',
         'ask_totp': 'Type the code from the app on your phone',
@@ -13422,6 +13452,7 @@ class Daemon(object):
         self.stop_flag = threading.Event()
         self.shipper = None
         self.siem = None
+        self.sshgate = None
         _HS_WAIVE['store'][0] = store       # the exceptions to high security read from it
         self.dirs = {}
         self.reload_directories()
@@ -13444,6 +13475,8 @@ class Daemon(object):
             store.on_event = lambda *a, _s=(self.shipper, self.siem): [x.event_line(*a) for x in _s]
             store.on_radius = self.siem.signin_line
             self.radius = RadiusServer(self)
+            # SSH with a code (1.0.181): a gate of its own on 127.0.0.1.
+            self.sshgate = SshGate(self)
 
     def reload_directories(self):
         self.store._dirs = None
@@ -17510,6 +17543,26 @@ TEXT_MESSAGES = [
      'title': 'The administration: checking a number',
      'says': 'Sent when an administrator sets up the second step by SMS, to check the number.',
      'fields': [('admin_sms_verify', 'text', 'The SMS', ('code', 'minutes', 'site'), 'sms')]},
+    # Signing in over SSH to the nodes (1.0.181): an SSH token by mail or SMS.
+    {'id': 'ssh_mail', 'short': 'The sign-in code by mail', 'kind': 'mail', 'group': 'code', 'purpose': 'ssh',
+     'title': 'SSH: a sign-in code by mail',
+     'says': 'Sent when somebody signs in over SSH to the nodes with an SSH token by mail.',
+     'fields': [
+         ('ssh_subject', 'line', 'Subject', ('code', 'minutes', 'site'), 'subject'),
+         ('h_s_title', 'line', 'The band at the top', ('site',), 'layout'),
+         ('h_s_hello', 'rich', 'Greeting', ('name',), 'layout'),
+         ('h_s_lede', 'rich', 'What it is', ('account',), 'layout'),
+         ('h_s_facts', 'rich', 'Under the code', ('minutes',), 'layout'),
+         ('h_s_warn', 'rich', 'The warning', (), 'layout'),
+         ('h_s_foot', 'rich', 'The foot', ('site',), 'layout'),
+         ('h_s_hello_anon', 'rich', 'Greeting when the name is not known', (), 'other'),
+         ('h_s_lede_anon', 'rich', 'What it is when the account is not known', (), 'other'),
+         ('ssh_body', 'text', 'The plain text version', ('code', 'minutes', 'site'), 'plain'),
+     ]},
+    {'id': 'ssh_sms', 'short': 'The sign-in code by SMS', 'kind': 'sms', 'group': 'code',
+     'title': 'SSH: a sign-in code by SMS',
+     'says': 'Sent when somebody signs in over SSH to the nodes with an SSH token by SMS.',
+     'fields': [('ssh_sms', 'text', 'The SMS', ('code', 'minutes', 'site'), 'sms')]},
     {'id': 'prompts', 'kind': 'prompt', 'group': 'code', 'title': 'The VPN’s second window',
      'says': 'What the VPN shows when it asks for the code - each at most 253 bytes, as '
              'RADIUS carries it.',
@@ -28725,25 +28778,9 @@ def sshd_checked_conf(b):
     return c
 
 
+# The RADIUS client 1.0.178-1.0.180 made for pam_radius - taken away by the gate of
+# its own (87s_sshotp, 1.0.181).
 SSH_RADIUS_CLIENT = 'SSH of the nodes - pam_radius'
-
-
-def ssh_radius_client(store, by):
-    """The RADIUS client pam_radius is to this node's own RADIUS: 127.0.0.1,
-    made once with a secret of its own; its secret for the root helper."""
-    for c in store.clients(with_secret=True):
-        try:
-            if ipaddress.ip_address('127.0.0.1') in address_net(c.get('address')) and \
-                    c.get('secret') and c.get('enabled', 1):
-                return c
-        except ValueError:
-            continue
-    store.client_save({'name': SSH_RADIUS_CLIENT, 'address': '127.0.0.1',
-                       'secret': secrets.token_urlsafe(32), 'enabled': 1,
-                       'note': 'made by otp for SSH with a code (Settings → SSH server)'}, by=by)
-    store.add_event('settings', '%s: a RADIUS client for SSH with a code (127.0.0.1) was made'
-                    % by, 'info', who=by)
-    return [c for c in store.clients(with_secret=True) if c['name'] == SSH_RADIUS_CLIENT][0]
 
 
 def sshd_hash(c, at):
@@ -28757,11 +28794,7 @@ def sshd_save(store, b, by):
     c = sshd_checked_conf(b)
     hisec_sshd(c)                           # 1.0.168
     if c['radius']:
-        bind = str(CONFIG.get('radius_bind') or '').strip()
-        if bind and bind not in ('0.0.0.0', '::', '127.0.0.1', '*'):
-            raise ValueError('RADIUS listens on %s only - pam_radius asks 127.0.0.1: let it '
-                             'listen on every address (Settings → The RADIUS server)' % bind)
-        ssh_radius_client(store, by)
+        ssh_gate_secret(store, make=True)
     if c['manage'] and c['allow_users'] and c['permit_root'] != 'no' and \
             not any(u in ('root', '*') for u in c['allow_users']) and not b.get('ok_no_root'):
         raise ValueError('AllowUsers without root lets nobody in as root - add root to it, or '
@@ -28805,7 +28838,9 @@ def sshd_view(store):
                                 else 'trial' if (now.get('trial') or {}).get('until')
                                 else 'done' if now.get('hash') == c.get('hash') or not c.get('hash')
                                 else 'waiting')})
-    return {'conf': c, 'nodes': nodes, 'helper': WEB_DIR.is_dir()}
+    return {'conf': c, 'nodes': nodes, 'helper': WEB_DIR.is_dir(), 'sshotp': sshotp_all(store),
+            'channels': code_channels(),
+            'gate_port': ssh_gate_port(store)}
 
 
 def sshd_ports_open(store):
@@ -28849,6 +28884,13 @@ def sshd_tick(daemon):
         todo.append(('keep', None))
     if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
         todo.append(('back', back))
+    # pam_radius's file with another secret or port than the gate's (1.0.181:
+    # the RADIUS client before, or a port changed): only that file is put right.
+    if c.get('manage') and c.get('radius') and (now.get('radius') or {}).get('pam') and \
+            now.get('hash') == c.get('hash') and not todo and \
+            (now.get('radius') or {}).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
+                                                               ssh_gate_port(store)):
+        todo.append(('pamconf', None))
     if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
         return
     HOST_WORK['sshd'] = True
@@ -28871,9 +28913,9 @@ def sshd_tick(daemon):
                         if c.get('radius'):
                             # The secret pam_radius shows otp, for its file of
                             # 0600 (1.0.178) - in the ask file, never a command line.
-                            cl = ssh_radius_client(store, 'otp')
-                            ask.update(radius_secret=cl['secret'],
-                                       radius_port=int(CONFIG.get('radius_auth_port') or 1812))
+                            # The gate's own (1.0.181), not a RADIUS client's.
+                            ask.update(radius_secret=ssh_gate_secret(store, make=True),
+                                       radius_port=ssh_gate_port(store))
                         got = root_ask('sshd.ask', 'sshd.json', ask, 120)
                         row.update(hash=c['hash'], failed='', error='', applied_at=time.time(),
                                    # Changed again while on trial: the helper
@@ -28881,6 +28923,10 @@ def sshd_tick(daemon):
                                    before_port=(row.get('before_port') if
                                                 (row.get('trial') or {}).get('until') else None)
                                    or (row.get('values') or {}).get('port') or '22')
+                    elif what == 'pamconf':
+                        got = root_ask('sshd.ask', 'sshd.json', {
+                            'do': 'pamconf', 'radius_secret': ssh_gate_secret(store),
+                            'radius_port': ssh_gate_port(store)}, 60)
                     elif what == 'keep':
                         got = root_ask('sshd.ask', 'sshd.json', {'do': 'keep'}, 60)
                         row['kept_at'] = time.time()
@@ -28892,7 +28938,7 @@ def sshd_tick(daemon):
                         continue
                     else:
                         got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
-                    row.update(radius=got.get('radius') or {})
+                    row.update(radius=got.get('radius') or {}, gate=dict(SSH_GATE_STATE))
                     row.update(values=got.get('values') or {}, there=got.get('there'),
                                dropins=got.get('dropins'), keys=got.get('keys'),
                                trial=got.get('trial') or {}, selinux=got.get('selinux') or '')
@@ -29000,6 +29046,452 @@ def osup_sched_tick(daemon):
             except ValueError as e:
                 store.add_event('settings', 'the restart on a schedule did not start: %s' % e,
                                 'bad')
+
+
+# ---- SSH with a code: tokens of their own (1.0.181) --------------------------------------
+# The codes for SSH are not the VPN's: a list of their own on Settings → SSH
+# server (the account on the nodes and an app's secret), kept like the second
+# step of the administration - meta 'sshotp:u:<name>', the secret sealed, the
+# step of the last code used (once). pam_radius asks a gate of its own: a
+# RADIUS listener of this daemon on 127.0.0.1 only, with a secret of its own
+# ('sshotp:gate', sealed) - not a RADIUS client, not a realm, not in the log of
+# RADIUS; every sign-in an event. Both nodes see the same list (meta).
+SSHOTP_NAME_RE = re.compile(r'^[A-Za-z0-9._][A-Za-z0-9._@-]{0,63}\Z')
+SSHOTP_LOCK = threading.Lock()
+SSHOTP_FAILS = collections.defaultdict(list)
+SSHOTP_TRIES, SSHOTP_WINDOW_S = 5, 300
+SSH_GATE_STATE = {'port': 0, 'listening': False, 'error': '', 'since': 0.0, 'answered': 0,
+                  'let_in': 0, 'refused': 0}
+
+
+def sshotp_key(name):
+    return 'sshotp:u:' + str(name or '').strip().lower()
+
+
+def sshotp_name(name):
+    name = str(name or '').strip()
+    if not SSHOTP_NAME_RE.match(name):
+        raise ValueError('the account is its name on the nodes: letters, digits and . _ @ - '
+                         '(up to 64)')
+    return name
+
+
+def sshotp_get(store, name):
+    try:
+        got = json.loads(store.get_meta(sshotp_key(name)) or 'null')
+    except ValueError:
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def sshotp_all(store):
+    out = []
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'sshotp:u:%'"):
+        try:
+            v = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        out.append({'name': v.get('name') or r['k'][len('sshotp:u:'):], 'at': v.get('at'),
+                    'kind': v.get('kind') or 'app',
+                    'dest': dest_masked(v.get('kind'), v.get('dest')) if v.get('dest') else '',
+                    'by': v.get('by') or '', 'note': v.get('note') or '',
+                    'used_at': v.get('used_at'), 'used_on': v.get('used_on') or '',
+                    'failed_at': v.get('failed_at')})
+    return sorted(out, key=lambda x: x['name'].lower())
+
+
+def sshotp_make(store, name, by, note='', replace=False, kind='app', dest=''):
+    """A new SSH token for `name`: an app's (the QR and the secret shown this
+    once), or codes sent by mail or SMS (1.0.181) where sending is set up."""
+    name = sshotp_name(name)
+    note = re.sub(r'[\r\n\t]', ' ', str(note or ''))[:120]
+    kind = str(kind or 'app')
+    if kind not in ('app', 'mail', 'sms'):
+        raise ValueError('an SSH token is an app\'s, or gets its codes by mail or SMS')
+    if kind != 'app':
+        if kind not in code_channels():
+            raise ValueError('sending %s is not set up (Settings → %s)' % (
+                ('mail', 'Mail') if kind == 'mail' else ('SMS', 'Codes by e-mail and SMS')))
+        dest = dest_checked(kind, dest)
+    with SSHOTP_LOCK:
+        had = sshotp_get(store, name)
+        if had and not replace:
+            raise ValueError('%s has an SSH token already - make a new one in its place, or '
+                             'remove it' % name)
+        rec = {'name': name, 'kind': kind, 'at': time.time(), 'by': by, 'note': note, 'step': 0}
+        if kind == 'app':
+            secret = b32_new(20)
+            rec['secret'] = seal_secret(secret, sshotp_key(name))
+        else:
+            rec['dest'] = dest
+        store.set_meta(sshotp_key(name), json.dumps(rec))
+    store.add_event('settings', '%s made %s SSH token for %s%s' % (
+        by, 'a new' if had else 'an', name, '' if kind == 'app' else ' (codes by %s to %s)' % (
+            'mail' if kind == 'mail' else 'SMS', dest_masked(kind, dest))),
+        'warn' if had else 'info', who=by)
+    if kind != 'app':
+        return {'name': name, 'kind': kind, 'dest': dest_masked(kind, dest)}
+    site = str(CONFIG.get('site_name') or short_host())
+    uri = otpauth_uri(secret, name, '%s (SSH)' % site)
+    return {'name': name, 'kind': 'app', 'qr': qr_data_uri(uri), 'uri': uri,
+            'secret': ' '.join(secret[i:i + 4] for i in range(0, len(secret), 4))}
+
+
+def sshotp_remove(store, name, by):
+    name = sshotp_name(name)
+    if not sshotp_get(store, name):
+        raise ValueError('%s has no SSH token' % name)
+    store.db.run('DELETE FROM meta WHERE k = ?', (sshotp_key(name),))
+    store.add_event('settings', '%s removed the SSH token of %s' % (by, name), 'warn', who=by)
+
+
+def _sshotp_fails(name, now):
+    fails = [t for t in SSHOTP_FAILS[name.lower()] if now - t < SSHOTP_WINDOW_S]
+    SSHOTP_FAILS[name.lower()] = fails
+    return fails
+
+
+def _sshotp_used(store, name, ok):
+    """The token's own row: when it was last used, or last failed."""
+    rec = sshotp_get(store, name)
+    if rec:
+        if ok:
+            rec.update(used_at=time.time(), used_on=node_name())
+        else:
+            rec['failed_at'] = time.time()
+        store.set_meta(sshotp_key(name), json.dumps(rec))
+
+
+def sshotp_check(store, name, code):
+    """(let in, what is said) - an app's code, good once, wrong ones counted
+    per name."""
+    name = str(name or '').strip()
+    if not SSHOTP_NAME_RE.match(name):
+        return False, 'no such account'
+    now = time.time()
+    with SSHOTP_LOCK:
+        fails = _sshotp_fails(name, now)
+        if len(fails) >= SSHOTP_TRIES:
+            return False, 'too many wrong codes - wait %d min' % (SSHOTP_WINDOW_S // 60)
+        rec = sshotp_get(store, name)
+        if not rec:
+            fails.append(now)
+            return False, 'no SSH token for this account'
+        if rec.get('kind', 'app') != 'app':
+            return False, 'this token gets its codes sent'
+        secret = unseal_secret(rec.get('secret'), sshotp_key(name))
+        step = totp_match(secret, code, digits=6, window=int(CONFIG.get('totp_window') or 1)) \
+            if secret else None
+        if step is None or step <= int(rec.get('step') or 0):
+            fails.append(now)
+            rec['failed_at'] = now
+            store.set_meta(sshotp_key(name), json.dumps(rec))
+            return False, ('the code is not right' if step is None
+                           else 'the code was used already - wait for the next one')
+        rec.update(step=step, used_at=now, used_on=node_name())
+        store.set_meta(sshotp_key(name), json.dumps(rec))
+        SSHOTP_FAILS.pop(name.lower(), None)
+        return True, 'signed in'
+
+
+SSH_GATE_PORTS = range(18129, 18200)
+
+
+def ssh_gate_ephemeral():
+    """The ports the kernel hands out for outgoing connections - never the gate's."""
+    try:
+        lo, hi = (int(x) for x in open('/proc/sys/net/ipv4/ip_local_port_range').read().split())
+        return lo, hi
+    except (OSError, ValueError):
+        return 32768, 60999
+
+
+def ssh_gate_candidates(store):
+    """The port this node took before first, then the one set, then the rest of
+    18129-18199 - none of the kernel's own for outgoing connections."""
+    lo, hi = ssh_gate_ephemeral()
+    out = []
+    try:
+        was = int(store.get_meta('sshotp:port:' + node_name()) or 0)
+    except (TypeError, ValueError):
+        was = 0
+    try:
+        want = int(CONFIG.get('ssh_gate_port') or 18129)
+    except (TypeError, ValueError):
+        want = 18129
+    for p in [was, want] + list(SSH_GATE_PORTS):
+        if 1024 < p < 65536 and not lo <= p <= hi and p not in out:
+            out.append(p)
+    return out
+
+
+SSHOTP_SENT = collections.defaultdict(list)       # name -> [when a code went]
+SSHOTP_SEND_GAP_S, SSHOTP_SEND_MOST, SSHOTP_SEND_WINDOW_S = 20, 5, 900
+SSHOTP_CHALLENGES = {}                             # State -> what was sent, on this node
+
+
+def sshotp_send(store, name):
+    """A code by mail or SMS for `name`'s SSH token: (State, what to ask) or
+    raises ValueError with what is said. Not more often than every 20 s, and 5
+    in 15 min - a name typed at ssh must not become a way to send SMS."""
+    rec = sshotp_get(store, name) or {}
+    kind = rec.get('kind')
+    if kind not in ('mail', 'sms'):
+        raise ValueError('no SSH token by mail or SMS for this account')
+    if kind not in code_channels():
+        raise ValueError('sending %s is not set up now' % ('mail' if kind == 'mail' else 'SMS'))
+    now = time.time()
+    with SSHOTP_LOCK:
+        sent = [t for t in SSHOTP_SENT[name.lower()] if now - t < SSHOTP_SEND_WINDOW_S]
+        SSHOTP_SENT[name.lower()] = sent
+        if sent and now - sent[-1] < SSHOTP_SEND_GAP_S:
+            raise ValueError('a code went a moment ago - wait %d s' % SSHOTP_SEND_GAP_S)
+        if len(sent) >= SSHOTP_SEND_MOST:
+            raise ValueError('%d codes in %d min - wait' % (SSHOTP_SEND_MOST,
+                                                            SSHOTP_SEND_WINDOW_S // 60))
+        sent.append(now)
+        for k in [k for k, v in SSHOTP_CHALLENGES.items() if now > v['exp'] + 60]:
+            SSHOTP_CHALLENGES.pop(k, None)
+    code, salt = code_new(), secrets.token_hex(8)
+    try:
+        code_send(store, kind, rec['dest'], code, purpose='ssh', name=name)
+    except (MailError, SmsError) as e:
+        store.add_event('ssh', 'the SSH code for %s could not be sent (%s): %s' % (
+            name, kind, e), 'warn', who=name)
+        raise ValueError('the code could not be sent')
+    state = secrets.token_hex(16)
+    with SSHOTP_LOCK:
+        SSHOTP_CHALLENGES[state] = {'name': name, 'hash': code_hash(salt, code), 'salt': salt,
+                                    'exp': now + int(CONFIG.get('code_ttl_s') or 300),
+                                    'tries': 0}
+    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms',
+                     dest=dest_masked(kind, rec['dest']))
+    return state, ask
+
+
+def sshotp_answer(store, state, name, code):
+    """The code typed after a challenge: (let in, what is said, ask again)."""
+    now = time.time()
+    with SSHOTP_LOCK:
+        ch = SSHOTP_CHALLENGES.get(state)
+        if not ch or ch['name'] != name or now > ch['exp']:
+            SSHOTP_CHALLENGES.pop(state, None)
+            return False, 'the code is no longer good - sign in again', False
+        fails = _sshotp_fails(name, now)
+        if len(fails) >= SSHOTP_TRIES:
+            SSHOTP_CHALLENGES.pop(state, None)
+            return False, 'too many wrong codes - wait %d min' % (SSHOTP_WINDOW_S // 60), False
+        if hmac.compare_digest(code_hash(ch['salt'], str(code or '').strip()), ch['hash']):
+            SSHOTP_CHALLENGES.pop(state, None)
+            SSHOTP_FAILS.pop(name.lower(), None)
+            ok = True
+        else:
+            fails.append(now)
+            ch['tries'] += 1
+            ok = False
+            again = ch['tries'] < 3
+            if not again:
+                SSHOTP_CHALLENGES.pop(state, None)
+    _sshotp_used(store, name, ok)
+    if ok:
+        return True, 'signed in', False
+    return False, 'the code is not right', again
+
+
+def ssh_gate_port(store=None):
+    """The port the gate of this node listens on - what its pam_radius is told."""
+    if SSH_GATE_STATE.get('listening') and SSH_GATE_STATE.get('port'):
+        return int(SSH_GATE_STATE['port'])
+    if store is not None:
+        got = ssh_gate_candidates(store)
+        if got:
+            return got[0]
+    try:
+        return int(CONFIG.get('ssh_gate_port') or 18129)
+    except (TypeError, ValueError):
+        return 18129
+
+
+def ssh_gate_secret(store, make=False):
+    try:
+        rec = json.loads(store.get_meta('sshotp:gate') or '{}')
+    except ValueError:
+        rec = {}
+    got = unseal_secret(rec.get('secret'), 'sshotp:gate') if rec.get('secret') else ''
+    if not got and make:
+        got = secrets.token_urlsafe(32)
+        store.set_meta('sshotp:gate', json.dumps({'secret': seal_secret(got, 'sshotp:gate'),
+                                                  'at': time.time()}))
+    return got or ''
+
+
+def ssh_gate_fp(secret, port):
+    """What says pam_radius has this secret and port - never the secret itself."""
+    return hashlib.sha256(('%d %s' % (int(port), secret)).encode()).hexdigest()[:12]
+
+
+def ssh_gate_wanted(store):
+    c = _meta_json(store, 'host:sshd:conf') or {}
+    return bool(c.get('manage') and c.get('radius'))
+
+
+def ssh_gate_old_client(store):
+    """The RADIUS client 1.0.178-1.0.180 made for pam_radius: no longer asked."""
+    for c in store.clients():
+        if c.get('name') == SSH_RADIUS_CLIENT and str(c.get('address') or '') == '127.0.0.1':
+            store.client_drop(c['id'])
+            store.add_event('settings', 'the RADIUS client "%s" is gone - SSH asks a gate of its '
+                            'own now, with SSH tokens of their own (Settings → SSH server)'
+                            % SSH_RADIUS_CLIENT, 'info')
+
+
+class SshGate(object):
+    """pam_radius's otp: on 127.0.0.1, in a thread of its own - RADIUS of the
+    VPN is not touched by it, nor it by RADIUS."""
+
+    def __init__(self, daemon):
+        self.d = daemon
+        self.sock = None
+        self.port = 0
+        self.looked = 0.0
+        self.stop_flag = False
+        self.lock = threading.Lock()
+        self.seen = {}
+        self.thread = threading.Thread(target=self.run, name='otp-sshgate', daemon=True)
+        self.thread.start()
+
+    def configure(self):
+        store = self.d.store
+        try:
+            want = ssh_gate_wanted(store)
+            if want:
+                ssh_gate_old_client(store)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('sshgate', 'the SSH gate: %s' % e, 'warn', every=600)
+            return
+        if self.sock and not want:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+            SSH_GATE_STATE.update(listening=False, port=0)
+        if want and not self.sock:
+            # A port nothing else has (1.0.181): the one taken before, else the
+            # next free of 18129-18199 - remembered per node, and pam_radius
+            # of this node told of it (sshd_tick, pamconf).
+            tried = []
+            for port in ssh_gate_candidates(store):
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                try:
+                    s.bind(('127.0.0.1', port))
+                except OSError as e:
+                    s.close()
+                    tried.append('%d (%s)' % (port, e.strerror or e))
+                    continue
+                s.settimeout(1.0)
+                self.sock, self.port = s, port
+                SSH_GATE_STATE.update(listening=True, port=port, error='', since=time.time())
+                if store.get_meta('sshotp:port:' + node_name()) != str(port):
+                    store.set_meta('sshotp:port:' + node_name(), str(port))
+                log('the gate for SSH with a code listens on 127.0.0.1:%d%s' % (
+                    port, ' (taken: %s)' % ', '.join(tried[:5]) if tried else ''))
+                break
+            else:
+                SSH_GATE_STATE.update(listening=False, port=0,
+                                      error='no free port of 18129-18199 on 127.0.0.1')
+                log_sparing('sshgate-bind', 'the gate for SSH with a code: no free port of '
+                            '18129-18199 on 127.0.0.1', 'bad', every=600)
+
+    def run(self):
+        while not self.stop_flag:
+            if time.time() - self.looked > 10:
+                self.looked = time.time()
+                self.configure()
+            s = self.sock
+            if not s:
+                time.sleep(1.0)
+                continue
+            try:
+                data, addr = s.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                time.sleep(0.5)
+                continue
+            # Each request in a thread of its own (a code by mail can take
+            # seconds); pam_radius sending the same one again while it is
+            # worked on, or after, gets the same answer, never a second code.
+            key = data[1:2] + data[4:20] + repr(addr).encode()
+            with self.lock:
+                for k in [k for k, v in self.seen.items() if time.time() - v[0] > 60]:
+                    self.seen.pop(k, None)
+                was = self.seen.get(key)
+                if was is not None:
+                    if was[1]:
+                        try:
+                            s.sendto(was[1], addr)
+                        except OSError:
+                            pass
+                    continue
+                self.seen[key] = (time.time(), None)
+            threading.Thread(target=self.serve, args=(s, data, addr, key), name='otp-sshgate-req',
+                             daemon=True).start()
+
+    def serve(self, s, data, addr, key):
+        try:
+            out = self.answer(data, addr)
+            with self.lock:
+                self.seen[key] = (time.time(), out)
+            if out:
+                s.sendto(out, addr)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('sshgate-req', 'the gate for SSH with a code: %s' % e, 'warn',
+                        every=300)
+
+    def answer(self, data, addr):
+        if not ipaddress.ip_address(addr[0]).is_loopback:
+            return None
+        p = Packet.parse(data)
+        if p.code != 1:
+            return None
+        secret = ssh_gate_secret(self.d.store).encode()
+        if not secret or p.message_authenticator_ok(secret) is False:
+            return None
+        user = p.text(1)
+        try:
+            code = p.password(secret) or ''
+        except RadiusError:
+            return None
+        store = self.d.store
+        who = re.sub(r'[^\w.@-]', '?', user)[:64]
+        state = (p.get(24) or b'').decode('ascii', 'replace')
+        rec = sshotp_get(store, user) if SSHOTP_NAME_RE.match(user or '') else None
+        if state:
+            ok, said, again = sshotp_answer(store, state, user, code)
+            if again:
+                return build_reply(p, 11, [attr_bytes('Reply-Message', code_words('again')),
+                                           bytes([24, len(state) + 2]) + state.encode()], secret)
+        elif rec and rec.get('kind') in ('mail', 'sms'):
+            # By mail or SMS (1.0.181): whatever was typed first, a code is
+            # sent and asked for in a second prompt (Access-Challenge).
+            try:
+                st, ask = sshotp_send(store, user)
+            except ValueError as e:
+                ok, said = False, str(e)
+            else:
+                log('SSH: a code for %s went by %s' % (who, rec['kind']))
+                return build_reply(p, 11, [attr_bytes('Reply-Message', ask),
+                                           bytes([24, len(st) + 2]) + st.encode()], secret)
+        else:
+            ok, said = sshotp_check(store, user, code)
+        SSH_GATE_STATE['answered'] += 1
+        SSH_GATE_STATE['let_in' if ok else 'refused'] += 1
+        store.add_event('ssh', '%s %s SSH on %s with a code%s' % (
+            who, 'signed in to' if ok else 'was not let into', node_name(),
+            '' if ok else ': ' + said), 'info' if ok else 'warn', who=who)
+        return build_reply(p, 2 if ok else 3,
+                           [attr_bytes('Reply-Message', 'otp: ' + said)], secret)
 
 
 # ---- something asked of every node, each answering for itself (1.0.169) ----------------
@@ -38230,6 +38722,18 @@ def _sshd_do(h):
         if act == 'refresh':
             HOST_WORK['sshd_read'] = 0.0
             return sshd_view(h.store)
+        # SSH tokens of their own (1.0.181): the app's QR shown once, when made.
+        if act == 'sshotp_add':
+            got = sshotp_make(h.store, b.get('name'), s['name'], b.get('note') or '',
+                              replace=bool(b.get('replace')), kind=str(b.get('kind') or 'app'),
+                              dest=str(b.get('dest') or ''))
+            return dict(sshd_view(h.store), made=got, message=(
+                'the SSH token of %s is made - scan it now, it is not shown again' % got['name']
+                if got['kind'] == 'app' else 'the SSH token of %s is made - its codes go to %s'
+                % (got['name'], got['dest'])))
+        if act == 'sshotp_remove':
+            sshotp_remove(h.store, b.get('name'), s['name'])
+            return dict(sshd_view(h.store), message='removed')
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
