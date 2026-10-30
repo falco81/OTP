@@ -750,6 +750,7 @@ def vip_watch(daemon):
             store = daemon.store
             v = vip_conf(store)
             if not v.get('on') or not CONFIG.get('ha_mode'):
+                VIP_HEALTH['here'] = False
                 try:
                     VIP_STATE.unlink()
                 except OSError:
@@ -760,6 +761,18 @@ def vip_watch(daemon):
                 VIP_HEALTH['fails'] += 1
             else:
                 VIP_HEALTH['fails'] = 0
+            # Maintenance asked for (1.0.186): said at once, not after two looks -
+            # RADIUS of this node stops answering, and the VIP address went
+            # silent for seconds before keepalived moved it. Meanwhile, while the
+            # address is still here, RADIUS goes on answering (handle()).
+            planned = maintenance_now(store).get('on')
+            if planned:
+                VIP_HEALTH['fails'] = max(VIP_HEALTH['fails'], VIP_FAILS_BEFORE)
+                VIP_HEALTH.setdefault('drain_since', time.time())
+                why = why or 'in maintenance'
+            else:
+                VIP_HEALTH.pop('drain_since', None)
+            VIP_HEALTH['here'] = vip_here(v.get('address'))
             ok = VIP_HEALTH['fails'] < VIP_FAILS_BEFORE
             if not why or not ok or VIP_HEALTH['ok'] is None:
                 VIP_HEALTH.update(ok=ok, why=why if not ok else '')

@@ -775,6 +775,27 @@ def _first_line(cmd, timeout=5):
 
 
 def software_info(store=None):
+    """What _software_now found, made in a thread of its own once in 10 minutes
+    (1.0.186): asked in the heartbeat, its ten programs (5 s each at most) and
+    the database's version held the main loop, and the other node took this
+    one for gone."""
+    now = time.time()
+    if now - _SOFTWARE.get('full_at', 0) > 600 and not _SOFTWARE.get('busy'):
+        _SOFTWARE['busy'] = True
+
+        def go():
+            try:
+                _SOFTWARE['full'] = _software_now(store)
+                _SOFTWARE['full_at'] = time.time()
+            except Exception:                           # noqa: BLE001
+                _SOFTWARE['full_at'] = time.time()
+            finally:
+                _SOFTWARE['busy'] = False
+        threading.Thread(target=go, name='otp-software', daemon=True).start()
+    return dict(_SOFTWARE.get('full') or {'otp': __version__})
+
+
+def _software_now(store=None):
     """What this node runs on (1.0.99): otp, its Python and the modules it
     uses, the libraries under them, the programs beside it and the system -
     for Settings → About, of every node. Asked at most once an hour."""
@@ -1405,7 +1426,11 @@ class Daemon(object):
         # the middle of whatever the main thread was doing - a log line
         # holding its lock, a query on the connection - every night when
         # logrotate reloads.
-        self.hup_asked = threading.Event()
+        self.hup_asked = HUP_ASKED
+        try:
+            self.conf_sig = hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
+        except OSError:
+            self.conf_sig = None
         signal.signal(signal.SIGHUP, lambda *_: self.hup_asked.set())
         last_tidy = time.monotonic() - 3601
         last_backup_day = self.store.get_meta('backup_day', '')
@@ -1686,6 +1711,18 @@ class Daemon(object):
 
     def _hup(self):
         log_open()
+        # logrotate's every night (1.0.186): the logs opened again and nothing
+        # else - read again, the caches RADIUS answers from started empty and
+        # the directories were made anew. config.json changed (otp --set,
+        # systemctl reload after an edit): read again, as before.
+        try:
+            sig = hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
+        except OSError:
+            sig = None
+        if sig is not None and sig == getattr(self, 'conf_sig', None):
+            log('the logs opened again (SIGHUP; config.json as it was)')
+            return
+        self.conf_sig = sig
         try:
             self.reload_all('SIGHUP')
         except Exception as e:

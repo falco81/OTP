@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.185'
+__version__ = '1.0.186'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2160,10 +2160,11 @@ _LOG_TO_STDERR = True
 def log_open():
     global _LOG_FILE
     with _LOG_LOCK:
+        _LOG_WANTED[0] = True
         try:
             if _LOG_FILE:
                 _LOG_FILE.close()
-        except OSError:
+        except (OSError, ValueError):
             pass
         _LOG_FILE = None
         try:
@@ -2171,6 +2172,13 @@ def log_open():
             _LOG_FILE = open(LOG_DIR / 'otp.log', 'a', encoding='utf-8')
         except OSError:
             _LOG_FILE = None
+
+
+_LOG_WANTED = [False]           # this process writes otp.log (the daemon)
+# A SIGHUP noted from the first moment of the daemon (1.0.186): one that came
+# while it was still starting (a slow migration after an upgrade at night,
+# logrotate's) ended the process - Python's default for it.
+HUP_ASKED = threading.Event()
 
 
 _LOG_SPARING = {}
@@ -2208,39 +2216,93 @@ def log(words, level='info'):
     words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', lambda m: '\\x%02x' % ord(m.group(0)),
                    words).replace('\n', '\n    ')
     line = '%s %-5s %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), level, words)
+    try:
+        _log_line(line, level)
+    except Exception:                                   # noqa: BLE001
+        # Never out of log() (1.0.186): a closed file after a rotation the
+        # disk had no room for raised here, out of every RADIUS worker that
+        # logged - one by one they ended, and nothing was answered.
+        pass
+
+
+def _log_line(line, level):
     global _LOG_FILE
     with _LOG_LOCK:
         # Rotated away from under it (1.0.94): logrotate's reload is refused
         # to the otp account, and the lines went on into a file deleted the
-        # next day. Looked at every 10 s; a new otp.log is opened.
+        # next day. Looked at every 10 s; a new otp.log is opened - and one
+        # that could not be (a disk full at night) is tried again (1.0.186).
         t = time.monotonic()
-        if _LOG_FILE and t - _LOG_CHECKED[0] > 10:
+        if _LOG_WANTED[0] and t - _LOG_CHECKED[0] > 10:
             _LOG_CHECKED[0] = t
             try:
-                if os.stat(str(LOG_DIR / 'otp.log')).st_ino != os.fstat(_LOG_FILE.fileno()).st_ino:
-                    raise FileNotFoundError
-            except OSError:
+                stale = _LOG_FILE is None or _LOG_FILE.closed or \
+                    os.stat(str(LOG_DIR / 'otp.log')).st_ino != os.fstat(_LOG_FILE.fileno()).st_ino
+            except (OSError, ValueError):
+                stale = True
+            if stale:
                 try:
-                    _LOG_FILE.close()
+                    if _LOG_FILE is not None:
+                        _LOG_FILE.close()
+                except (OSError, ValueError):
+                    pass
+                _LOG_FILE = None
+                try:
                     _LOG_FILE = open(LOG_DIR / 'otp.log', 'a', encoding='utf-8')
                 except OSError:
-                    pass
+                    _LOG_FILE = None
         if _LOG_FILE:
             try:
                 _LOG_FILE.write(line + '\n')
                 _LOG_FILE.flush()
-            except OSError:
+            except (OSError, ValueError):
                 pass
         # Under systemd, with otp.log open, only warnings and errors go to
         # the journal as well (1.0.136): every line twice, debugging on, and
         # a journald slow to take them held every thread that logs.
-        if _LOG_TO_STDERR and (level != 'debug' or CONFIG.get('debug')) and (
-                not _LOG_FILE or not _UNDER_SYSTEMD or level in ('warn', 'error', 'crit')):
-            try:
-                sys.stderr.write(line + '\n')
-                sys.stderr.flush()
-            except (OSError, ValueError):
-                pass
+        to_err = _LOG_TO_STDERR and (level != 'debug' or CONFIG.get('debug')) and (
+            not _LOG_FILE or not _UNDER_SYSTEMD or level in ('warn', 'error', 'crit'))
+    if not to_err:
+        return
+    if _UNDER_SYSTEMD:
+        # To the journal by a thread of its own (1.0.186): a journald or a
+        # disk that stalls (the night's dumps) held every thread that logs,
+        # RADIUS's too, in this write. Full, a line is left out, not waited for.
+        try:
+            _ERR_Q.put_nowait(line)
+        except queue.Full:
+            _ERR_DROPPED[0] += 1
+        if _ERR_THREAD[0] is None or not _ERR_THREAD[0].is_alive():
+            with _LOG_LOCK:
+                if _ERR_THREAD[0] is None or not _ERR_THREAD[0].is_alive():
+                    _ERR_THREAD[0] = threading.Thread(target=_err_writer, name='log-journal',
+                                                      daemon=True)
+                    _ERR_THREAD[0].start()
+        return
+    try:
+        sys.stderr.write(line + '\n')
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
+_ERR_Q = queue.Queue(maxsize=5000)
+_ERR_THREAD = [None]
+_ERR_DROPPED = [0]
+
+
+def _err_writer():
+    while True:
+        try:
+            line = _ERR_Q.get()
+            if _ERR_DROPPED[0]:
+                n, _ERR_DROPPED[0] = _ERR_DROPPED[0], 0
+                sys.stderr.write('(%d lines left out of the journal: it did not take them in '
+                                 'time)\n' % n)
+            sys.stderr.write(line + '\n')
+            sys.stderr.flush()
+        except Exception:                               # noqa: BLE001
+            time.sleep(0.5)
 
 
 def debugging(what):

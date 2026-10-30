@@ -1196,7 +1196,7 @@ class Storage(object):
             raise ValueError('there is a client called %s already' % name)
         row = {'name': name, 'address': str(net) if net.num_addresses > 1 else
                str(net.network_address),
-               'realm': str(data.get('realm') or '').strip().lstrip('@')[:190],
+               'realm': str(data.get('realm') or '').strip().lstrip('@').rstrip('.')[:190],
                'require_ma': _yes(data, 'require_ma', 0),
                'enabled': int(bool(int(data.get('enabled', 1) if data.get('enabled')
                                        is not None else 1))),
@@ -2029,7 +2029,10 @@ class Storage(object):
             time.sleep(0.2)
         if gone and self.db.engine == 'sqlite':
             try:
-                self.db.run(RawSql('PRAGMA wal_checkpoint(TRUNCATE)'))
+                # PASSIVE (1.0.186): TRUNCATE waited for every reader - the night's
+                # backup reading the whole file - with the writer's lock held, and
+                # every RADIUS write waited behind it until it gave up.
+                self.db.run(RawSql('PRAGMA wal_checkpoint(PASSIVE)'))
             except Exception:                           # noqa: BLE001
                 pass
         return gone

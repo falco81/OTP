@@ -1069,8 +1069,10 @@ def ha_peer_columns():
 # writing its own: of two nodes asked for the same code at the same moment,
 # at least one sees the other's row - so it is never let in twice. (One may
 # refuse it when both see each other; the next code then goes through.)
-ONCE_PEER = {'db': None, 'down_until': 0.0, 'said': 0.0}
+ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0,
+             'alive': True, 'alive_at': 0.0}
 ONCE_PEER_LOCK = threading.Lock()
+ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
 
 
@@ -1083,45 +1085,96 @@ def once_key(kind, name, value):
     return '%s:%s' % (kind, h[:48])
 
 
-def _once_peer_has(k, me):
+def once_peer_forget():
+    """The connections to the other node closed - its address or TLS changed."""
+    with ONCE_PEER_LOCK:
+        pool, ONCE_PEER['pool'] = ONCE_PEER['pool'], []
+        ONCE_PEER['made'] = 0
+        ONCE_PEER['down_until'] = 0.0
+        ONCE_PEER['fails'] = 0
+    for db in pool:
+        try:
+            db.close()
+        except Exception:                               # noqa: BLE001
+            pass
+
+
+def _once_peer_alive(store):
+    """Whether the other node has been heard from lately - looked at every 10 s
+    in this node's own database (1.0.186): a node restarted or switched off
+    for the night's updates is not asked, each sign-in let in waited for it."""
+    now = time.time()
+    if now - ONCE_PEER['alive_at'] < 10:
+        return ONCE_PEER['alive']
+    ONCE_PEER['alive_at'] = now
+    try:
+        others = [n for n in ha_nodes(store) if not n.get('me')]
+        ONCE_PEER['alive'] = not others or any(n.get('alive') for n in others)
+    except Exception:                                   # noqa: BLE001
+        ONCE_PEER['alive'] = True
+    return ONCE_PEER['alive']
+
+
+def _once_peer_has(k, me, store=None):
     """Whether the other node's database has the other node's row for `k`:
     True, False, or None when it cannot be asked just now. Asked on a
-    connection of its own with a 2 s limit, and waited for 2.5 s at most
-    (1.0.101): a peer that drops packets without a word must not hold every
-    sign-in that was let in."""
+    connection of its own with a 2 s limit, and waited for 1.5 s at most
+    (1.0.101; 1.0.186): a peer that drops packets without a word must not hold
+    every sign-in that was let in. A few connections (1.0.186): with one, the
+    sign-ins of a busy morning asked one after the other and timed out on each
+    other - and the peer was taken for gone. Not asked again for 20 s, then
+    longer each time it does not answer, up to 5 minutes."""
+    if store is not None and not _once_peer_alive(store):
+        return None
     with ONCE_PEER_LOCK:
         if ONCE_PEER['down_until'] > time.time():
             return None
-        db = ONCE_PEER['db']
-    got = {}
+        if ONCE_PEER['pool']:
+            db = ONCE_PEER['pool'].pop()
+        elif ONCE_PEER['made'] < ONCE_PEER_MOST:
+            db = None
+            ONCE_PEER['made'] += 1
+        else:
+            db = 'wait'
+    if db == 'wait':
+        # Every connection in use: one comes back within a moment.
+        for _ in range(30):
+            time.sleep(0.05)
+            with ONCE_PEER_LOCK:
+                if ONCE_PEER['pool']:
+                    db = ONCE_PEER['pool'].pop()
+                    break
+        if db == 'wait':
+            return None
+    got = {'db': db}
 
     def ask():
-        nonlocal db
         try:
-            if db is None:
-                db = db_open(ha_peer_conf(timeout=2), statement_s=2)
-                with ONCE_PEER_LOCK:
-                    if ONCE_PEER['db'] is None:
-                        ONCE_PEER['db'] = db
-            got['v'] = bool(db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?',
-                                     (k, me)))
+            if got['db'] is None:
+                got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
+            got['v'] = bool(got['db'].value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?',
+                                            (k, me)))
         except Exception as e:                          # noqa: BLE001
             got['e'] = e
     t = threading.Thread(target=ask, name='once-peer', daemon=True)
     t.start()
-    t.join(2.5)
+    t.join(1.5)
     if 'v' in got:
+        with ONCE_PEER_LOCK:
+            ONCE_PEER['pool'].append(got['db'])
+            ONCE_PEER['fails'] = 0
         return got['v']
-    e = got.get('e') or TimeoutError('no answer within 2.5 s')
+    e = got.get('e') or TimeoutError('no answer within 1.5 s')
     with ONCE_PEER_LOCK:
-        was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-        ONCE_PEER['down_until'] = time.time() + 20
+        ONCE_PEER['made'] = max(0, ONCE_PEER['made'] - 1)
+        ONCE_PEER['fails'] += 1
+        ONCE_PEER['down_until'] = time.time() + min(300, 20 * 2 ** (ONCE_PEER['fails'] - 1))
         say = ONCE_PEER['said'] < time.time() - 300
         if say:
             ONCE_PEER['said'] = time.time()
-    if was is not None and not t.is_alive():
+    if got.get('db') is not None and not t.is_alive():
         try:
-            was.close()
+            got['db'].close()
         except Exception:                               # noqa: BLE001
             pass
     if say:
@@ -1149,7 +1202,7 @@ def once_take(store, kind, name, value):
     if db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?', (k, me)):
         return False                    # the other node took it, and it came over
     if me and CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer'):
-        if _once_peer_has(k, me):
+        if _once_peer_has(k, me, store):
             return False                # the other node took it, not over yet
     return True
 

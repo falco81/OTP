@@ -167,7 +167,11 @@ class Siem(object):
                 self.trouble['frame'] = str(e)[:200]
                 continue
             for t in list(self.targets):
-                self._send(t, line)
+                try:
+                    self._send(t, line)
+                except Exception as e:                  # noqa: BLE001
+                    # Nothing ends this thread (1.0.186).
+                    self.trouble[str(t)] = str(e)[:200]
 
     def _tls(self):
         if self.ctx is None:

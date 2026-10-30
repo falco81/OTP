@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.185'
+__version__ = '1.0.186'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2160,10 +2160,11 @@ _LOG_TO_STDERR = True
 def log_open():
     global _LOG_FILE
     with _LOG_LOCK:
+        _LOG_WANTED[0] = True
         try:
             if _LOG_FILE:
                 _LOG_FILE.close()
-        except OSError:
+        except (OSError, ValueError):
             pass
         _LOG_FILE = None
         try:
@@ -2171,6 +2172,13 @@ def log_open():
             _LOG_FILE = open(LOG_DIR / 'otp.log', 'a', encoding='utf-8')
         except OSError:
             _LOG_FILE = None
+
+
+_LOG_WANTED = [False]           # this process writes otp.log (the daemon)
+# A SIGHUP noted from the first moment of the daemon (1.0.186): one that came
+# while it was still starting (a slow migration after an upgrade at night,
+# logrotate's) ended the process - Python's default for it.
+HUP_ASKED = threading.Event()
 
 
 _LOG_SPARING = {}
@@ -2208,39 +2216,93 @@ def log(words, level='info'):
     words = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', lambda m: '\\x%02x' % ord(m.group(0)),
                    words).replace('\n', '\n    ')
     line = '%s %-5s %s' % (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), level, words)
+    try:
+        _log_line(line, level)
+    except Exception:                                   # noqa: BLE001
+        # Never out of log() (1.0.186): a closed file after a rotation the
+        # disk had no room for raised here, out of every RADIUS worker that
+        # logged - one by one they ended, and nothing was answered.
+        pass
+
+
+def _log_line(line, level):
     global _LOG_FILE
     with _LOG_LOCK:
         # Rotated away from under it (1.0.94): logrotate's reload is refused
         # to the otp account, and the lines went on into a file deleted the
-        # next day. Looked at every 10 s; a new otp.log is opened.
+        # next day. Looked at every 10 s; a new otp.log is opened - and one
+        # that could not be (a disk full at night) is tried again (1.0.186).
         t = time.monotonic()
-        if _LOG_FILE and t - _LOG_CHECKED[0] > 10:
+        if _LOG_WANTED[0] and t - _LOG_CHECKED[0] > 10:
             _LOG_CHECKED[0] = t
             try:
-                if os.stat(str(LOG_DIR / 'otp.log')).st_ino != os.fstat(_LOG_FILE.fileno()).st_ino:
-                    raise FileNotFoundError
-            except OSError:
+                stale = _LOG_FILE is None or _LOG_FILE.closed or \
+                    os.stat(str(LOG_DIR / 'otp.log')).st_ino != os.fstat(_LOG_FILE.fileno()).st_ino
+            except (OSError, ValueError):
+                stale = True
+            if stale:
                 try:
-                    _LOG_FILE.close()
+                    if _LOG_FILE is not None:
+                        _LOG_FILE.close()
+                except (OSError, ValueError):
+                    pass
+                _LOG_FILE = None
+                try:
                     _LOG_FILE = open(LOG_DIR / 'otp.log', 'a', encoding='utf-8')
                 except OSError:
-                    pass
+                    _LOG_FILE = None
         if _LOG_FILE:
             try:
                 _LOG_FILE.write(line + '\n')
                 _LOG_FILE.flush()
-            except OSError:
+            except (OSError, ValueError):
                 pass
         # Under systemd, with otp.log open, only warnings and errors go to
         # the journal as well (1.0.136): every line twice, debugging on, and
         # a journald slow to take them held every thread that logs.
-        if _LOG_TO_STDERR and (level != 'debug' or CONFIG.get('debug')) and (
-                not _LOG_FILE or not _UNDER_SYSTEMD or level in ('warn', 'error', 'crit')):
-            try:
-                sys.stderr.write(line + '\n')
-                sys.stderr.flush()
-            except (OSError, ValueError):
-                pass
+        to_err = _LOG_TO_STDERR and (level != 'debug' or CONFIG.get('debug')) and (
+            not _LOG_FILE or not _UNDER_SYSTEMD or level in ('warn', 'error', 'crit'))
+    if not to_err:
+        return
+    if _UNDER_SYSTEMD:
+        # To the journal by a thread of its own (1.0.186): a journald or a
+        # disk that stalls (the night's dumps) held every thread that logs,
+        # RADIUS's too, in this write. Full, a line is left out, not waited for.
+        try:
+            _ERR_Q.put_nowait(line)
+        except queue.Full:
+            _ERR_DROPPED[0] += 1
+        if _ERR_THREAD[0] is None or not _ERR_THREAD[0].is_alive():
+            with _LOG_LOCK:
+                if _ERR_THREAD[0] is None or not _ERR_THREAD[0].is_alive():
+                    _ERR_THREAD[0] = threading.Thread(target=_err_writer, name='log-journal',
+                                                      daemon=True)
+                    _ERR_THREAD[0].start()
+        return
+    try:
+        sys.stderr.write(line + '\n')
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
+_ERR_Q = queue.Queue(maxsize=5000)
+_ERR_THREAD = [None]
+_ERR_DROPPED = [0]
+
+
+def _err_writer():
+    while True:
+        try:
+            line = _ERR_Q.get()
+            if _ERR_DROPPED[0]:
+                n, _ERR_DROPPED[0] = _ERR_DROPPED[0], 0
+                sys.stderr.write('(%d lines left out of the journal: it did not take them in '
+                                 'time)\n' % n)
+            sys.stderr.write(line + '\n')
+            sys.stderr.flush()
+        except Exception:                               # noqa: BLE001
+            time.sleep(0.5)
 
 
 def debugging(what):
@@ -2854,6 +2916,11 @@ DB_TROUBLE_KINDS = ('OperationalError', 'QueryCanceled', 'QueryCanceledError', '
 DB_TROUBLE_WORDS = ('database is locked', 'disk is full', 'disk i/o error', 'no space left')
 
 
+# When RADIUS last could not use the database, and why (1.0.186) - for the
+# alerts, through each node's health row.
+DB_TROUBLE_SEEN = {'at': 0.0, 'said': ''}
+
+
 def db_trouble(e):
     if isinstance(e, DbError):
         return True
@@ -3046,6 +3113,15 @@ class Db(object):
     LANE_RETRY_S = 60
     RADIUS_LANES = 4
 
+    def _conn_timeout(self):
+        """How long a new connection may take: 2 s at most for RADIUS's own
+        (1.0.186) - made under its lane's lock, every request on that lane
+        waited out the whole db_timeout_s of a database that did not answer."""
+        lane = getattr(self._tls, 'lane', None)
+        if lane is not None and lane is not self._lanes.get('main'):
+            return max(1, min(int(self.timeout), 2))
+        return self.timeout
+
     def _lane(self):
         """The lane of this thread's statement: the one pinned for the call it
         is in, or the one it would take."""
@@ -3215,7 +3291,7 @@ class Db(object):
                         host=self.host or 'localhost', port=self.port or 3306,
                         user=self.user, password=self.password, database=self.name,
                         charset='utf8mb4', autocommit=True,
-                        connect_timeout=self.timeout,
+                        connect_timeout=self._conn_timeout(),
                         # A line that drops without a word no longer holds
                         # every request behind the lock for hours (1.0.57).
                         read_timeout=(stmt_s + 4) if quick else (
@@ -3243,7 +3319,7 @@ class Db(object):
                     self.conn = psycopg2.connect(
                         host=self.host or 'localhost', port=self.port or 5432,
                         user=self.user, password=self.password, dbname=self.name,
-                        connect_timeout=self.timeout,
+                        connect_timeout=self._conn_timeout(),
                         # TCP keepalives (1.0.57): a connection lost in a
                         # failover or a firewall is found dead in ~20 s, not
                         # when the kernel gives up, with every request
@@ -6975,7 +7051,7 @@ class Storage(object):
             raise ValueError('there is a client called %s already' % name)
         row = {'name': name, 'address': str(net) if net.num_addresses > 1 else
                str(net.network_address),
-               'realm': str(data.get('realm') or '').strip().lstrip('@')[:190],
+               'realm': str(data.get('realm') or '').strip().lstrip('@').rstrip('.')[:190],
                'require_ma': _yes(data, 'require_ma', 0),
                'enabled': int(bool(int(data.get('enabled', 1) if data.get('enabled')
                                        is not None else 1))),
@@ -7808,7 +7884,10 @@ class Storage(object):
             time.sleep(0.2)
         if gone and self.db.engine == 'sqlite':
             try:
-                self.db.run(RawSql('PRAGMA wal_checkpoint(TRUNCATE)'))
+                # PASSIVE (1.0.186): TRUNCATE waited for every reader - the night's
+                # backup reading the whole file - with the writer's lock held, and
+                # every RADIUS write waited behind it until it gave up.
+                self.db.run(RawSql('PRAGMA wal_checkpoint(PASSIVE)'))
             except Exception:                           # noqa: BLE001
                 pass
         return gone
@@ -7908,12 +7987,20 @@ class Directory(object):
         if not threading.current_thread().name.startswith('radius'):
             yield                       # the pages and the command line: not counted
             return
-        most = max(2, int(CONFIG.get('radius_workers') or 16) // 2)
+        workers = int(CONFIG.get('radius_workers') or 16)
+        most = max(2, workers // 2)
         with self.BUSY_LOCK:
             n = self.BUSY.get(self.name.lower(), 0)
             if n >= most:
                 raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
                                       'this one is not added to them' % (self.name, n))
+            # Every directory together too (1.0.186): two of them listed (the
+            # same domain controllers twice, say) held every worker between
+            # them, and the realms of the code alone waited.
+            if sum(self.BUSY.values()) >= max(2, workers - 4):
+                raise LdapUnreachable('the directories are answering slowly: %d requests wait '
+                                      'on them already - this one is not added to them'
+                                      % sum(self.BUSY.values()))
             self.BUSY[self.name.lower()] = n + 1
         try:
             yield
@@ -8523,6 +8610,10 @@ def open_codes(value, bind=None):
     return [dict(x) if isinstance(x, dict) else {'c': str(x), 'used': None} for x in got]
 
 
+# The checks of a code a RADIUS worker makes, kept until its answer went (1.0.186).
+OTP_LOG_LATER = threading.local()
+
+
 class Tokens(object):
     """Making, checking and looking after tokens."""
 
@@ -9113,13 +9204,18 @@ class Tokens(object):
                           (str(src or '')[:120], str(client or '')[:120], norm_name(name)))
 
     def _said(self, name, ok, said, how, src, rid, off=None):
-        try:
-            self.store.otp_add({'ts': time.time(), 'name': name, 'ok': 1 if ok else 0,
-                                'said': said, 'how': how, 'src': str(src or '')[:120],
-                                'rid': str(rid or '')[:120],
-                                'step_off': int(off) if off is not None else None})
-        except Exception as e:
-            log('the check of a code could not be written down: %s' % e, 'warn')
+        row = {'ts': time.time(), 'name': name, 'ok': 1 if ok else 0, 'said': said, 'how': how,
+               'src': str(src or '')[:120], 'rid': str(rid or '')[:120],
+               'step_off': int(off) if off is not None else None}
+        later = getattr(OTP_LOG_LATER, 'rows', None)
+        if later is not None:
+            # A RADIUS worker's: written once the answer went (1.0.186).
+            later.append(row)
+        else:
+            try:
+                self.store.otp_add(row)
+            except Exception as e:
+                log('the check of a code could not be written down: %s' % e, 'warn')
         if self.on_check:
             try:
                 self.on_check(name, ok, said, how, src, rid)
@@ -9300,11 +9396,16 @@ class Shipper(object):
                 pri, line, file_name = self.q.get(timeout=1.0)
             except queue.Empty:
                 continue
-            if file_name and CONFIG.get('ship_files'):
-                self._to_file(file_name, line)
-            if CONFIG.get('isemon'):
-                for target in list(self.targets):
-                    self._to_target(target, '<%d>%s' % (pri, line))
+            # Nothing ends this thread (1.0.186): one error took isemon's
+            # sending and its files away until a restart.
+            try:
+                if file_name and CONFIG.get('ship_files'):
+                    self._to_file(file_name, line)
+                if CONFIG.get('isemon'):
+                    for target in list(self.targets):
+                        self._to_target(target, '<%d>%s' % (pri, line))
+            except Exception as e:                      # noqa: BLE001
+                log_sparing('shipper', 'isemon: a line could not go: %s' % e, 'warn', every=300)
 
     def _to_file(self, name, line):
         path = LOG_DIR / name
@@ -9312,10 +9413,14 @@ class Shipper(object):
         try:
             if f is not None:
                 try:
-                    if os.fstat(f.fileno()).st_ino != os.stat(path).st_ino:
+                    if f.closed or os.fstat(f.fileno()).st_ino != os.stat(path).st_ino:
                         raise OSError('rotated')
-                except OSError:
-                    f.close()
+                except (OSError, ValueError):
+                    try:
+                        f.close()
+                    except (OSError, ValueError):
+                        pass
+                    self.files.pop(name, None)
                     f = None
             if f is None:
                 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -9323,7 +9428,7 @@ class Shipper(object):
                 self.files[name] = f
             f.write(line + '\n')
             f.flush()
-        except OSError as e:
+        except (OSError, ValueError) as e:
             self.trouble['file:' + name] = str(e)
 
     def _to_target(self, target, data):
@@ -9602,7 +9707,11 @@ class Siem(object):
                 self.trouble['frame'] = str(e)[:200]
                 continue
             for t in list(self.targets):
-                self._send(t, line)
+                try:
+                    self._send(t, line)
+                except Exception as e:                  # noqa: BLE001
+                    # Nothing ends this thread (1.0.186).
+                    self.trouble[str(t)] = str(e)[:200]
 
     def _tls(self):
         if self.ctx is None:
@@ -11237,7 +11346,7 @@ class Authenticator(object):
         if not said:
             return ''
         if client_realm:
-            said = '%s@%s' % (said, str(client_realm).lstrip('@'))
+            said = '%s@%s' % (said, str(client_realm).strip().lstrip('@').rstrip('.'))
         return said
 
     @staticmethod
@@ -11721,6 +11830,10 @@ class RadiusServer(object):
         self.d = daemon
         self.socks = {}
         self.jobs = queue.Queue(maxsize=5000)
+        # Accounting apart (1.0.186): a NAS restarted sends thousands of Stops
+        # and Interim-Updates at once; in the same queue and workers they held
+        # the sign-ins behind them. Their own workers, on the main connection.
+        self.acct_jobs = queue.Queue(maxsize=5000)
         # duplicate key -> (time, reply or None), oldest first, never more
         # than SEEN_MAX: a flood fills it to the brim and no further (1.0.33).
         self.seen = collections.OrderedDict()
@@ -11767,6 +11880,11 @@ class RadiusServer(object):
         self.open_sockets()
         for i in range(int(CONFIG.get('radius_workers') or 16)):
             t = threading.Thread(target=self.work, name='radius-%d' % i, daemon=True)
+            t.start()
+            self.workers.append(t)
+        for i in range(4):
+            t = threading.Thread(target=self.work, args=(self.acct_jobs,), name='acct-%d' % i,
+                                 daemon=True)
             t.start()
             self.workers.append(t)
 
@@ -11861,14 +11979,16 @@ class RadiusServer(object):
             if self.socks.get(kind, (None, None, None))[2] is not sock:
                 return
             try:
-                self.jobs.put_nowait((kind, sock, data, peer, time.time()))
+                (self.acct_jobs if kind == 'acct' else self.jobs).put_nowait(
+                    (kind, sock, data, peer, time.time()))
             except queue.Full:
                 self.counts['overflow'] += 1
 
-    def work(self):
+    def work(self, jobs=None):
+        jobs = jobs if jobs is not None else self.jobs
         while not self.stop_flag:
             try:
-                kind, sock, data, peer, arrived = self.jobs.get(timeout=1.0)
+                kind, sock, data, peer, arrived = jobs.get(timeout=1.0)
             except queue.Empty:
                 continue
             # Older than any NAS waits (1.0.57): after a stall the queue held
@@ -11882,11 +12002,16 @@ class RadiusServer(object):
                 with self.unknown_lock:
                     self.quiet['too old to answer'] += 1
                 continue
+            # The checks of a code written down after the answer went (1.0.186),
+            # not before it: kept by Tokens._said, written below.
+            OTP_LOG_LATER.rows = []
+            OTP_LOG_LATER.sparse = False
             try:
                 self.handle(kind, sock, data, peer, arrived)
             except DbError as e:
                 # Not answered, as any request while the database is away.
                 self.counts['no_database'] += 1
+                DB_TROUBLE_SEEN.update(at=time.time(), said=str(e).split('\n')[0][:200])
                 log_sparing('radius-db', 'RADIUS requests go unanswered: %s'
                             % str(e).split('\n')[0][:200], 'error')
             except Exception as e:
@@ -11895,6 +12020,25 @@ class RadiusServer(object):
                 log_sparing('radius-broke:%s:%s' % (type(e).__name__, str(e)[:60]),
                             'a RADIUS request from %s broke: %s\n%s'
                             % (peer[0], e, traceback.format_exc()), 'error', every=300)
+            finally:
+                rows, OTP_LOG_LATER.rows = OTP_LOG_LATER.rows, None
+                for row in rows or ():
+                    try:
+                        self.d.store.otp_add(row)
+                    except Exception as e:              # noqa: BLE001
+                        log_sparing('otp-log', 'the check of a code could not be written down: '
+                                    '%s' % e, 'warn')
+
+    @staticmethod
+    def draining():
+        """Maintenance asked for, the VIP address still on this node (1.0.186):
+        answered on until keepalived has moved it - 20 s at most - so the VPN
+        asking the VIP address is not left without an answer meanwhile. Never
+        while this node is rebuilt or a backup is put back."""
+        if HA_REBUILDING.is_set() or RESTORE_RUNNING.is_set() or not VIP_HEALTH.get('here'):
+            return False
+        since = VIP_HEALTH.setdefault('drain_since', time.time())
+        return time.time() - since < 20
 
     # ---- one packet -----------------------------------------------------------
     def handle(self, kind, sock, data, peer, arrived):
@@ -11905,7 +12049,7 @@ class RadiusServer(object):
         self.sum_up()
         # In maintenance nothing is answered (1.0.37): the VPN takes this
         # node for down and asks the other, as it would any node that is.
-        if maintenance_now(self.d.store).get('on'):
+        if maintenance_now(self.d.store).get('on') and not self.draining():
             self.counts['maintenance'] += 1
             return
         client = self.d.store.client_for(ip)
@@ -11945,22 +12089,30 @@ class RadiusServer(object):
                     # A refusal sent late is given to a repeat once it went
                     # (1.0.136) - before, the NAS's repeats got nothing and it
                     # took the server for dead.
-                    if got[1] and time.time() >= (got[2] if len(got) > 2 else 0):
-                        try:
-                            sock.sendto(got[1], peer)
-                        except OSError:
-                            pass
-                    return
-                self.seen[key] = (arrived, None)
-                self.seen.move_to_end(key)
-                # Old ones go from the front; past the limit the oldest go
-                # whatever their age - never a rebuild of the whole table.
-                cut = arrived - window
-                while self.seen:
-                    k0, v0 = next(iter(self.seen.items()))
-                    if v0[0] >= cut and len(self.seen) <= self.SEEN_MAX:
-                        break
-                    self.seen.popitem(last=False)
+                    again = got[1] if got[1] and time.time() >= (got[2] if len(got) > 2 else 0) \
+                        else None
+                    hit = True
+                else:
+                    hit = False
+                    self.seen[key] = (arrived, None)
+                    self.seen.move_to_end(key)
+                    # Old ones go from the front; past the limit the oldest go
+                    # whatever their age - never a rebuild of the whole table.
+                    cut = arrived - window
+                    while self.seen:
+                        k0, v0 = next(iter(self.seen.items()))
+                        if v0[0] >= cut and len(self.seen) <= self.SEEN_MAX:
+                            break
+                        self.seen.popitem(last=False)
+            if hit:
+                # Sent outside the lock (1.0.186): a full send buffer held every
+                # packet's look for repeats behind it.
+                if again:
+                    try:
+                        sock.sendto(again, peer)
+                    except OSError:
+                        pass
+                return
         try:
             if kind == 'acct':
                 reply = self.accounting(pkt, client, ip, port, secret, arrived)
@@ -12174,6 +12326,12 @@ class RadiusServer(object):
         # does not, and is refused as before - not left unanswered.
         unreadable = pkt.get(2) is not None and (
             password is None or re.search(r'[\x01-\x1f\x7f]', password) is not None)
+        # Refused all the same, but written down once a minute a client
+        # (1.0.186): unsigned, with no password to read (none, CHAP) or one that
+        # decodes to U+FFFD - anyone can send such from a NAS's address, and each
+        # was a row in the database, uncounted by the sign-in protection.
+        OTP_LOG_LATER.sparse = pkt.get(80) is None and (
+            pkt.get(2) is None or (password is not None and '\ufffd' in password))
         if unreadable and not chap and pkt.get(80) is None:
             # A password that does not come out (another secret) and nothing
             # proving the packet is the client's: not written down one row a
@@ -12380,7 +12538,18 @@ class RadiusServer(object):
         except OSError:
             pass
 
+    SPARSE = {}
+
     def write_down(self, pkt, client, ip, port, rid, arrived, d, code, reply, took, words, w):
+        if getattr(OTP_LOG_LATER, 'sparse', False) and d.result != 'accept':
+            k = ((client or {}).get('name') or ip, d.reason[:60])
+            now = time.time()
+            if now - self.SPARSE.get(k, 0) < 60:
+                self.counts['not_written'] += 1
+                return
+            if len(self.SPARSE) > 5000:
+                self.SPARSE.clear()
+            self.SPARSE[k] = now
         if d.result == 'accept' and d.token_name:
             self.d.tokens.mark_from(d.token_name, w.get('Calling-Station-Id') or ip,
                                     (client or {}).get('name') or '')
@@ -12484,7 +12653,7 @@ class RadiusServer(object):
 
     def state(self):
         return {'listening': self.bound, 'trouble': self.trouble, 'counts': dict(self.counts),
-                'queued': self.jobs.qsize()}
+                'queued': self.jobs.qsize() + self.acct_jobs.qsize()}
 # ---- RADIUS: guessing from one place held back (1.0.137) -----------------------------
 # Every token counts its own wrong codes and locks itself (lockout_after), and
 # that is all there was: from one place - one address behind the VPN - a
@@ -13408,6 +13577,27 @@ def _first_line(cmd, timeout=5):
 
 
 def software_info(store=None):
+    """What _software_now found, made in a thread of its own once in 10 minutes
+    (1.0.186): asked in the heartbeat, its ten programs (5 s each at most) and
+    the database's version held the main loop, and the other node took this
+    one for gone."""
+    now = time.time()
+    if now - _SOFTWARE.get('full_at', 0) > 600 and not _SOFTWARE.get('busy'):
+        _SOFTWARE['busy'] = True
+
+        def go():
+            try:
+                _SOFTWARE['full'] = _software_now(store)
+                _SOFTWARE['full_at'] = time.time()
+            except Exception:                           # noqa: BLE001
+                _SOFTWARE['full_at'] = time.time()
+            finally:
+                _SOFTWARE['busy'] = False
+        threading.Thread(target=go, name='otp-software', daemon=True).start()
+    return dict(_SOFTWARE.get('full') or {'otp': __version__})
+
+
+def _software_now(store=None):
     """What this node runs on (1.0.99): otp, its Python and the modules it
     uses, the libraries under them, the programs beside it and the system -
     for Settings → About, of every node. Asked at most once an hour."""
@@ -14038,7 +14228,11 @@ class Daemon(object):
         # the middle of whatever the main thread was doing - a log line
         # holding its lock, a query on the connection - every night when
         # logrotate reloads.
-        self.hup_asked = threading.Event()
+        self.hup_asked = HUP_ASKED
+        try:
+            self.conf_sig = hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
+        except OSError:
+            self.conf_sig = None
         signal.signal(signal.SIGHUP, lambda *_: self.hup_asked.set())
         last_tidy = time.monotonic() - 3601
         last_backup_day = self.store.get_meta('backup_day', '')
@@ -14319,6 +14513,18 @@ class Daemon(object):
 
     def _hup(self):
         log_open()
+        # logrotate's every night (1.0.186): the logs opened again and nothing
+        # else - read again, the caches RADIUS answers from started empty and
+        # the directories were made anew. config.json changed (otp --set,
+        # systemctl reload after an edit): read again, as before.
+        try:
+            sig = hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
+        except OSError:
+            sig = None
+        if sig is not None and sig == getattr(self, 'conf_sig', None):
+            log('the logs opened again (SIGHUP; config.json as it was)')
+            return
+        self.conf_sig = sig
         try:
             self.reload_all('SIGHUP')
         except Exception as e:
@@ -19637,9 +19843,22 @@ def _seal_tag_ok(key, value, bind):
     return hmac.compare_digest(tag, hmac.new(sign, signed, hashlib.sha256).digest()[:16])
 
 
-def copy_read_through(path, key=None, sample=50):
+def copy_read_through(path, key=None, sample=50, child=False):
     """A copy of the database read to its last line: what it holds, and - with
-    a key - how many tokens of a sample open with it."""
+    a key - how many tokens of a sample open with it. In the daemon by `otp
+    --read-copy`, a process of its own (1.0.186): a big copy read line by line
+    is minutes of Python, which held its one lock against RADIUS."""
+    if not child and DAEMON_DB[0] is not None:
+        r = subprocess.run([sys.executable, '-I', os.path.abspath(__file__), '--read-copy',
+                            str(path)], input=(key.hex() if key else '') + '\n',
+                           capture_output=True, text=True, timeout=6 * 3600)
+        try:
+            got = json.loads(r.stdout.strip().split('\n')[-1])
+        except (ValueError, IndexError):
+            raise RbError('the copy could not be read: %s' % (r.stderr or r.stdout).strip()[-300:])
+        if got.get('error'):
+            raise RbError(got['error'])
+        return got
     import gzip
     counts, table, admins = {}, None, 0
     tried = opened = 0
@@ -20908,8 +21127,10 @@ def ha_peer_columns():
 # writing its own: of two nodes asked for the same code at the same moment,
 # at least one sees the other's row - so it is never let in twice. (One may
 # refuse it when both see each other; the next code then goes through.)
-ONCE_PEER = {'db': None, 'down_until': 0.0, 'said': 0.0}
+ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0,
+             'alive': True, 'alive_at': 0.0}
 ONCE_PEER_LOCK = threading.Lock()
+ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
 
 
@@ -20922,45 +21143,96 @@ def once_key(kind, name, value):
     return '%s:%s' % (kind, h[:48])
 
 
-def _once_peer_has(k, me):
+def once_peer_forget():
+    """The connections to the other node closed - its address or TLS changed."""
+    with ONCE_PEER_LOCK:
+        pool, ONCE_PEER['pool'] = ONCE_PEER['pool'], []
+        ONCE_PEER['made'] = 0
+        ONCE_PEER['down_until'] = 0.0
+        ONCE_PEER['fails'] = 0
+    for db in pool:
+        try:
+            db.close()
+        except Exception:                               # noqa: BLE001
+            pass
+
+
+def _once_peer_alive(store):
+    """Whether the other node has been heard from lately - looked at every 10 s
+    in this node's own database (1.0.186): a node restarted or switched off
+    for the night's updates is not asked, each sign-in let in waited for it."""
+    now = time.time()
+    if now - ONCE_PEER['alive_at'] < 10:
+        return ONCE_PEER['alive']
+    ONCE_PEER['alive_at'] = now
+    try:
+        others = [n for n in ha_nodes(store) if not n.get('me')]
+        ONCE_PEER['alive'] = not others or any(n.get('alive') for n in others)
+    except Exception:                                   # noqa: BLE001
+        ONCE_PEER['alive'] = True
+    return ONCE_PEER['alive']
+
+
+def _once_peer_has(k, me, store=None):
     """Whether the other node's database has the other node's row for `k`:
     True, False, or None when it cannot be asked just now. Asked on a
-    connection of its own with a 2 s limit, and waited for 2.5 s at most
-    (1.0.101): a peer that drops packets without a word must not hold every
-    sign-in that was let in."""
+    connection of its own with a 2 s limit, and waited for 1.5 s at most
+    (1.0.101; 1.0.186): a peer that drops packets without a word must not hold
+    every sign-in that was let in. A few connections (1.0.186): with one, the
+    sign-ins of a busy morning asked one after the other and timed out on each
+    other - and the peer was taken for gone. Not asked again for 20 s, then
+    longer each time it does not answer, up to 5 minutes."""
+    if store is not None and not _once_peer_alive(store):
+        return None
     with ONCE_PEER_LOCK:
         if ONCE_PEER['down_until'] > time.time():
             return None
-        db = ONCE_PEER['db']
-    got = {}
+        if ONCE_PEER['pool']:
+            db = ONCE_PEER['pool'].pop()
+        elif ONCE_PEER['made'] < ONCE_PEER_MOST:
+            db = None
+            ONCE_PEER['made'] += 1
+        else:
+            db = 'wait'
+    if db == 'wait':
+        # Every connection in use: one comes back within a moment.
+        for _ in range(30):
+            time.sleep(0.05)
+            with ONCE_PEER_LOCK:
+                if ONCE_PEER['pool']:
+                    db = ONCE_PEER['pool'].pop()
+                    break
+        if db == 'wait':
+            return None
+    got = {'db': db}
 
     def ask():
-        nonlocal db
         try:
-            if db is None:
-                db = db_open(ha_peer_conf(timeout=2), statement_s=2)
-                with ONCE_PEER_LOCK:
-                    if ONCE_PEER['db'] is None:
-                        ONCE_PEER['db'] = db
-            got['v'] = bool(db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?',
-                                     (k, me)))
+            if got['db'] is None:
+                got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
+            got['v'] = bool(got['db'].value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?',
+                                            (k, me)))
         except Exception as e:                          # noqa: BLE001
             got['e'] = e
     t = threading.Thread(target=ask, name='once-peer', daemon=True)
     t.start()
-    t.join(2.5)
+    t.join(1.5)
     if 'v' in got:
+        with ONCE_PEER_LOCK:
+            ONCE_PEER['pool'].append(got['db'])
+            ONCE_PEER['fails'] = 0
         return got['v']
-    e = got.get('e') or TimeoutError('no answer within 2.5 s')
+    e = got.get('e') or TimeoutError('no answer within 1.5 s')
     with ONCE_PEER_LOCK:
-        was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-        ONCE_PEER['down_until'] = time.time() + 20
+        ONCE_PEER['made'] = max(0, ONCE_PEER['made'] - 1)
+        ONCE_PEER['fails'] += 1
+        ONCE_PEER['down_until'] = time.time() + min(300, 20 * 2 ** (ONCE_PEER['fails'] - 1))
         say = ONCE_PEER['said'] < time.time() - 300
         if say:
             ONCE_PEER['said'] = time.time()
-    if was is not None and not t.is_alive():
+    if got.get('db') is not None and not t.is_alive():
         try:
-            was.close()
+            got['db'].close()
         except Exception:                               # noqa: BLE001
             pass
     if say:
@@ -20988,7 +21260,7 @@ def once_take(store, kind, name, value):
     if db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?', (k, me)):
         return False                    # the other node took it, and it came over
     if me and CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer'):
-        if _once_peer_has(k, me):
+        if _once_peer_has(k, me, store):
             return False                # the other node took it, not over yet
     return True
 
@@ -23797,6 +24069,7 @@ def vip_watch(daemon):
             store = daemon.store
             v = vip_conf(store)
             if not v.get('on') or not CONFIG.get('ha_mode'):
+                VIP_HEALTH['here'] = False
                 try:
                     VIP_STATE.unlink()
                 except OSError:
@@ -23807,6 +24080,18 @@ def vip_watch(daemon):
                 VIP_HEALTH['fails'] += 1
             else:
                 VIP_HEALTH['fails'] = 0
+            # Maintenance asked for (1.0.186): said at once, not after two looks -
+            # RADIUS of this node stops answering, and the VIP address went
+            # silent for seconds before keepalived moved it. Meanwhile, while the
+            # address is still here, RADIUS goes on answering (handle()).
+            planned = maintenance_now(store).get('on')
+            if planned:
+                VIP_HEALTH['fails'] = max(VIP_HEALTH['fails'], VIP_FAILS_BEFORE)
+                VIP_HEALTH.setdefault('drain_since', time.time())
+                why = why or 'in maintenance'
+            else:
+                VIP_HEALTH.pop('drain_since', None)
+            VIP_HEALTH['here'] = vip_here(v.get('address'))
             ok = VIP_HEALTH['fails'] < VIP_FAILS_BEFORE
             if not why or not ok or VIP_HEALTH['ok'] is None:
                 VIP_HEALTH.update(ok=ok, why=why if not ok else '')
@@ -24891,10 +25176,15 @@ def acme_order(store, target, name, by, say=None):
 
 def acme_tick(daemon):
     """Once an hour: what is due, ordered - in a thread of its own."""
-    try:
-        acme_host_publish(daemon.store)
-    except Exception:                                   # noqa: BLE001
-        pass
+    # In a thread (1.0.186): socket.getfqdn() waits on a DNS that does not
+    # answer, and this is the main loop's.
+    if time.time() - ACME_HOST['at'] >= 600:
+        def pub():
+            try:
+                acme_host_publish(daemon.store)
+            except Exception:                           # noqa: BLE001
+                pass
+        threading.Thread(target=pub, name='otp-acme-host', daemon=True).start()
     if not CONFIG.get('acme') or ACME_WORK['busy'] or \
             time.time() - ACME_WORK['at'] < ACME_EVERY:
         return
@@ -25943,13 +26233,7 @@ def _hatls_off_tick(store, w, st):
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
             sub_connection_set(store, sub, conninfo)
-        with ONCE_PEER_LOCK:
-            was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-        if was is not None:
-            try:
-                was.close()
-            except Exception:                           # noqa: BLE001
-                pass
+        once_peer_forget()
         st.update(step='off_server', said='this node takes the other\'s rows as before (Database '
                   '→ TLS)')
         hatls_put(store, st)
@@ -26329,13 +26613,7 @@ def _hatls_tick(store):
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
             sub_connection_set(store, sub, conninfo)
-        with ONCE_PEER_LOCK:
-            was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-        if was is not None:
-            try:
-                was.close()
-            except Exception:                           # noqa: BLE001
-                pass
+        once_peer_forget()
         st.update(step='hba', said='this node takes the other\'s rows over TLS, its '
                   'certificate checked (verify-full)', retry_at=0, link_since=None,
                   peer_lacks=None)
@@ -26466,13 +26744,7 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
                     raise ValueError('the subscription %s could not be pointed at %s: %s'
                                      % (sub, peer, str(e).split(': ', 1)[-1]))
                 done.append('this node takes the other\'s rows from %s now' % peer)
-            with ONCE_PEER_LOCK:
-                was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-            if was is not None:
-                try:
-                    was.close()
-                except Exception:                       # noqa: BLE001
-                    pass
+            once_peer_forget()
         if mine:
             write_file_settings({'ha_address': mine})
             CONFIG['ha_address'] = mine
@@ -30686,6 +30958,8 @@ def health_publish(daemon):
            'siem': daemon.siem.state() if getattr(daemon, 'siem', None) else {},
            'isemon': daemon.shipper.state() if getattr(daemon, 'shipper', None) else {},
            'snmp': dict(SNMP_STATE) if getattr(daemon, 'snmp', None) else {},
+           # RADIUS left without the database in the last 5 minutes (1.0.186).
+           'db_trouble': DB_TROUBLE_SEEN['said'] if now - DB_TROUBLE_SEEN['at'] < 300 else '',
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -30766,13 +31040,16 @@ def alert_problems(store, lang='en'):
                     _al(lang, 'Změny z jednoho uzlu se nedostávají na druhý%s.',
                         'Changes on one node do not reach the other%s.') % (
                         ' (%s)' % rs['trouble'] if rs.get('trouble') else ''), 'ha')
-        try:
-            trouble = db_trouble()
-        except Exception:                               # noqa: BLE001
-            trouble = ''
-        if trouble:
-            add('db', 'bad', node_name(), _al(lang, 'Potíže s databází', 'The database is in '
-                                                    'trouble'), str(trouble)[:300], 'db')
+        # Each node's own (1.0.186): db_trouble() was called with nothing to
+        # look at - it raised, and this never said a word.
+        for n in names:
+            trouble = (health.get(n) or {}).get('db_trouble')
+            if trouble:
+                add('db:%s' % n, 'bad', n, _al(lang, 'Potíže s databází', 'The database is in '
+                                                     'trouble'),
+                    _al(lang, 'RADIUS na %s nemohl použít databázi: %s',
+                        'RADIUS on %s could not use the database: %s') % (n, str(trouble)[:300]),
+                    'db')
     # Backups: the nightly copy of each node, and the backups sent away.
     if CONFIG.get('alerts_backup', 1):
         if CONFIG.get('backup_daily'):
@@ -39229,8 +39506,14 @@ def metrics_text(daemon):
         m.put('otp_directories', 'gauge', 'Directories (Active Directory).',
               [({}, len(daemon.dirs))])
         day = time.time() - 86400
-        rows = store.db.rows("SELECT result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                             "packet = 'Access-Request' GROUP BY result", (day,))
+        # On the pages' reading connection (1.0.186), not the one /api/health
+        # and the ticks share: a day of requests counted is not quick.
+        try:
+            rd = daemon.reader()
+        except Exception:                               # noqa: BLE001
+            rd = store
+        rows = rd.db.rows("SELECT result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                          "packet = 'Access-Request' GROUP BY result", (day,))
         m.put('otp_radius_last_day', 'gauge',
               'Access-Requests of the last 24 hours in the database (both nodes), by result.',
               [({'result': x['result'] or '?'}, x['n']) for x in rows])
@@ -39336,7 +39619,16 @@ def _metrics(h):
         raise ApiError(401, 'the token is not the one set (Authorization: Bearer ...)')
     if not metrics_allowed(h.client_ip()):
         raise ApiError(403, 'not from the networks Prometheus may ask from')
-    return {'text': metrics_text(h.d)}
+    # The same answer for 10 s (1.0.186): two Prometheus servers, or one asking
+    # every few seconds, each made the whole count again.
+    with METRICS_CACHE['lock']:
+        if time.time() - METRICS_CACHE['at'] > 10 or not METRICS_CACHE['text']:
+            METRICS_CACHE['text'] = metrics_text(h.d)
+            METRICS_CACHE['at'] = time.time()
+        return {'text': METRICS_CACHE['text']}
+
+
+METRICS_CACHE = {'at': 0.0, 'text': '', 'lock': threading.Lock()}
 
 
 @route('POST', '/api/metrics')
@@ -43722,6 +44014,7 @@ def build_parser():
     g.add_argument('--backup', action='store_true', help='a copy of the database, now')
     # The daemon's copies made by a process of their own (1.0.150), not shown.
     g.add_argument('--dump-copy', action='store_true', help=argparse.SUPPRESS)
+    g.add_argument('--read-copy', metavar='FILE', help=argparse.SUPPRESS)
     g.add_argument('--restore', metavar='FILE', help='put a copy back (--yes); without --yes, '
                    'what is in it and where it was made')
     g.add_argument('--restore-bundle', metavar='FILE', help='put back a backup sent to a '
@@ -44884,6 +45177,18 @@ def cli_main(argv=None):
         return run_daemon()
     if args.dump_copy:
         return cli_dump_copy()
+    if args.read_copy:
+        # copy_read_through in a process of its own (1.0.186); the key of the
+        # tokens on stdin, never on the command line.
+        key = sys.stdin.readline().strip()
+        try:
+            got = copy_read_through(args.read_copy, bytes.fromhex(key) if key else None,
+                                    child=True)
+        except (RbError, OSError, ValueError) as e:
+            sys.stdout.write(json.dumps({'error': str(e)}) + '\n')
+            return 1
+        sys.stdout.write(json.dumps(got, default=str) + '\n')
+        return 0
     if not acted and args.json:
         # --json alone (1.0.103): the state as JSON, asked by a script - never
         # the daemon in the foreground because stdin is not a terminal.
@@ -46352,6 +46657,7 @@ def cli_dump_copy():
 
 
 def run_daemon():
+    signal.signal(signal.SIGHUP, lambda *_: HUP_ASKED.set())
     become_service_user()
     load_config()
     daemon_lock()

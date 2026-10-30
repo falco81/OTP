@@ -392,13 +392,7 @@ def _hatls_off_tick(store, w, st):
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
             sub_connection_set(store, sub, conninfo)
-        with ONCE_PEER_LOCK:
-            was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-        if was is not None:
-            try:
-                was.close()
-            except Exception:                           # noqa: BLE001
-                pass
+        once_peer_forget()
         st.update(step='off_server', said='this node takes the other\'s rows as before (Database '
                   '→ TLS)')
         hatls_put(store, st)
@@ -778,13 +772,7 @@ def _hatls_tick(store):
                                    CONFIG.get('db_name'), CONFIG.get('db_user'),
                                    CONFIG.get('db_password'))
             sub_connection_set(store, sub, conninfo)
-        with ONCE_PEER_LOCK:
-            was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-        if was is not None:
-            try:
-                was.close()
-            except Exception:                           # noqa: BLE001
-                pass
+        once_peer_forget()
         st.update(step='hba', said='this node takes the other\'s rows over TLS, its '
                   'certificate checked (verify-full)', retry_at=0, link_since=None,
                   peer_lacks=None)

@@ -36,9 +36,22 @@ def _seal_tag_ok(key, value, bind):
     return hmac.compare_digest(tag, hmac.new(sign, signed, hashlib.sha256).digest()[:16])
 
 
-def copy_read_through(path, key=None, sample=50):
+def copy_read_through(path, key=None, sample=50, child=False):
     """A copy of the database read to its last line: what it holds, and - with
-    a key - how many tokens of a sample open with it."""
+    a key - how many tokens of a sample open with it. In the daemon by `otp
+    --read-copy`, a process of its own (1.0.186): a big copy read line by line
+    is minutes of Python, which held its one lock against RADIUS."""
+    if not child and DAEMON_DB[0] is not None:
+        r = subprocess.run([sys.executable, '-I', os.path.abspath(__file__), '--read-copy',
+                            str(path)], input=(key.hex() if key else '') + '\n',
+                           capture_output=True, text=True, timeout=6 * 3600)
+        try:
+            got = json.loads(r.stdout.strip().split('\n')[-1])
+        except (ValueError, IndexError):
+            raise RbError('the copy could not be read: %s' % (r.stderr or r.stdout).strip()[-300:])
+        if got.get('error'):
+            raise RbError(got['error'])
+        return got
     import gzip
     counts, table, admins = {}, None, 0
     tried = opened = 0

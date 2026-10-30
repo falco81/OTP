@@ -4,6 +4,55 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.186 — 30 October 2026
+
+**Signing in: always answered, quickly, whatever else runs** - a review of the
+whole way a RADIUS request goes, and of everything that runs beside it, with a
+load test of its own (`tests/load/t_latency.py`, SQLite and PostgreSQL): one
+request at a time is answered in 1.5 ms (SQLite) / 3.5 ms (PostgreSQL); at 150
+requests a second, with the pages, the log, the events, Prometheus, a backup
+every second, settings saved and the logs rotated with a SIGHUP every 3 s all at
+once, half are answered within 2.3 ms and 99 in 100 within 14 ms (SQLite) - none
+left unanswered, every one rightly let in or refused.
+- `log()` never fails: a log rotated at night onto a full disk left a closed file
+  behind it, and every RADIUS worker that wrote a line after it ended - one by
+  one, the process up, nothing answered. A file that cannot be opened is tried
+  again every 10 s.
+- The journal is written by a thread of its own: a journald or a disk that
+  stalled held every thread that logs, RADIUS's too.
+- isemon's and the SIEM's sending can no longer end on an error (it stopped
+  until a restart).
+- logrotate's SIGHUP opens the logs again and nothing else when config.json is as
+  it was - it emptied the caches RADIUS answers from and made the directories
+  anew every night. A SIGHUP while the daemon still starts no longer ends it.
+- A check of a code is written down after the answer went, not before.
+- Accounting has a queue and workers of its own: a NAS restarted sends thousands
+  of Stops at once, and the sign-ins waited behind them.
+- An unsigned request with no password to read (none, CHAP) or one that decodes
+  to nothing - anyone can send such from a NAS's address - is refused as before
+  and written down once a minute a client, not each one a row.
+- A repeat is answered outside the lock every packet takes.
+- RADIUS's own database connections wait 2 s at most to be made (10 before).
+- All the directories together hold at most all the workers but four: the
+  realms of the code alone are always answered.
+- SQLite: the hourly tidy's checkpoint no longer waits for the night's backup
+  reading the file, with every RADIUS write behind it until it gave up.
+- In a cluster: whether a code was used on the other node is asked on a few
+  connections, 1.5 s at most, not at all while the other node is not heard from,
+  and after a failure not for 20 s, then longer each time (5 min at most).
+- Maintenance (the night's updates, a restart one at a time): the VIP address
+  is given up at once, and RADIUS goes on answering while the address is still
+  on the node (20 s at most) - it went silent for seconds before.
+- What the node runs on (Settings → About) and its full name for ACME are found
+  in threads of their own, not in the main loop - it was taken for gone by the
+  other node when they took long.
+- The check of a backup reads the copy of the database in a process of its own.
+- Prometheus gets the same answer for 10 s, counted on the pages' connection.
+- The alert *The database is in trouble* works: it was never sent (a call
+  without its argument). Now: RADIUS on a node could not use the database in
+  the last 5 minutes.
+- A client's realm written with a dot at the end (`corp.cz.`) is taken without it.
+
 ## 1.0.185 — 30 October 2026
 
 - The SNMPv3 tile of the Overview is gone again: SNMPv3 has its card where otp

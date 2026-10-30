@@ -80,6 +80,8 @@ def health_publish(daemon):
            'siem': daemon.siem.state() if getattr(daemon, 'siem', None) else {},
            'isemon': daemon.shipper.state() if getattr(daemon, 'shipper', None) else {},
            'snmp': dict(SNMP_STATE) if getattr(daemon, 'snmp', None) else {},
+           # RADIUS left without the database in the last 5 minutes (1.0.186).
+           'db_trouble': DB_TROUBLE_SEEN['said'] if now - DB_TROUBLE_SEEN['at'] < 300 else '',
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -160,13 +162,16 @@ def alert_problems(store, lang='en'):
                     _al(lang, 'Změny z jednoho uzlu se nedostávají na druhý%s.',
                         'Changes on one node do not reach the other%s.') % (
                         ' (%s)' % rs['trouble'] if rs.get('trouble') else ''), 'ha')
-        try:
-            trouble = db_trouble()
-        except Exception:                               # noqa: BLE001
-            trouble = ''
-        if trouble:
-            add('db', 'bad', node_name(), _al(lang, 'Potíže s databází', 'The database is in '
-                                                    'trouble'), str(trouble)[:300], 'db')
+        # Each node's own (1.0.186): db_trouble() was called with nothing to
+        # look at - it raised, and this never said a word.
+        for n in names:
+            trouble = (health.get(n) or {}).get('db_trouble')
+            if trouble:
+                add('db:%s' % n, 'bad', n, _al(lang, 'Potíže s databází', 'The database is in '
+                                                     'trouble'),
+                    _al(lang, 'RADIUS na %s nemohl použít databázi: %s',
+                        'RADIUS on %s could not use the database: %s') % (n, str(trouble)[:300]),
+                    'db')
     # Backups: the nightly copy of each node, and the backups sent away.
     if CONFIG.get('alerts_backup', 1):
         if CONFIG.get('backup_daily'):

@@ -73,8 +73,14 @@ def metrics_text(daemon):
         m.put('otp_directories', 'gauge', 'Directories (Active Directory).',
               [({}, len(daemon.dirs))])
         day = time.time() - 86400
-        rows = store.db.rows("SELECT result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                             "packet = 'Access-Request' GROUP BY result", (day,))
+        # On the pages' reading connection (1.0.186), not the one /api/health
+        # and the ticks share: a day of requests counted is not quick.
+        try:
+            rd = daemon.reader()
+        except Exception:                               # noqa: BLE001
+            rd = store
+        rows = rd.db.rows("SELECT result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                          "packet = 'Access-Request' GROUP BY result", (day,))
         m.put('otp_radius_last_day', 'gauge',
               'Access-Requests of the last 24 hours in the database (both nodes), by result.',
               [({'result': x['result'] or '?'}, x['n']) for x in rows])
@@ -180,7 +186,16 @@ def _metrics(h):
         raise ApiError(401, 'the token is not the one set (Authorization: Bearer ...)')
     if not metrics_allowed(h.client_ip()):
         raise ApiError(403, 'not from the networks Prometheus may ask from')
-    return {'text': metrics_text(h.d)}
+    # The same answer for 10 s (1.0.186): two Prometheus servers, or one asking
+    # every few seconds, each made the whole count again.
+    with METRICS_CACHE['lock']:
+        if time.time() - METRICS_CACHE['at'] > 10 or not METRICS_CACHE['text']:
+            METRICS_CACHE['text'] = metrics_text(h.d)
+            METRICS_CACHE['at'] = time.time()
+        return {'text': METRICS_CACHE['text']}
+
+
+METRICS_CACHE = {'at': 0.0, 'text': '', 'lock': threading.Lock()}
 
 
 @route('POST', '/api/metrics')

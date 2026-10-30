@@ -471,10 +471,15 @@ def acme_order(store, target, name, by, say=None):
 
 def acme_tick(daemon):
     """Once an hour: what is due, ordered - in a thread of its own."""
-    try:
-        acme_host_publish(daemon.store)
-    except Exception:                                   # noqa: BLE001
-        pass
+    # In a thread (1.0.186): socket.getfqdn() waits on a DNS that does not
+    # answer, and this is the main loop's.
+    if time.time() - ACME_HOST['at'] >= 600:
+        def pub():
+            try:
+                acme_host_publish(daemon.store)
+            except Exception:                           # noqa: BLE001
+                pass
+        threading.Thread(target=pub, name='otp-acme-host', daemon=True).start()
     if not CONFIG.get('acme') or ACME_WORK['busy'] or \
             time.time() - ACME_WORK['at'] < ACME_EVERY:
         return

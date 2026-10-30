@@ -134,7 +134,7 @@ class Authenticator(object):
         if not said:
             return ''
         if client_realm:
-            said = '%s@%s' % (said, str(client_realm).lstrip('@'))
+            said = '%s@%s' % (said, str(client_realm).strip().lstrip('@').rstrip('.'))
         return said
 
     @staticmethod
@@ -618,6 +618,10 @@ class RadiusServer(object):
         self.d = daemon
         self.socks = {}
         self.jobs = queue.Queue(maxsize=5000)
+        # Accounting apart (1.0.186): a NAS restarted sends thousands of Stops
+        # and Interim-Updates at once; in the same queue and workers they held
+        # the sign-ins behind them. Their own workers, on the main connection.
+        self.acct_jobs = queue.Queue(maxsize=5000)
         # duplicate key -> (time, reply or None), oldest first, never more
         # than SEEN_MAX: a flood fills it to the brim and no further (1.0.33).
         self.seen = collections.OrderedDict()
@@ -664,6 +668,11 @@ class RadiusServer(object):
         self.open_sockets()
         for i in range(int(CONFIG.get('radius_workers') or 16)):
             t = threading.Thread(target=self.work, name='radius-%d' % i, daemon=True)
+            t.start()
+            self.workers.append(t)
+        for i in range(4):
+            t = threading.Thread(target=self.work, args=(self.acct_jobs,), name='acct-%d' % i,
+                                 daemon=True)
             t.start()
             self.workers.append(t)
 
@@ -758,14 +767,16 @@ class RadiusServer(object):
             if self.socks.get(kind, (None, None, None))[2] is not sock:
                 return
             try:
-                self.jobs.put_nowait((kind, sock, data, peer, time.time()))
+                (self.acct_jobs if kind == 'acct' else self.jobs).put_nowait(
+                    (kind, sock, data, peer, time.time()))
             except queue.Full:
                 self.counts['overflow'] += 1
 
-    def work(self):
+    def work(self, jobs=None):
+        jobs = jobs if jobs is not None else self.jobs
         while not self.stop_flag:
             try:
-                kind, sock, data, peer, arrived = self.jobs.get(timeout=1.0)
+                kind, sock, data, peer, arrived = jobs.get(timeout=1.0)
             except queue.Empty:
                 continue
             # Older than any NAS waits (1.0.57): after a stall the queue held
@@ -779,11 +790,16 @@ class RadiusServer(object):
                 with self.unknown_lock:
                     self.quiet['too old to answer'] += 1
                 continue
+            # The checks of a code written down after the answer went (1.0.186),
+            # not before it: kept by Tokens._said, written below.
+            OTP_LOG_LATER.rows = []
+            OTP_LOG_LATER.sparse = False
             try:
                 self.handle(kind, sock, data, peer, arrived)
             except DbError as e:
                 # Not answered, as any request while the database is away.
                 self.counts['no_database'] += 1
+                DB_TROUBLE_SEEN.update(at=time.time(), said=str(e).split('\n')[0][:200])
                 log_sparing('radius-db', 'RADIUS requests go unanswered: %s'
                             % str(e).split('\n')[0][:200], 'error')
             except Exception as e:
@@ -792,6 +808,25 @@ class RadiusServer(object):
                 log_sparing('radius-broke:%s:%s' % (type(e).__name__, str(e)[:60]),
                             'a RADIUS request from %s broke: %s\n%s'
                             % (peer[0], e, traceback.format_exc()), 'error', every=300)
+            finally:
+                rows, OTP_LOG_LATER.rows = OTP_LOG_LATER.rows, None
+                for row in rows or ():
+                    try:
+                        self.d.store.otp_add(row)
+                    except Exception as e:              # noqa: BLE001
+                        log_sparing('otp-log', 'the check of a code could not be written down: '
+                                    '%s' % e, 'warn')
+
+    @staticmethod
+    def draining():
+        """Maintenance asked for, the VIP address still on this node (1.0.186):
+        answered on until keepalived has moved it - 20 s at most - so the VPN
+        asking the VIP address is not left without an answer meanwhile. Never
+        while this node is rebuilt or a backup is put back."""
+        if HA_REBUILDING.is_set() or RESTORE_RUNNING.is_set() or not VIP_HEALTH.get('here'):
+            return False
+        since = VIP_HEALTH.setdefault('drain_since', time.time())
+        return time.time() - since < 20
 
     # ---- one packet -----------------------------------------------------------
     def handle(self, kind, sock, data, peer, arrived):
@@ -802,7 +837,7 @@ class RadiusServer(object):
         self.sum_up()
         # In maintenance nothing is answered (1.0.37): the VPN takes this
         # node for down and asks the other, as it would any node that is.
-        if maintenance_now(self.d.store).get('on'):
+        if maintenance_now(self.d.store).get('on') and not self.draining():
             self.counts['maintenance'] += 1
             return
         client = self.d.store.client_for(ip)
@@ -842,22 +877,30 @@ class RadiusServer(object):
                     # A refusal sent late is given to a repeat once it went
                     # (1.0.136) - before, the NAS's repeats got nothing and it
                     # took the server for dead.
-                    if got[1] and time.time() >= (got[2] if len(got) > 2 else 0):
-                        try:
-                            sock.sendto(got[1], peer)
-                        except OSError:
-                            pass
-                    return
-                self.seen[key] = (arrived, None)
-                self.seen.move_to_end(key)
-                # Old ones go from the front; past the limit the oldest go
-                # whatever their age - never a rebuild of the whole table.
-                cut = arrived - window
-                while self.seen:
-                    k0, v0 = next(iter(self.seen.items()))
-                    if v0[0] >= cut and len(self.seen) <= self.SEEN_MAX:
-                        break
-                    self.seen.popitem(last=False)
+                    again = got[1] if got[1] and time.time() >= (got[2] if len(got) > 2 else 0) \
+                        else None
+                    hit = True
+                else:
+                    hit = False
+                    self.seen[key] = (arrived, None)
+                    self.seen.move_to_end(key)
+                    # Old ones go from the front; past the limit the oldest go
+                    # whatever their age - never a rebuild of the whole table.
+                    cut = arrived - window
+                    while self.seen:
+                        k0, v0 = next(iter(self.seen.items()))
+                        if v0[0] >= cut and len(self.seen) <= self.SEEN_MAX:
+                            break
+                        self.seen.popitem(last=False)
+            if hit:
+                # Sent outside the lock (1.0.186): a full send buffer held every
+                # packet's look for repeats behind it.
+                if again:
+                    try:
+                        sock.sendto(again, peer)
+                    except OSError:
+                        pass
+                return
         try:
             if kind == 'acct':
                 reply = self.accounting(pkt, client, ip, port, secret, arrived)
@@ -1071,6 +1114,12 @@ class RadiusServer(object):
         # does not, and is refused as before - not left unanswered.
         unreadable = pkt.get(2) is not None and (
             password is None or re.search(r'[\x01-\x1f\x7f]', password) is not None)
+        # Refused all the same, but written down once a minute a client
+        # (1.0.186): unsigned, with no password to read (none, CHAP) or one that
+        # decodes to U+FFFD - anyone can send such from a NAS's address, and each
+        # was a row in the database, uncounted by the sign-in protection.
+        OTP_LOG_LATER.sparse = pkt.get(80) is None and (
+            pkt.get(2) is None or (password is not None and '\ufffd' in password))
         if unreadable and not chap and pkt.get(80) is None:
             # A password that does not come out (another secret) and nothing
             # proving the packet is the client's: not written down one row a
@@ -1277,7 +1326,18 @@ class RadiusServer(object):
         except OSError:
             pass
 
+    SPARSE = {}
+
     def write_down(self, pkt, client, ip, port, rid, arrived, d, code, reply, took, words, w):
+        if getattr(OTP_LOG_LATER, 'sparse', False) and d.result != 'accept':
+            k = ((client or {}).get('name') or ip, d.reason[:60])
+            now = time.time()
+            if now - self.SPARSE.get(k, 0) < 60:
+                self.counts['not_written'] += 1
+                return
+            if len(self.SPARSE) > 5000:
+                self.SPARSE.clear()
+            self.SPARSE[k] = now
         if d.result == 'accept' and d.token_name:
             self.d.tokens.mark_from(d.token_name, w.get('Calling-Station-Id') or ip,
                                     (client or {}).get('name') or '')
@@ -1381,4 +1441,4 @@ class RadiusServer(object):
 
     def state(self):
         return {'listening': self.bound, 'trouble': self.trouble, 'counts': dict(self.counts),
-                'queued': self.jobs.qsize()}
+                'queued': self.jobs.qsize() + self.acct_jobs.qsize()}

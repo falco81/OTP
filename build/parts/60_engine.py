@@ -90,12 +90,20 @@ class Directory(object):
         if not threading.current_thread().name.startswith('radius'):
             yield                       # the pages and the command line: not counted
             return
-        most = max(2, int(CONFIG.get('radius_workers') or 16) // 2)
+        workers = int(CONFIG.get('radius_workers') or 16)
+        most = max(2, workers // 2)
         with self.BUSY_LOCK:
             n = self.BUSY.get(self.name.lower(), 0)
             if n >= most:
                 raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
                                       'this one is not added to them' % (self.name, n))
+            # Every directory together too (1.0.186): two of them listed (the
+            # same domain controllers twice, say) held every worker between
+            # them, and the realms of the code alone waited.
+            if sum(self.BUSY.values()) >= max(2, workers - 4):
+                raise LdapUnreachable('the directories are answering slowly: %d requests wait '
+                                      'on them already - this one is not added to them'
+                                      % sum(self.BUSY.values()))
             self.BUSY[self.name.lower()] = n + 1
         try:
             yield
@@ -705,6 +713,10 @@ def open_codes(value, bind=None):
     return [dict(x) if isinstance(x, dict) else {'c': str(x), 'used': None} for x in got]
 
 
+# The checks of a code a RADIUS worker makes, kept until its answer went (1.0.186).
+OTP_LOG_LATER = threading.local()
+
+
 class Tokens(object):
     """Making, checking and looking after tokens."""
 
@@ -1295,13 +1307,18 @@ class Tokens(object):
                           (str(src or '')[:120], str(client or '')[:120], norm_name(name)))
 
     def _said(self, name, ok, said, how, src, rid, off=None):
-        try:
-            self.store.otp_add({'ts': time.time(), 'name': name, 'ok': 1 if ok else 0,
-                                'said': said, 'how': how, 'src': str(src or '')[:120],
-                                'rid': str(rid or '')[:120],
-                                'step_off': int(off) if off is not None else None})
-        except Exception as e:
-            log('the check of a code could not be written down: %s' % e, 'warn')
+        row = {'ts': time.time(), 'name': name, 'ok': 1 if ok else 0, 'said': said, 'how': how,
+               'src': str(src or '')[:120], 'rid': str(rid or '')[:120],
+               'step_off': int(off) if off is not None else None}
+        later = getattr(OTP_LOG_LATER, 'rows', None)
+        if later is not None:
+            # A RADIUS worker's: written once the answer went (1.0.186).
+            later.append(row)
+        else:
+            try:
+                self.store.otp_add(row)
+            except Exception as e:
+                log('the check of a code could not be written down: %s' % e, 'warn')
         if self.on_check:
             try:
                 self.on_check(name, ok, said, how, src, rid)
@@ -1482,11 +1499,16 @@ class Shipper(object):
                 pri, line, file_name = self.q.get(timeout=1.0)
             except queue.Empty:
                 continue
-            if file_name and CONFIG.get('ship_files'):
-                self._to_file(file_name, line)
-            if CONFIG.get('isemon'):
-                for target in list(self.targets):
-                    self._to_target(target, '<%d>%s' % (pri, line))
+            # Nothing ends this thread (1.0.186): one error took isemon's
+            # sending and its files away until a restart.
+            try:
+                if file_name and CONFIG.get('ship_files'):
+                    self._to_file(file_name, line)
+                if CONFIG.get('isemon'):
+                    for target in list(self.targets):
+                        self._to_target(target, '<%d>%s' % (pri, line))
+            except Exception as e:                      # noqa: BLE001
+                log_sparing('shipper', 'isemon: a line could not go: %s' % e, 'warn', every=300)
 
     def _to_file(self, name, line):
         path = LOG_DIR / name
@@ -1494,10 +1516,14 @@ class Shipper(object):
         try:
             if f is not None:
                 try:
-                    if os.fstat(f.fileno()).st_ino != os.stat(path).st_ino:
+                    if f.closed or os.fstat(f.fileno()).st_ino != os.stat(path).st_ino:
                         raise OSError('rotated')
-                except OSError:
-                    f.close()
+                except (OSError, ValueError):
+                    try:
+                        f.close()
+                    except (OSError, ValueError):
+                        pass
+                    self.files.pop(name, None)
                     f = None
             if f is None:
                 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1505,7 +1531,7 @@ class Shipper(object):
                 self.files[name] = f
             f.write(line + '\n')
             f.flush()
-        except OSError as e:
+        except (OSError, ValueError) as e:
             self.trouble['file:' + name] = str(e)
 
     def _to_target(self, target, data):

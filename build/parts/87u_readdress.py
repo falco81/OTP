@@ -98,13 +98,7 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
                     raise ValueError('the subscription %s could not be pointed at %s: %s'
                                      % (sub, peer, str(e).split(': ', 1)[-1]))
                 done.append('this node takes the other\'s rows from %s now' % peer)
-            with ONCE_PEER_LOCK:
-                was, ONCE_PEER['db'] = ONCE_PEER['db'], None
-            if was is not None:
-                try:
-                    was.close()
-                except Exception:                       # noqa: BLE001
-                    pass
+            once_peer_forget()
         if mine:
             write_file_settings({'ha_address': mine})
             CONFIG['ha_address'] = mine

@@ -538,6 +538,7 @@ def build_parser():
     g.add_argument('--backup', action='store_true', help='a copy of the database, now')
     # The daemon's copies made by a process of their own (1.0.150), not shown.
     g.add_argument('--dump-copy', action='store_true', help=argparse.SUPPRESS)
+    g.add_argument('--read-copy', metavar='FILE', help=argparse.SUPPRESS)
     g.add_argument('--restore', metavar='FILE', help='put a copy back (--yes); without --yes, '
                    'what is in it and where it was made')
     g.add_argument('--restore-bundle', metavar='FILE', help='put back a backup sent to a '
@@ -1700,6 +1701,18 @@ def cli_main(argv=None):
         return run_daemon()
     if args.dump_copy:
         return cli_dump_copy()
+    if args.read_copy:
+        # copy_read_through in a process of its own (1.0.186); the key of the
+        # tokens on stdin, never on the command line.
+        key = sys.stdin.readline().strip()
+        try:
+            got = copy_read_through(args.read_copy, bytes.fromhex(key) if key else None,
+                                    child=True)
+        except (RbError, OSError, ValueError) as e:
+            sys.stdout.write(json.dumps({'error': str(e)}) + '\n')
+            return 1
+        sys.stdout.write(json.dumps(got, default=str) + '\n')
+        return 0
     if not acted and args.json:
         # --json alone (1.0.103): the state as JSON, asked by a script - never
         # the daemon in the foreground because stdin is not a terminal.
@@ -3168,6 +3181,7 @@ def cli_dump_copy():
 
 
 def run_daemon():
+    signal.signal(signal.SIGHUP, lambda *_: HUP_ASKED.set())
     become_service_user()
     load_config()
     daemon_lock()

@@ -25,6 +25,11 @@ DB_TROUBLE_KINDS = ('OperationalError', 'QueryCanceled', 'QueryCanceledError', '
 DB_TROUBLE_WORDS = ('database is locked', 'disk is full', 'disk i/o error', 'no space left')
 
 
+# When RADIUS last could not use the database, and why (1.0.186) - for the
+# alerts, through each node's health row.
+DB_TROUBLE_SEEN = {'at': 0.0, 'said': ''}
+
+
 def db_trouble(e):
     if isinstance(e, DbError):
         return True
@@ -217,6 +222,15 @@ class Db(object):
     LANE_RETRY_S = 60
     RADIUS_LANES = 4
 
+    def _conn_timeout(self):
+        """How long a new connection may take: 2 s at most for RADIUS's own
+        (1.0.186) - made under its lane's lock, every request on that lane
+        waited out the whole db_timeout_s of a database that did not answer."""
+        lane = getattr(self._tls, 'lane', None)
+        if lane is not None and lane is not self._lanes.get('main'):
+            return max(1, min(int(self.timeout), 2))
+        return self.timeout
+
     def _lane(self):
         """The lane of this thread's statement: the one pinned for the call it
         is in, or the one it would take."""
@@ -386,7 +400,7 @@ class Db(object):
                         host=self.host or 'localhost', port=self.port or 3306,
                         user=self.user, password=self.password, database=self.name,
                         charset='utf8mb4', autocommit=True,
-                        connect_timeout=self.timeout,
+                        connect_timeout=self._conn_timeout(),
                         # A line that drops without a word no longer holds
                         # every request behind the lock for hours (1.0.57).
                         read_timeout=(stmt_s + 4) if quick else (
@@ -414,7 +428,7 @@ class Db(object):
                     self.conn = psycopg2.connect(
                         host=self.host or 'localhost', port=self.port or 5432,
                         user=self.user, password=self.password, dbname=self.name,
-                        connect_timeout=self.timeout,
+                        connect_timeout=self._conn_timeout(),
                         # TCP keepalives (1.0.57): a connection lost in a
                         # failover or a firewall is found dead in ~20 s, not
                         # when the kernel gives up, with every request
