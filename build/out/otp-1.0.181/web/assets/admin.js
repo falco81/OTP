@@ -13656,6 +13656,65 @@ function sdAct(action, b) {
   api('sshd', {action: action}).then(function (r) { toast(r.message, 'good'); SD.d = r; drawSshd(); sdPoll(true); })
     .catch(function (e) { if (b) busy(b, false); oops(e); });
 }
+function sdAct2(body) {
+  return api('sshd', body).then(function (r) { toast(r.message, 'good'); SD.d = r; drawSshd(); return r; }).catch(oops);
+}
+function sdTokenAsk(was) {
+  var who, note, kind = (was && was.kind) || 'app', dest, destF;
+  var ch = (SD.d && SD.d.channels) || [];
+  modal(was ? 'A new SSH token for ' + was.name : 'Add an SSH token', function (body) {
+    body.appendChild(el('p', 'note', 'A token of its own for signing in over SSH - not a VPN token. From an app (the QR code shown once, right after: have the app at hand), or codes sent by mail or SMS where sending is set up.'));
+    if (was) body.appendChild(el('p', 'note warn', 'The SSH token ' + was.name + ' has now stops working the moment this one is made - an app\'s secret is made anew.'));
+    var g = el('div', 'formgrid');
+    who = noI18n(textBox(was ? was.name : '', 'jan', 'mono'));
+    if (was) who.disabled = true;
+    g.appendChild(formField('The account', who, 'Its name on the nodes - the name typed at ssh.'));
+    note = textBox(was ? was.note || '' : '', 'Jan Novák, admin', '');
+    g.appendChild(formField('Note', note, 'Whose it is - for you, nothing else.'));
+    /* Where the codes come from (1.0.181): the app, or mail and SMS when set up. */
+    var seg = el('div', 'seg');
+    [['app', 'An app'], ['mail', 'By mail'], ['sms', 'By SMS']].forEach(function (o) {
+      var b = el('button', kind === o[0] ? 'on' : '', o[1]);
+      b.type = 'button';
+      if (o[0] !== 'app' && ch.indexOf(o[0]) < 0) { b.disabled = true; b.title = o[0] === 'mail' ? 'sending mail is not set up (Settings → Mail)' : 'sending SMS is not set up (Settings → Codes by e-mail and SMS)'; }
+      b.onclick = function () {
+        kind = o[0];
+        Array.prototype.forEach.call(seg.children, function (x) { x.className = x === b ? 'on' : ''; });
+        destF.hidden = kind === 'app';
+        dest.placeholder = kind === 'sms' ? '+420 777 123 456' : 'jan@example.cz';
+      };
+      seg.appendChild(b);
+    });
+    g.appendChild(formField('The codes come', seg, 'By mail or SMS: Enter at the first prompt of ssh, then the code that was sent.'));
+    body.appendChild(g);
+    dest = noI18n(textBox('', 'jan@example.cz', 'mono'));
+    destF = formField('Where to', dest, 'The address or the number the codes go to.');
+    destF.hidden = kind === 'app';
+    body.appendChild(destF);
+    setTimeout(function () { (was ? note : who).focus(); }, 60);
+  }, [{words: 'Close', close: true}, {words: was ? 'Make a new one' : 'Make it', cls: 'primary', icon: 'add', go: function (b) {
+    busy(b, true);
+    sdTokenMake(who.value.trim(), note.value.trim(), !!was, b, kind, dest.value.trim());
+  }}], 'medium');
+}
+function sdTokenMake(name, note, replace, b, kind, dest) {
+  api('sshd', {action: 'sshotp_add', name: name, note: note || '', replace: !!replace, kind: kind || 'app', dest: dest || ''}).then(function (r) {
+    SD.d = r; drawSshd();
+    var m = r.made;
+    if (m.kind !== 'app') { closeModal(); toast(r.message, 'good'); return; }
+    modal('The SSH token of ' + m.name, function (body) {
+      var grid = el('div', 'enrol');
+      var qr = el('div', 'qrbox');
+      var img = el('img'); img.src = m.qr; img.alt = 'QR code';
+      qr.appendChild(img); grid.appendChild(qr);
+      var right = el('div');
+      right.appendChild(el('p', 'note', 'Scan it with the authenticator application now, or type the key in - it is not shown again. Then ssh ' + m.name + '@' + ((STATUS && STATUS.node) || 'otp1') + ' (any node): the code where the password is asked.'));
+      right.appendChild(kvTable([['Account', m.name], ['Key', copyOnClick(noI18n(el('span', 'keytext', m.secret)), m.secret.replace(/\s+/g, ''), 'the key was copied')]]));
+      grid.appendChild(right);
+      body.appendChild(grid);
+    }, [{words: 'Close', close: true}], 'medium');
+  }).catch(function (e) { if (b) busy(b, false); oops(e); });
+}
 function drawSshd(live) {
   var real = $('sd-host');
   if (!real || !SD.d) return;
@@ -13700,6 +13759,7 @@ function drawSshd(live) {
         ['Keys of root', String(n.keys)],
         ['SELinux', (n.now || {}).selinux || '–', true],
         ['A code from otp', !n.radius || n.radius.pam === undefined ? '–' : (n.radius.pam ? 'asked (pam_radius)' : (n.radius.module ? 'not asked' : 'pam_radius is not here'))],
+        ['otp\'s gate for SSH', !(n.now || {}).gate ? '–' : (n.now.gate.listening ? '127.0.0.1:' + n.now.gate.port : (n.now.gate.error || 'not listening')), true],
         ['Read', n.now.at ? ago(n.now.at) : 'not yet']
       ]));
       if (n.now.error) c.appendChild(el('p', 'note bad', n.now.error));
@@ -13753,7 +13813,7 @@ function drawSshd(live) {
     /* A code from otp (1.0.178): pam_radius asks this node's own RADIUS. */
     var rc = el('div', 'card full');
     rc.appendChild(el('h2', '', 'Signing in with a code from otp'));
-    rc.appendChild(el('p', 'muted small', 'sshd asks for a code from the account\'s token where it would ask for its password, through pam_radius and the RADIUS of the node itself (127.0.0.1). The RADIUS client "SSH of the nodes - pam_radius" is made by itself. Users sign in with their token in a realm with no suffix - the name typed at ssh is the name otp looks up.'));
+    rc.appendChild(el('p', 'muted small', 'sshd asks for a code where it would ask for the account\'s password - from an SSH token of the account, below: tokens of their own, not the VPN\'s, in no realm and no RADIUS client. pam_radius asks otp\'s own gate on 127.0.0.1 of each node, on a free port of 18129-18199 each node finds for itself.'));
     var rs = switchBox(dr.radius);
     rs._input.disabled = !dr.manage;
     rs._input.onchange = function () { dr.radius = !!rs._get(); sdDirty(); drawSshd(); };
@@ -13777,6 +13837,41 @@ function drawSshd(live) {
       if (miss.length) rc.appendChild(el('p', 'note warn', 'pam_radius is not on ' + miss.join(', ') + ' - otp installs it when this is saved (RHEL: from EPEL - dnf install epel-release first).'));
       rc.appendChild(el('p', 'note', 'Keep the session you have open and try a new one while it is on trial. A kernel booted with ipv6.disable=1 breaks pam_radius 2.0 - nobody gets the code asked.'));
     }
+    /* The SSH tokens (1.0.181): of their own, as the administration's second step. */
+    var tl = el('div', 'sd-tokens');
+    tl.appendChild(el('h3', '', 'SSH tokens'));
+    var list = d.sshotp || [];
+    if (!list.length) tl.appendChild(el('p', 'muted small', 'None yet. Each account that is to sign in with a code needs one - its name as on the nodes (jan, root…).'));
+    else {
+      var tb = el('table', 'rows');
+      var thr = el('tr');
+      ['Account', 'Note', 'The codes', 'Made', 'Last used', ''].forEach(function (h) { thr.appendChild(el('th', '', h)); });
+      var th = el('thead'); th.appendChild(thr); tb.appendChild(th);
+      var bd = el('tbody');
+      list.forEach(function (x) {
+        var tr = el('tr');
+        tr.appendChild(noI18n(el('td', 'mono', x.name)));
+        tr.appendChild(noI18n(el('td', '', x.note || '')));
+        tr.appendChild(el('td', 'small', x.kind === 'mail' ? 'mail · ' + x.dest : (x.kind === 'sms' ? 'SMS · ' + x.dest : 'an app')));
+        tr.appendChild(el('td', 'muted small', (x.at ? ago(x.at) : '') + (x.by ? ' · ' + x.by : '')));
+        tr.appendChild(el('td', 'muted small', x.used_at ? ago(x.used_at) + (x.used_on ? ' · ' + x.used_on : '') : 'never'));
+        var td = el('td', 'acts');
+        var nw = cmdButton('A new one…', 'refresh', 'small');
+        nw.onclick = function () { sdTokenAsk(x); };
+        var rm = cmdButton('Remove', 'trash', 'small danger');
+        rm.onclick = function () { confirmThen('Remove the SSH token of ' + x.name, x.name + ' then gets no code over SSH - with the system password when otp does not answer off, not in at all but with a key.', 'Remove', function () { sdAct2({action: 'sshotp_remove', name: x.name}); }, true); };
+        td.appendChild(nw); td.appendChild(rm);
+        tr.appendChild(td);
+        bd.appendChild(tr);
+      });
+      tb.appendChild(bd);
+      tl.appendChild(tb);
+    }
+    var add = cmdButton('Add an SSH token…', 'add', 'primary');
+    add.onclick = function () { sdTokenAsk(); };
+    var ar = el('div', 'btnrow'); ar.appendChild(add);
+    tl.appendChild(ar);
+    rc.appendChild(tl);
     host.appendChild(rc);
     /* The notice. */
     var nc = el('div', 'card full');
@@ -14568,9 +14663,10 @@ function drawDbTls() {
     sub = 'It stopped working with TLS (' + (rescued[0].rescued.why || '') + ') - the database is on the same machine, so it went on without it and RADIUS kept answering. Put it right and encrypt it again.';
   } else if (checked) {
     title = 'Every node reaches its database encrypted and checked';
-    sub = d.kind === 'local' || (d.kind === 'replicated' && !d.link_done) ? 'PostgreSQL here has a certificate from otp’s own authority, renewed by itself 45 days before it ends - and made again when the machine’s names change.'
-      : (d.kind === 'replicated' ? 'Each node checks its own PostgreSQL with otp’s own authority - its certificate the one the link between the databases has, renewed with it. Either is switched off without the other.'
-        : 'The server’s certificate is checked with the authority given.');
+    /* Said outright (1.0.181): renewed while running, nothing stops. */
+    sub = d.kind === 'local' || (d.kind === 'replicated' && !d.link_done) ? 'PostgreSQL here has a certificate from otp’s own authority, renewed by itself 45 days before it ends - and made again when the machine’s names change. Renewed while everything runs: PostgreSQL takes the new one with a reload, no restart - the connections go on, RADIUS does not notice.'
+      : (d.kind === 'replicated' ? 'Each node checks its own PostgreSQL with otp’s own authority - its certificate the one the link between the databases has, renewed with it by itself 45 days before it ends (the authority two years before), as the replication’s: with a reload of PostgreSQL, no restart - nothing stops. Either is switched off without the other.'
+        : 'The server’s certificate is checked with the authority given. That server’s certificate is renewed by its administrator - otp only checks it.');
   } else if (on.length) {
     title = 'Encrypted, but whose certificate answers is not checked on ' + on.filter(function (n) { return n.mode === 'require'; }).map(function (n) { return n.name; }).join(', ');
     sub = 'require encrypts but takes any certificate. verify-full also checks that it is the server’s.';

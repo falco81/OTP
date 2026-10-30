@@ -3318,3 +3318,10 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 :where(.card, #modal-body, .set-item) > :where(.btnrow + *:not(.btnrow)) {margin-top:16px}
 :where(.card, #modal-body) > :where(.btn:not(:first-child)) {margin-top:14px}
 :where(.dbt-try:not(:empty)) {margin-top:18px}
+
+/* SSH tokens (1.0.181) */
+.sd-tokens{margin-top:22px;border-top:1px solid var(--line);padding-top:16px}
+.sd-tokens h3{margin:0 0 10px}
+.sd-tokens > .btnrow{margin-top:16px}
+.sd-tokens td.acts{text-align:right;white-space:nowrap}
+.sd-tokens td.acts .btn + .btn{margin-left:8px}

@@ -1,5 +1,6 @@
-# SSH with a code from otp (1.0.178): a daemon with a realm of codes alone and a
-# token; the root helper's sshd_do puts pam_radius into a copy of sshd's PAM (and
+# SSH with a code from otp (1.0.178; 1.0.181: SSH tokens of their own and otp's gate
+# on 127.0.0.1, no RADIUS client, realm or VPN token): a daemon and an SSH token; the
+# root helper's sshd_do puts pam_radius into a copy of sshd's PAM (and
 # the drop-in, sshd -t), that copy installed as the PAM service otptest; then
 # pamtester signs in as sshd would: the right code, a wrong one, a user left out,
 # root, otp not answering (the fallback, or none with passwords off); taken out
@@ -11,10 +12,15 @@ V = '/home/claude/build/out/otp-%s' % VER
 D = tempfile.mkdtemp(prefix='otp-pamr-')
 os.makedirs(D + '/run')
 os.makedirs(D + '/web')
-API, RAD = 30991, 36920
-SECRET = 'ssh-radius-secret-178-abcdef'
+os.makedirs(D + '/sms')
+import socket
+API, RAD, WANT = 30991, 36920, 18131
+# Something else on the port asked for: the gate takes the next free one.
+BUSY = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+BUSY.bind(('127.0.0.1', WANT))
 json.dump({'db_engine': 'sqlite', 'radius_bind': '127.0.0.1', 'radius_auth_port': RAD, 'radius_acct_port': RAD + 1,
-           'api_port': API, 'node_name': 'otp1'}, open(D + '/config.json', 'w'))
+           'api_port': API, 'node_name': 'otp1', 'ssh_gate_port': WANT,
+           'sms_mode': 'spool', 'sms_spool_dir': D + '/sms'}, open(D + '/config.json', 'w'))
 env = dict(os.environ, OTP_STATE=D, OTP_CONFIG=D + '/config.json', OTP_LOGDIR=D, OTP_RUN=D + '/run', OTP_STAY_ROOT='1')
 os.environ.update(env)
 sys.path.insert(0, V)
@@ -24,10 +30,12 @@ otp.load_config(saved=None)
 st = otp.Storage(otp.open_db())
 st.db.make_tables()
 otp.sealing_key(make=True)
-st.client_save({'name': 'SSH of the nodes - pam_radius', 'address': '127.0.0.1', 'secret': SECRET, 'enabled': 1})
-st.realm_save({'name': 'local', 'suffix': '', 'lookup': 'none', 'auth_mode': 'otp'})
-tk = otp.Tokens(st)
-K = tk.enroll('jan', 'test')['secret']
+# What 1.0.178-1.0.180 made: a RADIUS client - taken away when the gate opens.
+st.client_save({'name': 'SSH of the nodes - pam_radius', 'address': '127.0.0.1', 'secret': 'old-client-secret-xyz',
+                'enabled': 1})
+st.set_meta('host:sshd:conf', json.dumps({'manage': True, 'radius': True}))
+SECRET = otp.ssh_gate_secret(st, make=True)
+K = otp.sshotp_make(st, 'jan', 'test')['secret'].replace(' ', '')
 d = subprocess.Popen([sys.executable, V + '/otp.py', '--daemon'], env=env, stdout=open(D + '/d.out', 'w'),
                      stderr=subprocess.STDOUT)
 atexit.register(lambda: d.poll() is None and d.terminate())
@@ -42,6 +50,15 @@ def ok(w, c, more=''):
 
 def code(off=0):
     return otp.totp(base64.b32decode(K + '=' * (-len(K) % 8)), time.time() + off)
+
+
+GATE = int(st.get_meta('sshotp:port:otp1') or 0)
+lo, hi = otp.ssh_gate_ephemeral()
+ok('the gate: not the port taken by something else, a free one of 18129-18199 (%d)' % GATE,
+   GATE != WANT and 18129 <= GATE <= 18199 and not lo <= GATE <= hi)
+ok('no VPN token, no realm: none made', not st.db.value('SELECT COUNT(*) FROM tokens') and not st.realms())
+ok('the old RADIUS client for SSH taken away', not [c for c in st.clients() if 'pam_radius' in c['name']],
+   [c['name'] for c in st.clients()])
 
 
 # ---- the root helper, on copies of /etc/ssh and /etc/pam.d ----------------------------
@@ -61,13 +78,13 @@ CONF = {'manage': True, 'permit_root': 'prohibit-password', 'password': True, 'p
 def apply(**kw):
     c = dict(CONF, **kw)
     return otp_web.sshd_do({'do': 'apply', 'conf': c, 'trial_min': 0, 'no_keys_ok': True, 'id': 'abc',
-                            'radius_secret': SECRET, 'radius_port': RAD})
+                            'radius_secret': SECRET, 'radius_port': GATE})
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def pam(user, secret_word):
+def pam(user, secret_word, *more):
     """sshd's PAM as otptest, with the answer on stdin (pamauth.py: pamtester and
     pam_radius 2.0 do not get on)."""
     shutil.copy(E + '/pam.d/sshd', '/etc/pam.d/otptest')
@@ -76,7 +93,7 @@ def pam(user, secret_word):
     so = D + '/v6shim.so'
     if not os.path.exists(so):
         subprocess.run(['gcc', '-shared', '-fPIC', '-o', so, HERE + '/v6shim.c', '-ldl'], check=True)
-    got = subprocess.run([sys.executable, HERE + '/pamauth.py', 'otptest', user], input=secret_word + '\n',
+    got = subprocess.run([sys.executable, HERE + '/pamauth.py', 'otptest', user], input='\n'.join((secret_word,) + more) + '\n',
                          capture_output=True, text=True, timeout=60, env=dict(os.environ, LD_PRELOAD=so))
     return got.returncode == 0, (got.stdout + got.stderr).strip()[-200:]
 
@@ -97,16 +114,35 @@ ok('put in twice: one block', open(E + '/pam.d/sshd').read().count(otp_web.PAM_B
 
 good, said = pam('jan', code())
 ok('the right code: in (%s)' % said, good)
+good, said = pam('jan', code())
+ok('the same code again: not in (used once)', not good, said)
 good, said = pam('jan', '000000')
 ok('a wrong code: not in', not good, said)
+good, said = pam('petr', '123456')
+ok('no SSH token for petr: not in', not good, said)
+ev = json.dumps(st.db.rows("SELECT words FROM events WHERE kind = 'ssh'"))
+ok('each sign-in an event (in, and not)', 'jan signed in to SSH on otp1' in ev and 'was not let into SSH' in ev, ev[:300])
+rl = st.db.value('SELECT COUNT(*) FROM radius_log')
+ok('nothing in the log of RADIUS', not rl, rl)
+# By SMS (1.0.181): Enter at the first prompt, the code sent, asked in a second one.
+otp.sshotp_make(st, 'eva', 'test', kind='sms', dest='+420777123456')
+good, said = pam('eva', '', '@sms:' + D + '/sms')
+ok('an SSH token by SMS: Enter, the code by SMS asked in a second prompt - in (%s)' % said.replace('\n', ' | '),
+   good and said.count('prompt') >= 2)
+time.sleep(21)
+good, said = pam('eva', '', '111111')
+ok('... a wrong code sent back: asked again, then not in', not good and said.count('prompt') >= 3, said)
+time.sleep(1)
+good, said = pam('eva', '')
+ok('... asked again at once: no second SMS within 20 s', not good and 'prompt' in said, said)
+ok('... the SMS says it is for SSH', 'SSH' in otp.code_message('sms', '+420777123456', '123456', 'ssh', lang='en'))
+ok('the SSH token says when it was used', (otp.sshotp_all(st)[0].get('used_at') or 0) > time.time() - 120)
 # Only these users: jan is not among them - his own password (none here) asked, not otp.
 apply(radius_users=['petr'])
 text = open(E + '/pam.d/sshd').read()
 ok('only petr: the others skip it', 'user notin petr' in text)
-n0 = len([l for l in open(D + '/otp.log').read().split('\n') if 'jan' in l]) if os.path.exists(D + '/otp.log') else 0
 good, said = pam('jan', code())
 ok('jan, not among them: otp is not asked, his system password is (none: out)', not good and 'prompt' in said, said)
-n_before = st.db.value("SELECT COUNT(*) FROM radius_log")
 apply()
 # otp not answering: with the fallback, the system's password (none here - so out, but
 # by common-auth, after pam_radius said it cannot ask).
@@ -114,6 +150,13 @@ d.terminate()
 d.wait(10)
 good, said = pam('jan', code())
 ok('otp down, fallback on: pam_radius steps aside, common-auth asked (no such password: out)', not good, said)
+got = otp_web.sshd_do({'do': 'read'})
+ok('the helper says the file\'s fingerprint - the daemon\'s own', got['radius']['fp'] == otp.ssh_gate_fp(SECRET, GATE)
+   and SECRET not in json.dumps(got))
+otp_web.sshd_do({'do': 'pamconf', 'radius_secret': 'another-secret-of-the-gate', 'radius_port': GATE + 1})
+ok('pamconf: only the file, the new secret and port', 'another-secret-of-the-gate' in open(cf).read() and
+   ':%d ' % (GATE + 1) in open(cf).read())
+otp_web.sshd_do({'do': 'pamconf', 'radius_secret': SECRET, 'radius_port': GATE})
 apply(password=False, radius_fallback=True)
 text = open(E + '/pam.d/sshd').read()
 ok('passwords off: no fallback, and pam_deny after', 'localifdown' not in text and 'auth requisite pam_deny.so' in text)
@@ -125,7 +168,7 @@ ok('switched off: sshd\'s PAM exactly as it was', open(E + '/pam.d/sshd').read()
 ok('... the secret\'s file gone', not os.path.exists(cf))
 # On trial, not kept: everything back.
 otp_web.sshd_do({'do': 'apply', 'conf': CONF, 'trial_min': 5, 'no_keys_ok': True, 'id': 'trial1', 'hash': 'h1',
-                 'radius_secret': SECRET, 'radius_port': RAD})
+                 'radius_secret': SECRET, 'radius_port': GATE})
 ok('on trial: in', otp_web.PAM_BEGIN in open(E + '/pam.d/sshd').read())
 otp_web.sshd_put_back('not kept in time')
 ok('... not kept: sshd\'s PAM as it was, the secret gone', open(E + '/pam.d/sshd').read() == ORIG and not os.path.exists(cf))

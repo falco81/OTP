@@ -39,6 +39,18 @@ def conv(n, msgs, resp, _data):
         print('prompt %d: %s' % (m.msg_style, (m.msg or b'').decode('utf-8', 'replace').strip()), flush=True)
         if m.msg_style in (1, 2):           # PAM_PROMPT_ECHO_OFF / ON
             a = answers.pop(0) if answers else ''
+            if a.startswith('@sms:'):
+                # The code sent by SMS (1.0.181): the newest file in the spool folder.
+                import os, re as _re, time as _t
+                d, until = a[5:], _t.time() + 20
+                while _t.time() < until:
+                    got = sorted(f for f in os.listdir(d) if not f.startswith('.'))
+                    if got:
+                        text = open(os.path.join(d, got[-1])).read()
+                        os.unlink(os.path.join(d, got[-1]))
+                        a = (_re.search(r'\b(\d{6,8})\b', text.split('\n\n', 1)[-1]) or [None, ''])[1]
+                        break
+                    _t.sleep(0.2)
             resp[0][i].resp = libc.strdup(a.encode())
     return 0
 

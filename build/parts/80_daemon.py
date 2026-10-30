@@ -907,6 +907,7 @@ class Daemon(object):
         self.stop_flag = threading.Event()
         self.shipper = None
         self.siem = None
+        self.sshgate = None
         _HS_WAIVE['store'][0] = store       # the exceptions to high security read from it
         self.dirs = {}
         self.reload_directories()
@@ -929,6 +930,8 @@ class Daemon(object):
             store.on_event = lambda *a, _s=(self.shipper, self.siem): [x.event_line(*a) for x in _s]
             store.on_radius = self.siem.signin_line
             self.radius = RadiusServer(self)
+            # SSH with a code (1.0.181): a gate of its own on 127.0.0.1.
+            self.sshgate = SshGate(self)
 
     def reload_directories(self):
         self.store._dirs = None

@@ -28,6 +28,7 @@ descriptor, never a path the otp account could swap for a link.
   otp_web.py --os-job ID check|upgrade   the system's updates (started by itself)
   otp_web.py --sshd-back                 a change of sshd on trial put back (its timer)
 """
+import hashlib
 import ipaddress
 import json
 import os
@@ -2998,6 +2999,27 @@ def pam_selinux_radius():
                       % (got.stderr or got.stdout).strip()[-200:])
 
 
+def pam_radius_conf_write(secret, port):
+    if not re.match(r'^[\x21-\x7e]{8,128}\Z', str(secret or '')):
+        raise Refused('the secret of otp\'s gate for SSH is missing')
+    os.makedirs(os.path.dirname(pam_radius_conf_path()), mode=0o755, exist_ok=True)
+    _put_file(pam_radius_conf_path(), '# otp - Settings -> SSH server; the secret of otp\'s gate '
+              'for SSH on 127.0.0.1\n'
+              # The source as a fourth field (1.0.178): pam_radius 2.0.1 with
+              # three closed this file twice and took sshd's process down.
+              '127.0.0.1:%d %s 30 127.0.0.1\n' % (int(port or 18129), secret), 0o600)
+
+
+def pam_radius_conf_fp():
+    """What the daemon compares with its own: a hash of the port and the
+    secret pam_radius has, never the secret."""
+    for line in (_read_or(pam_radius_conf_path()) or '').split('\n'):
+        m = re.match(r'^127\.0\.0\.1:(\d+)\s+(\S+)', line)
+        if m:
+            return hashlib.sha256(('%d %s' % (int(m.group(1)), m.group(2))).encode()).hexdigest()[:12]
+    return ''
+
+
 def pam_set(c, secret, port):
     """Our block in (or out of) sshd's PAM; the secret's file with it."""
     path = pam_sshd_path()
@@ -3012,16 +3034,9 @@ def pam_set(c, secret, port):
             _put_file(path, clean, 0o644)
         _drop(pam_radius_conf_path())
         return 'SSH without a code from otp' if clean != text else ''
-    if not re.match(r'^[\x21-\x7e]{8,128}\Z', str(secret or '')):
-        raise Refused('the RADIUS secret for SSH is missing')
     pam_radius_install()
     pam_selinux_radius()
-    os.makedirs(os.path.dirname(pam_radius_conf_path()), mode=0o755, exist_ok=True)
-    _put_file(pam_radius_conf_path(), '# otp - Settings -> SSH server; the secret of the RADIUS '
-              'client of 127.0.0.1\n'
-              # The source as a fourth field (1.0.178): pam_radius 2.0.1 with
-              # three closed this file twice and took sshd's process down.
-              '127.0.0.1:%d %s 10 127.0.0.1\n' % (int(port or 1812), secret), 0o600)
+    pam_radius_conf_write(secret, port)
     lines = clean.split('\n')
     at = next((i for i, l in enumerate(lines)
                if re.match(r'^\s*(auth\b|@include\s+common-auth|-?auth\b)', l)), None)
@@ -3225,8 +3240,13 @@ def sshd_do(r):
             _drop(SSHD_STATE)
     elif do == 'back':
         sshd_put_back(str(r.get('why') or 'asked to go back'))
+    elif do == 'pamconf':
+        # The gate's secret and port, nothing else (1.0.181): only where our
+        # block is in sshd's PAM.
+        if PAM_BEGIN in (_read_or(pam_sshd_path()) or ''):
+            pam_radius_conf_write(r.get('radius_secret'), r.get('radius_port'))
     elif do != 'read':
-        raise Refused('read, apply, keep or back')
+        raise Refused('read, apply, keep, back or pamconf')
     v = sshd_values()
     t = sshd_trial_read()
     return {'values': v, 'there': os.path.exists(SSHD_BIN), 'dropins': sshd_reads_dropins(),
@@ -3235,7 +3255,8 @@ def sshd_do(r):
             'paths': notice_paths(),
             'radius': {'module': bool(pam_radius_module()),
                        'pam': PAM_BEGIN in (_read_or(pam_sshd_path()) or ''),
-                       'conf': os.path.exists(pam_radius_conf_path())},
+                       'conf': os.path.exists(pam_radius_conf_path()),
+                       'fp': pam_radius_conf_fp()},
             'selinux': subprocess.run(['getenforce'], capture_output=True, text=True).stdout.strip()
             if shutil.which('getenforce') else ''}
 
