@@ -4,6 +4,24 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.165 — 30 October 2026
+
+**Every table paged and held; restarts that never stop the service**
+- Every table of the pages scrolls inside itself under headings that stay, and
+  past 50 rows it is paged with the same buttons as every list - the clients,
+  the realms, the accounts, the firewall's rules, the backups, the keys, the
+  certificates, the histories and the rest. The page a table is on stays while
+  it is drawn again by itself. The lists the daemon pages itself (the tokens,
+  the log, the enrolments, the events, the outgoing mail) keep theirs.
+- A setting that depends on one that is greyed out is greyed out too: *On the
+  day* of a weekly restart, update, report or backup cannot be changed while
+  the schedule itself is off.
+- A restart one after the other - by hand, on a schedule, or after an update -
+  never stops the service: it is refused while only one node answers; a node
+  whose turn comes with nobody else answering stays up; one that does not
+  restart and come back stops the rest; and a node is not restarted while the
+  web address has not moved off it (waited for up to 90 s, not 20).
+
 ## 1.0.164 — 30 October 2026
 
 **Updates and restarts on a schedule**
