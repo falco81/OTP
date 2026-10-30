@@ -4,6 +4,22 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.171 — 30 October 2026
+
+**Fixes to 1.0.170: secrets saved, the other nodes' values in line, the names**
+- A secret saved on the settings pages (the deSEC or Cloudflare token, a
+  password) stayed "1 change not saved" after *Save*: what was saved was not
+  taken off the list of changes, and a secret, shown as dots once saved, never
+  looked the same as what was typed.
+- The other nodes' values of a node's own setting stand right under its box -
+  along a row they are in line, whatever the words under each say.
+- *The node's DNS name* (was "This node's DNS name"): empty, it says the name
+  the certificate is for now; the other node's and the web address's are under
+  the box, each changed from there. In *High availability* the names (isemon,
+  syslog, the certificate) are with *What it calls itself*, an empty one said
+  in words. "Empty: the cluster's value ((empty))" says it once.
+- *In your DNS*: the copy buttons in line down each column.
+
 ## 1.0.170 — 30 October 2026
 
 **Encryption to the database server, as a wizard; ACME beside Certificates and TLS**

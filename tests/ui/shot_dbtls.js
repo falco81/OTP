@@ -73,6 +73,8 @@ const PROBE = {otp1: {ok: true, kind: 'local', server_tls: true, ssl: true, vers
   await pg.fill('#in-name', 'uiadmin'); await pg.fill('#in-pass', PW); await pg.keyboard.press('Enter');
   await pg.waitForTimeout(2500);
   await pg.screenshot({path: OUT + '/after-login.png'});
+  await pg.goto('http://127.0.0.1:8099/admin/#settings/radius'); await pg.waitForTimeout(2500);
+  const rp = await pg.$('#pane-radius'); if (rp) await rp.screenshot({path: OUT + '/radius-nodes.png'});
   await pg.goto('http://127.0.0.1:8099/admin/#settings/db'); await pg.waitForTimeout(3000);
   const c = await pg.$('#db-tls-card');
   await c.scrollIntoViewIfNeeded(); await c.screenshot({path: OUT + '/dbtls-card.png'});
