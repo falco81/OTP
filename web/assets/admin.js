@@ -14113,6 +14113,19 @@ function drawAcme() {
         ['Ordered by', t.target === 'vip' ? 'the first node by name' : t.target]
       ]));
       if (st.ok === false && st.said) c.appendChild(nodeSaid({ok: false, error: st.said, at: st.failed_at}, ''));
+      /* What the last order did, step by step (1.0.175). */
+      if ((st.steps || []).length) {
+        var det = el('details', 'acme-steps-done');
+        det.appendChild(el('summary', 'small muted', 'What the last order did'));
+        var t0 = st.steps[0][0];
+        st.steps.forEach(function (x) {
+          var r = el('div', 'si-row small');
+          r.appendChild(noI18n(el('span', 'muted mono', '+' + Math.round(x[0] - t0) + ' s')));
+          r.appendChild(el('span', '', x[1]));
+          det.appendChild(r);
+        });
+        c.appendChild(det);
+      }
       var pr = AC.probe[t.target];
       if (pr) c.appendChild(nodeSaid({ok: pr.ok, at: pr.at, error: pr.ok ? '' : pr.said}, 'Port 80 answers as the CA will ask it'));
       var row = el('div', 'btnrow');

@@ -3301,3 +3301,4 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .set-item label > .node-tags{flex:none;display:inline-flex;gap:4px;white-space:nowrap;align-items:center}
 .hal-nodes.wide .hal-node{grid-template-columns:minmax(110px,max-content) auto 1fr}
 .mon-pre{max-height:60vh;overflow:auto;white-space:pre}
+.acme-steps-done{margin:6px 0}.acme-steps-done summary{cursor:pointer}.acme-steps-done .si-row{gap:8px}

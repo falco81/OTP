@@ -744,25 +744,25 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="web" data-icon="lock" title="The certificates of the nodes and of the cluster's VIP address, and how TLS is spoken.">Certificates and TLS</button>
     <button type="button" class="fulladmin-only" data-pane="acme" data-icon="lock" title="The certificates ordered from Let's Encrypt (or another ACME CA) and renewed by themselves.">Automatic certificates</button>
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
+    <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
+    <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node as root over SSH: made here, added or taken away.">SSH keys of root</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="network" data-icon="net" title="Each node's address, gateway, DNS servers, host name and IPv6 - put in by the node itself, a cluster kept whole.">Network</button>
-    <button type="button" class="fulladmin-only" data-pane="monitor" data-icon="pulse" title="Prometheus asks each node for its metrics.">Monitoring</button>
     <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy for what otp asks of the web - new versions, the SMS gateway, the system updates.">Proxy</button>
     <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of each node: chrony, its time servers, how far off it is - codes from the app are worked out from it.">Time</button>
     <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
     <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the VIP address moved out of the way first.">Restart and power off</button>
-    <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the VIP address moved out of the way first; a restart offered when one is needed.">System updates</button>
     <button type="button" class="fulladmin-only" data-pane="logs" data-icon="chart" title="Each node's disks, and how much the system journal and otp's own logs may take.">Disks and logs</button>
-    <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node as root over SSH: made here, added or taken away.">SSH keys of root</button>
-    <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
     <div class="ctl-group">Data</div>
     <button type="button" data-pane="db" data-icon="db" title="Which database everything lives in, how big it is, copies of it, and how long things are kept.">The database</button>
     <button type="button" data-pane="backup" data-icon="archive" title="Backups of everything to another machine - FTP, FTPS, SFTP, SCP, SMB or a folder - locked with a password, on a schedule, and putting one back.">Backups</button>
     <button type="button" data-pane="carry" data-icon="download" title="Everything that makes this installation what it is, as one file to carry to another machine.">Export and import</button>
     <div class="ctl-group">Monitoring and updates</div>
     <button type="button" class="fulladmin-only" data-pane="alerts" data-icon="bell" title="A mail when something is wrong, and a report of the week by mail.">Alerts and reports</button>
+    <button type="button" class="fulladmin-only" data-pane="monitor" data-icon="pulse" title="Prometheus asks each node for its metrics.">Monitoring</button>
     <button type="button" data-pane="isemon" data-icon="pulse" title="Sending every check of a code and every RADIUS packet to isemon, in the shape isemon already reads.">isemon</button>
     <button type="button" class="fulladmin-only" data-pane="siem" data-icon="log" title="Every event and every sign-in to a syslog server or a SIEM - UDP, TCP or TLS; JSON, CEF or RFC 5424.">Syslog and SIEM</button>
+    <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the VIP address moved out of the way first; a restart offered when one is needed.">System updates</button>
     <button type="button" class="fulladmin-only" data-pane="upgrade" data-icon="up" title="A new version, put in from here; nodes in and out of service.">Upgrades</button>
     <button type="button" data-pane="about" data-icon="info" title="Version, what is running, the language, the debug log.">About</button>
   </nav>

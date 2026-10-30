@@ -4,6 +4,22 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.175 — 30 October 2026
+
+**ACME by deSEC: the CA asked only once deSEC has the record everywhere**
+- Let's Encrypt checks a record from several places of the world; deSEC's
+  name servers are anycast, and a place they had not reached yet answered
+  `During secondary validation: DNS problem: NXDOMAIN` - though the record was
+  there. otp now asks deSEC's own name servers straight (not through a resolver,
+  which would keep "not there" for the CA) until both have it, then waits a minute
+  more, and only then asks the CA.
+- Each certificate's card keeps what its last order did, step by step and when
+  (*What the last order did*).
+- The menu of the settings in order: *Monitoring* with the alerts, isemon and
+  syslog; *System updates* beside *Upgrades*; the SSH server and root's SSH keys
+  under *Access*; *Server* is the machine itself - network, proxy, time, high
+  availability, restart, disks and logs.
+
 ## 1.0.174 — 30 October 2026
 
 **ACME by deSEC with a domain of your own: where the way to the record stops**
