@@ -4,6 +4,31 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.166 — 30 October 2026
+
+**Syslog and SIEM, a proxy, the disks and the logs**
+- *Settings → Syslog and SIEM* (off until switched on): every event and every
+  RADIUS sign-in - who, from where, let in or refused and why, never the code
+  typed - to up to 8 syslog servers or a SIEM, as RFC 5424 syslog over UDP,
+  TCP or TLS (RFC 5425 framing, the server's certificate checked, a CA of its
+  own given if needed); the message as JSON, CEF or RFC 5424 structured data.
+  Each node sends its own from a thread and a queue of its own: a sign-in
+  only puts a line in the queue, a server that is down or slow holds nothing
+  up. What each node sent, what failed and what waits is on the page, with a
+  test line to send.
+- *Settings → Proxy* (off until switched on): an HTTP proxy, with a user name
+  and a password kept sealed, for what otp asks of the web - the new versions,
+  the HTTP SMS gateway - and for dnf or apt on every node, handed to the root
+  helper in its request and to the update in a file only root reads, never on
+  a command line. Names, domains and nets reached straight are listed; *Try
+  it* asks an address through it. Mail, Active Directory, the database,
+  syslog and the other node never go through it.
+- *Settings → Disks and logs*: each node's disks, how much its system journal,
+  otp's logs and otp's data take; the journal limited in size and age
+  (journald.conf.d/00-otp.conf) and how many of otp's log files are kept and
+  how big one grows (/etc/logrotate.d/otp) - put in by every node itself,
+  again whenever changed, through its root helper (logs.ask).
+
 ## 1.0.165 — 30 October 2026
 
 **Every table paged and held; restarts that never stop the service**

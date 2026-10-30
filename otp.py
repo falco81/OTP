@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.165'
+__version__ = '1.0.166'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -289,6 +289,26 @@ DEFAULTS = {
     'power_auto_day': '7',
     'power_auto_at': '05:40',
     'power_auto_needed': 1,
+    'siem': 0,
+    'siem_targets': '',
+    'siem_format': 'json',
+    'siem_events': 1,
+    'siem_signins': 1,
+    'siem_facility': 13,
+    'siem_hostname': '',
+    'siem_verify': 1,
+    'siem_ca': '',
+    'proxy': 0,
+    'proxy_url': '',
+    'proxy_user': '',
+    'proxy_password': '',
+    'proxy_no': 'localhost, 127.0.0.1, ::1',
+    'proxy_os': 1,
+    'proxy_sms': 1,
+    'logs_journal_mb': 0,
+    'logs_journal_days': 0,
+    'logs_keep': 30,
+    'logs_max_mb': 200,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -335,7 +355,7 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # the pages ask the daemon on, the name it greets mail servers with, the
 # name isemon files its lines under and the debug switches.
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
-             'isemon_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
+             'isemon_hostname', 'siem_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
              'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
@@ -348,9 +368,10 @@ def this_node_name(conf=None):
 
 
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
-               'rbackup_password')
+               'rbackup_password', 'proxy_password')
 # Secrets kept in the database, sealed with the key that seals the tokens.
-SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password')
+SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
+               'proxy_password')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -397,6 +418,11 @@ TUNABLE = {
     'osup_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'osup_auto_reboot': ('ask', 'auto'),
     'power_auto': (0, 1), 'power_auto_every': ('weekly', 'monthly'),
     'power_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'power_auto_needed': (0, 1),
+    'siem': (0, 1), 'siem_format': ('json', 'cef', 'rfc5424'), 'siem_events': (0, 1),
+    'siem_signins': (0, 1), 'siem_facility': (0, 23), 'siem_verify': (0, 1),
+    'proxy': (0, 1), 'proxy_os': (0, 1), 'proxy_sms': (0, 1),
+    'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
+    'logs_max_mb': (1, 100000),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -465,6 +491,9 @@ CHOICE_WORDS = {
     'power_auto_every': {'weekly': 'every week, on the day below',
                          'monthly': 'on the first of every month'},
     'power_auto_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
+    'siem_format': {'json': 'JSON - one object to a line (Graylog, Splunk, Elastic, Wazuh)',
+                    'cef': 'CEF - ArcSight, QRadar, Sentinel',
+                    'rfc5424': 'RFC 5424 with structured data, key="value"'},
     'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
                    '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
@@ -630,6 +659,26 @@ NAMES = {
     'power_auto_day': 'On the day',
     'power_auto_at': 'At',
     'power_auto_needed': 'Only the nodes that need one',
+    'siem': 'Send to a syslog server or a SIEM',
+    'siem_targets': 'Where to send them',
+    'siem_format': 'In the shape of',
+    'siem_events': 'Every event',
+    'siem_signins': 'Every sign-in, let in or refused',
+    'siem_facility': 'Syslog facility',
+    'siem_hostname': 'The name this machine is written under',
+    'siem_verify': 'Check the server’s certificate (TLS)',
+    'siem_ca': 'The certificate authority of the server (TLS)',
+    'proxy': 'Go out through a proxy',
+    'proxy_url': 'The proxy',
+    'proxy_user': 'User name at the proxy',
+    'proxy_password': 'Password at the proxy',
+    'proxy_no': 'Straight, not through the proxy',
+    'proxy_os': 'The system updates through it too',
+    'proxy_sms': 'The SMS gateway through it too',
+    'logs_journal_mb': 'The system journal at most (MB)',
+    'logs_journal_days': 'The system journal kept for (days)',
+    'logs_keep': 'otp’s own logs kept (files)',
+    'logs_max_mb': 'A log file at most (MB)',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1061,6 +1110,35 @@ SAYS = {
     'power_auto_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
     'power_auto_needed': 'Only the nodes an update left waiting for a restart; off: every node, '
                          'every time.',
+    'siem': 'Every event and every sign-in, as syslog (RFC 5424), to the servers below - '
+            'from each node, as it happens. Sent by a thread of its own: a sign-in never waits '
+            'for it. Off until switched on.',
+    'siem_targets': '<code>tls://siem.example.cz:6514</code>, <code>tcp://host:514</code> or '
+                    '<code>udp://host:514</code>, separated by commas.',
+    'siem_format': 'What the message is, after the syslog header.',
+    'siem_events': 'All that the Events page lists: a setting changed, a token made, a node '
+                   'gone, a source blocked.',
+    'siem_signins': 'Each Access-Request: who, from where, let in or refused and why. The code '
+                    'typed is never sent.',
+    'siem_facility': '13 (log audit) is the usual; 16-23 are local0-local7, 10 authpriv.',
+    'siem_hostname': 'The host name on every line. Empty: the node’s name.',
+    'siem_verify': 'Off only for a test: anyone between could read and change the lines.',
+    'siem_ca': 'The CA certificate (PEM) the server’s certificate is signed by, where it is not '
+               'one the system trusts already.',
+    'proxy': 'An HTTP proxy for what otp asks of the web: the new versions, the SMS gateway, the '
+             'system updates. Mail, Active Directory, the database and syslog never use it.',
+    'proxy_url': '<code>http://proxy.example.cz:3128</code>',
+    'proxy_user': 'Where the proxy asks for one. Empty: none.',
+    'proxy_password': 'Kept sealed, like the other passwords.',
+    'proxy_no': 'Names and addresses reached without it, separated by commas: '
+                '<code>.example.cz</code> is every name under it, <code>10.0.0.0/8</code> a net.',
+    'proxy_os': 'dnf or apt fetch the updates of System → Updates through it.',
+    'proxy_sms': 'The HTTP SMS gateway asked through it.',
+    'logs_journal_mb': 'How much room systemd’s journal may take on each node; the oldest goes '
+                       'first. 0: as the system has it.',
+    'logs_journal_days': 'Nothing older is kept. 0: as the system has it.',
+    'logs_keep': 'How many old files of /var/log/otp are kept, one a day.',
+    'logs_max_mb': 'A file bigger than this is put aside sooner than once a day.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1145,6 +1223,11 @@ PANES = {
              'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
     'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
               'power_auto_needed'],
+    'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
+             'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
+    'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
+              'proxy_sms'],
+    'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1203,6 +1286,11 @@ ONLY_WHEN = {
     'osup_auto_at': ['osup_auto', '1'], 'osup_auto_reboot': ['osup_auto', '1'],
     'power_auto_every': ['power_auto', '1'], 'power_auto_day': ['power_auto_every', 'weekly'],
     'power_auto_at': ['power_auto', '1'], 'power_auto_needed': ['power_auto', '1'],
+    'siem_targets': ['siem', '1'], 'siem_format': ['siem', '1'], 'siem_events': ['siem', '1'],
+    'siem_signins': ['siem', '1'], 'siem_facility': ['siem', '1'],
+    'siem_hostname': ['siem', '1'], 'siem_verify': ['siem', '1'], 'siem_ca': ['siem', '1'],
+    'proxy_url': ['proxy', '1'], 'proxy_user': ['proxy', '1'], 'proxy_password': ['proxy', '1'],
+    'proxy_no': ['proxy', '1'], 'proxy_os': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1286,7 +1374,7 @@ def _coerce(current, value):
 
 
 # Settings of several lines (1.0.103): the rest are one line each.
-SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets',
+SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca',
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
 
@@ -1365,6 +1453,27 @@ def check_setting(key, value):
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'siem_targets':
+        if len(siem_targets(str(got), strict=True)) > 8:
+            raise BadSetting('siem_targets: 8 servers at most')
+    if key == 'siem_ca' and str(got).strip() and \
+            '-----BEGIN CERTIFICATE-----' not in str(got):
+        raise BadSetting('siem_ca: a certificate in PEM, -----BEGIN CERTIFICATE-----')
+    if key == 'siem_hostname' and str(got).strip() \
+            and not re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', str(got).strip()):
+        raise BadSetting('siem_hostname: a host name has letters, digits, dots and dashes '
+                         'and nothing else')
+    if key == 'proxy_url' and str(got).strip() and \
+            not re.match(r'^https?://[A-Za-z0-9.\-]+(?::\d{1,5})?/?\Z|^https?://\[[0-9a-fA-F:]+\]'
+                         r'(?::\d{1,5})?/?\Z', str(got).strip()):
+        raise BadSetting('proxy_url: http://host:port - the user name and the password go '
+                         'in the fields below, not in the address')
+    if key == 'proxy_user' and re.search(r'[\s:@/]', str(got)):
+        raise BadSetting('proxy_user: no spaces, no : @ or /')
+    if key == 'proxy_no' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9.*:/\[\]_-]+([\s,;]+[A-Za-z0-9.*:/\[\]_-]+)*[\s,;]*\Z',
+                         str(got).strip()):
+        raise BadSetting('proxy_no: names, .domains and addresses, separated by commas')
     if key == 'upgrade_url' and str(got).strip() and \
             not re.match(r'^https://[^\s]+\Z', str(got).strip()):
         raise BadSetting('upgrade_url: an address starting https://')
@@ -7138,6 +7247,12 @@ class Storage(object):
         if HA_REBUILDING.is_set():
             return None
         row.setdefault('node', log_node())
+        hook = getattr(self, 'on_radius', None)
+        if hook:
+            try:
+                hook(row)                   # only put in a queue (1.0.166)
+            except Exception:               # noqa: BLE001
+                pass
         return self.db.insert('radius_log', row)
 
     def radius_rows(self, hours=24, q='', result='', client='', limit=100, offset=0,
@@ -8948,6 +9063,255 @@ def codes_open(tok):
                 not scratch_find(tok.get('name'), one.get('c'), kept, key)[0]:
             one['used'] = time.time()
     return shown
+
+
+# ---------------------------------------------------------------------------
+# Every event and every sign-in to a syslog server / SIEM (1.0.166)
+# ---------------------------------------------------------------------------
+# isemon's shapes are isemon's own; this is for whatever else collects the
+# logs - rsyslog, syslog-ng, Graylog, Splunk, Wazuh, QRadar, Sentinel: every
+# event of the Events page and every RADIUS sign-in with its result, as RFC
+# 5424 syslog over UDP, TCP or TLS (RFC 5425), the message as JSON, CEF or
+# key="value" pairs. A queue and a thread of its own: a sign-in only puts a
+# line into the queue, never waits for any of it; a full queue drops lines and
+# counts them.
+SIEM_PEN = 32473                    # the example enterprise number of RFC 5612
+SIEM_SEVERITY = {'bad': 3, 'warn': 4, 'info': 6}
+
+
+def siem_targets(text, strict=False):
+    """`udp://host:514`, `tcp://host:514`, `tls://host:6514` - or
+    `host[:port][/udp|/tcp|/tls]` - comma separated, as (host, port, proto)."""
+    out = []
+    for one in re.split(r'[,;\s]+', str(text or '')):
+        one = one.strip()
+        if not one:
+            continue
+        m = re.match(r'^(?:(udp|tcp|tls)://)?(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.\-]+)(?::(\d+))?'
+                     r'(?:/(udp|tcp|tls))?/?\Z', one, re.I)
+        if not m:
+            if strict:
+                raise BadSetting('siem_targets: %r is not tls://host:6514, tcp://host:514 or '
+                                 'udp://host:514' % one)
+            continue
+        proto = (m.group(1) or m.group(4) or 'udp').lower()
+        port = int(m.group(3) or (6514 if proto == 'tls' else 514))
+        if strict and not 0 < port < 65536:
+            raise BadSetting('siem_targets: %d is not a port' % port)
+        out.append((m.group(2).strip('[]'), port, proto))
+    return out
+
+
+def _cef_head(text):
+    return str(text).replace('\\', '\\\\').replace('|', '\\|')
+
+
+def _cef_val(text):
+    return str(text).replace('\\', '\\\\').replace('=', '\\=').replace('\r', ' ') \
+        .replace('\n', ' ')
+
+
+def _sd_val(text):
+    return str(text).replace('\\', '\\\\').replace('"', '\\"').replace(']', '\\]')
+
+
+class Siem(object):
+    def __init__(self):
+        self.q = queue.Queue(maxsize=20000)
+        self.targets = []
+        self.conns = {}
+        self.udp = {}
+        self.sent = collections.Counter()
+        self.trouble = {}
+        self.down = {}
+        self.dropped = 0
+        self.last_sent = 0.0
+        self.stop_flag = False
+        self.ctx = None
+        self.lock = threading.Lock()        # one line at a time on a connection
+        self.configure()
+        self.thread = threading.Thread(target=self.run, name='siem', daemon=True)
+        self.thread.start()
+
+    def configure(self):
+        self.targets = siem_targets(CONFIG.get('siem_targets')) if CONFIG.get('siem') else []
+        self.ctx = None
+        for key, sock in list(self.conns.items()):
+            if key not in self.targets:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                self.conns.pop(key, None)
+
+    def host(self):
+        return str(CONFIG.get('siem_hostname') or '').strip() or node_name()
+
+    # ---- what is said ---------------------------------------------------------------
+    def frame(self, kind, severity, fields, words):
+        """One message, in the shape siem_format says."""
+        fmt = CONFIG.get('siem_format') or 'json'
+        fields = dict(fields, node=node_name())
+        if fmt == 'json':
+            body = json.dumps(dict(fields, type=kind, message=words), ensure_ascii=False,
+                              sort_keys=True, default=str)
+            sd = '-'
+        elif fmt == 'cef':
+            ext = ' '.join('%s=%s' % (k, _cef_val(v)) for k, v in fields.items()
+                           if v not in (None, ''))
+            body = 'CEF:0|otp|otp|%s|%s|%s|%d|%s msg=%s' % (
+                _cef_head(__version__), _cef_head(fields.get('event') or kind),
+                _cef_head(words[:120]), {3: 7, 4: 5, 6: 2}.get(severity, 3), ext, _cef_val(words))
+            sd = '-'
+        else:
+            sd = '[otp@%d %s]' % (SIEM_PEN, ' '.join(
+                '%s="%s"' % (re.sub(r'[^A-Za-z0-9_.-]', '_', k)[:32], _sd_val(v))
+                for k, v in fields.items() if v not in (None, '')))
+            body = words
+        stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='milliseconds')
+        pri = int(CONFIG.get('siem_facility') or 13) * 8 + severity
+        return '<%d>1 %s %s otp %d %s %s \ufeff%s' % (
+            pri, stamp, self.host(), os.getpid(), kind, sd, body.replace('\n', ' '))
+
+    def put(self, kind, severity, fields, words):
+        if not CONFIG.get('siem') or not self.targets:
+            return
+        try:
+            self.q.put_nowait((kind, severity, fields, words))
+        except queue.Full:
+            self.dropped += 1
+
+    def event_line(self, kind, words, level, who):
+        if CONFIG.get('siem_events', 1):
+            self.put('event', SIEM_SEVERITY.get(level, 6),
+                     {'event': 'event', 'kind': kind, 'level': level, 'who': who or ''},
+                     '%s: %s' % (kind, words))
+
+    def signin_line(self, row):
+        """A RADIUS request as the log has it - its result and why."""
+        if not CONFIG.get('siem_signins', 1) or row.get('packet') != 'Access-Request':
+            return
+        res = row.get('result') or ''
+        if res not in ('accept', 'reject', 'drop', 'challenge'):
+            return
+        fields = {'event': 'signin-' + res, 'user': row.get('username') or '',
+                  'realm': row.get('realm') or '', 'result': res,
+                  'reason': row.get('reason') or '', 'client': row.get('client') or '',
+                  'nas_ip': row.get('nas_ip') or '', 'src': row.get('src') or '',
+                  'calling': row.get('calling') or '', 'device': row.get('device') or '',
+                  'ms': row.get('took_ms')}
+        words = '%s %s%s%s' % ('let in' if res == 'accept' else
+                               ('asked for a code' if res == 'challenge' else 'refused'),
+                               fields['user'] or '?',
+                               ' from %s' % fields['calling'] if fields['calling'] else '',
+                               ': %s' % fields['reason'] if fields['reason'] and res != 'accept'
+                               else '')
+        self.put('signin', 6 if res in ('accept', 'challenge') else 4, fields, words)
+
+    def test(self, by):
+        """A line to every target, sent before this returns where it can be."""
+        if not self.targets:
+            raise ValueError('no syslog server is set')
+        line = self.frame('test', 6, {'event': 'test', 'who': by},
+                          'a test from otp %s, sent by %s' % (__version__, by))
+        out = {}
+        for t in self.targets:
+            out['%s:%d/%s' % t] = self._send(t, line) or 'sent'
+        return out
+
+    # ---- sending --------------------------------------------------------------------
+    def run(self):
+        while not self.stop_flag:
+            try:
+                kind, severity, fields, words = self.q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                line = self.frame(kind, severity, fields, words)
+            except Exception as e:                      # noqa: BLE001
+                self.trouble['frame'] = str(e)[:200]
+                continue
+            for t in list(self.targets):
+                self._send(t, line)
+
+    def _tls(self):
+        if self.ctx is None:
+            ctx = ssl.create_default_context()
+            ca = str(CONFIG.get('siem_ca') or '').strip()
+            if ca:
+                ctx.load_verify_locations(cadata=ca)
+            if not CONFIG.get('siem_verify', 1):
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            self.ctx = ctx
+        return self.ctx
+
+    def _send(self, target, line):
+        """'' when it went, or what stopped it."""
+        with self.lock:
+            return self._send_one(target, line)
+
+    def _send_one(self, target, line):
+        host, port, proto = target
+        key = '%s:%d/%s' % target
+        raw = line.encode('utf-8', 'replace')
+        try:
+            if proto == 'udp':
+                fam = socket.AF_INET6 if ':' in host else socket.AF_INET
+                sock = self.udp.get(fam)
+                if sock is None:
+                    sock = self.udp[fam] = socket.socket(fam, socket.SOCK_DGRAM)
+                sock.sendto(raw[:8000], (host, port))
+            else:
+                until = self.down.get(key, 0.0)
+                if time.time() < until:
+                    return 'not reachable - tried again at %s' % time.strftime(
+                        '%H:%M:%S', time.localtime(until))
+                # RFC 5425 / 6587: a length and a space before each message.
+                data = b'%d ' % len(raw) + raw
+                for attempt in (1, 2):
+                    sock = self.conns.get(target)
+                    if sock is None:
+                        sock = socket.create_connection((host, port), timeout=5)
+                        if proto == 'tls':
+                            sock = self._tls().wrap_socket(sock, server_hostname=host)
+                        sock.settimeout(5)
+                        self.conns[target] = sock
+                    try:
+                        sock.sendall(data)
+                        break
+                    except OSError:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                        self.conns.pop(target, None)
+                        if attempt == 2:
+                            raise
+            self.sent[key] += 1
+            self.last_sent = time.time()
+            self.trouble.pop(key, None)
+            self.down.pop(key, None)
+            return ''
+        except (OSError, ssl.SSLError, ValueError) as e:
+            said = str(e)[:200] or e.__class__.__name__
+            self.trouble[key] = said
+            if proto != 'udp':
+                self.down[key] = time.time() + 30
+                self.conns.pop(target, None)
+            return said
+
+    def state(self):
+        return {'on': bool(CONFIG.get('siem')), 'host': self.host(),
+                'targets': ['%s:%d/%s' % t for t in self.targets], 'sent': dict(self.sent),
+                'trouble': dict(self.trouble), 'queued': self.q.qsize(),
+                'dropped': self.dropped, 'last_sent': self.last_sent,
+                'format': CONFIG.get('siem_format') or 'json'}
+
+    def flush(self, wait=3.0):
+        until = time.time() + wait
+        while not self.q.empty() and time.time() < until:
+            time.sleep(0.05)
 # ---------------------------------------------------------------------------
 # Codes sent by mail or SMS, and the VPN's second window (1.0.76)
 # ---------------------------------------------------------------------------
@@ -9565,8 +9929,8 @@ def _tel_open(req, timeout=20.0):
                                              (' ' + _tel_hidden(body)[:300]) if body else '',
                                              timeout), 'debug')
     try:
-        r = urllib.request.urlopen(req, timeout=timeout, context=_tel_ssl()
-                                   if req.full_url.startswith('https') else None)
+        r = url_open(req, timeout=timeout, context=_tel_ssl()
+                     if req.full_url.startswith('https') else None, purpose='sms')
         if not loud:
             return r
         with r:
@@ -10025,7 +10389,7 @@ def sms_send(to, text):
             if k.strip():
                 req.add_header(k.strip(), fill(v.strip(), 'raw'))
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with url_open(req, timeout=15, purpose='sms') as r:
             said = r.read(4000).decode('utf-8', 'replace')
             status = r.status
     except urllib.error.HTTPError as e:
@@ -12776,6 +13140,7 @@ class Daemon(object):
         self.started = time.time()
         self.stop_flag = threading.Event()
         self.shipper = None
+        self.siem = None
         self.dirs = {}
         self.reload_directories()
         self.tokens = Tokens(store)
@@ -12791,8 +13156,11 @@ class Daemon(object):
         self.login_info = {}
         if serve:
             self.shipper = Shipper()
+            self.siem = Siem()
             self.tokens.on_check = self.shipper.token_line
-            store.on_event = self.shipper.event_line
+            # Both told of each event (1.0.166); each only queues it.
+            store.on_event = lambda *a, _s=(self.shipper, self.siem): [x.event_line(*a) for x in _s]
+            store.on_radius = self.siem.signin_line
             self.radius = RadiusServer(self)
 
     def reload_directories(self):
@@ -12876,6 +13244,8 @@ class Daemon(object):
         self.reload_directories()
         if self.shipper:
             self.shipper.configure()
+        if self.siem:
+            self.siem.configure()
         if self.radius:
             self.radius.open_sockets()
         self.conf_serial = self.store.get_meta('conf_serial', '0')
@@ -13071,6 +13441,9 @@ class Daemon(object):
             problems.append('sending to isemon is on and nowhere to send to is set')
         if sh.get('trouble'):
             problems.extend('isemon %s: %s' % kv for kv in sorted(sh['trouble'].items()))
+        si = self.siem.state() if self.siem else {}
+        if si.get('trouble'):
+            problems.extend('syslog %s: %s' % kv for kv in sorted(si['trouble'].items()))
         lost = int(self.store.db.value('SELECT COUNT(*) AS n FROM tokens', (), 0) or 0) and \
             not sealing_key()
         if lost:
@@ -13410,6 +13783,8 @@ class Daemon(object):
         self.radius.stop()
         if self.shipper:
             self.shipper.flush()
+        if self.siem:
+            self.siem.flush()
         if self.api:
             self.api.stop()
 
@@ -20662,7 +21037,7 @@ def _online_get(url, limit=4 * 1024 * 1024, accept='*/*', timeout=30):
     req = urllib.request.Request(url, headers={
         'User-Agent': 'otp/%s (+upgrade check)' % __version__, 'Accept': accept})
     ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+    with url_open(req, timeout=timeout, context=ctx) as r:
         final = r.geturl()
         if not str(final).startswith('https://'):
             raise ValueError('it was sent on to an address that is not https: %s' % final)
@@ -20878,6 +21253,127 @@ def online_fetch(store, version, by, older=False):
             tmp.unlink()
         except OSError:
             pass
+
+
+# ---- going out through a proxy (1.0.166) --------------------------------------------
+# Settings → Proxy: what otp asks of the web itself - the new versions, the SMS
+# gateway - and, handed to the root helper in its request (never on a command
+# line), dnf or apt fetching the system updates. Mail, Active Directory, the
+# database, syslog and the other node never go through it.
+def proxy_on(purpose='web'):
+    if not CONFIG.get('proxy') or not str(CONFIG.get('proxy_url') or '').strip():
+        return False
+    if purpose == 'sms':
+        return bool(CONFIG.get('proxy_sms', 1))
+    if purpose == 'os':
+        return bool(CONFIG.get('proxy_os', 1))
+    return True
+
+
+def proxy_full(purpose='web'):
+    """The proxy's address with its user and password in it, for urllib, dnf
+    and apt - '' where none is to be used. Never logged, never shown."""
+    if not proxy_on(purpose):
+        return ''
+    url = str(CONFIG.get('proxy_url') or '').strip().rstrip('/')
+    user = str(CONFIG.get('proxy_user') or '').strip()
+    if not user:
+        return url
+    pw = unseal_secret(CONFIG.get('proxy_password') or '') or ''
+    scheme, _, rest = url.partition('://')
+    return '%s://%s:%s@%s' % (scheme, urllib.parse.quote(user, safe=''),
+                              urllib.parse.quote(pw, safe=''), rest)
+
+
+def proxy_no_list():
+    return [w.strip().lower() for w in re.split(r'[\s,;]+', str(CONFIG.get('proxy_no') or ''))
+            if w.strip()]
+
+
+def proxy_skips(host):
+    """Whether this host is reached straight, as proxy_no says."""
+    host = str(host or '').strip('[]').lower()
+    if not host:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    for one in proxy_no_list():
+        if one == '*':
+            return True
+        if ip is not None and ('/' in one or re.match(r'^[0-9a-f.:]+\Z', one)):
+            try:
+                if ip in ipaddress.ip_network(one.strip('[]'), strict=False):
+                    return True
+            except ValueError:
+                pass
+            continue
+        one = one.lstrip('*')
+        if one.startswith('.'):
+            if host.endswith(one) or host == one[1:]:
+                return True
+        elif host == one:
+            return True
+    return False
+
+
+class _ProxyOnly(urllib.request.ProxyHandler):
+    """ProxyHandler without its look at no_proxy in the environment: only
+    proxy_no says what goes straight."""
+    def proxy_open(self, req, proxy, type):
+        proxy_type, user, password, hostport = urllib.request._parse_proxy(proxy)
+        if user and password:
+            creds = base64.b64encode(('%s:%s' % (urllib.parse.unquote(user),
+                                                 urllib.parse.unquote(password))).encode())
+            req.add_header('Proxy-authorization', 'Basic ' + creds.decode('ascii'))
+        req.set_proxy(urllib.parse.unquote(hostport), proxy_type or req.type)
+        return None
+
+
+def url_open(req, timeout=30, context=None, purpose='web'):
+    """urllib.request.urlopen, through the proxy where one is set and the host
+    is not one reached straight; never through what the environment says."""
+    if not isinstance(req, urllib.request.Request):
+        req = urllib.request.Request(req)
+    proxy = proxy_full(purpose)
+    host = urllib.parse.urlsplit(req.full_url).hostname or ''
+    handlers = [_ProxyOnly(
+        {'http': proxy, 'https': proxy} if proxy and not proxy_skips(host) else {})]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
+
+
+def proxy_try(url=''):
+    """Settings → Proxy → Try it: a page fetched through the proxy, and what came
+    back or what stopped it."""
+    if not proxy_on():
+        raise ValueError('no proxy is set - switch it on and give its address first')
+    url = str(url or '').strip() or online_url() or 'https://github.com/'
+    if not re.match(r'^https?://[^\s]+\Z', url):
+        raise ValueError('an address starting https://')
+    began = time.time()
+    host = urllib.parse.urlsplit(url).hostname or ''
+    req = urllib.request.Request(url, method='HEAD', headers={
+        'User-Agent': 'otp/%s (+proxy check)' % __version__})
+    try:
+        with url_open(req, timeout=15, context=ssl.create_default_context()) as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+        if e.code == 407:
+            return {'ok': False, 'url': url, 'status': 407,
+                    'said': 'the proxy asks for a user name and a password (407) - they are '
+                            'missing or wrong', 'ms': int((time.time() - began) * 1000)}
+    except (OSError, ssl.SSLError, ValueError) as e:
+        said = str(getattr(e, 'reason', '') or e)
+        if 'Tunnel connection failed: 407' in said:
+            said = 'the proxy asks for a user name and a password (407) - they are missing or wrong'
+        return {'ok': False, 'url': url, 'said': said[:300],
+                'ms': int((time.time() - began) * 1000)}
+    return {'ok': True, 'url': url, 'status': status, 'straight': proxy_skips(host),
+            'ms': int((time.time() - began) * 1000)}
 
 # ---- going back to an older version (1.0.143) ---------------------------------------
 # Never by putting a database back: the tables stay as they are - every column
@@ -25026,6 +25522,110 @@ def ntp_view(store):
             'hash': h if _meta_json(store, 'ntp:conf') else '', 'now': time.time()}
 
 
+# ---- disks and logs (1.0.166) ------------------------------------------------------
+# Settings → Disks and logs: how much systemd's journal may take and for how
+# long, and how many of otp's own log files logrotate keeps - the same for
+# every node, each node putting it in on its own machine through its root
+# helper (logs.ask): journald.conf.d/00-otp.conf and /etc/logrotate.d/otp.
+# Asked again when the settings change, and every 6 hours to read how much
+# the journal and the logs take now. Done in the alerts' thread: never on
+# the way of a sign-in.
+LOGS_EVERY = 6 * 3600
+LOGS_WORK = {'at': 0.0, 'hash': '', 'again': ''}
+LOGS_LOCK = threading.Lock()
+
+
+def logs_desired():
+    return {'journal_mb': int(CONFIG.get('logs_journal_mb') or 0),
+            'journal_days': int(CONFIG.get('logs_journal_days') or 0),
+            'keep': int(CONFIG.get('logs_keep') or 30),
+            'max_mb': int(CONFIG.get('logs_max_mb') or 200)}
+
+
+def logs_hash(d):
+    return hashlib.sha256(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def dir_size(path, most=200000):
+    total, n = 0, 0
+    for top, _dirs, files in os.walk(str(path)):
+        for f in files:
+            n += 1
+            if n > most:
+                return total
+            try:
+                total += os.lstat(os.path.join(top, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def logs_start(daemon):
+    """logs_tick in a thread of its own: the helper may take its time (90 s
+    when it does not answer) and the alerts never wait for it."""
+    if LOGS_WORK.get('busy'):
+        return
+    LOGS_WORK['busy'] = True
+
+    def go():
+        try:
+            logs_tick(daemon)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('logs', 'the journal and the logs: %s' % e, 'warn', every=900)
+        finally:
+            LOGS_WORK['busy'] = False
+    threading.Thread(target=go, name='otp-logs', daemon=True).start()
+
+
+def logs_tick(daemon, force=False):
+    """This node's journal and logrotate as the settings say; what they take."""
+    with LOGS_LOCK:
+        return _logs_tick(daemon, force)
+
+
+def _logs_tick(daemon, force):
+    store = daemon.store
+    want = logs_desired()
+    h = logs_hash(want)
+    again = store.get_meta('host:logs:again') or ''
+    k = 'host:logs:' + node_name()
+    row = _meta_json(store, k) or {}
+    age = time.time() - float(row.get('at') or 0)
+    if force or again != LOGS_WORK['again'] or row.get('hash') != h:
+        pass
+    elif age < (LOGS_EVERY if row.get('ok') else 600):
+        return row
+    LOGS_WORK['again'] = again
+    out = {'at': time.time(), 'hash': h, 'want': want, 'ok': False,
+           'logdir': dir_size(LOG_DIR), 'state': dir_size(STATE_DIR)}
+    try:
+        got = root_ask('logs.ask', 'logs.ans', dict(want, do='apply'), wait=90)
+        out.update(ok=True, **{x: got.get(x) for x in ('journal_use', 'journal_conf',
+                                                       'rotate_conf', 'said')})
+    except ValueError as e:
+        out['said'] = str(e)[:300]
+    store.set_meta(k, json.dumps(out))
+    if row.get('hash') and row.get('hash') != h and out['ok']:
+        log('the journal and the logs set as Settings say: %s' % json.dumps(want))
+    return out
+
+
+def logs_view(store):
+    nodes = [n['name'] for n in ha_nodes(store)] if CONFIG.get('ha_mode') else [node_name()]
+    want = logs_desired()
+    h = logs_hash(want)
+    out = []
+    for n in nodes:
+        row = _meta_json(store, 'host:logs:' + n) or {}
+        health = _meta_json(store, 'host:health:' + n) or {}
+        out.append({'node': n, 'me': n == node_name(), 'disks': health.get('disks') or [],
+                    'health_at': health.get('at'), 'at': row.get('at'), 'ok': row.get('ok'),
+                    'said': row.get('said') or '', 'current': row.get('hash') == h,
+                    'journal_use': row.get('journal_use'), 'logdir': row.get('logdir'),
+                    'state': row.get('state'), 'siem': health.get('siem') or {}})
+    return {'nodes': out, 'want': want, 'disk_pct': int(CONFIG.get('alerts_disk_pct') or 0)}
+
+
 # ---- root's SSH keys and the updates of the system (1.0.158) ------------------------
 # Both done by each node's root helper (otp_web.py), asked through the
 # database so a page on either node reaches both. One writer a row, as
@@ -25412,7 +26012,10 @@ def osup_cancel(store, by):
 def _osup_job(kind, security=False):
     """The helper asked to start the work; its id."""
     got = root_ask('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind,
-                                             'security': bool(security)}, 60)
+                                             'security': bool(security),
+                                             # dnf and apt through Settings → Proxy (1.0.166)
+                                             'proxy': proxy_full('os'),
+                                             'proxy_no': ','.join(proxy_no_list())}, 60)
     return got
 
 
@@ -25978,6 +26581,7 @@ def health_publish(daemon):
     except Exception:                                   # noqa: BLE001
         pass
     row = {'at': now, 'disks': disks_now(), 'dirs_down': dead, 'sms': dict(SMS_HEALTH),
+           'siem': daemon.siem.state() if getattr(daemon, 'siem', None) else {},
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -26758,6 +27362,7 @@ def alerts_tick(daemon):
                 health_publish(daemon)
             except Exception as e:                      # noqa: BLE001
                 log_sparing('health', 'this node\'s health row: %s' % e, 'warn', every=900)
+            logs_start(daemon)
             if not alerts_lead(store):
                 return
             if CONFIG.get('alerts') or CONFIG.get('report'):
@@ -33988,6 +34593,77 @@ def _alerts_do(h):
     except (ValueError, MailError) as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+# ---- syslog / SIEM, the proxy, the disks and the logs (1.0.166) -------------------------
+def _siem_view(h):
+    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    me = h.d.siem.state() if getattr(h.d, 'siem', None) else {}
+    out = []
+    for n in nodes:
+        row = _meta_json(h.store, 'host:health:' + n) or {}
+        st = me if n == node_name() else (row.get('siem') or {})
+        out.append(dict(st, node=n, me=n == node_name(), at=time.time() if n == node_name()
+                        else row.get('at')))
+    return {'nodes': out, 'on': bool(CONFIG.get('siem'))}
+
+
+@route('GET', '/api/siem')
+def _siem(h):
+    h.me('fulladmin')
+    return _siem_view(h)
+
+
+@route('POST', '/api/siem')
+def _siem_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'test':
+        raise ApiError(400, 'no such thing to do')
+    if not getattr(h.d, 'siem', None):
+        raise ApiError(400, 'this daemon sends nothing')
+    try:
+        got = h.d.siem.test(s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    h.store.add_event('settings', '%s sent a test line to the syslog servers from %s: %s' % (
+        s['name'], node_name(), ', '.join('%s %s' % kv for kv in sorted(got.items()))),
+        'info', who=s['name'])
+    return dict(_siem_view(h), test=got, node=node_name())
+
+
+@route('POST', '/api/proxy')
+def _proxy_do(h):
+    h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'try':
+        raise ApiError(400, 'no such thing to do')
+    try:
+        return dict(proxy_try(str(b.get('url') or '')), node=node_name())
+    except ValueError as e:
+        raise ApiError(400, str(e))
+
+
+@route('GET', '/api/logs')
+def _logs(h):
+    h.me('fulladmin')
+    return logs_view(h.store)
+
+
+@route('POST', '/api/logs')
+def _logs_do(h):
+    h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'refresh':
+        raise ApiError(400, 'no such thing to do')
+    # Every node asks its helper again at its next look (a minute at most);
+    # this one at once.
+    h.store.set_meta('host:logs:again', '%.3f' % time.time())
+    try:
+        logs_tick(h.d, force=True)
+    except Exception as e:                              # noqa: BLE001
+        raise ApiError(400, 'it did not go: %s' % e)
+    return logs_view(h.store)
 # ---- the console: otp run by its menus, on the server's own screen (1.0.130) --------
 # `otp --console` - and, with `otp --console-at-login on`, what root sees first
 # after signing in at the console or over SSH. Everything is done by the same

@@ -2481,6 +2481,9 @@ function showPane(name) {
   if (name === 'power') loadPower();
   if (name === 'sshkeys') loadSshKeys(); else skPoll(false);
   if (name === 'alerts') loadAlerts();
+  if (name === 'siem') loadSiem();
+  if (name === 'proxy') drawProxy();
+  if (name === 'logs') loadLogs();
   if (name === 'sshd') loadSshd(); else sdPoll(false);
   if (name === 'osup') loadOsup(); else ouPoll(false);
   if (name === 'time') loadNtp();
@@ -13236,4 +13239,163 @@ function drawSshd(live) {
     nc.appendChild(el('p', 'muted small', 'Saved with the bar at the bottom; each node then puts it in by itself within seconds.'));
     host.appendChild(nc);
   }, live);
+}
+
+
+/* ---- Settings → Syslog and SIEM, Proxy, Disks and logs (1.0.166) ----------------
+   Each node's own state; the settings are the pane's own card. */
+var SI = {d: null};
+function loadSiem() {
+  api('siem').then(function (d) { SI.d = d; drawSiem(); }).catch(oops);
+}
+function drawSiem() {
+  var real = $('si-host');
+  if (!real || !SI.d) return;
+  liveLetGo(real);
+  liveFill(real, function (host) {
+    var d = SI.d;
+    var c = el('div', 'card full');
+    var h = el('h2', '', 'Sent so far');
+    var tl = el('span', 'right');
+    var look = cmdButton('Look again', 'refresh', 'small');
+    look.onclick = function () { loadSiem(); };
+    var test = cmdButton('Send a test line', 'play', 'small');
+    explain(test, 'One line to every server below, from this node, now - to see it arrive and how it reads.');
+    test.disabled = !d.on;
+    test.onclick = function () {
+      busy(test, true);
+      api('siem', {action: 'test'}).then(function (x) {
+        busy(test, false);
+        SI.d = x; drawSiem();
+        var bad = Object.keys(x.test || {}).filter(function (k) { return x.test[k] !== 'sent'; });
+        if (bad.length) toast(bad.map(function (k) { return k + ': ' + x.test[k]; }).join(' · '), 'bad');
+        else toast('A test line went from ' + x.node + ' to ' + Object.keys(x.test || {}).join(', '), 'good');
+      }).catch(function (e) { busy(test, false); oops(e); });
+    };
+    tl.appendChild(look); tl.appendChild(test);
+    h.appendChild(tl);
+    c.appendChild(h);
+    if (!d.on) c.appendChild(el('p', 'note', 'Sending is off - switch it on below and say where to.'));
+    var grid = el('div', 'pw-grid');
+    (d.nodes || []).forEach(function (n) {
+      var nc = el('div', 'card pw-node');
+      var hd = el('div', 'pw-head');
+      var trouble = Object.keys(n.trouble || {});
+      var fresh = n.at && Date.now() / 1000 - n.at < 300;
+      hd.appendChild(el('span', 'dot ' + (!fresh ? 'bad' : (trouble.length ? 'warn' : 'ok'))));
+      hd.appendChild(noI18n(el('b', '', n.node)));
+      if (n.me) hd.appendChild(el('span', 'tag dim', 'this node'));
+      nc.appendChild(hd);
+      if (!fresh) { nc.appendChild(el('p', 'muted small', 'Not heard from in the last minutes.')); grid.appendChild(nc); return; }
+      (n.targets || []).forEach(function (t) {
+        var row = el('div', 'si-row');
+        row.appendChild(el('span', 'dot ' + ((n.trouble || {})[t] ? 'bad' : ((n.sent || {})[t] ? 'ok' : 'dim'))));
+        row.appendChild(noI18n(el('span', 'mono', t)));
+        row.appendChild(el('span', 'muted small', num((n.sent || {})[t] || 0) + ' sent'));
+        nc.appendChild(row);
+        if ((n.trouble || {})[t]) nc.appendChild(noI18n(el('div', 'si-said small', n.trouble[t])));
+      });
+      if (!(n.targets || []).length) nc.appendChild(el('p', 'muted small', 'Nowhere to send to.'));
+      var kv = el('div', 'lg-kv');
+      [['Waiting to go', num(n.queued || 0)], ['Dropped, the queue full', num(n.dropped || 0)],
+       ['Last sent', n.last_sent ? ago(n.last_sent) : '–', true], ['Written as', n.host || '–']].forEach(function (x) {
+        kv.appendChild(el('span', 'muted', x[0]));
+        kv.appendChild(x[2] ? el('b', '', x[1]) : noI18n(el('b', '', x[1])));
+      });
+      nc.appendChild(kv);
+      grid.appendChild(nc);
+    });
+    c.appendChild(grid);
+    host.appendChild(c);
+  });
+}
+
+function drawProxy() {
+  var host = $('px-host');
+  if (!host) return;
+  clear(host);
+  var c = el('div', 'card full');
+  c.appendChild(el('h2', '', 'Try it'));
+  c.appendChild(el('p', 'note', 'An address asked through the proxy as it is saved, from this node. Empty: where the new versions are looked for.'));
+  var row = el('div', 'btnrow');
+  var url = el('input');
+  url.type = 'text';
+  url.placeholder = 'https://github.com/';
+  url.style.flex = '1';
+  url.style.minWidth = '260px';
+  var go = cmdButton('Try it', 'play', 'primary');
+  var said = el('div', 'px-said small');
+  go.onclick = function () {
+    busy(go, true);
+    clear(said);
+    api('proxy', {action: 'try', url: url.value.trim()}).then(function (x) {
+      busy(go, false);
+      var line = el('div', 'al-ok');
+      line.appendChild(el('span', 'dot ' + (x.ok ? 'ok' : 'bad')));
+      var words = x.ok ? (x.straight ? 'Reached straight, not through the proxy (it is in the list below)' : 'Reached through the proxy') + ' - HTTP ' + x.status + ', ' + x.ms + ' ms, from ' + x.node
+        : 'Not reached: ' + x.said;
+      line.appendChild(el('span', '', words));
+      said.appendChild(line);
+    }).catch(function (e) { busy(go, false); oops(e); });
+  };
+  row.appendChild(url); row.appendChild(go);
+  c.appendChild(row);
+  c.appendChild(said);
+  host.appendChild(c);
+}
+
+var LG = {d: null};
+function loadLogs() {
+  api('logs').then(function (d) { LG.d = d; drawLogs(); }).catch(oops);
+}
+function drawLogs() {
+  var real = $('lg-host');
+  if (!real || !LG.d) return;
+  liveLetGo(real);
+  liveFill(real, function (host) {
+    var d = LG.d;
+    var c = el('div', 'card full');
+    var h = el('h2', '', 'The nodes');
+    var tl = el('span', 'right');
+    var again = cmdButton('Put in and look again', 'refresh', 'small');
+    explain(again, 'Every node puts the settings below in again and says how much its journal and logs take - this one at once, the other within a minute.');
+    again.onclick = function () {
+      busy(again, true);
+      api('logs', {action: 'refresh'}).then(function (x) { busy(again, false); LG.d = x; drawLogs(); toast('Asked of every node', 'good'); })
+        .catch(function (e) { busy(again, false); oops(e); });
+    };
+    tl.appendChild(again);
+    h.appendChild(tl);
+    c.appendChild(h);
+    var grid = el('div', 'pw-grid');
+    (d.nodes || []).forEach(function (n) {
+      var nc = el('div', 'card pw-node');
+      var hd = el('div', 'pw-head');
+      hd.appendChild(el('span', 'dot ' + (!n.at ? 'dim' : (n.ok && n.current ? 'ok' : (n.ok ? 'warn' : 'bad')))));
+      hd.appendChild(noI18n(el('b', '', n.node)));
+      hd.appendChild(el('span', 'tag ' + (n.ok && n.current ? 'good' : (n.at ? 'warn' : 'dim')), !n.at ? 'not asked yet' : (n.ok && n.current ? 'as set' : (n.ok ? 'being put in' : 'failed'))));
+      nc.appendChild(hd);
+      (n.disks || []).forEach(function (dk) {
+        var row = el('div', 'al-disk');
+        var lab = el('div', 'al-disk-l');
+        lab.appendChild(noI18n(el('span', 'mono', dk.path)));
+        lab.appendChild(el('span', 'muted small', bytes(dk.free) + ' free of ' + bytes(dk.total)));
+        row.appendChild(lab);
+        var lim = d.disk_pct || 85;
+        row.appendChild(upBar(dk.pct, dk.pct >= 95 ? 'bad' : (dk.pct >= lim ? 'warn' : 'good'), num(dk.pct) + ' %'));
+        nc.appendChild(row);
+      });
+      var kv = el('div', 'lg-kv');
+      [['The system journal', n.journal_use], ['otp’s logs', n.logdir], ['otp’s data', n.state]].forEach(function (x) {
+        kv.appendChild(el('span', 'muted', x[0]));
+        kv.appendChild(noI18n(el('b', '', x[1] == null ? '–' : bytes(x[1]))));
+      });
+      nc.appendChild(kv);
+      if (n.said && !n.ok) nc.appendChild(noI18n(el('div', 'si-said small', n.said)));
+      if (n.at) nc.appendChild(el('p', 'muted small', 'Asked ' + ago(n.at)));
+      grid.appendChild(nc);
+    });
+    c.appendChild(grid);
+    host.appendChild(c);
+  });
 }
