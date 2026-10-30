@@ -4,6 +4,11 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.179 — 30 October 2026
+
+- isemon's *Send a test sign-in…*: Success or Failure is a switch, green or red
+  with the word beside it - it was a box to type `s` or `f` into.
+
 ## 1.0.178 — 30 October 2026
 
 **SSH to the nodes with a code from otp (pam_radius)**

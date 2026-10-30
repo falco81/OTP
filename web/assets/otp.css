@@ -618,6 +618,11 @@
   .sw input:focus-visible + .knob{box-shadow:0 0 0 3px rgba(88,166,255,.35)}
   .sw input:disabled + .knob{opacity:.45;cursor:not-allowed}
   .sw.small{width:36px;height:22px}
+  /* Two outcomes, not on and off (1.0.179): green one way, red the other. */
+  .sw.okbad input:not(:checked) + .knob{background:var(--crit);border-color:var(--crit)}
+  .sw-line{display:flex;align-items:center;gap:10px;min-height:38px}
+  .sw-said{font-weight:600}
+  .sw-said.ok{color:var(--ok)} .sw-said.bad{color:var(--crit)}
   .sw.small .knob::after{width:16px;height:16px}
   .sw.small input:checked + .knob::after{transform:translateX(14px)}
 
