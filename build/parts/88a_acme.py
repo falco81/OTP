@@ -443,7 +443,11 @@ def acme_order(store, target, name, by, say=None):
                         'info', who=by)
         return st
     except (AcmeError, ValueError, OSError) as e:
-        st.update(ok=False, failed_at=time.time(), said=str(e)[:400])
+        if 'NXDOMAIN' in str(e) and (CONFIG.get('acme_challenge') or '') == 'dns-01':
+            e = AcmeError('%s - the CA does not find the record: In your DNS → Check DNS, with '
+                          'DNS servers for ACME set to public ones (1.1.1.1), shows where the way '
+                          'to it stops (the CNAME, or the delegation of its zone)' % e)
+        st.update(ok=False, failed_at=time.time(), said=str(e)[:600])
         old = acme_state(store, target)
         for k in ('not_after', 'issuer', 'ordered_at'):
             if old.get(k):
@@ -866,8 +870,14 @@ def _os_resolvers():
 
 def dns_ask(name, qtype):
     """One question to ACME's DNS servers (the mail's own DNS client):
-    [(type, text)] of the answer - CNAME (5), TXT (16), A (1), AAAA (28). []
-    for a name that is not there; OSError when no resolver answers."""
+    [(type, text)] of the answer - CNAME (5), TXT (16), A (1), AAAA (28), NS (2).
+    [] for a name that is not there; OSError when no resolver answers."""
+    return dns_ask_rc(name, qtype)[1]
+
+
+def dns_ask_rc(name, qtype):
+    """dns_ask, and whether the name is there at all: (rcode, records) - 3 is
+    NXDOMAIN, which a CNAME to a name nobody serves ends in too."""
     last = None
     for srv in (acme_resolvers() or _os_resolvers())[:3]:
         try:
@@ -877,7 +887,7 @@ def dns_ask(name, qtype):
             continue
         rcode, recs = _dns_records(data)
         if rcode == 3:
-            return []
+            return 3, []
         if rcode:
             last = OSError(DNS_RCODES.get(rcode, 'rcode %d' % rcode))
             continue
@@ -896,7 +906,9 @@ def dns_ask(name, qtype):
                 out.append(('A', socket.inet_ntop(socket.AF_INET, rd)))
             elif rtype == 28 and size == 16:
                 out.append(('AAAA', socket.inet_ntop(socket.AF_INET6, rd)))
-        return out
+            elif rtype == 2:
+                out.append(('NS', _dns_name(data, at)[0].lower()))
+        return 0, out
     raise OSError('no DNS server answered (%s)' % (last or 'none'))
 
 
@@ -989,6 +1001,16 @@ def acme_dns_guide(store):
                              'the VIP address' if t == 'vip' else t), 'check': 'a'})
             continue
         rr, cname = acme_dns_where(name)
+        if how == 'desec' and cname:
+            dom = str(CONFIG.get('acme_desec_domain') or '').strip().rstrip('.').lower()
+            if dom and not dom.endswith('.dedyn.io') and not any(
+                    x.get('type') == 'NS' for x in rows):
+                # A domain of your own at deSEC (1.0.174): the zone above it
+                # must send the internet there - NS records, once.
+                rows.append({'target': '', 'name': dom, 'type': 'NS', 'record': dom,
+                             'value': 'ns1.desec.io. ns2.desec.org.',
+                             'why': 'once, in the zone above it: %s at deSEC' % dom,
+                             'check': 'ns'})
         own = '_acme-challenge.' + name
         if how == 'acmedns' or cname:
             rows.append({'target': t, 'name': name, 'type': 'CNAME', 'record': own,
@@ -1011,12 +1033,21 @@ def acme_dns_check(store):
             continue
         try:
             if r['check'] == 'cname':
-                got = [x[1] for x in dns_ask(r['record'], 5) if x[0] == 'CNAME']
+                rc, recs = dns_ask_rc(r['record'], 5)
+                got = [x[1] for x in recs if x[0] == 'CNAME']
                 want = r['value'].rstrip('.').lower()
                 r['found'] = got[0] + '.' if got else ''
                 r['ok'] = bool(got) and got[0].rstrip('.') == want
                 r['said'] = 'there' if r['ok'] else (
                     'it points elsewhere: %s' % r['found'] if got else 'not there yet')
+            elif r['check'] == 'ns':
+                rc, recs = dns_ask_rc(r['record'], 2)
+                got = sorted(x[1] for x in recs if x[0] == 'NS')
+                r['found'] = ' '.join(got)
+                r['ok'] = any(x.rstrip('.').endswith(('desec.io', 'desec.org')) for x in got)
+                r['said'] = 'there' if r['ok'] else (
+                    ('it is served by %s, not deSEC' % r['found']) if got else
+                    'not delegated: the internet does not know %s' % r['record'])
             else:
                 with acme_dns_scope():
                     got = sorted({a[4][0] for a in socket.getaddrinfo(
@@ -1028,4 +1059,5 @@ def acme_dns_check(store):
             r.update(ok=False, said='could not be looked up: %s' % str(e)[:120])
     g['at'] = time.time()
     g['resolvers'] = acme_resolvers() or ['this machine\'s DNS']
+    g['own_resolvers'] = bool(acme_resolvers())
     return g

@@ -105,6 +105,20 @@ _acme-challenge.otp1.example.cz.  CNAME  _acme-challenge.otp1.yourname.dedyn.io.
 _acme-challenge.otp2.example.cz.  CNAME  _acme-challenge.otp2.yourname.dedyn.io.
 ```
 
+**A domain of your own at deSEC** (`acme.example.cz` rather than a free
+`yourname.dedyn.io`): the zone above it must send the internet there - once, in
+`example.cz`, wherever its DNS is kept:
+
+```
+acme.example.cz.   NS   ns1.desec.io.
+acme.example.cz.   NS   ns2.desec.org.
+```
+
+(and the DS records deSEC shows, if `example.cz` is signed with DNSSEC). Without
+them the CA follows the CNAME into a name nobody serves and says `NXDOMAIN looking
+up TXT for _acme-challenge.NAME` - though the record is there at deSEC. A
+`dedyn.io` domain is delegated by deSEC itself.
+
 The card **In your DNS** on the page lists exactly these for the certificates
 asked for (and, for HTTP-01, where each name is to point), with the steps of the
 way chosen and **Check DNS**, which looks each record up from the node as the CA

@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.174 — 30 October 2026
+
+**ACME by deSEC with a domain of your own: where the way to the record stops**
+- A domain of your own at deSEC (`acme.example.cz`) has to be delegated to it by
+  the zone above it (NS records). *In your DNS* lists those records too, and
+  *Check DNS* says whether the internet is sent to deSEC for it. Without them the
+  CA answered `NXDOMAIN looking up TXT for _acme-challenge.NAME` though the record
+  was there at deSEC.
+- An order that fails so says where to look; *Check DNS* done with the machine's
+  own DNS servers says that they may see what the internet does not, and to set
+  *DNS servers for ACME* to public ones.
+
 ## 1.0.173 — 30 October 2026
 
 **Prometheus**

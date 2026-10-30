@@ -266,6 +266,9 @@ def fake_dns():
                 ans.append((cur, 16, bytes([len(v)]) + v.encode()))
         if qtype == 1 and zone.get('A ' + cur):
             ans.append((cur, 1, socket.inet_aton(zone['A ' + cur])))
+        if qtype == 2:
+            for v in zone.get('NS ' + cur) or []:
+                ans.append((cur, 2, nm(v)))
         found = bool(ans) or any(k.endswith(' ' + cur) or k == cur for k in zone)
         head = q[:2] + struct.pack('!HHHHH', 0x8180 if found else 0x8183, 1, len(ans), 0, 0)
         out = head + q[12:qend]
@@ -408,4 +411,22 @@ ok('... Check DNS asks them too (%s)' % r1.get('said'), r1.get('ok') and '127.0.
 SET({'acme_resolvers': '1.2.3.4.5'}) if False else None
 c, x = SET({'acme_resolvers': 'not-an-address'})
 ok('a DNS server that is not an address refused (%s)' % c, c == 400)
+
+# A domain of its own at deSEC (1.0.174): its delegation in the guide, and checked.
+SET({'acme_resolvers': '127.0.0.2', 'acme_challenge': 'dns-01', 'acme_dns': 'desec', 'acme_desec_domain': 'acme.otp.test'})
+v = call('/api/acme', None, S)[1]
+ns = [r for r in v['dns_guide']['rows'] if r['type'] == 'NS']
+ok('a domain of its own at deSEC: its NS records in the guide (%s)' % ns, len(ns) == 1 and ns[0]['record'] == 'acme.otp.test'
+   and 'ns1.desec.io.' in ns[0]['value'])
+c, g = call('/api/acme', {'action': 'dns_check'}, S)
+r1 = [r for r in g['rows'] if r['type'] == 'NS'][0]
+ok('... not delegated: said so (%s)' % r1.get('said'), r1.get('ok') is False and 'not delegated' in r1.get('said', ''))
+d0 = dns(); d0['NS acme.otp.test'] = ['ns1.desec.io', 'ns2.desec.org']; json.dump(d0, open(DNSJSON, 'w'))
+c, g = call('/api/acme', {'action': 'dns_check'}, S)
+r1 = [r for r in g['rows'] if r['type'] == 'NS'][0]
+ok('... delegated: there (%s)' % r1.get('said'), r1.get('ok') is True)
+SET({'acme_desec_domain': 'otpdesec.dedyn.io'})
+v = call('/api/acme', None, S)[1]
+ok('... a dedyn.io domain needs none', not [r for r in v['dns_guide']['rows'] if r['type'] == 'NS'])
+SET({'acme_challenge': 'http-01'})
 print('ALL %d / %d' % (sum(R), len(R)))
