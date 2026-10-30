@@ -612,7 +612,11 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
 # own timer puts the one before back - until Keep it ('host:sshd:keep').
 SSHD_DEFAULT = {'manage': False, 'permit_root': 'prohibit-password', 'password': True,
                 'port': 22, 'allow_users': [], 'tries': 4, 'notice': '', 'notice_ssh': False,
-                'notice_console': False, 'notice_motd': False, 'trial_min': 5}
+                'notice_console': False, 'notice_motd': False, 'trial_min': 5,
+                # A code from otp at SSH sign-in (1.0.178): pam_radius asking
+                # this node's own RADIUS.
+                'radius': False, 'radius_users': [], 'radius_root': False,
+                'radius_fallback': True}
 HOST_WORK.update(sshd=False, sshd_read=0.0)
 
 
@@ -658,7 +662,39 @@ def sshd_checked_conf(b):
     c['notice'] = text
     for k in ('notice_ssh', 'notice_console', 'notice_motd'):
         c[k] = bool(b.get(k)) and bool(text.strip())
+    c['radius'] = bool(b.get('radius')) and c['manage']
+    raw = b.get('radius_users') or ''
+    ru = [str(u) for u in raw if u] if isinstance(raw, list) else \
+        [u for u in re.split(r'[\s,]+', str(raw)) if u]
+    for u in ru:
+        if not re.match(r'^[A-Za-z0-9._@-]{1,64}$', u):
+            raise ValueError('%r is not a user name' % u)
+    c['radius_users'] = ru[:100]
+    c['radius_root'] = bool(b.get('radius_root'))
+    # Passwords off: a node otp cannot ask lets nobody in with one either.
+    c['radius_fallback'] = bool(b.get('radius_fallback', True)) and c['password']
     return c
+
+
+SSH_RADIUS_CLIENT = 'SSH of the nodes - pam_radius'
+
+
+def ssh_radius_client(store, by):
+    """The RADIUS client pam_radius is to this node's own RADIUS: 127.0.0.1,
+    made once with a secret of its own; its secret for the root helper."""
+    for c in store.clients(with_secret=True):
+        try:
+            if ipaddress.ip_address('127.0.0.1') in address_net(c.get('address')) and \
+                    c.get('secret') and c.get('enabled', 1):
+                return c
+        except ValueError:
+            continue
+    store.client_save({'name': SSH_RADIUS_CLIENT, 'address': '127.0.0.1',
+                       'secret': secrets.token_urlsafe(32), 'enabled': 1,
+                       'note': 'made by otp for SSH with a code (Settings → SSH server)'}, by=by)
+    store.add_event('settings', '%s: a RADIUS client for SSH with a code (127.0.0.1) was made'
+                    % by, 'info', who=by)
+    return [c for c in store.clients(with_secret=True) if c['name'] == SSH_RADIUS_CLIENT][0]
 
 
 def sshd_hash(c, at):
@@ -671,6 +707,12 @@ def sshd_hash(c, at):
 def sshd_save(store, b, by):
     c = sshd_checked_conf(b)
     hisec_sshd(c)                           # 1.0.168
+    if c['radius']:
+        bind = str(CONFIG.get('radius_bind') or '').strip()
+        if bind and bind not in ('0.0.0.0', '::', '127.0.0.1', '*'):
+            raise ValueError('RADIUS listens on %s only - pam_radius asks 127.0.0.1: let it '
+                             'listen on every address (Settings → The RADIUS server)' % bind)
+        ssh_radius_client(store, by)
     if c['manage'] and c['allow_users'] and c['permit_root'] != 'no' and \
             not any(u in ('root', '*') for u in c['allow_users']) and not b.get('ok_no_root'):
         raise ValueError('AllowUsers without root lets nobody in as root - add root to it, or '
@@ -682,6 +724,11 @@ def sshd_save(store, b, by):
         c['permit_root'], 'on' if c['password'] else 'off', c['port'],
         ', AllowUsers ' + ' '.join(c['allow_users']) if c['allow_users'] else '')
         if c['manage'] else 'the SSH server as the system has it')
+    if c['radius']:
+        what += '; a code from otp at sign-in (%s%s)' % (
+            ', '.join(c['radius_users']) or 'everybody but root' if not c['radius_root']
+            else ', '.join(c['radius_users']) or 'everybody, root too',
+            ', the system password when otp does not answer' if c['radius_fallback'] else '')
     notes = [w for k, w in (('notice_ssh', 'SSH'), ('notice_console', 'console'),
                             ('notice_motd', 'after sign-in')) if c[k]]
     store.add_event('settings', '%s set the SSH server: %s%s%s' % (
@@ -770,9 +817,15 @@ def sshd_tick(daemon):
                                         'warn')
                         got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
                     elif what == 'apply':
-                        got = root_ask('sshd.ask', 'sshd.json', {
-                            'do': 'apply', 'conf': c, 'trial_min': c.get('trial_min') or 0,
-                            'hash': c['hash'], 'id': secrets.token_hex(4)}, 90)
+                        ask = {'do': 'apply', 'conf': c, 'trial_min': c.get('trial_min') or 0,
+                               'hash': c['hash'], 'id': secrets.token_hex(4)}
+                        if c.get('radius'):
+                            # The secret pam_radius shows otp, for its file of
+                            # 0600 (1.0.178) - in the ask file, never a command line.
+                            cl = ssh_radius_client(store, 'otp')
+                            ask.update(radius_secret=cl['secret'],
+                                       radius_port=int(CONFIG.get('radius_auth_port') or 1812))
+                        got = root_ask('sshd.ask', 'sshd.json', ask, 120)
                         row.update(hash=c['hash'], failed='', error='', applied_at=time.time(),
                                    # Changed again while on trial: the helper
                                    # goes back to the first, so its port stays open.
@@ -790,6 +843,7 @@ def sshd_tick(daemon):
                         continue
                     else:
                         got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
+                    row.update(radius=got.get('radius') or {})
                     row.update(values=got.get('values') or {}, there=got.get('there'),
                                dropins=got.get('dropins'), keys=got.get('keys'),
                                trial=got.get('trial') or {}, selinux=got.get('selinux') or '')

@@ -80,8 +80,18 @@ def _ask_isemon(daemon, args):
     if not CONFIG.get('isemon'):
         raise ValueError('sending to isemon is off')
     before = dict(sh.sent)
-    sh.put('otp', 'daemon', 'a test from otp %s on %s, sent by %s - isemon reads nothing from '
-           'this line' % (__version__, node_name(), args.get('by') or '?'))
+    who = str(args.get('as_user') or '')
+    if re.match(r'^[A-Za-z0-9._@-]{1,64}\Z', who):
+        # A sign-in isemon shows (1.0.178): totpcgi's own line, under a name
+        # given, said to be a test - to the receivers only, not into the files.
+        rid = 'otp-test-%s-%d' % (node_name(), int(time.time()))
+        sh.put('totp.cgi', 'auth', '%s: user=%s, mode=PAM_SM_AUTH, host=127.0.0.1, rid=%s, '
+               'message=a test from otp %s on %s, sent by %s - not a real sign-in'
+               % ('Success' if args.get('ok', True) else 'Failure', who, rid, __version__,
+                  node_name(), re.sub(r'[\r\n,]', ' ', str(args.get('by') or '?'))))
+    else:
+        sh.put('otp', 'daemon', 'a test from otp %s on %s, sent by %s - isemon reads nothing from '
+               'this line' % (__version__, node_name(), args.get('by') or '?'))
     sh.flush(3)
     time.sleep(0.3)
     st = sh.state()

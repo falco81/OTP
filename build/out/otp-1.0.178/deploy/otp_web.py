@@ -2903,7 +2903,133 @@ def sshd_checked(c):
     out['notice'] = text
     for k in ('notice_ssh', 'notice_console', 'notice_motd'):
         out[k] = bool(c.get(k)) and bool(text.strip())
+    out['radius'] = bool(c.get('radius')) and out['manage']
+    raw = c.get('radius_users') or []
+    ru = [str(u) for u in raw if u] if isinstance(raw, list) else \
+        [u for u in re.split(r'[\s,]+', str(raw)) if u]
+    for u in ru:
+        if not re.match(r'^[A-Za-z0-9._@-]{1,64}$', u):
+            raise Refused('%r is not a user name' % u)
+    out['radius_users'] = ru[:100]
+    out['radius_root'] = bool(c.get('radius_root'))
+    out['radius_fallback'] = bool(c.get('radius_fallback')) and out['password']
     return out
+
+
+# ---- SSH with a code from otp (1.0.178) ------------------------------------------------
+# pam_radius in sshd's PAM: a block of otp's own at the top of the auth lines
+# of /etc/pam.d/sshd, asking this node's RADIUS on 127.0.0.1 with the secret in
+# /etc/otp/pam_radius.conf (0600). Root is left out unless asked; a key goes
+# past PAM as always. With passwords off, nobody gets in by a password through
+# PAM either. Put back with the rest when a change on trial is not kept.
+PAM_BEGIN = '# otp: SSH with a code from otp (RADIUS) - Settings -> SSH server (begin)'
+PAM_END = '# otp: SSH with a code from otp (RADIUS) (end)'
+PAM_MOD_DIRS = ('/usr/lib64/security', '/lib64/security', '/usr/lib/x86_64-linux-gnu/security',
+                '/lib/x86_64-linux-gnu/security', '/usr/lib/aarch64-linux-gnu/security',
+                '/usr/lib/security', '/lib/security')
+
+
+def pam_sshd_path():
+    return os.path.join(ETC_DIR, 'pam.d', 'sshd')
+
+
+def pam_radius_conf_path():
+    return os.path.join(ETC_DIR, 'otp', 'pam_radius.conf')
+
+
+def pam_radius_module():
+    for d in PAM_MOD_DIRS:
+        if os.path.exists(os.path.join(d, 'pam_radius_auth.so')):
+            return os.path.join(d, 'pam_radius_auth.so')
+    return ''
+
+
+def pam_radius_install():
+    """The module put in where it is missing - EPEL's pam_radius, Debian's
+    libpam-radius-auth."""
+    if pam_radius_module() or os.environ.get('OTP_NO_PKG'):
+        return pam_radius_module()
+    for cmd in (['dnf', '-y', 'install', 'pam_radius'],
+                ['apt-get', '-y', 'install', 'libpam-radius-auth']):
+        if shutil.which(cmd[0]):
+            subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            break
+    if not pam_radius_module():
+        raise Refused('pam_radius is not on this machine and could not be put in - on '
+                      'AlmaLinux/RHEL: dnf install epel-release && dnf install pam_radius')
+    return pam_radius_module()
+
+
+def pam_without_ours(text):
+    return re.sub(r'(?ms)^' + re.escape(PAM_BEGIN) + r'\n.*?^' + re.escape(PAM_END) + r'\n?', '',
+                  text)
+
+
+def pam_block(c):
+    lines = [PAM_BEGIN]
+    if c['radius_users']:
+        lines.append('auth [success=1 default=ignore] pam_succeed_if.so quiet user notin %s'
+                     % ':'.join(c['radius_users']))
+    elif not c['radius_root']:
+        lines.append('auth [success=1 default=ignore] pam_succeed_if.so quiet user = root')
+    lines.append('auth [success=done new_authtok_reqd=done ignore=ignore default=die] '
+                 'pam_radius_auth.so conf=%s%s' % (pam_radius_conf_path(),
+                                                   ' localifdown' if c['radius_fallback'] else ''))
+    if not c['password']:
+        # Passwords off: nobody left out of the code gets in by a password here.
+        lines.append('auth requisite pam_deny.so')
+    lines.append(PAM_END)
+    return '\n'.join(lines) + '\n'
+
+
+def pam_selinux_radius():
+    """SELinux keeps sshd from asking RADIUS until authlogin_radius is on."""
+    if os.environ.get('OTP_NO_PKG') or not shutil.which('getsebool') or not shutil.which('getenforce'):
+        return
+    if subprocess.run(['getenforce'], capture_output=True, text=True).stdout.strip() == 'Disabled':
+        return
+    got = subprocess.run(['getsebool', 'authlogin_radius'], capture_output=True, text=True)
+    if got.returncode or got.stdout.strip().endswith('on'):
+        return
+    got = subprocess.run(['setsebool', '-P', 'authlogin_radius', 'on'], capture_output=True, text=True,
+                         timeout=300)
+    if got.returncode:
+        raise Refused('SELinux: setsebool -P authlogin_radius on: %s'
+                      % (got.stderr or got.stdout).strip()[-200:])
+
+
+def pam_set(c, secret, port):
+    """Our block in (or out of) sshd's PAM; the secret's file with it."""
+    path = pam_sshd_path()
+    text = _read_or(path)
+    if text is None:
+        if not c.get('radius'):
+            return ''
+        raise Refused('%s is not there - sshd does not use PAM here' % path)
+    clean = pam_without_ours(text)
+    if not c.get('radius'):
+        if clean != text:
+            _put_file(path, clean, 0o644)
+        _drop(pam_radius_conf_path())
+        return 'SSH without a code from otp' if clean != text else ''
+    if not re.match(r'^[\x21-\x7e]{8,128}\Z', str(secret or '')):
+        raise Refused('the RADIUS secret for SSH is missing')
+    pam_radius_install()
+    pam_selinux_radius()
+    os.makedirs(os.path.dirname(pam_radius_conf_path()), mode=0o755, exist_ok=True)
+    _put_file(pam_radius_conf_path(), '# otp - Settings -> SSH server; the secret of the RADIUS '
+              'client of 127.0.0.1\n'
+              # The source as a fourth field (1.0.178): pam_radius 2.0.1 with
+              # three closed this file twice and took sshd's process down.
+              '127.0.0.1:%d %s 10 127.0.0.1\n' % (int(port or 1812), secret), 0o600)
+    lines = clean.split('\n')
+    at = next((i for i, l in enumerate(lines)
+               if re.match(r'^\s*(auth\b|@include\s+common-auth|-?auth\b)', l)), None)
+    if at is None:
+        raise Refused('%s has no auth lines - put the block in by hand' % path)
+    lines[at:at] = pam_block(c).rstrip('\n').split('\n')
+    _put_file(path, '\n'.join(lines), 0o644)
+    return 'SSH asks for a code from otp (pam_radius)'
 
 
 def sshd_text(c):
@@ -2912,9 +3038,13 @@ def sshd_text(c):
              'Port %d' % c['port'],
              'PermitRootLogin %s' % c['permit_root'],
              'PasswordAuthentication %s' % ('yes' if c['password'] else 'no'),
-             'KbdInteractiveAuthentication %s' % ('yes' if c['password'] else 'no'),
+             # A code from otp is asked in a second prompt: keyboard-interactive.
+             'KbdInteractiveAuthentication %s' % ('yes' if c['password'] or c.get('radius')
+                                                  else 'no'),
              'PubkeyAuthentication yes',
              'MaxAuthTries %d' % c['tries']]
+    if c.get('radius'):
+        lines.append('UsePAM yes')
     if c['allow_users']:
         lines.append('AllowUsers %s' % ' '.join(c['allow_users']))
     lines.append('Banner %s' % (notice_paths()['banner'] if c['notice_ssh'] else 'none'))
@@ -2978,6 +3108,13 @@ def sshd_put_back(why='not kept in time'):
         _drop(banner)
     else:
         _put_file(banner, t['banner'])
+    if 'pam' in t:
+        if t['pam'] is not None:
+            _put_file(pam_sshd_path(), t['pam'], 0o644)
+        if t.get('pamconf') is None:
+            _drop(pam_radius_conf_path())
+        else:
+            _put_file(pam_radius_conf_path(), t['pamconf'], 0o600)
     try:
         sshd_reload()
     except Refused:
@@ -3028,7 +3165,8 @@ def sshd_do(r):
         drop = os.path.join(SSH_DIR, SSHD_DROPIN)
         paths = notice_paths()
         before = old or {'dropin': _read_or(drop), 'banner': _read_or(paths['banner']),
-                         'issue': None, 'motd': None}
+                         'issue': None, 'motd': None, 'pam': _read_or(pam_sshd_path()),
+                         'pamconf': _read_or(pam_radius_conf_path())}
         if not old:
             for where in ('issue', 'motd'):
                 cur = _read_or(paths[where])
@@ -3053,9 +3191,20 @@ def sshd_do(r):
             s = sshd_selinux_port(c['port'])
             if s:
                 said.append(s)
+            try:
+                w = pam_set(c, r.get('radius_secret'), r.get('radius_port'))
+            except Refused:
+                if before['dropin'] is None:
+                    _drop(drop)
+                else:
+                    _put_file(drop, before['dropin'], 0o600)
+                raise
+            if w:
+                said.append(w)
         else:
             if before['dropin'] is not None or os.path.exists(drop):
                 _drop(drop)
+            pam_set({'radius': False}, '', 0)
         notice_set('issue', c['notice'] if c['notice_console'] else None)
         notice_set('motd', c['notice'] if c['notice_motd'] else None)
         if not (c['manage'] and c['notice_ssh']):
@@ -3084,6 +3233,9 @@ def sshd_do(r):
             'dropin': _read_or(os.path.join(SSH_DIR, SSHD_DROPIN)), 'keys': root_keys_count(),
             'trial': {'hash': t.get('hash'), 'until': t.get('until')} if t else {},
             'paths': notice_paths(),
+            'radius': {'module': bool(pam_radius_module()),
+                       'pam': PAM_BEGIN in (_read_or(pam_sshd_path()) or ''),
+                       'conf': os.path.exists(pam_radius_conf_path())},
             'selinux': subprocess.run(['getenforce'], capture_output=True, text=True).stdout.strip()
             if shutil.which('getenforce') else ''}
 

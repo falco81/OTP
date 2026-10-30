@@ -3094,8 +3094,11 @@ def _isemon_do(h):
     if not CONFIG.get('isemon'):
         raise ApiError(400, 'sending to isemon is off')
     # From every node (1.0.169): each sends its own test line.
-    return node_ask(h.d, 'isemon', {'by': s['name'], 'only': str(b.get('node') or '')},
-                    s['name'])
+    who = str(b.get('as_user') or '').strip()
+    if who and not re.match(r'^[A-Za-z0-9._@-]{1,64}\Z', who):
+        raise ApiError(400, 'the name is letters, digits and . _ @ - only')
+    return node_ask(h.d, 'isemon', {'by': s['name'], 'only': str(b.get('node') or ''),
+                                    'as_user': who, 'ok': bool(b.get('ok', True))}, s['name'])
 
 
 def _isemon_tls_target(b):
