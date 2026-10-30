@@ -2596,13 +2596,20 @@ function loadSettings(redraw) {
     else {
       document.querySelectorAll('.set-item[data-key]').forEach(function (item) {
         var st = settingByKey(item.dataset.key);
+        /* A secret just saved shows what is kept now (1.0.170): the box still
+           held what was typed, never the dots of the saved one - it stayed
+           "not saved" after every save. */
+        if (st && st.secret && JUST_SAVED[st.key] && !(st.key in DIRTY) && $('set-' + st.key))
+          $('set-' + st.key).value = st.value || '';
         if (st && $('set-' + st.key)) markDirty(item, st);
       });
     }
+    JUST_SAVED = {};
     var h = (location.hash || '').split('/');
     showPane(PANE || (h[1] || 'radius'));
   }).catch(oops);
 }
+var JUST_SAVED = {};
 function settingByKey(key) {
   return ((SETTINGS && SETTINGS.settings) || []).filter(function (s) { return s.key === key; })[0];
 }
@@ -2893,6 +2900,7 @@ function drawSettings() {
     host.appendChild(g);
   }
   applyOnlyWhen();
+  if (typeof AC !== 'undefined' && AC.d) acmeNamesInSettings(AC.d);
   explainWhatWasDrawn($('tab-settings'));
   if (typeof PANE !== 'undefined' && PANE === 'db') dbLinkNote();   /* drawn again (1.0.107) */
   if (typeof PANE !== 'undefined' && PANE === 'backup' && typeof rbPassTools === 'function') rbPassTools();
@@ -2915,8 +2923,10 @@ function settingItem(s) {
   var item = settingItemBare(s);
   var tail = el('div', 'set-tail');
   Array.prototype.slice.call(item.children, 2).forEach(function (c) { tail.appendChild(c); });
+  /* Right under the box (1.0.171), before what it says - words of different
+     lengths put them at different heights along a row. */
   var others = nodeOthers(s);
-  if (others) tail.appendChild(others);
+  if (others) tail.insertBefore(others, tail.firstChild);
   item.appendChild(tail);
   return item;
 }
@@ -2933,6 +2943,7 @@ function nodeOthers(s) {
     var has = s.per_node && Object.prototype.hasOwnProperty.call(s.per_node, n);
     var val = has ? s.per_node[n] : s.shared;
     var row = el('div', 'node-other');
+    row.dataset.node = n;
     row.appendChild(noI18n(el('span', 'tag dim', n)));
     var redraw = function () { loadSettings(); };
     if (isBool(s)) {
@@ -3374,8 +3385,13 @@ $('set-save').onclick = function () {
       Object.keys(DIRTY).forEach(function (k) {
         if (!(k in want) || DIRTY[k] !== want[k]) left[k] = DIRTY[k];
       });
-      if (Object.keys(left).length) { DIRTY = left; markDirtyCount(); loadSettings(false); }
-      else loadSettings();
+      /* What was saved is no longer a change (1.0.170): it stayed in DIRTY, so
+         the page was never drawn again and a secret - shown as dots once
+         saved - looked changed for ever. */
+      Object.keys(want).forEach(function (k) { JUST_SAVED[k] = 1; });
+      DIRTY = left;
+      markDirtyCount();
+      loadSettings(Object.keys(left).length ? false : undefined);
       if (paneLive('upgrade')) loadUpgrade();      /* the card to go back shown or not (1.0.144) */
       tick();
       return true;
@@ -6862,14 +6878,17 @@ var HA = null;
    changeable too. */
 var NODE_GROUPS = [
   ['RADIUS and the ports', ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port']],
-  ['What it calls itself', ['mail_helo', 'isemon_hostname']],
+  ['What it calls itself', ['mail_helo', 'isemon_hostname', 'siem_hostname', 'acme_node_name']],
   ['Its copies of the database', ['backup_daily', 'backup_at', 'backup_keep']],
   ['Writing down more (debug)', ['debug', 'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes']]];
 var NODE_NAMES = {backup_daily: 'A copy of the database every day', backup_at: 'Made at',
                   backup_keep: 'Copies kept', radius_bind: 'RADIUS listens on the address',
-                  isemon_hostname: 'The name isemon files it under'};
+                  isemon_hostname: 'The name isemon files it under',
+                  siem_hostname: 'The name the syslog servers file it under',
+                  acme_node_name: 'The name of its own certificate (ACME)'};
 var NODE_EMPTY = {isemon_hostname: 'the machine’s own name', mail_helo: 'the machine’s own name',
-                  radius_bind: 'every address'};
+                  radius_bind: 'every address', siem_hostname: 'the machine’s own name',
+                  acme_node_name: 'the name of its certificate, else its full host name'};
 function nodeValWords(s, v) {
   if (isBool(s)) return (v === true || v === 1 || v === '1' || v === 'true') ? 'on' : 'off';
   if (v === '' || v === null || v === undefined) return NODE_EMPTY[s.key] || '(empty)';
@@ -6911,8 +6930,10 @@ function nodeEdit(s, node, current, then) {
     if (s.says) body.appendChild(saysBlock(s.says));
     box = textBox(current === null || current === undefined ? '' : String(current),
                   node === '*' ? String(s.default) : String(s.shared), 'mono');
-    body.appendChild(formField('For ' + who, box, node === '*' ? 'Empty: the built-in default (' + nodeValWords(s, s.default) + ').'
-                                                     : 'Empty: the cluster’s value (' + nodeValWords(s, s.shared) + ').'));
+    /* What empty means, once - "((empty))" said it twice (1.0.170). */
+    var bare = function (v) { return nodeValWords(s, v).replace(/^\((.*)\)$/, '$1'); };
+    body.appendChild(formField('For ' + who, box, node === '*' ? 'Empty: the built-in default (' + bare(s.default) + ').'
+                                                     : 'Empty: the cluster’s value (' + bare(s.shared) + ').'));
   }, [{words: 'Close', close: true}, {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
     if (b && b.disabled) return;
     if (b) busy(b, true);
@@ -14122,30 +14143,78 @@ function drawAcme() {
       var nm = cmdButton('Its name…', 'edit', 'small');
       explain(nm, t.target === 'vip' ? 'The DNS name of the web address - the one people type. It is the web address’s own (Settings → High availability) and its certificate is for it.'
         : 'The DNS name the certificate of ' + t.target + ' is for. Empty: the full host name of ' + t.target + '.');
-      nm.onclick = function () {
-        askInModal(t.target === 'vip' ? 'The name of the web address' : 'The name of ' + t.target,
-          'The full DNS name its certificate is for - it goes into the certificate as its name (CN) and in its alternative names (SAN). The CA gives it only for a name that points at it (HTTP-01) or whose TXT record can be put in (DNS-01).',
-          [{label: 'DNS name', placeholder: t.target === 'vip' ? 'otp.example.cz' : t.target + '.example.cz', mono: true, value: t.name || '',
-            says: t.target === 'vip' ? 'Empty: the web address has no name.' : 'Empty: its full host name, as ' + t.target + ' says it.'}],
-          'Keep it', 'save', function (v, b) {
-            busy(b, true);
-            api('acme', {action: 'name', target: t.target, name: v[0].trim()}).then(function (x) {
-              closeModal(); AC.d = x; drawAcme(); toast('kept', 'good');
-            }).catch(function (e) { busy(b, false); oops(e); });
-          });
-      };
+      nm.onclick = function () { acmeNameAsk(t); };
       row.appendChild(probe); row.appendChild(order); row.appendChild(cb); row.appendChild(nm);
       c.appendChild(row);
       grid.appendChild(c);
     });
     host.appendChild(grid);
     if (d.on && d.dns_guide) host.appendChild(acmeDnsGuide(d));
+    setTimeout(function () { acmeNamesInSettings(d); }, 0);
     if (d.account && d.account.kid) {
       var a = el('p', 'muted small', 'The account at the CA: ');
       a.appendChild(noI18n(el('span', 'mono', d.account.kid)));
       host.appendChild(a);
     }
   });
+}
+
+/* The names of the certificates beside their box (1.0.170): what each node's
+   certificate is for now when its box is empty, and the web address's name -
+   it is the web address's own (High availability), changed from here too. */
+function acmeNamesInSettings(d) {
+  var item = document.querySelector('.set-item[data-key="acme_node_name"]');
+  if (!item) return;
+  var now = {};
+  (d.targets || []).forEach(function (t) { now[t.target] = t.name || ''; });
+  var input = $('set-acme_node_name');
+  if (input && now[d.node]) input.placeholder = now[d.node];
+  Array.prototype.forEach.call(item.querySelectorAll('.node-other[data-node]'), function (row) {
+    var old = row.querySelector('.node-now');
+    if (old) old.remove();
+    var n = row.dataset.node;
+    var shown = row.querySelector('.mono');
+    if (now[n] && !(shown && shown.textContent.trim() === now[n])) {
+      var w = el('span', 'node-now muted');
+      w.appendChild(el('span', '', 'now'));
+      w.appendChild(document.createTextNode(' '));
+      w.appendChild(noI18n(el('span', 'mono', now[n])));
+      var acts = row.querySelector('button');
+      row.insertBefore(w, acts || null);
+    }
+  });
+  var vip = (d.targets || []).filter(function (t) { return t.target === 'vip'; })[0];
+  var box = item.querySelector('.node-others');
+  var vr = item.querySelector('.node-other.vip');
+  if (vr) vr.remove();
+  if (!vip) return;
+  if (!box) {
+    box = el('div', 'node-others small');
+    (item.querySelector('.set-tail') || item).appendChild(box);
+  }
+  vr = el('div', 'node-other vip');
+  vr.appendChild(el('span', 'tag dim', 'the web address'));
+  vr.appendChild(vip.name ? noI18n(el('span', 'mono small', vip.name)) : el('span', 'node-empty small', '(empty)'));
+  vr.appendChild(el('span', 'muted', 'its own (High availability)'));
+  if (ADMIN) {
+    var eb = iconButton('edit', 'Change the name of the web address');
+    eb.onclick = function () { acmeNameAsk({target: 'vip', name: vip.name}); };
+    vr.appendChild(eb);
+  }
+  box.appendChild(vr);
+}
+function acmeNameAsk(t) {
+  askInModal(t.target === 'vip' ? 'The name of the web address' : 'The name of ' + t.target,
+    'The full DNS name its certificate is for - it goes into the certificate as its name (CN) and in its alternative names (SAN). The CA gives it only for a name that points at it (HTTP-01) or whose TXT record can be put in (DNS-01).',
+    [{label: 'DNS name', placeholder: t.target === 'vip' ? 'otp.example.cz' : t.target + '.example.cz', mono: true, value: t.name || '',
+      says: t.target === 'vip' ? 'Empty: the web address has no name.' : 'Empty: its full host name, as ' + t.target + ' says it.'}],
+    'Keep it', 'save', function (v, b) {
+      busy(b, true);
+      api('acme', {action: 'name', target: t.target, name: v[0].trim()}).then(function (x) {
+        closeModal(); AC.d = x; drawAcme(); toast('kept', 'good');
+        if (t.target !== 'vip') loadSettings();
+      }).catch(function (e) { busy(b, false); oops(e); });
+    });
 }
 
 /* In your DNS (1.0.170): what each certificate asked for needs there - by the
@@ -14193,9 +14262,8 @@ function acmeDnsGuide(d) {
   });
   var t = listTable(['Certificate', 'Record', 'Type', 'Points at / value', 'In DNS now'], rows, function (r) {
     var tr = el('tr');
-    tr.appendChild(noI18n(el('td', '', r.target === 'vip' ? '' : r.target)));
-    if (r.target === 'vip') tr.firstChild.appendChild(el('span', '', 'the web address'));
-    var rec = el('td', 'mono small');
+    tr.appendChild(r.target === 'vip' ? el('td', '', 'the web address') : noI18n(el('td', '', r.target)));
+    var rec = el('td', 'mono small dns-cell');
     if (r.record) {
       rec.appendChild(noI18n(el('span', '', r.record)));
       var cp = iconButton('copy', 'Copy');
@@ -14204,7 +14272,7 @@ function acmeDnsGuide(d) {
     } else rec.appendChild(el('span', 'muted', r.why || ''));
     tr.appendChild(rec);
     tr.appendChild(noI18n(el('td', 'mono small', r.type || '')));
-    var val = el('td', 'mono small');
+    var val = el('td', 'mono small dns-cell');
     if (r.type === 'CNAME' || (r.type === 'A' && r.value)) {
       val.appendChild(noI18n(el('span', '', r.value)));
       var cv = iconButton('copy', 'Copy');
@@ -14223,6 +14291,12 @@ function acmeDnsGuide(d) {
       }
     } else st.appendChild(el('span', 'muted', r.type === 'TXT' && !r.value ? 'otp puts it in' : '–'));
     tr.appendChild(st);
+    /* The text and its button in one box: the button at the column's edge. */
+    Array.prototype.forEach.call(tr.querySelectorAll('td.dns-cell'), function (td) {
+      var box = el('div', 'dns-val');
+      while (td.firstChild) box.appendChild(td.firstChild);
+      td.appendChild(box);
+    });
     return tr;
   });
   card.appendChild(t);

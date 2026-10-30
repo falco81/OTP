@@ -3274,12 +3274,20 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .hs-kept summary{cursor:pointer;color:var(--tx-mut)}
 .hs-kept .hs-list{margin-top:8px}
 /* the other nodes' values of a node's own setting, under its box (1.0.170) */
-.node-others{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px dashed var(--line);border-radius:8px}
-.node-other{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
-.node-other > .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
-.node-other .iconbtn,.node-other button{margin-left:auto}
-.node-other button + button{margin-left:0}
+.node-others{display:flex;flex-direction:column;gap:2px;padding:2px 0 2px 8px;border-left:2px solid var(--line);margin:0}
+.node-other{display:flex;align-items:center;gap:8px;min-width:0;min-height:30px}
+.node-other > .tag{flex:none}
+.node-other > .mono,.node-other > .node-empty{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.node-other > .muted{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.node-other > button:first-of-type{margin-left:auto}
+.node-other > button{flex:none}
 /* In your DNS (1.0.170) */
 .acme-dns{margin-top:14px}
 .acme-steps{margin:6px 0 12px 18px;padding:0;display:flex;flex-direction:column;gap:4px;color:var(--muted)}
-.acme-dns td .iconbtn,.acme-dns td button{margin-left:6px;vertical-align:middle}
+/* the records and their copy buttons: the text left, the button at the column's right edge, one under the other */
+.acme-dns td{vertical-align:middle}
+.acme-dns .dns-val{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.acme-dns .dns-val > span:first-child{overflow-wrap:anywhere;min-width:0;flex:1}
+.acme-dns .dns-val > button{margin-left:auto;flex:none}
+.acme-dns .dns-val > div{flex-basis:100%}
+.node-other .node-now{font-size:12px}

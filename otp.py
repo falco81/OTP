@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.170'
+__version__ = '1.0.171'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -737,7 +737,7 @@ NAMES = {
     'acme_url': 'Its ACME directory',
     'acme_ca_pem': 'The CA\u2019s own certificate',
     'acme_for': 'For',
-    'acme_node_name': 'This node\u2019s DNS name',
+    'acme_node_name': 'The node\u2019s DNS name',
     'acme_days': 'Renewed when fewer days are left than',
     'acme_key': 'The key of the certificate',
     'acme_challenge': 'How the CA checks the name',
@@ -1232,7 +1232,9 @@ SAYS = {
     'acme_url': 'The directory of another ACME CA, <code>https://ca.example.cz/acme/acme/directory</code>.',
     'acme_ca_pem': 'The CA\u2019s root (PEM), where the system does not trust it already.',
     'acme_for': 'Which certificates are ordered.',
-    'acme_node_name': 'The name this node\u2019s own certificate is for. Empty: its full host name.',
+    'acme_node_name': 'The name a node\u2019s own certificate is for - each node its own, the others\u2019 '
+                      'under the box. Empty: the name of the certificate it has now, else its full host '
+                      'name. The web address\u2019s: <i>Its name\u2026</i> on its card above.',
     'acme_days': 'Let\u2019s Encrypt\u2019s certificates last 90 days; 30 is what it advises.',
     'acme_key': 'ECDSA is smaller and quicker; RSA for old clients.',
     'acme_challenge': 'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, '
