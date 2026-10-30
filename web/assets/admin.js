@@ -14292,7 +14292,7 @@ function acmeDnsGuide(d) {
   });
   var t = listTable(['Certificate', 'Record', 'Type', 'Points at / value', 'In DNS now'], rows, function (r) {
     var tr = el('tr');
-    tr.appendChild(r.target === 'vip' ? el('td', '', 'the VIP address') : noI18n(el('td', '', r.target)));
+    tr.appendChild(r.target === 'vip' ? el('td', '', 'the VIP address') : (r.type === 'NS' ? el('td', '', 'its zone at deSEC') : noI18n(el('td', '', r.target))));
     var rec = el('td', 'mono small dns-cell');
     if (r.record) {
       rec.appendChild(noI18n(el('span', '', r.record)));
@@ -14303,7 +14303,7 @@ function acmeDnsGuide(d) {
     tr.appendChild(rec);
     tr.appendChild(noI18n(el('td', 'mono small', r.type || '')));
     var val = el('td', 'mono small dns-cell');
-    if (r.type === 'CNAME' || (r.type === 'A' && r.value)) {
+    if (r.type === 'CNAME' || r.type === 'NS' || (r.type === 'A' && r.value)) {
       val.appendChild(noI18n(el('span', '', r.value)));
       var cv = iconButton('copy', 'Copy');
       cv.onclick = function () { copyText(r.value, cv); };
@@ -14350,11 +14350,14 @@ function acmeDnsGuide(d) {
   chk.onclick = function () {
     busy(chk, true);
     api('acme', {action: 'dns_check'}).then(function (x) {
-      AC_DNS = {at: Date.now() / 1000, rows: x.rows};
+      AC_DNS = {at: Date.now() / 1000, rows: x.rows, own: x.own_resolvers};
       busy(chk, false); drawAcme();
     }).catch(function (e) { busy(chk, false); oops(e); });
   };
   row.appendChild(chk);
+  if (checked && AC_DNS.own === false) {
+    card.appendChild(el('p', 'note warn small', 'Checked with this machine’s DNS servers - inside your network they may see what the internet does not. Set DNS servers for ACME (below) to public ones, 1.1.1.1, 9.9.9.9, to see what the CA sees.'));
+  }
   if (checked) {
     var when = el('span', 'muted small');
     when.appendChild(el('span', '', 'checked'));
