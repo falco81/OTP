@@ -4,6 +4,22 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.173 — 30 October 2026
+
+**Prometheus**
+- *Settings → Monitoring*: each node answers `https://NODE/metrics` in
+  Prometheus' text format - RADIUS since the start (by what became of each
+  packet), the requests of the last day, the tokens, the database, the cluster
+  and its replication (running, errors, how far behind), the certificates of the
+  pages and when they end, the mail queue, isemon and syslog, the alerts open now,
+  high security. Asked with a token (`Authorization: Bearer`) made on the page,
+  shown once and kept sealed; from the networks set only, where any are. The page
+  shows the `prometheus.yml` with the nodes' addresses and what this node answers
+  now. An upgrade puts `location = /metrics` into nginx's file by itself.
+  `docs/monitoring.md`.
+- The name of a setting that wraps onto two lines keeps its (i) and its node's
+  tags on the last line, level with the boxes beside it.
+
 ## 1.0.172 — 30 October 2026
 
 **isemon over TLS, the database's TLS and the link's each by itself, ACME beside your own certificates**

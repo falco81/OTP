@@ -108,9 +108,17 @@ function otp_clear_session(): void
  * $payload, when given, is sent as a JSON body and turns this into a POST.
  */
 function otp_call(string $path, string $method = 'GET', array|object|null $payload = null,
-                     float $timeout = 30.0): array
+                     float $timeout = 30.0, array $extra = []): array
 {
     $headers = ['Accept: application/json'];
+    /* Headers of a caller's own (1.0.173): the scraper's token for /metrics,
+       one line each, nothing that could start another header. */
+    foreach ($extra as $line) {
+        $line = (string) $line;
+        if (preg_match('/^X-Otp-[A-Za-z-]{1,40}: [\x21-\x7e]{1,300}$/', $line)) {
+            $headers[] = $line;
+        }
+    }
     $headers[] = 'X-Otp-Client: '
         . preg_replace('/[^0-9a-fA-F:.]/', '', (string) ($_SERVER['REMOTE_ADDR'] ?? ''));
     // The name the pages were reached by, for the link in a token's mail

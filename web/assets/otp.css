@@ -3293,8 +3293,11 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .node-other .node-now{font-size:12px}
 /* A setting's name: the words wrap, the (i) and the tags of a node stay one
    block at the right (1.0.172) */
-.set-item label:has(> .lbl-txt){flex-wrap:nowrap;align-items:flex-start}
+.set-item label:has(> .lbl-txt){flex-wrap:nowrap;align-items:flex-end}
 .set-item label > .lbl-txt{flex:1 1 auto;min-width:0}
-.set-item label > .iinfo{margin-top:1px}
+.set-item label > .iinfo{margin-bottom:1px}
+/* the tags of a node on the name's last line, as on every box of the row (1.0.173) */
+.set-item label > .node-tags{margin-bottom:0}
 .set-item label > .node-tags{flex:none;display:inline-flex;gap:4px;white-space:nowrap;align-items:center}
 .hal-nodes.wide .hal-node{grid-template-columns:minmax(110px,max-content) auto 1fr}
+.mon-pre{max-height:60vh;overflow:auto;white-space:pre}

@@ -291,7 +291,7 @@ if (isset($_GET['api'])) {
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
-        'dbtls' => '/api/dbtls',
+        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -307,7 +307,7 @@ if (isset($_GET['api'])) {
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
-        'dbtls' => '/api/dbtls',
+        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -746,6 +746,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="network" data-icon="net" title="Each node's address, gateway, DNS servers, host name and IPv6 - put in by the node itself, a cluster kept whole.">Network</button>
+    <button type="button" class="fulladmin-only" data-pane="monitor" data-icon="pulse" title="Prometheus asks each node for its metrics.">Monitoring</button>
     <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy for what otp asks of the web - new versions, the SMS gateway, the system updates.">Proxy</button>
     <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of each node: chrony, its time servers, how far off it is - codes from the app are worked out from it.">Time</button>
     <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
@@ -966,6 +967,14 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         waits for it. Off until switched on.</p></div>
     <div id="si-host"></div>
     <div class="card full"><h2>Settings</h2><div id="sect-siem"></div></div>
+  </div>
+  <div class="ctl-pane" id="pane-monitor" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Monitoring</h2>
+      <p class="ctl-lede">Prometheus asks each node for its metrics at <span class="mono">https://NODE/metrics</span>:
+        RADIUS, the tokens, the database, the cluster and its replication, the certificates, the mail,
+        isemon and syslog, the alerts open now.</p></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-monitor"></div></div>
+    <div id="mon-host"></div>
   </div>
   <div class="ctl-pane" id="pane-proxy" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Proxy</h2>
