@@ -582,7 +582,7 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
     if reboot and plan.get('reboot') == 'auto':
         osup_put(store, row, state='rebooting', said='updated - restarting, as it needs')
         try:
-            power_ask(store, 'reboot', [me], 'one', by)
+            power_ask(store, 'reboot', [me], 'one', by, keep_service=True)
         except ValueError as e:
             osup_put(store, row, state='done', said='updated; the restart was not started: %s' % e)
         return
@@ -867,7 +867,7 @@ def osup_sched_tick(daemon):
             try:
                 if osup_plan(store).get('state') == 'running':
                     raise ValueError('an update of the system is going on')
-                power_ask(store, 'reboot', nodes, 'rolling', by)
+                power_ask(store, 'reboot', nodes, 'rolling', by, keep_service=True)
                 store.add_event('settings', 'the restart on a schedule: %s, one after the other'
                                 % ', '.join(nodes), 'warn')
             except ValueError as e:

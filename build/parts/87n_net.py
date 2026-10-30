@@ -820,7 +820,10 @@ def power_busy(store):
     return False
 
 
-def power_ask(store, how, targets, order, by):
+def power_ask(store, how, targets, order, by, keep_service=False):
+    """`keep_service` (1.0.165): a node goes down only while another one
+    answers - asked of every restart one after the other, on a schedule and
+    after an update; a node that does not come back stops the rest."""
     if how not in ('reboot', 'poweroff'):
         raise ValueError('reboot or poweroff')
     known = [node_name()] + [n['name'] for n in ha_nodes(store) if n['name'] != node_name()]
@@ -840,8 +843,14 @@ def power_ask(store, how, targets, order, by):
         # The node this page is not on last: the page stays with the other
         # while the first restarts.
         targets.sort(key=lambda n: n == node_name())
+    keep_service = bool(keep_service or (order == 'rolling' and len(targets) > 1))
+    if keep_service and CONFIG.get('ha_mode') and how == 'reboot':
+        alive = [n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me')]
+        if len(alive) < 2:
+            raise ValueError('only %s answers: restarting it would stop the service - bring the '
+                             'other node back first' % (', '.join(alive) or 'this node'))
     plan = {'id': secrets.token_hex(6), 'how': how, 'targets': targets, 'order': order,
-            'by': by, 'at': time.time(), 'from': node_name()}
+            'by': by, 'at': time.time(), 'from': node_name(), 'keep_service': keep_service}
     store.set_meta('power:plan', json.dumps(plan))
     store.add_event('starting and stopping', '%s asked for a %s of %s%s' % (
         by, 'restart' if how == 'reboot' else 'power-off', ', '.join(targets),
@@ -862,15 +871,23 @@ def power_go(daemon, plan):
     row = {'id': plan['id'], 'how': plan['how'], 'at': time.time(), 'boot': boot_time()}
     try:
         many = bool(CONFIG.get('ha_mode'))
+        if many and plan.get('keep_service') and plan['how'] == 'reboot' and \
+                not any(n.get('alive') and not n.get('me') for n in ha_nodes(store)):
+            # Its turn come, nobody else answers (1.0.165): it stays up.
+            raise ValueError('no other node answers now - not restarted, the service goes on here')
         if many and plan.get('order') != 'together' and not (maintenance_row(store) or {}).get('on'):
             maintenance_set(store, True, 'a %s asked by %s' % (
                 'restart' if plan['how'] == 'reboot' else 'power-off', plan.get('by')),
                 plan.get('by') or '')
             row['maint'] = True
             v = vip_conf(store)
-            end = time.time() + 20
+            end = time.time() + 90
             while v.get('on') and vip_here(v.get('address')) and time.time() < end:
                 time.sleep(1)
+            if v.get('on') and vip_here(v.get('address')) and plan.get('keep_service'):
+                # The web address did not move (1.0.165): not restarted under it.
+                raise ValueError('the web address did not move to the other node in 90 s - not '
+                                 'restarted')
         row['down_at'] = time.time() + 5
         _power_put(store, row, 'going', 'going down')
         net_root({'do': 'power', 'how': plan['how'], 'in': 5}, 30)
@@ -917,6 +934,14 @@ def power_tick(daemon):
             other = _meta_json(store, 'power:node:' + t) or {}
             if other.get('id') != plan['id'] or other.get('state') not in ('back', 'failed'):
                 return False                # not my turn yet
+            if other.get('state') == 'failed' and plan.get('keep_service'):
+                # One before did not come back (1.0.165): the rest stays up.
+                _power_put(store, {'id': plan['id'], 'how': plan['how'], 'at': time.time(),
+                                   'boot': boot_time()}, 'failed',
+                           'not restarted: %s did not restart and come back' % t)
+                store.add_event('starting and stopping', '%s was not restarted: %s did not come '
+                                'back - the service goes on here' % (me, t), 'bad')
+                return False
     _net_thread(power_go, daemon, plan)
     return True
 

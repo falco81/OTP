@@ -1135,7 +1135,7 @@ function loadTokens() {
         tr.appendChild(tokenTools(r.name));
         tr.onclick = function () { tokenPeek(r.name); };
         return tr;
-      }, 'rows'));
+      }, 'rows', {own: true}));
     pager('tk-pager', PAGE.tokens, per, d.total, function (p) { PAGE.tokens = p; loadTokens(); });
     explainWhatWasDrawn(host);
   }).catch(oops);
@@ -2082,7 +2082,7 @@ function requestTable(rows) {
     if (nd) tr.appendChild(nodeCell(r.node));
     tr.onclick = function () { requestPeek(r.id); };
     return tr;
-  }, 'rows');
+  }, 'rows', {own: true});
 }
 
 /* A click-through into the Log (1.0.100): what it looks for is written into
@@ -2162,7 +2162,7 @@ function activityTable(rows) {
     tr.appendChild(tools);
     tr.onclick = function () { if (r.kind === 'code') codePeek(r); else requestPeek(r.id); };
     return tr;
-  }, 'rows');
+  }, 'rows', {own: true});
 }
 
 function loadRequests() {
@@ -2395,7 +2395,7 @@ function loadEvents() {
       tr.appendChild(el('td', '', r.words));
       if (nd) tr.appendChild(nodeCell(r.node));
       return tr;
-    }));
+    }, '', {own: true}));
     pager('ev-pager', PAGE.events, per, d.total, function (p) { PAGE.events = p; loadEvents(); });
   }).catch(oops);
 }
@@ -2441,7 +2441,7 @@ function loadEnrolment() {
         tr.onclick = function () { tokenPeek(r.who); };
       }
       return tr;
-    }, 'plain|Nobody has been to the enrolment pages in this time'));
+    }, 'plain|Nobody has been to the enrolment pages in this time', {own: true}));
     pager('en-pager', PAGE.enrolment, per, d.total, function (p) { PAGE.enrolment = p; loadEnrolment(); });
   }).catch(oops);
 }
@@ -3165,20 +3165,36 @@ function askThen(title, words, buttonWords, danger) {
 function applyOnlyWhen() {
   applySubs();
   var rules = (SETTINGS && SETTINGS.only_when) || {};
+  /* A setting is asleep when the one it depends on says so - and also when
+     that one is asleep itself (1.0.165): On the day of a weekly restart was
+     there to change with the restart switched off. The reason given is the
+     first one up the line that is off. */
+  var seen = {};
+  function wake(key, depth) {
+    if (seen[key]) return seen[key];
+    var rule = rules[key];
+    if (!rule || depth > 6) return (seen[key] = {live: true});
+    var master = $('set-' + rule[0]);
+    if (!master) return (seen[key] = {live: true});
+    var up = wake(rule[0], depth + 1);
+    if (!up.live) return (seen[key] = up);
+    var now = master._get ? String(master._get()) : String(master.value);
+    var want = rule[1];
+    var live = want === '*' ? !!now.trim() : (want.slice(-4) === '-not' ? now !== want.slice(0, -4) : now === want);
+    return (seen[key] = {live: live, by: rule[0], want: want, now: now});
+  }
   Object.keys(rules).forEach(function (key) {
     var item = document.querySelector('.set-item[data-key="' + key + '"]');
-    var master = $('set-' + rules[key][0]);
-    if (!item || !master) return;
-    var now = master._get ? String(master._get()) : String(master.value);
-    var want = rules[key][1];
-    var live = want === '*' ? !!now.trim() : (want.slice(-4) === '-not' ? now !== want.slice(0, -4) : now === want);
+    if (!item || !$('set-' + rules[key][0])) return;
+    var w = wake(key, 0);
+    var live = w.live, want = w.want, now = w.now;
     item.classList.toggle('asleep', !live);
     var says = item.querySelector('.asleep-why');
     // Written again on every pass (1.0.61): it went on naming the choice it
     // was first put in for.
     if (says) says.remove();
     if (!live) {
-      var other = settingByKey(rules[key][0]) || {};
+      var other = settingByKey(w.by) || {};
       (item.querySelector('.set-tail') || item).appendChild(el('div', 'says asleep-why', want === '*' ? 'Not in use until ' + other.name + ' is filled in.'
         : (isBool(other) ? 'Not in use while ' + other.name + ' is off.'
            : 'Not in use while ' + other.name + ' is “' + ((other.choice_words || {})[now] || now) + '”.')));
@@ -9560,7 +9576,7 @@ function loadMailq(quiet) {
       tr.onclick = function () { mailqPeek(r.qid); };
       tr.classList.add('tappable');
       return tr;
-    }, 'rows'));
+    }, 'rows', {own: true}));
     }, !!quiet);
     pager('mq-pager', MQ.page, MQ.per, d.total, function (p) { MQ.page = p; loadMailq(); });
     explainWhatWasDrawn($('pane-mailq'));

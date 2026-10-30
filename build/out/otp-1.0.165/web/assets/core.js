@@ -967,8 +967,35 @@ function headCells(headers) {
   });
 }
 
-function listTable(headers, rows, cell, cls) {
-  var wrap = el('div', 'scroll');
+/* Every table of the pages (1.0.165): its rows scroll inside it under headings
+   that stay, and past LT_PER rows it is paged - the same buttons as every
+   list. The lists the daemon pages itself (`own`: the tokens, the log, the
+   enrolments, the events, the outgoing mail) keep their own. The page a table
+   is on is kept while it is drawn again by itself. */
+var LT_PER = 50;
+var LT_PAGE = {};
+function listTable(headers, rows, cell, cls, opts) {
+  opts = opts || {};
+  rows = Array.isArray(rows) ? rows : [];
+  if (!opts.own && rows.length > LT_PER) {
+    var key = (cls || '') + '|' + headCells(headers).map(function (th) { return th.textContent; }).join('|');
+    var box = el('div', 'lt-paged');
+    var pages = Math.ceil(rows.length / LT_PER);
+    var draw = function (page) {
+      page = Math.max(0, Math.min(pages - 1, page || 0));
+      LT_PAGE[key] = page;
+      clear(box);
+      var t = listTable(headers, rows.slice(page * LT_PER, (page + 1) * LT_PER),
+                        function (r, n) { return cell(r, n + page * LT_PER); }, cls, {own: false, inner: true});
+      box.appendChild(t);
+      var pg = el('div', 'pager lt-pager');
+      box.appendChild(pg);
+      pager(pg, page, LT_PER, rows.length, function (p) { draw(p); t = null; });
+    };
+    draw(LT_PAGE[key] || 0);
+    return box;
+  }
+  var wrap = el('div', 'scroll' + (opts.own ? '' : ' lt-held'));
   var table = el('table', cls || 'plain');
   var thead = el('thead'), tr = el('tr');
   /* A header is its words, or {words, cls} when the column it names is not
@@ -978,7 +1005,6 @@ function listTable(headers, rows, cell, cls) {
   thead.appendChild(tr);
   table.appendChild(thead);
   var body = el('tbody');
-  rows = Array.isArray(rows) ? rows : [];
   /* An empty list says so in one row rather than leaving a bare header
      (1.0.15). `cls` may carry an `empty` text after a '|': 'plain|Nothing yet'. */
   var words = 'Nothing here';
@@ -1007,7 +1033,7 @@ function listTable(headers, rows, cell, cls) {
 
 /* ---- paging, once, for every table that needs it ------------------------- */
 function pager(id, page, per, total, go, capped) {
-  var host = $(id);
+  var host = typeof id === 'string' ? $(id) : id;
   clear(host);
   var pages = Math.max(1, Math.ceil((total || 0) / per));
   /* A page past the end - the window rolled on, or rows were erased - is
