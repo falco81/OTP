@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.184 — 30 October 2026
+
+- SNMPv3 switched on puts a tile of its own on the Overview, in a row under the
+  others and as wide as they are: answered requests, the port, who asked last,
+  the traps sent - red when it does not listen or the user is not set, orange
+  when the last trap did not go; a click shows the rest and opens the settings.
+  Switched off, the tile goes.
+- The firewall lets SNMPv3 in by itself while it is on (from *SNMP only from*, or
+  from everywhere) and takes the rule out when it is switched off - as it did in
+  1.0.182, now tested and said: *Settings → Firewall and access* lists it among
+  what otp lets in.
+
 ## 1.0.183 — 30 October 2026
 
 **SSH with a code**

@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.183'
+__version__ = '1.0.184'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -13876,6 +13876,9 @@ class Daemon(object):
             'host': socket.gethostname(), 'started': self.started,
             'uptime': time.time() - self.started, 'now': time.time(),
             'radius': r, 'isemon': sh, 'tokens': c,
+            # The Overview's tile (1.0.184), shown while SNMPv3 is on.
+            'snmp': dict(SNMP_STATE, on=bool(CONFIG.get('snmp')), ready=bool(snmp_conf()),
+                         traps_on=bool(CONFIG.get('snmp_traps'))) if CONFIG.get('snmp') else {},
             'clients': len(self.store.clients()), 'realms': len(self.store.realms()),
             'directories': len(self.dirs),
             'day': {'accept': acc, 'reject': rej},
