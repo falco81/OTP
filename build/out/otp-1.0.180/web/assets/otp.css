@@ -3310,3 +3310,11 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 /* a switch of another node right under the box's own switch (1.0.177) */
 .node-others.bool{border-left:0;padding-left:0}
 .node-others.bool .node-other > .sw{margin:0;flex:none}
+
+/* Room around the buttons (1.0.180): a row of buttons under a field, a note or
+   a table got it pressed up against it, and what came after the row too. No
+   weight of its own (:where) - a place that sets its own margin keeps it. */
+:where(.card, #modal-body, .set-item) > :where(.btnrow:not(:first-child)) {margin-top:16px}
+:where(.card, #modal-body, .set-item) > :where(.btnrow + *:not(.btnrow)) {margin-top:16px}
+:where(.card, #modal-body) > :where(.btn:not(:first-child)) {margin-top:14px}
+:where(.dbt-try:not(:empty)) {margin-top:18px}
