@@ -290,7 +290,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -305,7 +305,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -740,6 +740,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" class="fulladmin-only" data-pane="hisec" data-icon="shield" title="Every way of doing something less safely switched off - and what stands against it now.">High security</button>
     <button type="button" data-pane="web" data-icon="lock" title="The certificates of the nodes and of the cluster's web address, and how TLS is spoken.">Certificates and TLS</button>
+    <button type="button" class="fulladmin-only" data-pane="acme" data-icon="lock" title="The certificates ordered from Let's Encrypt (or another ACME CA) and renewed by themselves.">Automatic certificates</button>
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="network" data-icon="net" title="Each node's address, gateway, DNS servers, host name and IPv6 - put in by the node itself, a cluster kept whole.">Network</button>
@@ -946,6 +947,15 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div id="hs-host"></div>
     <div class="card full"><h2>Settings</h2><div id="sect-hisec"></div></div>
   </div>
+  <div class="ctl-pane" id="pane-acme" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Automatic certificates</h2>
+      <p class="ctl-lede">The certificate of the web address - and, where asked, each node's own - ordered from Let's
+        Encrypt or another ACME CA and renewed by itself well before it runs out. The CA checks the name by asking
+        it on port 80 (HTTP-01), or by a record in DNS (DNS-01) for servers it cannot see from the internet. In a
+        cluster the answer is kept in the database, so whichever node has the web address gives it.</p></div>
+    <div id="ac-host"></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-acme"></div></div>
+  </div>
   <div class="ctl-pane" id="pane-siem" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Syslog and SIEM</h2>
       <p class="ctl-lede">Every event and every sign-in - who, from where, let in or refused and why - to a
@@ -976,8 +986,9 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         line and every RADIUS packet as a <span class="mono">radius-detail</span> line - exactly
         what a totpcgi token server and its FreeRADIUS send it - so isemon reads this server with
         what it already has.</p></div>
-    <div class="card full"><div id="isemon-state"></div></div>
-    <div class="card full"><div id="sect-isemon"></div></div>
+    <div id="isemon-state"></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-isemon"></div></div>
+    <div class="card full" id="isemon-guide"></div>
   </div>
 
   <div class="ctl-pane" id="pane-people" hidden>
@@ -1325,6 +1336,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         cluster. Locked with the password below; sent to every destination switched on - a
         folder, FTP, FTPS, SFTP, SCP or a Windows/Samba share. Each node of a cluster sends its own.</p></div>
     <div id="rb-top"></div>
+    <div class="card full" id="rb-tried-card" hidden><h2>Backups tried <span class="right" id="rb-tried-tools"></span></h2><div id="rb-tried"></div></div>
     <div class="card full"><h2>When, how many, and the password</h2><div id="sect-backup"></div></div>
     <div class="card full"><h2>Where they go <span class="right" id="rb-add-host"></span></h2>
       <div id="rb-targets"></div></div>

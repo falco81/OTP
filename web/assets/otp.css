@@ -3191,7 +3191,6 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .si-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)}
 .si-row .mono{flex:1;min-width:0;overflow-wrap:anywhere}
 .si-said{color:var(--crit,#f85149);margin:2px 0 6px 18px;overflow-wrap:anywhere}
-.px-said{margin-top:10px}
 .lg-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:10px 0 4px}
 .lg-kv b{text-align:right}
 
@@ -3210,7 +3209,67 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .rb-tried{display:flex;flex-direction:column;gap:6px}
 .rb-try{border:1px solid var(--line);border-radius:8px;padding:8px 12px}
 .rb-try.bad{border-color:color-mix(in srgb,var(--crit,#f85149) 50%,var(--line))}
-.rb-try summary{cursor:pointer;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rb-try summary{cursor:pointer;display:flex;gap:8px;align-items:center;flex-wrap:wrap;list-style:none}
+.rb-try summary::-webkit-details-marker{display:none}
+.rb-try-x{margin-left:auto}
 .rb-checks{margin:8px 0 2px 16px;display:flex;flex-direction:column;gap:4px}
 .rb-check{display:flex;gap:8px;align-items:baseline}
 .rb-check .dot{flex:none;transform:translateY(-1px)}
+
+/* Proxy → Try it (1.0.169): the way it went */
+.px-out{margin-top:14px;display:flex;flex-direction:column;gap:12px}
+.px-result{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--panel2)}
+.px-verdict{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.px-verdict.ok b{color:var(--ok,#3fb950)} .px-verdict.bad b{color:var(--crit,#f85149)}
+.px-path{display:flex;align-items:center;gap:0;flex-wrap:wrap;row-gap:12px}
+.px-stop{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:150px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);text-align:center}
+.px-stop .px-ic{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:var(--panel2);color:var(--tx-mut)}
+.px-stop.me .px-ic{color:var(--accent,#58a6ff)}
+.px-stop.good{border-color:color-mix(in srgb,var(--ok,#3fb950) 55%,var(--line))}
+.px-stop.good .px-ic{color:var(--ok,#3fb950)}
+.px-stop.bad{border-color:color-mix(in srgb,var(--crit,#f85149) 55%,var(--line))}
+.px-stop.bad .px-ic{color:var(--crit,#f85149)}
+.px-stop b{font-size:12.5px;word-break:break-all}
+.px-link{flex:1;min-width:90px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:0 6px}
+.px-wire{display:block;width:100%;height:3px;border-radius:2px;background:var(--line)}
+.px-link.ok .px-wire{background:var(--ok,#3fb950)}
+.px-link.bad .px-wire{background:repeating-linear-gradient(90deg,var(--crit,#f85149) 0 8px,transparent 8px 14px)}
+.px-link.going .px-wire{background:repeating-linear-gradient(90deg,var(--accent,#58a6ff) 0 10px,transparent 10px 20px);background-size:40px 3px;animation:px-run .8s linear infinite}
+@keyframes px-run{from{background-position:0 0}to{background-position:40px 0}}
+.px-lw{color:var(--tx-mut)}
+.px-link.ok .px-lw{color:var(--ok,#3fb950)} .px-link.bad .px-lw{color:var(--crit,#f85149)}
+.px-steps{display:flex;flex-direction:column;gap:6px}
+.px-step{display:flex;gap:12px;align-items:flex-start;padding:8px 12px;border:1px solid var(--line);border-radius:8px}
+.px-step .px-n{flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--panel2)}
+.px-step.ok .px-n{color:var(--ok,#3fb950);background:var(--ok-bg,rgba(63,185,80,.15))}
+.px-step.bad .px-n{color:var(--crit,#f85149);background:rgba(248,81,73,.15)}
+.px-step.off{opacity:.55}
+.px-st{flex:1;min-width:0}
+.px-st .mono{overflow-wrap:anywhere}
+.px-ms{flex:none}
+@media (max-width:700px){.px-link{min-width:100%;padding:4px 0}.px-stop{min-width:100%}}
+.px-nodes{display:grid;grid-template-columns:1fr;gap:14px}
+.px-nodes.two{grid-template-columns:repeat(auto-fit,minmax(520px,1fr))}
+.px-node{display:flex;flex-direction:column;gap:10px}
+.px-node-h{display:flex;gap:8px;align-items:center}
+.px-nodes .px-stop{min-width:120px}
+
+/* Every node a card (1.0.169): the standard of Time */
+.node-grid{grid-template-columns:repeat(auto-fill,minmax(520px,1fr))}
+.node-grid .ntp-node .btnrow{margin-top:12px}
+.node-said{display:flex;gap:10px;align-items:flex-start;margin-top:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
+.node-said .dot{margin-top:6px;flex:none}
+.node-said.ok{border-color:color-mix(in srgb,var(--ok,#3fb950) 45%,var(--line))}
+.node-said.bad{border-color:color-mix(in srgb,var(--crit,#f85149) 45%,var(--line))}
+@media (max-width:700px){.node-grid{grid-template-columns:1fr}}
+.rb-nodes{margin-top:14px;margin-bottom:0}
+
+/* High security: the exceptions (1.0.169) */
+.hs-ex{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none;cursor:pointer}
+.hs-item{align-items:center}
+.hs-item.waived{opacity:.75}
+.hs-item.ok .hs-what{font-weight:500}
+.hs-h.dim{color:var(--tx-mut)}
+.hs-kept{margin-top:14px}
+.hs-kept summary{cursor:pointer;color:var(--tx-mut)}
+.hs-kept .hs-list{margin-top:8px}

@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.168'
+__version__ = '1.0.169'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -311,6 +311,28 @@ DEFAULTS = {
     'logs_journal_days': 0,
     'logs_keep': 30,
     'logs_max_mb': 200,
+    'acme': 0,
+    'acme_email': '',
+    'acme_ca': 'letsencrypt',
+    'acme_url': '',
+    'acme_ca_pem': '',
+    'acme_for': 'vip',
+    'acme_node_name': '',
+    'acme_days': 30,
+    'acme_key': 'ec',
+    'acme_challenge': 'http-01',
+    'acme_dns': 'manual',
+    'acme_dns_server': '',
+    'acme_dns_zone': '',
+    'acme_dns_tsig_name': '',
+    'acme_dns_tsig_alg': 'hmac-sha256',
+    'acme_dns_tsig_secret': '',
+    'acme_dns_token': '',
+    'acme_dns_url': '',
+    'acme_dns_user': '',
+    'acme_dns_key': '',
+    'acme_dns_subdomain': '',
+    'acme_dns_wait': 30,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -357,7 +379,7 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # the pages ask the daemon on, the name it greets mail servers with, the
 # name isemon files its lines under and the debug switches.
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
-             'isemon_hostname', 'siem_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
+             'isemon_hostname', 'siem_hostname', 'acme_node_name', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
              'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
@@ -370,10 +392,11 @@ def this_node_name(conf=None):
 
 
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
-               'rbackup_password', 'proxy_password')
+               'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
+               'acme_dns_key')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
-               'proxy_password')
+               'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -426,6 +449,12 @@ TUNABLE = {
     'proxy': (0, 1), 'proxy_os': (0, 1), 'proxy_sms': (0, 1),
     'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
     'logs_max_mb': (1, 100000),
+    'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
+    'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('ec', 'rsa2048'),
+    'acme_challenge': ('http-01', 'dns-01'), 'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns'),
+    'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384', 'hmac-sha224', 'hmac-sha1',
+                          'hmac-md5'),
+    'acme_dns_wait': (0, 600),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -446,6 +475,16 @@ TUNABLE = {
 }
 
 CHOICE_WORDS = {
+    'acme_challenge': {'http-01': 'HTTP-01 - the CA asks port 80 of the name',
+                       'dns-01': 'DNS-01 - a TXT record in DNS (no port open to the internet)'},
+    'acme_dns': {'manual': 'by hand - the record is shown here, you put it in',
+                 'rfc2136': 'RFC 2136 dynamic update with a TSIG key (BIND, PowerDNS, Knot...)',
+                 'cloudflare': 'Cloudflare, with an API token', 'acmedns': 'an acme-dns server'},
+    'acme_ca': {'letsencrypt': 'Let\u2019s Encrypt', 'letsencrypt-staging': 'Let\u2019s Encrypt - staging (to try it)',
+                'custom': 'another ACME CA (step-ca, an internal CA...)'},
+    'acme_for': {'vip': 'the web address (or this node, where there is none)',
+                 'node': 'each node\u2019s own name', 'both': 'the web address and each node'},
+    'acme_key': {'ec': 'ECDSA P-256', 'rsa2048': 'RSA 2048'},
     'rbackup_verify': {'off': 'only by hand', 'after': 'after every backup, the one just sent',
                        'weekly': 'once a week, the newest one'},
     'mail_mode': {'off': 'off - no mail is sent',
@@ -686,6 +725,28 @@ NAMES = {
     'logs_journal_days': 'The system journal kept for (days)',
     'logs_keep': 'otp’s own logs kept (files)',
     'logs_max_mb': 'A log file at most (MB)',
+    'acme': 'Certificates from an ACME CA',
+    'acme_email': 'Mail of the account at the CA',
+    'acme_ca': 'The CA',
+    'acme_url': 'Its ACME directory',
+    'acme_ca_pem': 'The CA\u2019s own certificate',
+    'acme_for': 'For',
+    'acme_node_name': 'This node\u2019s DNS name',
+    'acme_days': 'Renewed when fewer days are left than',
+    'acme_key': 'The key of the certificate',
+    'acme_challenge': 'How the CA checks the name',
+    'acme_dns': 'Who puts the TXT record in DNS',
+    'acme_dns_server': 'The DNS server taking the updates',
+    'acme_dns_zone': 'The zone',
+    'acme_dns_tsig_name': 'The name of the TSIG key',
+    'acme_dns_tsig_alg': 'Its algorithm',
+    'acme_dns_tsig_secret': 'The TSIG secret',
+    'acme_dns_token': 'The Cloudflare API token',
+    'acme_dns_url': 'The acme-dns server',
+    'acme_dns_user': 'acme-dns user',
+    'acme_dns_key': 'acme-dns key',
+    'acme_dns_subdomain': 'acme-dns subdomain',
+    'acme_dns_wait': 'Wait for DNS to carry it (s)',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1153,6 +1214,36 @@ SAYS = {
     'logs_journal_days': 'Nothing older is kept. 0: as the system has it.',
     'logs_keep': 'How many old files of /var/log/otp are kept, one a day.',
     'logs_max_mb': 'A file bigger than this is put aside sooner than once a day.',
+    'acme': 'The certificates ordered from the CA by HTTP-01 and renewed by themselves - port 80 '
+            'of the name must reach a node. In a cluster the answer is kept in the database, so '
+            'whichever node has the web address gives it. Off until switched on.',
+    'acme_email': 'Where the CA writes when a certificate runs out unrenewed. Empty: none.',
+    'acme_ca': 'Let\u2019s Encrypt, its staging (certificates browsers do not trust - to try '
+               'it), or another.',
+    'acme_url': 'The directory of another ACME CA, <code>https://ca.example.cz/acme/acme/directory</code>.',
+    'acme_ca_pem': 'The CA\u2019s root (PEM), where the system does not trust it already.',
+    'acme_for': 'Which certificates are ordered.',
+    'acme_node_name': 'The name this node\u2019s own certificate is for. Empty: its full host name.',
+    'acme_days': 'Let\u2019s Encrypt\u2019s certificates last 90 days; 30 is what it advises.',
+    'acme_key': 'ECDSA is smaller and quicker; RSA for old clients.',
+    'acme_challenge': 'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, '
+                      'for a CA of your own). DNS-01 needs nothing open: the CA reads a TXT record.',
+    'acme_dns': 'By hand the order waits up to an hour for you; the others renew by themselves.',
+    'acme_dns_server': 'The primary DNS server of the zone, <code>ns1.example.cz</code> or with a port '
+                       '<code>10.0.0.53:53</code>.',
+    'acme_dns_zone': 'Where the record goes, <code>example.cz</code>. Empty: as the server finds it.',
+    'acme_dns_tsig_name': 'As the DNS server knows it, <code>otp-acme.</code>; allowed to update '
+                          '_acme-challenge records only.',
+    'acme_dns_tsig_alg': 'As the key was made (tsig-keygen makes hmac-sha256).',
+    'acme_dns_tsig_secret': 'The key\u2019s secret (base64). Kept sealed; written to a file only otp '
+                            'reads for the moment nsupdate runs.',
+    'acme_dns_token': 'A token with Zone - DNS - Edit for the zone. Kept sealed.',
+    'acme_dns_url': '<code>https://auth.acme-dns.example.cz</code>; _acme-challenge.NAME is a CNAME to '
+                    'the subdomain below.',
+    'acme_dns_user': 'From the registration at acme-dns.',
+    'acme_dns_key': 'From the registration at acme-dns. Kept sealed.',
+    'acme_dns_subdomain': 'From the registration at acme-dns.',
+    'acme_dns_wait': 'How long the record is given to reach every DNS server before the CA is asked.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1243,6 +1334,11 @@ PANES = {
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
               'proxy_sms'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
+    'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
+             'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
+             'acme_dns_server', 'acme_dns_zone', 'acme_dns_tsig_name', 'acme_dns_tsig_alg',
+             'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_url', 'acme_dns_user',
+             'acme_dns_key', 'acme_dns_subdomain', 'acme_dns_wait'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1306,6 +1402,16 @@ ONLY_WHEN = {
     'siem_hostname': ['siem', '1'], 'siem_verify': ['siem', '1'], 'siem_ca': ['siem', '1'],
     'proxy_url': ['proxy', '1'], 'proxy_user': ['proxy', '1'], 'proxy_password': ['proxy', '1'],
     'proxy_no': ['proxy', '1'], 'proxy_os': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
+    'acme_for': ['acme', '1'], 'acme_email': ['acme', '1'], 'acme_ca': ['acme', '1'],
+    'acme_url': ['acme_ca', 'custom'], 'acme_ca_pem': ['acme_ca', 'custom'],
+    'acme_node_name': ['acme_for', 'vip-not'], 'acme_days': ['acme', '1'], 'acme_key': ['acme', '1'],
+    'acme_challenge': ['acme', '1'], 'acme_dns': ['acme_challenge', 'dns-01'],
+    'acme_dns_wait': ['acme_challenge', 'dns-01'],
+    'acme_dns_server': ['acme_dns', 'rfc2136'], 'acme_dns_zone': ['acme_dns', 'rfc2136'],
+    'acme_dns_tsig_name': ['acme_dns', 'rfc2136'], 'acme_dns_tsig_alg': ['acme_dns', 'rfc2136'],
+    'acme_dns_tsig_secret': ['acme_dns', 'rfc2136'], 'acme_dns_token': ['acme_dns', 'cloudflare'],
+    'acme_dns_url': ['acme_dns', 'acmedns'], 'acme_dns_user': ['acme_dns', 'acmedns'],
+    'acme_dns_key': ['acme_dns', 'acmedns'], 'acme_dns_subdomain': ['acme_dns', 'acmedns'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1389,7 +1495,7 @@ def _coerce(current, value):
 
 
 # Settings of several lines (1.0.103): the rest are one line each.
-SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca',
+SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca', 'acme_ca_pem',
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
 
@@ -1468,6 +1574,33 @@ def check_setting(key, value):
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'acme_email' and str(got).strip() and \
+            not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', str(got).strip()):
+        raise BadSetting('acme_email: a mail address')
+    if key == 'acme_url' and str(got).strip() and \
+            not re.match(r'^https://[^\s"<>]+\Z', str(got).strip()):
+        raise BadSetting('acme_url: an address starting https://')
+    if key == 'acme_dns_url' and str(got).strip() and \
+            not re.match(r'^(https://[^\s"<>]+|http://(127\.0\.0\.1|localhost)(:\d+)?(/[^\s"<>]*)?)\Z',
+                         str(got).strip()):
+        raise BadSetting('acme_dns_url: an address starting https://')
+    if key in ('acme_dns_server',) and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9.\-:\[\]]{1,260}\Z', str(got).strip()):
+        raise BadSetting('acme_dns_server: a name or an address, :port if not 53')
+    if key in ('acme_dns_zone', 'acme_dns_tsig_name') and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9][A-Za-z0-9.\-_]{0,252}\Z', str(got).strip()):
+        raise BadSetting('%s: a DNS name' % key)
+    if key == 'acme_dns_tsig_secret' and str(got).strip() and not is_masked(got) and \
+            not re.match(r'^[A-Za-z0-9+/=]{8,512}\Z', str(got).strip()):
+        raise BadSetting('acme_dns_tsig_secret: the secret in base64, as tsig-keygen makes it')
+    if key in ('acme_dns_user', 'acme_dns_subdomain') and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9-]{1,64}\Z', str(got).strip()):
+        raise BadSetting('%s: letters, digits and dashes' % key)
+    if key == 'acme_ca_pem' and str(got).strip() and '-----BEGIN CERTIFICATE-----' not in str(got):
+        raise BadSetting('acme_ca_pem: a certificate in PEM, -----BEGIN CERTIFICATE-----')
+    if key == 'acme_node_name' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9][A-Za-z0-9.-]{0,252}\Z', str(got).strip()):
+        raise BadSetting('acme_node_name: a DNS name')
     if key == 'siem_targets':
         if len(siem_targets(str(got), strict=True)) > 8:
             raise BadSetting('siem_targets: 8 servers at most')
@@ -13158,6 +13291,7 @@ class Daemon(object):
         self.stop_flag = threading.Event()
         self.shipper = None
         self.siem = None
+        _HS_WAIVE['store'][0] = store       # the exceptions to high security read from it
         self.dirs = {}
         self.reload_directories()
         self.tokens = Tokens(store)
@@ -13494,6 +13628,7 @@ class Daemon(object):
             'database': {'engine': self.store.db.engine, 'where': self.store.db.where()},
             'lang': CONFIG.get('ui_lang') or 'cs', 'php': php_state(), 'admin_show_key': bool(CONFIG.get('admin_show_key')),
             'high_security': bool(CONFIG.get('high_security')),
+            'hisec_waived': sorted(hisec_waived(self.store)),
             'default_realm': CONFIG.get('default_realm') or '',
             'node': node_name(),
             'nodes': [{'name': n['name'], 'alive': n['alive'], 'age': n['age'],
@@ -13734,6 +13869,14 @@ class Daemon(object):
                     osup_sched_tick(self)       # updates and restarts on a schedule (1.0.164)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osup-sched', 'the schedule of updates: %s' % e, 'warn', every=600)
+                try:
+                    node_ask_tick(self)         # tests asked of every node (1.0.169)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('node-ask', 'a test asked of every node: %s' % e, 'warn', every=600)
+                try:
+                    acme_tick(self)             # certificates by ACME (1.0.169)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('acme-tick', 'ACME: %s' % e, 'warn', every=600)
                 try:
                     sshd_tick(self)             # the SSH server and the notices (1.0.163)
                 except Exception as e:          # noqa: BLE001
@@ -19360,6 +19503,21 @@ def rb_verified(store):
     return out
 
 
+def rb_verified_forget(store, at=None):
+    """Taken off the list - one try (by its time) or all; the backups stay."""
+    n = 0
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'rbackup:verified:%'"):
+        try:
+            rows = json.loads(r['v'] or '[]')
+        except ValueError:
+            rows = []
+        keep = [] if at is None else [x for x in rows if abs(float(x.get('at') or 0) - at) > 0.001]
+        if len(keep) != len(rows):
+            n += len(rows) - len(keep)
+            store.set_meta(r['k'], json.dumps(keep))
+    return n
+
+
 def rb_verify_start(store, by, tid=None, name=None):
     """In a thread of its own, followed as a backup is (RB_JOB)."""
     with RB_LOCK:
@@ -21605,34 +21763,139 @@ def url_open(req, timeout=30, context=None, purpose='web'):
 
 
 def proxy_try(url=''):
-    """Settings → Proxy → Try it: a page fetched through the proxy, and what came
-    back or what stopped it."""
-    if not proxy_on():
-        raise ValueError('no proxy is set - switch it on and give its address first')
+    """Settings → Proxy → Try it (1.0.169): an address asked the way otp asks
+    the web - through the proxy where one is set and the address is not one
+    reached straight, else straight - one step at a time: the name looked up,
+    the connection, the tunnel through the proxy, TLS and the certificate,
+    the answer. Always tried; each step with how long it took."""
     url = str(url or '').strip() or online_url() or 'https://github.com/'
-    if not re.match(r'^https?://[^\s]+\Z', url):
-        raise ValueError('an address starting https://')
+    if not re.match(r'^https?://[^\s/]+[^\s]*\Z', url):
+        raise ValueError('an address starting https:// (or http://)')
+    u = urllib.parse.urlsplit(url)
+    host = u.hostname or ''
+    tls_on = u.scheme == 'https'
+    port = u.port or (443 if tls_on else 80)
+    via, why = '', ''
+    if not proxy_on():
+        why = 'no proxy is set' if not CONFIG.get('proxy') else 'the proxy has no address'
+    elif proxy_skips(host):
+        why = '%s is in the list reached straight' % host
+    else:
+        via = proxy_full()
+    px = urllib.parse.urlsplit(via) if via else None
+    out = {'url': url, 'host': host, 'port': port, 'mode': 'proxy' if via else 'direct',
+           'why_direct': why, 'node': node_name(), 'steps': [], 'ok': False,
+           'proxy': '%s:%d' % (px.hostname, px.port or 3128) if px else '',
+           'proxy_auth': bool(px and px.username)}
     began = time.time()
-    host = urllib.parse.urlsplit(url).hostname or ''
-    req = urllib.request.Request(url, method='HEAD', headers={
-        'User-Agent': 'otp/%s (+proxy check)' % __version__})
+    sock = [None]
+
+    def step(what, fn):
+        t0 = time.time()
+        try:
+            said = fn() or ''
+        except Exception as e:                          # noqa: BLE001
+            out['steps'].append({'what': what, 'ok': False, 'ms': int((time.time() - t0) * 1000),
+                                 'said': str(getattr(e, 'reason', '') or e)[:300]})
+            raise
+        out['steps'].append({'what': what, 'ok': True, 'ms': int((time.time() - t0) * 1000),
+                             'said': said})
+
+    def resolve(name, p):
+        got = socket.getaddrinfo(name, p, 0, socket.SOCK_STREAM)
+        addrs = []
+        for g in got:
+            if g[4][0] not in addrs:
+                addrs.append(g[4][0])
+        out.setdefault('addrs', {})[name] = addrs
+        return ', '.join(addrs[:4])
+
+    def connect(name, p):
+        sock[0] = socket.create_connection((name, p), timeout=10)
+        sock[0].settimeout(15)
+        peer = sock[0].getpeername()
+        return '%s port %d' % (peer[0], peer[1])
+
+    def read_head():
+        data = b''
+        while b'\r\n\r\n' not in data and len(data) < 65536:
+            chunk = sock[0].recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        line = data.split(b'\r\n', 1)[0].decode('latin-1', 'replace')
+        m = re.match(r'^HTTP/\d(?:\.\d)?\s+(\d{3})\s*(.*)$', line)
+        if not m:
+            raise ValueError('no HTTP answer: %r' % line[:80])
+        return int(m.group(1)), m.group(2).strip(), data
+
+    def auth_header():
+        if not (px and px.username):
+            return ''
+        creds = '%s:%s' % (urllib.parse.unquote(px.username), urllib.parse.unquote(px.password or ''))
+        return 'Proxy-Authorization: Basic %s\r\n' % base64.b64encode(creds.encode()).decode()
+
     try:
-        with url_open(req, timeout=15, context=ssl.create_default_context()) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-        if e.code == 407:
-            return {'ok': False, 'url': url, 'status': 407,
-                    'said': 'the proxy asks for a user name and a password (407) - they are '
-                            'missing or wrong', 'ms': int((time.time() - began) * 1000)}
-    except (OSError, ssl.SSLError, ValueError) as e:
-        said = str(getattr(e, 'reason', '') or e)
-        if 'Tunnel connection failed: 407' in said:
-            said = 'the proxy asks for a user name and a password (407) - they are missing or wrong'
-        return {'ok': False, 'url': url, 'said': said[:300],
-                'ms': int((time.time() - began) * 1000)}
-    return {'ok': True, 'url': url, 'status': status, 'straight': proxy_skips(host),
-            'ms': int((time.time() - began) * 1000)}
+        if via:
+            step('the proxy looked up (%s)' % px.hostname, lambda: resolve(px.hostname, px.port or 3128))
+            step('connected to the proxy', lambda: connect(px.hostname, px.port or 3128))
+            if tls_on:
+                def tunnel():
+                    sock[0].sendall(('CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n%s'
+                                     'User-Agent: otp/%s (+proxy check)\r\n\r\n' % (
+                                         host, port, host, port, auth_header(), __version__)).encode())
+                    code, words, _ = read_head()
+                    if code == 407:
+                        raise ValueError('the proxy asks for a user name and a password (407) - '
+                                         'they are %s' % ('wrong' if px.username else 'missing'))
+                    if code != 200:
+                        raise ValueError('the proxy said %d %s' % (code, words))
+                    return '%d %s%s' % (code, words, ' - with the user name and password'
+                                        if px.username else '')
+                step('a tunnel through the proxy to %s:%d' % (host, port), tunnel)
+        else:
+            step('%s looked up' % host, lambda: resolve(host, port))
+            step('connected to %s' % host, lambda: connect(host, port))
+        if tls_on:
+            def handshake():
+                ctx = ssl.create_default_context()
+                sock[0] = ctx.wrap_socket(sock[0], server_hostname=host)
+                c = sock[0].getpeercert() or {}
+                subj = dict(x[0] for x in c.get('subject', ()) if x)
+                iss = dict(x[0] for x in c.get('issuer', ()) if x)
+                out['tls'] = {'version': sock[0].version(), 'cipher': (sock[0].cipher() or [''])[0],
+                              'subject': subj.get('commonName', ''),
+                              'issuer': iss.get('organizationName') or iss.get('commonName', ''),
+                              'until': c.get('notAfter', '')}
+                return '%s, %s - %s, by %s' % (out['tls']['version'], out['tls']['cipher'],
+                                               out['tls']['subject'], out['tls']['issuer'])
+            step('TLS, the certificate of %s checked' % host, handshake)
+
+        def ask():
+            path = (u.path or '/') + ('?' + u.query if u.query else '')
+            target = url if (via and not tls_on) else path
+            sock[0].sendall(('HEAD %s HTTP/1.1\r\nHost: %s\r\n%sUser-Agent: otp/%s (+proxy check)'
+                             '\r\nConnection: close\r\n\r\n' % (
+                                 target, u.netloc.split('@')[-1],
+                                 auth_header() if (via and not tls_on) else '', __version__)).encode())
+            code, words, _ = read_head()
+            out['status'] = code
+            if code == 407:
+                raise ValueError('the proxy asks for a user name and a password (407)')
+            return '%d %s' % (code, words)
+        step('asked for %s' % (u.path or '/'), ask)
+        out['ok'] = True
+    except Exception:                                   # noqa: BLE001
+        pass
+    finally:
+        try:
+            if sock[0]:
+                sock[0].close()
+        except OSError:
+            pass
+    out['ms'] = int((time.time() - began) * 1000)
+    return out
+
 
 
 # ---- a ZIP locked with a passphrase: WinZip AES-256 (1.0.167) ----------------------------
@@ -21814,12 +22077,13 @@ def zip_aes_open(raw, info, passphrase, most=64 * 1024):
 
 
 # ---- High security (1.0.168) -------------------------------------------------------------
-# Settings → Tokens → High security: every way of doing something less safely
-# switched off. It is switched on only once nothing stands against it - what
-# does is listed, each with where it is set; while it is on, what would stand
-# against it is refused wherever it is changed (the pages, the API, the
-# command line) and greyed out on the pages. What is only advised is listed
-# beside it and stops nothing.
+# Settings → High security: every way of doing something less safely switched
+# off. It is switched on only once nothing stands against it - what does is
+# listed, each with where it is set; while it is on, what would stand against
+# it is refused wherever it is changed (the pages, the API, the command line)
+# and greyed out on the pages. Any rule can be made an exception (1.0.169):
+# then it stops nothing and is not enforced. The security check - updates
+# waiting, certificates running out, backups - is listed beside it.
 #
 # Each rule of a setting: (what is wrong with the value, or '') for a value
 # and the configuration around it; `forbid`/`most`/`least` tell the pages
@@ -21841,10 +22105,6 @@ HISEC_SETTINGS = {
                              'offers to'},
     'smtp_verify': {'forbid': [0], 'pane': 'mail', 'when': lambda c: c.get('mail_mode') != 'off',
                     'why': 'the mail server\'s certificate is not checked'},
-    'mail_direct_tls': {'forbid': ['if-offered'], 'pane': 'mail',
-                        'when': lambda c: c.get('mail_mode') == 'direct',
-                        'why': 'mail is delivered unencrypted where the recipient\'s server '
-                               'does not offer TLS'},
     'sms_url': {'pane': 'codes', 'when': lambda c: c.get('sms_mode') == 'http',
                 'test': lambda v, c: str(v or '').strip().lower().startswith('http://'),
                 'why': 'the SMS gateway is asked over plain http://'},
@@ -21867,36 +22127,91 @@ HISEC_SETTINGS = {
                     'why': 'codes are taken more than one step (30 s) either side'},
     'totp_disallow_reuse': {'forbid': [0], 'pane': 'tokens',
                             'why': 'a code may be used again while it is good'},
-}
-
-# Advised, never stopping anything.
-HISEC_ADVICE = {
-    'admin_2fa': {'test': lambda v, c: not v, 'pane': 'people',
-                  'why': 'the administration is opened with a password alone - a second step '
-                         'from an app is advised'},
-    'admin_2fa_mail': {'test': lambda v, c: bool(v) and bool(c.get('admin_2fa')), 'pane': 'people',
+    'mail_direct_tls': {'forbid': ['if-offered'], 'pane': 'mail',
+                        'when': lambda c: c.get('mail_mode') == 'direct',
+                        'why': 'mail is delivered unencrypted where the recipient\'s server '
+                               'does not offer TLS'},
+    'admin_2fa': {'forbid': [0, False], 'pane': 'people',
+                  'why': 'the administration is opened with a password alone - no second step'},
+    'admin_2fa_mail': {'forbid': [1, True], 'when': lambda c: bool(c.get('admin_2fa')), 'pane': 'people',
                        'why': 'the second step of the administration may come by mail - an app '
                               'is safer'},
-    'admin_2fa_sms': {'test': lambda v, c: bool(v) and bool(c.get('admin_2fa')), 'pane': 'people',
+    'admin_2fa_sms': {'forbid': [1, True], 'when': lambda c: bool(c.get('admin_2fa')), 'pane': 'people',
                       'why': 'the second step of the administration may come by SMS - an app '
                              'is safer'},
-    'admin_show_key': {'test': lambda v, c: bool(v), 'pane': 'tokens',
+    'admin_show_key': {'forbid': [1, True], 'pane': 'tokens',
                        'why': 'administrators may show a token\'s key'},
-    'portal_show_secret': {'test': lambda v, c: bool(v), 'pane': 'portal',
+    'portal_show_secret': {'forbid': [1, True], 'pane': 'portal',
                            'why': 'the enrolment page shows the key as text beside the QR code'},
-    'scratch_digits': {'test': lambda v, c: int(v or 0) < 10, 'pane': 'tokens',
+    'scratch_digits': {'least': 10, 'pane': 'tokens',
                        'why': 'recovery codes shorter than 10 digits'},
-    'mail_codes': {'test': lambda v, c: bool(v) and c.get('mail_mode') != 'off', 'pane': 'mail',
+    'mail_codes': {'forbid': [1, True], 'when': lambda c: c.get('mail_mode') != 'off', 'pane': 'mail',
                    'why': 'codes may come by mail - weaker than an app'},
-    'portal_who': {'test': lambda v, c: v == 'anyone' and bool(c.get('portal')), 'pane': 'portal',
+    'portal_who': {'forbid': ['anyone'], 'when': lambda c: bool(c.get('portal')), 'pane': 'portal',
                    'why': 'anyone in a directory may enrol on the enrolment page'},
-    'session_hours': {'test': lambda v, c: int(v or 0) > 8, 'pane': 'people',
+    'session_hours': {'most': 8, 'pane': 'people',
                       'why': 'a sign-in to the administration lasts more than 8 hours'},
-    'session_idle_min': {'test': lambda v, c: int(v or 0) > 30, 'pane': 'people',
+    'session_idle_min': {'most': 30, 'pane': 'people',
                          'why': 'a sign-in to the administration stays open idle more than 30 min'},
     'proxy_user': {'test': lambda v, c: bool(c.get('proxy')) and not str(v or '').strip(),
                    'pane': 'proxy', 'why': 'the proxy is used without a user name and password'},
 }
+
+# What is not a setting: the directories, the clients, the destinations, the
+# TLS of the pages, the SSH server, the exports - one rule each, its details
+# (which directory, which node) listed under it.
+HISEC_RULES = [
+    ('dir:tls', 'a directory reached over plain LDAP - passwords go over the network unencrypted',
+     'LDAPS or STARTTLS', 'dir'),
+    ('dir:verify', 'a directory whose certificate is not checked',
+     'check the certificate (give its CA)', 'dir'),
+    ('dir:weak', 'a directory spoken to with old, weak TLS', 'switch the old TLS off', 'dir'),
+    ('client:secret', 'a RADIUS client\'s shared secret shorter than 16 characters',
+     'a secret of 16 characters or more', 'clients'),
+    ('db:tls', 'the database reached without TLS that checks its certificate',
+     'TLS: verify-ca or verify-full', 'db'),
+    ('ha:tls', 'the replication between the nodes without TLS that checks the certificate',
+     'TLS for the replication', 'ha'),
+    ('backup:ftp', 'a backup destination over plain FTP - its password goes unencrypted',
+     'SFTP, SCP or FTPS', 'backup'),
+    ('backup:ftps', 'a backup destination over FTPS whose certificate is not checked',
+     'check it: the system, a CA or a pin', 'backup'),
+    ('backup:smb', 'a backup destination over SMB without encryption', 'SMB encryption on',
+     'backup'),
+    ('web:tls', 'the TLS of the pages other than standard (ECDHE, AEAD) or modern (TLS 1.3)',
+     'standard or modern', 'web'),
+    ('fw:admin', 'the administration reachable from anywhere', 'only from the networks that '
+     'need it', 'fw'),
+    ('sshd:password', 'SSH lets people in with a password', 'keys only', 'sshd'),
+    ('sshd:root', 'root may sign in over SSH with a password', 'root: with a key only, or not '
+     'at all', 'sshd'),
+    ('sshd:tries', 'SSH allows more than 4 tries a connection', '4 tries at most', 'sshd'),
+    ('export:unlocked', 'tokens exported not locked - the backup, the .totp files, one token',
+     'an export is always locked with a passphrase', 'import'),
+]
+HISEC_RULE = {r[0]: r for r in HISEC_RULES}
+
+
+# Exceptions (1.0.169): a rule switched off by hand stops nothing and is not
+# enforced - kept in the database for the whole cluster, each change an event.
+_HS_WAIVE = {'at': 0.0, 'v': frozenset(), 'store': [None]}
+
+
+def hisec_waived(store=None):
+    store = store or _HS_WAIVE['store'][0]
+    if store is None:
+        return _HS_WAIVE['v']
+    if time.time() - _HS_WAIVE['at'] > 2:
+        got = _meta_json(store, 'hisec:waive') or []
+        _HS_WAIVE.update(at=time.time(), v=frozenset(x for x in got if isinstance(x, str)))
+        _HS_WAIVE['store'][0] = store
+    return _HS_WAIVE['v']
+
+
+def hisec_enforced(rule, store=None):
+    """Whether high security is on and this rule is not an exception."""
+    return _hs_on() and rule not in hisec_waived(store)
+
 
 
 def _hs_bad(rule, value, conf):
@@ -21914,6 +22229,11 @@ def _hs_bad(rule, value, conf):
             return int(value or 0) > rule['most']
         except (TypeError, ValueError):
             return True
+    if 'least' in rule:
+        try:
+            return int(value or 0) < rule['least']
+        except (TypeError, ValueError):
+            return True
     return False
 
 
@@ -21928,61 +22248,49 @@ def hisec_setting_refused(key, value, conf=None):
 
 
 def hisec_ui(key):
-    """For the pages: what to grey out while it is on."""
+    """For the pages: what to grey out while it is on - nothing for an exception."""
     rule = HISEC_SETTINGS.get(key)
-    if not rule:
+    if not rule or key in hisec_waived():
         return None
     out = {'why': rule['why']}
-    for k in ('forbid', 'most'):
+    for k in ('forbid', 'most', 'least'):
         if k in rule:
             out[k] = rule[k]
     return out
 
 
-def _hs_item(kind, what, fix, pane, key=''):
-    return {'kind': kind, 'what': what, 'fix': fix, 'pane': pane, 'key': key}
+def _hs_item(kind, what, fix, pane, key='', rule=''):
+    return {'kind': kind, 'what': what, 'fix': fix, 'pane': pane, 'key': key,
+            'rule': rule or key}
 
 
-def hisec_findings(store, conf=None):
-    """{'block': [...], 'warn': [...]}: what stands against high security now."""
+def hisec_rules(store, conf=None):
+    """Every rule, as it stands now: {id, kind, what, fix, pane, key, bad, details}."""
     conf = dict(CONFIG if conf is None else conf)
-    block, warn = [], []
+    out = []
     for key, rule in HISEC_SETTINGS.items():
-        if _hs_bad(rule, conf.get(key), conf):
-            block.append(_hs_item('setting', rule['why'], NAMES.get(key, key), rule['pane'], key))
-    for key, rule in HISEC_ADVICE.items():
-        if _hs_bad(rule, conf.get(key), conf):
-            warn.append(_hs_item('setting', rule['why'], NAMES.get(key, key), rule['pane'], key))
-    # Active Directory and the other directories.
+        out.append({'rule': key, 'kind': 'setting', 'what': rule['why'], 'fix': NAMES.get(key, key),
+                    'pane': rule['pane'], 'key': key, 'details': [],
+                    'bad': _hs_bad(rule, conf.get(key), conf)})
+    hit = {r[0]: [] for r in HISEC_RULES}
     for d in store.directories():
         if not d.get('enabled', 1):
             continue
         if d.get('tls') == 'none':
-            block.append(_hs_item('dir', 'the directory %s is reached over plain LDAP - '
-                                  'passwords go over the network unencrypted' % d['name'],
-                                  'LDAPS or STARTTLS', 'dir'))
+            hit['dir:tls'].append(d['name'])
         elif not d.get('verify', 1):
-            block.append(_hs_item('dir', 'the certificate of the directory %s is not checked'
-                                  % d['name'], 'check the certificate (give its CA)', 'dir'))
+            hit['dir:verify'].append(d['name'])
         if d.get('weak'):
-            block.append(_hs_item('dir', 'the directory %s is spoken to with old, weak TLS'
-                                  % d['name'], 'switch the old TLS off', 'dir'))
-    # RADIUS clients.
+            hit['dir:weak'].append(d['name'])
     for c in store.clients(with_secret=True):
         if len(str(c.get('secret') or '')) < 16:
-            block.append(_hs_item('client', 'the shared secret of the client %s is shorter than '
-                                  '16 characters' % c['name'], 'a secret of 16 characters or more',
-                                  'clients'))
-    # The database and the cluster.
+            hit['client:secret'].append(c['name'])
     if conf.get('db_engine') in ('mariadb', 'postgres') and \
             str(conf.get('db_host') or '').strip() and not str(conf['db_host']).startswith('/') and \
             conf.get('db_tls') not in ('verify-ca', 'verify-full'):
-        block.append(_hs_item('db', 'the database is reached without TLS that checks its '
-                              'certificate', 'TLS: verify-ca or verify-full', 'db'))
+        hit['db:tls'].append(str(conf.get('db_host')))
     if conf.get('ha_mode') == 'replicated' and ha_link_tls(conf)[0] not in ('verify-ca', 'verify-full'):
-        block.append(_hs_item('ha', 'the replication between the nodes goes without TLS that '
-                              'checks the certificate', 'TLS for the replication', 'ha'))
-    # Backups to other machines.
+        hit['ha:tls'].append(str(conf.get('ha_peer') or ''))
     try:
         targets = rb_targets(store)
     except Exception:                                   # noqa: BLE001
@@ -21991,16 +22299,11 @@ def hisec_findings(store, conf=None):
         if not t.get('enabled', 1):
             continue
         if t.get('kind') == 'ftp':
-            block.append(_hs_item('backup', 'the backup destination %s is plain FTP - its password '
-                                  'goes unencrypted' % t.get('name'), 'SFTP, SCP or FTPS', 'backup'))
+            hit['backup:ftp'].append(t.get('name'))
         elif t.get('kind') == 'ftps' and t.get('tls_check') == 'none':
-            block.append(_hs_item('backup', 'the certificate of the backup destination %s is not '
-                                  'checked' % t.get('name'), 'check it: the system, a CA or a pin',
-                                  'backup'))
+            hit['backup:ftps'].append(t.get('name'))
         elif t.get('kind') == 'smb' and not t.get('smb_encrypt', 1):
-            block.append(_hs_item('backup', 'the backup destination %s (SMB) is not encrypted'
-                                  % t.get('name'), 'SMB encryption on', 'backup'))
-    # TLS of the pages: ECDHE and AEAD only, or TLS 1.3 alone.
+            hit['backup:smb'].append(t.get('name'))
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'web:tls:%'"):
         try:
             prof = json.loads(r['v'] or '{}')
@@ -22008,34 +22311,46 @@ def hisec_findings(store, conf=None):
             continue
         if isinstance(prof, dict) and prof.get('cert') and \
                 (prof.get('preset') or 'standard') not in ('standard', 'modern'):
-            block.append(_hs_item('web', 'the TLS of %s takes %s ciphers' % (
-                r['k'][len('web:tls:'):], prof.get('preset')),
-                'standard (ECDHE, AEAD) or modern (TLS 1.3)', 'web'))
+            hit['web:tls'].append('%s (%s)' % (r['k'][len('web:tls:'):], prof.get('preset')))
     a = (access_conf(store) or {}).get('admin') or {'any': True}
     if a.get('any', True):
-        block.append(_hs_item('fw', 'the administration can be reached from anywhere',
-                              'only from the networks that need it', 'fw'))
-    # SSH, as each node's sshd says it is.
+        hit['fw:admin'].append('everybody')
     for n in host_nodes(store):
         v = (sshd_now(store, n) or {}).get('values') or {}
-        if not v:
-            warn.append(_hs_item('sshd', 'the SSH server of %s has not said yet how it is set' % n,
-                                 'look again', 'sshd'))
-            continue
         if v.get('passwordauthentication') == 'yes' or v.get('kbdinteractiveauthentication') == 'yes':
-            block.append(_hs_item('sshd', 'SSH on %s lets people in with a password' % n,
-                                  'keys only', 'sshd'))
+            hit['sshd:password'].append(n)
         if v.get('permitrootlogin') == 'yes':
-            block.append(_hs_item('sshd', 'root may sign in to %s over SSH with a password' % n,
-                                  'root: with a key only, or not at all', 'sshd'))
+            hit['sshd:root'].append(n)
         try:
-            if int(v.get('maxauthtries') or 6) > 4:
-                block.append(_hs_item('sshd', 'SSH on %s allows more than 4 tries a connection' % n,
-                                      '4 tries at most', 'sshd'))
+            if v and int(v.get('maxauthtries') or 6) > 4:
+                hit['sshd:tries'].append(n)
         except ValueError:
             pass
-    # The security check (1.0.169): what is not as it should be now - advised,
-    # never stopping high security - as the alerts see it, and the rest.
+    for rid, what, fix, pane in HISEC_RULES:
+        out.append({'rule': rid, 'kind': rid.split(':', 1)[0], 'what': what, 'fix': fix,
+                    'pane': pane, 'key': '', 'details': [x for x in hit[rid] if x],
+                    'bad': bool(hit[rid])})
+    w = hisec_waived(store)
+    for r in out:
+        r['waived'] = r['rule'] in w
+    return out
+
+
+def hisec_findings(store, conf=None):
+    """{'block', 'waived', 'warn', 'rules'}: what stands against high security now -
+    the rules not kept and not exceptions; the security check apart."""
+    rules = hisec_rules(store, conf)
+    block = [dict(r, title=r['what'], what=r['what'] + (': ' + ', '.join(r['details']) if r['details']
+                                                      else ''))
+             for r in rules if r['bad'] and not r['waived']]
+    waived = [r for r in rules if r['waived']]
+    warn = []
+    for n in host_nodes(store):
+        if not (sshd_now(store, n) or {}).get('values'):
+            warn.append(_hs_item('check', 'the SSH server of %s has not said yet how it is set' % n,
+                                 'look again', 'sshd'))
+    # The security check (1.0.169): what is not as it should be now - as the
+    # alerts see it, and the rest. It never stops high security.
     if not fw_conf(store).get('on'):
         warn.append(_hs_item('check', 'the machine\'s firewall is off - otp\'s own rules are not '
                              'in force', 'the firewall on', 'fw'))
@@ -22056,7 +22371,27 @@ def hisec_findings(store, conf=None):
     for k, p in sorted(seen.items()):
         if k.split(':', 1)[0] in ('cert', 'sec', 'reboot', 'rbverify', 'rbackup'):
             warn.append(_hs_item('check', p['title'], p['said'], p.get('pane') or ''))
-    return {'block': block, 'warn': warn}
+    return {'block': block, 'waived': waived, 'warn': warn, 'rules': rules}
+
+
+def hisec_waive(store, rule, on, by):
+    """An exception made, or taken back - taken back only where the rule is
+    kept, while high security is on: it would stand against it at once."""
+    if rule not in HISEC_SETTINGS and rule not in HISEC_RULE:
+        raise ValueError('there is no such rule: %s' % rule)
+    w = set(_meta_json(store, 'hisec:waive') or [])
+    if not on and rule in w and _hs_on():
+        now = [r for r in hisec_rules(store) if r['rule'] == rule]
+        if now and now[0]['bad']:
+            raise ValueError('high security is on and this is not as it wants it - put it right '
+                             'first (%s), then take the exception back' % now[0]['fix'])
+    (w.add if on else w.discard)(rule)
+    store.set_meta('hisec:waive', json.dumps(sorted(w)))
+    _HS_WAIVE['at'] = 0.0
+    title = HISEC_SETTINGS[rule]['why'] if rule in HISEC_SETTINGS else HISEC_RULE[rule][1]
+    store.add_event('settings', '%s %s an exception to high security: %s' % (
+        by, 'made' if on else 'took back', title), 'warn', who=by)
+    return sorted(w)
 
 
 class HiSecConflict(BadSetting):
@@ -22078,63 +22413,67 @@ def hisec_guard_settings(store, checked):
             raise HiSecConflict(got)
     if after.get('high_security'):
         for key in HISEC_SETTINGS:
-            if key in checked or any(k in checked for k in ('mail_mode', 'sms_mode', 'siem')):
+            if key in hisec_waived(store):
+                continue
+            if key in checked or any(k in checked for k in ('mail_mode', 'sms_mode', 'siem',
+                                                            'admin_2fa', 'portal', 'proxy')):
                 why = hisec_setting_refused(key, after.get(key), after)
                 if why:
                     raise BadSetting('%s: not while high security is on - %s'
                                      % (NAMES.get(key, key), why))
 
 
-def hisec_refuse(what):
-    """A change of a directory, a client, a destination... while it is on."""
-    if _hs_on() and what:
+def hisec_refuse(what, rule=''):
+    """A change of a directory, a client, a destination... while it is on -
+    unless that rule is an exception."""
+    if _hs_on() and what and (not rule or rule not in hisec_waived()):
         raise ValueError('not while high security is on (Settings - High security): %s' % what)
 
 
 def hisec_directory(row):
     if row.get('tls') == 'none':
-        hisec_refuse('a directory over plain LDAP - LDAPS or STARTTLS')
+        hisec_refuse('a directory over plain LDAP - LDAPS or STARTTLS', 'dir:tls')
     if not row.get('verify', 1):
-        hisec_refuse('a directory whose certificate is not checked')
+        hisec_refuse('a directory whose certificate is not checked', 'dir:verify')
     if row.get('weak'):
-        hisec_refuse('old, weak TLS to a directory')
+        hisec_refuse('old, weak TLS to a directory', 'dir:weak')
 
 
 def hisec_client_secret(secret):
     if len(str(secret or '')) < 16:
-        hisec_refuse('a shared secret shorter than 16 characters')
+        hisec_refuse('a shared secret shorter than 16 characters', 'client:secret')
 
 
 def hisec_backup_target(t):
     if not t.get('enabled', 1):
         return
     if t.get('kind') == 'ftp':
-        hisec_refuse('plain FTP - SFTP, SCP or FTPS')
+        hisec_refuse('plain FTP - SFTP, SCP or FTPS', 'backup:ftp')
     if t.get('kind') == 'ftps' and t.get('tls_check') == 'none':
-        hisec_refuse('FTPS without checking the certificate')
+        hisec_refuse('FTPS without checking the certificate', 'backup:ftps')
     if t.get('kind') == 'smb' and not t.get('smb_encrypt', 1):
-        hisec_refuse('SMB without encryption')
+        hisec_refuse('SMB without encryption', 'backup:smb')
 
 
 def hisec_tls(prof):
     if (prof.get('preset') or 'standard') not in ('standard', 'modern'):
-        hisec_refuse('TLS other than standard (ECDHE, AEAD) or modern (TLS 1.3)')
+        hisec_refuse('TLS other than standard (ECDHE, AEAD) or modern (TLS 1.3)', 'web:tls')
 
 
 def hisec_access(a):
     if ((a or {}).get('admin') or {'any': True}).get('any', True):
-        hisec_refuse('the administration reachable from anywhere - list the networks')
+        hisec_refuse('the administration reachable from anywhere - list the networks', 'fw:admin')
 
 
 def hisec_sshd(c):
     if not c.get('manage'):
         return
     if c.get('password'):
-        hisec_refuse('SSH with passwords - keys only')
+        hisec_refuse('SSH with passwords - keys only', 'sshd:password')
     if c.get('permit_root') == 'yes':
-        hisec_refuse('root over SSH with a password')
+        hisec_refuse('root over SSH with a password', 'sshd:root')
     if int(c.get('tries') or 4) > 4:
-        hisec_refuse('more than 4 SSH tries a connection')
+        hisec_refuse('more than 4 SSH tries a connection', 'sshd:tries')
 
 
 def hisec_view(store):
@@ -22855,6 +23194,10 @@ def web_desired(store):
         out['fw'] = fw
     if access is not None:
         out['access'] = access
+    # ACME (1.0.169): port 80 answers the CA for the names ordered - the web
+    # address's on every node, wherever it is now.
+    if CONFIG.get('acme'):
+        out['acme'] = acme_http_names(store)
     return out
 
 
@@ -22880,7 +23223,7 @@ def web_tick(store):
     # Nothing ever asked and nothing to ask: no request at all.
     st = web_status()
     if not st and not desired['vip']['on'] and not desired['tls']['node'] and \
-            'fw' not in desired and 'access' not in desired:
+            'fw' not in desired and 'access' not in desired and 'acme' not in desired:
         return
     h = web_hash(desired)
     if st.get('hash') == h:
@@ -23767,6 +24110,620 @@ def repl_errors_clear(store, by):
                            'sync': int(x.get('sync_errors') or 0)}
     store.set_meta('ha:errbase:' + node_name(), json.dumps(base))
     return base
+
+
+# ---- certificates by ACME: Let's Encrypt and the like (1.0.169) --------------------------
+# Settings → Automatic certificates: the certificate of the web address (and,
+# where asked, each node's own) ordered from an ACME CA - Let's Encrypt, its
+# staging, or one of your own (step-ca, an internal CA) - by HTTP-01, and
+# renewed when fewer than acme_days are left. The answer to the challenge is
+# kept in the database, so whichever node the CA reaches on port 80 gives it
+# (nginx sends /.well-known/acme-challenge/ to acme.php, which asks the
+# daemon): in a cluster the web address may be on either node. The web
+# address's certificate is ordered by the one node that does what one node
+# does for both (alerts_lead); a node's own by that node. Signed with openssl;
+# done in a thread of its own, never on the way of a sign-in.
+ACME_CAS = {'letsencrypt': 'https://acme-v02.api.letsencrypt.org/directory',
+            'letsencrypt-staging': 'https://acme-staging-v02.api.letsencrypt.org/directory'}
+ACME_WORK = {'busy': False, 'at': 0.0, 'says': '', 'target': ''}
+ACME_EVERY = float(os.environ.get('OTP_ACME_EVERY') or 3600)
+ACME_RETRY = float(os.environ.get('OTP_ACME_RETRY') or 6 * 3600)
+
+
+class AcmeError(Exception):
+    pass
+
+
+def _b64u(data):
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+
+def acme_directory_url():
+    ca = CONFIG.get('acme_ca') or 'letsencrypt'
+    if ca == 'custom':
+        return str(CONFIG.get('acme_url') or '').strip()
+    return ACME_CAS.get(ca, ACME_CAS['letsencrypt'])
+
+
+def _acme_ctx():
+    ctx = ssl.create_default_context()
+    pem = str(CONFIG.get('acme_ca_pem') or '').strip()
+    if pem and CONFIG.get('acme_ca') == 'custom':
+        ctx.load_verify_locations(cadata=pem)
+    return ctx
+
+
+class Acme(object):
+    """One conversation with the CA: the account, its key, the nonces."""
+    def __init__(self, store):
+        self.store = store
+        self.dir_url = acme_directory_url()
+        if not re.match(r'^https://[^\s]+\Z', self.dir_url):
+            raise AcmeError('the ACME directory is an https:// address')
+        self.work = tempfile.mkdtemp(prefix='otp-acme-', dir=str(STATE_DIR))
+        os.chmod(self.work, 0o700)
+        self.nonce = None
+        self.kid = None
+        self.dir = self._get(self.dir_url)[0]
+        self._account()
+
+    def close(self):
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    # -- HTTP ------------------------------------------------------------------------
+    def _req(self, url, data=None, method=None, accept='application/json'):
+        if not str(url).startswith('https://'):
+            raise AcmeError('the CA sent an address that is not https: %s' % url)
+        req = urllib.request.Request(url, data=data, method=method or ('POST' if data else 'GET'),
+                                     headers={'User-Agent': 'otp/%s (acme)' % __version__,
+                                              'Accept': accept})
+        if data is not None:
+            req.add_header('Content-Type', 'application/jose+json')
+        try:
+            with url_open(req, timeout=30, context=_acme_ctx()) as r:
+                body, headers, status = r.read(1 << 20), r.headers, r.status
+        except urllib.error.HTTPError as e:
+            body, headers, status = e.read(1 << 20), e.headers, e.code
+        except (OSError, ssl.SSLError) as e:
+            raise AcmeError('the CA did not answer (%s): %s' % (
+                urllib.parse.urlsplit(url).hostname, getattr(e, 'reason', e)))
+        if headers.get('Replay-Nonce'):
+            self.nonce = headers['Replay-Nonce']
+        return body, headers, status
+
+    def _get(self, url):
+        body, headers, status = self._req(url)
+        if status >= 400:
+            raise AcmeError('the CA said %d: %s' % (status, body[:200]))
+        return json.loads(body.decode('utf-8')), headers
+
+    # -- signing ---------------------------------------------------------------------
+    def _key_file(self):
+        p = os.path.join(self.work, 'account.pem')
+        if not os.path.exists(p):
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as f:
+                f.write(self.key_pem)
+        return p
+
+    def _jwk(self):
+        der = _openssl(['pkey', '-in', self._key_file(), '-pubout', '-outform', 'DER'],
+                       what='the account key')
+        point = der[-64:]
+        return {'crv': 'P-256', 'kty': 'EC', 'x': _b64u(point[:32]), 'y': _b64u(point[32:])}
+
+    def thumbprint(self):
+        jwk = self._jwk()
+        return _b64u(hashlib.sha256(json.dumps(
+            {'crv': jwk['crv'], 'kty': jwk['kty'], 'x': jwk['x'], 'y': jwk['y']},
+            separators=(',', ':'), sort_keys=True).encode()).digest())
+
+    def _sign(self, data):
+        der = _openssl(['dgst', '-sha256', '-sign', self._key_file()], data=data,
+                       what='signing for the CA')
+        # DER SEQUENCE { INTEGER r, INTEGER s } -> r || s, 32 bytes each.
+        i = 2 if der[1] < 0x80 else 3
+
+        def integer(at):
+            n = der[at + 1]
+            v = der[at + 2:at + 2 + n].lstrip(b'\x00')
+            return v.rjust(32, b'\x00'), at + 2 + n
+        r, i = integer(i)
+        s, _ = integer(i)
+        return r + s
+
+    def post(self, url, payload, use_jwk=False):
+        for attempt in (1, 2):
+            if not self.nonce:
+                self._req(self.dir['newNonce'], method='HEAD')
+            protected = {'alg': 'ES256', 'nonce': self.nonce, 'url': url}
+            if use_jwk or not self.kid:
+                protected['jwk'] = self._jwk()
+            else:
+                protected['kid'] = self.kid
+            p64 = _b64u(json.dumps(protected))
+            b64 = '' if payload is None else _b64u(json.dumps(payload))
+            sig = _b64u(self._sign(('%s.%s' % (p64, b64)).encode('ascii')))
+            self.nonce = None
+            body, headers, status = self._req(url, json.dumps(
+                {'protected': p64, 'payload': b64, 'signature': sig}).encode('utf-8'),
+                accept='application/json' if 'cert' not in url else
+                'application/pem-certificate-chain')
+            if status == 400 and b'badNonce' in body and attempt == 1:
+                continue
+            if status >= 400:
+                try:
+                    err = json.loads(body.decode('utf-8'))
+                    said = err.get('detail') or err.get('type')
+                except ValueError:
+                    said = body[:200].decode('utf-8', 'replace')
+                raise AcmeError('the CA refused it: %s' % said)
+            return body, headers
+
+    def post_json(self, url, payload):
+        body, headers = self.post(url, payload)
+        return (json.loads(body.decode('utf-8')) if body else {}), headers
+
+    # -- the account -----------------------------------------------------------------
+    def _account(self):
+        row = _meta_json(self.store, 'acme:account') or {}
+        pem = unseal_secret(row.get('key') or '', 'acme') if row.get('key') else ''
+        if row.get('directory') != self.dir_url or not pem:
+            pem = ''
+        if not pem:
+            pem = _openssl(['genpkey', '-algorithm', 'EC', '-pkeyopt', 'ec_paramgen_curve:P-256'],
+                           what='the account key').decode()
+            row = {}
+        self.key_pem = pem
+        if row.get('kid'):
+            self.kid = row['kid']
+            return
+        mail = str(CONFIG.get('acme_email') or '').strip()
+        payload = {'termsOfServiceAgreed': True}
+        if mail:
+            payload['contact'] = ['mailto:' + mail]
+        body, headers = self.post(self.dir['newAccount'], payload, use_jwk=True)
+        self.kid = headers.get('Location')
+        if not self.kid:
+            raise AcmeError('the CA made no account')
+        self.store.set_meta('acme:account', json.dumps({
+            'key': seal_secret(pem, 'acme'), 'kid': self.kid, 'directory': self.dir_url,
+            'email': mail, 'at': time.time()}))
+
+    # -- an order --------------------------------------------------------------------
+    def _poll(self, url, done, what, secs=90):
+        end = time.time() + secs
+        while True:
+            got, _ = self.post_json(url, None)
+            st = got.get('status')
+            if st in done:
+                return got
+            if st == 'invalid':
+                errs = [c.get('error', {}).get('detail') for c in got.get('challenges') or []
+                        if c.get('error')] or [got.get('error', {}).get('detail')]
+                raise AcmeError('%s: %s' % (what, '; '.join(e for e in errs if e) or 'invalid'))
+            if time.time() > end:
+                raise AcmeError('%s: the CA has not said in %d s (%s)' % (what, secs, st))
+            time.sleep(2)
+
+    def order(self, names, say):
+        say('ordered from the CA')
+        got, headers = self.post_json(self.dir['newOrder'], {
+            'identifiers': [{'type': 'dns', 'value': n} for n in names]})
+        order_url = headers.get('Location')
+        thumb = self.thumbprint()
+        for az in got.get('authorizations') or []:
+            a, _ = self.post_json(az, None)
+            if a.get('status') == 'valid':
+                continue
+            name = a.get('identifier', {}).get('value')
+            kind = 'dns-01' if (CONFIG.get('acme_challenge') or 'http-01') == 'dns-01' else 'http-01'
+            ch = [c for c in a.get('challenges') or [] if c.get('type') == kind]
+            if not ch:
+                raise AcmeError('the CA offers no %s challenge for %s' % (kind.upper(), name))
+            token = ch[0]['token']
+            if not re.match(r'^[A-Za-z0-9_-]{8,256}\Z', token):
+                raise AcmeError('the CA sent a token that is not one')
+            auth = token + '.' + thumb
+            if kind == 'dns-01':
+                # A TXT record in DNS (1.0.169): for a server the CA cannot
+                # reach - nothing has to be open to the internet.
+                txt = _b64u(hashlib.sha256(auth.encode()).digest())
+                undo = acme_dns_put(self.store, name, txt, say)
+                try:
+                    say('the CA looks up _acme-challenge.%s' % name)
+                    self.post_json(ch[0]['url'], {})
+                    self._poll(az, ('valid',), 'the CA did not take %s' % name, 180)
+                finally:
+                    try:
+                        undo()
+                    except Exception as e:              # noqa: BLE001
+                        log('ACME: the TXT record of %s was not taken away: %s' % (name, e), 'warn')
+                continue
+            # Kept where every node finds it; the other node's copy of the
+            # database has it within seconds.
+            self.store.set_meta('acme:chal:' + token, json.dumps(
+                {'auth': auth, 'at': time.time(), 'name': name}))
+            time.sleep(float(os.environ.get('OTP_ACME_SETTLE') or 3))
+            say('the CA looks at http://%s/.well-known/acme-challenge/' % name)
+            try:
+                self.post_json(ch[0]['url'], {})
+                self._poll(az, ('valid',), 'the CA did not take %s' % name)
+            finally:
+                self.store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
+        key, csr = make_csr(names[0], names[1:], CONFIG.get('acme_key') or 'ec')
+        der = _openssl(['req', '-in', '/dev/stdin', '-outform', 'DER'], data=csr.encode(),
+                       what='the request')
+        say('the certificate is made')
+        o, _ = self.post_json(got['finalize'], {'csr': _b64u(der)})
+        if o.get('status') != 'valid':
+            o = self._poll(order_url, ('valid',), 'the order', 120)
+        body, _ = self.post(o['certificate'], None)
+        return key, body.decode('utf-8')
+
+
+# ---- what is ordered, and when ----------------------------------------------------------
+def acme_name_of(store, target):
+    """The DNS name a target's certificate is for."""
+    if target == 'vip':
+        return str(vip_conf(store).get('fqdn') or '').strip()
+    k = 'acme_node_name@' + target
+    saved = store.settings_saved()
+    name = str(saved.get(k) or (CONFIG.get('acme_node_name') if target == node_name() else '')
+               or '').strip()
+    if not name and target == node_name():
+        name = socket.getfqdn()
+    return name
+
+
+def acme_targets(store):
+    """[(target, name)] this node orders: the web address's on the lead, and
+    its own where asked."""
+    if not CONFIG.get('acme'):
+        return []
+    want = CONFIG.get('acme_for') or 'vip'
+    out = []
+    if want in ('vip', 'both') and vip_conf(store).get('on') and alerts_lead(store):
+        out.append(('vip', acme_name_of(store, 'vip')))
+    if want in ('node', 'both') or (want == 'vip' and not vip_conf(store).get('on')):
+        out.append((node_name(), acme_name_of(store, node_name())))
+    return [(t, n) for t, n in out if n]
+
+
+def acme_state(store, target):
+    return _meta_json(store, 'acme:state:' + target) or {}
+
+
+def acme_due(store, target, name):
+    """Why this certificate is to be ordered now, or ''."""
+    st = acme_state(store, target)
+    if st.get('failed_at') and time.time() - float(st['failed_at']) < ACME_RETRY and \
+            st.get('name') == name:
+        return ''
+    prof = tls_profile(store, target) or {}
+    info = prof.get('info') or {}
+    if prof.get('how') != 'ACME' or st.get('name') != name:
+        return 'not ordered yet for %s' % name
+    left = (float(info.get('not_after') or 0) - time.time()) / 86400
+    if left < int(CONFIG.get('acme_days') or 30):
+        return '%d days left' % int(left)
+    return ''
+
+
+def acme_order(store, target, name, by, say=None):
+    """One certificate ordered and put in; the state kept, an event written."""
+    say = say or (lambda t: None)
+    if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+                    r'[A-Za-z]{2,63}\Z', name):
+        raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)' % name)
+    st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url()}
+    a = None
+    try:
+        a = Acme(store)
+        key, chain = a.order([name], say)
+        got = cert_bundle(chain, key)
+        info = got['info']
+        prof = tls_profile(store, target) or {}
+        prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
+                    key=seal_secret(got['key'], 'web:tls'), info=info,
+                    chain_info=got['chain_info'], root_info=got['root_info'],
+                    verify=got['verify'], how='ACME')
+        prof.pop('pending_key', None)
+        prof.pop('csr', None)
+        prof.setdefault('preset', 'standard')
+        prof.setdefault('dh', 'none')
+        tls_save(store, target, prof, by)
+        st.update(ok=True, not_after=info.get('not_after'), issuer=info.get('issuer'),
+                  ordered_at=time.time())
+        store.set_meta('acme:state:' + target, json.dumps(st))
+        store.add_event('settings', 'a certificate for %s (%s) came from the CA, good until %s'
+                        % (name, 'the web address' if target == 'vip' else target,
+                           stamp(info.get('not_after')) if info.get('not_after') else '?'),
+                        'info', who=by)
+        return st
+    except (AcmeError, ValueError, OSError) as e:
+        st.update(ok=False, failed_at=time.time(), said=str(e)[:400])
+        old = acme_state(store, target)
+        for k in ('not_after', 'issuer', 'ordered_at'):
+            if old.get(k):
+                st[k] = old[k]
+        store.set_meta('acme:state:' + target, json.dumps(st))
+        store.add_event('settings', 'no certificate for %s came from the CA: %s' % (name, e),
+                        'bad', who=by)
+        raise AcmeError(str(e))
+    finally:
+        if a:
+            a.close()
+
+
+def acme_tick(daemon):
+    """Once an hour: what is due, ordered - in a thread of its own."""
+    if not CONFIG.get('acme') or ACME_WORK['busy'] or \
+            time.time() - ACME_WORK['at'] < ACME_EVERY:
+        return
+    ACME_WORK['at'] = time.time()
+    store = daemon.store
+    due = [(t, n) for t, n in acme_targets(store) if acme_due(store, t, n)]
+    if not due:
+        return
+    acme_start(store, due, 'otp (renewal)')
+
+
+def acme_start(store, which, by):
+    if ACME_WORK['busy']:
+        raise ValueError('a certificate is being ordered already')
+    ACME_WORK.update(busy=True, says='starting')
+
+    def go():
+        try:
+            for t, n in which:
+                ACME_WORK['target'] = t
+                try:
+                    acme_order(store, t, n, by, lambda s: ACME_WORK.update(says=s))
+                except AcmeError as e:
+                    log('ACME: %s' % e, 'warn')
+        finally:
+            ACME_WORK.update(busy=False, says='', target='')
+    threading.Thread(target=go, name='otp-acme', daemon=True).start()
+
+
+def acme_challenge(store, token):
+    """The answer for the CA, or None: what acme.php gives on port 80."""
+    if not re.match(r'^[A-Za-z0-9_-]{8,256}\Z', str(token or '')):
+        return None
+    got = _meta_json(store, 'acme:chal:' + token) or {}
+    if not got.get('auth') or time.time() - float(got.get('at') or 0) > 3600:
+        return None
+    return got['auth']
+
+
+def acme_view(store):
+    out = []
+    for t in tls_targets(store):
+        if t == 'vip' and not vip_conf(store).get('on'):
+            continue
+        prof = tls_profile(store, t) or {}
+        info = prof.get('info') or {}
+        out.append({'target': t, 'name': acme_name_of(store, t), 'state': acme_state(store, t),
+                    'how': prof.get('how') or '', 'subject': info.get('subject'),
+                    'issuer': info.get('issuer'), 'not_after': info.get('not_after')})
+    mine = [t for t, _ in acme_targets(store)]
+    acc = _meta_json(store, 'acme:account') or {}
+    return {'on': bool(CONFIG.get('acme')), 'targets': out, 'mine': mine,
+            'directory': acme_directory_url(), 'account': {
+                'kid': acc.get('kid'), 'email': acc.get('email'), 'at': acc.get('at')},
+            'work': dict(ACME_WORK), 'node': node_name(),
+            'challenge': CONFIG.get('acme_challenge') or 'http-01',
+            'manual': {k: v for k, v in (_meta_json(store, 'acme:manual') or {}).items()
+                       if k in ('rr', 'txt', 'at', 'done')} or None}
+
+
+def acme_probe(store, target):
+    """Whether http://NAME/.well-known/acme-challenge/ reaches an otp node that
+    answers - asked from here, straight, as the CA will (from outside it may
+    still be blocked: a firewall in front sees only what reaches it)."""
+    name = acme_name_of(store, target) if target else ''
+    if not name:
+        raise ValueError('which certificate? its name is not known')
+    token = 'otp-probe-' + secrets.token_urlsafe(16)
+    want = token + '.' + secrets.token_urlsafe(8)
+    store.set_meta('acme:chal:' + token, json.dumps({'auth': want, 'at': time.time(),
+                                                    'name': name, 'probe': True}))
+    url = 'http://%s/.well-known/acme-challenge/%s' % (name, token)
+    began = time.time()
+    out = {'name': name, 'url': url, 'ok': False}
+    try:
+        time.sleep(float(os.environ.get('OTP_ACME_SETTLE') or 3))
+        req = urllib.request.Request(url, headers={'User-Agent': 'otp/%s (acme probe)' % __version__})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=10) as r:
+            body = r.read(4096).decode('utf-8', 'replace').strip()
+        out.update(ok=body == want, status=r.status,
+                   said='answered as the CA wants it' if body == want else
+                   'something answers on port 80, but not otp\'s answer: %r' % body[:80])
+    except urllib.error.HTTPError as e:
+        out['said'] = 'port 80 answers %d - nginx does not send /.well-known/acme-challenge/ to otp' % e.code
+    except (OSError, ValueError) as e:
+        out['said'] = 'port 80 of %s cannot be reached: %s' % (name, getattr(e, 'reason', e))
+    finally:
+        store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
+    out['ms'] = int((time.time() - began) * 1000)
+    return out
+
+
+def acme_http_names(store):
+    """The names this node's port 80 answers the CA for."""
+    want = CONFIG.get('acme_for') or 'vip'
+    vip_on = bool(vip_conf(store).get('on'))
+    out = []
+    if want in ('vip', 'both') and vip_on:
+        out.append(acme_name_of(store, 'vip'))
+    if want in ('node', 'both') or (want == 'vip' and not vip_on):
+        out.append(acme_name_of(store, node_name()))
+    return [n for n in out if n and re.match(r'^[A-Za-z0-9][A-Za-z0-9.-]{0,252}\Z', n)]
+
+
+# ---- DNS-01: the TXT record put in DNS (1.0.169) -------------------------------------
+# For a server the CA cannot reach: _acme-challenge.NAME TXT, put in by
+#   rfc2136    - nsupdate with a TSIG key (BIND, PowerDNS, Knot...), the key in a
+#                file only otp reads for the moment it runs, never on a command line;
+#   cloudflare - its API, with a token that may edit the zone's DNS;
+#   acmedns    - an acme-dns server (_acme-challenge.NAME a CNAME to its subdomain);
+#   manual     - shown on the page; the order waits until it is said to be there.
+# Then waited for (acme_dns_wait s) and taken away again once the CA has looked.
+NSUPDATE = os.environ.get('OTP_NSUPDATE') or 'nsupdate'
+
+
+def _dns_wait(say):
+    w = int(CONFIG.get('acme_dns_wait') or 0)
+    if w:
+        say('waited %d s for DNS to carry it' % w)
+        time.sleep(w)
+
+
+def acme_dns_put(store, name, txt, say):
+    """The TXT record put in; returns what takes it away again."""
+    how = CONFIG.get('acme_dns') or 'manual'
+    rr = '_acme-challenge.%s' % name.rstrip('.')
+    say('the TXT record %s put in DNS (%s)' % (rr, how))
+    if how == 'rfc2136':
+        undo = _dns_rfc2136(rr, txt)
+    elif how == 'cloudflare':
+        undo = _dns_cloudflare(rr, txt)
+    elif how == 'acmedns':
+        undo = _dns_acmedns(txt)
+    else:
+        undo = _dns_manual(store, rr, txt, say)
+    _dns_wait(say)
+    return undo
+
+
+def _dns_rfc2136(rr, txt):
+    server = str(CONFIG.get('acme_dns_server') or '').strip()
+    if not server:
+        raise AcmeError('the DNS server for the updates is not set')
+    keyname = str(CONFIG.get('acme_dns_tsig_name') or '').strip()
+    secret = unseal_secret(CONFIG.get('acme_dns_tsig_secret') or '') or ''
+    alg = CONFIG.get('acme_dns_tsig_alg') or 'hmac-sha256'
+    host, _, port = server.partition(':')
+    zone = str(CONFIG.get('acme_dns_zone') or '').strip()
+
+    def run(op):
+        work = tempfile.mkdtemp(prefix='otp-dns-', dir=str(STATE_DIR))
+        os.chmod(work, 0o700)
+        try:
+            args = [NSUPDATE]
+            if keyname:
+                kf = os.path.join(work, 'tsig.key')
+                fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'w') as f:
+                    f.write('key "%s" {\n  algorithm %s;\n  secret "%s";\n};\n' % (keyname, alg, secret))
+                args += ['-k', kf]
+            script = 'server %s %s\n' % (host, port or '53')
+            if zone:
+                script += 'zone %s\n' % zone
+            script += 'update %s %s 60 TXT "%s"\nsend\n' % (op, rr, txt) if op == 'add' else \
+                'update delete %s TXT "%s"\nsend\n' % (rr, txt)
+            try:
+                got = subprocess.run(args, input=script, capture_output=True, text=True, timeout=60)
+            except FileNotFoundError:
+                raise AcmeError('nsupdate is not on this machine (dnf install bind-utils)')
+            if got.returncode != 0:
+                raise AcmeError('the DNS server did not take the update: %s'
+                                % (got.stderr or got.stdout).strip()[-300:])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    run('add')
+    return lambda: run('delete')
+
+
+def _cf(method, path, body=None):
+    tok = unseal_secret(CONFIG.get('acme_dns_token') or '') or ''
+    if not tok:
+        raise AcmeError('the Cloudflare API token is not set')
+    base = str(os.environ.get('OTP_CF_API') or 'https://api.cloudflare.com/client/v4').rstrip('/')
+    req = urllib.request.Request(base + path, method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={'Authorization': 'Bearer ' + tok,
+                                          'Content-Type': 'application/json',
+                                          'User-Agent': 'otp/%s (acme)' % __version__})
+    try:
+        with url_open(req, timeout=30, context=ssl.create_default_context()
+                      if base.startswith('https') else None) as r:
+            got = json.loads(r.read(1 << 20).decode())
+    except urllib.error.HTTPError as e:
+        try:
+            got = json.loads(e.read().decode())
+        except ValueError:
+            got = {}
+        raise AcmeError('Cloudflare said %d: %s' % (e.code, '; '.join(
+            x.get('message', '') for x in got.get('errors') or []) or e.reason))
+    if not got.get('success'):
+        raise AcmeError('Cloudflare said no: %s' % '; '.join(
+            x.get('message', '') for x in got.get('errors') or []))
+    return got.get('result')
+
+
+def _dns_cloudflare(rr, txt):
+    labels = rr.split('.')
+    zone_id = None
+    for i in range(1, len(labels) - 1):
+        z = '.'.join(labels[i:])
+        got = _cf('GET', '/zones?name=' + urllib.parse.quote(z))
+        if got:
+            zone_id = got[0]['id']
+            break
+    if not zone_id:
+        raise AcmeError('Cloudflare has no zone for %s that the token may see' % rr)
+    rec = _cf('POST', '/zones/%s/dns_records' % zone_id,
+              {'type': 'TXT', 'name': rr, 'content': txt, 'ttl': 60})
+    return lambda: _cf('DELETE', '/zones/%s/dns_records/%s' % (zone_id, rec['id']))
+
+
+def _dns_acmedns(txt):
+    url = str(CONFIG.get('acme_dns_url') or '').strip().rstrip('/')
+    if not url:
+        raise AcmeError('the acme-dns server is not set')
+    req = urllib.request.Request(url + '/update', method='POST', data=json.dumps(
+        {'subdomain': str(CONFIG.get('acme_dns_subdomain') or ''), 'txt': txt}).encode(),
+        headers={'X-Api-User': str(CONFIG.get('acme_dns_user') or ''),
+                 'X-Api-Key': unseal_secret(CONFIG.get('acme_dns_key') or '') or '',
+                 'Content-Type': 'application/json'})
+    try:
+        with url_open(req, timeout=30, context=ssl.create_default_context()
+                      if url.startswith('https') else None) as r:
+            r.read(4096)
+    except urllib.error.HTTPError as e:
+        raise AcmeError('acme-dns said %d: %s' % (e.code, e.read(300).decode('utf-8', 'replace')))
+    except OSError as e:
+        raise AcmeError('acme-dns did not answer: %s' % getattr(e, 'reason', e))
+    return lambda: None             # acme-dns keeps the last two; nothing to take away
+
+
+ACME_MANUAL_WAIT = float(os.environ.get('OTP_ACME_MANUAL_WAIT') or 3600)
+
+
+def _dns_manual(store, rr, txt, say):
+    """Shown on the page; waited for until somebody says it is in DNS."""
+    ident = secrets.token_hex(6)
+    store.set_meta('acme:manual', json.dumps({'id': ident, 'rr': rr, 'txt': txt, 'at': time.time()}))
+    say('waiting: put %s TXT "%s" in DNS, then say so on the page' % (rr, txt))
+    end = time.time() + ACME_MANUAL_WAIT
+    try:
+        while time.time() < end:
+            got = _meta_json(store, 'acme:manual') or {}
+            if got.get('id') != ident:
+                raise AcmeError('the manual DNS step was given up')
+            if got.get('done'):
+                return lambda: None
+            time.sleep(2)
+        raise AcmeError('nobody said the TXT record was in DNS within an hour')
+    finally:
+        got = _meta_json(store, 'acme:manual') or {}
+        if got.get('id') == ident:
+            store.db.run("DELETE FROM meta WHERE k = 'acme:manual'")
 
 
 # ---- the link between the two databases: encrypted and checked (1.0.104) -----------
@@ -27295,6 +28252,114 @@ def osup_sched_tick(daemon):
                 store.add_event('settings', 'the restart on a schedule did not start: %s' % e,
                                 'bad')
 
+
+# ---- something asked of every node, each answering for itself (1.0.169) ----------------
+# A test that only a node itself can make - Proxy → Try it, a test line to
+# isemon or to the syslog servers - asked once on the pages and made on every
+# node: the ask is kept in the database ('ask:want:KIND'), each node's loop
+# sees it within seconds and writes its own answer ('ask:got:KIND:NODE'), the
+# page shows every node's as they come. The node the page is on answers at
+# once. Each answer is made in a thread of its own.
+NODE_ASK = {'do': {}, 'done': set(), 'daemon': [None]}
+NODE_ASK_FRESH = 120
+
+
+def node_ask_kind(kind):
+    """Registers what a kind of ask does: fn(daemon, args) -> dict."""
+    def put(fn):
+        NODE_ASK['do'][kind] = fn
+        return fn
+    return put
+
+
+def _node_ask_run(daemon, kind, want):
+    key = '%s:%s' % (kind, want.get('id'))
+    if key in NODE_ASK['done'] or kind not in NODE_ASK['do']:
+        return
+    only = (want.get('args') or {}).get('only')
+    if only and only != node_name():
+        NODE_ASK['done'].add(key)
+        return
+    NODE_ASK['done'].add(key)
+    store = daemon.store
+
+    def go():
+        try:
+            got = NODE_ASK['do'][kind](daemon, want.get('args') or {})
+        except Exception as e:                          # noqa: BLE001
+            got = {'ok': False, 'error': str(e)[:300]}
+        got = dict(got or {}, id=want['id'], at=time.time(), node=node_name())
+        store.set_meta('ask:got:%s:%s' % (kind, node_name()), json.dumps(got, default=str))
+    threading.Thread(target=go, name='otp-ask-' + kind, daemon=True).start()
+
+
+def node_ask(daemon, kind, args, by):
+    want = {'id': secrets.token_hex(6), 'args': args or {}, 'at': time.time(), 'by': by}
+    daemon.store.set_meta('ask:want:' + kind, json.dumps(want))
+    _node_ask_run(daemon, kind, want)
+    nodes = [n for n, a in host_alive(daemon.store).items() if a] or [node_name()]
+    nodes = sorted(set(nodes) | {node_name()})
+    if (args or {}).get('only'):
+        nodes = [args['only']]
+    return {'id': want['id'], 'nodes': nodes}
+
+
+def node_ask_tick(daemon):
+    NODE_ASK['daemon'][0] = daemon
+    for kind in list(NODE_ASK['do']):
+        want = _meta_json(daemon.store, 'ask:want:' + kind) or {}
+        if want.get('id') and time.time() - float(want.get('at') or 0) < NODE_ASK_FRESH:
+            _node_ask_run(daemon, kind, want)
+
+
+def node_ask_results(store, kind, ident):
+    out = {}
+    for n in host_nodes(store):
+        got = _meta_json(store, 'ask:got:%s:%s' % (kind, n)) or {}
+        out[n] = got if got.get('id') == ident else None
+    return out
+
+
+@node_ask_kind('proxy')
+def _ask_proxy(daemon, args):
+    return proxy_try(args.get('url') or '')
+
+
+@node_ask_kind('isemon')
+def _ask_isemon(daemon, args):
+    sh = getattr(daemon, 'shipper', None)
+    if not sh:
+        raise ValueError('nothing is sent from this process')
+    if not CONFIG.get('isemon'):
+        raise ValueError('sending to isemon is off')
+    before = dict(sh.sent)
+    sh.put('otp', 'daemon', 'a test from otp %s on %s, sent by %s - isemon reads nothing from '
+           'this line' % (__version__, node_name(), args.get('by') or '?'))
+    sh.flush(3)
+    time.sleep(0.3)
+    st = sh.state()
+    went = [k for k, v in st.get('sent', {}).items() if v > before.get(k, 0)]
+    return {'ok': bool(went) and not st.get('trouble'), 'went': went, 'state': st}
+
+
+@node_ask_kind('siem')
+def _ask_siem(daemon, args):
+    si = getattr(daemon, 'siem', None)
+    if not si:
+        raise ValueError('nothing is sent from this process')
+    got = si.test(args.get('by') or '?')
+    return {'ok': all(v == 'sent' for v in got.values()), 'test': got, 'state': si.state()}
+
+
+@node_ask_kind('dircheck')
+def _ask_dircheck(daemon, args):
+    ad = daemon.dirs.get(str(args.get('name') or '').lower())
+    if not ad:
+        raise ValueError('there is no directory called %s here' % args.get('name'))
+    c = ad.check()
+    ok = any(sv.get('ok') for sv in c.get('servers') or [])
+    return {'ok': ok, 'check': c}
+
 # ---- alerts by mail, and the report (1.0.162) ------------------------------------------
 # Each node writes what only it can see into a row of its own every minute
 # ('host:health:NODE': its disks, the directories it cannot reach, the SMS
@@ -27374,6 +28439,7 @@ def health_publish(daemon):
         pass
     row = {'at': now, 'disks': disks_now(), 'dirs_down': dead, 'sms': dict(SMS_HEALTH),
            'siem': daemon.siem.state() if getattr(daemon, 'siem', None) else {},
+           'isemon': daemon.shipper.state() if getattr(daemon, 'shipper', None) else {},
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -30100,7 +31166,7 @@ def _tokens_export(h):
     b = h.body()
     lock = b.get('lock', True) is not False
     phrase = str(b.get('passphrase') or '')
-    if not lock and CONFIG.get('high_security'):
+    if not lock and hisec_enforced('export:unlocked', h.store):
         raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
                             'locked with a passphrase')
     if lock and len(phrase) < 8:
@@ -30768,7 +31834,7 @@ def _tokens_backup(h):
     # Locked unless asked otherwise in so many words, and never under high
     # security (1.0.168): every key and recovery code is in it.
     lock = b.get('lock', True) is not False
-    if not lock and CONFIG.get('high_security'):
+    if not lock and hisec_enforced('export:unlocked', h.store):
         raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
                             'locked with a passphrase')
     if lock and len(phrase) < 8:
@@ -31227,6 +32293,14 @@ def _dirs_do(h):
             who, user[:120], 'it would sign in' if said.get('ok') else 'refused'), who=who)
         return {'tried': said}
     h.me('tokenadmin')
+    # The connection to a directory tried from every node (1.0.169): each node
+    # reaches the domain controllers on its own.
+    if act == 'check_all':
+        if str(b.get('name') or '').lower() not in h.d.dirs:
+            raise ApiError(404, 'there is no directory called %s (switched on)' % b.get('name'))
+        return node_ask(h.d, 'dircheck', {'name': str(b.get('name') or '')}, h.me()['name'])
+    if act == 'result':
+        return {'nodes': node_ask_results(h.store, 'dircheck', str(b.get('id') or ''))}
     if act not in ('check', 'groups', 'lookup'):
         raise ApiError(400, 'no such thing to do with a directory')     # 1.0.103
     ad = h.d.dirs.get(str(b.get('name') or '').lower())
@@ -31564,16 +32638,46 @@ def _hisec(h):
     return hisec_view(h.store)
 
 
+@route('POST', '/api/hisec')
+def _hisec_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'waive':
+        raise ApiError(400, 'no such thing to do')
+    try:
+        hisec_waive(h.store, str(b.get('rule') or ''), bool(b.get('on')), s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    return hisec_view(h.store)
+
+
 @route('POST', '/api/isemon')
 def _isemon_do(h):
     s = h.me('fulladmin')
-    if not h.d.shipper:
-        raise ApiError(503, 'nothing is being sent from this process')
-    h.d.shipper.put('otp', 'daemon', 'a test from otp %s, sent by %s - isemon reads nothing '
-                    'from this line' % (__version__, s['name']))
-    h.d.shipper.flush(3)
-    time.sleep(0.3)
-    return {'isemon': h.d.shipper.state()}
+    b = h.body()
+    if str(b.get('action') or '') == 'result':
+        return {'nodes': node_ask_results(h.store, 'isemon', str(b.get('id') or ''))}
+    if not CONFIG.get('isemon'):
+        raise ApiError(400, 'sending to isemon is off')
+    # From every node (1.0.169): each sends its own test line.
+    return node_ask(h.d, 'isemon', {'by': s['name'], 'only': str(b.get('node') or '')},
+                    s['name'])
+
+
+@route('GET', '/api/isemon')
+def _isemon(h):
+    """What each node sends to isemon (1.0.169): this one as it is now, the
+    other as its own row of the last minute says."""
+    h.me()
+    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    out = []
+    for n in sorted(set(nodes) | {node_name()}):
+        row = _meta_json(h.store, 'host:health:' + n) or {}
+        st = (h.d.shipper.state() if h.d.shipper else {}) if n == node_name() else \
+            (row.get('isemon') or {})
+        out.append(dict(st, node=n, me=n == node_name(),
+                        at=time.time() if n == node_name() else row.get('at')))
+    return {'nodes': out, 'on': bool(CONFIG.get('isemon'))}
 
 
 @route('GET', '/api/users')
@@ -34975,6 +36079,19 @@ def _rbackup_do(h):
             return {'message': 'the backup is being tried', 'job': job}
         if act == 'verified':
             return {'verified': rb_verified(h.store)[:40]}
+        if act == 'verified_forget':
+            at = None
+            if not b.get('all'):
+                try:
+                    at = float(b.get('at'))
+                except (TypeError, ValueError):
+                    raise ValueError('which try?')
+            n = rb_verified_forget(h.store, at)
+            if not n:
+                raise ValueError('that try is not on the list any more')
+            h.store.add_event('backups', '%s took %d tr%s of backups off the list; the backups '
+                              'stay where they are' % (by, n, 'y' if n == 1 else 'ies'), who=by)
+            return {'message': 'taken off the list', 'verified': rb_verified(h.store)[:20]}
         if act == 'list':
             return {'files': rb_remote_list(h.store, b.get('id'))}
         if act == 'delete_file':
@@ -35480,30 +36597,36 @@ def _siem(h):
 def _siem_do(h):
     s = h.me('fulladmin')
     b = h.body()
-    if str(b.get('action') or '') != 'test':
+    act = str(b.get('action') or '')
+    if act == 'result':
+        return {'nodes': node_ask_results(h.store, 'siem', str(b.get('id') or ''))}
+    if act != 'test':
         raise ApiError(400, 'no such thing to do')
-    if not getattr(h.d, 'siem', None):
-        raise ApiError(400, 'this daemon sends nothing')
-    try:
-        got = h.d.siem.test(s['name'])
-    except ValueError as e:
-        raise ApiError(400, str(e))
-    h.store.add_event('settings', '%s sent a test line to the syslog servers from %s: %s' % (
-        s['name'], node_name(), ', '.join('%s %s' % kv for kv in sorted(got.items()))),
-        'info', who=s['name'])
-    return dict(_siem_view(h), test=got, node=node_name())
+    if not CONFIG.get('siem') or not siem_targets(CONFIG.get('siem_targets')):
+        raise ApiError(400, 'no syslog server is set')
+    # From every node (1.0.169): each sends its own and says how it went.
+    h.store.add_event('settings', '%s sent a test line to the syslog servers from every node'
+                      % s['name'], 'info', who=s['name'])
+    return node_ask(h.d, 'siem', {'by': s['name'], 'only': str(b.get('node') or '')}, s['name'])
 
 
 @route('POST', '/api/proxy')
 def _proxy_do(h):
     h.me('fulladmin')
     b = h.body()
-    if str(b.get('action') or '') != 'try':
-        raise ApiError(400, 'no such thing to do')
+    act = str(b.get('action') or '')
     try:
-        return dict(proxy_try(str(b.get('url') or '')), node=node_name())
+        if act == 'try':
+            # On every node (1.0.169); 'result' says what each found so far.
+            url = str(b.get('url') or '').strip()
+            if url and not re.match(r'^https?://[^\s/]+[^\s]*\Z', url):
+                raise ValueError('an address starting https:// (or http://)')
+            return node_ask(h.d, 'proxy', {'url': url}, h.me('fulladmin')['name'])
+        if act == 'result':
+            return {'nodes': node_ask_results(h.store, 'proxy', str(b.get('id') or ''))}
     except ValueError as e:
         raise ApiError(400, str(e))
+    raise ApiError(400, 'no such thing to do')
 
 
 @route('GET', '/api/logs')
@@ -35526,6 +36649,64 @@ def _logs_do(h):
     except Exception as e:                              # noqa: BLE001
         raise ApiError(400, 'it did not go: %s' % e)
     return logs_view(h.store)
+
+
+# ---- certificates by ACME (1.0.169) ---------------------------------------------------
+@route('GET', '/api/acme/challenge')
+def _acme_challenge(h):
+    """What acme.php gives the CA on port 80 - no account: the CA asks."""
+    got = acme_challenge(h.store, h.arg('token'))
+    if got is None:
+        raise ApiError(404, 'no such challenge')
+    return {'auth': got}
+
+
+@route('GET', '/api/acme')
+def _acme(h):
+    h.me('fulladmin')
+    return acme_view(h.store)
+
+
+@route('POST', '/api/acme')
+def _acme_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    try:
+        if act == 'order':
+            if not CONFIG.get('acme'):
+                raise ValueError('certificates by ACME are off - switch them on and save first')
+            mine = dict(acme_targets(h.store))
+            target = str(b.get('target') or '')
+            if target not in mine:
+                raise ValueError('%s is not ordered from this node - the web address\'s is ordered '
+                                 'by %s, a node\'s by that node' % (target, 'the first node by name'))
+            acme_start(h.store, [(target, mine[target])], s['name'])
+            return dict(acme_view(h.store), message='the certificate of %s is being ordered' % mine[target])
+        if act == 'probe':
+            return acme_probe(h.store, str(b.get('target') or ''))
+        if act in ('manual_done', 'manual_drop'):
+            # The TXT record put in by hand (1.0.169) - or the order given up.
+            got = _meta_json(h.store, 'acme:manual') or {}
+            if not got.get('id'):
+                raise ValueError('no order waits for a TXT record now')
+            if act == 'manual_done':
+                got['done'] = time.time()
+                h.store.set_meta('acme:manual', json.dumps(got))
+            else:
+                h.store.db.run("DELETE FROM meta WHERE k = 'acme:manual'")
+            h.store.add_event('settings', '%s said the TXT record %s %s' % (
+                s['name'], got.get('rr'), 'is in DNS' if act == 'manual_done' else
+                'will not be put in - the order is given up'), who=s['name'])
+            return acme_view(h.store)
+        if act == 'forget':
+            h.store.db.run("DELETE FROM meta WHERE k = 'acme:account'")
+            h.store.add_event('settings', '%s forgot the account at the ACME CA - a new one is '
+                              'made at the next order' % s['name'], 'warn', who=s['name'])
+            return acme_view(h.store)
+    except (ValueError, AcmeError) as e:
+        raise ApiError(400, str(e))
+    raise ApiError(400, 'no such thing to do')
 # ---- the console: otp run by its menus, on the server's own screen (1.0.130) --------
 # `otp --console` - and, with `otp --console-at-login on`, what root sees first
 # after signing in at the console or over SSH. Everything is done by the same

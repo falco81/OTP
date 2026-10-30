@@ -18,7 +18,7 @@ the list is empty. The same list is on the page itself, with *Look again*.
 |---|---|
 | Active Directory | plain LDAP; the certificate not checked; old, weak TLS |
 | RADIUS | answers without a Message-Authenticator; a client that sent one leaving it out; no Sign-in protection; a client's secret under 16 characters |
-| Mail | to the server unencrypted or only if offered (`smtp_security` none, starttls-if); the certificate not checked; direct delivery without TLS required |
+| Mail | to the server unencrypted or only if offered (`smtp_security` none, starttls-if); the certificate not checked |
 | SMS | the HTTP gateway over `http://`; the telephone gateway without HTTPS or without checking its certificate |
 | Database, cluster | MariaDB/PostgreSQL over the network without `verify-ca`/`verify-full`; the replication likewise |
 | Backups | plain FTP; FTPS not checking the certificate; SMB not encrypted |
@@ -30,9 +30,26 @@ the list is empty. The same list is on the page itself, with *Look again*.
 While it is on, each of these is refused wherever it is changed - the pages,
 the API, `otp --set` - and greyed out on the pages, with why.
 
-## Advised, stopping nothing
+## Exceptions (1.0.169)
 
-The administration without a second step from an app, or with one by mail or
+Every rule has a switch on its right: *Exception*. A rule made an exception
+stops nothing and is not enforced while high security is on - the rest stay.
+While high security is on, an exception is taken back only once the rule is kept
+(else high security would stand against itself). Each change is an event. The
+rules kept are listed too, folded, each with its switch.
+
+## The security check
+
+What is not as it should be now - the firewall off, no backup going to another
+machine or none tried, a backup that cannot be put back, security updates or a
+restart waiting, certificates running out - is listed apart, and never stops
+high security.
+
+## Before 1.0.169: advised, stopping nothing
+
+Direct delivery with TLS only where the recipient's server offers it (many
+offer none, and a mail refused there is a token that never arrives); the
+administration without a second step from an app, or with one by mail or
 SMS; administrators showing a token's key; the enrolment page showing the key
 as text; recovery codes under 10 digits; codes by mail; enrolment for anyone in
 a directory; sign-ins to the administration lasting over 8 hours or idle over
