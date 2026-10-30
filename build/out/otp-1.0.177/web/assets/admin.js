@@ -2939,22 +2939,24 @@ function nodeOthers(s) {
   if (!s.node_key || !SETTINGS || !SETTINGS.cluster || s.secret) return null;
   var names = (SETTINGS.nodes || []).filter(function (n) { return n !== SETTINGS.node; });
   if (!names.length) return null;
-  var box = el('div', 'node-others small');
+  var box = el('div', 'node-others small' + (isBool(s) ? ' bool' : ''));
   names.forEach(function (n) {
     var has = s.per_node && Object.prototype.hasOwnProperty.call(s.per_node, n);
     var val = has ? s.per_node[n] : s.shared;
     var row = el('div', 'node-other');
     row.dataset.node = n;
-    row.appendChild(noI18n(el('span', 'tag dim', n)));
     var redraw = function () { loadSettings(); };
     if (isBool(s)) {
+      /* The node's switch first, right under the box's own (1.0.177): after
+         the node's tag it stood off to the side of the one above. */
       var sw = switchBox(nodeValWords(s, val) === 'on');
-      sw.classList.add('small');
       sw._input.disabled = !ADMIN;
       if (!has) sw.classList.add('inherited');
       sw._input.addEventListener('change', function () { nodeSave(s, n, !!sw._get(), redraw); });
       row.appendChild(sw);
+      row.appendChild(noI18n(el('span', 'tag dim', n)));
     } else {
+      row.appendChild(noI18n(el('span', 'tag dim', n)));
       row.appendChild(nodeValEl(s, val, 'mono small' + (has ? '' : ' muted')));
     }
     row.appendChild(el('span', 'muted', has ? 'its own' : 'the cluster’s'));

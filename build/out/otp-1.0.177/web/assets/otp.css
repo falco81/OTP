@@ -3302,3 +3302,6 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .hal-nodes.wide .hal-node{grid-template-columns:minmax(110px,max-content) auto 1fr}
 .mon-pre{max-height:60vh;overflow:auto;white-space:pre}
 .acme-steps-done{margin:6px 0}.acme-steps-done summary{cursor:pointer}.acme-steps-done .si-row{gap:8px}
+/* a switch of another node right under the box's own switch (1.0.177) */
+.node-others.bool{border-left:0;padding-left:0}
+.node-others.bool .node-other > .sw{margin:0;flex:none}

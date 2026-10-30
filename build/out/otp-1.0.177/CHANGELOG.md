@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.177 — 30 October 2026
+
+- A switch of another node stands right under the setting's own switch, its
+  node's name after it - it stood off to the side, after the name (*A copy of the
+  database every day* and every other switch of a node's own).
+- The alert of a certificate running out says "VIP adresy" in Czech, as the
+  pages do.
+
 ## 1.0.176 — 30 October 2026
 
 **ACME: what is being waited for, said as it goes**
