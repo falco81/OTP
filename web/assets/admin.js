@@ -2481,6 +2481,7 @@ function showPane(name) {
   if (name === 'power') loadPower();
   if (name === 'sshkeys') loadSshKeys(); else skPoll(false);
   if (name === 'alerts') loadAlerts();
+  if (name === 'sshd') loadSshd(); else sdPoll(false);
   if (name === 'osup') loadOsup(); else ouPoll(false);
   if (name === 'time') loadNtp();
   if (name === 'ha') loadHa();
@@ -13022,7 +13023,7 @@ function alPreview(period) {
       f.setAttribute('title', x.subject);
       f.srcdoc = x.html;
       body.appendChild(f);
-    }, [{words: 'Close', close: true}], 'large');
+    }, [{words: 'Close', close: true}], 'al-report');
   }).catch(oops);
 }
 function alLog() {
@@ -13054,4 +13055,161 @@ function alLog() {
     }, 'plain'));
     host.appendChild(c);
   });
+}
+
+
+/* ---- Settings → SSH server and notices (1.0.163) --------------------------------
+   One wish for the cluster, each node putting it in by itself and saying what
+   sshd makes of it; a change on trial until Keep it. Saved with the bar at
+   the bottom, as the time servers are. */
+var SD = {d: null, draft: null, poll: null};
+var SD_STATE = {done: ['as wished', 'good'], trial: ['on trial', 'warn'], waiting: ['being put in', 'info'],
+                failed: ['refused', 'bad'], back: ['went back', 'warn']};
+function loadSshd() {
+  api('sshd').then(function (d) {
+    SD.d = d;
+    if (!SD.draft) SD.draft = JSON.parse(JSON.stringify(d.conf));
+    drawSshd();
+    sdPoll(sdBusy(d));
+  }).catch(oops);
+}
+function sdBusy(d) { return (d.nodes || []).some(function (n) { return n.state === 'waiting' || n.state === 'trial'; }); }
+function sdPoll(on) {
+  if (on && !SD.poll) {
+    SD.poll = setInterval(function () {
+      if (TAB !== 'settings' || PANE !== 'sshd') { sdPoll(false); return; }
+      api('sshd').then(function (d) { SD.d = d; drawSshd(true); if (!sdBusy(d)) sdPoll(false); }).catch(function () {});
+    }, 3000);
+  }
+  if (!on && SD.poll) { clearInterval(SD.poll); SD.poll = null; }
+}
+function sdDirty() {
+  pendingSet('sshd', {pane: 'sshd', save: sdSave, reset: function () {
+    SD.draft = JSON.parse(JSON.stringify(SD.d.conf)); drawSshd();
+  }});
+}
+function sdSave() {
+  var dr = SD.draft;
+  return api('sshd', {action: 'save', conf: dr}).then(function (r) {
+    toast(r.message, 'good'); SD.d = r; SD.draft = JSON.parse(JSON.stringify(r.conf)); drawSshd(); sdPoll(true); return true;
+  });
+}
+function sdAct(action, b) {
+  if (b) busy(b, true);
+  api('sshd', {action: action}).then(function (r) { toast(r.message, 'good'); SD.d = r; drawSshd(); sdPoll(true); })
+    .catch(function (e) { if (b) busy(b, false); oops(e); });
+}
+function drawSshd(live) {
+  var real = $('sd-host');
+  if (!real || !SD.d) return;
+  liveLetGo(real);
+  liveFill(real, function (host) {
+    var d = SD.d, dr = SD.draft, nodes = d.nodes || [];
+    if (!d.helper) host.appendChild(el('p', 'note bad', 'The root helper of this node is not installed (install.sh --upgrade puts it in).'));
+    /* On trial: keep it, or put it back. */
+    var trial = nodes.filter(function (n) { return n.state === 'trial'; });
+    if (trial.length) {
+      var tc = el('div', 'card full notice warn sd-trial');
+      tc.appendChild(el('h2', '', 'On trial - keep it, or it goes back'));
+      var until = Math.min.apply(null, trial.map(function (n) { return (n.now.trial || {}).until || 0; }));
+      tc.appendChild(el('p', 'note', 'Open a new SSH session to ' + trial.map(function (n) { return n.name; }).join(' and ') + ' now, with the port and the way of signing in as set, and keep the one you have open. Works: Keep it. Unless kept, each node puts back what it had in ' + span(Math.max(0, Math.round(until - Date.now() / 1000))) + '.'));
+      var row = el('div', 'btnrow');
+      var kp = cmdButton('Keep it', 'check', 'primary');
+      kp.onclick = function () { sdAct('keep', kp); };
+      var bk = cmdButton('Put it back now', 'undo', '');
+      bk.onclick = function () { confirmThen('Put the SSH server back', 'Each node on trial puts back what it had before the change.', 'Put it back', function () { sdAct('back', bk); }, false); };
+      row.appendChild(kp); row.appendChild(bk);
+      tc.appendChild(row);
+      host.appendChild(tc);
+    }
+    /* Each node, as sshd has it. */
+    var grid = el('div', 'pw-grid');
+    nodes.forEach(function (n) {
+      var c = el('div', 'card pw-node');
+      var hd = el('div', 'pw-head');
+      hd.appendChild(el('span', 'dot ' + (n.alive ? 'ok' : 'bad')));
+      hd.appendChild(noI18n(el('b', '', n.name)));
+      if (n.me) hd.appendChild(el('span', 'tag info', 'this page'));
+      var w = SD_STATE[n.state] || SD_STATE.done;
+      if (d.conf.hash) hd.appendChild(el('span', 'tag ' + w[1], w[0]));
+      c.appendChild(hd);
+      var v = (n.now || {}).values || {};
+      c.appendChild(netFacts([
+        ['Port', v.port || '', true],
+        ['Root may sign in', v.permitrootlogin ? ({'without-password': 'with a key only', 'prohibit-password': 'with a key only', 'yes': 'yes', 'no': 'no'})[v.permitrootlogin] || v.permitrootlogin : (n.now.there === false ? 'sshd is not here' : '')],
+        ['Passwords', v.passwordauthentication || ''],
+        ['Tries a connection', v.maxauthtries || '', true],
+        ['Who may sign in', v.allowusers || 'everybody'],
+        ['Keys of root', String(n.keys)],
+        ['SELinux', (n.now || {}).selinux || '–', true],
+        ['Read', n.now.at ? ago(n.now.at) : 'not yet']
+      ]));
+      if (n.now.error) c.appendChild(el('p', 'note bad', n.now.error));
+      if (n.now.dropins === false) c.appendChild(el('p', 'note warn', 'This sshd does not read sshd_config.d - otp cannot set it here.'));
+      grid.appendChild(c);
+    });
+    host.appendChild(grid);
+    /* The wish. */
+    var fc = el('div', 'card full');
+    fc.appendChild(el('h2', '', 'The SSH server'));
+    var sw = switchBox(dr.manage);
+    sw._input.onchange = function () { dr.manage = !!sw._get(); sdDirty(); drawSshd(); };
+    fc.appendChild(formField('otp sets the SSH server', sw, 'Off: each node keeps sshd as the system has it, and otp\'s file is taken away.'));
+    var g = el('div', 'formgrid sd-grid' + (dr.manage ? '' : ' off'));
+    var seg = el('div', 'seg');
+    [['prohibit-password', 'With a key only'], ['yes', 'With a key or a password'], ['no', 'Not at all']].forEach(function (o) {
+      var b = el('button', dr.permit_root === o[0] ? 'on' : '', o[1]);
+      b.type = 'button'; b.disabled = !dr.manage;
+      b.onclick = function () { dr.permit_root = o[0]; sdDirty(); drawSshd(); };
+      seg.appendChild(b);
+    });
+    g.appendChild(formField('Root signs in', seg));
+    var pw = switchBox(dr.password);
+    pw._input.disabled = !dr.manage;
+    pw._input.onchange = function () { dr.password = !!pw._get(); sdDirty(); drawSshd(); };
+    g.appendChild(formField('Passwords', pw, 'Off: only keys sign in, for everybody.'));
+    var port = textBox(String(dr.port || 22), '22', 'mono');
+    port.disabled = !dr.manage;
+    port.oninput = function () { dr.port = parseInt(port.value, 10) || 22; sdDirty(); };
+    g.appendChild(formField('Port', port, 'Another than 22: the firewall lets it in by itself, the old one too while it is on trial.'));
+    var tries = textBox(String(dr.tries || 4), '4', 'mono');
+    tries.disabled = !dr.manage;
+    tries.oninput = function () { dr.tries = parseInt(tries.value, 10) || 4; sdDirty(); };
+    g.appendChild(formField('Tries a connection', tries, 'Wrong passwords or keys before sshd closes it (MaxAuthTries).'));
+    var au = textBox((dr.allow_users || []).join(' '), 'root admin', 'mono');
+    au.disabled = !dr.manage;
+    au.oninput = function () { dr.allow_users = au.value.split(/[\s,]+/).filter(Boolean); sdDirty(); };
+    g.appendChild(formField('Who may sign in', au, 'The accounts, separated by spaces (AllowUsers). Empty: everybody.'));
+    var tm = textBox(String(dr.trial_min === undefined ? 5 : dr.trial_min), '5', 'mono');
+    tm.disabled = !dr.manage;
+    tm.oninput = function () { dr.trial_min = Math.max(0, parseInt(tm.value, 10) || 0); sdDirty(); };
+    g.appendChild(formField('On trial for (min)', tm, 'Unless kept within this, each node puts back what it had. 0: no trial - not advised.'));
+    fc.appendChild(g);
+    var none = nodes.filter(function (n) { return !n.keys; }).map(function (n) { return n.name; });
+    if (dr.manage && none.length && (dr.permit_root === 'prohibit-password' || !dr.password))
+      fc.appendChild(el('p', 'note bad', 'Root has no key on ' + none.join(', ') + ' - add one on SSH keys of root first, or this is refused there.'));
+    if (dr.manage && !dr.password && dr.permit_root === 'yes')
+      fc.appendChild(el('p', 'note', 'Passwords off: root signs in with a key either way.'));
+    host.appendChild(fc);
+    /* The notice. */
+    var nc = el('div', 'card full');
+    nc.appendChild(el('h2', '', 'The notice'));
+    var ta = noI18n(el('textarea', 'mono sd-notice'));
+    ta.rows = 6; ta.value = dr.notice || ''; ta.placeholder = 'Authorised use only. Every connection is logged.';
+    ta.oninput = function () { dr.notice = ta.value; sdDirty(); };
+    nc.appendChild(formField('Its words', ta, 'Plain text, as many lines as needed - often what the security policy wants said.'));
+    var wh = el('div', 'sd-where');
+    [['notice_ssh', 'Before signing in over SSH', 'sshd\'s Banner - needs otp to set the SSH server'], ['notice_console', 'At the console', '/etc/issue'], ['notice_motd', 'After signing in', 'the message of the day']].forEach(function (o) {
+      var lab = el('label', 'chk');
+      var cb = el('input'); cb.type = 'checkbox'; cb.checked = !!dr[o[0]];
+      cb.disabled = o[0] === 'notice_ssh' && !dr.manage;
+      cb.onchange = function () { dr[o[0]] = cb.checked; sdDirty(); };
+      lab.appendChild(cb); lab.appendChild(el('span', '', o[1]));
+      lab.appendChild(el('span', 'muted small', o[2]));
+      wh.appendChild(lab);
+    });
+    nc.appendChild(wh);
+    nc.appendChild(el('p', 'muted small', 'Saved with the bar at the bottom; each node then puts it in by itself within seconds.'));
+    host.appendChild(nc);
+  }, live);
 }

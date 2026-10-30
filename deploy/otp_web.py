@@ -26,6 +26,7 @@ descriptor, never a path the otp account could swap for a link.
   otp_web.py            serve request.json (as root, from systemd)
   otp_web.py --status   what is in place here (JSON)
   otp_web.py --os-job ID check|upgrade   the system's updates (started by itself)
+  otp_web.py --sshd-back                 a change of sshd on trial put back (its timer)
 """
 import ipaddress
 import json
@@ -2664,6 +2665,380 @@ def sshkeys_part():
     write_here(SSHKEYS_FILE, json.dumps(out))
 
 
+# ---- the SSH server and the notices at sign-in (1.0.163) --------------------------------
+# otp's own drop-in, read before every other (00-otp.conf: the first value
+# sshd reads of a setting is the one it keeps), checked by sshd -t before it
+# is put in, and on trial: a timer of systemd's own puts the one before back
+# unless Keep it comes in time - also with the daemon down, also with the
+# web away. The notices: before signing in over SSH (Banner), at the console
+# (/etc/issue.d or /etc/issue) and after signing in (/etc/motd.d or /etc/motd).
+SSHD_ASK, SSHD_FILE = 'sshd.ask', 'sshd.json'
+SSH_DIR = os.environ.get('OTP_SSH_DIR', '/etc/ssh')
+ETC_DIR = os.environ.get('OTP_ETC', '/etc')
+SSHD_BIN = shutil.which('sshd') or '/usr/sbin/sshd'
+SSHD_DROPIN = 'sshd_config.d/00-otp.conf'
+SSHD_STATE = os.path.join(SSH_DIR, '.otp-sshd-trial.json')
+SSHD_PERMIT = ('yes', 'prohibit-password', 'no')
+NOTICE_MARK = '# written by otp - Settings -> SSH server and notices\n'
+
+
+def sshd_conf_path():
+    return os.path.join(SSH_DIR, 'sshd_config')
+
+
+def sshd_reads_dropins():
+    """Whether sshd_config takes sshd_config.d (OpenSSH 8.2 on; RHEL 8's 8.0 does not)."""
+    try:
+        with open(sshd_conf_path()) as f:
+            text = f.read()
+    except OSError:
+        return False
+    return bool(re.search(r'(?im)^\s*Include\s+\S*sshd_config\.d/\*\.conf', text))
+
+
+def sshd_values():
+    if not os.path.exists(SSHD_BIN):
+        return {}
+    got = subprocess.run([SSHD_BIN, '-T', '-f', sshd_conf_path(), '-C',
+                          'user=root,host=localhost,addr=127.0.0.1'],
+                         capture_output=True, text=True, timeout=20)
+    said = {}
+    for ln in got.stdout.splitlines():
+        k, _, v = ln.partition(' ')
+        if k in ('port', 'permitrootlogin', 'passwordauthentication', 'pubkeyauthentication',
+                 'allowusers', 'banner', 'kbdinteractiveauthentication', 'maxauthtries'):
+            said[k] = v.strip() if k not in said else said[k] + ' ' + v.strip()
+    return said
+
+
+def _read_or(path, most=65536):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as f:
+            return f.read(most).decode('utf-8', 'replace')
+    except OSError:
+        return None
+
+
+def _put_file(path, text, mode=0o644):
+    """Written whole, beside and renamed in; never through a link."""
+    folder = os.path.dirname(path)
+    if os.path.islink(path) or os.path.islink(folder):
+        raise Refused('%s is a link - put the file itself there' % path)
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix='.otp-')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    if shutil.which('restorecon'):
+        subprocess.run(['restorecon', path], capture_output=True)
+
+
+def _drop(path):
+    try:
+        if not os.path.islink(path):
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def notice_paths():
+    """Where the console's and the after-sign-in notices go here: a file of
+    otp's own in issue.d / motd.d where agetty and pam_motd read those, else
+    the one file (kept as it was beside it, put back when switched off)."""
+    issue_d = os.path.join(ETC_DIR, 'issue.d')
+    motd_d = os.path.join(ETC_DIR, 'motd.d')
+    return {'issue': os.path.join(issue_d, 'otp.issue') if os.path.isdir(issue_d)
+            else os.path.join(ETC_DIR, 'issue'),
+            'motd': os.path.join(motd_d, 'otp') if os.path.isdir(motd_d)
+            else os.path.join(ETC_DIR, 'motd'),
+            'banner': os.path.join(SSH_DIR, 'otp-banner')}
+
+
+def notice_set(where, text):
+    """The notice put in at `where` (issue, motd), or taken out (text None)."""
+    path = notice_paths()[where]
+    whole = os.path.basename(path) in ('issue', 'motd')
+    keep = path + '.otp-before'
+    if text is None:
+        if whole:
+            had = _read_or(keep)
+            cur = _read_or(path) or ''
+            if had is not None and cur.startswith(NOTICE_MARK.strip()):
+                _put_file(path, had)
+            _drop(keep)
+        else:
+            _drop(path)
+        return
+    if whole and _read_or(keep) is None:
+        cur = _read_or(path)
+        if cur is not None and not cur.startswith(NOTICE_MARK.strip()):
+            _put_file(keep, cur)
+    body = text.rstrip() + '\n'
+    if where == 'issue':
+        body = body.replace('\\', '\\\\') + '\n'       # agetty reads \ escapes
+    _put_file(path, (NOTICE_MARK if whole else '') + body)
+
+
+def root_keys_count():
+    try:
+        return len([k for k in auth_keys(auth_lines()) if k.get('readable')])
+    except Exception:                                   # noqa: BLE001
+        return 0
+
+
+def sshd_checked(c):
+    """What the page asked for, made whole - checked here again."""
+    if not isinstance(c, dict):
+        raise Refused('the request is not an object')
+    out = {'manage': bool(c.get('manage'))}
+    permit = str(c.get('permit_root') or 'prohibit-password')
+    if permit not in SSHD_PERMIT:
+        raise Refused('root signs in with: yes, prohibit-password or no')
+    out['permit_root'] = permit
+    out['password'] = bool(c.get('password'))
+    try:
+        port = int(c.get('port') or 22)
+    except (TypeError, ValueError):
+        raise Refused('the port is a number')
+    if not 1 <= port <= 65535:
+        raise Refused('the port is 1 to 65535')
+    out['port'] = port
+    users = [u for u in re.split(r'[\s,]+', str(c.get('allow_users') or '')) if u]
+    for u in users:
+        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}$', u):
+            raise Refused('%r is not a user name' % u)
+    out['allow_users'] = users[:50]
+    try:
+        out['tries'] = max(1, min(10, int(c.get('tries') or 4)))
+    except (TypeError, ValueError):
+        out['tries'] = 4
+    text = str(c.get('notice') or '').replace('\r\n', '\n')
+    if len(text) > 4000:
+        raise Refused('the notice is 4000 characters at most')
+    if re.search(r'[\x00-\x08\x0b-\x1f\x7f]', text):
+        raise Refused('no control characters in the notice')
+    out['notice'] = text
+    for k in ('notice_ssh', 'notice_console', 'notice_motd'):
+        out[k] = bool(c.get(k)) and bool(text.strip())
+    return out
+
+
+def sshd_text(c):
+    lines = ['# otp - Settings -> SSH server and notices. Changed there, not here: this',
+             '# file is written whole each time.',
+             'Port %d' % c['port'],
+             'PermitRootLogin %s' % c['permit_root'],
+             'PasswordAuthentication %s' % ('yes' if c['password'] else 'no'),
+             'KbdInteractiveAuthentication %s' % ('yes' if c['password'] else 'no'),
+             'PubkeyAuthentication yes',
+             'MaxAuthTries %d' % c['tries']]
+    if c['allow_users']:
+        lines.append('AllowUsers %s' % ' '.join(c['allow_users']))
+    lines.append('Banner %s' % (notice_paths()['banner'] if c['notice_ssh'] else 'none'))
+    return '\n'.join(lines) + '\n'
+
+
+def sshd_selinux_port(port):
+    """A port other than 22 let through by SELinux, where it is enforcing."""
+    if port == 22 or not shutil.which('getenforce'):
+        return ''
+    mode = subprocess.run(['getenforce'], capture_output=True, text=True).stdout.strip()
+    if mode != 'Enforcing':
+        return ''
+    if not shutil.which('semanage'):
+        raise Refused('SELinux keeps sshd to port 22 and semanage is not on this machine '
+                      '(dnf install policycoreutils-python-utils)')
+    got = subprocess.run(['semanage', 'port', '-a', '-t', 'ssh_port_t', '-p', 'tcp', str(port)],
+                         capture_output=True, text=True)
+    if got.returncode != 0 and 'already defined' not in (got.stderr or ''):
+        got = subprocess.run(['semanage', 'port', '-m', '-t', 'ssh_port_t', '-p', 'tcp',
+                              str(port)], capture_output=True, text=True)
+        if got.returncode != 0:
+            raise Refused('semanage: %s' % (got.stderr or got.stdout).strip()[-200:])
+    return 'SELinux lets sshd use port %d' % port
+
+
+def sshd_reload():
+    if NO_SERVICES:
+        return
+    for unit in ('sshd', 'ssh'):
+        got = subprocess.run(['systemctl', 'reload-or-restart', unit], capture_output=True,
+                             text=True)
+        if got.returncode == 0:
+            return
+    raise Refused('sshd could not be reloaded: %s' % (got.stderr or '').strip()[-200:])
+
+
+def sshd_trial_read():
+    try:
+        return json.loads(_read_or(SSHD_STATE) or '{}')
+    except ValueError:
+        return {}
+
+
+def sshd_put_back(why='not kept in time'):
+    """What was there before the change on trial, back."""
+    t = sshd_trial_read()
+    if not t:
+        return False
+    drop = os.path.join(SSH_DIR, SSHD_DROPIN)
+    if t.get('dropin') is None:
+        _drop(drop)
+    else:
+        _put_file(drop, t['dropin'], 0o600)
+    for where in ('issue', 'motd'):
+        notice_set(where, None)
+        if t.get(where) is not None:
+            notice_set(where, t[where])
+    banner = notice_paths()['banner']
+    if t.get('banner') is None:
+        _drop(banner)
+    else:
+        _put_file(banner, t['banner'])
+    try:
+        sshd_reload()
+    except Refused:
+        pass
+    _drop(SSHD_STATE)
+    write_here('sshd-back.json', json.dumps({'at': time.time(), 'hash': t.get('hash'),
+                                             'why': why}))
+    return True
+
+
+def sshd_arm(minutes, ident):
+    """The timer that puts it back: systemd's own, not this helper's."""
+    if NO_SERVICES or not minutes:
+        return ''
+    unit = 'otp-sshd-back-%s' % ident
+    me = os.path.abspath(__file__)
+    run(['systemd-run', '--on-active=%ds' % (int(minutes) * 60), '--unit', unit,
+         sys.executable, '-I', me, '--sshd-back'], 'systemd-run')
+    return unit
+
+
+def sshd_disarm(t):
+    unit = (t or {}).get('unit')
+    if unit and not NO_SERVICES:
+        subprocess.run(['systemctl', 'stop', unit + '.timer'], capture_output=True)
+
+
+def sshd_do(r):
+    do = r.get('do')
+    if do == 'apply':
+        c = sshd_checked(r.get('conf'))
+        trial = max(0, min(60, int(r.get('trial_min') or 0)))
+        keys = root_keys_count()
+        if c['manage']:
+            if not sshd_reads_dropins():
+                raise Refused('this sshd does not read sshd_config.d (OpenSSH before 8.2, or an '
+                              'Include taken out of %s) - set it there by hand' % sshd_conf_path())
+            if c['permit_root'] != 'no' and not c['password'] and not keys and \
+                    not r.get('no_keys_ok'):
+                raise Refused('root has no SSH key here, and passwords would be off: nobody would '
+                              'reach this machine as root over SSH - add a key first')
+            if c['permit_root'] == 'prohibit-password' and not keys and not r.get('no_keys_ok'):
+                raise Refused('root may sign in only with a key and has none here - add a key '
+                              'first')
+        old = sshd_trial_read()
+        if old:
+            sshd_disarm(old)            # a change on trial changed again: one timer, the first state
+        drop = os.path.join(SSH_DIR, SSHD_DROPIN)
+        paths = notice_paths()
+        before = old or {'dropin': _read_or(drop), 'banner': _read_or(paths['banner']),
+                         'issue': None, 'motd': None}
+        if not old:
+            for where in ('issue', 'motd'):
+                cur = _read_or(paths[where])
+                whole = os.path.basename(paths[where]) in ('issue', 'motd')
+                if cur is not None and (not whole or cur.startswith(NOTICE_MARK.strip())):
+                    before[where] = cur.split('\n', 1)[1] if whole else cur
+        said = []
+        if c['manage']:
+            text = sshd_text(c)
+            if c['notice_ssh']:
+                _put_file(paths['banner'], c['notice'].rstrip() + '\n')
+            _put_file(drop, text, 0o600)
+            got = subprocess.run([SSHD_BIN, '-t', '-f', sshd_conf_path()], capture_output=True,
+                                 text=True)
+            if got.returncode != 0:
+                if before['dropin'] is None:
+                    _drop(drop)
+                else:
+                    _put_file(drop, before['dropin'], 0o600)
+                raise Refused('sshd does not take it, so it is as it was: %s'
+                              % (got.stderr or got.stdout).strip()[-300:])
+            s = sshd_selinux_port(c['port'])
+            if s:
+                said.append(s)
+        else:
+            if before['dropin'] is not None or os.path.exists(drop):
+                _drop(drop)
+        notice_set('issue', c['notice'] if c['notice_console'] else None)
+        notice_set('motd', c['notice'] if c['notice_motd'] else None)
+        if not (c['manage'] and c['notice_ssh']):
+            _drop(paths['banner'])
+        sshd_reload()
+        ident = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:12] or 'x'
+        if trial and c['manage']:
+            before.update(hash=str(r.get('hash') or '')[:64], until=time.time() + trial * 60,
+                          unit=sshd_arm(trial, ident))
+            _put_file(SSHD_STATE, json.dumps(before), 0o600)
+        else:
+            _drop(SSHD_STATE)
+        said.append('sshd reloaded')
+    elif do == 'keep':
+        t = sshd_trial_read()
+        if t:
+            sshd_disarm(t)
+            _drop(SSHD_STATE)
+    elif do == 'back':
+        sshd_put_back(str(r.get('why') or 'asked to go back'))
+    elif do != 'read':
+        raise Refused('read, apply, keep or back')
+    v = sshd_values()
+    t = sshd_trial_read()
+    return {'values': v, 'there': os.path.exists(SSHD_BIN), 'dropins': sshd_reads_dropins(),
+            'dropin': _read_or(os.path.join(SSH_DIR, SSHD_DROPIN)), 'keys': root_keys_count(),
+            'trial': {'hash': t.get('hash'), 'until': t.get('until')} if t else {},
+            'paths': notice_paths(),
+            'selinux': subprocess.run(['getenforce'], capture_output=True, text=True).stdout.strip()
+            if shutil.which('getenforce') else ''}
+
+
+def sshd_part():
+    d = web_fd()
+    try:
+        raw = read_req(SSHD_ASK, 65536)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(SSHD_ASK, d)
+        return
+    drop_ask(SSHD_ASK, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict):
+            raise Refused('the request is not an object')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        out['data'] = sshd_do(r)
+        out['ok'] = True
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(SSHD_FILE, json.dumps(out))
+
+
 # ---- updates of the operating system (1.0.158) ------------------------------------------
 # Asked with osup.ask, answered at once; the work itself - minutes of dnf or
 # apt - runs as a unit of its own (systemd-run), so this oneshot service ends
@@ -2956,6 +3331,10 @@ def serve():
     except Exception as e:                              # noqa: BLE001
         print('otp_web.py: the updates of the system: %s' % e, file=sys.stderr)
     try:
+        sshd_part()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: the SSH server: %s' % e, file=sys.stderr)
+    try:
         os.replace('request.json', 'request.taken', src_dir_fd=d, dst_dir_fd=d)
     except FileNotFoundError:
         return 0
@@ -3007,6 +3386,10 @@ def main(argv):
     if os.geteuid() != 0:
         print('otp_web.py: root only', file=sys.stderr)
         return 2
+    if argv[:1] == ['--sshd-back']:
+        # The timer of a change of sshd on trial (1.0.163): not kept in time.
+        sshd_put_back()
+        return 0
     if argv[:1] == ['--os-job'] and len(argv) >= 3 and argv[2] in ('check', 'upgrade'):
         return osup_job(re.sub(r'[^A-Za-z0-9]', '', argv[1])[:40], argv[2])
     return serve()

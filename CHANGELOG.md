@@ -4,6 +4,28 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.163 — 30 October 2026
+
+**The SSH server and the notices at sign-in; the alerts' and the report's language**
+- *Settings → SSH server and notices*: root signs in with a key only, with a
+  key or a password, or not at all; passwords on or off for everybody; the
+  port; how many tries a connection has; who may sign in (AllowUsers). Put in
+  on every node by its root helper as `sshd_config.d/00-otp.conf` - read
+  before every other file - and checked by `sshd -t` first: what sshd does not
+  take is not put in. Refused where root has no key and could not sign in any
+  more; AllowUsers without root refused while root may sign in.
+- A change is on trial on each node (5 min by default): unless *Keep it* comes
+  in time, a timer of systemd's own puts back what the node had - with the
+  daemon or the web down too. *Put it back now* does it at once. While a new
+  port is on trial the firewall lets the old one in as well; SELinux is told
+  of a port other than 22.
+- The notice - often what a security policy wants said - before signing in
+  over SSH (Banner), at the console (`/etc/issue.d`, or `/etc/issue` kept
+  beside it) and after signing in (`/etc/motd.d`, or `/etc/motd`).
+- The alerts and the report have a language each - Czech or English - or the
+  mails' language.
+- The report is wider and its tables' lines are neither cut nor wrapped.
+
 ## 1.0.162 — 30 October 2026
 
 **Alerts by mail, and a report by mail**
