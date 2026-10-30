@@ -18,7 +18,7 @@ def _online_get(url, limit=4 * 1024 * 1024, accept='*/*', timeout=30):
     req = urllib.request.Request(url, headers={
         'User-Agent': 'otp/%s (+upgrade check)' % __version__, 'Accept': accept})
     ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+    with url_open(req, timeout=timeout, context=ctx) as r:
         final = r.geturl()
         if not str(final).startswith('https://'):
             raise ValueError('it was sent on to an address that is not https: %s' % final)

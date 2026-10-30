@@ -1789,6 +1789,12 @@ class Storage(object):
         if HA_REBUILDING.is_set():
             return None
         row.setdefault('node', log_node())
+        hook = getattr(self, 'on_radius', None)
+        if hook:
+            try:
+                hook(row)                   # only put in a queue (1.0.166)
+            except Exception:               # noqa: BLE001
+                pass
         return self.db.insert('radius_log', row)
 
     def radius_rows(self, hours=24, q='', result='', client='', limit=100, offset=0,

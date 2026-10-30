@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.165'
+__version__ = '1.0.166'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -289,6 +289,26 @@ DEFAULTS = {
     'power_auto_day': '7',
     'power_auto_at': '05:40',
     'power_auto_needed': 1,
+    'siem': 0,
+    'siem_targets': '',
+    'siem_format': 'json',
+    'siem_events': 1,
+    'siem_signins': 1,
+    'siem_facility': 13,
+    'siem_hostname': '',
+    'siem_verify': 1,
+    'siem_ca': '',
+    'proxy': 0,
+    'proxy_url': '',
+    'proxy_user': '',
+    'proxy_password': '',
+    'proxy_no': 'localhost, 127.0.0.1, ::1',
+    'proxy_os': 1,
+    'proxy_sms': 1,
+    'logs_journal_mb': 0,
+    'logs_journal_days': 0,
+    'logs_keep': 30,
+    'logs_max_mb': 200,
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -335,7 +355,7 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # the pages ask the daemon on, the name it greets mail servers with, the
 # name isemon files its lines under and the debug switches.
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
-             'isemon_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
+             'isemon_hostname', 'siem_hostname', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
              'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
@@ -348,9 +368,10 @@ def this_node_name(conf=None):
 
 
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
-               'rbackup_password')
+               'rbackup_password', 'proxy_password')
 # Secrets kept in the database, sealed with the key that seals the tokens.
-SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password')
+SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
+               'proxy_password')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -397,6 +418,11 @@ TUNABLE = {
     'osup_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'osup_auto_reboot': ('ask', 'auto'),
     'power_auto': (0, 1), 'power_auto_every': ('weekly', 'monthly'),
     'power_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'power_auto_needed': (0, 1),
+    'siem': (0, 1), 'siem_format': ('json', 'cef', 'rfc5424'), 'siem_events': (0, 1),
+    'siem_signins': (0, 1), 'siem_facility': (0, 23), 'siem_verify': (0, 1),
+    'proxy': (0, 1), 'proxy_os': (0, 1), 'proxy_sms': (0, 1),
+    'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
+    'logs_max_mb': (1, 100000),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -465,6 +491,9 @@ CHOICE_WORDS = {
     'power_auto_every': {'weekly': 'every week, on the day below',
                          'monthly': 'on the first of every month'},
     'power_auto_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
+    'siem_format': {'json': 'JSON - one object to a line (Graylog, Splunk, Elastic, Wazuh)',
+                    'cef': 'CEF - ArcSight, QRadar, Sentinel',
+                    'rfc5424': 'RFC 5424 with structured data, key="value"'},
     'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
                    '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
@@ -630,6 +659,26 @@ NAMES = {
     'power_auto_day': 'On the day',
     'power_auto_at': 'At',
     'power_auto_needed': 'Only the nodes that need one',
+    'siem': 'Send to a syslog server or a SIEM',
+    'siem_targets': 'Where to send them',
+    'siem_format': 'In the shape of',
+    'siem_events': 'Every event',
+    'siem_signins': 'Every sign-in, let in or refused',
+    'siem_facility': 'Syslog facility',
+    'siem_hostname': 'The name this machine is written under',
+    'siem_verify': 'Check the server’s certificate (TLS)',
+    'siem_ca': 'The certificate authority of the server (TLS)',
+    'proxy': 'Go out through a proxy',
+    'proxy_url': 'The proxy',
+    'proxy_user': 'User name at the proxy',
+    'proxy_password': 'Password at the proxy',
+    'proxy_no': 'Straight, not through the proxy',
+    'proxy_os': 'The system updates through it too',
+    'proxy_sms': 'The SMS gateway through it too',
+    'logs_journal_mb': 'The system journal at most (MB)',
+    'logs_journal_days': 'The system journal kept for (days)',
+    'logs_keep': 'otp’s own logs kept (files)',
+    'logs_max_mb': 'A log file at most (MB)',
     'report': 'A report by mail',
     'report_to': 'Send it to',
     'report_every': 'How often',
@@ -1061,6 +1110,35 @@ SAYS = {
     'power_auto_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
     'power_auto_needed': 'Only the nodes an update left waiting for a restart; off: every node, '
                          'every time.',
+    'siem': 'Every event and every sign-in, as syslog (RFC 5424), to the servers below - '
+            'from each node, as it happens. Sent by a thread of its own: a sign-in never waits '
+            'for it. Off until switched on.',
+    'siem_targets': '<code>tls://siem.example.cz:6514</code>, <code>tcp://host:514</code> or '
+                    '<code>udp://host:514</code>, separated by commas.',
+    'siem_format': 'What the message is, after the syslog header.',
+    'siem_events': 'All that the Events page lists: a setting changed, a token made, a node '
+                   'gone, a source blocked.',
+    'siem_signins': 'Each Access-Request: who, from where, let in or refused and why. The code '
+                    'typed is never sent.',
+    'siem_facility': '13 (log audit) is the usual; 16-23 are local0-local7, 10 authpriv.',
+    'siem_hostname': 'The host name on every line. Empty: the node’s name.',
+    'siem_verify': 'Off only for a test: anyone between could read and change the lines.',
+    'siem_ca': 'The CA certificate (PEM) the server’s certificate is signed by, where it is not '
+               'one the system trusts already.',
+    'proxy': 'An HTTP proxy for what otp asks of the web: the new versions, the SMS gateway, the '
+             'system updates. Mail, Active Directory, the database and syslog never use it.',
+    'proxy_url': '<code>http://proxy.example.cz:3128</code>',
+    'proxy_user': 'Where the proxy asks for one. Empty: none.',
+    'proxy_password': 'Kept sealed, like the other passwords.',
+    'proxy_no': 'Names and addresses reached without it, separated by commas: '
+                '<code>.example.cz</code> is every name under it, <code>10.0.0.0/8</code> a net.',
+    'proxy_os': 'dnf or apt fetch the updates of System → Updates through it.',
+    'proxy_sms': 'The HTTP SMS gateway asked through it.',
+    'logs_journal_mb': 'How much room systemd’s journal may take on each node; the oldest goes '
+                       'first. 0: as the system has it.',
+    'logs_journal_days': 'Nothing older is kept. 0: as the system has it.',
+    'logs_keep': 'How many old files of /var/log/otp are kept, one a day.',
+    'logs_max_mb': 'A file bigger than this is put aside sooner than once a day.',
     'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
     'report_day': 'The day a weekly report goes.',
     'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
@@ -1145,6 +1223,11 @@ PANES = {
              'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
     'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
               'power_auto_needed'],
+    'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
+             'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
+    'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
+              'proxy_sms'],
+    'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
@@ -1203,6 +1286,11 @@ ONLY_WHEN = {
     'osup_auto_at': ['osup_auto', '1'], 'osup_auto_reboot': ['osup_auto', '1'],
     'power_auto_every': ['power_auto', '1'], 'power_auto_day': ['power_auto_every', 'weekly'],
     'power_auto_at': ['power_auto', '1'], 'power_auto_needed': ['power_auto', '1'],
+    'siem_targets': ['siem', '1'], 'siem_format': ['siem', '1'], 'siem_events': ['siem', '1'],
+    'siem_signins': ['siem', '1'], 'siem_facility': ['siem', '1'],
+    'siem_hostname': ['siem', '1'], 'siem_verify': ['siem', '1'], 'siem_ca': ['siem', '1'],
+    'proxy_url': ['proxy', '1'], 'proxy_user': ['proxy', '1'], 'proxy_password': ['proxy', '1'],
+    'proxy_no': ['proxy', '1'], 'proxy_os': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
     'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
@@ -1286,7 +1374,7 @@ def _coerce(current, value):
 
 
 # Settings of several lines (1.0.103): the rest are one line each.
-SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets',
+SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'siem_ca',
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
 
@@ -1365,6 +1453,27 @@ def check_setting(key, value):
     if key == 'isemon_targets':
         for one in syslog_targets(str(got), strict=True):
             pass
+    if key == 'siem_targets':
+        if len(siem_targets(str(got), strict=True)) > 8:
+            raise BadSetting('siem_targets: 8 servers at most')
+    if key == 'siem_ca' and str(got).strip() and \
+            '-----BEGIN CERTIFICATE-----' not in str(got):
+        raise BadSetting('siem_ca: a certificate in PEM, -----BEGIN CERTIFICATE-----')
+    if key == 'siem_hostname' and str(got).strip() \
+            and not re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', str(got).strip()):
+        raise BadSetting('siem_hostname: a host name has letters, digits, dots and dashes '
+                         'and nothing else')
+    if key == 'proxy_url' and str(got).strip() and \
+            not re.match(r'^https?://[A-Za-z0-9.\-]+(?::\d{1,5})?/?\Z|^https?://\[[0-9a-fA-F:]+\]'
+                         r'(?::\d{1,5})?/?\Z', str(got).strip()):
+        raise BadSetting('proxy_url: http://host:port - the user name and the password go '
+                         'in the fields below, not in the address')
+    if key == 'proxy_user' and re.search(r'[\s:@/]', str(got)):
+        raise BadSetting('proxy_user: no spaces, no : @ or /')
+    if key == 'proxy_no' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9.*:/\[\]_-]+([\s,;]+[A-Za-z0-9.*:/\[\]_-]+)*[\s,;]*\Z',
+                         str(got).strip()):
+        raise BadSetting('proxy_no: names, .domains and addresses, separated by commas')
     if key == 'upgrade_url' and str(got).strip() and \
             not re.match(r'^https://[^\s]+\Z', str(got).strip()):
         raise BadSetting('upgrade_url: an address starting https://')

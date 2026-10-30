@@ -77,6 +77,7 @@ def health_publish(daemon):
     except Exception:                                   # noqa: BLE001
         pass
     row = {'at': now, 'disks': disks_now(), 'dirs_down': dead, 'sms': dict(SMS_HEALTH),
+           'siem': daemon.siem.state() if getattr(daemon, 'siem', None) else {},
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -857,6 +858,7 @@ def alerts_tick(daemon):
                 health_publish(daemon)
             except Exception as e:                      # noqa: BLE001
                 log_sparing('health', 'this node\'s health row: %s' % e, 'warn', every=900)
+            logs_start(daemon)
             if not alerts_lead(store):
                 return
             if CONFIG.get('alerts') or CONFIG.get('report'):

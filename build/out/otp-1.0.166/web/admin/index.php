@@ -311,7 +311,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup',
@@ -326,7 +326,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -763,10 +763,12 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="network" data-icon="net" title="Each node's address, gateway, DNS servers, host name and IPv6 - put in by the node itself, a cluster kept whole.">Network</button>
+    <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy for what otp asks of the web - new versions, the SMS gateway, the system updates.">Proxy</button>
     <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of each node: chrony, its time servers, how far off it is - codes from the app are worked out from it.">Time</button>
     <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
     <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the web address moved out of the way first.">Restart and power off</button>
     <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the web address moved out of the way first; a restart offered when one is needed.">System updates</button>
+    <button type="button" class="fulladmin-only" data-pane="logs" data-icon="chart" title="Each node's disks, and how much the system journal and otp's own logs may take.">Disks and logs</button>
     <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node as root over SSH: made here, added or taken away.">SSH keys of root</button>
     <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
     <div class="ctl-group">Data</div>
@@ -776,6 +778,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="ctl-group">Monitoring and updates</div>
     <button type="button" class="fulladmin-only" data-pane="alerts" data-icon="bell" title="A mail when something is wrong, and a report of the week by mail.">Alerts and reports</button>
     <button type="button" data-pane="isemon" data-icon="pulse" title="Sending every check of a code and every RADIUS packet to isemon, in the shape isemon already reads.">isemon</button>
+    <button type="button" class="fulladmin-only" data-pane="siem" data-icon="log" title="Every event and every sign-in to a syslog server or a SIEM - UDP, TCP or TLS; JSON, CEF or RFC 5424.">Syslog and SIEM</button>
     <button type="button" class="fulladmin-only" data-pane="upgrade" data-icon="up" title="A new version, put in from here; nodes in and out of service.">Upgrades</button>
     <button type="button" data-pane="about" data-icon="info" title="Version, what is running, the language, the debug log.">About</button>
   </nav>
@@ -949,6 +952,30 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div id="al-host"></div>
     <div class="card full"><h2>Settings</h2><div id="sect-alerts"></div></div>
     <div id="al-log"></div>
+  </div>
+  <div class="ctl-pane" id="pane-siem" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Syslog and SIEM</h2>
+      <p class="ctl-lede">Every event and every sign-in - who, from where, let in or refused and why - to a
+        syslog server or a SIEM (Graylog, Splunk, Elastic, Wazuh, QRadar, Sentinel), as RFC 5424 syslog over
+        UDP, TCP or TLS. Each node sends its own, as it happens, from a thread of its own: a sign-in never
+        waits for it. Off until switched on.</p></div>
+    <div id="si-host"></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-siem"></div></div>
+  </div>
+  <div class="ctl-pane" id="pane-proxy" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Proxy</h2>
+      <p class="ctl-lede">Where the servers may reach the web only through an HTTP proxy: the new versions,
+        the SMS gateway and the system updates (dnf, apt) go through it - on every node. Mail, Active Directory,
+        the database, syslog and the other node never do.</p></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-proxy"></div></div>
+    <div id="px-host"></div>
+  </div>
+  <div class="ctl-pane" id="pane-logs" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Disks and logs</h2>
+      <p class="ctl-lede">How full each node's disks are, and how much the system journal and otp's own logs
+        may take - put in on every node by the node itself, again whenever it is changed here.</p></div>
+    <div id="lg-host"></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-logs"></div></div>
   </div>
   <div class="ctl-pane" id="pane-isemon" hidden>
     <div class="ctl-head"><h2 class="ctl-title">isemon</h2>

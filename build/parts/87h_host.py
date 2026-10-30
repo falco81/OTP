@@ -386,7 +386,10 @@ def osup_cancel(store, by):
 def _osup_job(kind, security=False):
     """The helper asked to start the work; its id."""
     got = root_ask('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind,
-                                             'security': bool(security)}, 60)
+                                             'security': bool(security),
+                                             # dnf and apt through Settings → Proxy (1.0.166)
+                                             'proxy': proxy_full('os'),
+                                             'proxy_no': ','.join(proxy_no_list())}, 60)
     return got
 
 

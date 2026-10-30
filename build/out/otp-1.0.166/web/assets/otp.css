@@ -3186,3 +3186,11 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .lt-paged > .lt-pager:empty{display:none}
 .modal .scroll.lt-held > table > thead th, .pw-node .scroll.lt-held > table > thead th{background:var(--panel)}
 .ctl-pane .scroll.lt-held{max-height:max(280px, calc(100vh - 440px))}
+
+/* Syslog and SIEM, Disks and logs (1.0.166) */
+.si-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)}
+.si-row .mono{flex:1;min-width:0;overflow-wrap:anywhere}
+.si-said{color:var(--crit,#f85149);margin:2px 0 6px 18px;overflow-wrap:anywhere}
+.px-said{margin-top:10px}
+.lg-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:10px 0 4px}
+.lg-kv b{text-align:right}

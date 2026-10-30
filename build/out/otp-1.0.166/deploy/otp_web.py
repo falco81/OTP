@@ -3042,6 +3042,108 @@ def sshd_part():
     write_here(SSHD_FILE, json.dumps(out))
 
 
+# ---- the journal and the logs (1.0.166) ------------------------------------------------
+# Asked with logs.ask by the daemon of this node: how much systemd's journal
+# may take and for how long (journald.conf.d/00-otp.conf, journald restarted
+# only when that file changed), and how many files of /var/log/otp logrotate
+# keeps and how big one may grow (/etc/logrotate.d/otp, the two lines only).
+# Answered with what the journal takes now.
+LOGS_ASK, LOGS_ANS = 'logs.ask', 'logs.ans'
+JOURNAL_DROPIN = 'systemd/journald.conf.d/00-otp.conf'
+LOGROTATE_OTP = 'logrotate.d/otp'
+
+
+def _int_in(r, key, lo, hi):
+    try:
+        v = int(r.get(key) or 0)
+    except (TypeError, ValueError):
+        raise Refused('%s: a whole number' % key)
+    if not lo <= v <= hi:
+        raise Refused('%s: %d to %d' % (key, lo, hi))
+    return v
+
+
+def journal_use():
+    if not shutil.which('journalctl'):
+        return None
+    try:
+        got = subprocess.run(['journalctl', '--disk-usage'], capture_output=True, text=True,
+                             timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r'take up ([0-9.]+)([BKMGT])', got.stdout + got.stderr)
+    if not m:
+        return None
+    return int(float(m.group(1)) * {'B': 1, 'K': 1 << 10, 'M': 1 << 20, 'G': 1 << 30,
+                                    'T': 1 << 40}[m.group(2)])
+
+
+def logs_do(r):
+    mb = _int_in(r, 'journal_mb', 0, 100000)
+    days = _int_in(r, 'journal_days', 0, 3650)
+    keep = _int_in(r, 'keep', 1, 3650)
+    max_mb = _int_in(r, 'max_mb', 1, 100000)
+    said = []
+    path = os.path.join(ETC_DIR, JOURNAL_DROPIN)
+    before = _read_or(path)
+    if mb or days:
+        text = ('# Written by otp (Settings - Disks and logs); changed there, not here.\n'
+                '[Journal]\n' + ('SystemMaxUse=%dM\n' % mb if mb else '') +
+                ('MaxRetentionSec=%dday\n' % days if days else ''))
+        if before != text:
+            _put_file(path, text)
+            said.append('the journal: %s' % ', '.join(
+                ([('at most %d MB' % mb)] if mb else []) + ([('%d days' % days)] if days else [])))
+    elif before is not None:
+        _drop(path)
+        said.append('the journal: as the system has it')
+    changed = (_read_or(path) != before)
+    if changed and not NO_SERVICES and shutil.which('systemctl'):
+        got = subprocess.run(['systemctl', 'restart', 'systemd-journald'], capture_output=True,
+                             text=True, timeout=60)
+        if got.returncode != 0:
+            said.append('systemd-journald did not restart: %s' % (got.stderr or '').strip()[-200:])
+    lr = os.path.join(ETC_DIR, LOGROTATE_OTP)
+    text = _read_or(lr)
+    if text is None:
+        said.append('%s is not there - otp\'s logs are not rotated' % lr)
+    else:
+        new = re.sub(r'(?m)^(\s*)rotate\s+\d+\s*$', r'\g<1>rotate %d' % keep, text)
+        new = re.sub(r'(?m)^(\s*)maxsize\s+\d+[kMG]?\s*$', r'\g<1>maxsize %dM' % max_mb, new)
+        if new != text:
+            _put_file(lr, new)
+            said.append('otp\'s logs: %d kept, %d MB each at most' % (keep, max_mb))
+    return {'journal_use': journal_use(), 'journal_conf': _read_or(path) or '',
+            'rotate_conf': '\n'.join(x.strip() for x in (_read_or(lr) or '').splitlines()
+                                     if re.match(r'\s*(rotate|maxsize)\b', x)),
+            'said': said}
+
+
+def logs_part():
+    d = web_fd()
+    try:
+        raw = read_req(LOGS_ASK, 4096)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(LOGS_ASK, d)
+        return
+    drop_ask(LOGS_ASK, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict) or r.get('do') != 'apply':
+            raise Refused('apply only')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        out['data'] = logs_do(r)
+        out['ok'] = True
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(LOGS_ANS, json.dumps(out))
+
+
 # ---- updates of the operating system (1.0.158) ------------------------------------------
 # Asked with osup.ask, answered at once; the work itself - minutes of dnf or
 # apt - runs as a unit of its own (systemd-run), so this oneshot service ends
@@ -3052,6 +3154,39 @@ OSUP_ANS = 'osup.ans'
 OSUP_FILE = 'osup.json'
 OSUP_LOCK = os.environ.get('OTP_OSUP_LOCK', '/run/otp-osup.lock')
 OSUP_PM = os.environ.get('OTP_OSUP_PM', '')          # tests: a fake package manager
+# The proxy dnf and apt go through (1.0.166): handed over in osup.ask, kept
+# here for the job, readable by root only, never on a command line.
+OSUP_PROXY = os.environ.get('OTP_OSUP_PROXY', '/run/otp-osup-proxy.json')
+
+
+def osup_proxy_keep(r):
+    url = str(r.get('proxy') or '').strip()
+    if url and not re.match(r'^https?://[^\s]+\Z', url):
+        raise Refused('the proxy is not an http:// address')
+    no = ','.join(w for w in re.split(r'[\s,;]+', re.sub(r'[^A-Za-z0-9.*:/\[\],;\s_-]', '',
+                                                          str(r.get('proxy_no') or ''))) if w)
+    if not url:
+        _drop(OSUP_PROXY)
+        return
+    fd = os.open(OSUP_PROXY + '.new', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                 0o600)
+    with os.fdopen(fd, 'w') as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(json.dumps({'url': url, 'no': no}))
+    os.replace(OSUP_PROXY + '.new', OSUP_PROXY)
+
+
+def osup_proxy_env(env):
+    try:
+        got = json.loads(_read_or(OSUP_PROXY) or '{}')
+    except ValueError:
+        got = {}
+    if got.get('url'):
+        for k in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+            env[k] = got['url']
+        if got.get('no'):
+            env['no_proxy'] = env['NO_PROXY'] = got['no']
+    return env
 
 
 def osup_pm():
@@ -3117,6 +3252,7 @@ def osup_part():
         kind = r.get('kind')
         if r.get('do') != 'run' or kind not in ('check', 'upgrade'):
             raise Refused('run: check or upgrade')
+        osup_proxy_keep(r)
         osup_launch(out['id'], kind, bool(r.get('security')) and kind == 'upgrade')
         out['ok'] = True
         out['data'] = {'started': kind, 'pm': osup_pm(), 'security': bool(r.get('security'))}
@@ -3188,6 +3324,7 @@ def osup_job(ident, kind, security=False):
 
     env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C',
            'DEBIAN_FRONTEND': 'noninteractive', 'HOME': '/root'}
+    osup_proxy_env(env)
 
     def stream(cmd, on_line=None, ok=(0,)):
         say('$ ' + ' '.join(cmd))
@@ -3349,6 +3486,10 @@ def serve():
         sshd_part()
     except Exception as e:                              # noqa: BLE001
         print('otp_web.py: the SSH server: %s' % e, file=sys.stderr)
+    try:
+        logs_part()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: the journal and the logs: %s' % e, file=sys.stderr)
     try:
         os.replace('request.json', 'request.taken', src_dir_fd=d, dst_dir_fd=d)
     except FileNotFoundError:

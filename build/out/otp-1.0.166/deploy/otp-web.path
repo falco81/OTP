@@ -1,5 +1,5 @@
 [Unit]
-Description=otp - TLS, the web address, the firewall, the network, the time, the console at login or PostgreSQL's log, asked for on the pages
+Description=otp - TLS, the web address, the firewall, the network, the time, the console at login, the journal and the logs or PostgreSQL's log, asked for on the pages
 
 [Path]
 PathExists=/var/lib/otp/web/request.json
@@ -12,6 +12,7 @@ PathExists=/var/lib/otp/web/console.ask
 PathExists=/var/lib/otp/web/sshkeys.ask
 PathExists=/var/lib/otp/web/osup.ask
 PathExists=/var/lib/otp/web/sshd.ask
+PathExists=/var/lib/otp/web/logs.ask
 Unit=otp-web.service
 TriggerLimitIntervalSec=0
 

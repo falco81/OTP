@@ -615,8 +615,8 @@ def _tel_open(req, timeout=20.0):
                                              (' ' + _tel_hidden(body)[:300]) if body else '',
                                              timeout), 'debug')
     try:
-        r = urllib.request.urlopen(req, timeout=timeout, context=_tel_ssl()
-                                   if req.full_url.startswith('https') else None)
+        r = url_open(req, timeout=timeout, context=_tel_ssl()
+                     if req.full_url.startswith('https') else None, purpose='sms')
         if not loud:
             return r
         with r:
@@ -1075,7 +1075,7 @@ def sms_send(to, text):
             if k.strip():
                 req.add_header(k.strip(), fill(v.strip(), 'raw'))
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with url_open(req, timeout=15, purpose='sms') as r:
             said = r.read(4000).decode('utf-8', 'replace')
             status = r.status
     except urllib.error.HTTPError as e:

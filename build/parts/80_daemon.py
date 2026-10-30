@@ -906,6 +906,7 @@ class Daemon(object):
         self.started = time.time()
         self.stop_flag = threading.Event()
         self.shipper = None
+        self.siem = None
         self.dirs = {}
         self.reload_directories()
         self.tokens = Tokens(store)
@@ -921,8 +922,11 @@ class Daemon(object):
         self.login_info = {}
         if serve:
             self.shipper = Shipper()
+            self.siem = Siem()
             self.tokens.on_check = self.shipper.token_line
-            store.on_event = self.shipper.event_line
+            # Both told of each event (1.0.166); each only queues it.
+            store.on_event = lambda *a, _s=(self.shipper, self.siem): [x.event_line(*a) for x in _s]
+            store.on_radius = self.siem.signin_line
             self.radius = RadiusServer(self)
 
     def reload_directories(self):
@@ -1006,6 +1010,8 @@ class Daemon(object):
         self.reload_directories()
         if self.shipper:
             self.shipper.configure()
+        if self.siem:
+            self.siem.configure()
         if self.radius:
             self.radius.open_sockets()
         self.conf_serial = self.store.get_meta('conf_serial', '0')
@@ -1201,6 +1207,9 @@ class Daemon(object):
             problems.append('sending to isemon is on and nowhere to send to is set')
         if sh.get('trouble'):
             problems.extend('isemon %s: %s' % kv for kv in sorted(sh['trouble'].items()))
+        si = self.siem.state() if self.siem else {}
+        if si.get('trouble'):
+            problems.extend('syslog %s: %s' % kv for kv in sorted(si['trouble'].items()))
         lost = int(self.store.db.value('SELECT COUNT(*) AS n FROM tokens', (), 0) or 0) and \
             not sealing_key()
         if lost:
@@ -1540,6 +1549,8 @@ class Daemon(object):
         self.radius.stop()
         if self.shipper:
             self.shipper.flush()
+        if self.siem:
+            self.siem.flush()
         if self.api:
             self.api.stop()
 

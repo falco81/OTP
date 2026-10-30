@@ -59,3 +59,74 @@ def _alerts_do(h):
     except (ValueError, MailError) as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+
+
+# ---- syslog / SIEM, the proxy, the disks and the logs (1.0.166) -------------------------
+def _siem_view(h):
+    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    me = h.d.siem.state() if getattr(h.d, 'siem', None) else {}
+    out = []
+    for n in nodes:
+        row = _meta_json(h.store, 'host:health:' + n) or {}
+        st = me if n == node_name() else (row.get('siem') or {})
+        out.append(dict(st, node=n, me=n == node_name(), at=time.time() if n == node_name()
+                        else row.get('at')))
+    return {'nodes': out, 'on': bool(CONFIG.get('siem'))}
+
+
+@route('GET', '/api/siem')
+def _siem(h):
+    h.me('fulladmin')
+    return _siem_view(h)
+
+
+@route('POST', '/api/siem')
+def _siem_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'test':
+        raise ApiError(400, 'no such thing to do')
+    if not getattr(h.d, 'siem', None):
+        raise ApiError(400, 'this daemon sends nothing')
+    try:
+        got = h.d.siem.test(s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    h.store.add_event('settings', '%s sent a test line to the syslog servers from %s: %s' % (
+        s['name'], node_name(), ', '.join('%s %s' % kv for kv in sorted(got.items()))),
+        'info', who=s['name'])
+    return dict(_siem_view(h), test=got, node=node_name())
+
+
+@route('POST', '/api/proxy')
+def _proxy_do(h):
+    h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'try':
+        raise ApiError(400, 'no such thing to do')
+    try:
+        return dict(proxy_try(str(b.get('url') or '')), node=node_name())
+    except ValueError as e:
+        raise ApiError(400, str(e))
+
+
+@route('GET', '/api/logs')
+def _logs(h):
+    h.me('fulladmin')
+    return logs_view(h.store)
+
+
+@route('POST', '/api/logs')
+def _logs_do(h):
+    h.me('fulladmin')
+    b = h.body()
+    if str(b.get('action') or '') != 'refresh':
+        raise ApiError(400, 'no such thing to do')
+    # Every node asks its helper again at its next look (a minute at most);
+    # this one at once.
+    h.store.set_meta('host:logs:again', '%.3f' % time.time())
+    try:
+        logs_tick(h.d, force=True)
+    except Exception as e:                              # noqa: BLE001
+        raise ApiError(400, 'it did not go: %s' % e)
+    return logs_view(h.store)
