@@ -2482,7 +2482,7 @@ function showPane(name) {
   if (name === 'acme') loadAcme(); else acPoll(false);
   if (name === 'hisec') loadHisec();
   if (name === 'proxy') drawProxy();
-  if (name === 'monitor') drawMonitor();
+  if (name === 'monitor') { drawMonitor(); loadSnmp(); }
   if (name === 'logs') loadLogs();
   if (name === 'sshd') loadSshd(); else sdPoll(false);
   if (name === 'osup') loadOsup(); else ouPoll(false);
@@ -15047,6 +15047,81 @@ function isemonTlsWizard(was) {
 /* ==== Monitoring: Prometheus (1.0.173) =========================================
    A token made here and shown once; what prometheus.yml says to ask every
    node; what this node answers now. */
+/* ---- SNMPv3 (1.0.182): each node's agent, its engine ID, its own test ---------- */
+var SN = {d: null, said: {}};
+function loadSnmp() {
+  api('snmp').then(function (d) { SN.d = d; drawSnmp(); }).catch(function () {});
+}
+function drawSnmp() {
+  var host = $('snmp-host');
+  if (!host || !SN.d) return;
+  var d = SN.d;
+  host.innerHTML = '';
+  var card = el('div', 'card full');
+  card.appendChild(el('h2', '', 'SNMPv3'));
+  card.appendChild(el('p', 'note', 'Each node answers by itself, at its own address, with an engine ID of its own - the monitoring asks every node, as with Prometheus. authPriv only: the user and its two passphrases above. otp\'s objects are under ' + d.base + ' (OTP-MIB, deploy/OTP-MIB.txt in the package).'));
+  if (!d.on) card.appendChild(el('p', 'muted small', 'Off - switch it on above, with the user and its passphrases.'));
+  else if (!d.ready) card.appendChild(el('p', 'note warn', 'On, but the user or a passphrase is not set: nothing is answered yet.'));
+  var grid = nodeGrid();
+  (d.nodes || []).forEach(function (n) {
+    var a = n.snmp || {}, fresh = nodeFresh(n);
+    var c = nodeCard(n, !fresh ? 'bad' : (a.listening ? 'ok' : (d.on ? 'bad' : 'dim')),
+      !fresh ? 'not heard from' : (a.listening ? 'listening' : (d.on ? 'not listening' : 'off')),
+      !fresh ? 'crit' : (a.listening ? 'ok' : (d.on ? 'crit' : 'dim')));
+    c.appendChild(netFacts([
+      ['Port', a.port ? a.port + '/udp' : '–', true],
+      ['Engine ID', a.engine ? copyOnClick(noI18n(el('span', 'mono small', a.engine)), a.engine, 'the engine ID was copied') : '–'],
+      ['Engine boots', a.boots ? String(a.boots) : '–', true],
+      ['Asked / answered', num(a.asked || 0) + ' / ' + num(a.answered || 0)],
+      ['Last asked from', a.last_from ? a.last_from + ' · ' + ago(a.last_at) : 'never'],
+      ['Traps sent', num(a.traps || 0)],
+      ['Read', n.at ? ago(n.at) : '']
+    ]));
+    if (a.error) c.appendChild(noI18n(el('p', 'note bad small', a.error)));
+    if (a.trap_error) c.appendChild(noI18n(el('p', 'note warn small', 'Last trap: ' + a.trap_error)));
+    var said = SN.said[n.node];
+    if (said) c.appendChild(nodeSaid(said, said.sent ? 'The test trap went to ' + Object.keys(said.sent).join(', ') : 'It answered itself in ' + said.ms + ' ms: ' + ((said.said || {})['1.3.6.1.2.1.1.1.0'] || '')));
+    if (ME.role === 'fulladmin') {
+      var row = el('div', 'btnrow');
+      var t = cmdButton('Ask it', 'play', 'small');
+      explain(t, n.node + ' asks its own agent on 127.0.0.1 as the monitoring would: discovery, then a GET with the user and its passphrases (authPriv).');
+      t.disabled = !d.on || !d.ready || !fresh;
+      t.onclick = function () {
+        busy(t, true);
+        askNodes('snmp', {action: 'test', node: n.node}, function (node, got) { SN.said[node] = got; },
+          function () { busy(t, false); drawSnmp(); }).catch(function (e) { busy(t, false); oops(e); });
+      };
+      var tr = cmdButton('Send a test trap', 'bell', 'small');
+      explain(tr, 'A trap from ' + n.node + ' to every receiver set, now - with its engine ID, authPriv.');
+      tr.disabled = !d.on || !d.ready || !fresh || !(d.trap_to || []).length;
+      tr.onclick = function () {
+        busy(tr, true);
+        askNodes('snmp', {action: 'trap', node: n.node}, function (node, got) { SN.said[node] = got; },
+          function () { busy(tr, false); drawSnmp(); }).catch(function (e) { busy(tr, false); oops(e); });
+      };
+      row.appendChild(t); row.appendChild(tr);
+      c.appendChild(row);
+    }
+    grid.appendChild(c);
+  });
+  card.appendChild(grid);
+  /* What to put into the monitoring - net-snmp's commands and the trap receiver. */
+  var user = d.user || 'USER', auth = d.auth === 'SHA-1' ? 'SHA' : d.auth, priv = d.priv === 'AES-256' ? 'AES256' : 'AES';
+  var lines = ['# asked (net-snmp; Zabbix: SNMPv3, authPriv, ' + d.auth + ', ' + d.priv + ', security name ' + user + ')'];
+  (d.nodes || []).forEach(function (n) {
+    lines.push('snmpwalk -v3 -l authPriv -u ' + user + ' -a ' + auth + ' -A \'…\' -x ' + priv + ' -X \'…\' ' + n.node + ':' + d.port + ' ' + d.base);
+  });
+  lines.push('', '# traps: snmptrapd.conf on the receiver, one line for each node\'s engine ID');
+  (d.nodes || []).forEach(function (n) {
+    var e = (n.snmp || {}).engine || 'ENGINE-ID-OF-' + n.node;
+    lines.push('createUser -e 0x' + e + ' ' + user + ' ' + auth + ' \'…\' ' + priv + ' \'…\'');
+  });
+  lines.push('authUser log,execute ' + user + ' priv');
+  card.appendChild(el('h3', 'peek-h', 'In the monitoring'));
+  card.appendChild(noI18n(el('pre', 'wrap mono small', lines.join('\n'))));
+  card.appendChild(el('p', 'muted small', 'The passphrases are not shown here - they are those set above (kept sealed). AES-256 is net-snmp\'s AES256 and Zabbix\'s AES256, not Cisco\'s AES256C.'));
+  host.appendChild(card);
+}
 function drawMonitor() {
   var host = $('mon-host');
   if (!host || !ADMIN) return;

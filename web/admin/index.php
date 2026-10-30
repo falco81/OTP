@@ -291,7 +291,7 @@ if (isset($_GET['api'])) {
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
-        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics',
+        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -307,7 +307,7 @@ if (isset($_GET['api'])) {
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
-        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics',
+        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -972,9 +972,11 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="ctl-head"><h2 class="ctl-title">Monitoring</h2>
       <p class="ctl-lede">Prometheus asks each node for its metrics at <span class="mono">https://NODE/metrics</span>:
         RADIUS, the tokens, the database, the cluster and its replication, the certificates, the mail,
-        isemon and syslog, the alerts open now.</p></div>
+        isemon and syslog, the alerts open now. And SNMPv3: each node answers it itself, and sends traps when
+        something is wrong.</p></div>
     <div class="card full"><h2>Settings</h2><div id="sect-monitor"></div></div>
     <div id="mon-host"></div>
+    <div id="snmp-host"></div>
   </div>
   <div class="ctl-pane" id="pane-proxy" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Proxy</h2>

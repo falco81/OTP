@@ -75,3 +75,80 @@ groups:
         expr: otp_alerts_open{level="bad"} > 0
         for: 10m
 ```
+
+## SNMPv3 (1.0.182)
+
+Each node answers SNMPv3 itself: an agent of the otp daemon, in a thread of its
+own - no snmpd, nothing in RADIUS' way. *Settings → Monitoring → SNMPv3*.
+
+- **authPriv only.** One user (securityName), the same on every node, with a
+  passphrase for authentication and one for encryption (12 characters at least,
+  kept sealed like every secret of otp). noAuthNoPriv and authNoPriv are not
+  answered. Authentication HMAC-SHA-256 (default), -SHA-512 or -SHA-1 (RFC 3414,
+  RFC 7860); encryption AES-128 (default) or AES-256 (RFC 3826; AES-256 with the
+  key extended as net-snmp and Zabbix do it - their `AES256`, not Cisco's
+  `AES256C`).
+- **Each node an engine of its own** - its engine ID made once and kept in
+  `/var/lib/otp/snmp-engine`, the engine boots counted in `snmp-boots`. The page
+  shows each node's engine ID (click to copy) - a trap receiver needs it.
+- **Port 161/udp** on every address of the node (or one, *Listen on*, set for each
+  node). Binding 161 needs `CAP_NET_BIND_SERVICE`: `otp.service` has it from
+  1.0.182 (`install.sh --upgrade` puts the unit in); nothing else is given to the
+  daemon. Where the system's snmpd has 161 already, give otp another port.
+- **Only from**: the networks the monitoring asks from; the firewall lets in these
+  only (or everybody when none is set). Anything else is not answered at all.
+- Read only: GET, GETNEXT and GETBULK. A SET is refused (notWritable).
+- *Ask it* on each node's card: the node asks its own agent on 127.0.0.1 as a
+  manager would - discovery, then a GET authPriv.
+
+### What it answers
+
+| OID | |
+|---|---|
+| `1.3.6.1.2.1.1` | the system group: sysDescr (otp, the version, the node), sysObjectID, sysUpTime, sysContact, sysName, sysLocation |
+| `1.3.6.1.6.3.10.2.1` | the engine: its ID, boots, time |
+| `1.3.6.1.6.3.15.1.1` | usmStats: unknown users, wrong digests, not in the time window... |
+| `1.3.6.1.4.1.8072.9999.9999.7` | **OTP-MIB** (`deploy/OTP-MIB.txt`): the version, node, database engine, high security; RADIUS (listening, queued, packets, accepts, rejects, challenges... as Counter64); the database (up, latency); the tokens; the alerts (how many bad and warn, and a table of each); the certificates (days left); the nodes of the cluster; and `otpMetricTable` - every sample of `/metrics`, name, labels and value |
+
+otp has no enterprise number of its own: its objects are under net-snmp's
+`netSnmpPlaypen` (`.1.3.6.1.4.1.8072.9999.9999`), `.7`. Load `OTP-MIB.txt` into
+the monitoring (it imports `NET-SNMP-MIB`, which net-snmp and Zabbix have) - or
+use the numbers.
+
+```
+snmpwalk -v3 -l authPriv -u otpmon -a SHA-256 -A '...' -x AES -X '...' otp1 1.3.6.1.4.1.8072.9999.9999.7
+snmpget  -v3 -l authPriv -u otpmon -a SHA-256 -A '...' -x AES -X '...' otp1 \
+         1.3.6.1.4.1.8072.9999.9999.7.5.1.0 1.3.6.1.4.1.8072.9999.9999.7.2.1.0
+```
+
+Zabbix: an SNMP interface on each node, SNMPv3, security level authPriv, the
+user, *SHA256* and *AES128* (or what was chosen) with the passphrases; items with
+the OIDs above (`otpAlertsBad.0` > 0, `otpRadiusListening.0` = 0,
+`otpDbUp.0` = 0...).
+
+### Traps
+
+*Traps when something is wrong*: an SNMPv2-Trap, authPriv, from the node that
+sends the alerts (the one with the VIP address, or the first alive) to every
+receiver in *Where traps go* (`host` or `host:port`, 162 by default):
+
+- `otpAlertRaised` (`.7.0.1`) when something goes wrong - what the alerts see
+  (*Alerts and reports*), after their delay - and again when a warning becomes
+  bad;
+- `otpAlertCleared` (`.7.0.2`) when it is right again;
+- `otpTestTrap` (`.7.0.3`) from *Send a test trap*.
+
+Each carries `otpTrapKey`, `otpTrapLevel`, `otpTrapTitle`, `otpTrapSaid` and
+`otpTrapNode`. Their own record of what was said, apart from the mails: traps go
+whether the alerts' mails are on or not.
+
+The receiver knows the user with **each node's engine ID** (a trap is sent by the
+node's own engine), in `snmptrapd.conf`:
+
+```
+createUser -e 0x80001f8805... otpmon SHA-256 '...' AES '...'
+createUser -e 0x80001f8805... otpmon SHA-256 '...' AES '...'
+authUser log,execute otpmon priv
+```
+
+The page writes those lines with the engine IDs filled in.

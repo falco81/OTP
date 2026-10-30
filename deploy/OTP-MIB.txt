@@ -1,0 +1,277 @@
+OTP-MIB DEFINITIONS ::= BEGIN
+
+-- otp, the one-time password server: what each node's own SNMPv3 agent
+-- answers (1.0.182). Read only. Under netSnmpPlaypen (net-snmp's subtree for
+-- objects of one's own), .7 - otp has no enterprise number of its own.
+-- Every sample of https://NODE/metrics is in otpMetricTable too.
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE,
+    Integer32, Gauge32, Counter64, TimeTicks
+        FROM SNMPv2-SMI
+    DisplayString
+        FROM SNMPv2-TC
+    netSnmpPlaypen
+        FROM NET-SNMP-MIB;
+
+otp MODULE-IDENTITY
+    LAST-UPDATED "202610300000Z"
+    ORGANIZATION "otp"
+    CONTACT-INFO "The administrators of the otp servers - Settings, Monitoring."
+    DESCRIPTION  "otp: RADIUS, the tokens, the database, the alerts, the
+                  certificates and the cluster of one node."
+    REVISION     "202610300000Z"
+    DESCRIPTION  "First: 1.0.182."
+    ::= { netSnmpPlaypen 7 }
+
+otpNotifications OBJECT IDENTIFIER ::= { otp 0 }
+otpInfo          OBJECT IDENTIFIER ::= { otp 1 }
+otpRadius        OBJECT IDENTIFIER ::= { otp 2 }
+otpDatabase      OBJECT IDENTIFIER ::= { otp 3 }
+otpTokens        OBJECT IDENTIFIER ::= { otp 4 }
+otpAlerts        OBJECT IDENTIFIER ::= { otp 5 }
+otpCertificates  OBJECT IDENTIFIER ::= { otp 6 }
+otpCluster       OBJECT IDENTIFIER ::= { otp 7 }
+otpTrapObjects   OBJECT IDENTIFIER ::= { otp 8 }
+otpMetrics       OBJECT IDENTIFIER ::= { otp 9 }
+
+-- otpInfo ------------------------------------------------------------------------
+
+otpVersion OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The version of otp." ::= { otpInfo 1 }
+otpNode OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The name of this node." ::= { otpInfo 2 }
+otpSite OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The name of the site (Settings, About)." ::= { otpInfo 3 }
+otpDbEngine OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "sqlite, mariadb or postgres." ::= { otpInfo 4 }
+otpHighSecurity OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 while high security is on." ::= { otpInfo 5 }
+otpInCluster OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 when this node is one of a cluster of two." ::= { otpInfo 6 }
+otpUptime OBJECT-TYPE
+    SYNTAX TimeTicks MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Since the daemon started." ::= { otpInfo 7 }
+
+-- otpRadius ----------------------------------------------------------------------
+
+otpRadiusListening OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 while RADIUS listens." ::= { otpRadius 1 }
+otpRadiusQueued OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Requests waiting for a worker." ::= { otpRadius 2 }
+otpRadiusPackets OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Packets since the daemon started." ::= { otpRadius 3 }
+otpRadiusAccepts OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Access-Accept sent." ::= { otpRadius 4 }
+otpRadiusRejects OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Access-Reject sent." ::= { otpRadius 5 }
+otpRadiusChallenges OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Access-Challenge sent." ::= { otpRadius 6 }
+otpRadiusAccounting OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Accounting-Request answered." ::= { otpRadius 7 }
+otpRadiusStatus OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Status-Server answered." ::= { otpRadius 8 }
+otpRadiusDropped OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Requests dropped." ::= { otpRadius 9 }
+otpRadiusMalformed OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Packets that were not RADIUS." ::= { otpRadius 10 }
+otpRadiusUnknown OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Packets from addresses that are not clients." ::= { otpRadius 11 }
+otpRadiusRepeated OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Requests sent again and answered as before." ::= { otpRadius 12 }
+otpRadiusNoDatabase OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Requests the database could not answer." ::= { otpRadius 13 }
+otpRadiusMaintenance OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Requests not answered in maintenance." ::= { otpRadius 14 }
+
+-- otpDatabase --------------------------------------------------------------------
+
+otpDbUp OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 while the database answers." ::= { otpDatabase 1 }
+otpDbLatency OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "microseconds" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "How long SELECT 1 took." ::= { otpDatabase 2 }
+
+-- otpTokens ----------------------------------------------------------------------
+
+otpTokensAll OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Every token." ::= { otpTokens 1 }
+otpTokensActive OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Tokens in use." ::= { otpTokens 2 }
+otpTokensPending OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Tokens not confirmed yet." ::= { otpTokens 3 }
+otpTokensDisabled OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Tokens switched off." ::= { otpTokens 4 }
+otpTokensUsed30d OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Tokens used in the last 30 days." ::= { otpTokens 5 }
+otpTokensNeverUsed OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Tokens never used." ::= { otpTokens 6 }
+
+-- otpAlerts ----------------------------------------------------------------------
+
+otpAlertsBad OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "What the alerts see wrong now: bad." ::= { otpAlerts 1 }
+otpAlertsWarn OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "What the alerts see wrong now: warnings." ::= { otpAlerts 2 }
+
+otpAlertTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF OtpAlertEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "Each thing wrong now." ::= { otpAlerts 3 }
+otpAlertEntry OBJECT-TYPE
+    SYNTAX OtpAlertEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One thing wrong." INDEX { otpAlertIndex } ::= { otpAlertTable 1 }
+OtpAlertEntry ::= SEQUENCE { otpAlertIndex Integer32, otpAlertKey DisplayString,
+    otpAlertLevel DisplayString, otpAlertTitle DisplayString, otpAlertSaid DisplayString }
+otpAlertIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now." ::= { otpAlertEntry 1 }
+otpAlertKey OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "What it is about, the same while it lasts." ::= { otpAlertEntry 2 }
+otpAlertLevel OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "bad or warn." ::= { otpAlertEntry 3 }
+otpAlertTitle OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "In a few words." ::= { otpAlertEntry 4 }
+otpAlertSaid OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "More of it." ::= { otpAlertEntry 5 }
+
+-- otpCertificates ----------------------------------------------------------------
+
+otpCertTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF OtpCertEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "The certificates of the pages: each node's and the VIP address's."
+    ::= { otpCertificates 1 }
+otpCertEntry OBJECT-TYPE
+    SYNTAX OtpCertEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One certificate." INDEX { otpCertIndex } ::= { otpCertTable 1 }
+OtpCertEntry ::= SEQUENCE { otpCertIndex Integer32, otpCertTarget DisplayString,
+    otpCertName DisplayString, otpCertDaysLeft Integer32, otpCertEnd Integer32 }
+otpCertIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number." ::= { otpCertEntry 1 }
+otpCertTarget OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "A node's name, or vip." ::= { otpCertEntry 2 }
+otpCertName OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its common name." ::= { otpCertEntry 3 }
+otpCertDaysLeft OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Days until it ends." ::= { otpCertEntry 4 }
+otpCertEnd OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "When it ends, unix time." ::= { otpCertEntry 5 }
+
+-- otpCluster ---------------------------------------------------------------------
+
+otpNodeTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF OtpNodeEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "The nodes of the cluster." ::= { otpCluster 1 }
+otpNodeEntry OBJECT-TYPE
+    SYNTAX OtpNodeEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One node." INDEX { otpNodeIndex } ::= { otpNodeTable 1 }
+OtpNodeEntry ::= SEQUENCE { otpNodeIndex Integer32, otpNodeName DisplayString,
+    otpNodeUp Integer32, otpNodeAge Gauge32 }
+otpNodeIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number." ::= { otpNodeEntry 1 }
+otpNodeName OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its name." ::= { otpNodeEntry 2 }
+otpNodeUp OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 when it was heard from lately." ::= { otpNodeEntry 3 }
+otpNodeAge OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "seconds" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Since it was last heard from." ::= { otpNodeEntry 4 }
+
+-- what the traps carry -----------------------------------------------------------
+
+otpTrapKey OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "What it is about." ::= { otpTrapObjects 1 }
+otpTrapLevel OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "bad, warn, ok or info." ::= { otpTrapObjects 2 }
+otpTrapTitle OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "In a few words." ::= { otpTrapObjects 3 }
+otpTrapSaid OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "More of it." ::= { otpTrapObjects 4 }
+otpTrapNode OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "The node that sent it." ::= { otpTrapObjects 5 }
+
+otpAlertRaised NOTIFICATION-TYPE
+    OBJECTS { otpTrapKey, otpTrapLevel, otpTrapTitle, otpTrapSaid, otpTrapNode }
+    STATUS current
+    DESCRIPTION "Something went wrong (or worse), as the alerts see it."
+    ::= { otpNotifications 1 }
+otpAlertCleared NOTIFICATION-TYPE
+    OBJECTS { otpTrapKey, otpTrapLevel, otpTrapTitle, otpTrapSaid, otpTrapNode }
+    STATUS current
+    DESCRIPTION "What went wrong is right again."
+    ::= { otpNotifications 2 }
+otpTestTrap NOTIFICATION-TYPE
+    OBJECTS { otpTrapKey, otpTrapLevel, otpTrapTitle, otpTrapSaid, otpTrapNode }
+    STATUS current
+    DESCRIPTION "Sent from Settings, Monitoring, to try the receiver."
+    ::= { otpNotifications 3 }
+
+-- otpMetrics: every Prometheus sample ---------------------------------------------
+
+otpMetricTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF OtpMetricEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "Every sample https://NODE/metrics gives, now." ::= { otpMetrics 1 }
+otpMetricEntry OBJECT-TYPE
+    SYNTAX OtpMetricEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One sample." INDEX { otpMetricIndex } ::= { otpMetricTable 1 }
+OtpMetricEntry ::= SEQUENCE { otpMetricIndex Integer32, otpMetricName DisplayString,
+    otpMetricLabels DisplayString, otpMetricValue DisplayString }
+otpMetricIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..2147483647) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now - samples come and go." ::= { otpMetricEntry 1 }
+otpMetricName OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The metric's name, otp_..." ::= { otpMetricEntry 2 }
+otpMetricLabels OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its labels, as Prometheus has them." ::= { otpMetricEntry 3 }
+otpMetricValue OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its value, as text." ::= { otpMetricEntry 4 }
+
+END

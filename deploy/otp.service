@@ -29,6 +29,9 @@ LogsDirectory=otp
 LogsDirectoryMode=0750
 ReadWritePaths=/var/lib/otp /var/log/otp /etc/otp
 # RADIUS on its standard ports needs no privilege: 1812 and 1813 are above 1024.
+# SNMPv3 on 161 (1.0.182) does: binding a port below 1024, nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 Environment=MALLOC_ARENA_MAX=2
 Nice=-5
 ProtectSystem=strict
