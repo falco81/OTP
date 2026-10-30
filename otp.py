@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.167'
+__version__ = '1.0.168'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -137,6 +137,7 @@ DEFAULTS = {
     'totp_algorithm': 'SHA1',
     'totp_window': 1,
     'admin_show_key': 1,
+    'high_security': 0,
     'totp_disallow_reuse': 1,
     # --- upgrades from the web (1.0.123) ----------------------------------
     'upgrade_check': 1,
@@ -251,6 +252,7 @@ DEFAULTS = {
     'rbackup_day': 7,
     'rbackup_keep': 30,
     'rbackup_keep_days': 0,
+    'rbackup_verify': 'off',
     'rbackup_password': '',
     # --- alerts by mail, and the report (1.0.162) -----------------------------
     'alerts': 0,
@@ -381,7 +383,7 @@ TUNABLE = {
     'radius_unknown_log': (0, 1), 'radius_reject_delay_ms': (0, 10000),
     'totp_digits': (6, 8), 'totp_period': (15, 120),
     'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
-    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'totp_disallow_reuse': (0, 1),
+    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'high_security': (0, 1), 'totp_disallow_reuse': (0, 1),
     'upgrade_check': (0, 1), 'upgrade_downgrade': (0, 1),
     'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
@@ -406,6 +408,7 @@ TUNABLE = {
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
     'rbackup': (0, 1), 'rbackup_every': ('daily', 'weekly'), 'rbackup_day': (1, 7),
     'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650),
+    'rbackup_verify': ('off', 'after', 'weekly'),
     'alerts': (0, 1), 'alerts_delay_min': (0, 120), 'alerts_repeat_h': (0, 168),
     'alerts_resolved': (0, 1), 'alerts_nodes': (0, 1), 'alerts_backup': (0, 1),
     'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
@@ -443,6 +446,8 @@ TUNABLE = {
 }
 
 CHOICE_WORDS = {
+    'rbackup_verify': {'off': 'only by hand', 'after': 'after every backup, the one just sent',
+                       'weekly': 'once a week, the newest one'},
     'mail_mode': {'off': 'off - no mail is sent',
                   'smtp': 'through a mail server (SMTP relay)',
                   'direct': 'straight to the recipient’s mail server (MX), no relay'},
@@ -559,6 +564,7 @@ NAMES = {
     'totp_algorithm': 'The hash',
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
+    'high_security': 'High security',
     'upgrade_check': 'Look for a new version every day',
     'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
@@ -628,6 +634,7 @@ NAMES = {
     'rbackup_day': 'On (1 Monday - 7 Sunday)',
     'rbackup_keep': 'Backups kept at each destination',
     'rbackup_keep_days': 'And none older than (days)',
+    'rbackup_verify': 'Try the backups',
     'rbackup_password': 'The password of the backups',
     'alerts': 'Alerts by mail',
     'alerts_to': 'Send them to',
@@ -830,6 +837,10 @@ SAYS = {
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
                    'service\'s environment.',
+    'high_security': 'Every way of doing something less safely switched off - plain LDAP, unencrypted '
+                     'mail, syslog and backups, certificates not checked, weak TLS, SSH with '
+                     'passwords, exports not locked and the rest listed above. Switched on only '
+                     'once nothing stands against it; off by default.',
     'admin_show_key': 'A full administrator may open a token and show its QR code and key - '
                       'for somebody whose phone cannot scan the page, or to set the same '
                       'token up again. Whoever has the key can make the codes, so every look '
@@ -1054,6 +1065,9 @@ SAYS = {
     'rbackup_keep': 'How many of this node’s backups each destination keeps; the oldest go '
                     'first, the newest never.',
     'rbackup_keep_days': 'Older ones are taken away too - 0: only the count above decides.',
+    'rbackup_verify': 'The newest backup fetched back, opened with the password, every file checked, '
+                      'the database read through and the tokens tried against the key in it - '
+                      'nothing is put back. After every backup, or once a week.',
     'rbackup_password': 'Every backup is locked with it (AES-256, opened with otp or with openssl '
                         'alone). Keep it apart from the backups as well - in a password vault: '
                         'without it nobody, you included, opens them. Empty: the backups are '
@@ -1218,11 +1232,12 @@ PANES = {
            'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
     'ha': ['node_name'],
     'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
-               'rbackup_keep_days', 'rbackup_password'],
+               'rbackup_keep_days', 'rbackup_password', 'rbackup_verify'],
     'osup': ['osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_what', 'osup_auto_every',
              'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
     'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
               'power_auto_needed'],
+    'hisec': ['high_security'],
     'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
@@ -6680,6 +6695,7 @@ class Storage(object):
             if len(secret) > 128:
                 raise ValueError('a shared secret of more than 128 characters is more than '
                                  'RADIUS hides properly')
+            hisec_client_secret(secret)     # 1.0.168
             row['secret'] = seal_secret(secret)
         elif not old:
             raise ValueError('a client needs a shared secret')
@@ -7104,6 +7120,7 @@ class Storage(object):
                'note': str(data.get('note') or '')[:400]}
         if 'ca' in data:
             row['ca'] = ca
+        hisec_directory(row)                # 1.0.168
         pw = data.get('bind_pw')
         if pw is not None and not is_masked(pw):
             row['bind_pw'] = seal_secret(pw) if str(pw) else ''
@@ -13310,6 +13327,7 @@ class Daemon(object):
             # (1.0.20): a copy of the database alone does not give it away.
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
+        hisec_guard_settings(self.store, checked)        # 1.0.168
         if 'node_name' in checked:
             taken = node_name_taken(self.store, checked['node_name'])
             if taken:
@@ -13394,7 +13412,7 @@ class Daemon(object):
                    'in_file': key in FILE_KEYS,
                    'file': FILE_CONFIG.get(key) if key in FILE_KEYS else None,
                    'file_only': key in FILE_ONLY_KEYS,
-                   'node_key': key in NODE_KEYS}
+                   'node_key': key in NODE_KEYS, 'hisec': hisec_ui(key)}
             if key in NODE_KEYS:
                 one['per_node'] = {k.split('@', 1)[1]: v for k, v in saved.items()
                                    if k.startswith(key + '@')}
@@ -13475,6 +13493,7 @@ class Daemon(object):
             'last': last, 'serial': '%s/%s' % (serial, ev), 'problems': problems,
             'database': {'engine': self.store.db.engine, 'where': self.store.db.where()},
             'lang': CONFIG.get('ui_lang') or 'cs', 'php': php_state(), 'admin_show_key': bool(CONFIG.get('admin_show_key')),
+            'high_security': bool(CONFIG.get('high_security')),
             'default_realm': CONFIG.get('default_realm') or '',
             'node': node_name(),
             'nodes': [{'name': n['name'], 'alive': n['alive'], 'age': n['age'],
@@ -17811,6 +17830,7 @@ def rb_save(store, data, by):
         if data.get('id') and not old:
             raise ValueError('no such destination')
         t = rb_checked(data, old)
+        hisec_backup_target(t)              # 1.0.168
         if old:
             targets = [t if x['id'] == t['id'] else x for x in targets]
         else:
@@ -18887,6 +18907,15 @@ def rb_job_start(store, by, only=None):
             RB_JOB['result'] = rb_run(store, by, only, progress)
             if RB_JOB['result'].get('error'):
                 RB_JOB['error'] = RB_JOB['result']['error']
+            elif RB_JOB['result'].get('ok') and CONFIG.get('rbackup_verify') == 'after':
+                # Tried at once, at the first destination it went to (1.0.169).
+                RB_JOB.update(what='verify', says='the backup just sent is tried', done=0, whole=4)
+                sent = RB_JOB['result']
+                v = rb_verify(store, by, sent['targets'][0]['id'], sent.get('file'), progress)
+                sent['verified'] = v
+                if not v['ok']:
+                    RB_JOB['error'] = 'sent, but it is not good: ' + '; '.join(
+                        c['what'] for c in v['checks'] if not c['ok'])
         except Exception as e:                          # noqa: BLE001
             RB_JOB['error'] = scrub_secret(str(e))[:400]
             log('remote backup failed: %s' % e, 'error')
@@ -18968,6 +18997,13 @@ def rb_tick(daemon):
         except Exception as e:                          # noqa: BLE001
             log_sparing('rb-now:' + str(e)[:60], 'Back up now asked by the other node: %s'
                         % e, 'warn', 600)
+    if not RB_JOB['running'] and rb_verify_due(store) and \
+            time.time() - float(getattr(daemon, '_rb_verify_at', 0)) > 3600:
+        daemon._rb_verify_at = time.time()          # once an hour at most, if it fails to start
+        try:
+            rb_verify_start(store, 'otp (weekly)')
+        except ValueError:
+            pass
     day = rb_due(store, getattr(daemon, '_rb_day', ''))
     if not day or RB_JOB['running']:
         return
@@ -19133,6 +19169,229 @@ def rb_remote_list(store, tid):
     out.sort(key=lambda x: -x['when'])
     return out
 
+
+
+# ---- a backup tried, without putting it back (1.0.169) ---------------------------------
+# Settings → Backups → Try a backup: the newest backup of this node at a
+# destination fetched into a folder of its own, opened with the password of
+# the backups, every file checked against its manifest, the copy of the
+# database read to its last line and counted, the key in it checked against
+# the tokens in it (each token's key must open with it), config.json read -
+# what a restore needs, done without touching the database in use. The
+# newest nightly copy on this machine is read through as well. By hand, after
+# every backup, or weekly (rbackup_verify); in a thread of its own, the
+# result kept per node ('rbackup:verified:NODE') and alerted when it failed.
+RB_VERIFY_KEEP = 30
+
+
+def _seal_tag_ok(key, value, bind):
+    """Whether `key` is the one `value` was sealed with - its tag checked, the
+    secret itself never opened."""
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith(SEALED2):
+        v2, prefix = True, SEALED2
+    elif value.startswith(SEALED):
+        v2, prefix = False, SEALED
+    else:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(value[len(prefix):].encode('ascii'))
+    except (ValueError, TypeError):
+        return False
+    if len(raw) < 32:
+        return False
+    nonce, body, tag = raw[:16], raw[16:-16], raw[-16:]
+    sign = hmac.new(key, b'sign', hashlib.sha256).digest()
+    signed = (b'2|' + str(bind).encode('utf-8') + b'|' if v2 else b'') + nonce + body
+    return hmac.compare_digest(tag, hmac.new(sign, signed, hashlib.sha256).digest()[:16])
+
+
+def copy_read_through(path, key=None, sample=50):
+    """A copy of the database read to its last line: what it holds, and - with
+    a key - how many tokens of a sample open with it."""
+    import gzip
+    counts, table, admins = {}, None, 0
+    tried = opened = 0
+    with gzip.open(str(path), 'rt', encoding='utf-8') as f:
+        head = json.loads(f.readline() or '{}')
+        if 'otp' not in head and 'opt' not in head:
+            raise RbError('the copy of the database is not one made by otp')
+        for line in f:
+            got = json.loads(line)
+            if set(got.keys()) == {'table'}:
+                table = got['table']
+                counts.setdefault(table, 0)
+                continue
+            if not table:
+                continue
+            counts[table] += 1
+            if table == 'accounts' and got.get('role') == 'fulladmin' and not got.get('disabled'):
+                admins += 1
+            if table == 'tokens' and key and tried < sample and got.get('secret'):
+                ok = _seal_tag_ok(key, got['secret'], token_bind(got.get('name')))
+                if ok is not None:
+                    tried += 1
+                    opened += 1 if ok else 0
+    return {'head': head, 'counts': counts, 'admins': admins, 'tried': tried, 'opened': opened}
+
+
+def rb_verify_file(path, password, work, made_here=True):
+    """The checks on one backup file: [(what, ok, said)] and its manifest."""
+    checks = []
+
+    def check(what, ok, said=''):
+        checks.append({'what': what, 'ok': bool(ok), 'said': said})
+        return ok
+    try:
+        top, m = rb_open(path, password, work)
+    except RbError as e:
+        check('opened with the password of the backups, every file as its manifest says',
+              False, str(e))
+        return checks, {}
+    check('opened with the password of the backups, every file as its manifest says', True,
+          '%d file(s)' % len(m.get('files') or {}))
+    key = None
+    try:
+        key = bytes.fromhex(open(os.path.join(top, 'secrets.key')).read().strip())
+        check('the key of the tokens is in it', len(key) >= 32)
+    except (OSError, ValueError) as e:
+        check('the key of the tokens is in it', False, str(e)[:200])
+    try:
+        got = copy_read_through(os.path.join(top, 'otp-copy.json.gz'), key)
+        c = got['counts']
+        check('the copy of the database reads to its last line', True, '%d tables, %d tokens, '
+              '%d accounts' % (len(c), c.get('tokens', 0), c.get('accounts', 0)))
+        want = m.get('tokens')
+        if isinstance(want, int):
+            check('every token the manifest names is in it', c.get('tokens', 0) == want,
+                  '%d of %d' % (c.get('tokens', 0), want))
+        check('a full administrator can sign in after it', got['admins'] > 0,
+              '%d' % got['admins'])
+        if got['tried']:
+            check('the tokens open with the key in it', got['opened'] == got['tried'],
+                  '%d of %d tried' % (got['opened'], got['tried']))
+    except (OSError, ValueError, EOFError, RbError) as e:
+        check('the copy of the database reads to its last line', False, str(e)[:200])
+    try:
+        with open(os.path.join(top, 'config.json')) as f:
+            json.load(f)
+        check('config.json is in it and reads', True)
+    except (OSError, ValueError) as e:
+        check('config.json is in it and reads', False, str(e)[:200])
+    return checks, m
+
+
+def rb_verify(store, by, tid=None, name=None, progress=None):
+    """The newest backup of this node at a destination (or the one named),
+    tried. The result is kept and returned."""
+    def say(n, t):
+        if progress:
+            progress(n, 4, t)
+    targets = [t for t in rb_targets(store) if t.get('enabled') and (not tid or t['id'] == tid)]
+    if tid and not targets:
+        raise RbError('no such destination')
+    if not targets:
+        raise RbError('no destination is switched on')
+    t = targets[0]
+    began = time.time()
+    res = {'at': began, 'by': by, 'node': node_name(), 'target': t['id'], 'target_name': t['name'],
+           'checks': [], 'ok': False}
+    work = tempfile.mkdtemp(prefix='otp-verify-', dir=str(STATE_DIR))
+    os.chmod(work, 0o700)
+    try:
+        say(1, 'the backups at %s listed' % t['name'])
+        files = rb_remote_list(store, t['id'])
+        pick = [f for f in files if f['name'] == name] if name else \
+            ([f for f in files if f['mine']] or files)
+        if not pick:
+            raise RbError('there is no backup %s at %s' % (('called ' + name) if name else
+                                                           'of this node', t['name']))
+        f = pick[0]
+        res.update(file=f['name'], made=f['when'], bytes=f['bytes'])
+        say(2, 'fetched from %s' % t['name'])
+        dst = os.path.join(work, 'b')
+        rb_fetch(store, t['id'], f['name'], dst)
+        say(3, 'opened and read through')
+        res['checks'], m = rb_verify_file(dst, rb_password(), work)
+        res['otp'] = m.get('otp')
+    except (RbError, OSError, ValueError, subprocess.SubprocessError) as e:
+        res['checks'].append({'what': 'fetched from the destination', 'ok': False,
+                              'said': rb_said(e) if not isinstance(e, RbError) else str(e)})
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # The newest nightly copy here, read through too.
+    say(4, 'the newest nightly copy read through')
+    try:
+        kept = kept_copies()
+        if kept:
+            got = copy_read_through(BACKUP_DIR / kept[0]['name'], sealing_key())
+            res['checks'].append({'what': 'the newest nightly copy here reads to its last line',
+                                  'ok': got['tried'] == got['opened'],
+                                  'said': '%s, %d tokens' % (kept[0]['name'],
+                                                             got['counts'].get('tokens', 0))})
+    except Exception as e:                              # noqa: BLE001
+        res['checks'].append({'what': 'the newest nightly copy here reads to its last line',
+                              'ok': False, 'said': str(e)[:200]})
+    res['ok'] = bool(res['checks']) and all(c['ok'] for c in res['checks'])
+    res['secs'] = round(time.time() - began, 1)
+    k = 'rbackup:verified:' + node_name()
+    rows = _meta_json(store, k) or []
+    if not isinstance(rows, list):
+        rows = []
+    store.set_meta(k, json.dumps(([res] + rows)[:RB_VERIFY_KEEP]))
+    bad = [c['what'] + (': ' + c['said'] if c['said'] else '') for c in res['checks'] if not c['ok']]
+    store.add_event('backups', 'the backup %s at %s was tried: %s' % (
+        res.get('file') or '?', t['name'], 'it can be put back' if res['ok'] else
+        'NOT GOOD - ' + '; '.join(bad)), 'info' if res['ok'] else 'bad', who=by)
+    return res
+
+
+def rb_verified(store):
+    """Every node's tries, newest first."""
+    out = []
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'rbackup:verified:%'"):
+        try:
+            rows = json.loads(r['v'] or '[]')
+        except ValueError:
+            continue
+        out += [x for x in rows if isinstance(x, dict)]
+    out.sort(key=lambda x: -float(x.get('at') or 0))
+    return out
+
+
+def rb_verify_start(store, by, tid=None, name=None):
+    """In a thread of its own, followed as a backup is (RB_JOB)."""
+    with RB_LOCK:
+        if RB_JOB['running']:
+            raise ValueError('a backup is being made or tried already')
+        RB_JOB.update(running=True, what='verify', says='starting', done=0, whole=4, error='',
+                      began=time.time(), ended=0, result=None, by=by)
+
+    def progress(done, whole, says):
+        RB_JOB.update(done=done, whole=whole, says=says)
+
+    def work():
+        try:
+            RB_JOB['result'] = rb_verify(store, by, tid, name, progress)
+            if not RB_JOB['result'].get('ok'):
+                RB_JOB['error'] = 'the backup is not good: ' + '; '.join(
+                    c['what'] for c in RB_JOB['result']['checks'] if not c['ok'])
+        except Exception as e:                          # noqa: BLE001
+            RB_JOB['error'] = scrub_secret(str(e))[:400]
+        finally:
+            RB_JOB.update(running=False, ended=time.time())
+    threading.Thread(target=work, name='rbackup-verify', daemon=True).start()
+    return dict(RB_JOB)
+
+
+def rb_verify_due(store):
+    """Weekly: a week since this node last tried one."""
+    if (CONFIG.get('rbackup_verify') or 'off') != 'weekly':
+        return False
+    rows = _meta_json(store, 'rbackup:verified:' + node_name()) or []
+    last = float(rows[0].get('at') or 0) if isinstance(rows, list) and rows else 0
+    return time.time() - last > 7 * 86400
 
 # ---------------------------------------------------------------------------
 # Two servers, both answering: high availability, active/active (1.0.13)
@@ -21553,6 +21812,335 @@ def zip_aes_open(raw, info, passphrase, most=64 * 1024):
     d = zlib.decompressobj(-15)
     return d.decompress(packed, most + 1)
 
+
+# ---- High security (1.0.168) -------------------------------------------------------------
+# Settings → Tokens → High security: every way of doing something less safely
+# switched off. It is switched on only once nothing stands against it - what
+# does is listed, each with where it is set; while it is on, what would stand
+# against it is refused wherever it is changed (the pages, the API, the
+# command line) and greyed out on the pages. What is only advised is listed
+# beside it and stops nothing.
+#
+# Each rule of a setting: (what is wrong with the value, or '') for a value
+# and the configuration around it; `forbid`/`most`/`least` tell the pages
+# which values to grey out.
+def _hs_on():
+    return bool(CONFIG.get('high_security'))
+
+
+HISEC_SETTINGS = {
+    'radius_reply_ma': {'forbid': [0], 'pane': 'radius',
+                        'why': 'RADIUS answers without a Message-Authenticator (BlastRADIUS)'},
+    'radius_ma_sticky': {'forbid': [0], 'pane': 'radius',
+                         'why': 'a client that sent a Message-Authenticator may leave it out again'},
+    'radius_guard': {'forbid': [0], 'pane': 'guard',
+                     'why': 'guessing passwords and codes over RADIUS is not held back'},
+    'smtp_security': {'forbid': ['none', 'starttls-if'], 'pane': 'mail',
+                      'when': lambda c: c.get('mail_mode') == 'smtp',
+                      'why': 'mail goes to the mail server unencrypted, or encrypted only if it '
+                             'offers to'},
+    'smtp_verify': {'forbid': [0], 'pane': 'mail', 'when': lambda c: c.get('mail_mode') != 'off',
+                    'why': 'the mail server\'s certificate is not checked'},
+    'mail_direct_tls': {'forbid': ['if-offered'], 'pane': 'mail',
+                        'when': lambda c: c.get('mail_mode') == 'direct',
+                        'why': 'mail is delivered unencrypted where the recipient\'s server '
+                               'does not offer TLS'},
+    'sms_url': {'pane': 'codes', 'when': lambda c: c.get('sms_mode') == 'http',
+                'test': lambda v, c: str(v or '').strip().lower().startswith('http://'),
+                'why': 'the SMS gateway is asked over plain http://'},
+    'sms_tel_https': {'forbid': [0], 'pane': 'codes',
+                      'when': lambda c: c.get('sms_mode') == 'teltonika',
+                      'why': 'the telephone gateway is asked over plain HTTP'},
+    'sms_tel_verify': {'forbid': [0], 'pane': 'codes',
+                       'when': lambda c: c.get('sms_mode') == 'teltonika',
+                       'why': 'the telephone gateway\'s certificate is not checked'},
+    'siem_verify': {'forbid': [0], 'pane': 'siem', 'when': lambda c: bool(c.get('siem')),
+                    'why': 'the syslog server\'s certificate is not checked'},
+    'siem_targets': {'pane': 'siem', 'when': lambda c: bool(c.get('siem')),
+                     'test': lambda v, c: any(p != 'tls' for _h, _p, p in siem_targets(v)),
+                     'why': 'syslog goes over UDP or TCP unencrypted - only tls:// servers'},
+    'isemon': {'forbid': [1], 'pane': 'isemon',
+               'why': 'isemon is sent plain syslog (UDP/TCP), unencrypted'},
+    'debug': {'forbid': [1, True], 'pane': 'about',
+              'why': 'debugging writes the details of requests into the log'},
+    'totp_window': {'most': 1, 'pane': 'tokens',
+                    'why': 'codes are taken more than one step (30 s) either side'},
+    'totp_disallow_reuse': {'forbid': [0], 'pane': 'tokens',
+                            'why': 'a code may be used again while it is good'},
+}
+
+# Advised, never stopping anything.
+HISEC_ADVICE = {
+    'admin_2fa': {'test': lambda v, c: not v, 'pane': 'people',
+                  'why': 'the administration is opened with a password alone - a second step '
+                         'from an app is advised'},
+    'admin_2fa_mail': {'test': lambda v, c: bool(v) and bool(c.get('admin_2fa')), 'pane': 'people',
+                       'why': 'the second step of the administration may come by mail - an app '
+                              'is safer'},
+    'admin_2fa_sms': {'test': lambda v, c: bool(v) and bool(c.get('admin_2fa')), 'pane': 'people',
+                      'why': 'the second step of the administration may come by SMS - an app '
+                             'is safer'},
+    'admin_show_key': {'test': lambda v, c: bool(v), 'pane': 'tokens',
+                       'why': 'administrators may show a token\'s key'},
+    'portal_show_secret': {'test': lambda v, c: bool(v), 'pane': 'portal',
+                           'why': 'the enrolment page shows the key as text beside the QR code'},
+    'scratch_digits': {'test': lambda v, c: int(v or 0) < 10, 'pane': 'tokens',
+                       'why': 'recovery codes shorter than 10 digits'},
+    'mail_codes': {'test': lambda v, c: bool(v) and c.get('mail_mode') != 'off', 'pane': 'mail',
+                   'why': 'codes may come by mail - weaker than an app'},
+    'portal_who': {'test': lambda v, c: v == 'anyone' and bool(c.get('portal')), 'pane': 'portal',
+                   'why': 'anyone in a directory may enrol on the enrolment page'},
+    'session_hours': {'test': lambda v, c: int(v or 0) > 8, 'pane': 'people',
+                      'why': 'a sign-in to the administration lasts more than 8 hours'},
+    'session_idle_min': {'test': lambda v, c: int(v or 0) > 30, 'pane': 'people',
+                         'why': 'a sign-in to the administration stays open idle more than 30 min'},
+    'proxy_user': {'test': lambda v, c: bool(c.get('proxy')) and not str(v or '').strip(),
+                   'pane': 'proxy', 'why': 'the proxy is used without a user name and password'},
+}
+
+
+def _hs_bad(rule, value, conf):
+    if rule.get('when') and not rule['when'](conf):
+        return False
+    if 'test' in rule:
+        try:
+            return bool(rule['test'](value, conf))
+        except (ValueError, TypeError, BadSetting):
+            return True
+    if 'forbid' in rule:
+        return value in rule['forbid'] or (isinstance(value, bool) and int(value) in rule['forbid'])
+    if 'most' in rule:
+        try:
+            return int(value or 0) > rule['most']
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def hisec_setting_refused(key, value, conf=None):
+    """What high security has against this value of a setting, or ''."""
+    rule = HISEC_SETTINGS.get(key)
+    if not rule:
+        return ''
+    conf = dict(CONFIG if conf is None else conf)
+    conf[key] = value
+    return rule['why'] if _hs_bad(rule, value, conf) else ''
+
+
+def hisec_ui(key):
+    """For the pages: what to grey out while it is on."""
+    rule = HISEC_SETTINGS.get(key)
+    if not rule:
+        return None
+    out = {'why': rule['why']}
+    for k in ('forbid', 'most'):
+        if k in rule:
+            out[k] = rule[k]
+    return out
+
+
+def _hs_item(kind, what, fix, pane, key=''):
+    return {'kind': kind, 'what': what, 'fix': fix, 'pane': pane, 'key': key}
+
+
+def hisec_findings(store, conf=None):
+    """{'block': [...], 'warn': [...]}: what stands against high security now."""
+    conf = dict(CONFIG if conf is None else conf)
+    block, warn = [], []
+    for key, rule in HISEC_SETTINGS.items():
+        if _hs_bad(rule, conf.get(key), conf):
+            block.append(_hs_item('setting', rule['why'], NAMES.get(key, key), rule['pane'], key))
+    for key, rule in HISEC_ADVICE.items():
+        if _hs_bad(rule, conf.get(key), conf):
+            warn.append(_hs_item('setting', rule['why'], NAMES.get(key, key), rule['pane'], key))
+    # Active Directory and the other directories.
+    for d in store.directories():
+        if not d.get('enabled', 1):
+            continue
+        if d.get('tls') == 'none':
+            block.append(_hs_item('dir', 'the directory %s is reached over plain LDAP - '
+                                  'passwords go over the network unencrypted' % d['name'],
+                                  'LDAPS or STARTTLS', 'dir'))
+        elif not d.get('verify', 1):
+            block.append(_hs_item('dir', 'the certificate of the directory %s is not checked'
+                                  % d['name'], 'check the certificate (give its CA)', 'dir'))
+        if d.get('weak'):
+            block.append(_hs_item('dir', 'the directory %s is spoken to with old, weak TLS'
+                                  % d['name'], 'switch the old TLS off', 'dir'))
+    # RADIUS clients.
+    for c in store.clients(with_secret=True):
+        if len(str(c.get('secret') or '')) < 16:
+            block.append(_hs_item('client', 'the shared secret of the client %s is shorter than '
+                                  '16 characters' % c['name'], 'a secret of 16 characters or more',
+                                  'clients'))
+    # The database and the cluster.
+    if conf.get('db_engine') in ('mariadb', 'postgres') and \
+            str(conf.get('db_host') or '').strip() and not str(conf['db_host']).startswith('/') and \
+            conf.get('db_tls') not in ('verify-ca', 'verify-full'):
+        block.append(_hs_item('db', 'the database is reached without TLS that checks its '
+                              'certificate', 'TLS: verify-ca or verify-full', 'db'))
+    if conf.get('ha_mode') == 'replicated' and ha_link_tls(conf)[0] not in ('verify-ca', 'verify-full'):
+        block.append(_hs_item('ha', 'the replication between the nodes goes without TLS that '
+                              'checks the certificate', 'TLS for the replication', 'ha'))
+    # Backups to other machines.
+    try:
+        targets = rb_targets(store)
+    except Exception:                                   # noqa: BLE001
+        targets = []
+    for t in targets:
+        if not t.get('enabled', 1):
+            continue
+        if t.get('kind') == 'ftp':
+            block.append(_hs_item('backup', 'the backup destination %s is plain FTP - its password '
+                                  'goes unencrypted' % t.get('name'), 'SFTP, SCP or FTPS', 'backup'))
+        elif t.get('kind') == 'ftps' and t.get('tls_check') == 'none':
+            block.append(_hs_item('backup', 'the certificate of the backup destination %s is not '
+                                  'checked' % t.get('name'), 'check it: the system, a CA or a pin',
+                                  'backup'))
+        elif t.get('kind') == 'smb' and not t.get('smb_encrypt', 1):
+            block.append(_hs_item('backup', 'the backup destination %s (SMB) is not encrypted'
+                                  % t.get('name'), 'SMB encryption on', 'backup'))
+    # TLS of the pages: ECDHE and AEAD only, or TLS 1.3 alone.
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'web:tls:%'"):
+        try:
+            prof = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if isinstance(prof, dict) and prof.get('cert') and \
+                (prof.get('preset') or 'standard') not in ('standard', 'modern'):
+            block.append(_hs_item('web', 'the TLS of %s takes %s ciphers' % (
+                r['k'][len('web:tls:'):], prof.get('preset')),
+                'standard (ECDHE, AEAD) or modern (TLS 1.3)', 'web'))
+    a = (access_conf(store) or {}).get('admin') or {'any': True}
+    if a.get('any', True):
+        block.append(_hs_item('fw', 'the administration can be reached from anywhere',
+                              'only from the networks that need it', 'fw'))
+    # SSH, as each node's sshd says it is.
+    for n in host_nodes(store):
+        v = (sshd_now(store, n) or {}).get('values') or {}
+        if not v:
+            warn.append(_hs_item('sshd', 'the SSH server of %s has not said yet how it is set' % n,
+                                 'look again', 'sshd'))
+            continue
+        if v.get('passwordauthentication') == 'yes' or v.get('kbdinteractiveauthentication') == 'yes':
+            block.append(_hs_item('sshd', 'SSH on %s lets people in with a password' % n,
+                                  'keys only', 'sshd'))
+        if v.get('permitrootlogin') == 'yes':
+            block.append(_hs_item('sshd', 'root may sign in to %s over SSH with a password' % n,
+                                  'root: with a key only, or not at all', 'sshd'))
+        try:
+            if int(v.get('maxauthtries') or 6) > 4:
+                block.append(_hs_item('sshd', 'SSH on %s allows more than 4 tries a connection' % n,
+                                      '4 tries at most', 'sshd'))
+        except ValueError:
+            pass
+    # The security check (1.0.169): what is not as it should be now - advised,
+    # never stopping high security - as the alerts see it, and the rest.
+    if not fw_conf(store).get('on'):
+        warn.append(_hs_item('check', 'the machine\'s firewall is off - otp\'s own rules are not '
+                             'in force', 'the firewall on', 'fw'))
+    try:
+        targets = [t for t in rb_targets(store) if t.get('enabled')]
+    except Exception:                                   # noqa: BLE001
+        targets = []
+    if not targets:
+        warn.append(_hs_item('check', 'no backup goes to another machine', 'a destination for '
+                             'the backups', 'backup'))
+    elif not rb_verified(store):
+        warn.append(_hs_item('check', 'no backup has been tried yet - whether one can be put '
+                             'back is not known', 'Try the newest, or try them weekly', 'backup'))
+    try:
+        seen = alert_problems(store, 'en')
+    except Exception:                                   # noqa: BLE001
+        seen = {}
+    for k, p in sorted(seen.items()):
+        if k.split(':', 1)[0] in ('cert', 'sec', 'reboot', 'rbverify', 'rbackup'):
+            warn.append(_hs_item('check', p['title'], p['said'], p.get('pane') or ''))
+    return {'block': block, 'warn': warn}
+
+
+class HiSecConflict(BadSetting):
+    def __init__(self, findings):
+        BadSetting.__init__(self, 'high security cannot be switched on, %d thing(s) stand '
+                                  'against it: %s' % (len(findings['block']), '; '.join(
+                                      x['what'] for x in findings['block'])))
+        self.findings = findings
+
+
+def hisec_guard_settings(store, checked):
+    """Before settings are saved: switching it on only with nothing against
+    it; while it is on, no value it stands against."""
+    after = dict(CONFIG)
+    after.update(checked)
+    if checked.get('high_security') and not CONFIG.get('high_security'):
+        got = hisec_findings(store, after)
+        if got['block']:
+            raise HiSecConflict(got)
+    if after.get('high_security'):
+        for key in HISEC_SETTINGS:
+            if key in checked or any(k in checked for k in ('mail_mode', 'sms_mode', 'siem')):
+                why = hisec_setting_refused(key, after.get(key), after)
+                if why:
+                    raise BadSetting('%s: not while high security is on - %s'
+                                     % (NAMES.get(key, key), why))
+
+
+def hisec_refuse(what):
+    """A change of a directory, a client, a destination... while it is on."""
+    if _hs_on() and what:
+        raise ValueError('not while high security is on (Settings - High security): %s' % what)
+
+
+def hisec_directory(row):
+    if row.get('tls') == 'none':
+        hisec_refuse('a directory over plain LDAP - LDAPS or STARTTLS')
+    if not row.get('verify', 1):
+        hisec_refuse('a directory whose certificate is not checked')
+    if row.get('weak'):
+        hisec_refuse('old, weak TLS to a directory')
+
+
+def hisec_client_secret(secret):
+    if len(str(secret or '')) < 16:
+        hisec_refuse('a shared secret shorter than 16 characters')
+
+
+def hisec_backup_target(t):
+    if not t.get('enabled', 1):
+        return
+    if t.get('kind') == 'ftp':
+        hisec_refuse('plain FTP - SFTP, SCP or FTPS')
+    if t.get('kind') == 'ftps' and t.get('tls_check') == 'none':
+        hisec_refuse('FTPS without checking the certificate')
+    if t.get('kind') == 'smb' and not t.get('smb_encrypt', 1):
+        hisec_refuse('SMB without encryption')
+
+
+def hisec_tls(prof):
+    if (prof.get('preset') or 'standard') not in ('standard', 'modern'):
+        hisec_refuse('TLS other than standard (ECDHE, AEAD) or modern (TLS 1.3)')
+
+
+def hisec_access(a):
+    if ((a or {}).get('admin') or {'any': True}).get('any', True):
+        hisec_refuse('the administration reachable from anywhere - list the networks')
+
+
+def hisec_sshd(c):
+    if not c.get('manage'):
+        return
+    if c.get('password'):
+        hisec_refuse('SSH with passwords - keys only')
+    if c.get('permit_root') == 'yes':
+        hisec_refuse('root over SSH with a password')
+    if int(c.get('tries') or 4) > 4:
+        hisec_refuse('more than 4 SSH tries a connection')
+
+
+def hisec_view(store):
+    got = hisec_findings(store)
+    return dict(got, on=_hs_on())
+
 # ---- going back to an older version (1.0.143) ---------------------------------------
 # Never by putting a database back: the tables stay as they are - every column
 # a newer version added is one an older one leaves alone (they are all added
@@ -22224,6 +22812,7 @@ def tls_policy_checked(b):
         out['hsts'] = max(0, min(63072000, int(hv) if hv not in (None, '') else 63072000))
     except (TypeError, ValueError):
         raise ValueError('HSTS is a number of seconds')
+    hisec_tls(out)                          # 1.0.168
     return out
 
 
@@ -23000,6 +23589,10 @@ def access_checked_api(b):
             raise ApiError(400, '%s would be for nobody: give a network, or let everybody in'
                            % words)
         out[k] = {'any': bool(one.get('any')), 'from': nets}
+    try:
+        hisec_access(out)                   # 1.0.168
+    except ValueError as e:
+        raise ApiError(400, str(e))
     return out
 
 
@@ -26474,6 +27067,7 @@ def sshd_hash(c, at):
 
 def sshd_save(store, b, by):
     c = sshd_checked_conf(b)
+    hisec_sshd(c)                           # 1.0.168
     if c['manage'] and c['allow_users'] and c['permit_root'] != 'no' and \
             not any(u in ('root', '*') for u in c['allow_users']) and not b.get('ok_no_root'):
         raise ValueError('AllowUsers without root lets nobody in as root - add root to it, or '
@@ -26635,6 +27229,26 @@ def _due(every, day, at, now=None):
     return (n.hour, n.minute) >= (hh, mm), n.strftime('%Y-%m-%d')
 
 
+def osup_settling(store):
+    """An update going on, or a node still looking (again) for updates - what
+    says which node needs a restart is not known yet (1.0.168)."""
+    if osup_plan(store).get('state') == 'running':
+        return True
+    for n in host_nodes(store):
+        chk = _meta_json(store, 'host:osup:check:' + n) or {}
+        if chk.get('state') == 'running':
+            return True
+        for r in node_key_rows(store, 'host:osup:checkwant', n):
+            try:
+                a = json.loads(r['v'] or '{}')
+            except ValueError:
+                continue
+            if a.get('id') and a['id'] not in (chk.get('asked') or []) and \
+                    time.time() - float(a.get('at') or 0) < 900:
+                return True
+    return False
+
+
 def osup_sched_tick(daemon):
     store = daemon.store
     if not alerts_lead(store):
@@ -26663,7 +27277,9 @@ def osup_sched_tick(daemon):
     if CONFIG.get('power_auto'):
         due, day = _due(CONFIG.get('power_auto_every') or 'weekly', CONFIG.get('power_auto_day'),
                         CONFIG.get('power_auto_at'))
-        if due and store.get_meta('power:auto:day') != day and \
+        # Not while an update or a look for updates is still going on: the
+        # nodes that need a restart are known only after it (1.0.168).
+        if due and store.get_meta('power:auto:day') != day and not osup_settling(store) and \
                 claim_once(store, 'power:auto:day', day):
             nodes = host_nodes(store)
             if CONFIG.get('power_auto_needed', 1):
@@ -26672,8 +27288,6 @@ def osup_sched_tick(daemon):
                 store.add_event('settings', 'the restart on a schedule: no node needs one', 'info')
                 return
             try:
-                if osup_plan(store).get('state') == 'running':
-                    raise ValueError('an update of the system is going on')
                 power_ask(store, 'reboot', nodes, 'rolling', by, keep_service=True)
                 store.add_event('settings', 'the restart on a schedule: %s, one after the other'
                                 % ', '.join(nodes), 'warn')
@@ -26879,6 +27493,18 @@ def alert_problems(store, lang='en'):
                             'No backup of %s went out in time' % n),
                         _al(lang, 'Poslední úspěšná: %s.', 'The last good one: %s.')
                         % (_al_when(ok[0]['at']) if ok else '–'), 'backup')
+        # The last try of a backup (1.0.169): one that cannot be put back.
+        tried = rb_verified(store)
+        for n in names:
+            mine = [r for r in tried if r.get('node') == n]
+            if mine and not mine[0].get('ok'):
+                bad = [c for c in mine[0].get('checks') or [] if not c.get('ok')]
+                add('rbverify:' + n, 'bad', n,
+                    _al(lang, 'Záloha z %s nejde obnovit' % n,
+                        'The backup of %s cannot be put back' % n),
+                    '%s: %s' % (mine[0].get('file') or '?', '; '.join(
+                        c['what'] + (' (%s)' % c['said'] if c.get('said') else '')
+                        for c in bad)[:400]), 'backup')
     # Certificates running out.
     days = int(CONFIG.get('alerts_cert_days') or 0)
     if days:
@@ -29474,6 +30100,9 @@ def _tokens_export(h):
     b = h.body()
     lock = b.get('lock', True) is not False
     phrase = str(b.get('passphrase') or '')
+    if not lock and CONFIG.get('high_security'):
+        raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
+                            'locked with a passphrase')
     if lock and len(phrase) < 8:
         raise ApiError(400, 'a passphrase of 8 characters at least - or choose not locked')
     arg = lambda k: str(b.get(k) or '')     # noqa: E731
@@ -30136,12 +30765,19 @@ def _tokens_backup(h):
                              limit=1000000, kind=kind if kind in ('totp', 'mail', 'sms') else '')
     data = tokens_backup(h.store, [r['name'] for r in rows], s['name'])
     phrase = str(b.get('passphrase') or '')
-    # Always locked (1.0.136): every key and recovery code is in it.
-    if len(phrase) < 8:
+    # Locked unless asked otherwise in so many words, and never under high
+    # security (1.0.168): every key and recovery code is in it.
+    lock = b.get('lock', True) is not False
+    if not lock and CONFIG.get('high_security'):
+        raise ApiError(403, 'high security is on (Settings - High security): tokens are only exported '
+                            'locked with a passphrase')
+    if lock and len(phrase) < 8:
         raise ApiError(400, 'a passphrase of 8 characters at least: the file holds every key')
-    text = json.dumps(bundle_lock(data, phrase, kind=TOKENS_KIND), indent=1)
+    if not lock:
+        phrase = ''
+    text = json.dumps(bundle_lock(data, phrase, kind=TOKENS_KIND) if phrase else data, indent=1)
     h.store.add_event('tokens', '%s backed up %d token(s)%s%s' % (
-        s['name'], data['count'], ' locked with a passphrase' if phrase else ' (not locked)',
+        s['name'], data['count'], ' locked with a passphrase' if phrase else ' - NOT LOCKED',
         (' - %d left out, their keys cannot be opened here' % len(data['lost']))
         if data['lost'] else ''), 'warn', who=s['name'])
     return {'file': text, 'count': data['count'], 'lost': data['lost'], 'locked': bool(phrase),
@@ -30916,8 +31552,16 @@ def _settings_do(h):
         return got
     except NodeMoved as e:
         raise ApiError(409, str(e))
+    except HiSecConflict as e:
+        raise ApiError(409, str(e), detail={'hisec': e.findings})
     except BadSetting as e:
         raise ApiError(400, str(e))
+
+
+@route('GET', '/api/hisec')
+def _hisec(h):
+    h.me('fulladmin')
+    return hisec_view(h.store)
 
 
 @route('POST', '/api/isemon')
@@ -34154,6 +34798,7 @@ def rb_page(store):
     for r in rb_history(store):
         nodes.setdefault(r.get('node') or '?', r)
     return {'targets': [rb_view(t) for t in rb_targets(store)], 'runs': rb_history(store)[:40],
+            'verified': rb_verified(store)[:20],
             'last_by_node': nodes, 'job': {k: v for k, v in RB_JOB.items()},
             'kinds': [{'kind': k, 'words': RB_KIND_WORDS[k], 'port': RB_PORTS.get(k)}
                       for k in RB_KINDS],
@@ -34323,6 +34968,13 @@ def _rbackup_do(h):
                 'job': job, 'others': others}
         if act == 'job':
             return {'job': dict(RB_JOB)}
+        if act == 'verify':
+            # Tried without being put back (1.0.169), followed as a backup is.
+            job = rb_verify_start(h.store, by, str(b.get('id') or '') or None,
+                                  str(b.get('name') or '') or None)
+            return {'message': 'the backup is being tried', 'job': job}
+        if act == 'verified':
+            return {'verified': rb_verified(h.store)[:40]}
         if act == 'list':
             return {'files': rb_remote_list(h.store, b.get('id'))}
         if act == 'delete_file':

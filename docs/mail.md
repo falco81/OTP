@@ -67,3 +67,8 @@ it, and *Bringing tokens over* reads it back, asking for the passphrase.
 *Not locked* gives a plain ZIP (one token: the `.totp` file itself) - only
 when chosen, and the event says NOT LOCKED. ZIPs locked the old ZipCrypto way
 are not read; AES-256 ones made by 7-Zip or WinZip are.
+
+The whole backup (`.json`, every kind of token) is locked the same way unless
+*not locked* is chosen (1.0.168). *Settings → Tokens → High security* takes
+*not locked* away from every export: the page does not offer it and the
+daemon refuses it.

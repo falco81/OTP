@@ -3194,3 +3194,23 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .px-said{margin-top:10px}
 .lg-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:10px 0 4px}
 .lg-kv b{text-align:right}
+
+/* High security (1.0.168) */
+.hs-note{color:var(--warn,#d29922)}
+.hs-h{margin:14px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.3px}
+.hs-h.bad{color:var(--crit,#f85149)}
+.hs-h.warn{color:var(--warn,#d29922)}
+.hs-list{display:flex;flex-direction:column;gap:6px}
+.hs-item{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
+.hs-item .dot{margin-top:6px;flex:none}
+.hs-what{font-weight:600}
+.hs-item a{color:var(--accent,#58a6ff)}
+
+/* Backups tried (1.0.169) */
+.rb-tried{display:flex;flex-direction:column;gap:6px}
+.rb-try{border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.rb-try.bad{border-color:color-mix(in srgb,var(--crit,#f85149) 50%,var(--line))}
+.rb-try summary{cursor:pointer;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rb-checks{margin:8px 0 2px 16px;display:flex;flex-direction:column;gap:4px}
+.rb-check{display:flex;gap:8px;align-items:baseline}
+.rb-check .dot{flex:none;transform:translateY(-1px)}

@@ -290,7 +290,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -305,7 +305,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -738,6 +738,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="mailq" data-icon="list" title="Every mail sent - a token's QR code, a code to sign in with - and what became of it: sent, waiting for another try (greylisting, a server away), failed. Sent again or taken away by hand.">Outgoing mail <span class="nav-badge" id="mq-badge" hidden></span></button>
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
+    <button type="button" class="fulladmin-only" data-pane="hisec" data-icon="shield" title="Every way of doing something less safely switched off - and what stands against it now.">High security</button>
     <button type="button" data-pane="web" data-icon="lock" title="The certificates of the nodes and of the cluster's web address, and how TLS is spoken.">Certificates and TLS</button>
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
     <div class="ctl-group">Server</div>
@@ -914,8 +915,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
           <option value="backup">a whole backup (.json) - every kind</option>
           <option value="totp">.totp files in a ZIP - the app's tokens, for totpcgi</option>
         </select>
-        <select id="exp-lock" title="A ZIP locked with AES-256 opens with 7-Zip, WinRAR or PeaZip and the passphrase; otp reads it back with it.">
-          <option value="lock">locked with a passphrase (AES-256)</option>
+        <select id="exp-lock" title="Locked: the passphrase opens it - a ZIP with 7-Zip, WinRAR or PeaZip (AES-256), a backup with otp. Not locked: whoever has the file can sign in as any of the tokens in it.">
+          <option value="lock">locked with a passphrase</option>
           <option value="open">not locked</option>
         </select>
         <input type="password" id="exp-pass" autocomplete="new-password" placeholder="a passphrase to lock it with (8 characters at least)" style="flex:1;min-width:260px">
@@ -935,6 +936,15 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div id="al-host"></div>
     <div class="card full"><h2>Settings</h2><div id="sect-alerts"></div></div>
     <div id="al-log"></div>
+  </div>
+  <div class="ctl-pane" id="pane-hisec" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">High security</h2>
+      <p class="ctl-lede">Every way of doing something less safely switched off, on every node: plain LDAP,
+        unencrypted mail, syslog and backups, certificates not checked, weak TLS, SSH with passwords, the
+        administration open to everybody, exports not locked. It is switched on only once nothing below stands
+        against it; while it is on, all of that is refused wherever it is changed and greyed out on the pages.</p></div>
+    <div id="hs-host"></div>
+    <div class="card full"><h2>Settings</h2><div id="sect-hisec"></div></div>
   </div>
   <div class="ctl-pane" id="pane-siem" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Syslog and SIEM</h2>
