@@ -1562,15 +1562,42 @@ def totp_file_text(tok):
     return '\n'.join(lines) + '\n'
 
 
-@route('GET', '/api/tokens/export')
+def _export_out(h, s, files, base, what, lock, phrase, single_text=None):
+    """The export as the page saves it: a ZIP locked with the passphrase
+    (AES-256, 1.0.167), or - asked for in so many words - not locked."""
+    if lock:
+        data, name, mime = zip_aes_write(files, phrase), base + '.zip', 'application/zip'
+    elif single_text is not None:
+        data, name, mime = single_text.encode('utf-8'), files[0][0], 'text/plain; charset=utf-8'
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for n, d in files:
+                z.writestr(n, d)
+        data, name, mime = buf.getvalue(), base + '.zip', 'application/zip'
+    h.store.add_event('tokens', '%s exported %s%s' % (
+        s['name'], what, ', locked with a passphrase' if lock else ' - NOT LOCKED'),
+        'warn', who=s['name'])
+    return {'name': name, 'file': base64.b64encode(data).decode('ascii'), 'mime': mime,
+            'locked': bool(lock)}
+
+
+@route('POST', '/api/tokens/export')
 def _tokens_export(h):
     """Tokens as totpcgi files: one token as its .totp, several as a ZIP of
     them. Every key in it signs its owner in, so: a full administrator only,
-    where showing keys is allowed, and every export written down."""
+    where showing keys is allowed, and every export written down. Locked with
+    a passphrase unless the page says, as asked, it is not to be (1.0.167)."""
     s = h.me('fulladmin')
     if not CONFIG.get('admin_show_key'):
         raise ApiError(403, 'showing the keys of tokens is switched off (Settings - Tokens)')
-    one = norm_name(h.arg('name'))
+    b = h.body()
+    lock = b.get('lock', True) is not False
+    phrase = str(b.get('passphrase') or '')
+    if lock and len(phrase) < 8:
+        raise ApiError(400, 'a passphrase of 8 characters at least - or choose not locked')
+    arg = lambda k: str(b.get(k) or '')     # noqa: E731
+    one = norm_name(arg('name'))
     if one:
         tok = h.store.token(one)
         if not tok:
@@ -1580,19 +1607,17 @@ def _tokens_export(h):
         text = totp_file_text(tok)
         if text is None:
             raise ApiError(409, 'the key of this token cannot be opened on this machine')
-        h.store.add_event('tokens', '%s exported the token of %s as a .totp file' % (
-            s['name'], one), 'warn', who=s['name'])
-        h.send_bytes(text.encode('utf-8'), totp_file_name(one),
-                     'text/plain; charset=utf-8')
-        return None
-    lq, bad = list_query('tokens', h.arg('q'))
+        return dict(_export_out(h, s, [(totp_file_name(one), text.encode('utf-8'))],
+                                totp_file_name(one)[:-5], 'the token of %s as a .totp file' % one,
+                                lock, phrase, single_text=text), count=1)
+    lq, bad = list_query('tokens', arg('q'))
     if bad:
         raise ApiError(400, bad)
-    rows, _ = h.store.tokens(q=lq.words, extra=(lq.sql, lq.args), state=h.arg('state'),
+    rows, _ = h.store.tokens(q=lq.words, extra=(lq.sql, lq.args), state=arg('state'),
                              limit=100000)
-    buf = io.BytesIO()
+    files = []
     done, lost, odd = 0, [], []
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+    if True:
         for r in rows:
             tok = h.store.token(r['name'])
             if token_kind(tok) != 'totp':
@@ -1605,7 +1630,7 @@ def _tokens_export(h):
                     str(tok.get('algorithm') or 'SHA1').upper() != 'SHA1':
                 odd.append('%s (%s digits, %s s, %s)' % (r['name'], tok.get('digits'),
                                                          tok.get('period'), tok.get('algorithm')))
-            z.writestr(totp_file_name(r['name']), text)
+            files.append((totp_file_name(r['name']), text.encode('utf-8')))
             done += 1
         notes = ['%d token(s) exported by %s on %s at %s.' % (
             done, s['name'], node_name(), time.strftime('%Y-%m-%d %H:%M:%S')), '',
@@ -1619,13 +1644,11 @@ def _tokens_export(h):
             notes += ['Left out - their keys cannot be opened on this machine:'] + \
                      ['  ' + x for x in lost] + ['']
         notes += ['Every key here signs its owner in. Keep this file as you keep passwords.']
-        z.writestr('README.txt', '\n'.join(notes) + '\n')
-    h.store.add_event('tokens', '%s exported %d token(s) as .totp files%s' % (
-        s['name'], done, (' (filter: %s)' % h.arg('q')) if h.arg('q') else ''), 'warn',
-        who=s['name'])
-    h.send_bytes(buf.getvalue(), 'otp-tokens-%s.zip' % time.strftime('%Y%m%d-%H%M%S'),
-                 'application/zip')
-    return None
+        files.append(('README.txt', ('\n'.join(notes) + '\n').encode('utf-8')))
+    return dict(_export_out(h, s, files, 'otp-tokens-%s' % time.strftime('%Y%m%d-%H%M%S'),
+                            '%d token(s) as .totp files%s' % (
+                                done, (' (filter: %s)' % arg('q')) if arg('q') else ''),
+                            lock, phrase), count=done, lost=lost)
 
 
 def mailq_said(e):
@@ -2168,7 +2191,7 @@ def totp_file_owner(fname):
     return unquote(fname[:-5] if fname.endswith('.totp') else fname)
 
 
-def totp_files_in_zip(b64, label, out):
+def totp_files_in_zip(b64, label, out, phrase=''):
     """The .totp files inside a ZIP the page sent (1.0.33) - a totpcgi
     folder zipped, or another otp's export. Read in memory with limits on
     everything: how big, how many, how far it unpacks. Nothing is written to
@@ -2196,8 +2219,14 @@ def totp_files_in_zip(b64, label, out):
                 total += info.file_size
                 if total > 64 * 1024 * 1024:
                     raise ValueError('it unpacks to more than 64 MB')
-                with z.open(info) as f:
-                    data = f.read(64 * 1024 + 1)
+                if info.flag_bits & 1:
+                    # Locked (1.0.167): opened with the passphrase given.
+                    if not phrase:
+                        raise PermissionError('%s is locked - its passphrase opens it' % label)
+                    data = zip_aes_open(raw, info, phrase)
+                else:
+                    with z.open(info) as f:
+                        data = f.read(64 * 1024 + 1)
                 if len(data) > 64 * 1024:
                     out.append({'name': base, 'said': 'not imported: too big for a .totp file'})
                     continue
@@ -2324,8 +2353,11 @@ def _token_import(h):
         return {'done': out}
     for one in b.get('files') or []:
         if one.get('zip'):
-            files.extend(totp_files_in_zip(one.get('zip'), str(one.get('name') or 'the ZIP'),
-                                           out))
+            try:
+                files.extend(totp_files_in_zip(one.get('zip'), str(one.get('name') or 'the ZIP'),
+                                               out, phrase))
+            except PermissionError as e:
+                raise ApiError(423, str(e))
         else:
             files.append(one)
     for one in files:

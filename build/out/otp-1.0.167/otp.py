@@ -77,7 +77,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.166'
+__version__ = '1.0.167'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -21375,6 +21375,184 @@ def proxy_try(url=''):
     return {'ok': True, 'url': url, 'status': status, 'straight': proxy_skips(host),
             'ms': int((time.time() - began) * 1000)}
 
+
+# ---- a ZIP locked with a passphrase: WinZip AES-256 (1.0.167) ----------------------------
+# The .totp files of the tokens, as the export gives them: every entry AES-256
+# in CTR mode with an HMAC-SHA1 over it (WinZip's AE-2, compression method 99),
+# its key from the passphrase by PBKDF2-HMAC-SHA1 - what 7-Zip, WinRAR, PeaZip
+# and `7z x` open, and otp reads back. AES itself from `cryptography` where the
+# system has it, else here in Python: a few kilobytes a token, not much to do.
+_AES_SBOX = None
+
+
+def _aes_tables():
+    global _AES_SBOX
+    if _AES_SBOX is None:
+        sbox = [0] * 256
+        p = q = 1
+        while True:
+            p = p ^ ((p << 1) & 0xFF) ^ (0x1B if p & 0x80 else 0)
+            q ^= q << 1
+            q ^= q << 2
+            q ^= q << 4
+            q &= 0xFF
+            if q & 0x80:
+                q ^= 0x09
+            x = q ^ ((q << 1) | (q >> 7)) ^ ((q << 2) | (q >> 6)) ^ \
+                ((q << 3) | (q >> 5)) ^ ((q << 4) | (q >> 4))
+            sbox[p] = (x ^ 0x63) & 0xFF
+            if p == 1:
+                break
+        sbox[0] = 0x63
+        _AES_SBOX = sbox
+    return _AES_SBOX
+
+
+def _xt(a):
+    return ((a << 1) ^ 0x1B) & 0xFF if a & 0x80 else a << 1
+
+
+class _Aes256(object):
+    """AES-256, encryption only (CTR needs no more)."""
+    def __init__(self, key):
+        sb = _aes_tables()
+        w = [list(key[i:i + 4]) for i in range(0, 32, 4)]
+        rcon = 1
+        for i in range(8, 60):
+            t = list(w[i - 1])
+            if i % 8 == 0:
+                t = [sb[b] for b in t[1:] + t[:1]]
+                t[0] ^= rcon
+                rcon = _xt(rcon)
+            elif i % 8 == 4:
+                t = [sb[b] for b in t]
+            w.append([a ^ b for a, b in zip(w[i - 8], t)])
+        self.rk = [sum(w[r * 4:r * 4 + 4], []) for r in range(15)]
+        self.sb = sb
+
+    def block(self, data):
+        sb, rk = self.sb, self.rk
+        s = [a ^ b for a, b in zip(data, rk[0])]
+        for r in range(1, 15):
+            s = [sb[x] for x in s]
+            s = [s[(i + 4 * (i % 4)) % 16] for i in range(16)]       # ShiftRows
+            if r != 14:
+                m = []
+                for c in range(4):
+                    a0, a1, a2, a3 = s[4 * c:4 * c + 4]
+                    t = a0 ^ a1 ^ a2 ^ a3
+                    m += [a0 ^ t ^ _xt(a0 ^ a1), a1 ^ t ^ _xt(a1 ^ a2),
+                          a2 ^ t ^ _xt(a2 ^ a3), a3 ^ t ^ _xt(a3 ^ a0)]
+                s = m
+            s = [a ^ b for a, b in zip(s, rk[r])]
+        return bytes(s)
+
+
+def _aes_ctr_le(key, data):
+    """WinZip's CTR: a 16-byte little-endian counter from 1, the same both ways."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError:
+        Cipher = None
+    out = bytearray()
+    if Cipher is not None:
+        enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+        stream = enc.update(b''.join((n + 1).to_bytes(16, 'little')
+                                     for n in range((len(data) + 15) // 16)))
+    else:
+        aes = _Aes256(key)
+        stream = b''.join(aes.block((n + 1).to_bytes(16, 'little'))
+                          for n in range((len(data) + 15) // 16))
+    out.extend(a ^ b for a, b in zip(data, stream))
+    return bytes(out)
+
+
+def _ae_keys(passphrase, salt):
+    k = hashlib.pbkdf2_hmac('sha1', str(passphrase).encode('utf-8'), salt, 1000, 66)
+    return k[:32], k[32:64], k[64:66]
+
+
+_AE_EXTRA = struct.pack('<HHH2sBH', 0x9901, 7, 2, b'AE', 3, 8)
+
+
+def zip_aes_write(files, passphrase):
+    """[(name, bytes)] -> the bytes of a ZIP, every entry locked (AE-2)."""
+    buf = io.BytesIO()
+    central = []
+    t = time.localtime()
+    dtime = (t.tm_hour << 11) | (t.tm_min << 5) | (t.tm_sec // 2)
+    ddate = ((max(t.tm_year, 1980) - 1980) << 9) | (t.tm_mon << 5) | t.tm_mday
+    for name, data in files:
+        fname = str(name).encode('utf-8')
+        comp = zlib.compressobj(9, zlib.DEFLATED, -15)
+        packed = comp.compress(data) + comp.flush()
+        salt = secrets.token_bytes(16)
+        ekey, akey, check = _ae_keys(passphrase, salt)
+        body = _aes_ctr_le(ekey, packed)
+        mac = hmac.new(akey, body, hashlib.sha1).digest()[:10]
+        blob = salt + check + body + mac
+        off = buf.tell()
+        flags = 0x0001 | 0x0800                # locked, the name in UTF-8
+        head = struct.pack('<IHHHHHIIIHH', 0x04034B50, 51, flags, 99, dtime, ddate, 0,
+                           len(blob), len(data), len(fname), len(_AE_EXTRA))
+        buf.write(head + fname + _AE_EXTRA + blob)
+        central.append(struct.pack('<IHHHHHHIIIHHHHHII', 0x02014B50, 0x031E, 51, flags, 99,
+                                   dtime, ddate, 0, len(blob), len(data), len(fname),
+                                   len(_AE_EXTRA), 0, 0, 0, 0o100600 << 16, off) +
+                       fname + _AE_EXTRA)
+    cd_off = buf.tell()
+    for c in central:
+        buf.write(c)
+    buf.write(struct.pack('<IHHHHIIH', 0x06054B50, 0, 0, len(central), len(central),
+                          buf.tell() - cd_off, cd_off, 0))
+    return buf.getvalue()
+
+
+def zip_is_locked(raw):
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            return any(i.flag_bits & 1 for i in z.infolist())
+    except zipfile.BadZipFile:
+        return False
+
+
+def zip_aes_open(raw, info, passphrase, most=64 * 1024):
+    """One entry of a locked ZIP (AE-1/AE-2, AES-256 made by otp, 7-Zip or
+    WinZip), opened; ValueError when the passphrase is not its own."""
+    if info.compress_type != 99:
+        raise ValueError('%s is locked the old ZipCrypto way - only AES is read' % info.filename)
+    ex = info.extra
+    strength, method = None, None
+    i = 0
+    while i + 4 <= len(ex):
+        hid, size = struct.unpack('<HH', ex[i:i + 4])
+        if hid == 0x9901 and size >= 7:
+            _ver, _ae, strength, method = struct.unpack('<H2sBH', ex[i + 4:i + 11])
+        i += 4 + size
+    if strength != 3:
+        raise ValueError('%s: only AES-256 is read' % info.filename)
+    off = info.header_offset
+    sig, = struct.unpack('<I', raw[off:off + 4])
+    if sig != 0x04034B50:
+        raise ValueError('the ZIP is damaged')
+    n, m = struct.unpack('<HH', raw[off + 26:off + 30])
+    start = off + 30 + n + m
+    blob = raw[start:start + info.compress_size]
+    if len(blob) < 28:
+        raise ValueError('the ZIP is damaged')
+    salt, check, body, mac = blob[:16], blob[16:18], blob[18:-10], blob[-10:]
+    ekey, akey, want = _ae_keys(passphrase, salt)
+    if not hmac.compare_digest(check, want) or \
+            not hmac.compare_digest(mac, hmac.new(akey, body, hashlib.sha1).digest()[:10]):
+        raise PermissionError('the passphrase does not open it')
+    packed = _aes_ctr_le(ekey, body)
+    if method == 0:
+        return packed[:most + 1]
+    if method != 8:
+        raise ValueError('%s: compressed in a way otp does not read' % info.filename)
+    d = zlib.decompressobj(-15)
+    return d.decompress(packed, most + 1)
+
 # ---- going back to an older version (1.0.143) ---------------------------------------
 # Never by putting a database back: the tables stay as they are - every column
 # a newer version added is one an older one leaves alone (they are all added
@@ -29264,15 +29442,42 @@ def totp_file_text(tok):
     return '\n'.join(lines) + '\n'
 
 
-@route('GET', '/api/tokens/export')
+def _export_out(h, s, files, base, what, lock, phrase, single_text=None):
+    """The export as the page saves it: a ZIP locked with the passphrase
+    (AES-256, 1.0.167), or - asked for in so many words - not locked."""
+    if lock:
+        data, name, mime = zip_aes_write(files, phrase), base + '.zip', 'application/zip'
+    elif single_text is not None:
+        data, name, mime = single_text.encode('utf-8'), files[0][0], 'text/plain; charset=utf-8'
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for n, d in files:
+                z.writestr(n, d)
+        data, name, mime = buf.getvalue(), base + '.zip', 'application/zip'
+    h.store.add_event('tokens', '%s exported %s%s' % (
+        s['name'], what, ', locked with a passphrase' if lock else ' - NOT LOCKED'),
+        'warn', who=s['name'])
+    return {'name': name, 'file': base64.b64encode(data).decode('ascii'), 'mime': mime,
+            'locked': bool(lock)}
+
+
+@route('POST', '/api/tokens/export')
 def _tokens_export(h):
     """Tokens as totpcgi files: one token as its .totp, several as a ZIP of
     them. Every key in it signs its owner in, so: a full administrator only,
-    where showing keys is allowed, and every export written down."""
+    where showing keys is allowed, and every export written down. Locked with
+    a passphrase unless the page says, as asked, it is not to be (1.0.167)."""
     s = h.me('fulladmin')
     if not CONFIG.get('admin_show_key'):
         raise ApiError(403, 'showing the keys of tokens is switched off (Settings - Tokens)')
-    one = norm_name(h.arg('name'))
+    b = h.body()
+    lock = b.get('lock', True) is not False
+    phrase = str(b.get('passphrase') or '')
+    if lock and len(phrase) < 8:
+        raise ApiError(400, 'a passphrase of 8 characters at least - or choose not locked')
+    arg = lambda k: str(b.get(k) or '')     # noqa: E731
+    one = norm_name(arg('name'))
     if one:
         tok = h.store.token(one)
         if not tok:
@@ -29282,19 +29487,17 @@ def _tokens_export(h):
         text = totp_file_text(tok)
         if text is None:
             raise ApiError(409, 'the key of this token cannot be opened on this machine')
-        h.store.add_event('tokens', '%s exported the token of %s as a .totp file' % (
-            s['name'], one), 'warn', who=s['name'])
-        h.send_bytes(text.encode('utf-8'), totp_file_name(one),
-                     'text/plain; charset=utf-8')
-        return None
-    lq, bad = list_query('tokens', h.arg('q'))
+        return dict(_export_out(h, s, [(totp_file_name(one), text.encode('utf-8'))],
+                                totp_file_name(one)[:-5], 'the token of %s as a .totp file' % one,
+                                lock, phrase, single_text=text), count=1)
+    lq, bad = list_query('tokens', arg('q'))
     if bad:
         raise ApiError(400, bad)
-    rows, _ = h.store.tokens(q=lq.words, extra=(lq.sql, lq.args), state=h.arg('state'),
+    rows, _ = h.store.tokens(q=lq.words, extra=(lq.sql, lq.args), state=arg('state'),
                              limit=100000)
-    buf = io.BytesIO()
+    files = []
     done, lost, odd = 0, [], []
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+    if True:
         for r in rows:
             tok = h.store.token(r['name'])
             if token_kind(tok) != 'totp':
@@ -29307,7 +29510,7 @@ def _tokens_export(h):
                     str(tok.get('algorithm') or 'SHA1').upper() != 'SHA1':
                 odd.append('%s (%s digits, %s s, %s)' % (r['name'], tok.get('digits'),
                                                          tok.get('period'), tok.get('algorithm')))
-            z.writestr(totp_file_name(r['name']), text)
+            files.append((totp_file_name(r['name']), text.encode('utf-8')))
             done += 1
         notes = ['%d token(s) exported by %s on %s at %s.' % (
             done, s['name'], node_name(), time.strftime('%Y-%m-%d %H:%M:%S')), '',
@@ -29321,13 +29524,11 @@ def _tokens_export(h):
             notes += ['Left out - their keys cannot be opened on this machine:'] + \
                      ['  ' + x for x in lost] + ['']
         notes += ['Every key here signs its owner in. Keep this file as you keep passwords.']
-        z.writestr('README.txt', '\n'.join(notes) + '\n')
-    h.store.add_event('tokens', '%s exported %d token(s) as .totp files%s' % (
-        s['name'], done, (' (filter: %s)' % h.arg('q')) if h.arg('q') else ''), 'warn',
-        who=s['name'])
-    h.send_bytes(buf.getvalue(), 'otp-tokens-%s.zip' % time.strftime('%Y%m%d-%H%M%S'),
-                 'application/zip')
-    return None
+        files.append(('README.txt', ('\n'.join(notes) + '\n').encode('utf-8')))
+    return dict(_export_out(h, s, files, 'otp-tokens-%s' % time.strftime('%Y%m%d-%H%M%S'),
+                            '%d token(s) as .totp files%s' % (
+                                done, (' (filter: %s)' % arg('q')) if arg('q') else ''),
+                            lock, phrase), count=done, lost=lost)
 
 
 def mailq_said(e):
@@ -29870,7 +30071,7 @@ def totp_file_owner(fname):
     return unquote(fname[:-5] if fname.endswith('.totp') else fname)
 
 
-def totp_files_in_zip(b64, label, out):
+def totp_files_in_zip(b64, label, out, phrase=''):
     """The .totp files inside a ZIP the page sent (1.0.33) - a totpcgi
     folder zipped, or another otp's export. Read in memory with limits on
     everything: how big, how many, how far it unpacks. Nothing is written to
@@ -29898,8 +30099,14 @@ def totp_files_in_zip(b64, label, out):
                 total += info.file_size
                 if total > 64 * 1024 * 1024:
                     raise ValueError('it unpacks to more than 64 MB')
-                with z.open(info) as f:
-                    data = f.read(64 * 1024 + 1)
+                if info.flag_bits & 1:
+                    # Locked (1.0.167): opened with the passphrase given.
+                    if not phrase:
+                        raise PermissionError('%s is locked - its passphrase opens it' % label)
+                    data = zip_aes_open(raw, info, phrase)
+                else:
+                    with z.open(info) as f:
+                        data = f.read(64 * 1024 + 1)
                 if len(data) > 64 * 1024:
                     out.append({'name': base, 'said': 'not imported: too big for a .totp file'})
                     continue
@@ -30026,8 +30233,11 @@ def _token_import(h):
         return {'done': out}
     for one in b.get('files') or []:
         if one.get('zip'):
-            files.extend(totp_files_in_zip(one.get('zip'), str(one.get('name') or 'the ZIP'),
-                                           out))
+            try:
+                files.extend(totp_files_in_zip(one.get('zip'), str(one.get('name') or 'the ZIP'),
+                                               out, phrase))
+            except PermissionError as e:
+                raise ApiError(423, str(e))
         else:
             files.append(one)
     for one in files:

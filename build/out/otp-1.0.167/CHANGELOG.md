@@ -4,6 +4,19 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.167 — 30 October 2026
+
+**The .totp export locked with a passphrase - or, when chosen, not**
+- *Export and import → .totp files in a ZIP*, and one token's *Export .totp*:
+  locked with a passphrase by default - a ZIP with AES-256 (WinZip AE-2) that
+  7-Zip, WinRAR, PeaZip and `7z x` open, and otp reads back. *Not locked* can
+  be chosen: a plain ZIP, or one token's `.totp` file itself. Every export is
+  an event that says which.
+- *Bringing tokens over* reads locked ZIPs - otp's own and AES-256 ones made
+  by 7-Zip or WinZip - and asks for the passphrase.
+- The export now goes through a POST that carries the passphrase in its body;
+  the old address of the download (a GET) is gone.
+
 ## 1.0.166 — 30 October 2026
 
 **Syslog and SIEM, a proxy, the disks and the logs**

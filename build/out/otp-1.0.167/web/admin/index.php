@@ -265,27 +265,6 @@ if (isset($_GET['api'])) {
         }
         exit;
     }
-    if ($what === 'tokens-export' && !$post) {
-        /* Tokens as totpcgi .totp files (1.0.20): one, or a ZIP of many. Only
-           a name, a state and a search are passed on. */
-        $bits = [];
-        foreach (['name', 'state', 'q'] as $k) {
-            $v = (string) ($_GET[$k] ?? '');
-            if ($v !== '') { $bits[] = $k . '=' . rawurlencode(substr($v, 0, 400)); }
-        }
-        [$status, $body] = otp_pipe('/api/tokens/export' . ($bits ? '?' . implode('&', $bits) : ''), '');
-        if ($status === 401) {
-            // Signed out meanwhile: back to the sign-in, not a page of JSON (1.0.36).
-            header('Location: /admin/');
-            exit;
-        }
-        if ($status !== 200) {
-            http_response_code($status ?: 503);
-            header('Content-Type: application/json');
-            echo $body ?: json_encode(['ok' => false, 'error' => 'the daemon is not answering']);
-        }
-        exit;
-    }
     if ($what === 'logout' && $post) {
         otp_call('/api/auth/logout', 'POST', [], 10.0);
         otp_clear_session();
@@ -314,7 +293,7 @@ if (isset($_GET['api'])) {
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
     ];
     $writes = [
-        'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup',
+        'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
         'clients' => '/api/clients', 'realms' => '/api/realms',
         'directories' => '/api/directories', 'radtest' => '/api/radtest',
         'settings' => '/api/settings', 'isemon' => '/api/isemon', 'users' => '/api/users',
@@ -934,6 +913,10 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         <select id="exp-format">
           <option value="backup">a whole backup (.json) - every kind</option>
           <option value="totp">.totp files in a ZIP - the app's tokens, for totpcgi</option>
+        </select>
+        <select id="exp-lock" title="A ZIP locked with AES-256 opens with 7-Zip, WinRAR or PeaZip and the passphrase; otp reads it back with it.">
+          <option value="lock">locked with a passphrase (AES-256)</option>
+          <option value="open">not locked</option>
         </select>
         <input type="password" id="exp-pass" autocomplete="new-password" placeholder="a passphrase to lock it with (8 characters at least)" style="flex:1;min-width:260px">
         <button class="btn cmd" id="exp-gen" data-icon="key" title="Make one up - it is shown once, keep it">Make one up</button>
