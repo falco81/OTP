@@ -60,3 +60,10 @@ tokens, or those a search picks, as totpcgi `.totp` files in one ZIP. One
 token: its window, *For another server → Export .totp*. Full administrators
 only, with *Administrators may show a token's QR code and key* on; each
 export is an event. The files hold the keys: keep them as passwords.
+
+Locked by default (1.0.167): the ZIP is AES-256 (WinZip AE-2) with a
+passphrase of 8 characters at least - 7-Zip, WinRAR, PeaZip and `7z x` open
+it, and *Bringing tokens over* reads it back, asking for the passphrase.
+*Not locked* gives a plain ZIP (one token: the `.totp` file itself) - only
+when chosen, and the event says NOT LOCKED. ZIPs locked the old ZipCrypto way
+are not read; AES-256 ones made by 7-Zip or WinZip are.

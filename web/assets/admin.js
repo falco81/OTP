@@ -1311,10 +1311,7 @@ function tokenPeek(name) {
     }
     if (showKeys && !t.key_lost && !sent) {
       var ex = cmdButton('Export .totp', 'download', '');
-      ex.onclick = function () { modalOver(function () {
-        confirmThen('Export the token of ' + name, 'A .totp file with its key and its unused recovery codes. Whoever has the file can sign in as ' + htmlText(name) + '.',
-          'Export it', function () { tokenExport(name); }, false);
-      }); };
+      ex.onclick = function () { modalOver(function () { tokenExport(name); }, function () { tokenPeek(name); }); };
       ph.add('For another server', 'As totpcgi keeps it: key, options, unused recovery codes.', [ex]);
     }
     if (TOKADMIN) {
@@ -3965,11 +3962,29 @@ function importFiles(list) {
     /* A whole backup (1.0.96): looked into first, then picked from. */
     var isBackup = got.some(function (g) { return g.text && /"kind"\s*:\s*"otp-tokens"/.test(g.text.slice(0, 400)); });
     if (isBackup) { backupPeek(got.filter(function (g) { return g.text && /"kind"\s*:\s*"otp-tokens"/.test(g.text.slice(0, 400)); }), ''); return null; }
-    return api('token-import', {files: got, replace: $('imp-replace').checked});
+    return zipImport(got, '');
   }).then(function (d) {
     if (!d) return;
     importSaid(d);
   }).catch(oops);
+}
+/* .totp files and ZIPs of them; a locked ZIP asks for its passphrase (1.0.167). */
+function zipImport(got, phrase) {
+  return api('token-import', {files: got, replace: $('imp-replace').checked, passphrase: phrase}).catch(function (e) {
+    if (!(e.status === 423 || /is locked|passphrase/.test(String(e.message)))) throw e;
+    return new Promise(function (done) {
+      modal('The ZIP is locked', function (body) {
+        body.appendChild(el('p', 'note', phrase ? 'That passphrase does not open it - try again.' : 'It was locked with a passphrase when it was exported: that passphrase opens it.'));
+        var pw = textBox('', 'the passphrase', 'mono');
+        pw.type = 'password';
+        noI18n(pw);
+        body.appendChild(formField('Passphrase', pw));
+        pw.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') MODAL_GO(); });
+        setTimeout(function () { pw.focus(); }, 50);
+        MODAL_GO = function () { var v = pw.value; closeModal(); done(zipImport(got, v)); };
+      }, [{words: 'Close', close: true}, {words: 'Open it', cls: 'primary', icon: 'key', go: function () { MODAL_GO(); }}], 'small');
+    });
+  });
 }
 function importSaid(d) {
   {
@@ -6058,10 +6073,15 @@ if ($('exp-go')) {
   qSuggest($('exp-q'), 'tokens');
   var expPaint = function () {
     var whole = $('exp-format').value === 'backup';
-    $('exp-pass').hidden = $('exp-gen').hidden = !whole;
+    /* A whole backup is always locked; the .totp ZIP locked unless chosen
+       otherwise (1.0.167). */
+    $('exp-lock').hidden = whole;
+    var lock = whole || $('exp-lock').value === 'lock';
+    $('exp-pass').hidden = $('exp-gen').hidden = !lock;
     $('exp-kind').disabled = !whole;
   };
   $('exp-format').onchange = expPaint;
+  $('exp-lock').onchange = expPaint;
   expPaint();
   $('exp-gen').onclick = function () {
     var words = 'abcdefghijkmnopqrstuvwxyz23456789', out = [], a = new Uint32Array(25);
@@ -6090,15 +6110,72 @@ if ($('exp-go')) {
         }, !pass);
       return;
     }
+    var lock = $('exp-lock').value === 'lock', pw = $('exp-pass').value;
+    if (lock && pw.length < 8) { toast('a passphrase of 8 characters at least - or choose not locked', 'bad'); return; }
     confirmThen('Export the tokens as .totp files', 'A ZIP of ' + (q || st ? 'the tokens that match' : '<b>every</b> token')
-      + ', each with its key and its unused recovery codes. Whoever has the file can sign in as any of them.',
+      + ', each with its key and its unused recovery codes. '
+      + (lock ? 'Locked with the passphrase (AES-256): 7-Zip, WinRAR or PeaZip open it with it, and otp reads it back.'
+              : '<b>Not locked</b> - whoever has the file can sign in as any of them.'),
       'Export them', function () {
-        window.location.href = '?api=tokens-export&q=' + encodeURIComponent(q) + '&state=' + encodeURIComponent(st);
-      }, false);
+        busy($('exp-go'), true);
+        tokensExport({q: q, state: st, lock: lock, passphrase: lock ? pw : ''}).then(function (d) {
+          $('exp-said').className = 'small ' + (d.lost && d.lost.length ? 'warn' : 'good');
+          $('exp-said').textContent = num(d.count) + ' token(s) in ' + d.name + (d.locked ? ', locked' : ', not locked')
+            + (d.lost && d.lost.length ? ' - left out, their keys cannot be opened here: ' + d.lost.join(', ') : '');
+        }).catch(oops).then(function () { busy($('exp-go'), false); });
+      }, !lock);
   };
 }
+/* The export as the daemon made it, saved (1.0.167): a ZIP locked with a
+   passphrase, or what was asked for not locked. */
+function tokensExport(q) {
+  return api('tokens-export', q).then(function (d) {
+    var bin = atob(d.file), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var a = el('a');
+    a.href = URL.createObjectURL(new Blob([bytes], {type: d.mime || 'application/octet-stream'}));
+    a.download = d.name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    return d;
+  });
+}
 function tokenExport(name) {
-  window.location.href = '?api=tokens-export&name=' + encodeURIComponent(name);
+  modal('Export the token of ' + name, function (body) {
+    body.appendChild(el('p', 'note', 'A .totp file with its key and its unused recovery codes. Whoever has the file can sign in as ' + name + '.'));
+    var how = {v: 'lock', value: function () { return this.v; }};
+    var sg = el('div', 'seg');
+    [['lock', 'Locked with a passphrase'], ['open', 'Not locked']].forEach(function (o) {
+      var bt = el('button', o[0] === how.v ? 'on' : '', o[1]);
+      bt.type = 'button';
+      bt.onclick = function () {
+        how.v = o[0];
+        Array.prototype.forEach.call(sg.children, function (x) { x.classList.toggle('on', x === bt); });
+        how.onchange(o[0]);
+      };
+      sg.appendChild(bt);
+    });
+    body.appendChild(formField('How', sg));
+    var pw = textBox('', 'a passphrase, 8 characters at least', 'mono');
+    pw.type = 'password';
+    pw.autocomplete = 'new-password';
+    var pf = formField('Passphrase', pw);
+    body.appendChild(pf);
+    var said = el('p', 'small muted', 'Locked: a ZIP with the .totp file in it, AES-256 - 7-Zip, WinRAR or PeaZip open it with the passphrase, and otp reads it back.');
+    body.appendChild(said);
+    how.onchange = function (v) {
+      pf.hidden = v !== 'lock';
+      said.className = 'small ' + (v === 'lock' ? 'muted' : 'warn');
+      said.textContent = v === 'lock' ? 'Locked: a ZIP with the .totp file in it, AES-256 - 7-Zip, WinRAR or PeaZip open it with the passphrase, and otp reads it back.'
+        : 'Not locked: the .totp file itself - whoever has it can sign in as ' + name + '.';
+    };
+    MODAL_GO = function () {
+      var lock = how.value() === 'lock';
+      if (lock && pw.value.length < 8) { toast('a passphrase of 8 characters at least - or choose not locked', 'bad'); return; }
+      tokensExport({name: name, lock: lock, passphrase: lock ? pw.value : ''}).then(function () { closeModal(); }).catch(oops);
+    };
+  }, [{words: 'Close', close: true}, {words: 'Export it', cls: 'primary', icon: 'download', go: function () { MODAL_GO(); }}], 'small');
 }
 
 /* ---- mail (1.0.20) ------------------------------------------------------- */
