@@ -1469,6 +1469,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
+                    alerts_tick(self)           # alerts by mail, the report (1.0.162)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('alerts-tick', 'the alerts: %s' % e, 'warn', every=600)
+                try:
                     osup_tick(self)             # the updates of the system (1.0.158)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osup-tick', 'the update of the system: %s' % e, 'warn',

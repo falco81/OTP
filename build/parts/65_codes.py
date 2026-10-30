@@ -1219,7 +1219,10 @@ def code_send(store, kind, to, code, purpose='signin', name='', lang=None, fmt=N
     def hide(t):
         return str(t).replace(str(code), '******') if code else str(t)
     try:
-        return hide(code_send_now(store, kind, to, code, purpose, name, lang, fmt, display))
+        got = hide(code_send_now(store, kind, to, code, purpose, name, lang, fmt, display))
+        if kind == 'sms':
+            sms_health(True)                    # for the alerts (1.0.162)
+        return got
     except MailError as e:
         new = MailError(hide(e), steps=e.steps, permanent=e.permanent)
         for k, v in vars(e).items():
@@ -1227,6 +1230,7 @@ def code_send(store, kind, to, code, purpose='signin', name='', lang=None, fmt=N
                 setattr(new, k, v)
         raise new
     except SmsError as e:
+        sms_health(False, hide(e))
         raise SmsError(hide(e))
 
 

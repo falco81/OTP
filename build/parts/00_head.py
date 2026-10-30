@@ -70,14 +70,14 @@ import urllib.parse
 import urllib.request
 import zipfile
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.161'
+__version__ = '1.0.162'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -252,6 +252,27 @@ DEFAULTS = {
     'rbackup_keep': 30,
     'rbackup_keep_days': 0,
     'rbackup_password': '',
+    # --- alerts by mail, and the report (1.0.162) -----------------------------
+    'alerts': 0,
+    'alerts_to': '',
+    'alerts_delay_min': 5,
+    'alerts_repeat_h': 24,
+    'alerts_resolved': 1,
+    'alerts_nodes': 1,
+    'alerts_backup': 1,
+    'alerts_cert_days': 21,
+    'alerts_disk_pct': 85,
+    'alerts_time': 1,
+    'alerts_updates': 1,
+    'alerts_dir': 1,
+    'alerts_sms': 1,
+    'alerts_guard': 0,
+    'alerts_url': '',
+    'report': 0,
+    'report_to': '',
+    'report_every': 'weekly',
+    'report_day': '1',
+    'report_at': '07:30',
     # --- the database ---------------------------------------------------------
     'db_engine': 'sqlite',
     'db_host': '',
@@ -348,6 +369,12 @@ TUNABLE = {
     'retain_events_days': (0, 36500), 'backup_daily': (0, 1), 'backup_keep': (1, 365),
     'rbackup': (0, 1), 'rbackup_every': ('daily', 'weekly'), 'rbackup_day': (1, 7),
     'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650),
+    'alerts': (0, 1), 'alerts_delay_min': (0, 120), 'alerts_repeat_h': (0, 168),
+    'alerts_resolved': (0, 1), 'alerts_nodes': (0, 1), 'alerts_backup': (0, 1),
+    'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
+    'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
+    'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
+    'report_day': ('1', '2', '3', '4', '5', '6', '7'),
     'db_engine': ('sqlite', 'mariadb', 'postgres'), 'db_port': (0, 65535),
     'db_timeout_s': (1, 300), 'ui_lang': ('cs', 'en'), 'api_port': (1024, 65535),
     'debug_radius': (0, 1), 'debug_ldap': (0, 1), 'debug_api': (0, 1), 'debug_codes': (0, 1),
@@ -402,6 +429,11 @@ CHOICE_WORDS = {
     'db_engine': {'sqlite': 'a file on this machine (SQLite)', 'mariadb': 'MariaDB / MySQL',
                   'postgres': 'PostgreSQL'},
     'ui_lang': {'cs': 'Čeština', 'en': 'English'},
+    'report_every': {'daily': 'every day, of the day before',
+                     'weekly': 'every week, of the week before',
+                     'monthly': 'every month, of the month before'},
+    'report_day': {'1': 'Monday', '2': 'Tuesday', '3': 'Wednesday', '4': 'Thursday',
+                   '5': 'Friday', '6': 'Saturday', '7': 'Sunday'},
 }
 
 NAMES = {
@@ -535,6 +567,26 @@ NAMES = {
     'rbackup_keep': 'Backups kept at each destination',
     'rbackup_keep_days': 'And none older than (days)',
     'rbackup_password': 'The password of the backups',
+    'alerts': 'Alerts by mail',
+    'alerts_to': 'Send them to',
+    'alerts_delay_min': 'Only once it has lasted (min)',
+    'alerts_repeat_h': 'Remind every (hours)',
+    'alerts_resolved': 'Say when it is over',
+    'alerts_nodes': 'A node, RADIUS, the replication or the database down',
+    'alerts_backup': 'A backup that failed or did not come',
+    'alerts_cert_days': 'A certificate running out within (days)',
+    'alerts_disk_pct': 'A disk fuller than (%)',
+    'alerts_time': 'A clock that is off',
+    'alerts_updates': 'Security updates and a restart waiting',
+    'alerts_dir': 'Active Directory out of reach',
+    'alerts_sms': 'The SMS gateway failing',
+    'alerts_guard': 'A source blocked for guessing',
+    'alerts_url': 'The administration’s address in the mails',
+    'report': 'A report by mail',
+    'report_to': 'Send it to',
+    'report_every': 'How often',
+    'report_day': 'On the day',
+    'report_at': 'At',
     'backup_at': 'At',
     'db_engine': 'The database',
     'db_host': 'Server',
@@ -910,6 +962,38 @@ SAYS = {
                         'without it nobody, you included, opens them. Empty: the backups are '
                         'not locked, and anybody with one has every token.',
     'backup_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
+    'alerts': 'A mail when something is wrong - a node, the replication, a backup, a '
+              'certificate, a disk, the clock, the directory, the SMS gateway - and when it is '
+              'over. One node of a cluster sends them for both. Off until switched on.',
+    'alerts_to': 'Addresses, separated by commas. The mail goes the way Settings → Mail says.',
+    'alerts_delay_min': 'A problem shorter than this is not mailed - a node restarted by an '
+                        'update is back in a few minutes. 0: at once.',
+    'alerts_repeat_h': 'While it lasts, said again this often. 0: once only.',
+    'alerts_resolved': 'A mail when what was mailed is over.',
+    'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS, the '
+                    'replication stopped, the database in trouble, the nodes on different versions.',
+    'alerts_backup': 'A nightly copy older than 36 hours; a backup to the destinations that '
+                     'failed, or none that went in time.',
+    'alerts_cert_days': 'A certificate of a node or of the web address running out within so '
+                        'many days. 0: never.',
+    'alerts_disk_pct': 'A file system otp lives on fuller than this. 0: never.',
+    'alerts_time': 'chrony out of sync, or the clock off by more than half a second - the codes '
+                   'from the phones are worked out from it.',
+    'alerts_updates': 'Security updates waiting, or a restart an update left - as System '
+                      'updates last found them.',
+    'alerts_dir': 'None of the servers of a directory answers a node.',
+    'alerts_sms': 'Three SMS in a row that did not go.',
+    'alerts_guard': 'Each source Sign-in protection blocks, as it is blocked.',
+    'alerts_url': 'Where the links in the mails lead, <code>https://otp.example.cz/admin/</code>. '
+                  'Empty: this machine’s name.',
+    'report': 'A report of the period by mail: the sign-ins by day, who was refused and why, '
+              'who signed in most, the clients, the blocked sources, the sign-ins to the '
+              'administration, the events worth a look, the tokens, the servers and what is '
+              'wrong now. One node of a cluster sends it.',
+    'report_to': 'Addresses, separated by commas. Empty: the ones the alerts go to.',
+    'report_every': 'A day, a week (Monday to Sunday) or a month - the one that has just ended.',
+    'report_day': 'The day a weekly report goes.',
+    'report_at': 'When, as <code>HH:MM</code> on this machine’s clock.',
     'db_engine': 'Where everything is kept: the tokens, the clients, the realms, the '
                  'settings, the logs. A file on this machine needs nothing; MariaDB and '
                  'PostgreSQL need their server and their Python driver.',
@@ -987,6 +1071,10 @@ PANES = {
     'ha': ['node_name'],
     'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
                'rbackup_keep_days', 'rbackup_password'],
+    'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
+               'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
+               'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
+               'alerts_url', 'report', 'report_to', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
               'code_send_window_min', 'code_lang', 'code_mail_fmt', 'sms_mode', 'sms_url', 'sms_method',
               'sms_body', 'sms_headers', 'sms_token', 'sms_spool_dir', 'sms_prefix',
@@ -1028,6 +1116,14 @@ ONLY_WHEN = {
     'backup_keep': ['backup_daily', '1'], 'backup_at': ['backup_daily', '1'],
     'rbackup_at': ['rbackup', '1'], 'rbackup_every': ['rbackup', '1'],
     'rbackup_day': ['rbackup_every', 'weekly'],
+    'alerts_to': ['alerts', '1'], 'alerts_delay_min': ['alerts', '1'],
+    'alerts_repeat_h': ['alerts', '1'], 'alerts_resolved': ['alerts', '1'],
+    'alerts_nodes': ['alerts', '1'], 'alerts_backup': ['alerts', '1'],
+    'alerts_cert_days': ['alerts', '1'], 'alerts_disk_pct': ['alerts', '1'],
+    'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
+    'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
+    'report_to': ['report', '1'], 'report_every': ['report', '1'],
+    'report_day': ['report_every', 'weekly'], 'report_at': ['report', '1'],
     'debug_radius': ['debug', '1'], 'debug_ldap': ['debug', '1'], 'debug_api': ['debug', '1'], 'debug_codes': ['debug', '1'],
     'smtp_host': ['mail_mode', 'smtp'], 'smtp_port': ['mail_mode', 'smtp'],
     'smtp_security': ['mail_mode', 'smtp'], 'smtp_auth': ['mail_mode', 'smtp'],
@@ -1141,7 +1237,16 @@ def check_setting(key, value):
             raise BadSetting('%s: %d characters at most' % (key, most))
         if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' if tall else r'[\x00-\x1f\x7f]', got):
             raise BadSetting('%s: no line breaks or other control characters' % key)
-    if key in ('backup_at', 'rbackup_at') and \
+    if key in ('alerts_to', 'report_to'):
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            if not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', one):
+                raise BadSetting('%s: %r is not a mail address' % (key, one))
+        if len([w for w in re.split(r'[\s,;]+', str(got)) if w]) > 20:
+            raise BadSetting('%s: 20 addresses at most' % key)
+    if key == 'alerts_url' and str(got).strip() and \
+            not re.match(r'^https?://[^\s"<>]+\Z', str(got).strip()):
+        raise BadSetting('alerts_url: an address starting https://')
+    if key in ('backup_at', 'rbackup_at', 'report_at') and \
             not re.match(r'^([01]?\d|2[0-3]):[0-5]\d\Z', str(got).strip()):
         raise BadSetting('%s is a time of day, written HH:MM' % key)
     # What reaches a command line, an option file or pg_hba.conf (1.0.33):
