@@ -9460,7 +9460,7 @@ if ($('sms-try')) {
 
 
 /* ---- the outgoing mail (1.0.95) -------------------------------------------- */
-var MQ = {page: 0, per: 100, timer: null};
+var MQ = {page: 0, per: 50, timer: null};
 var MQ_STATE_WORDS = {sending: ['being sent', 'info'], waiting: ['waiting', 'warn'], sent: ['sent', 'ok'],
                       failed: ['failed', 'crit'], expired: ['given up', 'dim']};
 function mailqBadge(c) {
@@ -12796,6 +12796,14 @@ function drawOsup(live) {
           + ' a restart after this update: ' + after.map(function (n) { return (n.check.reboot_why || []).join(', '); }).filter(function (x, i, a) { return x && a.indexOf(x) === i; }).join('; ') + '.');
         uc.appendChild(an);
       }
+      var seg2 = el('div', 'seg');
+      [['all', 'Every update'], ['security', 'Only the security updates']].forEach(function (o) {
+        var b = el('button', (OU.what || 'all') === o[0] ? 'on' : '', o[1]);
+        b.type = 'button';
+        b.onclick = function () { OU.what = o[0]; drawOsup(); };
+        seg2.appendChild(b);
+      });
+      uc.appendChild(formField('Which', seg2));
       uc.appendChild(formField('After the update', segb));
       var row2 = el('div', 'btnrow');
       var start = cmdButton(d.cluster ? 'Update them, one at a time' : 'Update it now', 'download', 'primary');
@@ -12804,7 +12812,7 @@ function drawOsup(live) {
         confirmThen(d.cluster ? 'Update the nodes' : 'Update this server', 'Every package of the system is updated' + (d.cluster ? ', on ' + htmlText(nodes.map(function (n) { return n.name; }).join(' and then ')) + ', each out of service while it is.' : '.')
           + (OU.reboot === 'auto' ? '<br><br>A node that needs it is <b>restarted by itself</b>.' : '<br><br>A restart it needs is offered when it is done.'),
           'Update', function () {
-            api('osup', {action: 'start', reboot: OU.reboot}).then(function (x) { toast(x.message, 'good'); OU.node = ''; ouAsked(); loadOsup(); }).catch(oops);
+            api('osup', {action: 'start', reboot: OU.reboot, security: OU.what === 'security'}).then(function (x) { toast(x.message, 'good'); OU.node = ''; ouAsked(); loadOsup(); }).catch(oops);
           }, false);
       };
       var lookAll = cmdButton('Look on every node', 'search', '');
@@ -12826,7 +12834,7 @@ function drawOsup(live) {
       }
       pc.appendChild(ph);
       pc.appendChild(el('p', 'note', 'Started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · ' + ({running: 'going on', done: 'done', failed: 'failed', cancelled: 'stopped'})[plan.state || 'running']
-        + (plan.reboot === 'auto' ? ' · restarted where needed' : '')));
+        + (plan.reboot === 'auto' ? ' · restarted where needed' : '') + (plan.security ? ' · security updates only' : '')));
       var steps = (plan.order || []).map(function (nm) {
         var n = nodes.filter(function (x) { return x.name === nm; })[0] || {name: nm};
         return {name: nm, row: n.row || {}};

@@ -13,7 +13,7 @@ A file is:
 
 ```json
 {
- "_meta": {"code": "cs", "name": "Čeština", "english": "Czech", "version": "1.0.163"},
+ "_meta": {"code": "cs", "name": "Čeština", "english": "Czech", "version": "1.0.164"},
  "strings":  {"s0001": {"source": "Add a client", "text": "Přidat klienta"}},
  "patterns": {"p0001": {"source": "{0} wrong code(s)", "text": "{0} {0:chybný kód|chybné kódy|chybných kódů}"}},
  "rich":     {"r0001": {"source": "Write everything into <code>/var/log/otp/otp.log</code>.", "text": "…"}}

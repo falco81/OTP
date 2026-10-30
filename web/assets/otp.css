@@ -2087,6 +2087,9 @@ select{padding:0 34px 0 12px}
 input.mono,textarea.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13.5px}
 textarea{border-radius:var(--rad);padding:10px 12px;background:var(--panel2);color:var(--tx);border:1px solid var(--line)}
 input:disabled,select:disabled,textarea:disabled{opacity:.5;cursor:not-allowed;background-color:var(--panel2);color:var(--tx-dim)}
+/* The box inside a switch stays hidden while disabled (1.0.164): the rule above showed it,
+   a checkbox over the switch while the console at login was being switched. */
+.sw input, .sw input:disabled{opacity:0;width:0;height:0;margin:0}
 input:focus,select:focus,textarea:focus{border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.15)}
 .btn,.btn.cmd{height:var(--h);padding:0 16px;font-size:13.5px;border-radius:var(--rad);gap:8px;
   display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;line-height:1}
@@ -3164,6 +3167,14 @@ iframe.al-frame{width:100%;height:70vh;border:1px solid var(--line);border-radiu
 .sd-where label.chk{display:flex;gap:8px;align-items:baseline}
 textarea.sd-notice{width:100%}
 .sd-trial .btnrow{margin-top:10px}
-.modal .box.al-report{width:min(1180px,100%)}
+.modal .box.al-report{width:min(1640px,97vw)}
 .sd-grid > .set-item:first-child{grid-column:span 2}
 .sd-grid .seg button{white-space:nowrap}
+#pane-osup > .card, #pane-power > .card{margin-top:16px}
+.card.held.mq-held > .mq-chips, .card.held.mq-held > #mq-said{flex:none}
+/* Outgoing mail (1.0.164): the pane as tall as the frame, its card taking what
+   is left under the words at the top - the counts, the search and the buttons
+   stay, only the mails scroll, the pages at the bottom. */
+body.app-shell #pane-mailq:not([hidden]){display:flex;flex-direction:column;height:100%;min-height:0}
+body.app-shell #pane-mailq > .ctl-head{flex:none}
+body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-height:none}
