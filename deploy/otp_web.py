@@ -2914,6 +2914,8 @@ def sshd_checked(c):
     out['radius_users'] = ru[:100]
     out['radius_root'] = bool(c.get('radius_root'))
     out['radius_fallback'] = bool(c.get('radius_fallback')) and out['password']
+    # A key and then the code (1.0.183): AuthenticationMethods for those asked.
+    out['radius_with_key'] = bool(c.get('radius_with_key')) and out['radius']
     return out
 
 
@@ -3063,7 +3065,42 @@ def sshd_text(c):
     if c['allow_users']:
         lines.append('AllowUsers %s' % ' '.join(c['allow_users']))
     lines.append('Banner %s' % (notice_paths()['banner'] if c['notice_ssh'] else 'none'))
+    lines += sshd_key_and_code(c)
     return '\n'.join(lines) + '\n'
+
+
+def sshd_key_and_code(c):
+    """A key first, then the code (1.0.183) - for the accounts the code is
+    asked of; the others as before. A Match block, last in this file: sshd
+    (8.2 and later) ends it at the end of the file it is in - checked after
+    writing (sshd_match_kept)."""
+    if not (c.get('radius') and c.get('radius_with_key')):
+        return []
+    both = 'AuthenticationMethods publickey,keyboard-interactive'
+    if c.get('radius_users'):
+        return ['# A key, then the code from otp - these accounts only',
+                'Match User %s' % ','.join(c['radius_users']), '    ' + both]
+    if c.get('radius_root'):
+        return ['# A key, then the code from otp', both]
+    return ['# A key, then the code from otp - root as before',
+            'Match User *,!root', '    ' + both]
+
+
+def sshd_match_kept():
+    """'' where every setting but AuthenticationMethods is the same for root
+    and for anybody else - otp's Match did not reach into the system's own
+    lines; else what differs."""
+    def t(user):
+        got = subprocess.run([SSHD_BIN, '-T', '-f', sshd_conf_path(), '-C',
+                              'user=%s,host=localhost,addr=127.0.0.1' % user],
+                             capture_output=True, text=True)
+        return {l.split(' ', 1)[0]: l for l in got.stdout.split('\n') if l.strip()}, got.returncode
+    a, ra = t('root')
+    b, rb = t('otp-nobody-check')
+    if ra or rb:
+        return 'sshd -T did not answer'
+    diff = sorted(k for k in set(a) | set(b) if k != 'authenticationmethods' and a.get(k) != b.get(k))
+    return ', '.join(diff[:5])
 
 
 def sshd_selinux_port(port):
@@ -3203,6 +3240,16 @@ def sshd_do(r):
                     _put_file(drop, before['dropin'], 0o600)
                 raise Refused('sshd does not take it, so it is as it was: %s'
                               % (got.stderr or got.stdout).strip()[-300:])
+            if c.get('radius_with_key'):
+                drift = sshd_match_kept()
+                if drift:
+                    if before['dropin'] is None:
+                        _drop(drop)
+                    else:
+                        _put_file(drop, before['dropin'], 0o600)
+                    raise Refused('this sshd lets a Match of a file it includes reach its own '
+                                  'settings (%s) - a key and the code cannot be set here; it is '
+                                  'as it was' % drift)
             s = sshd_selinux_port(c['port'])
             if s:
                 said.append(s)

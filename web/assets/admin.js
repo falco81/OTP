@@ -13660,7 +13660,7 @@ function sdAct2(body) {
   return api('sshd', body).then(function (r) { toast(r.message, 'good'); SD.d = r; drawSshd(); return r; }).catch(oops);
 }
 function sdTokenAsk(was) {
-  var who, note, kind = (was && was.kind) || 'app', dest, destF;
+  var who, note, kind = (was && was.kind) || 'app', dest, destF, langS, langF;
   var ch = (SD.d && SD.d.channels) || [];
   modal(was ? 'A new SSH token for ' + was.name : 'Add an SSH token', function (body) {
     body.appendChild(el('p', 'note', 'A token of its own for signing in over SSH - not a VPN token. From an app (the QR code shown once, right after: have the app at hand), or codes sent by mail or SMS where sending is set up.'));
@@ -13680,25 +13680,36 @@ function sdTokenAsk(was) {
       b.onclick = function () {
         kind = o[0];
         Array.prototype.forEach.call(seg.children, function (x) { x.className = x === b ? 'on' : ''; });
-        destF.hidden = kind === 'app';
+        destF.hidden = langF.hidden = kind === 'app';
         dest.placeholder = kind === 'sms' ? '+420 777 123 456' : 'jan@example.cz';
       };
       seg.appendChild(b);
     });
     g.appendChild(formField('The codes come', seg, 'By mail or SMS: Enter at the first prompt of ssh, then the code that was sent.'));
     body.appendChild(g);
+    var g2 = el('div', 'formgrid');
     dest = noI18n(textBox('', 'jan@example.cz', 'mono'));
     destF = formField('Where to', dest, 'The address or the number the codes go to.');
-    destF.hidden = kind === 'app';
-    body.appendChild(destF);
+    g2.appendChild(destF);
+    /* Czech or English mails and SMS (1.0.183). */
+    langS = el('select');
+    [['cs', 'Czech'], ['en', 'English']].forEach(function (o) {
+      var op = el('option', '', o[1]); op.value = o[0];
+      if (o[0] === ((was && was.lang) || (SETTINGS && settingByKey('code_lang') ? settingByKey('code_lang').value : 'cs'))) op.selected = true;
+      langS.appendChild(op);
+    });
+    langF = formField('The language of its mails and SMS', langS, 'The words as Settings → Message texts has them, SSH, in this language.');
+    g2.appendChild(langF);
+    destF.hidden = langF.hidden = kind === 'app';
+    body.appendChild(g2);
     setTimeout(function () { (was ? note : who).focus(); }, 60);
   }, [{words: 'Close', close: true}, {words: was ? 'Make a new one' : 'Make it', cls: 'primary', icon: 'add', go: function (b) {
     busy(b, true);
-    sdTokenMake(who.value.trim(), note.value.trim(), !!was, b, kind, dest.value.trim());
+    sdTokenMake(who.value.trim(), note.value.trim(), !!was, b, kind, dest.value.trim(), langS.value);
   }}], 'medium');
 }
-function sdTokenMake(name, note, replace, b, kind, dest) {
-  api('sshd', {action: 'sshotp_add', name: name, note: note || '', replace: !!replace, kind: kind || 'app', dest: dest || ''}).then(function (r) {
+function sdTokenMake(name, note, replace, b, kind, dest, lang) {
+  api('sshd', {action: 'sshotp_add', name: name, note: note || '', replace: !!replace, kind: kind || 'app', dest: dest || '', lang: lang || ''}).then(function (r) {
     SD.d = r; drawSshd();
     var m = r.made;
     if (m.kind !== 'app') { closeModal(); toast(r.message, 'good'); return; }
@@ -13817,7 +13828,7 @@ function drawSshd(live) {
     var rs = switchBox(dr.radius);
     rs._input.disabled = !dr.manage;
     rs._input.onchange = function () { dr.radius = !!rs._get(); sdDirty(); drawSshd(); };
-    rc.appendChild(formField('Ask for a code from otp', rs, dr.manage ? 'A key alone still lets in - sshd asks for the code only where it asks for a password.' : 'Needs otp to set the SSH server, above.'));
+    rc.appendChild(formField('Ask for a code from otp', rs, dr.manage ? (dr.radius_with_key ? 'A key and then the code - as set below.' : 'A key alone still lets in - sshd asks for the code only where it asks for a password. For a key and the code: below.') : 'Needs otp to set the SSH server, above.'));
     var rg = el('div', 'formgrid sd-grid' + (dr.manage && dr.radius ? '' : ' off'));
     var ru = textBox((dr.radius_users || []).join(' '), 'everybody', 'mono');
     ru.disabled = !dr.manage || !dr.radius;
@@ -13830,11 +13841,20 @@ function drawSshd(live) {
     var rf = switchBox(dr.radius_fallback && dr.password);
     rf._input.disabled = !dr.manage || !dr.radius || !dr.password;
     rf._input.onchange = function () { dr.radius_fallback = !!rf._get(); sdDirty(); };
+    /* A key, then the code (1.0.183). */
+    var rk = switchBox(dr.radius_with_key);
+    rk._input.disabled = !dr.manage || !dr.radius;
+    rk._input.onchange = function () { dr.radius_with_key = !!rk._get(); sdDirty(); drawSshd(); };
+    rg.appendChild(formField('A key, and then the code', rk, 'On: an SSH key alone no longer lets in - after the key sshd asks for the code too (AuthenticationMethods publickey,keyboard-interactive), for the accounts the code is asked of. Off: a key alone lets in, the code is asked only where a password would be.'));
     rg.appendChild(formField('The system password when otp does not answer', rf, dr.password ? 'pam_radius steps aside (localifdown) and the account\'s own password is asked.' : 'Needs passwords on - with them off, nobody gets in without the code.'));
     rc.appendChild(rg);
     if (dr.manage && dr.radius) {
       var miss = nodes.filter(function (n) { return n.radius && n.radius.module === false; }).map(function (n) { return n.name; });
       if (miss.length) rc.appendChild(el('p', 'note warn', 'pam_radius is not on ' + miss.join(', ') + ' - otp installs it when this is saved (RHEL: from EPEL - dnf install epel-release first).'));
+      if (dr.radius_with_key) {
+        var nk = nodes.filter(function (n) { return !n.keys; }).map(function (n) { return n.name; });
+        rc.appendChild(el('p', 'note warn', 'A key and then the code: whoever the code is asked of needs an SSH key of their own in ~/.ssh/authorized_keys on every node - without one, nobody gets in that way.' + (dr.radius_root && nk.length ? ' Root has no key on ' + nk.join(', ') + '.' : '')));
+      }
       rc.appendChild(el('p', 'note', 'Keep the session you have open and try a new one while it is on trial. A kernel booted with ipv6.disable=1 breaks pam_radius 2.0 - nobody gets the code asked.'));
     }
     /* The SSH tokens (1.0.181): of their own, as the administration's second step. */
@@ -13852,7 +13872,7 @@ function drawSshd(live) {
         var tr = el('tr');
         tr.appendChild(noI18n(el('td', 'mono', x.name)));
         tr.appendChild(noI18n(el('td', '', x.note || '')));
-        tr.appendChild(el('td', 'small', x.kind === 'mail' ? 'mail · ' + x.dest : (x.kind === 'sms' ? 'SMS · ' + x.dest : 'an app')));
+        tr.appendChild(el('td', 'small', x.kind === 'mail' ? 'mail · ' + x.dest + (x.lang ? ' · ' + x.lang.toUpperCase() : '') : (x.kind === 'sms' ? 'SMS · ' + x.dest + (x.lang ? ' · ' + x.lang.toUpperCase() : '') : 'an app')));
         tr.appendChild(el('td', 'muted small', (x.at ? ago(x.at) : '') + (x.by ? ' · ' + x.by : '')));
         tr.appendChild(el('td', 'muted small', x.used_at ? ago(x.used_at) + (x.used_on ? ' · ' + x.used_on : '') : 'never'));
         var td = el('td', 'acts');
