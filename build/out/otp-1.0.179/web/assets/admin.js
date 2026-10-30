@@ -4460,14 +4460,32 @@ function drawIsemon() {
         ts.disabled = t.disabled;
         explain(ts, 'A line in the very shape of totpcgi\'s (totp.cgi), from ' + n.node + ' to every isemon receiver: isemon shows it as a sign-in of the name given - its message says it is a test.');
         ts.onclick = function () {
-          askInModal('A test sign-in for isemon', 'isemon shows it under this name as a sign-in from ' + n.node + ', "Success" or "Failure" as chosen; its message says it is a test from otp. Nothing is checked and nothing is written into this node\'s files.',
-            [{label: 'As the user', value: 'otp-test', mono: true}, {label: 'Success or Failure (s / f)', value: 's', mono: true}], 'Send it', 'pulse', function (v, b) {
-              busy(b, true);
-              askNodes('isemon', {action: 'test', node: n.node, as_user: v[0].trim(), ok: !/^f/i.test(v[1].trim())}, function (node, got) {
-                IS.said[node] = got;
-                if (got.state) IS.d.nodes.forEach(function (x) { if (x.node === node) Object.assign(x, got.state, {at: Date.now() / 1000}); });
-              }, function () { closeModal(); drawIsemon(); }).catch(function (e) { busy(b, false); oops(e); });
-            });
+          var who, res;
+          modal('A test sign-in for isemon', function (body) {
+            body.appendChild(el('p', 'note', 'isemon shows it under this name as a sign-in from ' + n.node + ', a success or a failure as chosen; its message says it is a test from otp. Nothing is checked and nothing is written into this node\'s files.'));
+            var g = el('div', 'formgrid');
+            who = textBox('otp-test', 'otp-test', 'mono');
+            g.appendChild(formField('As the user', who));
+            /* Success or Failure (1.0.179): a switch, green or red - it said s / f. */
+            res = switchBox(true);
+            res.className += ' okbad';
+            var said = el('span', 'sw-said ok', 'Success');
+            res._input.onchange = function () {
+              said.className = 'sw-said ' + (res._get() ? 'ok' : 'bad');
+              said.textContent = res._get() ? 'Success' : 'Failure';
+            };
+            var line = el('div', 'sw-line');
+            line.appendChild(res); line.appendChild(said);
+            g.appendChild(formField('How it ends', line));
+            body.appendChild(g);
+            setTimeout(function () { who.focus(); }, 60);
+          }, [{words: 'Close', close: true}, {words: 'Send it', cls: 'primary', icon: 'pulse', go: function (b) {
+            busy(b, true);
+            askNodes('isemon', {action: 'test', node: n.node, as_user: who.value.trim(), ok: !!res._get()}, function (node, got) {
+              IS.said[node] = got;
+              if (got.state) IS.d.nodes.forEach(function (x) { if (x.node === node) Object.assign(x, got.state, {at: Date.now() / 1000}); });
+            }, function () { closeModal(); drawIsemon(); }).catch(function (e) { busy(b, false); oops(e); });
+          }}], 'medium');
         };
         row2.appendChild(ts);
         c.appendChild(row2);
