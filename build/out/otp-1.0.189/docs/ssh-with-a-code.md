@@ -76,7 +76,10 @@ window. A block put in by an older version is given `skip_passwd` by itself. A
 wrong code is asked again, three times. Every code sent to the account and still
 good (5 min) is taken, each once - a mail that came late, after a later sign-in
 sent another, still lets in. Signing in again within 20 s sends no second code:
-the one sent is asked for again. A code goes at most every 20 s and five in 15
+the one sent is asked for again (a new one goes if none is good any more). The
+prompt says when the code went (*... (11:16):*). Every wrong code is an event
+(*ssh*) saying why: a code that ran out (when it went, when it stopped being
+good), none sent to the account in the last hour, or not digits at all. A code goes at most every 20 s and five in 15
 minutes per account, so a name typed at `ssh` is no way to send SMS. The words are their own
 under *Settings → Message texts* (*SSH: a sign-in code by mail / by SMS*). The
 sending happens in a thread of its own; pam_radius waits up to 30 s for it.

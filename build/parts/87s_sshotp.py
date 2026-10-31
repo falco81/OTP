@@ -184,6 +184,7 @@ def ssh_gate_candidates(store):
 SSHOTP_SENT = collections.defaultdict(list)       # name -> [when a code went]
 SSHOTP_SEND_GAP_S, SSHOTP_SEND_MOST, SSHOTP_SEND_WINDOW_S = 20, 5, 900
 SSHOTP_CHALLENGES = {}                             # State -> what was sent, on this node
+SSHOTP_GONE = collections.defaultdict(list)        # name -> the codes sent the last hour
 
 
 def sshotp_send(store, name):
@@ -202,16 +203,15 @@ def sshotp_send(store, name):
     with SSHOTP_LOCK:
         sent = [t for t in SSHOTP_SENT[name.lower()] if now - t < SSHOTP_SEND_WINDOW_S]
         SSHOTP_SENT[name.lower()] = sent
-        if sent and now - sent[-1] < SSHOTP_SEND_GAP_S:
+        good = [v for v in SSHOTP_CHALLENGES.values()
+                if v.get('name') == name and v.get('hash') and now <= v['exp']]
+        if sent and now - sent[-1] < SSHOTP_SEND_GAP_S and good:
             # Signed in again at once (1.0.188): the code that went a moment ago
-            # is asked for again, not refused - and no second one sent.
-            good = [v for v in SSHOTP_CHALLENGES.values()
-                    if v.get('name') == name and v.get('hash') and now <= v['exp']]
-            if good:
-                state = secrets.token_hex(16)
-                SSHOTP_CHALLENGES[state] = {'name': name, 'exp': max(v['exp'] for v in good), 'tries': 0}
-                return state, ask
-            raise ValueError('a code went a moment ago - wait %d s' % SSHOTP_SEND_GAP_S)
+            # is asked for again, not refused - and no second one sent. None
+            # good any more (1.0.189: it ran out): a new one goes.
+            state = secrets.token_hex(16)
+            SSHOTP_CHALLENGES[state] = {'name': name, 'exp': max(v['exp'] for v in good), 'tries': 0}
+            return state, ask
         if len(sent) >= SSHOTP_SEND_MOST:
             raise ValueError('%d codes in %d min - wait' % (SSHOTP_SEND_MOST,
                                                             SSHOTP_SEND_WINDOW_S // 60))
@@ -231,6 +231,11 @@ def sshotp_send(store, name):
         SSHOTP_CHALLENGES[state] = {'name': name, 'hash': code_hash(salt, code), 'salt': salt,
                                     'exp': now + int(CONFIG.get('code_ttl_s') or 300),
                                     'tries': 0}
+        # Kept an hour (1.0.188), to say why a code typed was refused: run out, or
+        # never sent here.
+        SSHOTP_GONE[name.lower()] = [x for x in SSHOTP_GONE[name.lower()] if now - x['at'] < 3600][-20:] + [
+            {'hash': code_hash(salt, code), 'salt': salt, 'at': now,
+             'exp': now + int(CONFIG.get('code_ttl_s') or 300)}]
     return state, ask
 
 
@@ -271,7 +276,24 @@ def sshotp_answer(store, state, name, code):
     _sshotp_used(store, name, ok)
     if ok:
         return True, 'signed in', False
-    return False, 'the code is not right', again
+    return False, 'the code is not right (%s)' % sshotp_why(name, typed, now), again
+
+
+def sshotp_why(name, typed, now):
+    """Why a code typed was not one still good - for the event, never the code."""
+    shape = '%d digits' % len(typed) if typed.isdigit() else \
+        '%d characters, not digits only - pam_radius may have sent it scrambled' % len(typed)
+    with SSHOTP_LOCK:
+        hist = list(SSHOTP_GONE.get(name.lower()) or [])
+    for x in reversed(hist):
+        if hmac.compare_digest(code_hash(x['salt'], typed), x['hash']):
+            return 'typed %s: the code sent at %s, good until %s - it ran out %d s before' % (
+                shape, time.strftime('%H:%M:%S', time.localtime(x['at'])),
+                time.strftime('%H:%M:%S', time.localtime(x['exp'])), int(now - x['exp']))
+    good = [x for x in hist if now <= x['exp']]
+    return 'typed %s: none of the codes sent to %s in the last hour (%d, %d still good%s)' % (
+        shape, name, len(hist), len(good),
+        ', the newest at %s' % time.strftime('%H:%M:%S', time.localtime(hist[-1]['at'])) if hist else '')
 
 
 def sshotp_ask_app(store, name):
@@ -498,6 +520,9 @@ class SshGate(object):
                 app = (SSHOTP_CHALLENGES.get(state) or {}).get('app')
             ok, said, again = (sshotp_app_answer if app else sshotp_answer)(store, state, user, code)
             if again:
+                # Each wrong code an event too (1.0.189), with why - not only the last.
+                store.add_event('ssh', '%s typed a wrong code for SSH on %s (asked again): %s'
+                                % (who, node_name(), said), 'warn', who=who)
                 return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(code_words('again', lang=lang))),
                                            bytes([24, len(state) + 2]) + state.encode()], secret)
         elif rec and rec.get('kind', 'app') == 'app' and not code:
@@ -513,6 +538,11 @@ class SshGate(object):
                 ok, said = False, str(e)
             else:
                 log('SSH: a code for %s went by %s' % (who, rec['kind']))
+                # When it went (1.0.189): with mails come late, which one is the code.
+                with SSHOTP_LOCK:
+                    sent = [x['at'] for x in SSHOTP_GONE.get(user.lower()) or []]
+                if sent:
+                    ask = '%s (%s)' % (str(ask).rstrip(' :'), time.strftime('%H:%M', time.localtime(sent[-1])))
                 return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
                                            bytes([24, len(st) + 2]) + st.encode()], secret)
         else:

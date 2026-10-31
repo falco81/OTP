@@ -32,7 +32,7 @@ otp.Daemon(st, serve=False).save_settings({'mail_mode': 'smtp', 'smtp_host': '12
                                             'mail_from': 'otp@example.cz'}, by='test')
 st.set_meta('host:sshd:conf', json.dumps({'manage': True, 'radius': True}))
 SECRET = otp.ssh_gate_secret(st, make=True)
-USERS = {'sshapp': 'app', 'sshmail': 'mail'}
+USERS = {'sshapp': 'app', 'sshmail': 'mail', 'sshlate': 'mail', 'sshnone': 'mail'}
 K = None
 for u, kind in USERS.items():
     if subprocess.run(['id', u], capture_output=True).returncode:
@@ -215,6 +215,40 @@ n_mail = len(glob.glob(D + '/mail/*.eml'))
 good, seen, said = sign_in('sshmail', lambda p: c3.get('c') or 'none')
 ok('signed in again at once: the code that went asked for again, no second mail - in (%s)' % seen,
    good and len(glob.glob(D + '/mail/*.eml')) == n_mail, said[-400:])
+ok('... the prompt says when the code went (%s)' % seen, seen and re.search(r'\(\d\d:\d\d\):$', seen[0]), seen)
+# A code that ran out (a mail come too late): refused, and the event says so.
+otp.Daemon(st, serve=False).save_settings({'code_ttl_s': 60}, by='test')
+time.sleep(25)
+before4 = set(glob.glob(D + '/mail/*.eml'))
+c4 = {}
+
+
+def first4(p):
+    c4['c'] = c4.get('c') or last_code(before4)
+    return None
+
+
+sign_in('sshlate', first4)
+time.sleep(70)
+ONCE = []
+
+
+def once(answer):
+    def f(p):
+        if ONCE:
+            return None
+        ONCE.append(1)
+        return answer
+    return f
+
+
+good, seen, said = sign_in('sshlate', once(c4.get('c') or 'none'))
+evs = [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id DESC LIMIT 3")]
+ok('a code run out: not in, and the event says it ran out (%s)' % (evs[:1],), not good and any('ran out' in e for e in evs), evs)
+ONCE.clear()
+good, seen, said = sign_in('sshnone', once('000000'))
+evs = [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id DESC LIMIT 3")]
+ok('a code never sent: the event says none of the codes sent (%s)' % (evs[:1],), any('none of the codes' in e for e in evs), evs)
 ev = [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id")]
 print('    events:', ev[-6:])
 print('    sshd:', open(D + '/sshd.out').read()[-800:])

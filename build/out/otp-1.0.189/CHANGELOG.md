@@ -4,6 +4,20 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.189 — 31 October 2026
+
+**SSH with a code: why a code was refused, said** - a code mailed and typed right
+was refused, with nothing to say why:
+- Every wrong code is an event (*ssh*), not only the last, with why: the code
+  typed is one sent at HH:MM:SS that ran out N s before (a mail that came late),
+  none of the codes sent to the account in the last hour, or not digits at all
+  (pam_radius sending it otherwise than read).
+- The prompt says when the code went - *Type the code mailed to f\*\*\*\*@merit.cz
+  (11:16):* - so the mail to look for is known when several came.
+- A code that ran out, or was given up after three wrong ones: signing in again at
+  once sends a new one (it was refused for 20 s, "a code went a moment ago"). The
+  one still good is asked for again, as in 1.0.188.
+
 ## 1.0.188 — 31 October 2026
 
 **SSH with a code: one prompt, and the code that came is taken** - tried with a

@@ -136,8 +136,8 @@ ok('... a wrong code sent back: asked again, then not in', not good and said.cou
 time.sleep(1)
 n_sms = len(os.listdir(D + '/sms'))
 good, said = pam('eva', '')
-ok('... at once again, its code given up: no second SMS within 20 s, not in',
-   not good and len(os.listdir(D + '/sms')) == n_sms, said)
+ok('... at once again, its code given up (three wrong): a new one sent and asked for (1.0.189)',
+   not good and len(os.listdir(D + '/sms')) == n_sms + 1 and 'prompt' in said, said)
 otp.sshotp_make(st, 'ann', 'test', kind='sms', dest='+420777123457', lang='en')
 for f in os.listdir(D + '/sms'):
     os.unlink(os.path.join(D + '/sms', f))
