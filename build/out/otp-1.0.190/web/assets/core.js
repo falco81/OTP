@@ -2215,6 +2215,19 @@ function liveMerge(host, fresh, path, depth) {
     liveMerge(kept, mine, path, depth + 1);
   }
 }
+/* The scrolled boxes around `host` (and the page), with where each was. */
+function scrollHeld(host) {
+  var out = [];
+  for (var n = host.parentNode; n && n.nodeType === 1; n = n.parentNode) {
+    if (n.scrollTop > 0 && n.scrollHeight > n.clientHeight) out.push([n, n.scrollTop]);
+  }
+  var se = document.scrollingElement || document.documentElement;
+  if (se && se.scrollTop > 0) out.push([se, se.scrollTop]);
+  return out;
+}
+function scrollBack(held) {
+  held.forEach(function (h) { if (h[0].scrollTop !== h[1]) h[0].scrollTop = h[1]; });
+}
 var LIVE_OWED = [];
 function liveOwed() {
   if (!LIVE_OWED.length) return;
@@ -2247,8 +2260,12 @@ function liveFill(host, build, live, after) {
       var neu = Array.prototype.slice.call(box.childNodes);
       if (old.length === neu.length) old.forEach(function (c, i) { liveCarry(c, neu[i]); });
     }
+    /* Where the page was scrolled to, kept (1.0.190): emptied for a moment, the
+       pane was short, and a switch changed half-way down sent it to the top. */
+    var held = scrollHeld(host);
     clear(host);
     while (box.firstChild) host.appendChild(box.firstChild);
+    scrollBack(held);
   } else {
     var path = livePath(host, keep);
     var twin = path && liveAt(box, path);

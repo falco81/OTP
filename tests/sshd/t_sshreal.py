@@ -32,7 +32,7 @@ otp.Daemon(st, serve=False).save_settings({'mail_mode': 'smtp', 'smtp_host': '12
                                             'mail_from': 'otp@example.cz'}, by='test')
 st.set_meta('host:sshd:conf', json.dumps({'manage': True, 'radius': True}))
 SECRET = otp.ssh_gate_secret(st, make=True)
-USERS = {'sshapp': 'app', 'sshmail': 'mail', 'sshlate': 'mail', 'sshnone': 'mail'}
+USERS = {'sshapp': 'app', 'sshmail': 'mail', 'sshlate': 'mail', 'sshnone': 'mail', 'sshcz': 'mail'}
 K = None
 for u, kind in USERS.items():
     if subprocess.run(['id', u], capture_output=True).returncode:
@@ -249,6 +249,19 @@ ONCE.clear()
 good, seen, said = sign_in('sshnone', once('000000'))
 evs = [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id DESC LIMIT 3")]
 ok('a code never sent: the event says none of the codes sent (%s)' % (evs[:1],), any('none of the codes' in e for e in evs), evs)
+# Typed on a Czech keyboard without Shift: "794872" comes as "ýíčáýě" - taken as the digits.
+CZ = dict(zip('1234567890', '+ěščřžýáíé'))
+before5 = set(glob.glob(D + '/mail/*.eml'))
+c5 = {}
+
+
+def czech(p):
+    c5['c'] = c5.get('c') or last_code(before5)
+    return ''.join(CZ[x] for x in (c5['c'] or '000000'))
+
+
+good, seen, said = sign_in('sshcz', czech)
+ok('the code typed on a Czech keyboard\'s top row (%s): in' % ''.join(CZ[x] for x in (c5.get('c') or '0')), good, said[-300:])
 ev = [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id")]
 print('    events:', ev[-6:])
 print('    sshd:', open(D + '/sshd.out').read()[-800:])

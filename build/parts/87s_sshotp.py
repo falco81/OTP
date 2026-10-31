@@ -136,6 +136,7 @@ def sshotp_check(store, name, code):
         if rec.get('kind', 'app') != 'app':
             return False, 'this token gets its codes sent'
         secret = unseal_secret(rec.get('secret'), sshotp_key(name))
+        code = ssh_code_typed(code)
         step = totp_match(secret, code, digits=6, window=int(CONFIG.get('totp_window') or 1)) \
             if secret else None
         if step is None or step <= int(rec.get('step') or 0):
@@ -255,7 +256,8 @@ def sshotp_answer(store, state, name, code):
         if len(fails) >= SSHOTP_TRIES:
             SSHOTP_CHALLENGES.pop(state, None)
             return False, 'too many wrong codes - wait %d min' % (SSHOTP_WINDOW_S // 60), False
-        typed = str(code or '').strip()
+        raw = str(code or '').strip()
+        typed = ssh_code_typed(raw)
         # Any code still good that went to this account (1.0.188), each once: a
         # mail come late was the one typed, while a later sign-in had sent
         # another - and the right code was refused.
@@ -276,13 +278,35 @@ def sshotp_answer(store, state, name, code):
     _sshotp_used(store, name, ok)
     if ok:
         return True, 'signed in', False
-    return False, 'the code is not right (%s)' % sshotp_why(name, typed, now), again
+    return False, 'the code is not right (%s)' % sshotp_why(name, typed, now, raw), again
 
 
-def sshotp_why(name, typed, now):
+SSH_CZ_ROW = dict(zip('+ěščřžýáíéĚŠČŘŽÝÁÍÉ', '1234567890' + '234567890'))
+
+
+def ssh_code_typed(code):
+    """The code as typed, read as the digits meant (1.0.190): the top row of a Czech
+    keyboard without Shift gives +ěščřžýáíé, not 1234567890 - "794872" came as
+    "ýíčáěý" and was refused; digits of other scripts and full-width ones too."""
+    import unicodedata
+    out = []
+    for ch in str(code or '').strip():
+        if ch in SSH_CZ_ROW:
+            out.append(SSH_CZ_ROW[ch])
+            continue
+        try:
+            out.append(str(unicodedata.digit(ch)))
+        except (TypeError, ValueError):
+            out.append(ch)
+    return ''.join(out).replace(' ', '')
+
+
+def sshotp_why(name, typed, now, raw=None):
     """Why a code typed was not one still good - for the event, never the code."""
-    shape = '%d digits' % len(typed) if typed.isdigit() else \
-        '%d characters, not digits only - pam_radius may have sent it scrambled' % len(typed)
+    raw = typed if raw is None else raw
+    shape = '%d digits' % len(raw) if raw.isdigit() and raw.isascii() else \
+        '%d characters, not digits only (%s)' % (len(raw), ' '.join(
+            'U+%04X' % ord(c) for c in raw[:12]) or 'nothing at all')
     with SSHOTP_LOCK:
         hist = list(SSHOTP_GONE.get(name.lower()) or [])
     for x in reversed(hist):
