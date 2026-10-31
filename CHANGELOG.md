@@ -4,6 +4,17 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.190 — 31 October 2026
+
+- **SSH with a code**: a code typed on the top row of a Czech keyboard without
+  Shift (`+ěščřžýáíé` for `1234567890`) is read as the digits it meant - "794872"
+  came to otp as "ýíčáýě" and was refused; digits of other scripts and spaces in
+  it too. A code that is not digits says in its event which characters came
+  (U+00FD …), so it is plain what the SSH client sent.
+- **The pages**: a pane drawn again after a change - a switch on *SSH server and
+  notices*, and every pane drawn the same way - jumped back up while it was
+  drawn; it stays where it was scrolled to (`tests/ui/sshd_scroll.js`).
+
 ## 1.0.189 — 31 October 2026
 
 **SSH with a code: why a code was refused, said** - a code mailed and typed right
