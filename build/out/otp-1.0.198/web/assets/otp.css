@@ -3294,13 +3294,14 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .acme-steps{margin:6px 0 12px 18px;padding:0;display:flex;flex-direction:column;gap:4px;color:var(--muted)}
 /* the records and their copy buttons: the text left, the button at the column's right edge, one under the other */
 .acme-dns td{vertical-align:middle}
-.acme-dns td.dns-text{width:1%;white-space:nowrap;padding-right:6px}
-.acme-dns td.dns-text > div{white-space:normal}
-.acme-dns td.dns-copy{width:1%;white-space:nowrap;padding-left:0;vertical-align:middle}
-.acme-dns table td:last-child,.acme-dns table th:last-child{width:100%}
-.acme-dns table td,.acme-dns table th{white-space:nowrap}
-.acme-dns table td:first-child,.acme-dns table th:first-child{padding-right:18px}
-.acme-dns table td > div{white-space:normal}
+.acme-dns table{table-layout:fixed;width:100%}
+.acme-dns table td,.acme-dns table th{white-space:nowrap;overflow:hidden;padding-right:24px}
+.acme-dns th.dw-c{width:15%}.acme-dns th.dw-r{width:24%}.acme-dns th.dw-t{width:7%}
+.acme-dns th.dw-v{width:34%}.acme-dns th.dw-s{width:20%}
+.acme-dns .dns-val{display:flex;align-items:center;gap:10px;min-width:0}
+.acme-dns .dns-val > .dns-t{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.acme-dns .dns-val > button{flex:none}
+.acme-dns td > div.muted{white-space:normal}
 .node-other .node-now{font-size:12px}
 /* A setting's name: the words wrap, the (i) and the tags of a node stay one
    block at the right (1.0.172) */
