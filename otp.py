@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.202'
+__version__ = '1.0.203'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -24954,7 +24954,24 @@ def repl_errors_clear(store, by):
 # done in a thread of its own, never on the way of a sign-in.
 ACME_CAS = {'letsencrypt': 'https://acme-v02.api.letsencrypt.org/directory',
             'letsencrypt-staging': 'https://acme-staging-v02.api.letsencrypt.org/directory'}
-ACME_WORK = {'busy': False, 'at': 0.0, 'says': '', 'target': ''}
+ACME_WORK = {'busy': False, 'at': 0.0, 'says': '', 'target': '', 'n': 0, 'of': 0, 'done': 0, 'each': {}}
+# Several certificates at once (1.0.203): at most this many orders side by side.
+ACME_PARALLEL = max(1, int(os.environ.get('OTP_ACME_PARALLEL') or 3))
+_ACME_CUR = threading.local()          # the certificate this thread orders
+_ACME_LOCK = threading.Lock()
+
+
+def acme_progress(text):
+    """What the order of this thread waits for now - on its own card, and as
+    the last word of the whole (1.0.203)."""
+    text = str(text)[:300]
+    ACME_WORK['says'] = text
+    t = getattr(_ACME_CUR, 'target', '')
+    if t:
+        with _ACME_LOCK:
+            one = ACME_WORK['each'].get(t)
+            if one is not None:
+                one['says'] = text
 ACME_EVERY = float(os.environ.get('OTP_ACME_EVERY') or 3600)
 ACME_RETRY = float(os.environ.get('OTP_ACME_RETRY') or 6 * 3600)
 
@@ -25673,22 +25690,84 @@ def acme_tick(daemon):
     acme_start(store, due, 'otp (renewal)')
 
 
+def acme_parallel_why(which):
+    """Why these are ordered one after another, or '' when side by side
+    (1.0.203). By hand, the page shows one TXT record at a time; acme-dns keeps
+    the last two TXT records of its one subdomain for every name - a third
+    order side by side would push one out."""
+    if len(which) < 2 or ACME_PARALLEL < 2:
+        return 'one'
+    if (CONFIG.get('acme_challenge') or 'http-01') == 'dns-01':
+        how = CONFIG.get('acme_dns') or 'manual'
+        if how == 'manual':
+            return 'by hand'
+        if how == 'acmedns':
+            return 'acme-dns'
+    names = [n for _t, n in which]
+    if len(set(names)) != len(names):
+        return 'the same name twice'
+    return ''
+
+
 def acme_start(store, which, by):
-    if ACME_WORK['busy']:
-        raise ValueError('a certificate is being ordered already')
-    ACME_WORK.update(busy=True, says='starting')
+    with _ACME_LOCK:
+        if ACME_WORK['busy']:
+            raise ValueError('a certificate is being ordered already')
+        ACME_WORK.update(busy=True, says='starting', target='', n=0, of=len(which), done=0, each={})
+
+    def one(t, n, i):
+        # Each in a thread of its own: its names looked up by ACME's DNS
+        # servers, its words on its own card.
+        _ACME_DNS.on = True
+        _ACME_CUR.target = t
+        with _ACME_LOCK:
+            ACME_WORK['each'][t] = {'says': 'starting', 'at': time.time(), 'n': i + 1}
+            ACME_WORK.update(target=t, n=max(ACME_WORK['n'], i + 1))
+        try:
+            acme_order(store, t, n, by, acme_progress)
+        except AcmeError as e:
+            log('ACME: %s' % e, 'warn')
+        except Exception as e:                          # noqa: BLE001
+            # Never the others with it: one order gone wrong is said, the rest go on.
+            log('ACME: the order for %s stopped: %s' % (n, e), 'error')
+        finally:
+            with _ACME_LOCK:
+                ACME_WORK['each'].pop(t, None)
+                ACME_WORK['done'] += 1
+            _ACME_CUR.target = ''
 
     def go():
         _ACME_DNS.on = True
         try:
-            for i, (t, n) in enumerate(which):
-                ACME_WORK.update(target=t, n=i + 1, of=len(which))
+            why = acme_parallel_why(which)
+            if not why:
+                # The account first, once (1.0.203): orders side by side, each
+                # finding none (a new kind of its key, one the CA forgot), would
+                # make an account each.
                 try:
-                    acme_order(store, t, n, by, lambda s: ACME_WORK.update(says=s))
-                except AcmeError as e:
-                    log('ACME: %s' % e, 'warn')
+                    a = Acme(store)
+                    a.close()
+                except Exception as e:                  # noqa: BLE001
+                    why = 'the account not ready (%s)' % str(e)[:120]
+            if why:
+                for i, (t, n) in enumerate(which):
+                    one(t, n, i)
+                return
+            gate = threading.Semaphore(ACME_PARALLEL)
+            threads = []
+
+            def gated(t, n, i):
+                with gate:
+                    one(t, n, i)
+            for i, (t, n) in enumerate(which):
+                th = threading.Thread(target=gated, args=(t, n, i), name='otp-acme-%s' % t, daemon=True)
+                th.start()
+                threads.append(th)
+            for th in threads:
+                th.join()
         finally:
-            ACME_WORK.update(busy=False, says='', target='', n=0, of=0)
+            with _ACME_LOCK:
+                ACME_WORK.update(busy=False, says='', target='', n=0, of=0, done=0, each={})
     threading.Thread(target=go, name='otp-acme', daemon=True).start()
 
 
@@ -25700,6 +25779,15 @@ def acme_challenge(store, token):
     if not got.get('auth') or time.time() - float(got.get('at') or 0) > 3600:
         return None
     return got['auth']
+
+
+def acme_work_view():
+    """What is being ordered, copied under the lock: the orders side by side
+    change it while it is read."""
+    with _ACME_LOCK:
+        out = dict(ACME_WORK)
+        out['each'] = {t: dict(v) for t, v in ACME_WORK['each'].items()}
+    return out
 
 
 def acme_view(store):
@@ -25725,7 +25813,7 @@ def acme_view(store):
             'directory': acme_directory_url(), 'account': {
                 'kid': acc.get('kid'), 'email': acc.get('email'), 'at': acc.get('at'),
                 'key': ACME_KEY_WORDS.get(acc.get('kind') or 'ec', '') if acc.get('kid') else ''},
-            'work': dict(ACME_WORK), 'node': node_name(),
+            'work': acme_work_view(), 'node': node_name(),
             'challenge': CONFIG.get('acme_challenge') or 'http-01',
             'dns_guide': acme_dns_guide(store),
             'manual': {k: v for k, v in (_meta_json(store, 'acme:manual') or {}).items()
@@ -25893,15 +25981,15 @@ def _desec_seen(rr, txt, say):
             return
         # What is waited for, said as it goes (1.0.176): the line said "waited
         # 5 s" for minutes while deSEC was being asked.
-        ACME_WORK['says'] = 'waiting for deSEC\'s name servers to have the record - %s so far, %d s' % (
-            ', '.join(seen) or 'none', int(time.time() - began))
+        acme_progress('waiting for deSEC\'s name servers to have the record - %s so far, %d s' % (
+            ', '.join(seen) or 'none', int(time.time() - began)))
         time.sleep(5)
     settle = float(os.environ.get('OTP_DESEC_SETTLE') or 60)
     say('%s TXT is on %s after %d s; %d s more for deSEC\'s other places' % (
         rr, ', '.join(seen), int(time.time() - began), settle))
     left = settle
     while left > 0:
-        ACME_WORK['says'] = '%d s more for deSEC\'s other places of the world, then the CA is asked' % left
+        acme_progress('%d s more for deSEC\'s other places of the world, then the CA is asked' % left)
         time.sleep(min(5, left))
         left -= 5
 
@@ -40086,8 +40174,9 @@ def _acme_do(h):
             for target, _n in which:
                 acme_care_set(h.store, target, True, s['name'], 'ordered by hand')
             acme_start(h.store, which, s['name'])
-            return dict(acme_view(h.store), message='%d certificate(s) being ordered, one after another: %s%s' % (
-                len(which), ', '.join(n for _t, n in which),
+            how = 'one after another' if acme_parallel_why(which) else 'side by side'
+            return dict(acme_view(h.store), message='%d certificate(s) being ordered, %s: %s%s' % (
+                len(which), how, ', '.join(n for _t, n in which),
                 ('; no name for ' + ', '.join(left)) if left else ''))
         if act == 'dns_check':
             return acme_dns_check(h.store)

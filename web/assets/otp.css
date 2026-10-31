@@ -3292,6 +3292,7 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 /* In your DNS (1.0.170) */
 .acme-dns{margin-top:14px}
 .ac-all{margin:0 0 12px}
+.ac-going{margin:8px 0 4px}.ac-going .says{margin-top:4px}
 .ac-pick{display:flex;flex-direction:column;gap:2px;margin-top:10px}
 .ac-pick-row{padding:10px 0;border-bottom:1px solid var(--line)}
 .ac-pick-row:last-child{border-bottom:0}
