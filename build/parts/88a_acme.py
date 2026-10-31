@@ -126,8 +126,14 @@ class Acme(object):
         os.chmod(self.work, 0o700)
         self.nonce = None
         self.kid = None
-        self.dir = self._get(self.dir_url)[0]
-        self._account()
+        try:
+            self.dir = self._get(self.dir_url)[0]
+            self._account()
+        except BaseException:
+            # Its folder gone with it (1.0.205): every CA not answering left one,
+            # and after a refused account a key unsealed in it.
+            self.close()
+            raise
 
     def close(self):
         shutil.rmtree(self.work, ignore_errors=True)
@@ -622,15 +628,33 @@ def acme_order(store, target, name, by, say=None):
         got = cert_bundle(chain, key)
         info = got['info']
         alt = None
+        made = [kinds[0]]
         if len(kinds) > 1:
             # The second certificate (1.0.196, as Let's Encrypt advises): the name
             # is already proven, so the CA only signs - nginx offers it to the
             # clients that take it, RSA to the rest.
             say('a second certificate, with a %s key' % ACME_KEY_WORDS[kinds[1]])
-            k2, c2 = a.order([name], say, kinds[1])
-            g2 = cert_bundle(c2, k2)
-            alt = {'cert': g2['cert'], 'chain': g2['chain'], 'key': seal_secret(g2['key'], 'web:tls'),
-                   'info': g2['info'], 'for': tls_alt_for(got['cert'])}
+            try:
+                k2, c2 = a.order([name], say, kinds[1])
+                g2 = cert_bundle(c2, k2)
+                alt = {'cert': g2['cert'], 'chain': g2['chain'],
+                       'key': seal_secret(g2['key'], 'web:tls'),
+                       'info': g2['info'], 'for': tls_alt_for(got['cert'])}
+                made.append(kinds[1])
+            except (AcmeError, ValueError) as e:
+                # The first one kept all the same (1.0.205): thrown away with it,
+                # the CA's weekly limit for the name was spent on nothing, and
+                # every retry refused for a week.
+                say('the second certificate did not come (%s) - the %s one is put in alone'
+                    % (str(e)[:200], ACME_KEY_WORDS[kinds[0]]))
+                st['alt_said'] = str(e)[:300]
+        # As it is now, not as it was when the order began (1.0.205): an order
+        # takes minutes, an hour by hand - what was changed on Certificates and
+        # TLS meanwhile is kept, and one no longer looked after is left alone.
+        prof = tls_profile(store, target) or {}
+        if not acme_care(store, target):
+            raise AcmeError('ACME was told to leave this certificate alone while it was being '
+                            'ordered - the new one is not put in')
         if prof.get('cert') and prof.get('how') != 'ACME':
             # The certificate it had - uploaded, from your own CA - kept to go
             # back to (1.0.172): ACME switched off or left alone, it is put
@@ -654,7 +678,7 @@ def acme_order(store, target, name, by, say=None):
         tls_save(store, target, prof, by)
         st['kid'] = a.kid or ''
         st.update(ok=True, not_after=info.get('not_after'), issuer=info.get('issuer'),
-                  ordered_at=time.time(), keys=' + '.join(ACME_KEY_WORDS[k] for k in kinds))
+                  ordered_at=time.time(), keys=' + '.join(ACME_KEY_WORDS[k] for k in made))
         st['steps'] = steps[-25:]
         store.set_meta('acme:state:' + target, json.dumps(st))
         store.add_event('settings', 'a certificate for %s (%s) came from the CA, good until %s'
@@ -736,17 +760,28 @@ def acme_tick(daemon):
         threading.Thread(target=pub, name='otp-acme-host', daemon=True).start()
     if CONFIG.get('acme') and time.time() - ACME_ARI['at'] >= ACME_ARI_EVERY and not ACME_WORK['busy']:
         ACME_ARI['at'] = time.time()
-        threading.Thread(target=acme_ari_refresh, args=(daemon.store,), name='otp-acme-ari',
-                         daemon=True).start()
+        def ari(store=daemon.store):
+            with acme_dns_scope():      # the CA looked up as the orders look it up (1.0.205)
+                acme_ari_refresh(store)
+        threading.Thread(target=ari, name='otp-acme-ari', daemon=True).start()
     if not CONFIG.get('acme') or ACME_WORK['busy'] or \
             time.time() - ACME_WORK['at'] < ACME_EVERY:
         return
     ACME_WORK['at'] = time.time()
     store = daemon.store
-    due = [(t, n) for t, n in acme_targets(store) if acme_due(store, t, n)]
-    if not due:
-        return
-    acme_start(store, due, 'otp (renewal)')
+
+    def look():
+        # What is due worked out in a thread too (1.0.205): with no name given,
+        # a node's own is socket.getfqdn(), which waits on a DNS that does not
+        # answer - the main loop with it.
+        try:
+            due = [(t, n) for t, n in acme_targets(store) if acme_due(store, t, n)]
+            if due and not ACME_WORK['busy']:
+                acme_start(store, due, 'otp (renewal)')
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('acme-due', 'ACME: what is due could not be looked at: %s' % e, 'warn',
+                        every=3600)
+    threading.Thread(target=look, name='otp-acme-due', daemon=True).start()
 
 
 def acme_parallel_why(which):
@@ -1325,8 +1360,18 @@ _ACME_DNS = threading.local()
 _SYS_GETADDRINFO = socket.getaddrinfo
 
 
+def _acme_proxy_host():
+    """The proxy's own name: looked up as the machine looks names up (1.0.205) -
+    an inside name ACME's public DNS servers do not know."""
+    try:
+        return (urllib.parse.urlsplit(str(CONFIG.get('proxy_url') or '')).hostname or '').lower()
+    except ValueError:
+        return ''
+
+
 def _acme_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers():
+    if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers() and \
+            (host.decode() if isinstance(host, bytes) else str(host)).lower() != _acme_proxy_host():
         h = host.decode() if isinstance(host, bytes) else str(host)
         try:
             ipaddress.ip_address(h.strip('[]'))

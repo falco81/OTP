@@ -71,8 +71,14 @@ class Siem(object):
     def configure(self):
         self.targets = siem_targets(CONFIG.get('siem_targets')) if CONFIG.get('siem') else []
         self.ctx = None
+        # Every connection made again when its TLS changed (1.0.205): one made
+        # without checking the server went on unchecked after the check was
+        # switched on, until it broke - weeks.
+        tls = (CONFIG.get('siem_verify'), CONFIG.get('siem_ca'))
+        again = tls != getattr(self, '_tls_was', tls)
+        self._tls_was = tls
         for key, sock in list(self.conns.items()):
-            if key not in self.targets:
+            if again or key not in self.targets:
                 try:
                     sock.close()
                 except OSError:

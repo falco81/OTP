@@ -350,8 +350,8 @@ def rb_client_cert_given(text, password=''):
             raise ValueError('a client certificate needs its certificate and its private key')
         key = m.group(0) + '\n'
         if 'ENCRYPTED' in key:
-            key = _openssl(['pkey', '-passin', 'env:OTP_PW'], key.encode(),
-                           env={'OTP_PW': password}, what='the key (its password)').decode()
+            key = _openssl(['pkey', '-passin', 'fd:@'], key.encode(),
+                           secret=password, what='the key (its password)').decode()
         if _pub_of_key(key).strip() != _pub_of_cert(certs[0]).strip():
             raise ValueError('the key is not the one of this certificate')
         return key, '\n'.join(certs) + '\n'
@@ -366,8 +366,8 @@ def rb_client_cert_given(text, password=''):
         both = ''
         for extra in ([], ['-legacy']):
             try:
-                both = _openssl(['pkcs12', '-in', pf, '-nodes', '-passin', 'env:OTP_PW'] + extra,
-                                env={'OTP_PW': password}, what='the PFX (its password?)').decode()
+                both = _openssl(['pkcs12', '-in', pf, '-nodes', '-passin', 'fd:@'] + extra,
+                                secret=password, what='the PFX (its password?)').decode()
                 break
             except ValueError:
                 if extra:
@@ -1129,8 +1129,8 @@ def rb_build(store, work, progress=None):
         say(4, 'locked with the password of the backups')
         out = tar + '.enc'
         _openssl(['enc', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md', 'sha256',
-                  '-salt', '-in', tar, '-out', out, '-pass', 'env:OTP_RB_PASS'],
-                 env={'OTP_RB_PASS': pw}, what='locking it')
+                  '-salt', '-in', tar, '-out', out, '-pass', 'fd:@'],
+                 secret=pw, what='locking it')
         os.unlink(tar)
     h = hashlib.sha256()
     with open(out, 'rb') as f:
@@ -1205,6 +1205,11 @@ def rb_run(store, by, only=None, progress=None):
     run = {'at': began, 'by': by, 'node': node_name(), 'targets': [], 'ok': False}
     try:
         path, m, _md = rb_build(store, work, progress)
+        if not m.get('encrypted'):
+            # The password asked again as it was locked (1.0.205): taken away
+            # during a long dump, the copy came out unlocked - it is not sent.
+            raise RbError('the backup came out unlocked (its password was taken away meanwhile) '
+                          '- not sent anywhere')
         run.update(file=m['file'], bytes=m['bytes'], encrypted=m['encrypted'],
                    tokens=m['tokens'])
         sha = os.path.join(work, m['file'] + '.sha256')
@@ -1221,6 +1226,10 @@ def rb_run(store, by, only=None, progress=None):
                 tr.put(sha, os.path.basename(sha))
                 tr.put(md, os.path.basename(md))
                 got = {x['name']: x['size'] for x in tr.list()}
+                if m['file'] not in got:
+                    # Not there after it was sent (1.0.205): taken as sent, and
+                    # the old ones taken away after it.
+                    raise RbError('the server does not list it after it was sent')
                 if got.get(m['file']) not in (None, m['bytes']):
                     raise RbError('the server holds %s bytes of it, not %s' % (
                         got.get(m['file']), m['bytes']))
@@ -1440,8 +1449,8 @@ def rb_open(path, password, work):
         for n, pw in enumerate(tries):
             try:
                 _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
-                          'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
-                         env={'OTP_RB_PASS': pw}, what='opening it')
+                          'sha256', '-in', path, '-out', src, '-pass', 'fd:@'],
+                         secret=pw, what='opening it')
                 break
             except ValueError:
                 if n == len(tries) - 1:

@@ -9,8 +9,8 @@ library, and PHP pages that only relay to it.
 ## The short version
 
 ```bash
-tar xzf otp-1.0.203.tar.gz
-cd otp-1.0.203
+tar xzf otp-1.0.204.tar.gz
+cd otp-1.0.204
 sudo ./install.sh --server-name otp.example.local
 ```
 
@@ -31,7 +31,7 @@ token it has:
 
 ```bash
 mkdir /root/old-otp && cd /root/old-otp && unzip /root/otp.zip   # its etc/raddb and etc/totpcgi
-cd /root/otp-1.0.203
+cd /root/otp-1.0.204
 sudo ./install.sh --server-name otp.example.local \
      --import-legacy /root/old-otp \
      --radius-from 192.0.2.1/32 \
@@ -47,10 +47,12 @@ check afterwards.
 
 - AlmaLinux 9 (or Rocky / RHEL 9 or 10). Debian 12 and Ubuntu 24.04 work as
   well; there the installer does less by itself.
-- Python 3.8 or newer. install.sh runs otp on the newest one the distribution
-  offers beside its own: on RHEL, Rocky and AlmaLinux 9 it installs
-  `python3.12` (and `python3.12-psycopg2` / `python3.12-PyMySQL` for the
-  database) from AppStream, as the system's python3 there is 3.9. The choice
+- Python 3.8 or newer; tested up to 3.14. install.sh runs otp on the newest one
+  the distribution offers beside its own: `python3.14` where AppStream has it,
+  else `python3.12` on RHEL, Rocky and AlmaLinux 9 (with `python3.X-psycopg2` /
+  `python3.X-PyMySQL` for the database), as the system's python3 there is 3.9.
+  Only the distribution's packages - their security fixes come with the system
+  updates; otp never builds or fetches a Python of its own. The choice
   is the link `/usr/local/lib/otp/python`; the service and the `otp` command
   start it. `--python PATH` picks one, `--system-python` keeps the system's.
 - nginx and PHP-FPM 8.x for the pages. The installer puts PHP on a release

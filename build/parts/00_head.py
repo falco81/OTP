@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.203'
+__version__ = '1.0.204'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2153,11 +2153,37 @@ def token_bind(name):
     return 'token:' + str(name or '').strip().lower()
 
 
+SEAL_GUARD = {'db': None}         # the database of this process, for _sealed_held
+
+
+def _sealed_held():
+    """Whether the database holds tokens sealed with a key (it cannot be asked:
+    held, to be safe)."""
+    db = SEAL_GUARD.get('db')
+    if db is None:
+        return False
+    try:
+        return bool(int(db.value("SELECT COUNT(*) FROM tokens WHERE secret LIKE 'sealed:%'",
+                                 (), 0) or 0))
+    except Exception:                                   # noqa: BLE001
+        return True
+
+
 def seal_secret(text, bind=None):
     """Sealed with the key of this installation: a keystream from HMAC-SHA256,
     then a tag over it. With `bind`, the tag covers that too (sealed:2:), so
     the value opens only where it was sealed for."""
-    key = sealing_key(make=True)
+    key = sealing_key()
+    if not key:
+        # No new key while the database holds tokens sealed with one (1.0.205):
+        # the first secret sealed after the key was lost - a client saved, an
+        # enrolment - made a new one, past the daemon's own refusal at its
+        # start; the tokens stayed lost, and two nodes sealed each with its own.
+        if _sealed_held():
+            raise OSError('%s is missing, and the database holds tokens sealed with it: no '
+                          'new key is made - put the key back (it is beside every backup)'
+                          % sealing_key_path())
+        key = sealing_key(make=True)
     if not key:
         raise OSError('no key to seal with')
     data = str(text).encode('utf-8')

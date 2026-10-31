@@ -37,6 +37,15 @@ def _isemon_peer_names(store):
             for n in sorted(set(host_nodes(store)))]
 
 
+def _isemon_pair_ok():
+    """Whether the key on disk is the one of the certificate beside it."""
+    try:
+        return _pub_of_key(ISEMON_CLIENT_KEY.read_text()).strip() == \
+            _pub_of_cert(ISEMON_CLIENT_CRT.read_text()).strip()
+    except (OSError, ValueError):
+        return False
+
+
 def isemon_client_cert(store, force=False):
     """This node's own certificate for isemon (mutual TLS): made from otp's
     authority, renewed 60 days before it ends, kept sealed in the database and
@@ -45,7 +54,8 @@ def isemon_client_cert(store, force=False):
     got = _meta_json(store, k) or {}
     end = float(got.get('end') or 0)
     fresh = end - time.time() > ISEMON_CLIENT_RENEW_DAYS * 86400
-    if not force and fresh and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists():
+    if not force and fresh and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists() and \
+            _isemon_pair_ok():
         return end
     if not force and fresh and got.get('cert') and got.get('key'):
         key = unseal_secret(got['key'], bind=k)       # files gone: written again
@@ -63,13 +73,19 @@ def isemon_client_cert(store, force=False):
                                       'at': time.time()}))
         store.add_event('settings', 'a certificate of %s for isemon was made from otp\'s '
                         'authority, good until %s' % (node_name(), stamp(end)))
-    for path, text, mode in ((ISEMON_CLIENT_KEY, key, 0o600), (ISEMON_CLIENT_CRT, crt, 0o644)):
+    # Both written beside first, then both put in (1.0.205): replaced one after
+    # the other, a full disk between them left a key with another's certificate
+    # - and the early return above kept it so for months.
+    pairs = ((ISEMON_CLIENT_KEY, key, 0o600), (ISEMON_CLIENT_CRT, crt, 0o644))
+    for path, text, mode in pairs:
         tmp = str(path) + '.new'
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
         with os.fdopen(fd, 'w') as f:
             f.write(text.strip() + '\n')
-        os.chmod(tmp, mode)
-        os.replace(tmp, str(path))
+            f.flush()
+            os.fchmod(f.fileno(), mode)
+    for path, _text, _mode in pairs:
+        os.replace(str(path) + '.new', str(path))
     return end
 
 

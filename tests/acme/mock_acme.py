@@ -34,6 +34,7 @@ NONCES, ACCTS, ORDERS, AUTHZ, CERTS = set(), {}, {}, {}, {}
 LOCK = threading.Lock()
 ORDERS_ASKED, ARI_ASKED, ALGS = [], [], []
 OWNER = {}
+SIGN_LOCK = threading.Lock()
 LOG = []
 
 
@@ -276,21 +277,22 @@ class H(http.server.BaseHTTPRequestHandler):
             if not all(AUTHZ[u.split('/')[-1]]['status'] == 'valid' for u in o['authz']):
                 return self.err(403, 'orderNotReady', 'not every authorization is valid')
             csr = b64d(payload['csr'])
-            open(W + '/c.der', 'wb').write(csr)
-            run(['openssl', 'req', '-inform', 'DER', '-in', W + '/c.der', '-out', W + '/c.csr'])
-            text = run(['openssl', 'req', '-in', W + '/c.csr', '-noout', '-text']).decode()
+            open(W + '/c-%s.der' % oid, 'wb').write(csr)
+            run(['openssl', 'req', '-inform', 'DER', '-in', W + '/c-%s.der' % oid, '-out', W + '/c-%s.csr' % oid])
+            text = run(['openssl', 'req', '-in', W + '/c-%s.csr' % oid, '-noout', '-text']).decode()
             for n in o['names']:
                 if 'DNS:' + n not in text:
                     return self.err(400, 'badCSR', 'the request does not name %s' % n)
-            open(W + '/e', 'w').write('subjectAltName=' + ','.join('DNS:' + n for n in o['names']) + '\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid\n')
-            pem = run(['openssl', 'x509', '-req', '-in', W + '/c.csr', '-CA', W + '/ca.pem', '-CAkey', W + '/ca.key',
-                       '-CAcreateserial', '-days', '6' if o.get('profile') == 'shortlived' else
-                       (open(W + '/days').read().strip() if os.path.exists(W + '/days') else '90'),
-                       '-extfile', W + '/e']).decode()
+            open(W + '/e-%s' % oid, 'w').write('subjectAltName=' + ','.join('DNS:' + n for n in o['names']) + '\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid\n')
+            with SIGN_LOCK:             # one signing at a time: ca.srl is shared
+                pem = run(['openssl', 'x509', '-req', '-in', W + '/c-%s.csr' % oid, '-CA', W + '/ca.pem', '-CAkey', W + '/ca.key',
+                           '-CAcreateserial', '-days', '6' if o.get('profile') == 'shortlived' else
+                           (open(W + '/days').read().strip() if os.path.exists(W + '/days') else '90'),
+                           '-extfile', W + '/e-%s' % oid]).decode()
             CERTS[oid] = pem + open(W + '/ca.pem').read()
             # Which account ordered it: only that one may say an order replaces it (as LE).
-            open(W + '/s.pem', 'w').write(pem)
-            ser = run(['openssl', 'x509', '-in', W + '/s.pem', '-noout', '-serial']).decode().strip().split('=')[-1]
+            open(W + '/s-%s.pem' % oid, 'w').write(pem)
+            ser = run(['openssl', 'x509', '-in', W + '/s-%s.pem' % oid, '-noout', '-serial']).decode().strip().split('=')[-1]
             OWNER[int(ser, 16)] = o['kid']
             o['status'] = 'valid'
             return self.send(200, self.order(oid))

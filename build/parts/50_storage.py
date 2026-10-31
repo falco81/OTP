@@ -531,6 +531,7 @@ class Storage(object):
 
     def __init__(self, db, quick=False):
         self.db = db
+        SEAL_GUARD['db'] = db           # asked before a new key is made (1.0.205)
         # The command line (and so the console, every 20 s) made the tables,
         # indexes and triggers again on each run (1.0.136): on PostgreSQL
         # that takes locks that hold every RADIUS write behind them. Now it

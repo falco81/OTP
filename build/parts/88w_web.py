@@ -127,11 +127,26 @@ def vip_prefer(store, conf=None):
 
 
 # ---- certificates: read, taken apart, made -----------------------------------
-def _openssl(args, data=None, env=None, what='openssl'):
+def _openssl(args, data=None, env=None, what='openssl', secret=None):
+    """openssl run; a passphrase (`secret`) handed over on a pipe of its own
+    (1.0.205), named 'fd:@' in args - never on the command line nor in the
+    environment, where /proc keeps it; stdin stays for the data."""
     e = dict(os.environ)
     e.update(env or {})
-    got = subprocess.run(['openssl'] + args, input=data, capture_output=True, env=e,
-                         timeout=120)
+    fds = ()
+    rd = wr = None
+    if secret is not None:
+        rd, wr = os.pipe()
+        args = ['fd:%d' % rd if a == 'fd:@' else a for a in args]
+        fds = (rd,)
+        os.write(wr, (str(secret) + '\n').encode('utf-8'))
+        os.close(wr)
+    try:
+        got = subprocess.run(['openssl'] + args, input=data, capture_output=True, env=e,
+                             timeout=120, pass_fds=fds)
+    finally:
+        if rd is not None:
+            os.close(rd)
     if got.returncode != 0:
         said = (got.stderr or got.stdout or b'').decode('utf-8', 'replace').strip()
         raise ValueError('%s: %s' % (what, (said.splitlines() or ['openssl said no'])[-1][:200]))
@@ -261,8 +276,7 @@ def _pub_of_key(pem):
 
 def key_plain(pem, password=''):
     """A private key without its passphrase, as PEM."""
-    return _openssl(['pkey', '-passin', 'env:OTP_PW'], pem.encode(),
-                    {'OTP_PW': password or ''},
+    return _openssl(['pkey', '-passin', 'fd:@'], pem.encode(), secret=password or '',
                     what='the key (a wrong or missing password?)').decode()
 
 
@@ -276,8 +290,8 @@ def cert_bundle(cert='', key='', chain='', root='', pfx=b'', password='', pendin
         got = None
         for extra in ([], ['-legacy']):
             try:
-                got = _openssl(['pkcs12', '-nodes', '-passin', 'env:OTP_PW'] + extra, pfx,
-                               {'OTP_PW': password or ''}, what='the PFX / PKCS#12 file')
+                got = _openssl(['pkcs12', '-nodes', '-passin', 'fd:@'] + extra, pfx,
+                               secret=password or '', what='the PFX / PKCS#12 file')
                 break
             except ValueError as e:
                 last = e
@@ -400,7 +414,10 @@ def make_csr(cn, names, kind='rsa2048', **subject):
         kf = os.path.join(t, 'k.pem')
         with open(kf, 'w') as f:
             f.write(key)
-        csr = _openssl(['req', '-new', '-key', kf, '-subj', _subject(cn, **subject),
+        # A name longer than a CN may be (64) goes in the names alone (1.0.205), as
+        # Let's Encrypt takes it - refused here, after the CA had been asked.
+        long_ = len(cn or '') > 64 and re.match(r'^[A-Za-z0-9*.-]{1,253}\Z', cn or '')
+        csr = _openssl(['req', '-new', '-key', kf, '-subj', '/' if long_ else _subject(cn, **subject),
                         '-addext', 'subjectAltName=' + _san_ext([cn] + list(names))],
                        what='the request').decode()
     return key, csr

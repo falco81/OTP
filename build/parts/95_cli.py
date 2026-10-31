@@ -280,18 +280,32 @@ def ask_password(prompt='password', twice=True, env='OTP_PASSWORD'):
     said = os.environ.get(env) if env else None
     if said:
         return said
-    first = getpass.getpass('%s: ' % prompt)
-    if twice:
-        again = getpass.getpass('and again: ')
-        if first != again:
-            raise SystemExit('those two are not the same')
+    # No terminal (cron, ssh without -t, a pipe): one line of stdin, as --set
+    # KEY=- takes it (1.0.205) - getpass read it, asked "and again" and ended
+    # in a traceback at the end of the input.
+    if not sys.stdin.isatty():
+        line = sys.stdin.readline()
+        if not line:
+            raise SystemExit('otp: %s: nothing on stdin and no terminal to ask on' % prompt)
+        return line.rstrip('\r\n')
+    try:
+        first = getpass.getpass('%s: ' % prompt)
+        if twice:
+            again = getpass.getpass('and again: ')
+            if first != again:
+                raise SystemExit('those two are not the same')
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit('otp: %s: not given' % prompt)
     return first
 
 
 def not_on_command_line(what, value, how):
     """A secret written out on the command line is refused (1.0.187): ps, the
     shell's history and the process accounting all keep it. - asks for it."""
-    if value not in (None, '', '-') and not str(value).startswith('@env'):
+    # Only - (asked, or a line of stdin) or nothing (1.0.205): '@envSecret' was
+    # taken as it was written, the secret on the command line after all. --set
+    # KEY=@env reads OTP_VALUE_KEY before this is asked.
+    if value not in (None, '', '-'):
         raise SystemExit('otp: %s is not taken on the command line, where ps and the shell\'s '
                          'history keep it: %s' % (what, how))
 
@@ -2949,7 +2963,7 @@ def cli_main(argv=None):
             c = ad.check()
             if args.json:
                 out(c)
-                return 0
+                return 0 if c.get('ok') else 1          # as without --json (1.0.205)
             for srv in c['servers']:
                 print(pal.bold('  %s:%d' % (srv['host'], srv['port'])))
                 for st in srv['steps']:
@@ -3575,7 +3589,12 @@ def cli_main(argv=None):
             ask = {'all': 1, 'by': who} if asked == 'all' else {'key': [kind, whom], 'by': who}
             told = []
             for n, _at, rows in per:
-                if asked == 'all' or any(r['kind'] == kind and r['who'] == whom for r in rows):
+                # As the shared ones, whatever the case (1.0.205); the node told
+                # the name as it counts it.
+                hit = [r for r in rows if r['kind'] == kind and r['who'].lower() == whom.lower()]
+                if asked != 'all' and hit:
+                    ask = {'key': [kind, hit[0]['who']], 'by': who}
+                if asked == 'all' or hit:
                     try:
                         pending = json.loads(store.get_meta('lockouts:ask:' + n) or '[]')
                     except ValueError:
@@ -3796,7 +3815,7 @@ def cli_main(argv=None):
                 print(pal.bad_line('%s: %s' % (t, st['trouble'][t])))
             else:
                 print(pal.ok_line('%s: sent (%d)' % (t, st['sent'].get(t, 0))))
-        return 0
+        return 1 if st['trouble'] else 0               # trouble said is a failure (1.0.205)
 
     build_parser().print_help()
     return 2

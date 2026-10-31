@@ -1069,8 +1069,7 @@ def ha_peer_columns():
 # writing its own: of two nodes asked for the same code at the same moment,
 # at least one sees the other's row - so it is never let in twice. (One may
 # refuse it when both see each other; the next code then goes through.)
-ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0,
-             'alive': True, 'alive_at': 0.0}
+ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0}
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
@@ -1099,22 +1098,6 @@ def once_peer_forget():
             pass
 
 
-def _once_peer_alive(store):
-    """Whether the other node has been heard from lately - looked at every 10 s
-    in this node's own database (1.0.186): a node restarted or switched off
-    for the night's updates is not asked, each sign-in let in waited for it."""
-    now = time.time()
-    if now - ONCE_PEER['alive_at'] < 10:
-        return ONCE_PEER['alive']
-    ONCE_PEER['alive_at'] = now
-    try:
-        others = [n for n in ha_nodes(store) if not n.get('me')]
-        ONCE_PEER['alive'] = not others or any(n.get('alive') for n in others)
-    except Exception:                                   # noqa: BLE001
-        ONCE_PEER['alive'] = True
-    return ONCE_PEER['alive']
-
-
 def _once_peer_has(k, me, store=None):
     """Whether the other node's database has the other node's row for `k`:
     True, False, or None when it cannot be asked just now. Asked on a
@@ -1124,8 +1107,11 @@ def _once_peer_has(k, me, store=None):
     sign-ins of a busy morning asked one after the other and timed out on each
     other - and the peer was taken for gone. Not asked again for 20 s, then
     longer each time it does not answer, up to 5 minutes."""
-    if store is not None and not _once_peer_alive(store):
-        return None
+    # Asked whatever its heartbeat says (1.0.205): the heartbeat comes through
+    # replication, and a replication stopped while the other node still lets
+    # people in made it look gone - a code used there was let in here again. A
+    # node really gone costs one sign-in 1.5 s now and then: not asked again
+    # for 20 s, then longer each time, up to 5 minutes (down_until below).
     with ONCE_PEER_LOCK:
         if ONCE_PEER['down_until'] > time.time():
             return None

@@ -646,7 +646,7 @@ def sshd_checked_conf(b):
     users = [u for u in re.split(r'[\s,]+', str(b.get('allow_users') or '')) if u] \
         if not isinstance(b.get('allow_users'), list) else [str(u) for u in b['allow_users'] if u]
     for u in users:
-        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}$', u):
+        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}\Z', u):
             raise ValueError('%r is not a user name' % u)
     c['allow_users'] = users[:50]
     try:
@@ -668,7 +668,7 @@ def sshd_checked_conf(b):
     ru = [str(u) for u in raw if u] if isinstance(raw, list) else \
         [u for u in re.split(r'[\s,]+', str(raw)) if u]
     for u in ru:
-        if not re.match(r'^[A-Za-z0-9._@-]{1,64}$', u):
+        if not re.match(r'^[A-Za-z0-9._@-]{1,64}\Z', u):
             raise ValueError('%r is not a user name' % u)
     c['radius_users'] = ru[:100]
     c['radius_root'] = bool(b.get('radius_root'))

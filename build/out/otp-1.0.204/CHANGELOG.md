@@ -4,6 +4,23 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.204 — 31 October 2026
+
+**Python 3.14**: install.sh runs otp on `python3.14` where the distribution offers it
+(AppStream: `python3.14`, `python3.14-psycopg2`, `python3.14-PyMySQL`), else on the
+newest one after it, as before (3.13, 3.12, 3.11, the system's own). Only the
+distribution's packages - their security fixes come with the system updates; otp
+never builds or fetches a Python of its own. An upgrade takes it by itself where it
+is there (`--python PATH` and `--system-python` still decide instead); the root
+helpers stay on the system's python3.
+- Tested on Python 3.14.8: otp imported and compiled with every warning an error
+  (no DeprecationWarning, no SyntaxWarning of 3.14 - `return` in `finally` and the
+  like), installed on it, and every test run on it (below). Nothing of what 3.14
+  changed is used: no multiprocessing (its start method changed), no
+  `tarfile.extractall` (its filter changed).
+- On 3.14.8: every test of the suite (25 of 25), the cluster of two
+  (`t_ha_auth.py` 57 of 57, `t_ha_acme.py` 36 of 36).
+
 ## 1.0.203 — 31 October 2026
 
 **Automatic certificates: several ordered side by side** - *Order certificates now…*

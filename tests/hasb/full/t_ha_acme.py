@@ -232,11 +232,14 @@ for _ in range(60):
         break
 evs = dbq('a', "SELECT words FROM events WHERE words LIKE 'a certificate for nodea%%' ORDER BY id DESC LIMIT 1")
 ok('the CA\'s renewal window come (ARI): renewed by itself (%s)' % evs, renewed, asked()['ari'][-2:])
-for _ in range(20):
-    if not call('a', '/api/acme')[1].get('work', {}).get('busy'):
+# The window is the CA's for every certificate: nodea's own order waited for, whichever
+# came first.
+o = []
+for _ in range(60):
+    o = [x for x in asked()['orders'][n1:] if 'nodea.otp.test' in (x.get('names') or [])]
+    if o and not call('a', '/api/acme')[1].get('work', {}).get('busy'):
         break
     time.sleep(2)
-o = [x for x in asked()['orders'][n1:] if 'nodea.otp.test' in (x.get('names') or [])]
 ok('... the same account now: said to replace the one before (%s)' % o, o and o[0].get('replaces'), o)
 os.unlink(CAW + '/ari')
 # The account on RSA (RS256), and one key, ECDSA P-256: a certificate of that alone.

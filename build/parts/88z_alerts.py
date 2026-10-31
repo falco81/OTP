@@ -593,11 +593,14 @@ def alerts_evaluate(store, force=False):
         p['since'] = was.get('since') or now
         p['sent'] = bool(was.get('sent'))
         p['sent_at'] = was.get('sent_at')
+        # The worst level mailed so far (1.0.205): a disk at 95 % going between
+        # warn and bad mailed "worse than said" at every turn back to bad.
+        p['mailed'] = was.get('mailed') or (was.get('level') if was.get('sent') else None)
         if not p['sent'] and now - p['since'] >= delay:
             new.append(p)
         elif p['sent'] and repeat and now - float(was.get('sent_at') or 0) >= repeat:
             still.append(p)
-        elif p['sent'] and was.get('level') == 'warn' and p['level'] == 'bad':
+        elif p['sent'] and p['mailed'] == 'warn' and p['level'] == 'bad':
             new.append(p)                               # worse than said
         known[k] = dict(p)
     # Held while the cluster is worked on (1.0.194): the database's and the VIP
@@ -653,7 +656,10 @@ def alerts_evaluate(store, force=False):
             st = _alert_state(store)
             for k in said | {p['key'] for p in others}:
                 if k in st['problems']:
-                    st['problems'][k].update(sent=True, sent_at=now)
+                    one = st['problems'][k]
+                    one.update(sent=True, sent_at=now,
+                               mailed='bad' if 'bad' in (one.get('mailed'), one.get('level'))
+                               else one.get('level'))
             store.set_meta('alerts:state', json.dumps(st))
     return {'now': cur, 'new': len(new), 'still': len(still), 'over': len(gone),
             'events': len(events)}

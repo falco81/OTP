@@ -144,8 +144,10 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
     try:
         say(1, 'the backups at %s listed' % t['name'])
         files = rb_remote_list(store, t['id'])
+        # This node's own, never another node's in its place (1.0.205): it was
+        # said to put back here, and this node's own missing went unnoticed.
         pick = [f for f in files if f['name'] == name] if name else \
-            ([f for f in files if f['mine']] or files)
+            [f for f in files if f['mine']]
         if not pick:
             raise RbError('there is no backup %s at %s' % (('called ' + name) if name else
                                                            'of this node', t['name']))
