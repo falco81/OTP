@@ -19,10 +19,12 @@ def run(args, data=None):
     return p.stdout
 
 
-# The CA, and the certificate of this server (for 127.0.0.1), signed by it.
-run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-days', '30',
-     '-subj', '/CN=otp test ACME CA', '-addext', 'basicConstraints=critical,CA:TRUE',
-     '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-keyout', W + '/ca.key', '-out', W + '/ca.pem'])
+# The CA, and the certificate of this server (for 127.0.0.1), signed by it. Started again on
+# the same WORKDIR: the same CA - with none of the accounts it had (a CA that forgot them).
+if not os.path.exists(W + '/ca.key'):
+    run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-days', '30',
+         '-subj', '/CN=otp test ACME CA', '-addext', 'basicConstraints=critical,CA:TRUE',
+         '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-keyout', W + '/ca.key', '-out', W + '/ca.pem'])
 run(['openssl', 'req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-subj', '/CN=127.0.0.1',
      '-keyout', W + '/srv.key', '-out', W + '/srv.csr'])
 open(W + '/ext', 'w').write('subjectAltName=IP:127.0.0.1\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n')
@@ -213,7 +215,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     return self.err(400, 'badCSR', 'the request does not name %s' % n)
             open(W + '/e', 'w').write('subjectAltName=' + ','.join('DNS:' + n for n in o['names']) + '\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n')
             pem = run(['openssl', 'x509', '-req', '-in', W + '/c.csr', '-CA', W + '/ca.pem', '-CAkey', W + '/ca.key',
-                       '-CAcreateserial', '-days', '90', '-extfile', W + '/e']).decode()
+                       '-CAcreateserial', '-days', (open(W + '/days').read().strip() if os.path.exists(W + '/days') else '90'),
+                       '-extfile', W + '/e']).decode()
             CERTS[oid] = pem + open(W + '/ca.pem').read()
             o['status'] = 'valid'
             return self.send(200, self.order(oid))

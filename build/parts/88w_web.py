@@ -20,6 +20,7 @@
 WEB_DIR = STATE_DIR / 'web'
 VIP_STATE = RUN_DIR / 'vip-state'
 VIP_ROLE = RUN_DIR / 'vip-role'
+VIP_HERE_BY_ROLE = bool(os.environ.get('OTP_VIP_HERE_BY_ROLE'))
 WEB_HELPER = Path(__file__).parent / 'otp_web.py'
 VIP_FAILS_BEFORE = 2
 VIP_HEALTH_URL = os.environ.get('OTP_VIP_HEALTH_URL', 'https://127.0.0.1/healthz')                    # checks in a row before it is said unhealthy
@@ -467,6 +468,9 @@ def web_status():
         return {}
 
 
+WEB_RETRY_S = int(os.environ.get('OTP_WEB_RETRY_S') or 900)
+
+
 def web_tick(store):
     """Asks root for this node's part when what is wanted has changed."""
     if HA_REBUILDING.is_set() or not WEB_DIR.is_dir():
@@ -494,13 +498,19 @@ def web_tick(store):
         # Failed with exactly this: asked again only when somebody says so.
         # Or once after a restart (1.0.120): it may have failed on what the
         # machine did not have yet - its new address, say.
+        # And every 15 minutes (1.0.187): a failure on something passing - a
+        # mirror that did not answer while keepalived was installed - left the
+        # VIP address and the certificates as they were until somebody looked.
         if float(store.get_meta('web:retry:' + node_name()) or 0) <= float(st.get('at') or 0):
-            if st.get('state') != 'failed' or WEB_DRIFT.get('boot_retried') or \
-                    boot_time() <= float(st.get('at') or 0):
+            if st.get('state') != 'failed':
                 return
-            WEB_DRIFT['boot_retried'] = True
-            log('the web part failed before this restart (%s): asked again' % '; '.join(
-                st.get('said') or [])[:200], 'warn')
+            rebooted = not WEB_DRIFT.get('boot_retried') and boot_time() > float(st.get('at') or 0)
+            if not rebooted and time.time() - float(st.get('at') or 0) < WEB_RETRY_S:
+                return
+            if rebooted:
+                WEB_DRIFT['boot_retried'] = True
+            log_sparing('web-retry', 'the web part failed (%s): asked again' % '; '.join(
+                st.get('said') or [])[:200], 'warn', every=3000)
     # Root at work on it (1.0.59): while it holds request.taken the status
     # still has the old hash, and the same request was written again - every
     # change applied twice.
@@ -698,6 +708,13 @@ def local_addresses():
 
 def vip_here(address):
     """Does this machine hold the address now? Its interfaces say so."""
+    if VIP_HERE_BY_ROLE:
+        # Tests (1.0.187): two nodes on one machine both see the address on lo;
+        # keepalived's own word says which holds it.
+        try:
+            return VIP_ROLE.read_text().split()[0] == 'MASTER'
+        except (OSError, IndexError):
+            return False
     try:
         ip = ipaddress.ip_interface(str(address or '')).ip
     except ValueError:

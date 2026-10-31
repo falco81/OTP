@@ -512,6 +512,7 @@ class Console(object):
             ('9', 'Backups', self.m_backups),
             ('10', 'Upgrades', self.m_upgrades),
             ('11', 'The service', self.m_service),
+            ('12', 'Certificates, updates, restarts, tests', self.m_ops),
         ]
         os.environ.setdefault('ESCDELAY', '25')     # Esc at once, not after a second
         # Lines and blocks drawn as UTF-8 characters, as PuTTY in UTF-8 shows
@@ -1379,7 +1380,8 @@ class Console(object):
         def realms():
             return self.pick('Realms', lambda: self._rows(self.out('--realms')), [
                 ('realm', lambda r: r.get('name'), 18, None),
-                ('takes @', lambda r: r.get('suffix') or '(none)', 18, None),
+                ('takes @', lambda r: (r.get('suffix') or '(none)') + ''.join(
+                    ' +' + a for a in r.get('aliases') or []), 26, None),
                 ('password is', lambda r: r.get('auth_mode'), 11, None),
                 ('directory', lambda r: r.get('directory') or '-', 12, None),
                 ('codes', lambda r: ', '.join(r.get('methods') or []), 16, None),
@@ -1395,8 +1397,10 @@ class Console(object):
         return self.sub('RADIUS clients, realms and directories', [
             ('1', 'Clients (Enter: what to do with one)', clients),
             ('2', 'Add a client', lambda: self.client_edit(None)),
-            ('3', 'Realms', realms),
-            ('4', 'Directories (Enter: try one)', directories),
+            ('3', 'Realms (Enter: change one)', realms),
+            ('4', 'Add a realm', lambda: self.realm_edit(None)),
+            ('5', 'Directories (Enter: try one, change it)', directories),
+            ('6', 'Add a directory', lambda: self.directory_edit(None)),
         ])
 
     def client_edit(self, r):
@@ -1450,10 +1454,67 @@ class Console(object):
                 'answered.' % (r['name'], r.get('address')), 'Delete it', danger=True):
             self.act('--del-client', r['name'])
 
+    def realm_edit(self, r):
+        """A realm made, or changed (1.0.187): it could only be shown or deleted here."""
+        r = r or {}
+        dirs = [d.get('name') for d in (self.out('--directories') or []) if isinstance(d, dict)]
+        got = self.form('Change the realm %s' % r['name'] if r.get('name') else 'Add a realm', ([] if r.get('name') else [
+            {'key': 'name', 'label': 'its name', 'need': True,
+             'check': lambda v, _: None if re.match(r'^[A-Za-z0-9_.-]+$', v) else 'letters, digits, . _ -'}]) + [
+            {'key': 'suffix', 'label': 'takes @', 'value': r.get('suffix', ''),
+             'help': 'What follows the @ (example.cz); * every name; empty: names without one.'},
+            {'key': 'aliases', 'label': 'other suffixes', 'value': ','.join(r.get('aliases') or []),
+             'help': 'example.local,old.cz - taken as the realm\'s own suffix too.'},
+            {'key': 'mode', 'label': 'the password is', 'kind': 'choice', 'value': r.get('auth_mode') or 'otp',
+             'options': [('otp', 'the code alone'), ('password_otp', 'the directory password and the code'),
+                         ('challenge', 'the password, then the code in a second window'),
+                         ('password', 'the directory password alone')]},
+            {'key': 'directory', 'label': 'directory', 'kind': 'choice', 'value': r.get('directory') or '',
+             'options': [('', '(none)')] + [(d, d) for d in dirs]},
+            {'key': 'lookup', 'label': 'looked up by', 'kind': 'choice', 'value': r.get('lookup') or 'upn',
+             'options': [('upn', 'UPN (novak@example.cz)'), ('sam', 'sAMAccountName'), ('none', 'not looked up')]},
+            {'key': 'groups', 'label': 'groups', 'value': ';'.join(g.get('group', '') for g in r.get('groups') or []),
+             'help': 'G1;G2 - any one of them lets in; empty: anybody. Their replies are kept.'},
+            {'key': 'methods', 'label': 'codes people may choose', 'value': ','.join(r.get('methods') or ['totp']),
+             'help': 'totp,mail,sms'}])
+        if not got:
+            return
+        self.act('--add-realm', got.get('name') or r['name'], '--suffix', got['suffix'], '--aliases', got['aliases'],
+                 '--mode', got['mode'], '--directory', got['directory'], '--lookup', got['lookup'],
+                 '--groups', got['groups'], '--methods', got['methods'] or 'totp')
+
+    def directory_edit(self, r):
+        """A directory added, or changed (1.0.187); its password asked, never shown."""
+        r = r or {}
+        got = self.form('Change the directory %s' % r['name'] if r.get('name') else 'Add a directory', ([] if r.get('name') else [
+            {'key': 'name', 'label': 'its name', 'need': True,
+             'check': lambda v, _: None if re.match(r'^[A-Za-z0-9_.-]+$', v) else 'letters, digits, . _ -'}]) + [
+            {'key': 'hosts', 'label': 'servers', 'need': True, 'value': r.get('hosts') or '',
+             'help': 'dc1.example.local,dc2.example.local - in order.'},
+            {'key': 'base', 'label': 'where to look', 'need': True, 'value': r.get('base') or '',
+             'help': 'DC=example,DC=local'},
+            {'key': 'bind_dn', 'label': 'the account it reads with', 'value': r.get('bind_dn') or ''},
+            {'key': 'bind_pw', 'label': 'its password', 'kind': 'secret', 'need': not r.get('name'),
+             'help': 'Empty: the one it has is kept.' if r.get('name') else ''},
+            {'key': 'tls', 'label': 'reached by', 'kind': 'choice', 'value': r.get('tls') or 'ldaps',
+             'options': [('ldaps', 'LDAPS (636)'), ('starttls', 'StartTLS (389)'), ('none', 'plain (389) - not encrypted')]},
+            {'key': 'port', 'label': 'port', 'value': str(r.get('port') or ''), 'help': 'Empty: as reached by says.'}])
+        if not got:
+            return
+        args = ['--add-directory', got.get('name') or r['name'], '--hosts', got['hosts'], '--base', got['base'],
+                '--bind-dn', got['bind_dn'], '--tls', got['tls']] + (['--port', got['port']] if got['port'] else [])
+        env = None
+        if got.get('bind_pw'):
+            args += ['--bind-pw', '-']
+            env = {'OTP_BIND_PW': got['bind_pw']}
+        self.act(*args, env=env, title='$ otp --add-directory %s' % (got.get('name') or r['name']))
+
     def realm_do(self, r):
-        what = self.choose(r['name'], [('show', 'Show it all'), ('delete', 'Delete it')])
+        what = self.choose(r['name'], [('show', 'Show it all'), ('edit', 'Change it'), ('delete', 'Delete it')])
         if what == 'show':
             self.details(r['name'], r)
+        elif what == 'edit':
+            self.realm_edit(r)
         elif what == 'delete' and self.confirm(
                 'Delete', 'The realm %s is deleted - names of it no longer sign in.'
                 % r['name'], 'Delete it', danger=True):
@@ -1461,8 +1522,11 @@ class Console(object):
 
     def directory_do(self, r):
         what = self.choose(r['name'], [('test', 'Try it (and look somebody up)'),
-                                        ('show', 'Show it all'), ('delete', 'Delete it')],
+                                        ('show', 'Show it all'), ('edit', 'Change it'),
+                                        ('delete', 'Delete it')],
                            r.get('hosts') or '')
+        if what == 'edit':
+            return self.directory_edit(r)
         if what == 'test':
             who = self.ask_one('Try %s' % r['name'], 'look up too', need=False, help_=(
                 'Empty: only the connection and the binding are tried. A name (novak): '
@@ -1875,7 +1939,7 @@ class Console(object):
                 '%s names the database: it is moved on the pages (Settings - The database: '
                 'Try it, Set it up, Carry everything across, Start using it). Only to point at '
                 'the same data somewhere new (a moved server, a new password), on the command '
-                'line:  otp --set %s=... --yes' % (key, key)))
+                'line:  otp --set %s=%s --yes' % (key, key, '-' if key in SECRET_KEYS else '...')))
             return None
         kind, shape = self._kind(key)
         secret = bool(st.get('secret'))
@@ -2623,6 +2687,118 @@ class Console(object):
                 self.act('--restore', f['path'], '--yes')
 
     # ---- 10 upgrades ------------------------------------------------------------
+    def m_ops(self):
+        """What the pages do, for a server without them (1.0.187): ACME, the updates
+        of the system, restarts, a test mail or SMS, the SSH tokens, lockouts."""
+        def nodes():
+            got = self.out('--updates', 'status') or {}
+            return [n.get('name') for n in got.get('nodes') or [] if n.get('name')]
+
+        def acme_order():
+            got = self.out('--acme') or {}
+            opts = [('all', 'every one ACME looks after on this node')] + [
+                (t['target'], '%s - %s' % (t['target'], t.get('name') or 'no name yet'))
+                for t in got.get('targets') or []]
+            which = self.choose('Order a certificate now', opts)
+            if which is not None:
+                self.live(lambda: self.show_live('--acme-order', which))
+
+        def updates_start():
+            ns = nodes()
+            if not ns:
+                return
+            how = self.choose('A node whose update needs a restart', [
+                ('ask', 'ask on the pages first'), ('auto', 'restarted by itself, one at a time'),
+                ('never', 'not restarted')])
+            if how is None:
+                return
+            if self.confirm('Update now', 'The updates are put in on %s, one node at a time.'
+                            % ', '.join(ns), 'Update', danger=True):
+                self.act('--updates', 'start', '--reboot', how, '--yes')
+
+        def restart():
+            ns = nodes()
+            opts = [('all', 'every node, one at a time')] + [(n, n) for n in ns]
+            which = self.choose('Restart a machine', opts)
+            if which is None:
+                return
+            if self.confirm('Restart', ('Every node restarts now, one at a time' if which == 'all'
+                                        else 'The machine %s restarts now' % which) +
+                            '; the service goes on on the others.', 'Restart', danger=True):
+                self.act('--restart-nodes', which, '--yes')
+
+        def mail_test():
+            got = self.form('A test mail', [{'key': 'to', 'label': 'to', 'need': True,
+                                             'check': lambda v, _: None if re.match(
+                                                 r'^[^@\s]+@[^@\s]+\.[^@\s]+$', v) else 'not an e-mail address'}])
+            if got:
+                self.act('--mail-test', got['to'])
+
+        def sms_test():
+            got = self.form('A test SMS', [{'key': 'to', 'label': 'to', 'need': True,
+                                            'help': 'The number, +420…; the code in it opens nothing.'}])
+            if got:
+                self.act('--sms-test', got['to'])
+
+        def ssh_new():
+            got = self.form('An SSH token', [
+                {'key': 'name', 'label': 'the account', 'need': True,
+                 'help': 'The account it signs in to over SSH (root, an admin\'s own).'},
+                {'key': 'by', 'label': 'its codes', 'kind': 'choice', 'value': 'app',
+                 'options': [('app', 'from an authenticator app'), ('mail', 'sent by e-mail'),
+                             ('sms', 'sent by SMS')]},
+                {'key': 'to', 'label': 'sent to', 'need': True, 'when': lambda v: v.get('by') != 'app'}])
+            if not got:
+                return
+            extra = ['--by', got['by']] + (['--to', got['to']] if got['by'] != 'app' else [])
+            had = [r for r in (self.out('--ssh-tokens') or []) if isinstance(r, dict) and
+                   r.get('name', '').lower() == got['name'].lower()]
+            if had:
+                if not self.confirm('Replace', 'The SSH token of %s in use stops working now.'
+                                    % got['name'], 'Replace it', danger=True):
+                    return
+                extra.append('--yes')
+            self.act('--ssh-token-add', got['name'], *extra)
+
+        def ssh_del():
+            rows = [r for r in (self.out('--ssh-tokens') or []) if isinstance(r, dict)]
+            if not rows:
+                self.note('SSH tokens', 'There is none.')
+                return
+            which = self.choose('Take an SSH token away', [(r['name'], r['name']) for r in rows])
+            if which is not None and self.confirm('Take it away', 'The SSH token of %s stops '
+                                                  'working now.' % which, 'Take it away', danger=True):
+                self.act('--ssh-token-del', which)
+
+        def lockout_clear():
+            rows = [r for r in (self.out('--lockouts') or []) if isinstance(r, dict)]
+            if not rows:
+                self.note('Lockouts', 'Nobody and nothing is counted now.')
+                return
+            opts = [('all', 'every one')] + [('%s:%s' % (r['kind'], r['who']), '%s:%s (%s)' % (
+                r['kind'], r['who'], r.get('node'))) for r in rows]
+            which = self.choose('Forget a lockout', opts)
+            if which is not None:
+                self.act('--lockouts-clear', which)
+
+        return self.sub('Certificates, updates, restarts, tests', [
+            ('1', 'Certificates by ACME: how they stand', lambda: self.act('--acme')),
+            ('2', 'Order a certificate by ACME now', acme_order),
+            ('3', 'Updates of the system: how they stand', lambda: self.act('--updates', 'status')),
+            ('4', 'Look for updates now', lambda: self.act('--updates', 'check')),
+            ('5', 'Put the updates in (one node at a time)', updates_start),
+            ('6', 'Stop the updates going on', lambda: self.act('--updates', 'cancel')),
+            ('7', 'Restarts: how they went', lambda: self.act('--restarts')),
+            ('8', 'Restart a machine (the service kept)', restart),
+            ('9', 'Send a test mail', mail_test),
+            ('10', 'Send a test SMS', sms_test),
+            ('11', 'SSH tokens', lambda: self.act('--ssh-tokens')),
+            ('12', 'Make an SSH token', ssh_new),
+            ('13', 'Take an SSH token away', ssh_del),
+            ('14', 'Lockouts: who is locked out now', lambda: self.act('--lockouts')),
+            ('15', 'Forget a lockout', lockout_clear),
+        ])
+
     def m_upgrades(self):
         def online():
             self.working('working…  looking for a new version')

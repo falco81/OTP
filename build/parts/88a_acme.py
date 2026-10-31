@@ -43,6 +43,16 @@ def _acme_ctx():
     return ctx
 
 
+def _acme_account_gone(kind, said):
+    """The CA's error says the account it was asked with is no more (RFC 8555
+    accountDoesNotExist; Boulder's 'unauthorized' for one deactivated or not found)."""
+    if kind.endswith(':accountDoesNotExist') or kind == 'accountDoesNotExist':
+        return True
+    low = str(said or '').lower()
+    return kind.endswith('unauthorized') and 'account' in low and \
+        any(w in low for w in ('deactivated', 'not valid', 'not found', 'does not exist', 'revoked'))
+
+
 class Acme(object):
     """One conversation with the CA: the account, its key, the nonces."""
     def __init__(self, store):
@@ -123,7 +133,8 @@ class Acme(object):
         return r + s
 
     def post(self, url, payload, use_jwk=False):
-        for attempt in (1, 2):
+        anew = False
+        for attempt in (1, 2, 3):
             if not self.nonce:
                 self._req(self.dir['newNonce'], method='HEAD')
             protected = {'alg': 'ES256', 'nonce': self.nonce, 'url': url}
@@ -145,8 +156,20 @@ class Acme(object):
                 try:
                     err = json.loads(body.decode('utf-8'))
                     said = err.get('detail') or err.get('type')
-                except ValueError:
-                    said = body[:200].decode('utf-8', 'replace')
+                    kind = str(err.get('type') or '')
+                except (ValueError, AttributeError):
+                    said, kind = body[:200].decode('utf-8', 'replace'), ''
+                # The account kept here gone from the CA (1.0.187): deleted,
+                # deactivated, a CA of the same address started anew. Each
+                # renewal was refused for it until the certificates ran out;
+                # now a new account is made, and the request asked again.
+                if self.kid and not use_jwk and not anew and url != self.dir.get('newAccount') and \
+                        _acme_account_gone(kind, said):
+                    anew = True
+                    log('ACME: the CA does not know the account any more (%s) - a new one is made'
+                        % said, 'warn')
+                    self._account(fresh=True)
+                    continue
                 raise AcmeError('the CA refused it: %s' % said)
             return body, headers
 
@@ -155,11 +178,17 @@ class Acme(object):
         return (json.loads(body.decode('utf-8')) if body else {}), headers
 
     # -- the account -----------------------------------------------------------------
-    def _account(self):
-        row = _meta_json(self.store, 'acme:account') or {}
+    def _account(self, fresh=False):
+        row = {} if fresh else (_meta_json(self.store, 'acme:account') or {})
         pem = unseal_secret(row.get('key') or '', 'acme') if row.get('key') else ''
         if row.get('directory') != self.dir_url or not pem:
             pem = ''
+        if fresh:
+            self.kid = None
+            try:
+                os.unlink(os.path.join(self.work, 'account.pem'))
+            except OSError:
+                pass
         if not pem:
             pem = _openssl(['genpkey', '-algorithm', 'EC', '-pkeyopt', 'ec_paramgen_curve:P-256'],
                            what='the account key').decode()
@@ -398,7 +427,14 @@ def acme_due(store, target, name):
     if prof.get('how') != 'ACME' or st.get('name') != name:
         return 'not ordered yet for %s' % name
     left = (float(info.get('not_after') or 0) - time.time()) / 86400
-    if left < int(CONFIG.get('acme_days') or 30):
+    days = float(CONFIG.get('acme_days') or 30)
+    # A third of its life at most (1.0.187): a CA giving fewer days than
+    # acme_days (short-lived certificates, a test CA) had every new one due
+    # at once - ordered again every hour, until its limits refused them all.
+    life = (float(info.get('not_after') or 0) - float(info.get('not_before') or 0)) / 86400
+    if info.get('not_before') and life > 0:
+        days = min(days, life / 3)
+    if left < days:
         return '%d days left' % int(left)
     return ''
 

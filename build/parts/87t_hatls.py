@@ -92,7 +92,7 @@ def hatls_ca_make(store, by):
         name = re.sub(r'[^A-Za-z0-9 .-]', '', str(CONFIG.get('site_name') or 'otp'))[:40] or 'otp'
         crt = _openssl(['req', '-new', '-x509', '-key', kf, '-days', str(HATLS_CA_DAYS),
                         '-subj', '/CN=%s cluster database authority %s'
-                        % (name, datetime.now().strftime('%Y-%m-%d')),
+                        % (name, datetime.now().strftime('%Y-%m-%d %H:%M')),
                         '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
                         '-addext', 'keyUsage=critical,keyCertSign,cRLSign'],
                        what='the authority').decode()
@@ -645,29 +645,38 @@ def _hatls_tick(store):
         hatls_put(store, st)
         log('the link between the databases: %s reaches this node as %s - a new certificate'
             % (pn0, lacks))
-    # Renewed by itself: a certificate of this node ending within 45 days,
-    # or the authority within two years (one node makes the new one).
+    # Renewed by itself: the authority within two years of its end (one node
+    # makes the new one, and every node's certificate from it), or a
+    # certificate of this node ending within 45 days.
+    # The authority is looked at whatever this node's certificate (1.0.187):
+    # it was only when that ended soon, so the node that may make a new one
+    # never did when only the other node's was ending - and that one, not
+    # allowed to, renewed nothing at all until its certificate ran out. A
+    # node not making it renews its own as ever; tried again the next day
+    # if making it failed (not the next month).
     if not w or (st.get('for') == w.get('at') and st.get('step') == 'done'):
-        if st.get('step') == 'done' and float(st.get('cert_end') or 0) - now < \
+        ca = hatls_ca(store)
+        if st.get('step') == 'done' and ca['cas'] and \
+                float(ca['cas'][0].get('end') or 0) - now < HATLS_CA_ROLL_DAYS * 86400 and \
+                claim_once(store, 'hatls:roll', datetime.now().strftime('%Y-%m-%d')):
+            hatls_ca_make(store, 'otp (the authority ends soon)')
+            w = {'at': now, 'by': 'otp (renewed)', 'from': node_name()}
+            store.set_meta('hatls:want', json.dumps(w))
+            st = {}
+        elif st.get('step') == 'done' and float(st.get('cert_end') or 0) - now < \
                 HATLS_RENEW_DAYS * 86400:
-            ca = hatls_ca(store)
-            if ca['cas'] and float(ca['cas'][0].get('end') or 0) - now < \
-                    HATLS_CA_ROLL_DAYS * 86400:
-                if claim_once(store, 'hatls:roll', datetime.now().strftime('%Y-%m')):
-                    hatls_ca_make(store, 'otp (the authority ends soon)')
-                    w = {'at': now, 'by': 'otp (renewed)', 'from': node_name()}
-                    store.set_meta('hatls:want', json.dumps(w))
-                    st = {}
-            else:
-                ends = float(st.get('cert_end') or now)
-                st = {'for': w.get('at') if w else now, 'step': 'names', 'renew': True,
-                      'began': now, 'peer_host': str(CONFIG.get('ha_peer') or '')}
-                hatls_put(store, st)
-                store.add_event('ha', 'the certificate of %s\'s database ends %s: renewed'
-                                % (node_name(), datetime.fromtimestamp(ends).strftime('%Y-%m-%d')))
+            ends = float(st.get('cert_end') or now)
+            st = {'for': w.get('at') if w else now, 'step': 'names', 'renew': True,
+                  'began': now, 'peer_host': str(CONFIG.get('ha_peer') or '')}
+            hatls_put(store, st)
+            store.add_event('ha', 'the certificate of %s\'s database ends %s: renewed'
+                            % (node_name(), datetime.fromtimestamp(ends).strftime('%Y-%m-%d')))
         if not w or st.get('step') == 'done':
             return
-    if st.get('for') != w.get('at') and not st.get('renew'):
+    # A renewal of its own under way is let finish; one finished takes a want
+    # come since (1.0.187) - the new authority's: it stayed on the old one's.
+    if st.get('for') != w.get('at') and \
+            (not st.get('renew') or st.get('step') in ('done', 'failed')):
         st = {'for': w.get('at'), 'step': 'names', 'began': now,
               'peer_host': str(CONFIG.get('ha_peer') or ''), 'cert_end': st.get('cert_end')}
         hatls_put(store, st)

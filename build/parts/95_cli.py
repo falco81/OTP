@@ -288,6 +288,24 @@ def ask_password(prompt='password', twice=True, env='OTP_PASSWORD'):
     return first
 
 
+def not_on_command_line(what, value, how):
+    """A secret written out on the command line is refused (1.0.187): ps, the
+    shell's history and the process accounting all keep it. - asks for it."""
+    if value not in (None, '', '-') and not str(value).startswith('@env'):
+        raise SystemExit('otp: %s is not taken on the command line, where ps and the shell\'s '
+                         'history keep it: %s' % (what, how))
+
+
+def ask_secret_value(key):
+    """KEY=- of --set: from OTP_VALUE_<KEY>, else asked (twice), else one line of stdin."""
+    env = 'OTP_VALUE_' + key.upper()
+    if os.environ.get(env):
+        return os.environ[env]
+    if sys.stdin.isatty():
+        return ask_password(key, twice=True, env=None)
+    return sys.stdin.readline().rstrip('\r\n')
+
+
 class HelpfulParser(argparse.ArgumentParser):
     """An ArgumentParser whose help is isemon's: two columns, in colour.
     Anything going wrong in the drawing falls back to argparse's own."""
@@ -458,7 +476,7 @@ def build_parser():
     g.add_argument('--add-client', metavar='NAME', help='add (or change) a client: with '
                    '--address and --secret, and --realm for names that come without one')
     g.add_argument('--address', metavar='ADDR', help='an address or a range (10.0.0.0/24)')
-    g.add_argument('--secret', metavar='TEXT', help='the shared secret (-: from OTP_SECRET, '
+    g.add_argument('--secret', metavar='-', help='the shared secret (-: from OTP_SECRET, '
                    'or asked - not on the command line)')
     g.add_argument('--realm', metavar='REALM', help='the realm added to names without one')
     g.add_argument('--del-client', metavar='NAME', help='take a client away')
@@ -487,7 +505,7 @@ def build_parser():
     g.add_argument('--hosts', metavar='H1,H2', help='its servers, in order')
     g.add_argument('--base', metavar='DN', help='where to look: DC=example,DC=local')
     g.add_argument('--bind-dn', metavar='WHO', help='the account it reads with')
-    g.add_argument('--bind-pw', metavar='PASS', help='its password: - asks for it (or '
+    g.add_argument('--bind-pw', metavar='-', help='its password: - asks for it (or '
                    'OTP_BIND_PW) - not on the command line, where ps shows it')
     g.add_argument('--tls', choices=('ldaps', 'starttls', 'none'), help='how it is reached')
     g.add_argument('--port', type=int, metavar='N', help='its port')
@@ -503,7 +521,8 @@ def build_parser():
     g = p.add_argument_group('THE SETTINGS AND THE ACCOUNTS')
     g.add_argument('--settings', action='store_true', help='every setting, as it stands')
     g.add_argument('--set', action='append', metavar='KEY=VALUE', help='change one (again for '
-                   'more)')
+                   'more); a secret (a password, a token) as KEY=-: asked for, or one line of '
+                   'stdin, or OTP_VALUE_KEY - never written out here')
     g.add_argument('--users', action='store_true', help='who may open the administration pages')
     g.add_argument('--add-user', metavar='NAME', help='make an account (--role)')
     g.add_argument('--role', choices=ROLES_ALL, default=None, help='its role (with --add-user read-only when not given)')
@@ -557,11 +576,40 @@ def build_parser():
     g.add_argument('--tidy', action='store_true', help='delete what has been kept long enough')
     g.add_argument('--isemon-test', action='store_true', help='send one line to isemon’s '
                    'receivers and say what happened')
+    g = p.add_argument_group('WHAT THE PAGES DO, HERE TOO', 'For a server without its pages '
+                             '(installed --no-web) or with them down (1.0.187).')
+    g.add_argument('--acme', action='store_true', help='the certificates by ACME: each one\'s name, '
+                   'end, who looks after it, its last order')
+    g.add_argument('--acme-order', metavar='TARGET', help='order it now, followed here: a node\'s '
+                   'name, vip, or all (each one ACME looks after)')
+    g.add_argument('--updates', choices=('status', 'check', 'start', 'cancel'), help='the updates '
+                   'of the operating system: how they stand, look for them now, start them on '
+                   '--node NAME,NAME (every node when none) one at a time, or stop them')
+    g.add_argument('--reboot', choices=('ask', 'auto', 'never'), default='ask', help='with '
+                   '--updates start: restart a node whose update needs it - ask on the pages, '
+                   'by itself, or never [ask]')
+    g.add_argument('--restart-nodes', metavar='NODE,NODE', help='restart these machines now, one '
+                   'at a time, the service kept on the others (all: every node)')
+    g.add_argument('--restarts', action='store_true', help='the restarts asked for, and how they '
+                   'went')
+    g.add_argument('--mail-test', metavar='ADDRESS', help='send a test mail now, every step said')
+    g.add_argument('--sms-test', metavar='NUMBER', help='send a test SMS now (a code that opens '
+                   'nothing)')
+    g.add_argument('--ssh-tokens', action='store_true', help='the SSH tokens (Settings - SSH '
+                   'server), each one\'s way and when last used')
+    g.add_argument('--ssh-token-add', metavar='NAME', help='an SSH token for the account NAME: '
+                   'from the app (its QR code shown once), or --by mail|sms --to')
+    g.add_argument('--ssh-token-del', metavar='NAME', help='take an SSH token away')
+    g.add_argument('--lockouts', action='store_true', help='who and what is locked out now: '
+                   'tokens, the pages\' sign-ins, places refused')
+    g.add_argument('--lockouts-clear', metavar='all|KIND:WHO', help='forget a lockout (the KIND '
+                   'and WHO --lockouts shows), or every one, on every node')
     g = p.add_argument_group('MAINTENANCE AND UPGRADES')
     g.add_argument('--maintenance', choices=('on', 'off', 'status'), help='this node out of '
                    'service (RADIUS not answered, /healthz 503) or back; status says which')
-    g.add_argument('--node', metavar='NAME', help='with --maintenance: another node of the '
-                   'cluster rather than this one')
+    g.add_argument('--node', metavar='NAME', help='with --maintenance, --set (a node\'s own '
+                   'setting; * for the cluster\'s own value), --change-keep: another node of '
+                   'the cluster rather than this one')
     g.add_argument('--why', metavar='TEXT', help='with --maintenance on: why, for the events')
     g.add_argument('--upgrade-status', action='store_true', help='the package sent on the pages '
                    'and how an upgrade started there is going')
@@ -1295,6 +1343,9 @@ def cli_web(args, pal, store):
         pending = unseal_secret(prof['pending_key'], 'web:tls') if prof.get('pending_key') else ''
         got = cert_bundle(cert=pem, pfx=pfx, password=os.environ.get('OTP_TLS_PASSWORD', ''),
                           pending_key=pending)
+        # As on the pages (1.0.187): one run out is not put in.
+        if got['info'].get('not_after') and got['info']['not_after'] < time.time():
+            raise ValueError('this certificate ran out on %s' % stamp(got['info']['not_after']))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=got['info'],
                     chain_info=got['chain_info'], root_info=got['root_info'],
@@ -1304,6 +1355,9 @@ def cli_web(args, pal, store):
         prof.setdefault('preset', 'standard')
         prof.setdefault('dh', 'none')
         tls_save(store, target, prof, who)
+        # One put in by hand is kept (1.0.170; here too since 1.0.187): ACME's
+        # next renewal replaced it.
+        acme_care_set(store, target, False, who, 'a certificate was put in by hand')
         i = got['info']
         said.append('%s: %s, until %s, %d in the chain, root %s%s' % (
             target, i.get('subject'), stamp(i.get('not_after')), len(got['chain_info']),
@@ -1325,6 +1379,8 @@ def cli_web(args, pal, store):
         tls_save(store, target, prof, who)
         said.append('%s: %s, DH %s, HSTS %s' % (target, pol['preset'], pol['dh'],
                                                pol['hsts'] or 'off'))
+        store.add_event('settings', 'the TLS of %s was changed on the command line: %s, DH %s, '
+                        'HSTS %s' % (target, pol['preset'], pol['dh'], pol['hsts'] or 'off'), who=who)
     if args.vip_set or args.vip or args.vip_move or args.vip_return:
         if not CONFIG.get('ha_mode'):
             raise ValueError('the VIP address is for a cluster: otp --ha-setup first')
@@ -2348,6 +2404,14 @@ def cli_main(argv=None):
         return 0
 
     tk = Tokens(store)
+    if args.enroll and not store.token(args.enroll):
+        # Under its realm's own suffix, as the pages make it (1.0.187): made for
+        # novak@dpmo.local it was a second token beside novak@dpmo.cz, the one
+        # RADIUS looks up first - the QR code just shown never let anyone in.
+        main = norm_name(realm_main_name(args.enroll, store.realm_for(args.enroll)))
+        if main != norm_name(args.enroll):
+            print('  %s is %s - another suffix of its realm' % (args.enroll, main))
+            args.enroll = main
     if args.enroll:
         had = store.token(args.enroll)
         if had and had.get('state') != 'pending':
@@ -2445,8 +2509,7 @@ def cli_main(argv=None):
             raise SystemExit('no token %s' % norm_name(args.unlock))
         store.token_write(norm_name(args.unlock), {'failures': 0, 'fail_times': '[]', 'locked_until': None})
         # Its recovery codes given back too, as on the pages (1.0.103).
-        node_key_drop(store, 'scratchguard', args.unlock)
-        scratch_guard_clear(args.unlock)
+        scratch_guard_give_back(store, args.unlock)
         store.add_event('tokens', 'the command line let %s try again at once'
                         % norm_name(args.unlock), who='command line')
         print(pal.ok_line('the wrong codes of %s are forgotten' % norm_name(args.unlock)))
@@ -2500,6 +2563,8 @@ def cli_main(argv=None):
         except ValueError:
             raise SystemExit('otp --radtest: the port is a number')
         secret = a[4] if len(a) > 4 else None
+        not_on_command_line('the shared secret', secret, 'give - as the fifth word: it is asked for '
+                            '(or OTP_SECRET)')
         if secret == '-':
             # As --secret - (1.0.139): not on the command line, where ps shows it.
             secret = ask_password('the shared secret', twice=False, env='OTP_SECRET')
@@ -2565,6 +2630,7 @@ def cli_main(argv=None):
         return 0
 
     if args.add_client:
+        not_on_command_line('the shared secret', args.secret, '--secret - asks for it (or OTP_SECRET)')
         old = next((c for c in store.clients() if c['name'].lower() == args.add_client.lower()),
                    None)
         data = {'id': old['id'] if old else None, 'name': args.add_client,
@@ -2603,12 +2669,14 @@ def cli_main(argv=None):
         if args.json:
             out(rows)
             return 0
-        print(table([(r['name'], (r['suffix'] or '(none)') + ''.join(
-                          ' +' + a for a in r.get('aliases') or []), r['auth_mode'],
-                      r['directory'] or '-',
+        takes = [(r['suffix'] or '(none)') + ''.join(' +' + a for a in r.get('aliases') or [])
+                 for r in rows]
+        # As wide as the aliases need (1.0.187): they were cut at 16.
+        print(table([(r['name'], t, r['auth_mode'], r['directory'] or '-',
                       r['lookup'], '; '.join(g['group'] for g in r['groups']) or '(anybody)')
-                     for r in rows], ['name', 'takes @', 'password is', 'directory', 'lookup',
-                                      'groups'], [16, 16, 13, 12, 6, 70]))
+                     for r, t in zip(rows, takes)], ['name', 'takes @', 'password is', 'directory',
+                                                     'lookup', 'groups'],
+                    [16, max([16] + [min(48, len(t)) for t in takes]), 13, 12, 6, 70]))
         return 0
 
     if args.add_realm:
@@ -2616,7 +2684,10 @@ def cli_main(argv=None):
                    None) or {}
         groups = old.get('groups') or []
         if args.groups is not None:
-            groups = [{'group': g, 'reply': ''} for g in dn_list(args.groups)]
+            # A group it had keeps what it had (1.0.187): its replies (Class,
+            # Filter-Id - the VPN's policies) were emptied by every --groups.
+            had = {str(g.get('group') or '').lower(): g for g in groups}
+            groups = [dict(had.get(g.lower()) or {'reply': ''}, group=g) for g in dn_list(args.groups)]
         store.realm_save({'id': old.get('id'), 'name': args.add_realm,
                           'suffix': args.suffix if args.suffix is not None else old.get(
                               'suffix', args.add_realm),
@@ -2672,6 +2743,8 @@ def cli_main(argv=None):
         ca = None
         if args.ca:
             ca = Path(args.ca).read_text()
+        not_on_command_line('the password of the directory', args.bind_pw,
+                            '--bind-pw - asks for it (or OTP_BIND_PW)')
         pw = args.bind_pw if args.bind_pw is not None else os.environ.get('OTP_BIND_PW')
         if pw == '-':
             pw = ask_password('the password of %s' % (args.bind_dn or 'the binding account'),
@@ -2745,6 +2818,11 @@ def cli_main(argv=None):
     if args.settings:
         d = Daemon(store, serve=False)
         rows = d.settings_state(True)
+        if args.search:
+            # --search, as it says it does everywhere (1.0.187): it was every setting.
+            q = args.search.lower()
+            rows = [r for r in rows if q in ' '.join(str(r.get(k) or '') for k in
+                                                     ('key', 'name', 'short', 'says')).lower()]
         if args.json:
             out(rows)
             return 0
@@ -2820,6 +2898,11 @@ def cli_main(argv=None):
                     raise SystemExit('otp: %s=@env, and OTP_VALUE_%s is not set - nothing saved'
                                      % (k.strip(), k.strip().upper()))
                 v = os.environ['OTP_VALUE_' + k.strip().upper()]
+            elif v == '-' and k.strip() in SECRET_KEYS:
+                v = ask_secret_value(k.strip())
+            elif k.strip() in SECRET_KEYS:
+                not_on_command_line(k.strip(), v, '--set %s=- asks for it (or reads one line of stdin, '
+                                    'or OTP_VALUE_%s)' % (k.strip(), k.strip().upper()))
             want[k.strip()] = v
         # As the pages refuse them (1.0.136): the cluster has its own steps,
         # and a database named here opens empty at the next restart.
@@ -2839,7 +2922,9 @@ def cli_main(argv=None):
                              'does that). Only to point at the same data somewhere new (a moved '
                              'server, a new password): again with --yes' % ', '.join(moved))
         try:
-            said = d.save_settings(want, by=who)
+            # A node's own setting for another node, or the cluster's own value
+            # with --node '*' (1.0.187), as the pages can: it was this node's only.
+            said = d.save_settings(want, by=who, node=args.node or None)
         except (BadSetting, OSError) as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line(said['message']))
@@ -2946,6 +3031,11 @@ def cli_main(argv=None):
                 store.drop_account(name)
             else:
                 store.set_account(name, disabled=1 if flag == 'disable_user' else 0)
+            if flag in ('set_role', 'disable_user'):
+                # Signed out, as on the pages (1.0.187): its role decided again
+                # at its next sign-in; one switched off not left signed in.
+                store.db.run('DELETE FROM sessions WHERE kind = ? AND LOWER(name) = ?',
+                             ('admin', name.lower()))
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         store.add_event('accounts', '%s: %s on the command line' % (name, flag.replace('_', ' ')),
@@ -3106,6 +3196,254 @@ def cli_main(argv=None):
 
     if args.tidy:
         print(pal.ok_line('tidied: %s' % store.tidy()))
+        return 0
+
+    # ---- what the pages do, here too (1.0.187) -------------------------------------------
+    if args.acme:
+        v = acme_view(store)
+        if args.json:
+            out(v)
+            return 0
+        print(pal.head('certificates by ACME: %s - %s, %s' % (
+            'on' if v['on'] else 'off (otp --set acme=1)', v['directory'] or '-', v['challenge'])))
+        rows = []
+        for t in v['targets']:
+            st_ = t.get('state') or {}
+            left = (float(t['not_after']) - time.time()) / 86400 if t.get('not_after') else None
+            rows.append((t['target'], t.get('name') or '(no name)', '%.0f days' % left if left is not None
+                         else '-', 'ACME' if t.get('care') else 'by hand', (
+                             ('ok ' if st_.get('ok') else 'failed ') + stamp(st_.get('at')) +
+                             ('' if st_.get('ok') else ': %s' % (st_.get('said') or st_.get('error') or '')))
+                         if st_.get('at') else 'never ordered'))
+        print(table(rows, ['for', 'name', 'left', 'looked after', 'last order'], [10, 30, 9, 12, 60]))
+        if v.get('account', {}).get('kid'):
+            print('  account: %s, made %s' % (v['account'].get('email') or '(no mail)', stamp(v['account'].get('at'))))
+        return 0
+
+    if args.acme_order:
+        if not CONFIG.get('acme'):
+            raise SystemExit('otp: certificates by ACME are off - otp --set acme=1 (and acme_* ) first')
+        if args.acme_order == 'all':
+            which = acme_targets(store)
+            if not which:
+                raise SystemExit('otp: this node looks after no certificate by ACME (otp --acme)')
+        else:
+            t = args.acme_order
+            if t not in tls_targets(store) or (t == 'vip' and not vip_conf(store).get('address')):
+                raise SystemExit('otp: there is no such certificate: %s' % ', '.join(tls_targets(store)))
+            name = acme_name_of(store, t)
+            if not name:
+                raise SystemExit('otp: the name of this certificate is not known - give it on the pages '
+                                 '(Its name...) or otp --set acme_node_name@%s=NAME' % t)
+            # Ordered by hand, ACME looks after it from now on - as on the pages.
+            acme_care_set(store, t, True, who, 'ordered by hand')
+            which = [(t, name)]
+        bad = 0
+        for t, name in which:
+            print(pal.head('%s: %s' % (t, name)))
+            try:
+                acme_order(store, t, name, who, lambda w: print('  ' + str(w)))
+                print(pal.ok_line('the certificate of %s is made; the nodes put it in within a few '
+                                  'seconds' % name))
+            except (AcmeError, ValueError, OSError) as e:
+                bad += 1
+                print(pal.bad_line(str(e)))
+        return 1 if bad else 0
+
+    if args.updates:
+        if args.updates == 'status':
+            v = osup_view(store)
+            if args.json:
+                out(v)
+                return 0
+            plan = v.get('plan') or {}
+            print(pal.head('updates of the operating system: %s' % (
+                '%s, %s, by %s, %s' % (plan.get('state'), ', '.join(plan.get('order') or []),
+                                        plan.get('by') or '-', stamp(plan.get('at')))
+                if plan else 'none going on')))
+            rows = []
+            for n in v['nodes']:
+                chk, row = n.get('check') or {}, n.get('row') or {}
+                rows.append((n['name'] + (' (this)' if n['me'] else ''), 'up' if n['alive'] else 'not heard',
+                             '%s, %s' % (chk.get('state') or '-', ('%s waiting' % chk['count']) if
+                                         chk.get('count') is not None else '') if chk else 'not looked',
+                             row.get('state') or '-', 'needed' if n.get('reboot') else '-'))
+            print(table(rows, ['node', 'state', 'last look', 'this update', 'restart'], [22, 10, 26, 14, 8]))
+            return 0
+        nodes = [x.strip() for x in (args.node or '').split(',') if x.strip()] or None
+        try:
+            if args.updates == 'check':
+                got = osup_check_ask(store, nodes or host_nodes(store), who)
+                print(pal.ok_line('looking for updates on %s - otp --updates status in a minute'
+                                  % ', '.join(got)))
+            elif args.updates == 'start':
+                cli_sure(args, 'the updates are put in on %s, one node at a time%s' % (
+                    ', '.join(nodes or host_nodes(store)), {'auto': ', each restarted by itself '
+                                                            'where an update needs it',
+                                                            'never': ', none restarted'}.get(args.reboot, '')))
+                plan = osup_start(store, nodes, args.reboot, who)
+                print(pal.ok_line('the update starts: %s, one at a time - otp --updates status'
+                                  % ', '.join(plan['order'])))
+            else:
+                osup_cancel(store, who)
+                print(pal.ok_line('stopped - a node being updated finishes'))
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        return 0
+
+    if args.restart_nodes:
+        alln = host_nodes(store)
+        nodes = alln if args.restart_nodes == 'all' else \
+            [x.strip() for x in args.restart_nodes.split(',') if x.strip()]
+        wrong = [n for n in nodes if n not in alln]
+        if wrong:
+            raise SystemExit('otp: there is no node %s (%s)' % (', '.join(wrong), ', '.join(alln)))
+        cli_sure(args, 'the machines %s are restarted now, one at a time' % ', '.join(nodes))
+        try:
+            plan = power_ask(store, 'reboot', nodes, 'rolling' if len(nodes) > 1 else 'one', who)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        print(pal.ok_line('asked (%s) - otp --restarts says how it goes' % plan.get('id')))
+        return 0
+
+    if args.restarts:
+        v = power_view(store)
+        if args.json:
+            out(v)
+            return 0
+        plan = v.get('plan') or {}
+        print(pal.head('restarts: %s' % ('%s %s, %s, by %s, %s' % (
+            plan.get('how'), ', '.join(plan.get('targets') or []), plan.get('order'),
+            plan.get('by') or '-', stamp(plan.get('at'))) if plan else 'none of late')))
+        print(table([(n['name'] + (' (this)' if n['me'] else ''), 'up' if n['alive'] else 'not heard',
+                      stamp(n.get('started')) if n.get('started') else '-', (n.get('row') or {}).get('state') or '-',
+                      (n.get('row') or {}).get('said') or '') for n in v['nodes']],
+                    ['node', 'state', 'started', 'restart', 'said'], [22, 10, 20, 12, 60]))
+        return 0
+
+    if args.mail_test:
+        to = args.mail_test.strip()
+        if not re.match(r'^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+\Z', to):
+            raise SystemExit('otp: a mail address to send it to')
+        try:
+            steps = mail_send(store, test_mail(to, code_lang()), [to])
+        except MailError as e:
+            store.add_event('mail', 'a test mail to %s failed: %s' % (to, e), 'warn', who=who)
+            for st_ in getattr(e, 'steps', None) or []:
+                print('  ' + (st_ if isinstance(st_, str) else json.dumps(st_, ensure_ascii=False)))
+            print(pal.bad_line('not sent: %s' % e))
+            return 1
+        for st_ in steps or []:
+            print('  ' + (st_ if isinstance(st_, str) else json.dumps(st_, ensure_ascii=False)))
+        store.add_event('mail', '%s sent a test mail to %s' % (who, to), who=who)
+        print(pal.ok_line('sent to %s' % to))
+        return 0
+
+    if args.sms_test:
+        try:
+            to = phone_checked(args.sms_test)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        try:
+            said = sms_send(to, code_message('sms', to, code_new(), 'verify'))
+        except SmsError as e:
+            store.add_event('settings', 'a test SMS to %s failed: %s' % (to, e), 'warn', who=who)
+            print(pal.bad_line('not sent: %s' % e))
+            return 1
+        store.add_event('settings', '%s sent a test SMS to %s' % (who, to), who=who)
+        print(pal.ok_line('sent to %s%s' % (to, (': %s' % said) if said else '')))
+        return 0
+
+    if args.ssh_tokens:
+        rows = sshotp_all(store)
+        if args.json:
+            out(rows)
+            return 0
+        print(table([(r['name'], {'app': 'the app'}.get(r['kind'], r['kind']) +
+                      ((' to %s' % r['dest']) if r.get('dest') else ''), stamp(r.get('at')),
+                      ('%s on %s' % (stamp(r['used_at']), r.get('used_on') or '?')) if r.get('used_at') else 'never',
+                      r.get('note') or '') for r in rows],
+                    ['account', 'codes from', 'made', 'last used', 'note'], [16, 30, 17, 28, 30]))
+        return 0
+
+    if args.ssh_token_add:
+        had = sshotp_get(store, args.ssh_token_add)
+        if had:
+            cli_sure(args, 'the SSH token of %s in use is replaced, and stops working now'
+                     % sshotp_name(args.ssh_token_add))
+        try:
+            got = sshotp_make(store, args.ssh_token_add, who, args.note or '', replace=bool(had),
+                              kind=args.by or 'app', dest=args.to or '')
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        if got['kind'] != 'app':
+            print(pal.ok_line('the SSH token of %s is made - its codes go to %s' % (got['name'], got['dest'])))
+            return 0
+        print(pal.head('the SSH token of %s - scan it now, it is not shown again' % got['name']))
+        if not args.no_qr:
+            print(QrCode(got['uri']).terminal(invert=args.invert))
+        print('  key:      %s' % got['secret'])
+        return 0
+
+    if args.ssh_token_del:
+        try:
+            sshotp_remove(store, args.ssh_token_del, who)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        print(pal.ok_line('removed'))
+        return 0
+
+    if args.lockouts or args.lockouts_clear:
+        now = time.time()
+        per = []
+        for n in [node_name()] + [x['name'] for x in ha_nodes(store) if x['name'] != node_name()]:
+            try:
+                got = json.loads(store.get_meta('lockouts:' + n) or '{}')
+            except ValueError:
+                got = {}
+            rows = [dict(r, node=n) for r in (got.get('rows') or []) if float(r.get('forgets') or 0) > now]
+            for r in rows:
+                if r.get('locked') and float(r.get('until') or 0) <= now:
+                    r['locked'] = False
+            per.append((n, got.get('at'), rows))
+        shared = [dict(r, node='*') for r in lockouts_shared(store)]
+        if args.lockouts_clear:
+            asked = args.lockouts_clear
+            if asked != 'all' and ':' not in asked:
+                raise SystemExit('otp: --lockouts-clear all, or KIND:WHO as otp --lockouts shows them')
+            kind, _, whom = asked.partition(':')
+            n_done = 0
+            for r in shared:
+                if asked == 'all' or (r['kind'] == kind and r['who'].lower() == whom.lower()):
+                    n_done += lockouts_shared_clear(store, r['kind'], r['who'], who) or 0
+            # Each daemon clears its own within a few seconds (as the other node's pages ask).
+            ask = {'all': 1, 'by': who} if asked == 'all' else {'key': [kind, whom], 'by': who}
+            told = []
+            for n, _at, rows in per:
+                if asked == 'all' or any(r['kind'] == kind and r['who'] == whom for r in rows):
+                    try:
+                        pending = json.loads(store.get_meta('lockouts:ask:' + n) or '[]')
+                    except ValueError:
+                        pending = []
+                    store.set_meta('lockouts:ask:' + n, json.dumps(
+                        (pending if isinstance(pending, list) else [])[-50:] + [ask]))
+                    told.append(n)
+            if not n_done and not told:
+                raise SystemExit('otp: that is not counted any more')
+            print(pal.ok_line('cleared%s' % ((' - %s within a few seconds' % ', '.join(told)) if told else '')))
+            return 0
+        allrows = shared + [r for _n, _a, rows in per for r in rows]
+        if args.json:
+            out(allrows)
+            return 0
+        print(table([(r['node'], '%s:%s' % (r['kind'], r['who']), r.get('what') or '',
+                      '%d of %d' % (r.get('fails') or 0, r.get('limit') or 0),
+                      ('locked until %s' % stamp(r['until'])) if r.get('locked') and r.get('until') else
+                      ('locked' if r.get('locked') else 'counting')) for r in allrows],
+                    ['node', 'kind:who', 'what', 'counted', 'state'], [10, 40, 30, 9, 30]))
+        stale = [n for n, at, _r in per if not at or now - float(at) > 120]
+        if stale:
+            print(pal.dim('  not heard from of late: %s (its list may be old)' % ', '.join(stale)))
         return 0
 
     if args.isemon_test:

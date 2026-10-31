@@ -1069,8 +1069,9 @@ class Daemon(object):
         except Exception:                               # noqa: BLE001
             return [node_name()]
 
-    def save_settings(self, changes, by='', node=None, drawn_by=None):
+    def save_settings(self, changes, by='', node=None, drawn_by=None, keep_session=None):
         checked = {}
+        was_2fa = bool(CONFIG.get('admin_2fa'))
         # The page's boxes were drawn by one node and the save reached
         # another through the VIP address (1.0.110): otp1 took otp2's name
         # from a page otp2 had drawn. What belongs to one machine is saved
@@ -1163,6 +1164,20 @@ class Daemon(object):
                              else '',
                          '***' if k in SECRET_KEYS else json.dumps(v, ensure_ascii=False))
                 for k, v in sorted(checked.items())), who=by)
+        if not was_2fa and CONFIG.get('admin_2fa'):
+            # The second step for those signed in already too (1.0.149): their
+            # sessions, opened with the password alone, stayed whole for hours.
+            # The one saving it stays - it is how it was switched on. Here, not
+            # on the pages only (1.0.187): from the command line and the console
+            # they all stayed.
+            try:
+                gone = self.store.db.run('DELETE FROM sessions WHERE kind = ? AND id <> ?',
+                                         ('admin', int(keep_session or 0)))
+                if gone:
+                    self.store.add_event('accounts', 'the second step was switched on: %d other '
+                                         'sign-in(s) to the pages ended' % gone, 'warn', who=by)
+            except Exception as e:                      # noqa: BLE001
+                log('the sign-ins to the pages could not be ended: %s' % e, 'warn')
         self.changed('settings')
         self.reload_all()
         return {'message': ' '.join(['%d setting(s) saved.' % len(checked)] + said),

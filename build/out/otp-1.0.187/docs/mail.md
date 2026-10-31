@@ -19,7 +19,8 @@ The mail is HTML with a plain-text copy, in Czech or English.
 | Sender (`mail_from`, `mail_from_name`), Reply to, EHLO name | |
 | Mail language, Recovery codes in the mail | defaults for *Make a token* |
 
-The same from the command line: `otp --set mail_mode=smtp smtp_host=smtp.example.cz …`.
+The same from the command line: `otp --set mail_mode=smtp --set smtp_host=smtp.example.cz
+--set smtp_password=- …` (one `--set` for each; the password asked for, never written out).
 
 A server whose certificate a private authority signed: paste the authority
 (or the whole chain), or load a .crt / .pem / .cer file, in the

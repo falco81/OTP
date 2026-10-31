@@ -14,7 +14,8 @@ mkdir -p $S
 DB=otp_$(basename $S | tr -c 'a-z0-9\n' '_')
 PW=sbpw-$(head -c6 /dev/urandom | od -An -tx1 | tr -d ' \n')
 for n in a b; do
-  mkdir -p $S/$n/state/web $S/$n/log $S/$n/fakenm/profiles
+  mkdir -p $S/$n/state/web $S/$n/log $S/$n/fakenm/profiles $S/$n/nginx $S/$n/certs
+  cp /home/claude/build/out/otp-*/deploy/nginx-otp.conf $S/$n/nginx/otp.conf 2>/dev/null || true
   port=$([ $n = a ] && echo 5432 || echo 5433)
   ip=$([ $n = a ] && echo 10.99.0.1 || echo 10.99.0.2)
   i=$([ $n = a ] && echo 1 || echo 2)

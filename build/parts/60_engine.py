@@ -560,13 +560,29 @@ def scratch_guard_times(store, name):
             if time.time() - x < SCRATCH_GUARD_S]
 
 
-def _scratch_place(name, place, add=False):
+def scratch_guard_cleared(store, name):
+    """When the recovery codes of NAME were last given back (Unlock), on any
+    node and by any way - the pages, the command line (1.0.187): what each
+    daemon keeps of the places they were tried from is older than that."""
+    try:
+        return float(store.get_meta('scratchclear:' + norm_name(name)) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def scratch_guard_give_back(store, name):
+    node_key_drop(store, 'scratchguard', name)
+    store.set_meta('scratchclear:' + norm_name(name), repr(time.time()))
+    scratch_guard_clear(name)
+
+
+def _scratch_place(name, place, add=False, since=0.0):
     k = (norm_name(name), str(place or '')[:64])
     t = time.time()
     with SCRATCH_PLACES_LOCK:
         if len(SCRATCH_PLACES) > 20000:
             SCRATCH_PLACES.clear()
-        got = [x for x in SCRATCH_PLACES.get(k, []) if t - x < SCRATCH_GUARD_S]
+        got = [x for x in SCRATCH_PLACES.get(k, []) if t - x < SCRATCH_GUARD_S and x > since]
         if add:
             got = (got + [t])[-SCRATCH_GUARD_MOST * 2:]
         if got:
@@ -586,7 +602,7 @@ def scratch_guard_clear(name):
 def scratch_guard_note(store, name, place=''):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
-    here = _scratch_place(name, place, add=True)
+    here = _scratch_place(name, place, add=True, since=scratch_guard_cleared(store, name))
     before = len(scratch_guard_times(store, name))
     node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_ALL * 2)
     times = scratch_guard_times(store, name)
@@ -605,7 +621,7 @@ def scratch_guard_note(store, name, place=''):
 def scratch_guarded(store, name, place=None):
     if place is None:
         place = getattr(REQUEST_PLACE, 'v', '') or ''
-    return _scratch_place(name, place) >= SCRATCH_GUARD_MOST or \
+    return _scratch_place(name, place, since=scratch_guard_cleared(store, name)) >= SCRATCH_GUARD_MOST or \
         len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_ALL
 
 

@@ -603,9 +603,9 @@ def lockouts_publish(d, force=False):
     now = time.time()
     if not force and sig == LOCKOUTS_SENT['sig'] and now - LOCKOUTS_SENT['at'] < 60:
         return rows
-    many = bool(CONFIG.get('ha_mode')) or len(d.cluster_nodes()) > 1
-    if many:
-        d.store.set_meta('lockouts:' + node_name(), json.dumps({'at': now, 'rows': rows}))
+    # On a server alone too (1.0.187): the command line reads it there
+    # (otp --lockouts), the daemon's counts being in its memory only.
+    d.store.set_meta('lockouts:' + node_name(), json.dumps({'at': now, 'rows': rows}))
     LOCKOUTS_SENT.update(sig=sig, at=now)
     return rows
 
@@ -698,8 +698,7 @@ def lockouts_shared_clear(store, kind, who, by):
         if not store.token(who):
             return 0
         store.token_write(who, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
-        node_key_drop(store, 'scratchguard', who)
-        scratch_guard_clear(who)
+        scratch_guard_give_back(store, who)
         store.add_event('tokens', '%s let %s try again at once' % (by, who), who=by)
         return 1
     return 0
@@ -2083,8 +2082,7 @@ def _token_act(h, s, b, act, name, who):
         return {'scratch': codes, 'message': '%d new recovery codes' % len(codes)}
     if act == 'unlock':
         h.store.token_write(name, {'failures': 0, 'fail_times': '[]', 'locked_until': None})
-        node_key_drop(h.store, 'scratchguard', name)
-        scratch_guard_clear(name)
+        scratch_guard_give_back(h.store, name)
         h.store.add_event('tokens', '%s let %s try again at once' % (who, name), who=who)
         return {'message': 'the wrong codes are forgotten'}
     if act == 'rename':
@@ -3038,20 +3036,11 @@ def _settings_do(h):
         raise ApiError(400, 'the database is changed on Settings - The database with its own '
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
-    was_2fa = bool(CONFIG.get('admin_2fa'))
     try:
-        got = h.d.save_settings(asked, by=s['name'], node=b.get('node'),
-                                drawn_by=b.get('drawn_by'))
-        if not was_2fa and CONFIG.get('admin_2fa'):
-            # The second step for those signed in already too (1.0.149): their
-            # sessions, opened with the password alone, stayed whole for hours.
-            # The one saving it stays - it is how it was switched on.
-            gone = h.store.db.run('DELETE FROM sessions WHERE kind = ? AND id <> ?',
-                                  ('admin', int(s.get('id') or 0)))
-            if gone:
-                h.store.add_event('accounts', 'the second step was switched on: %d other '
-                                  'sign-in(s) to the pages ended' % gone, 'warn', who=s['name'])
-        return got
+        # The other sign-ins ended when the second step is switched on: in
+        # save_settings, the one saving it kept.
+        return h.d.save_settings(asked, by=s['name'], node=b.get('node'),
+                                 drawn_by=b.get('drawn_by'), keep_session=s.get('id'))
     except NodeMoved as e:
         raise ApiError(409, str(e))
     except HiSecConflict as e:

@@ -3,7 +3,8 @@
 *Settings → Automatic certificates*, for a full administrator, off until switched
 on. The certificate of the VIP address - and, where asked, each node's own - is
 ordered from an ACME CA and renewed by itself when fewer than `acme_days` (30)
-days are left. A failed try is tried again after 6 hours; the alerts tell of a
+days are left - or, for a certificate that lasts less (short-lived certificates),
+when a third of its life is left. A failed try is tried again after 6 hours; the alerts tell of a
 certificate running out as always.
 
 | Setting | |
@@ -15,7 +16,9 @@ certificate running out as always.
 | `acme_key` | ECDSA P-256 or RSA 2048 |
 
 The account key (ECDSA P-256) is made once and kept sealed in the database; every
-request is signed with it (ES256, with openssl). The certificate and its key go
+request is signed with it (ES256, with openssl). An account the CA no longer knows
+(deleted, deactivated) is made anew by itself, with a new key, and the request asked
+again. The certificate and its key go
 where an uploaded one goes, and every node serving it puts it in.
 
 ## In a cluster

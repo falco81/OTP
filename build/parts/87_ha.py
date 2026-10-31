@@ -1217,6 +1217,12 @@ def once_tidy(store):
             last = 0
         if t - last > 86400:
             store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'scratchclear:%'"):
+        try:
+            if t - float(r['v'] or 0) > 86400:      # older than every place it hides (1.0.187)
+                store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+        except (ValueError, TypeError):
+            store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
     for kind, keep in ONCE_KEEP_S.items():
         store.db.run('DELETE FROM token_once WHERE substr(k, 1, ?) = ? AND ts < ?',
                      (len(kind) + 1, kind + ':', t - keep))

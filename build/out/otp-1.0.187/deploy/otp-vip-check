@@ -1,7 +1,8 @@
 #!/bin/sh
 # otp-vip-check - what keepalived asks about the cluster's web address (otp 1.0.47).
 #   ok       may this node hold it? otp writes /run/otp/vip-state every few seconds;
-#            stale (otp not running), missing or "fail ..." (maintenance, an upgrade)
+#            stale (otp not running: no word for 10 s - it writes every 3), missing or
+#            "fail ..." (maintenance, an upgrade)
 #            is no.
 #   prefer   is this the node it is meant to be on (moved on the pages)?
 #   notify   keepalived saying what this node now is: MASTER, BACKUP or FAULT.
@@ -11,8 +12,12 @@ f=/run/otp/vip-state
 case "$1" in
   ok)
     [ -f "$f" ] || exit 1
+    # otp gone (a crash): seen at once by its lock file's process, not after
+    # 10 s of no word (1.0.187).
+    p=$(cat /var/lib/otp/otp.lock 2>/dev/null)
+    case "$p" in ''|*[!0-9]*) ;; *) kill -0 "$p" 2>/dev/null || [ -d "/proc/$p" ] || exit 1 ;; esac
     now=$(date +%s); at=$(stat -c %Y "$f" 2>/dev/null) || exit 1
-    [ $((now - at)) -le 20 ] || exit 1
+    [ $((now - at)) -le 10 ] || exit 1
     head -c 2 "$f" | grep -q '^ok' ;;
   prefer)
     [ -f "$f" ] || exit 1

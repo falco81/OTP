@@ -14,7 +14,7 @@ os.makedirs(D + '/run')
 os.makedirs(D + '/web')
 os.makedirs(D + '/sms')
 import socket
-API, RAD, WANT = 30991, 36920, 18131
+API, RAD, WANT = 30991, 36920, 18157   # in the gate's range, and not the HA sandbox's 18121-18132
 # Something else on the port asked for: the gate takes the next free one.
 BUSY = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 BUSY.bind(('127.0.0.1', WANT))
