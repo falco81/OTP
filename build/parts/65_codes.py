@@ -1224,7 +1224,7 @@ def code_message(kind, to, code, purpose='signin', lang=None, name='', display='
     site = str(CONFIG.get('site_name') or socket.gethostname())
     msg = EmailMessage()
     msg['Subject'] = code_words(cp['subject'], lang=lang, w=w, code=code)
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     msg['From'] = formataddr((str(CONFIG.get('mail_from_name') or site), sender))

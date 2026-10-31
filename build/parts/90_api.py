@@ -4178,7 +4178,11 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 else:
                     want[base] = v
             if want:
-                daemon.save_settings(want, by)
+                # The cluster's own value (1.0.206): a node's setting shared in the
+                # file was saved for the node that imported it alone - and with
+                # "replace" then taken away again.
+                daemon.save_settings(want, by, node='*')
+                imported_keys |= set(want)
                 said['settings'] += len(want)
             # A node's own after the shared ones (1.0.146): on a machine of its
             # own a node's value is kept as the plain key, and the file's shared

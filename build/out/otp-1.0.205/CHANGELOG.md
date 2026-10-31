@@ -9,7 +9,9 @@ the folder and of the archive.
 **A bug hunt, first round**: the whole program read through by area - RADIUS and
 signing in, the database and the cluster, the pages and their API, the root helper,
 ACME, TLS and the backups, the pages' scripts and the command line - each finding shown
-to fail before it was mended (`tests/round/t_round1.py`, 29 of 29).
+to fail before it was mended (`tests/round/t_round1.py`, 29 of 29). On Python 3.14.8: the
+whole suite, the cluster of two (`t_ha_auth.py` 57 of 57, `t_ha_acme.py` 36 of 36,
+`t_ha_alerts.py` 13 of 13).
 
 Signing in and the cluster:
 - **A code used on one node was taken again on the other while the replication from it

@@ -1119,6 +1119,14 @@ class Daemon(object):
                             'not from %s' % (', '.join(sorted(file_side)), node, node_name()))
         db_side = {k: v for k, v in checked.items() if k not in FILE_ONLY_KEYS}
         saved_now = self.store.settings_saved()
+        # The proxy's uses kept as rows of their own, off too (1.0.206): a 0 equal
+        # to the default was dropped, and the setting of before 1.0.202 that
+        # keeps a proxy on for the updates switched them on again at once. The
+        # proxy switched on now: its uses as they are set, off unless said.
+        if 'proxy' in db_side:
+            for k in ('proxy_update', 'proxy_os'):
+                if k not in saved_now and k not in db_side:
+                    db_side[k] = int(CONFIG.get(k) or 0) if not db_side.get('proxy') else 0
         for k, v in db_side.items():
             if k in NODE_KEYS and many and not cluster_wide:
                 shared = saved_now.get(k, FILE_CONFIG.get(k, DEFAULTS[k]))
@@ -1127,7 +1135,7 @@ class Daemon(object):
                 else:
                     self.store.save_setting(k + '@' + node, v, by)
                 continue
-            if v == FILE_CONFIG.get(k, DEFAULTS[k]):
+            if v == FILE_CONFIG.get(k, DEFAULTS[k]) and k not in ('proxy_update', 'proxy_os'):
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)

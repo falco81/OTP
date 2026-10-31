@@ -951,7 +951,7 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
     text += ['-- ', plain('foot')]
     msg = EmailMessage()
     msg['Subject'] = w['subject'].format(site=site)
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     msg['From'] = formataddr((str(CONFIG.get('mail_from_name') or site), sender))
@@ -976,7 +976,7 @@ def test_mail(to, lang='cs'):
     site = str(CONFIG.get('site_name') or socket.gethostname())
     msg = EmailMessage()
     msg['Subject'] = ('Zkušební zpráva z %s' if lang == 'cs' else 'A test message from %s') % site
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     msg['From'] = formataddr((str(CONFIG.get('mail_from_name') or site), sender))
@@ -1333,3 +1333,11 @@ def mailq_drop(store, qids, by=''):
         store.add_event('mail', '%s took %d mail(s) out of the outgoing mail' % (
             by or 'somebody', n), 'warn', who=by or None)
     return n
+
+
+def mail_sender():
+    """The address mail goes out from (1.0.206): "Name <addr>" saved before it
+    was refused is taken as its address - the server refused the header."""
+    from email.utils import parseaddr as _pa
+    got = str(CONFIG.get('mail_from') or '').strip()
+    return (_pa(got)[1] or got) if got else ''

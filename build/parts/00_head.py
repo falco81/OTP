@@ -1880,7 +1880,29 @@ def check_setting(key, value):
             and not re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', str(got).strip()):
         raise BadSetting('isemon_hostname: a host name has letters, digits, dots and '
                          'dashes and nothing else')
+    if key in ('mail_from', 'mail_reply_to') and str(got).strip():
+        # An address, and only that (1.0.206): "OTP <otp@firma.cz>" was taken, and
+        # every mail went out with a From the server refused - the name goes in
+        # From (name). The address in it taken as the value.
+        import email.utils as _eu
+        addr = _eu.parseaddr(str(got).strip())[1]
+        if not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', addr or ''):
+            raise BadSetting('%s: %r is not a mail address' % (key, got))
+        got = addr
+    if isinstance(got, str) and key in SETTING_STRIPPED:
+        # As it was checked (1.0.206): "127.0.0.1 " passed as an address and was
+        # kept with its space - RADIUS bound to it, and to nothing.
+        got = got.strip()
     return got
+
+
+SETTING_STRIPPED = frozenset((
+    'radius_bind', 'snmp_bind', 'snmp_user', 'snmp_trap_to', 'node_name', 'db_host', 'db_name',
+    'db_user', 'ha_address', 'ha_peer', 'alerts_url', 'backup_at', 'rbackup_at', 'report_at',
+    'osup_check_at', 'osup_auto_at', 'power_auto_at', 'acme_email', 'acme_url', 'acme_dns_url',
+    'acme_dns_server', 'acme_desec_domain', 'acme_dns_alias', 'acme_dns_zone',
+    'acme_dns_tsig_name', 'acme_dns_user', 'acme_dns_subdomain', 'acme_node_name',
+    'siem_hostname', 'isemon_hostname', 'proxy_url'))
 
 
 CONFIG_LOADED = [False]

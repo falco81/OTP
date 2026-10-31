@@ -448,7 +448,7 @@ def _al_h(text):
 
 
 def _al_msg(subject, page, text, to):
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     site = str(CONFIG.get('site_name') or socket.gethostname())
