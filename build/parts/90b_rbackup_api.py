@@ -315,8 +315,10 @@ def _rbackup_upload(h):
             pass
     up = secrets.token_hex(8)
     dst = RB_UPLOADS / up
-    h.body_to_file(dst, 4 * 1024 ** 3)            # as nginx takes (1.0.139)
     try:
+        # Inside the try (1.0.205): one that did not arrive whole, or too big,
+        # stayed behind - up to 4 GB until the next upload an hour later.
+        h.body_to_file(dst, 4 * 1024 ** 3)        # as nginx takes (1.0.139)
         with open(str(dst), 'rb') as f:
             head = f.read(8)
         if not (head.startswith(b'Salted__') or head.startswith(b'\x1f\x8b')):
@@ -332,8 +334,11 @@ def _rbackup_upload(h):
             return {'upload': up, 'locked': head.startswith(b'Salted__'), 'manifest': m}
         finally:
             shutil.rmtree(work, ignore_errors=True)
-    except ApiError:
-        dst.unlink()
+    except BaseException:
+        try:
+            dst.unlink()
+        except OSError:
+            pass
         raise
 
 
@@ -357,6 +362,11 @@ def _rbackup_download(h):
             raise ApiError(403, 'without a password of the backups the file would hold every '
                                 'token\'s key unlocked: set the password first')
         path, m, _md = rb_build(h.store, str(work))
+        if not m.get('encrypted'):
+            # The password asked again as it was locked (1.0.205): taken away during
+            # a long dump, the file came out unlocked - it is not handed out.
+            raise ApiError(409, 'the backup came out unlocked (its password was taken away '
+                                'meanwhile) - it is not handed out; set the password and ask again')
         h.store.add_event('backups', '%s downloaded a backup made for it (%s, %s)' % (
             s['name'], m['file'], 'locked' if m['encrypted'] else 'NOT locked'),
             'info' if m['encrypted'] else 'warn', who=s['name'])

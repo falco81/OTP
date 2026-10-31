@@ -3135,7 +3135,7 @@ def _isemon_tls_do(h, s, b, act):
         if not verify and hisec_enforced('isemon', store):
             raise ValueError('high security is on: isemon\'s certificate is checked')
         keep = [t for t in syslog_targets(CONFIG.get('isemon_targets')) if t[0] != host]
-        targets = ['%s:%d/%s' % t for t in keep] + ['%s:%d/tls' % (host, port)]
+        targets = [syslog_target_text(*t) for t in keep] + [syslog_target_text(host, port, 'tls')]
         ca = hatls_trust(hatls_ca(store)) if src == 'otp' else (pem if src == 'given' else '')
         h.d.save_settings({'isemon': 1, 'isemon_targets': ', '.join(targets), 'isemon_ca': ca,
                            'isemon_verify': 1 if verify else 0,
@@ -3147,8 +3147,8 @@ def _isemon_tls_do(h, s, b, act):
                 'tls': isemon_tls_view(store)}
     if act == 'tls_off':
         host = str(b.get('host') or '').strip().strip('[]')
-        targets = ['%s:%d/%s' % ((t[0], 514, 'tcp') if t[2] == 'tls' and (not host or t[0] == host)
-                                 else t) for t in syslog_targets(CONFIG.get('isemon_targets'))]
+        targets = [syslog_target_text(*((t[0], 514, 'tcp') if t[2] == 'tls' and (not host or t[0] == host)
+                                        else t)) for t in syslog_targets(CONFIG.get('isemon_targets'))]
         if hisec_enforced('isemon', store):
             raise ValueError('high security is on: isemon is sent to over TLS only')
         h.d.save_settings({'isemon_targets': ', '.join(targets), 'isemon_mtls': 0}, by=s['name'])
@@ -3824,12 +3824,20 @@ def _db_do(h):
                 # held then, and everything since was out of sight.
                 if not b.get('even_older'):
                     try:
+                        # The codes used as well as the events (1.0.205): a recovery
+                        # code used between the carry and this press is in
+                        # token_once alone - and was usable again on the new one.
+                        # (A code's time step is good a minute at most: not waited for.)
+                        def newest(db):
+                            return max(float(db.value('SELECT MAX(ts) FROM events') or 0),
+                                       float(db.value("SELECT MAX(ts) FROM token_once WHERE k "
+                                                      "LIKE 'scratch:%'") or 0))
                         far = db_open(c)
                         try:
-                            there = float(far.value('SELECT MAX(ts) FROM events') or 0)
+                            there = newest(far)
                         finally:
                             far.close()
-                        here = float(h.store.db.value('SELECT MAX(ts) FROM events') or 0)
+                        here = newest(h.store.db)
                     except Exception:                   # noqa: BLE001
                         there = here = 0
                     if there and here and there < here - 60:
@@ -3985,6 +3993,15 @@ def config_export(store, whole):
                     prof[kk] = unseal_secret(prof[kk], 'web:tls') or ''
                 else:
                     prof.pop(kk)
+        # The second certificate's key as the first's (1.0.205): left sealed with
+        # this machine's key, it opened nowhere else - and nginx's every change
+        # was refused there ("a certificate needs its key").
+        alt = prof.get('alt')
+        if isinstance(alt, dict):
+            if whole and alt.get('key'):
+                prof['alt'] = dict(alt, key=unseal_secret(alt['key'], 'web:tls') or '')
+            else:
+                prof.pop('alt')
         tls[r['k'][len('web:tls:'):]] = prof
 
     def meta_json(k):
@@ -4223,6 +4240,12 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     prof[kk] = seal_secret(prof[kk], 'web:tls')
                 else:
                     prof.pop(kk, None)
+            alt = prof.get('alt')
+            if isinstance(alt, dict) and isinstance(alt.get('key'), str) and alt['key'].strip() \
+                    and not alt['key'].startswith(('sealed:', SEALED2)):
+                prof['alt'] = dict(alt, key=seal_secret(alt['key'], 'web:tls'))
+            else:
+                prof.pop('alt', None)       # without its own key it is nothing (1.0.205)
             target = mapping.get(t, t)
             old_key = (_json_meta(store, 'web:tls:' + target) or {}).get('key')
             if not prof.get('key') and old_key:
@@ -4621,6 +4644,10 @@ def _portal_login(h):
         entry = Authenticator.find_person(ad, full, how, realm)
         if not entry:
             raise LdapError('there is no such account')
+        if entry.get('many'):
+            # More than one account answers to the name (1.0.205): as RADIUS
+            # refuses it - the token could be made for the wrong one.
+            raise LdapError('more than one account answers to that name')
         if entry_unusable(entry):
             raise LdapError('the account may not sign in: %s' % entry_unusable(entry))
         ad.password_ok(entry, password)
@@ -4705,43 +4732,64 @@ def portal_same_person(store, realm, entry):
     any realm on the same directory, or bare - '' when none."""
     sam = str(entry.get('sam') or '').strip()
     upn = str(entry.get('upn') or '').strip()
-    names = []
+    names = []                          # (name, what it is: 'upn' or 'sam')
+    star = False
     if upn:
-        names.append(upn)
+        names.append((upn, 'upn'))
     if sam:
-        names.append(sam)
+        names.append((sam, 'sam'))
         for r in store.realms():
             if str(r.get('directory') or '').lower() != str(realm.get('directory') or '').lower():
                 continue
             suf = str(r.get('suffix') or '')
-            if suf and suf != '*':
-                names.append('%s@%s' % (sam, suf))
+            if suf == '*':
+                star = True
+            elif suf:
+                names.append(('%s@%s' % (sam, suf), 'sam'))
                 # And under its other suffixes (1.0.117), for a token made
                 # before they were.
                 for al in r.get('aliases') or []:
-                    names.append('%s@%s' % (sam, al))
+                    names.append(('%s@%s' % (sam, al), 'sam'))
     here = str(realm.get('directory') or '').lower()
 
-    def same_directory(cand):
+    def same_directory(cand, what):
         # Only a name whose own realm reads the same directory is the same
         # person (1.0.59): a bare "novak" can be a different Novak in a realm
-        # on another directory.
+        # on another directory. And only as that realm reads its names
+        # (1.0.205): in a realm that looks names up by the account name,
+        # "jan.novak@corp.cz" is the account jan.novak - not whoever has
+        # that userPrincipalName; another person's token was taken for his.
         r = store.realm_for(cand)
-        return bool(r) and str(r.get('directory') or '').lower() == here
-    names = [n for n in names if same_directory(n)]
+        if not r or str(r.get('directory') or '').lower() != here:
+            return False
+        how = r.get('lookup')
+        return how not in ('upn', 'sam') or how == what
+    names = [(n, w) for n, w in names if same_directory(n, w)]
     seen = set()
-    for n in names:
+    for n, w in names:
         for cand in (n, n.lower()):
             if cand in seen:
                 continue
             seen.add(cand)
             if store.token(cand):
                 return norm_name(cand)
-    want = set(x.lower() for x in names)
+    want = {}
+    for n, w in names:
+        want.setdefault(n.lower(), w)
     if want:
         for row in store.db.rows('SELECT name FROM tokens WHERE LOWER(name) IN (%s)'
                                  % ','.join('?' * len(want)), tuple(sorted(want))):
-            if same_directory(row['name']):
+            if same_directory(row['name'], want.get(row['name'].lower(), 'sam')):
+                return row['name']
+    if sam and star:
+        # A realm of every suffix on this directory (1.0.205): the account's
+        # token under any suffix is its own - typed with another one, a
+        # second token was made with the password alone, and let in.
+        like = re.sub(r'([!%_])', r'!\1', sam.lower()) + '@%'
+        for row in store.db.rows("SELECT name FROM tokens WHERE LOWER(name) LIKE ? ESCAPE '!'",
+                                 (like,)):
+            if row['name'].lower().split('@', 1)[0] == sam.lower() and \
+                    same_directory(row['name'], 'sam'):
                 return row['name']
     return ''
 
@@ -5394,8 +5442,10 @@ CODE_NOW_LOCK = threading.Lock()
 
 @route('GET', '/api/ha')
 def _ha(h):
-    h.me()
-    return {'node': node_name(), 'address': node_address(), 'nodes': ha_nodes(h.store),
+    me = h.me()
+    nodes = [dict(n, web=web_unmapped(n['web'], me)) if isinstance(n, dict) and 'web' in n else n
+             for n in ha_nodes(h.store)]
+    return {'node': node_name(), 'address': node_address(), 'nodes': nodes,
             'replication': ha_repl_state(h.store), 'job': job_read(),
             'checks': ha_checks(h.store), 'engine': h.store.db.engine,
             'mode': CONFIG.get('ha_mode') or '',
@@ -5576,6 +5626,22 @@ def _ha_do(h):
 
 
 # ---- TLS and the cluster's VIP address (1.0.47) ------------------------------------
+def web_unmapped(web, me):
+    """A node's web state without the firewall's rules and the access lists for
+    an account that only reads (1.0.205): /api/firewall keeps them from it as
+    the map of the network, and /api/web, /api/ha gave them all the same."""
+    if (me or {}).get('role') in ('fulladmin', 'tokenadmin') or not isinstance(web, dict):
+        return web
+    return {k: v for k, v in web.items() if k not in ('fw', 'access')}
+
+
+def syslog_target_text(host, port, proto):
+    """host:port/proto as a target is written - an IPv6 address in brackets
+    (1.0.205): written bare, it was refused when saved, and TLS could be
+    switched neither on nor off."""
+    return '%s:%d/%s' % ('[%s]' % host if ':' in str(host) else host, int(port), proto)
+
+
 @route('GET', '/api/web')
 def _web(h):
     me = h.me()
@@ -5584,11 +5650,11 @@ def _web(h):
     for n in ha_nodes(store):
         one = {k: n.get(k) for k in ('name', 'me', 'alive', 'address', 'version', 'maintenance',
                                      'age', 'host')}
-        one['web'] = web_state(store) if n['me'] else (n.get('web') or {})
+        one['web'] = web_unmapped(web_state(store) if n['me'] else (n.get('web') or {}), me)
         nodes.append(one)
     if not any(x['me'] for x in nodes):
         nodes.insert(0, {'name': node_name(), 'me': True, 'alive': True,
-                         'address': node_address(), 'web': web_state(store)})
+                         'address': node_address(), 'web': web_unmapped(web_state(store), me)})
     v = vip_conf(store)
     holder = [x['name'] for x in nodes if (x.get('web') or {}).get('vip_here')]
     return {'node': node_name(), 'cluster': bool(CONFIG.get('ha_mode')), 'nodes': nodes,

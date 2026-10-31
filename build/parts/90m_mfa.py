@@ -214,7 +214,7 @@ def _mfa_do(h):
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
         if new['kind'] == 'app':
             secret = unseal_secret(new.get('secret'), 'adm2fa-new:' + name.lower())
-            step = totp_match(secret, code, digits=6, window=int(CONFIG.get('totp_window') or 1)) \
+            step = totp_match(secret, code, digits=6, window=mfa_window()) \
                 if secret else None
             if step is None:
                 h.failed(key)
@@ -263,8 +263,15 @@ def _mfa_do(h):
                 rec = mfa_get(h.store, name) or {}
                 secret = unseal_secret(rec.get('secret'), mfa_key(name))
                 step = totp_match(secret, code, digits=6,
-                                  window=int(CONFIG.get('totp_window') or 1)) if secret else None
+                                  window=mfa_window()) if secret else None
                 # A code is good once (as a token's is).
+                # And on either node (1.0.205): the step taken as a token's is, in
+                # token_once - the other node's own lock did not keep a code used
+                # here from being used there too.
+                if step is not None and step > int(rec.get('step') or 0) and \
+                        not once_take(h.store, 'step', 'adm2fa:' + name, step):
+                    h.failed(key)
+                    raise ApiError(400, 'that code was used already - wait for the next one')
                 if step is None or step <= int(rec.get('step') or 0):
                     h.failed(key)
                     raise ApiError(400, 'that code is not right' if step is None else
@@ -279,3 +286,13 @@ def _mfa_do(h):
         token = _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
         return {'message': 'signed in', 'done': True, 'token': token}
     raise ApiError(400, 'no such thing to do')
+
+
+def mfa_window():
+    """The steps either side a code is taken from (1.0.205): 0 as it is set -
+    `or 1` made the strict window the usual one."""
+    v = CONFIG.get('totp_window')
+    try:
+        return max(0, int(v)) if v is not None and v != '' else 1
+    except (TypeError, ValueError):
+        return 1

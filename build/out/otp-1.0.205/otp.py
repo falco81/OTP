@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.204'
+__version__ = '1.0.205'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2153,11 +2153,37 @@ def token_bind(name):
     return 'token:' + str(name or '').strip().lower()
 
 
+SEAL_GUARD = {'db': None}         # the database of this process, for _sealed_held
+
+
+def _sealed_held():
+    """Whether the database holds tokens sealed with a key (it cannot be asked:
+    held, to be safe)."""
+    db = SEAL_GUARD.get('db')
+    if db is None:
+        return False
+    try:
+        return bool(int(db.value("SELECT COUNT(*) FROM tokens WHERE secret LIKE 'sealed:%'",
+                                 (), 0) or 0))
+    except Exception:                                   # noqa: BLE001
+        return True
+
+
 def seal_secret(text, bind=None):
     """Sealed with the key of this installation: a keystream from HMAC-SHA256,
     then a tag over it. With `bind`, the tag covers that too (sealed:2:), so
     the value opens only where it was sealed for."""
-    key = sealing_key(make=True)
+    key = sealing_key()
+    if not key:
+        # No new key while the database holds tokens sealed with one (1.0.205):
+        # the first secret sealed after the key was lost - a client saved, an
+        # enrolment - made a new one, past the daemon's own refusal at its
+        # start; the tokens stayed lost, and two nodes sealed each with its own.
+        if _sealed_held():
+            raise OSError('%s is missing, and the database holds tokens sealed with it: no '
+                          'new key is made - put the key back (it is beside every backup)'
+                          % sealing_key_path())
+        key = sealing_key(make=True)
     if not key:
         raise OSError('no key to seal with')
     data = str(text).encode('utf-8')
@@ -3337,6 +3363,15 @@ class Db(object):
                                        isolation_level=None,
                                        timeout=self.RADIUS_SQLITE_BUSY_S if quick else 30)
                 conn.row_factory = sqlite3.Row
+                # LOWER() over every letter, as PostgreSQL and MariaDB do it
+                # (1.0.205): SQLite's own takes A-Z only - "Žofie" was never found
+                # again by its name, and could neither sign in nor be dropped.
+                try:
+                    conn.create_function('lower', 1, lambda v: v.lower() if isinstance(v, str)
+                                         else v, deterministic=True)
+                except (sqlite3.Error, TypeError):
+                    conn.create_function('lower', 1, lambda v: v.lower() if isinstance(v, str)
+                                         else v)
                 try:
                     conn.execute('PRAGMA journal_mode=WAL')
                     conn.execute('PRAGMA synchronous=NORMAL')
@@ -6453,6 +6488,7 @@ class Storage(object):
 
     def __init__(self, db, quick=False):
         self.db = db
+        SEAL_GUARD['db'] = db           # asked before a new key is made (1.0.205)
         # The command line (and so the console, every 20 s) made the tables,
         # indexes and triggers again on each run (1.0.136): on PostgreSQL
         # that takes locks that hold every RADIUS write behind them. Now it
@@ -8566,7 +8602,11 @@ def scratch_guard_clear(name):
 def scratch_guard_note(store, name, place=''):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
-    here = _scratch_place(name, place, add=True, since=scratch_guard_cleared(store, name))
+    # No place known (no Calling-Station-Id): every request one "place", and its
+    # limit everybody's - a stranger with the name alone stopped its owner's
+    # recovery codes for a day (1.0.205). Then only the day's limit counts.
+    here = _scratch_place(name, place, add=True, since=scratch_guard_cleared(store, name)) \
+        if place else 0
     before = len(scratch_guard_times(store, name))
     node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_ALL * 2)
     times = scratch_guard_times(store, name)
@@ -8585,8 +8625,8 @@ def scratch_guard_note(store, name, place=''):
 def scratch_guarded(store, name, place=None):
     if place is None:
         place = getattr(REQUEST_PLACE, 'v', '') or ''
-    return _scratch_place(name, place, since=scratch_guard_cleared(store, name)) >= SCRATCH_GUARD_MOST or \
-        len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_ALL
+    return (bool(place) and _scratch_place(name, place, since=scratch_guard_cleared(store, name))
+            >= SCRATCH_GUARD_MOST) or len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_ALL
 
 
 def entry_unusable(entry, locked=True):
@@ -8616,6 +8656,13 @@ def computer_account(r):
     return str((a.get('samaccountname') or [''])[0]).endswith('$')
 
 
+def dn_norm(dn):
+    """A DN as it is compared (1.0.205): lower case, no spaces around the
+    commas and equals signs that part it - "CN=VPN Users, OU=Groups" copied
+    from a page matched nothing AD said."""
+    return re.sub(r'(?<!\\)\s*([,=])\s*', r'\1', str(dn or '').strip().lower())
+
+
 def group_matches(wanted, have, ad=None):
     """Whether any group in `have` ([(dn, cn)]) is one of `wanted` (names or
     DNs). Returns the wanted entry that matched first, in `wanted`'s order.
@@ -8623,18 +8670,22 @@ def group_matches(wanted, have, ad=None):
     A name without its place is the one group `ad` says it is (1.0.101), by
     its DN - never any group of that cn wherever it is. Without `ad` to ask,
     a name alone matches nothing."""
-    by_dn = {dn.lower() for dn, _ in have}
+    by_dn = {dn_norm(dn) for dn, _ in have}
     by_cn = {str(cn).lower() for _, cn in have}
     for one in wanted:
         said = str(one.get('group') if isinstance(one, dict) else one).strip()
         if not said:
             continue
         if '=' in said and ',' in said:
-            if said.lower() in by_dn:
+            if dn_norm(said) in by_dn:
                 return one
         elif said.lower() in by_cn and ad is not None:
             try:
-                dns = ad.group_dns(said)
+                dns = {dn_norm(x) for x in ad.group_dns(said)}
+            except LdapUnreachable:
+                # The directory not answering is not "not a member" (1.0.205):
+                # said as it is, and never counted as somebody guessing.
+                raise
             except LdapError as e:
                 # Not known which group it is: no match, never a guess.
                 log_sparing('group-dns', 'the group %s could not be looked up in %s: %s'
@@ -9694,8 +9745,14 @@ class Siem(object):
     def configure(self):
         self.targets = siem_targets(CONFIG.get('siem_targets')) if CONFIG.get('siem') else []
         self.ctx = None
+        # Every connection made again when its TLS changed (1.0.205): one made
+        # without checking the server went on unchecked after the check was
+        # switched on, until it broke - weeks.
+        tls = (CONFIG.get('siem_verify'), CONFIG.get('siem_ca'))
+        again = tls != getattr(self, '_tls_was', tls)
+        self._tls_was = tls
         for key, sock in list(self.conns.items()):
-            if key not in self.targets:
+            if again or key not in self.targets:
                 try:
                     sock.close()
                 except OSError:
@@ -11695,7 +11752,11 @@ class Authenticator(object):
                 except LdapError as e:
                     d.step('the groups of %s' % d.user, False, str(e), t)
                     return d.refuse('LDAP server(s) have gone away')
-                hit = group_matches(wanted, have, ad)
+                try:
+                    hit = group_matches(wanted, have, ad)
+                except LdapError as e:
+                    d.step('the group of %s looked up' % d.user, False, str(e), t)
+                    return d.refuse('LDAP server(s) have gone away')
                 if not hit:
                     names = ', '.join(cn_of(w.get('group') or '') or w.get('group') or ''
                                       for w in wanted[:6]) + (' …' if len(wanted) > 6 else '')
@@ -14392,10 +14453,16 @@ class Daemon(object):
                     except Exception as e:      # noqa: BLE001
                         log_sparing('dropold-tick', 'the other node\'s old address: %s' % e,
                                     'warn', every=600)
-                    try:
-                        readdress_tick(self.store, self)    # told a new address (1.0.106)
-                    except Exception as e:      # noqa: BLE001
-                        log_sparing('tick:readdress:' + str(e)[:80], 'a new address of the cluster: %s' % e, 'warn', 3600)
+                    # In a thread of its own (1.0.205): it waits up to a minute on the
+                    # root helper, and the heartbeat waited with it - the other
+                    # node took this one for gone.
+                    def readdress(daemon=self):
+                        try:
+                            readdress_tick(daemon.store, daemon)    # told a new address (1.0.106)
+                        except Exception as e:      # noqa: BLE001
+                            log_sparing('tick:readdress:' + str(e)[:80],
+                                        'a new address of the cluster: %s' % e, 'warn', 3600)
+                    self.background('readdress', readdress)
                 try:
                     online_tick(self)           # a new version on the web (1.0.123)
                 except Exception as e:          # noqa: BLE001
@@ -18690,8 +18757,8 @@ def rb_client_cert_given(text, password=''):
             raise ValueError('a client certificate needs its certificate and its private key')
         key = m.group(0) + '\n'
         if 'ENCRYPTED' in key:
-            key = _openssl(['pkey', '-passin', 'env:OTP_PW'], key.encode(),
-                           env={'OTP_PW': password}, what='the key (its password)').decode()
+            key = _openssl(['pkey', '-passin', 'fd:@'], key.encode(),
+                           secret=password, what='the key (its password)').decode()
         if _pub_of_key(key).strip() != _pub_of_cert(certs[0]).strip():
             raise ValueError('the key is not the one of this certificate')
         return key, '\n'.join(certs) + '\n'
@@ -18706,8 +18773,8 @@ def rb_client_cert_given(text, password=''):
         both = ''
         for extra in ([], ['-legacy']):
             try:
-                both = _openssl(['pkcs12', '-in', pf, '-nodes', '-passin', 'env:OTP_PW'] + extra,
-                                env={'OTP_PW': password}, what='the PFX (its password?)').decode()
+                both = _openssl(['pkcs12', '-in', pf, '-nodes', '-passin', 'fd:@'] + extra,
+                                secret=password, what='the PFX (its password?)').decode()
                 break
             except ValueError:
                 if extra:
@@ -19469,8 +19536,8 @@ def rb_build(store, work, progress=None):
         say(4, 'locked with the password of the backups')
         out = tar + '.enc'
         _openssl(['enc', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md', 'sha256',
-                  '-salt', '-in', tar, '-out', out, '-pass', 'env:OTP_RB_PASS'],
-                 env={'OTP_RB_PASS': pw}, what='locking it')
+                  '-salt', '-in', tar, '-out', out, '-pass', 'fd:@'],
+                 secret=pw, what='locking it')
         os.unlink(tar)
     h = hashlib.sha256()
     with open(out, 'rb') as f:
@@ -19545,6 +19612,11 @@ def rb_run(store, by, only=None, progress=None):
     run = {'at': began, 'by': by, 'node': node_name(), 'targets': [], 'ok': False}
     try:
         path, m, _md = rb_build(store, work, progress)
+        if not m.get('encrypted'):
+            # The password asked again as it was locked (1.0.205): taken away
+            # during a long dump, the copy came out unlocked - it is not sent.
+            raise RbError('the backup came out unlocked (its password was taken away meanwhile) '
+                          '- not sent anywhere')
         run.update(file=m['file'], bytes=m['bytes'], encrypted=m['encrypted'],
                    tokens=m['tokens'])
         sha = os.path.join(work, m['file'] + '.sha256')
@@ -19561,6 +19633,10 @@ def rb_run(store, by, only=None, progress=None):
                 tr.put(sha, os.path.basename(sha))
                 tr.put(md, os.path.basename(md))
                 got = {x['name']: x['size'] for x in tr.list()}
+                if m['file'] not in got:
+                    # Not there after it was sent (1.0.205): taken as sent, and
+                    # the old ones taken away after it.
+                    raise RbError('the server does not list it after it was sent')
                 if got.get(m['file']) not in (None, m['bytes']):
                     raise RbError('the server holds %s bytes of it, not %s' % (
                         got.get(m['file']), m['bytes']))
@@ -19780,8 +19856,8 @@ def rb_open(path, password, work):
         for n, pw in enumerate(tries):
             try:
                 _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
-                          'sha256', '-in', path, '-out', src, '-pass', 'env:OTP_RB_PASS'],
-                         env={'OTP_RB_PASS': pw}, what='opening it')
+                          'sha256', '-in', path, '-out', src, '-pass', 'fd:@'],
+                         secret=pw, what='opening it')
                 break
             except ValueError:
                 if n == len(tries) - 1:
@@ -20060,8 +20136,10 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
     try:
         say(1, 'the backups at %s listed' % t['name'])
         files = rb_remote_list(store, t['id'])
+        # This node's own, never another node's in its place (1.0.205): it was
+        # said to put back here, and this node's own missing went unnoticed.
         pick = [f for f in files if f['name'] == name] if name else \
-            ([f for f in files if f['mine']] or files)
+            [f for f in files if f['mine']]
         if not pick:
             raise RbError('there is no backup %s at %s' % (('called ' + name) if name else
                                                            'of this node', t['name']))
@@ -21236,8 +21314,7 @@ def ha_peer_columns():
 # writing its own: of two nodes asked for the same code at the same moment,
 # at least one sees the other's row - so it is never let in twice. (One may
 # refuse it when both see each other; the next code then goes through.)
-ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0,
-             'alive': True, 'alive_at': 0.0}
+ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0}
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
@@ -21266,22 +21343,6 @@ def once_peer_forget():
             pass
 
 
-def _once_peer_alive(store):
-    """Whether the other node has been heard from lately - looked at every 10 s
-    in this node's own database (1.0.186): a node restarted or switched off
-    for the night's updates is not asked, each sign-in let in waited for it."""
-    now = time.time()
-    if now - ONCE_PEER['alive_at'] < 10:
-        return ONCE_PEER['alive']
-    ONCE_PEER['alive_at'] = now
-    try:
-        others = [n for n in ha_nodes(store) if not n.get('me')]
-        ONCE_PEER['alive'] = not others or any(n.get('alive') for n in others)
-    except Exception:                                   # noqa: BLE001
-        ONCE_PEER['alive'] = True
-    return ONCE_PEER['alive']
-
-
 def _once_peer_has(k, me, store=None):
     """Whether the other node's database has the other node's row for `k`:
     True, False, or None when it cannot be asked just now. Asked on a
@@ -21291,8 +21352,11 @@ def _once_peer_has(k, me, store=None):
     sign-ins of a busy morning asked one after the other and timed out on each
     other - and the peer was taken for gone. Not asked again for 20 s, then
     longer each time it does not answer, up to 5 minutes."""
-    if store is not None and not _once_peer_alive(store):
-        return None
+    # Asked whatever its heartbeat says (1.0.205): the heartbeat comes through
+    # replication, and a replication stopped while the other node still lets
+    # people in made it look gone - a code used there was let in here again. A
+    # node really gone costs one sign-in 1.5 s now and then: not asked again
+    # for 20 s, then longer each time, up to 5 minutes (down_until below).
     with ONCE_PEER_LOCK:
         if ONCE_PEER['down_until'] > time.time():
             return None
@@ -23573,11 +23637,26 @@ def vip_prefer(store, conf=None):
 
 
 # ---- certificates: read, taken apart, made -----------------------------------
-def _openssl(args, data=None, env=None, what='openssl'):
+def _openssl(args, data=None, env=None, what='openssl', secret=None):
+    """openssl run; a passphrase (`secret`) handed over on a pipe of its own
+    (1.0.205), named 'fd:@' in args - never on the command line nor in the
+    environment, where /proc keeps it; stdin stays for the data."""
     e = dict(os.environ)
     e.update(env or {})
-    got = subprocess.run(['openssl'] + args, input=data, capture_output=True, env=e,
-                         timeout=120)
+    fds = ()
+    rd = wr = None
+    if secret is not None:
+        rd, wr = os.pipe()
+        args = ['fd:%d' % rd if a == 'fd:@' else a for a in args]
+        fds = (rd,)
+        os.write(wr, (str(secret) + '\n').encode('utf-8'))
+        os.close(wr)
+    try:
+        got = subprocess.run(['openssl'] + args, input=data, capture_output=True, env=e,
+                             timeout=120, pass_fds=fds)
+    finally:
+        if rd is not None:
+            os.close(rd)
     if got.returncode != 0:
         said = (got.stderr or got.stdout or b'').decode('utf-8', 'replace').strip()
         raise ValueError('%s: %s' % (what, (said.splitlines() or ['openssl said no'])[-1][:200]))
@@ -23707,8 +23786,7 @@ def _pub_of_key(pem):
 
 def key_plain(pem, password=''):
     """A private key without its passphrase, as PEM."""
-    return _openssl(['pkey', '-passin', 'env:OTP_PW'], pem.encode(),
-                    {'OTP_PW': password or ''},
+    return _openssl(['pkey', '-passin', 'fd:@'], pem.encode(), secret=password or '',
                     what='the key (a wrong or missing password?)').decode()
 
 
@@ -23722,8 +23800,8 @@ def cert_bundle(cert='', key='', chain='', root='', pfx=b'', password='', pendin
         got = None
         for extra in ([], ['-legacy']):
             try:
-                got = _openssl(['pkcs12', '-nodes', '-passin', 'env:OTP_PW'] + extra, pfx,
-                               {'OTP_PW': password or ''}, what='the PFX / PKCS#12 file')
+                got = _openssl(['pkcs12', '-nodes', '-passin', 'fd:@'] + extra, pfx,
+                               secret=password or '', what='the PFX / PKCS#12 file')
                 break
             except ValueError as e:
                 last = e
@@ -23846,7 +23924,10 @@ def make_csr(cn, names, kind='rsa2048', **subject):
         kf = os.path.join(t, 'k.pem')
         with open(kf, 'w') as f:
             f.write(key)
-        csr = _openssl(['req', '-new', '-key', kf, '-subj', _subject(cn, **subject),
+        # A name longer than a CN may be (64) goes in the names alone (1.0.205), as
+        # Let's Encrypt takes it - refused here, after the CA had been asked.
+        long_ = len(cn or '') > 64 and re.match(r'^[A-Za-z0-9*.-]{1,253}\Z', cn or '')
+        csr = _openssl(['req', '-new', '-key', kf, '-subj', '/' if long_ else _subject(cn, **subject),
                         '-addext', 'subjectAltName=' + _san_ext([cn] + list(names))],
                        what='the request').decode()
     return key, csr
@@ -25067,8 +25148,14 @@ class Acme(object):
         os.chmod(self.work, 0o700)
         self.nonce = None
         self.kid = None
-        self.dir = self._get(self.dir_url)[0]
-        self._account()
+        try:
+            self.dir = self._get(self.dir_url)[0]
+            self._account()
+        except BaseException:
+            # Its folder gone with it (1.0.205): every CA not answering left one,
+            # and after a refused account a key unsealed in it.
+            self.close()
+            raise
 
     def close(self):
         shutil.rmtree(self.work, ignore_errors=True)
@@ -25563,15 +25650,33 @@ def acme_order(store, target, name, by, say=None):
         got = cert_bundle(chain, key)
         info = got['info']
         alt = None
+        made = [kinds[0]]
         if len(kinds) > 1:
             # The second certificate (1.0.196, as Let's Encrypt advises): the name
             # is already proven, so the CA only signs - nginx offers it to the
             # clients that take it, RSA to the rest.
             say('a second certificate, with a %s key' % ACME_KEY_WORDS[kinds[1]])
-            k2, c2 = a.order([name], say, kinds[1])
-            g2 = cert_bundle(c2, k2)
-            alt = {'cert': g2['cert'], 'chain': g2['chain'], 'key': seal_secret(g2['key'], 'web:tls'),
-                   'info': g2['info'], 'for': tls_alt_for(got['cert'])}
+            try:
+                k2, c2 = a.order([name], say, kinds[1])
+                g2 = cert_bundle(c2, k2)
+                alt = {'cert': g2['cert'], 'chain': g2['chain'],
+                       'key': seal_secret(g2['key'], 'web:tls'),
+                       'info': g2['info'], 'for': tls_alt_for(got['cert'])}
+                made.append(kinds[1])
+            except (AcmeError, ValueError) as e:
+                # The first one kept all the same (1.0.205): thrown away with it,
+                # the CA's weekly limit for the name was spent on nothing, and
+                # every retry refused for a week.
+                say('the second certificate did not come (%s) - the %s one is put in alone'
+                    % (str(e)[:200], ACME_KEY_WORDS[kinds[0]]))
+                st['alt_said'] = str(e)[:300]
+        # As it is now, not as it was when the order began (1.0.205): an order
+        # takes minutes, an hour by hand - what was changed on Certificates and
+        # TLS meanwhile is kept, and one no longer looked after is left alone.
+        prof = tls_profile(store, target) or {}
+        if not acme_care(store, target):
+            raise AcmeError('ACME was told to leave this certificate alone while it was being '
+                            'ordered - the new one is not put in')
         if prof.get('cert') and prof.get('how') != 'ACME':
             # The certificate it had - uploaded, from your own CA - kept to go
             # back to (1.0.172): ACME switched off or left alone, it is put
@@ -25595,7 +25700,7 @@ def acme_order(store, target, name, by, say=None):
         tls_save(store, target, prof, by)
         st['kid'] = a.kid or ''
         st.update(ok=True, not_after=info.get('not_after'), issuer=info.get('issuer'),
-                  ordered_at=time.time(), keys=' + '.join(ACME_KEY_WORDS[k] for k in kinds))
+                  ordered_at=time.time(), keys=' + '.join(ACME_KEY_WORDS[k] for k in made))
         st['steps'] = steps[-25:]
         store.set_meta('acme:state:' + target, json.dumps(st))
         store.add_event('settings', 'a certificate for %s (%s) came from the CA, good until %s'
@@ -25677,17 +25782,28 @@ def acme_tick(daemon):
         threading.Thread(target=pub, name='otp-acme-host', daemon=True).start()
     if CONFIG.get('acme') and time.time() - ACME_ARI['at'] >= ACME_ARI_EVERY and not ACME_WORK['busy']:
         ACME_ARI['at'] = time.time()
-        threading.Thread(target=acme_ari_refresh, args=(daemon.store,), name='otp-acme-ari',
-                         daemon=True).start()
+        def ari(store=daemon.store):
+            with acme_dns_scope():      # the CA looked up as the orders look it up (1.0.205)
+                acme_ari_refresh(store)
+        threading.Thread(target=ari, name='otp-acme-ari', daemon=True).start()
     if not CONFIG.get('acme') or ACME_WORK['busy'] or \
             time.time() - ACME_WORK['at'] < ACME_EVERY:
         return
     ACME_WORK['at'] = time.time()
     store = daemon.store
-    due = [(t, n) for t, n in acme_targets(store) if acme_due(store, t, n)]
-    if not due:
-        return
-    acme_start(store, due, 'otp (renewal)')
+
+    def look():
+        # What is due worked out in a thread too (1.0.205): with no name given,
+        # a node's own is socket.getfqdn(), which waits on a DNS that does not
+        # answer - the main loop with it.
+        try:
+            due = [(t, n) for t, n in acme_targets(store) if acme_due(store, t, n)]
+            if due and not ACME_WORK['busy']:
+                acme_start(store, due, 'otp (renewal)')
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('acme-due', 'ACME: what is due could not be looked at: %s' % e, 'warn',
+                        every=3600)
+    threading.Thread(target=look, name='otp-acme-due', daemon=True).start()
 
 
 def acme_parallel_why(which):
@@ -26266,8 +26382,18 @@ _ACME_DNS = threading.local()
 _SYS_GETADDRINFO = socket.getaddrinfo
 
 
+def _acme_proxy_host():
+    """The proxy's own name: looked up as the machine looks names up (1.0.205) -
+    an inside name ACME's public DNS servers do not know."""
+    try:
+        return (urllib.parse.urlsplit(str(CONFIG.get('proxy_url') or '')).hostname or '').lower()
+    except ValueError:
+        return ''
+
+
 def _acme_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers():
+    if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers() and \
+            (host.decode() if isinstance(host, bytes) else str(host)).lower() != _acme_proxy_host():
         h = host.decode() if isinstance(host, bytes) else str(host)
         try:
             ipaddress.ip_address(h.strip('[]'))
@@ -29698,7 +29824,7 @@ def sshd_checked_conf(b):
     users = [u for u in re.split(r'[\s,]+', str(b.get('allow_users') or '')) if u] \
         if not isinstance(b.get('allow_users'), list) else [str(u) for u in b['allow_users'] if u]
     for u in users:
-        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}$', u):
+        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}\Z', u):
             raise ValueError('%r is not a user name' % u)
     c['allow_users'] = users[:50]
     try:
@@ -29720,7 +29846,7 @@ def sshd_checked_conf(b):
     ru = [str(u) for u in raw if u] if isinstance(raw, list) else \
         [u for u in re.split(r'[\s,]+', str(raw)) if u]
     for u in ru:
-        if not re.match(r'^[A-Za-z0-9._@-]{1,64}$', u):
+        if not re.match(r'^[A-Za-z0-9._@-]{1,64}\Z', u):
             raise ValueError('%r is not a user name' % u)
     c['radius_users'] = ru[:100]
     c['radius_root'] = bool(b.get('radius_root'))
@@ -31341,6 +31467,15 @@ def _isemon_peer_names(store):
             for n in sorted(set(host_nodes(store)))]
 
 
+def _isemon_pair_ok():
+    """Whether the key on disk is the one of the certificate beside it."""
+    try:
+        return _pub_of_key(ISEMON_CLIENT_KEY.read_text()).strip() == \
+            _pub_of_cert(ISEMON_CLIENT_CRT.read_text()).strip()
+    except (OSError, ValueError):
+        return False
+
+
 def isemon_client_cert(store, force=False):
     """This node's own certificate for isemon (mutual TLS): made from otp's
     authority, renewed 60 days before it ends, kept sealed in the database and
@@ -31349,7 +31484,8 @@ def isemon_client_cert(store, force=False):
     got = _meta_json(store, k) or {}
     end = float(got.get('end') or 0)
     fresh = end - time.time() > ISEMON_CLIENT_RENEW_DAYS * 86400
-    if not force and fresh and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists():
+    if not force and fresh and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists() and \
+            _isemon_pair_ok():
         return end
     if not force and fresh and got.get('cert') and got.get('key'):
         key = unseal_secret(got['key'], bind=k)       # files gone: written again
@@ -31367,13 +31503,19 @@ def isemon_client_cert(store, force=False):
                                       'at': time.time()}))
         store.add_event('settings', 'a certificate of %s for isemon was made from otp\'s '
                         'authority, good until %s' % (node_name(), stamp(end)))
-    for path, text, mode in ((ISEMON_CLIENT_KEY, key, 0o600), (ISEMON_CLIENT_CRT, crt, 0o644)):
+    # Both written beside first, then both put in (1.0.205): replaced one after
+    # the other, a full disk between them left a key with another's certificate
+    # - and the early return above kept it so for months.
+    pairs = ((ISEMON_CLIENT_KEY, key, 0o600), (ISEMON_CLIENT_CRT, crt, 0o644))
+    for path, text, mode in pairs:
         tmp = str(path) + '.new'
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
         with os.fdopen(fd, 'w') as f:
             f.write(text.strip() + '\n')
-        os.chmod(tmp, mode)
-        os.replace(tmp, str(path))
+            f.flush()
+            os.fchmod(f.fileno(), mode)
+    for path, _text, _mode in pairs:
+        os.replace(str(path) + '.new', str(path))
     return end
 
 
@@ -32205,11 +32347,14 @@ def alerts_evaluate(store, force=False):
         p['since'] = was.get('since') or now
         p['sent'] = bool(was.get('sent'))
         p['sent_at'] = was.get('sent_at')
+        # The worst level mailed so far (1.0.205): a disk at 95 % going between
+        # warn and bad mailed "worse than said" at every turn back to bad.
+        p['mailed'] = was.get('mailed') or (was.get('level') if was.get('sent') else None)
         if not p['sent'] and now - p['since'] >= delay:
             new.append(p)
         elif p['sent'] and repeat and now - float(was.get('sent_at') or 0) >= repeat:
             still.append(p)
-        elif p['sent'] and was.get('level') == 'warn' and p['level'] == 'bad':
+        elif p['sent'] and p['mailed'] == 'warn' and p['level'] == 'bad':
             new.append(p)                               # worse than said
         known[k] = dict(p)
     # Held while the cluster is worked on (1.0.194): the database's and the VIP
@@ -32265,7 +32410,10 @@ def alerts_evaluate(store, force=False):
             st = _alert_state(store)
             for k in said | {p['key'] for p in others}:
                 if k in st['problems']:
-                    st['problems'][k].update(sent=True, sent_at=now)
+                    one = st['problems'][k]
+                    one.update(sent=True, sent_at=now,
+                               mailed='bad' if 'bad' in (one.get('mailed'), one.get('level'))
+                               else one.get('level'))
             store.set_meta('alerts:state', json.dumps(st))
     return {'now': cur, 'new': len(new), 'still': len(still), 'over': len(gone),
             'events': len(events)}
@@ -36056,7 +36204,7 @@ def _isemon_tls_do(h, s, b, act):
         if not verify and hisec_enforced('isemon', store):
             raise ValueError('high security is on: isemon\'s certificate is checked')
         keep = [t for t in syslog_targets(CONFIG.get('isemon_targets')) if t[0] != host]
-        targets = ['%s:%d/%s' % t for t in keep] + ['%s:%d/tls' % (host, port)]
+        targets = [syslog_target_text(*t) for t in keep] + [syslog_target_text(host, port, 'tls')]
         ca = hatls_trust(hatls_ca(store)) if src == 'otp' else (pem if src == 'given' else '')
         h.d.save_settings({'isemon': 1, 'isemon_targets': ', '.join(targets), 'isemon_ca': ca,
                            'isemon_verify': 1 if verify else 0,
@@ -36068,8 +36216,8 @@ def _isemon_tls_do(h, s, b, act):
                 'tls': isemon_tls_view(store)}
     if act == 'tls_off':
         host = str(b.get('host') or '').strip().strip('[]')
-        targets = ['%s:%d/%s' % ((t[0], 514, 'tcp') if t[2] == 'tls' and (not host or t[0] == host)
-                                 else t) for t in syslog_targets(CONFIG.get('isemon_targets'))]
+        targets = [syslog_target_text(*((t[0], 514, 'tcp') if t[2] == 'tls' and (not host or t[0] == host)
+                                        else t)) for t in syslog_targets(CONFIG.get('isemon_targets'))]
         if hisec_enforced('isemon', store):
             raise ValueError('high security is on: isemon is sent to over TLS only')
         h.d.save_settings({'isemon_targets': ', '.join(targets), 'isemon_mtls': 0}, by=s['name'])
@@ -36745,12 +36893,20 @@ def _db_do(h):
                 # held then, and everything since was out of sight.
                 if not b.get('even_older'):
                     try:
+                        # The codes used as well as the events (1.0.205): a recovery
+                        # code used between the carry and this press is in
+                        # token_once alone - and was usable again on the new one.
+                        # (A code's time step is good a minute at most: not waited for.)
+                        def newest(db):
+                            return max(float(db.value('SELECT MAX(ts) FROM events') or 0),
+                                       float(db.value("SELECT MAX(ts) FROM token_once WHERE k "
+                                                      "LIKE 'scratch:%'") or 0))
                         far = db_open(c)
                         try:
-                            there = float(far.value('SELECT MAX(ts) FROM events') or 0)
+                            there = newest(far)
                         finally:
                             far.close()
-                        here = float(h.store.db.value('SELECT MAX(ts) FROM events') or 0)
+                        here = newest(h.store.db)
                     except Exception:                   # noqa: BLE001
                         there = here = 0
                     if there and here and there < here - 60:
@@ -36906,6 +37062,15 @@ def config_export(store, whole):
                     prof[kk] = unseal_secret(prof[kk], 'web:tls') or ''
                 else:
                     prof.pop(kk)
+        # The second certificate's key as the first's (1.0.205): left sealed with
+        # this machine's key, it opened nowhere else - and nginx's every change
+        # was refused there ("a certificate needs its key").
+        alt = prof.get('alt')
+        if isinstance(alt, dict):
+            if whole and alt.get('key'):
+                prof['alt'] = dict(alt, key=unseal_secret(alt['key'], 'web:tls') or '')
+            else:
+                prof.pop('alt')
         tls[r['k'][len('web:tls:'):]] = prof
 
     def meta_json(k):
@@ -37144,6 +37309,12 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     prof[kk] = seal_secret(prof[kk], 'web:tls')
                 else:
                     prof.pop(kk, None)
+            alt = prof.get('alt')
+            if isinstance(alt, dict) and isinstance(alt.get('key'), str) and alt['key'].strip() \
+                    and not alt['key'].startswith(('sealed:', SEALED2)):
+                prof['alt'] = dict(alt, key=seal_secret(alt['key'], 'web:tls'))
+            else:
+                prof.pop('alt', None)       # without its own key it is nothing (1.0.205)
             target = mapping.get(t, t)
             old_key = (_json_meta(store, 'web:tls:' + target) or {}).get('key')
             if not prof.get('key') and old_key:
@@ -38315,8 +38486,10 @@ CODE_NOW_LOCK = threading.Lock()
 
 @route('GET', '/api/ha')
 def _ha(h):
-    h.me()
-    return {'node': node_name(), 'address': node_address(), 'nodes': ha_nodes(h.store),
+    me = h.me()
+    nodes = [dict(n, web=web_unmapped(n['web'], me)) if isinstance(n, dict) and 'web' in n else n
+             for n in ha_nodes(h.store)]
+    return {'node': node_name(), 'address': node_address(), 'nodes': nodes,
             'replication': ha_repl_state(h.store), 'job': job_read(),
             'checks': ha_checks(h.store), 'engine': h.store.db.engine,
             'mode': CONFIG.get('ha_mode') or '',
@@ -38497,6 +38670,22 @@ def _ha_do(h):
 
 
 # ---- TLS and the cluster's VIP address (1.0.47) ------------------------------------
+def web_unmapped(web, me):
+    """A node's web state without the firewall's rules and the access lists for
+    an account that only reads (1.0.205): /api/firewall keeps them from it as
+    the map of the network, and /api/web, /api/ha gave them all the same."""
+    if (me or {}).get('role') in ('fulladmin', 'tokenadmin') or not isinstance(web, dict):
+        return web
+    return {k: v for k, v in web.items() if k not in ('fw', 'access')}
+
+
+def syslog_target_text(host, port, proto):
+    """host:port/proto as a target is written - an IPv6 address in brackets
+    (1.0.205): written bare, it was refused when saved, and TLS could be
+    switched neither on nor off."""
+    return '%s:%d/%s' % ('[%s]' % host if ':' in str(host) else host, int(port), proto)
+
+
 @route('GET', '/api/web')
 def _web(h):
     me = h.me()
@@ -38505,11 +38694,11 @@ def _web(h):
     for n in ha_nodes(store):
         one = {k: n.get(k) for k in ('name', 'me', 'alive', 'address', 'version', 'maintenance',
                                      'age', 'host')}
-        one['web'] = web_state(store) if n['me'] else (n.get('web') or {})
+        one['web'] = web_unmapped(web_state(store) if n['me'] else (n.get('web') or {}), me)
         nodes.append(one)
     if not any(x['me'] for x in nodes):
         nodes.insert(0, {'name': node_name(), 'me': True, 'alive': True,
-                         'address': node_address(), 'web': web_state(store)})
+                         'address': node_address(), 'web': web_unmapped(web_state(store), me)})
     v = vip_conf(store)
     holder = [x['name'] for x in nodes if (x.get('web') or {}).get('vip_here')]
     return {'node': node_name(), 'cluster': bool(CONFIG.get('ha_mode')), 'nodes': nodes,
@@ -39266,7 +39455,7 @@ def _mfa_do(h):
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
         if new['kind'] == 'app':
             secret = unseal_secret(new.get('secret'), 'adm2fa-new:' + name.lower())
-            step = totp_match(secret, code, digits=6, window=int(CONFIG.get('totp_window') or 1)) \
+            step = totp_match(secret, code, digits=6, window=mfa_window()) \
                 if secret else None
             if step is None:
                 h.failed(key)
@@ -39315,8 +39504,15 @@ def _mfa_do(h):
                 rec = mfa_get(h.store, name) or {}
                 secret = unseal_secret(rec.get('secret'), mfa_key(name))
                 step = totp_match(secret, code, digits=6,
-                                  window=int(CONFIG.get('totp_window') or 1)) if secret else None
+                                  window=mfa_window()) if secret else None
                 # A code is good once (as a token's is).
+                # And on either node (1.0.205): the step taken as a token's is, in
+                # token_once - the other node's own lock did not keep a code used
+                # here from being used there too.
+                if step is not None and step > int(rec.get('step') or 0) and \
+                        not once_take(h.store, 'step', 'adm2fa:' + name, step):
+                    h.failed(key)
+                    raise ApiError(400, 'that code was used already - wait for the next one')
                 if step is None or step <= int(rec.get('step') or 0):
                     h.failed(key)
                     raise ApiError(400, 'that code is not right' if step is None else
@@ -39331,6 +39527,16 @@ def _mfa_do(h):
         token = _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
         return {'message': 'signed in', 'done': True, 'token': token}
     raise ApiError(400, 'no such thing to do')
+
+
+def mfa_window():
+    """The steps either side a code is taken from (1.0.205): 0 as it is set -
+    `or 1` made the strict window the usual one."""
+    v = CONFIG.get('totp_window')
+    try:
+        return max(0, int(v)) if v is not None and v != '' else 1
+    except (TypeError, ValueError):
+        return 1
 
 
 
@@ -39648,8 +39854,10 @@ def _rbackup_upload(h):
             pass
     up = secrets.token_hex(8)
     dst = RB_UPLOADS / up
-    h.body_to_file(dst, 4 * 1024 ** 3)            # as nginx takes (1.0.139)
     try:
+        # Inside the try (1.0.205): one that did not arrive whole, or too big,
+        # stayed behind - up to 4 GB until the next upload an hour later.
+        h.body_to_file(dst, 4 * 1024 ** 3)        # as nginx takes (1.0.139)
         with open(str(dst), 'rb') as f:
             head = f.read(8)
         if not (head.startswith(b'Salted__') or head.startswith(b'\x1f\x8b')):
@@ -39665,8 +39873,11 @@ def _rbackup_upload(h):
             return {'upload': up, 'locked': head.startswith(b'Salted__'), 'manifest': m}
         finally:
             shutil.rmtree(work, ignore_errors=True)
-    except ApiError:
-        dst.unlink()
+    except BaseException:
+        try:
+            dst.unlink()
+        except OSError:
+            pass
         raise
 
 
@@ -39690,6 +39901,11 @@ def _rbackup_download(h):
             raise ApiError(403, 'without a password of the backups the file would hold every '
                                 'token\'s key unlocked: set the password first')
         path, m, _md = rb_build(h.store, str(work))
+        if not m.get('encrypted'):
+            # The password asked again as it was locked (1.0.205): taken away during
+            # a long dump, the file came out unlocked - it is not handed out.
+            raise ApiError(409, 'the backup came out unlocked (its password was taken away '
+                                'meanwhile) - it is not handed out; set the password and ask again')
         h.store.add_event('backups', '%s downloaded a backup made for it (%s, %s)' % (
             s['name'], m['file'], 'locked' if m['encrypted'] else 'NOT locked'),
             'info' if m['encrypted'] else 'warn', who=s['name'])
@@ -44860,18 +45076,32 @@ def ask_password(prompt='password', twice=True, env='OTP_PASSWORD'):
     said = os.environ.get(env) if env else None
     if said:
         return said
-    first = getpass.getpass('%s: ' % prompt)
-    if twice:
-        again = getpass.getpass('and again: ')
-        if first != again:
-            raise SystemExit('those two are not the same')
+    # No terminal (cron, ssh without -t, a pipe): one line of stdin, as --set
+    # KEY=- takes it (1.0.205) - getpass read it, asked "and again" and ended
+    # in a traceback at the end of the input.
+    if not sys.stdin.isatty():
+        line = sys.stdin.readline()
+        if not line:
+            raise SystemExit('otp: %s: nothing on stdin and no terminal to ask on' % prompt)
+        return line.rstrip('\r\n')
+    try:
+        first = getpass.getpass('%s: ' % prompt)
+        if twice:
+            again = getpass.getpass('and again: ')
+            if first != again:
+                raise SystemExit('those two are not the same')
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit('otp: %s: not given' % prompt)
     return first
 
 
 def not_on_command_line(what, value, how):
     """A secret written out on the command line is refused (1.0.187): ps, the
     shell's history and the process accounting all keep it. - asks for it."""
-    if value not in (None, '', '-') and not str(value).startswith('@env'):
+    # Only - (asked, or a line of stdin) or nothing (1.0.205): '@envSecret' was
+    # taken as it was written, the secret on the command line after all. --set
+    # KEY=@env reads OTP_VALUE_KEY before this is asked.
+    if value not in (None, '', '-'):
         raise SystemExit('otp: %s is not taken on the command line, where ps and the shell\'s '
                          'history keep it: %s' % (what, how))
 
@@ -47529,7 +47759,7 @@ def cli_main(argv=None):
             c = ad.check()
             if args.json:
                 out(c)
-                return 0
+                return 0 if c.get('ok') else 1          # as without --json (1.0.205)
             for srv in c['servers']:
                 print(pal.bold('  %s:%d' % (srv['host'], srv['port'])))
                 for st in srv['steps']:
@@ -48155,7 +48385,12 @@ def cli_main(argv=None):
             ask = {'all': 1, 'by': who} if asked == 'all' else {'key': [kind, whom], 'by': who}
             told = []
             for n, _at, rows in per:
-                if asked == 'all' or any(r['kind'] == kind and r['who'] == whom for r in rows):
+                # As the shared ones, whatever the case (1.0.205); the node told
+                # the name as it counts it.
+                hit = [r for r in rows if r['kind'] == kind and r['who'].lower() == whom.lower()]
+                if asked != 'all' and hit:
+                    ask = {'key': [kind, hit[0]['who']], 'by': who}
+                if asked == 'all' or hit:
                     try:
                         pending = json.loads(store.get_meta('lockouts:ask:' + n) or '[]')
                     except ValueError:
@@ -48376,7 +48611,7 @@ def cli_main(argv=None):
                 print(pal.bad_line('%s: %s' % (t, st['trouble'][t])))
             else:
                 print(pal.ok_line('%s: sent (%d)' % (t, st['sent'].get(t, 0))))
-        return 0
+        return 1 if st['trouble'] else 0               # trouble said is a failure (1.0.205)
 
     build_parser().print_help()
     return 2

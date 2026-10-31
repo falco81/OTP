@@ -6499,6 +6499,8 @@ if ($('exp-go')) {
     for (var i = 0; i < 5; i++) { var w = ''; for (var j = 0; j < 5; j++) w += words[a[i * 5 + j] % words.length]; out.push(w); }
     $('exp-pass').value = out.join('-');
     $('exp-pass').type = 'text';
+    /* Shown to be written down, and only that (1.0.205): typed over, it is dots again. */
+    $('exp-pass').oninput = function () { this.type = 'password'; this.oninput = null; };
     $('exp-said').className = 'small warn';
     $('exp-said').textContent = 'Write the passphrase down now - it is not kept anywhere, and without it the backup cannot be opened.';
   };
@@ -6514,6 +6516,7 @@ if ($('exp-go')) {
           busy($('exp-go'), true);
           api('tokens-backup', {q: q, state: st, kind: $('exp-kind').value, passphrase: pass, lock: bLock}).then(function (d) {
             saveFile(d.name, d.file);
+            expForget();
             $('exp-said').className = 'small ' + (d.lost && d.lost.length ? 'warn' : 'good');
             $('exp-said').textContent = num(d.count) + ' token(s) in ' + d.name + (d.locked ? ', locked' : ', not locked')
               + (d.lost && d.lost.length ? ' - left out, their keys cannot be opened here: ' + d.lost.join(', ') : '');
@@ -6530,12 +6533,19 @@ if ($('exp-go')) {
       'Export them', function () {
         busy($('exp-go'), true);
         tokensExport({q: q, state: st, lock: lock, passphrase: lock ? pw : ''}).then(function (d) {
+          expForget();
           $('exp-said').className = 'small ' + (d.lost && d.lost.length ? 'warn' : 'good');
           $('exp-said').textContent = num(d.count) + ' token(s) in ' + d.name + (d.locked ? ', locked' : ', not locked')
             + (d.lost && d.lost.length ? ' - left out, their keys cannot be opened here: ' + d.lost.join(', ') : '');
         }).catch(oops).then(function () { busy($('exp-go'), false); });
       }, !lock);
   };
+}
+/* The passphrase gone from the page once the file is saved (1.0.205): it opens
+   every key in it, and stayed in the box as plain text. */
+function expForget() {
+  $('exp-pass').value = '';
+  $('exp-pass').type = 'password';
 }
 /* The export as the daemon made it, saved (1.0.167): a ZIP locked with a
    passphrase, or what was asked for not locked. */
@@ -14499,7 +14509,7 @@ function drawAcme() {
         };
         if (t.how && !acme) {
           confirmThen('Replace the certificate of ' + (t.target === 'vip' ? 'the VIP address' : t.target) + '?',
-            'It has one put in on Certificates and TLS (' + t.how + (t.issuer ? ', ' + t.issuer.replace(/^CN=/, '').split(',')[0] : '') + '). The one from the CA takes its place once it comes, and ACME renews it from then on. Its TLS settings stay as they are.',
+            'It has one put in on Certificates and TLS (' + htmlText(t.how) + (t.issuer ? ', ' + htmlText(t.issuer.replace(/^CN=/, '').split(',')[0]) : '') + '). The one from the CA takes its place once it comes, and ACME renews it from then on. Its TLS settings stay as they are.',
             'Order it', go, false);
         } else go();
       };
@@ -14542,7 +14552,7 @@ function acmePutBackButton(target, before, then) {
   var words = (before.issuer || '').replace(/^CN=/, '').split(',')[0];
   explain(b, 'The certificate it had before ACME replaced it' + (words ? ' - from ' + words : '') + (before.not_after ? ', good until ' + new Date(before.not_after * 1000).toLocaleDateString(numLang()) : '') + '. Put back as it was; ACME no longer renews this one. The TLS settings stay.');
   b.onclick = function () {
-    confirmThen('Put the certificate from before ACME back?', 'The one from the CA is taken out and the one it had before - ' + (words || before.how || '') + ' - put back, on every node that serves it. ACME no longer renews this one (Look after it gives it back).', 'Put it back', function () {
+    confirmThen('Put the certificate from before ACME back?', 'The one from the CA is taken out and the one it had before - ' + htmlText(words || before.how || '') + ' - put back, on every node that serves it. ACME no longer renews this one (Look after it gives it back).', 'Put it back', function () {
       busy(b, true);
       api('acme', {action: 'put_back', target: target}).then(function (x) { toast(x.message, 'good'); then(x); })
         .catch(function (e) { busy(b, false); oops(e); });

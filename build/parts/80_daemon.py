@@ -1505,10 +1505,16 @@ class Daemon(object):
                     except Exception as e:      # noqa: BLE001
                         log_sparing('dropold-tick', 'the other node\'s old address: %s' % e,
                                     'warn', every=600)
-                    try:
-                        readdress_tick(self.store, self)    # told a new address (1.0.106)
-                    except Exception as e:      # noqa: BLE001
-                        log_sparing('tick:readdress:' + str(e)[:80], 'a new address of the cluster: %s' % e, 'warn', 3600)
+                    # In a thread of its own (1.0.205): it waits up to a minute on the
+                    # root helper, and the heartbeat waited with it - the other
+                    # node took this one for gone.
+                    def readdress(daemon=self):
+                        try:
+                            readdress_tick(daemon.store, daemon)    # told a new address (1.0.106)
+                        except Exception as e:      # noqa: BLE001
+                            log_sparing('tick:readdress:' + str(e)[:80],
+                                        'a new address of the cluster: %s' % e, 'warn', 3600)
+                    self.background('readdress', readdress)
                 try:
                     online_tick(self)           # a new version on the web (1.0.123)
                 except Exception as e:          # noqa: BLE001

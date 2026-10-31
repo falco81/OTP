@@ -602,7 +602,11 @@ def scratch_guard_clear(name):
 def scratch_guard_note(store, name, place=''):
     """One request whose password and recovery code could not both be right
     (1.0.101) - see the RADIUS side. Written only over what was read."""
-    here = _scratch_place(name, place, add=True, since=scratch_guard_cleared(store, name))
+    # No place known (no Calling-Station-Id): every request one "place", and its
+    # limit everybody's - a stranger with the name alone stopped its owner's
+    # recovery codes for a day (1.0.205). Then only the day's limit counts.
+    here = _scratch_place(name, place, add=True, since=scratch_guard_cleared(store, name)) \
+        if place else 0
     before = len(scratch_guard_times(store, name))
     node_key_add(store, 'scratchguard', name, SCRATCH_GUARD_S, SCRATCH_GUARD_ALL * 2)
     times = scratch_guard_times(store, name)
@@ -621,8 +625,8 @@ def scratch_guard_note(store, name, place=''):
 def scratch_guarded(store, name, place=None):
     if place is None:
         place = getattr(REQUEST_PLACE, 'v', '') or ''
-    return _scratch_place(name, place, since=scratch_guard_cleared(store, name)) >= SCRATCH_GUARD_MOST or \
-        len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_ALL
+    return (bool(place) and _scratch_place(name, place, since=scratch_guard_cleared(store, name))
+            >= SCRATCH_GUARD_MOST) or len(scratch_guard_times(store, name)) >= SCRATCH_GUARD_ALL
 
 
 def entry_unusable(entry, locked=True):
@@ -652,6 +656,13 @@ def computer_account(r):
     return str((a.get('samaccountname') or [''])[0]).endswith('$')
 
 
+def dn_norm(dn):
+    """A DN as it is compared (1.0.205): lower case, no spaces around the
+    commas and equals signs that part it - "CN=VPN Users, OU=Groups" copied
+    from a page matched nothing AD said."""
+    return re.sub(r'(?<!\\)\s*([,=])\s*', r'\1', str(dn or '').strip().lower())
+
+
 def group_matches(wanted, have, ad=None):
     """Whether any group in `have` ([(dn, cn)]) is one of `wanted` (names or
     DNs). Returns the wanted entry that matched first, in `wanted`'s order.
@@ -659,18 +670,22 @@ def group_matches(wanted, have, ad=None):
     A name without its place is the one group `ad` says it is (1.0.101), by
     its DN - never any group of that cn wherever it is. Without `ad` to ask,
     a name alone matches nothing."""
-    by_dn = {dn.lower() for dn, _ in have}
+    by_dn = {dn_norm(dn) for dn, _ in have}
     by_cn = {str(cn).lower() for _, cn in have}
     for one in wanted:
         said = str(one.get('group') if isinstance(one, dict) else one).strip()
         if not said:
             continue
         if '=' in said and ',' in said:
-            if said.lower() in by_dn:
+            if dn_norm(said) in by_dn:
                 return one
         elif said.lower() in by_cn and ad is not None:
             try:
-                dns = ad.group_dns(said)
+                dns = {dn_norm(x) for x in ad.group_dns(said)}
+            except LdapUnreachable:
+                # The directory not answering is not "not a member" (1.0.205):
+                # said as it is, and never counted as somebody guessing.
+                raise
             except LdapError as e:
                 # Not known which group it is: no match, never a guess.
                 log_sparing('group-dns', 'the group %s could not be looked up in %s: %s'

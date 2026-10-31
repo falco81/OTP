@@ -379,6 +379,15 @@ class Db(object):
                                        isolation_level=None,
                                        timeout=self.RADIUS_SQLITE_BUSY_S if quick else 30)
                 conn.row_factory = sqlite3.Row
+                # LOWER() over every letter, as PostgreSQL and MariaDB do it
+                # (1.0.205): SQLite's own takes A-Z only - "Žofie" was never found
+                # again by its name, and could neither sign in nor be dropped.
+                try:
+                    conn.create_function('lower', 1, lambda v: v.lower() if isinstance(v, str)
+                                         else v, deterministic=True)
+                except (sqlite3.Error, TypeError):
+                    conn.create_function('lower', 1, lambda v: v.lower() if isinstance(v, str)
+                                         else v)
                 try:
                     conn.execute('PRAGMA journal_mode=WAL')
                     conn.execute('PRAGMA synchronous=NORMAL')

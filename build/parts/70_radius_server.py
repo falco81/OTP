@@ -398,7 +398,11 @@ class Authenticator(object):
                 except LdapError as e:
                     d.step('the groups of %s' % d.user, False, str(e), t)
                     return d.refuse('LDAP server(s) have gone away')
-                hit = group_matches(wanted, have, ad)
+                try:
+                    hit = group_matches(wanted, have, ad)
+                except LdapError as e:
+                    d.step('the group of %s looked up' % d.user, False, str(e), t)
+                    return d.refuse('LDAP server(s) have gone away')
                 if not hit:
                     names = ', '.join(cn_of(w.get('group') or '') or w.get('group') or ''
                                       for w in wanted[:6]) + (' …' if len(wanted) > 6 else '')
