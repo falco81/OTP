@@ -1738,7 +1738,27 @@ def _token_do(h):
     with contextlib.ExitStack() as held:
         for key in sorted(locks):       # always in one order, whoever takes two
             held.enter_context(locks[key])
-        return _token_act(h, s, b, act, name, who)
+        h._token_locks = [locks[key] for key in sorted(locks)]
+        try:
+            return _token_act(h, s, b, act, name, who)
+        finally:
+            h._token_locks = []
+
+
+@contextlib.contextmanager
+def token_locks_let_go(h):
+    """The token's lock let go while a mail or a code is sent (1.0.206): RADIUS
+    checks a code under it, and a person's sign-in waited on the SMS gateway or
+    the mail server - 20 s and more - while the helpdesk sent them something."""
+    held = list(getattr(h, '_token_locks', None) or [])
+    saved = []
+    for lk in reversed(held):
+        saved.append((lk, lk._release_save()))
+    try:
+        yield
+    finally:
+        for lk, st in reversed(saved):
+            lk._acquire_restore(st)
 
 
 def token_same_person(store, name):
@@ -1841,8 +1861,9 @@ def _token_act(h, s, b, act, name, who):
                                                                    tokrow.get('display') or ''),
                                  by=who, pending=bool(b.get('pending')),
                                  portal_url=h.portal_link())
-                steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
-                                     purpose='made')
+                with token_locks_let_go(h):
+                    steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
+                                         purpose='made')
                 out['mail_steps'] = steps
                 out['message'] += '; the QR code was sent to %s' % to
                 h.store.add_event('mail', '%s sent the token of %s to %s%s%s' % (
@@ -1905,8 +1926,9 @@ def _token_act(h, s, b, act, name, who):
                 SEND_TEST_SEEN.clear()
         began = time.time()
         try:
-            said = code_send(h.store, kind_now, tok.get('dest') or '', code_new(), 'signin',
-                             name=name)
+            with token_locks_let_go(h):
+                said = code_send(h.store, kind_now, tok.get('dest') or '', code_new(), 'signin',
+                                 name=name)
         except (MailError, SmsError, ValueError) as e:
             h.store.add_event('tokens', 'a test code for %s could not be sent: %s' % (name, e),
                               'warn', who=who)
@@ -2029,8 +2051,9 @@ def _token_act(h, s, b, act, name, who):
                              display=str(tok.get('display') or ''), by=who,
                              pending=tok.get('state') == 'pending',
                              portal_url=h.portal_link())
-            steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
-                                 purpose='again')
+            with token_locks_let_go(h):
+                steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
+                                     purpose='again')
         except MailError as e:
             h.store.add_event('mail', 'the token of %s could not be sent to %s: %s' % (
                 name, to, mailq_said(e)), 'warn', who=who)

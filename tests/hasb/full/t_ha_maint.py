@@ -74,6 +74,16 @@ def through_vip():
                 # is asked on is read from keepalived's role file - a moment late as it moves.
                 time.sleep(1)
                 r = rad('vip', 'nightuser', totp_of(T['secret']))[0]
+                if r == 'reject':
+                    # The first one went in and its answer was lost as the address moved:
+                    # the same code is good once on either node (1.0.205) - the next code,
+                    # as a person types it (a NAS asking again sends the very same packet,
+                    # which the node answers again; this test sends a new one).
+                    while int(time.time()) // 30 == s:
+                        time.sleep(1)
+                    time.sleep(1)
+                    r = rad('vip', 'nightuser', totp_of(T['secret']))[0]
+                    s = int(time.time()) // 30
             IN['asked'] += 1
             if r == 'accept':
                 IN['in'] += 1

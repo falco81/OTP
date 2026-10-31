@@ -135,6 +135,27 @@ function i18nInit(pack) {
     var c = i18nPattern(i18nFold(pair[0]), pair[1], false);
     if (c && c.own > 0) I18N.pats.push(c);
   });
+  var rich = pack.rich || {};
+  Object.keys(rich).forEach(function (k) {
+    var v = rich[k];
+    if (typeof v !== 'string' || v === '' || v === k) return;
+    var key = i18nFold(k);
+    /* One with no tags in it at all, on either side, is plain text as well
+       (1.0.206): an element without tags is looked for among the plain ones
+       only, and nine such sentences stayed in English. */
+    var plain = !/</.test(k) && !/</.test(v);
+    if (/\{\d+\}/.test(key)) {
+      var c = i18nPattern(key, v, true);
+      if (c && c.own > 0) I18N.richPats.push(c);
+      if (plain) {
+        var c2 = i18nPattern(key, v, false);
+        if (c2 && c2.own > 0) I18N.pats.push(c2);
+      }
+    } else {
+      I18N.rich.set(key, v);
+      if (plain && !I18N.exact.has(key)) I18N.exact.set(key, v);
+    }
+  });
   I18N.pats.sort(function (a, b) { return b.own - a.own; });
   /* One look for any pattern's fixed words at all: most texts on a page
      are data, contain none of them, and are turned away by this alone. */
@@ -143,18 +164,6 @@ function i18nInit(pack) {
     I18N.anyLit = lits.length && lits.length === I18N.pats.length
       ? new RegExp(lits.map(i18nEsc).join('|')) : null;
   } catch (e) { I18N.anyLit = null; }
-  var rich = pack.rich || {};
-  Object.keys(rich).forEach(function (k) {
-    var v = rich[k];
-    if (typeof v !== 'string' || v === '' || v === k) return;
-    var key = i18nFold(k);
-    if (/\{\d+\}/.test(key)) {
-      var c = i18nPattern(key, v, true);
-      if (c && c.own > 0) I18N.richPats.push(c);
-    } else {
-      I18N.rich.set(key, v);
-    }
-  });
   I18N.richPats.sort(function (a, b) { return b.own - a.own; });
   if (I18N_SEEN) I18N_SEEN.clear();          /* another language: worked out again */
   I18N.on = I18N.exact.size > 0 || I18N.pats.length > 0 || I18N.rich.size > 0

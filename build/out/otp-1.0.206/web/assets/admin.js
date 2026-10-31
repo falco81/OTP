@@ -6591,12 +6591,17 @@ function tokenExport(name) {
       said.textContent = v === 'lock' ? 'Locked: a ZIP with the .totp file in it, AES-256 - 7-Zip, WinRAR or PeaZip open it with the passphrase, and otp reads it back.'
         : 'Not locked: the .totp file itself - whoever has it can sign in as ' + name + '.';
     };
-    MODAL_GO = function () {
+    var going = false;
+    MODAL_GO = function (button) {
       var lock = how.value() === 'lock';
       if (lock && pw.value.length < 8) { toast('a passphrase of 8 characters at least - or choose not locked', 'bad'); return; }
-      tokensExport({name: name, lock: lock, passphrase: lock ? pw.value : ''}).then(function () { closeModal(); }).catch(oops);
+      if (going) return;               /* a double click made two files of the key (1.0.206) */
+      going = true;
+      busy(button, true);
+      tokensExport({name: name, lock: lock, passphrase: lock ? pw.value : ''}).then(function () { closeModal(); })
+        .catch(oops).then(function () { going = false; busy(button, false); });
     };
-  }, [{words: 'Close', close: true}, {words: 'Export it', cls: 'primary', icon: 'download', go: function () { MODAL_GO(); }}], 'small');
+  }, [{words: 'Close', close: true}, {words: 'Export it', cls: 'primary', icon: 'download', go: function (b) { MODAL_GO(b); }}], 'small');
 }
 
 /* ---- mail (1.0.20) ------------------------------------------------------- */
@@ -8861,6 +8866,8 @@ function vipFromServer(v, d) {
           prefer: v.prefer || v.prefer_now || names[0] || '', on: !!v.on};
 }
 function vipDirty() {
+  /* Changed in the moment after a save (1.0.206): there was no draft, and a TypeError. */
+  if (!VIPD) { var w_ = WEB.last || {}; VIPD = vipFromServer(w_.vip || {}, w_); VIPD.base = vipFromServer(w_.vip || {}, w_); }
   VIPD.dirty = true;
   VIPD.ver = (VIPD.ver || 0) + 1;
   pendingSet('vip', {save: vipSave, reset: function () { VIPD = null; loadVip(); }});
@@ -8868,7 +8875,9 @@ function vipDirty() {
 function vipSave() {
   var dr = VIPD, d = WEB.last || {}, v = d.vip || {};
   if (!dr) return Promise.resolve(true);
-  var was = vipFromServer(v, d);
+  /* Against what the draft was made from (1.0.206), not the latest refresh: another
+     administrator's change meanwhile was sent back the way it was. */
+  var was = dr.base || vipFromServer(v, d);
   var steps = [];
   if (dr.address !== was.address || (dr.address6 || '') !== (was.address6 || '') || dr.fqdn !== was.fqdn || String(dr.vrid) !== String(was.vrid)
       || JSON.stringify(Object.keys(dr.ifaces).sort().map(function (k) { return [k, dr.ifaces[k]]; }))
@@ -8913,7 +8922,10 @@ function drawVip(d) {
   /* Taken again from the server on every draw until something is changed
      here (1.0.57): kept from the first answer, a later save sent stale
      values back - undoing a move, or turning the address off. */
-  if (!VIPD || !VIPD.dirty) VIPD = vipFromServer(v, d);
+  if (!VIPD || (!VIPD.dirty && !liveWorkedIn($('web-vip')))) {   /* (1.0.206) */
+    VIPD = vipFromServer(v, d);
+    VIPD.base = vipFromServer(v, d);
+  }
   var dr = VIPD;
   /* The big line: where it is now. */
   var top = el('div', 'vip-top');
@@ -9117,7 +9129,8 @@ function fwRuleLine(r) {
 
 function drawFw(d) {
   FW.last = d;
-  if (!FW.dirty || !FW.draft) FW.draft = fwFromServer(d);
+  if (!FW.draft || (!FW.dirty && !liveWorkedIn($('fw-master')) && !liveWorkedIn($('fw-access'))
+                    && !liveWorkedIn($('fw-body')))) FW.draft = fwFromServer(d);   /* (1.0.206) */
   var dr = FW.draft;
   if (FW.dirty) fwPending();
   /* What is drawn is the draft; the auto rules follow what is turned off in it. */
@@ -9204,8 +9217,16 @@ function drawFwAccess(d) {
     box.placeholder = '10.0.0.0/8, 192.168.10.0/24, 2001:db8::/32';
     box.value = st[p[0]].from.join(', ');
     box.disabled = !d.may;
+    /* Into the draft as it is now (1.0.206), not the one this box was drawn from:
+       a refresh between made the save send the draft unchanged. */
+    var now = function () {
+      var a = FW.draft.access;
+      if (!a[p[0]]) a[p[0]] = {any: !!st[p[0]].any, from: st[p[0]].from.slice()};
+      return a[p[0]];
+    };
     box.oninput = function () {
       st[p[0]].from = box.value.split(/[\s,;]+/).filter(Boolean);
+      now().from = st[p[0]].from.slice();
       FW.draft.access_changed = true; FW.dirty = true; fwMarkBar();
     };
     [[true, 'Everybody'], [false, 'Only from']].forEach(function (o) {
@@ -9215,6 +9236,7 @@ function drawFwAccess(d) {
       if (o[0] && p[0] === 'admin' && hsOn('fw:admin')) b.title = 'not under high security';
       b.onclick = function () {
         st[p[0]].any = o[0];
+        now().any = o[0];
         Array.prototype.forEach.call(seg.children, function (x) { x.classList.toggle('on', x === b); });
         box.hidden = o[0];
         FW.draft.access_changed = true; FW.dirty = true; fwMarkBar();
@@ -10022,7 +10044,8 @@ function mailqWatch(on) {
   MQ.timer = null;
   /* Drawn again every 10 s while it is looked at - what waits moves by itself. */
   if (on) MQ.timer = setInterval(function () {
-    if (PANE !== 'mailq' || TAB !== 'settings' || document.hidden) { mailqWatch(false); return; }
+    if (PANE !== 'mailq' || TAB !== 'settings') { mailqWatch(false); return; }
+    if (document.hidden) return;        /* skipped, not stopped (1.0.206): back on the tab it went on never */
     if (!document.querySelector('.modal:not([hidden])')) loadMailq(true);
   }, 10000);
 }
@@ -10872,12 +10895,16 @@ function txTest() {
       to.addEventListener('keydown', function (e) { if (e.key === 'Enter') MODAL_GO(); });
       var out = el('div', 'said');
       body.appendChild(out);
+      var going = false;
       MODAL_GO = function (button) {
+        /* One at a time (1.0.206): Enter in the box sent another SMS at every press. */
+        if (going) return;
+        going = true;
         busy(button, true);
         api('texts', {action: 'test', id: m.id, lang: TX.lang, fields: TX.dirty, to: to.value.trim()}).then(function (d) {
           out.className = 'said good';
           out.textContent = d.message;
-        }).catch(function (e) { out.className = 'said bad'; out.textContent = e.message; }).then(function () { busy(button, false); });
+        }).catch(function (e) { out.className = 'said bad'; out.textContent = e.message; }).then(function () { busy(button, false); going = false; });
       };
     }, [{words: 'Close', close: true}, {words: 'Send', cls: 'primary', icon: sms ? 'phone' : 'mail', go: function (b) { MODAL_GO(b); }}], 'small');
   });
@@ -12182,9 +12209,16 @@ function rbRestoreWatch(title) {
     bar.innerHTML = '<div class="bar"><span id="rbr-fill"></span></div><div class="says" id="rbr-says"></div>';
     body.appendChild(bar);
   }, [{words: 'Close', close: true}], 'medium');
+  var empty = 0;
   var step = function () {
+    /* Not after its popup is closed, nor for ever on nothing (1.0.206). */
+    if (!$('rbr-fill')) return;
     api('db', {action: 'job'}).then(function (d) {
       var j = d.job || {};
+      if (!j.running && !j.what && !j.result && !j.error && ++empty > 60) {
+        if ($('rbr-says')) $('rbr-says').textContent = 'No word of it for a minute - the service may have started again. Load the page again to see the database as it is.';
+        return;
+      }
       if ($('rbr-fill')) $('rbr-fill').style.width = (j.whole ? Math.round(100 * j.done / j.whole) : 5) + '%';
       if ($('rbr-says')) $('rbr-says').textContent = (j.what || '') + (j.says ? ' — ' + j.says : '');
       if (j.running) { setTimeout(step, 1000); return; }
@@ -12769,7 +12803,9 @@ function drawNtp(quiet) {
   var real = $('ntp-host');
   if (!real || !NTP.d) return;
   /* What the server has, until something is changed here. */
-  if (!NTP.draft || !PENDING.ntp) NTP.draft = JSON.parse(JSON.stringify(NTP.d.conf));
+  /* ... and while somebody is in one of its boxes (1.0.206): the box kept, its
+     handlers wrote to the draft of before, the save sent the new one unchanged. */
+  if (!NTP.draft || (!PENDING.ntp && !liveWorkedIn(real))) NTP.draft = JSON.parse(JSON.stringify(NTP.d.conf));
   liveFill(real, function (host) {
   var d = NTP.d;
   var grid = el('div', 'pw-grid');
@@ -12985,7 +13021,10 @@ function ntpSave() {
            allow: dr.allow, step_s: (dr.makestep || [1, 3])[0], step_n: (dr.makestep || [1, 3])[1],
            minsources: dr.minsources, timezone: dr.timezone};
   return api('ntp', {action: 'save', conf: c}).then(function (r) {
-    toast(r.message, 'good'); NTP.draft = null; setTimeout(loadNtp, 5000); return true;
+    /* What was saved kept as the draft until the server says it (1.0.206): with
+       none, a change in those 5 s was marked and never sent. */
+    toast(r.message, 'good'); NTP.draft = JSON.parse(JSON.stringify(Object.assign({}, NTP.d && NTP.d.conf, dr)));
+    setTimeout(loadNtp, 5000); return true;
   });
 }
 

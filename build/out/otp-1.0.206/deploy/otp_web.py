@@ -3945,6 +3945,18 @@ def main(argv):
         # The timer of a change of sshd on trial (1.0.163): not kept in time.
         sshd_put_back()
         return 0
+    if argv[:1] == ['--pam-off']:
+        # otp taken away (1.0.206): sshd's PAM no longer asks an otp that is not
+        # there - every password and code over SSH was refused after an
+        # uninstall - and no change on trial is left with a timer that runs
+        # what is gone.
+        said = pam_set({'radius': False}, '', 0)
+        t = sshd_trial_read()
+        if t:
+            sshd_disarm(t)
+            _drop(SSHD_STATE)
+        print(said or 'sshd\'s PAM had nothing of otp in it')
+        return 0
     if argv[:1] == ['--os-job'] and len(argv) >= 3 and argv[2] in ('check', 'upgrade'):
         return osup_job(re.sub(r'[^A-Za-z0-9]', '', argv[1])[:40], argv[2],
                         argv[3:4] == ['security'])

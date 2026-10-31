@@ -1069,7 +1069,7 @@ def ha_peer_columns():
 # writing its own: of two nodes asked for the same code at the same moment,
 # at least one sees the other's row - so it is never let in twice. (One may
 # refuse it when both see each other; the next code then goes through.)
-ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0}
+ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0, 'gen': 0}
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
@@ -1089,6 +1089,7 @@ def once_peer_forget():
     with ONCE_PEER_LOCK:
         pool, ONCE_PEER['pool'] = ONCE_PEER['pool'], []
         ONCE_PEER['made'] = 0
+        ONCE_PEER['gen'] += 1           # one out on a question now is not taken back (1.0.206)
         ONCE_PEER['down_until'] = 0.0
         ONCE_PEER['fails'] = 0
     for db in pool:
@@ -1133,6 +1134,7 @@ def _once_peer_has(k, me, store=None):
         if db == 'wait':
             return None
     got = {'db': db}
+    gen = ONCE_PEER['gen']
 
     def ask():
         try:
@@ -1147,7 +1149,15 @@ def _once_peer_has(k, me, store=None):
     t.join(1.5)
     if 'v' in got:
         with ONCE_PEER_LOCK:
-            ONCE_PEER['pool'].append(got['db'])
+            if gen == ONCE_PEER['gen']:
+                ONCE_PEER['pool'].append(got['db'])
+            else:
+                # Made before the address or the TLS of the link changed (1.0.206):
+                # closed, not kept for good in the new pool.
+                try:
+                    got['db'].close()
+                except Exception:                       # noqa: BLE001
+                    pass
             ONCE_PEER['fails'] = 0
         return got['v']
     e = got.get('e') or TimeoutError('no answer within 1.5 s')

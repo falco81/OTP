@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.205'
+__version__ = '1.0.206'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1849,6 +1849,19 @@ def check_setting(key, value):
                          r'(?::\d{1,5})?/?\Z', str(got).strip()):
         raise BadSetting('proxy_url: http://host:port - the user name and the password go '
                          'in the fields below, not in the address')
+    if key in ('proxy_url', 'sms_tel_host') and str(got).strip():
+        # A port that is one, and an address a URL can be made of (1.0.206):
+        # :99999 or a bare IPv6 address was taken, and every try of it failed.
+        u = str(got).strip()
+        try:
+            sp = urllib.parse.urlsplit(u if '://' in u else 'http://' + u)
+            port_ = sp.port
+            host_ = sp.hostname
+        except ValueError:
+            port_, host_ = -1, None
+        if not host_ or (port_ is not None and not 1 <= port_ <= 65535) or u.endswith(':'):
+            raise BadSetting('%s: host or host:port (1-65535), an IPv6 address in brackets - '
+                             '[fd00::1]:443' % key)
     if key == 'proxy_user' and re.search(r'[\s:@/]', str(got)):
         raise BadSetting('proxy_user: no spaces, no : @ or /')
     if key == 'proxy_no' and str(got).strip() and \
@@ -1908,6 +1921,9 @@ SETTING_STRIPPED = frozenset((
 CONFIG_LOADED = [False]
 
 
+NAME_HELD = [False]               # the daemon running: its node's name kept until it starts again
+
+
 def load_config(path=None, saved=None):
     """The defaults, with config.json over them and anything saved over that."""
     global CONFIG, FILE_CONFIG, FILE_KEYS
@@ -1954,8 +1970,14 @@ def load_config(path=None, saved=None):
             return CONFIG
         raise SystemExit('otp: %s could not be read: %s - mend it (it is JSON) and start '
                          'again; nothing was started on the defaults' % (where, e))
+    was_loaded = CONFIG_LOADED[0]
     CONFIG_LOADED[0] = True
     FILE_CONFIG = dict(fresh)
+    if was_loaded and CONFIG and NAME_HELD[0] and this_node_name(fresh) != this_node_name(CONFIG):
+        # The name it runs under kept until it starts again (1.0.206), as the page
+        # says: read again at once, every setting of the node's old name stopped
+        # applying - RADIUS went to the cluster's address and port on the spot.
+        fresh['node_name'] = this_node_name(CONFIG)
     FILE_KEYS = named
     whole = dict(fresh)
     if saved:

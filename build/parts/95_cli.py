@@ -1205,6 +1205,16 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     write_file_settings(changes)
     chown_to_service(CONFIG_FILE, 0o640)
     load_config(saved=store.settings_saved())
+    # A node's own settings saved while it was alone made its own now (1.0.206):
+    # kept as the plain key, they became the cluster's - the second node bound
+    # RADIUS to the first one's address and greeted mail servers by its name.
+    me_now = node_name()
+    held = store.settings_saved()
+    for k in NODE_KEYS:
+        if k in held and (k + '@' + me_now) not in held:
+            store.save_setting(k + '@' + me_now, held[k], 'otp (cluster made)')
+            store.drop_setting(k)
+    load_config(saved=store.settings_saved())
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.
     data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(), 'pg_major': major,

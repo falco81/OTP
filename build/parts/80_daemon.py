@@ -1107,6 +1107,14 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        if 'radius_auth_port' in checked or 'radius_acct_port' in checked:
+            # One port for both refused (1.0.206): the sign-ins (or the accounting)
+            # stopped there and then, with "saved" on the page.
+            auth = int(checked.get('radius_auth_port', CONFIG.get('radius_auth_port') or 1812))
+            acct = int(checked.get('radius_acct_port', CONFIG.get('radius_acct_port') or 1813))
+            if auth == acct:
+                raise BadSetting('the sign-ins and the accounting cannot listen on one port (%d)'
+                                 % auth)
         if 'node_name' in checked:
             taken = node_name_taken(self.store, checked['node_name'])
             if taken:
@@ -1362,6 +1370,7 @@ class Daemon(object):
 
     # ---- running -------------------------------------------------------------------
     def run(self):
+        NAME_HELD[0] = True                 # a new node_name waits for the next start (1.0.206)
         log('otp %s starting: the database is %s' % (__version__, self.store.db.where()))
         try:
             downgrade_floor_note(self.store)        # how far back it may go (1.0.143)

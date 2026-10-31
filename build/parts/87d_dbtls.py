@@ -460,7 +460,13 @@ def dbtls_watch(daemon):
             log_sparing('dbtls-rescue-x', 'the connection to the database: %s' % e, 'warn',
                         every=600)
         if not DBTLS_WORK['at']:
-            dbtls_publish(daemon)       # one not written while the database was away
+            try:
+                dbtls_publish(daemon)   # one not written while the database was away
+            except Exception as e:      # noqa: BLE001
+                # The thread kept (1.0.206): the database away at its first look
+                # ended it, and the rescue it is for never ran.
+                log_sparing('dbtls-publish-x', 'the connection to the database: %s' % e,
+                            'warn', every=600)
 
 
 def dbtls_tick(daemon):

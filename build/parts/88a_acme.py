@@ -1095,7 +1095,15 @@ def _dns_rfc2136(rr, txt):
     keyname = str(CONFIG.get('acme_dns_tsig_name') or '').strip()
     secret = unseal_secret(CONFIG.get('acme_dns_tsig_secret') or '') or ''
     alg = CONFIG.get('acme_dns_tsig_alg') or 'hmac-sha256'
-    host, _, port = server.partition(':')
+    # [v6]:port, a bare IPv6 address (port 53), or host:port (1.0.206): split on
+    # the first colon, an IPv6 server came out as "server 2001 db8::53".
+    m = re.match(r'^\[([^\]]+)\](?::(\d+))?\Z', server)
+    if m:
+        host, port = m.group(1), m.group(2) or ''
+    elif server.count(':') > 1:
+        host, port = server, ''
+    else:
+        host, _, port = server.partition(':')
     zone = str(CONFIG.get('acme_dns_zone') or '').strip()
 
     def run(op):
@@ -1361,17 +1369,24 @@ _SYS_GETADDRINFO = socket.getaddrinfo
 
 
 def _acme_proxy_host():
-    """The proxy's own name: looked up as the machine looks names up (1.0.205) -
-    an inside name ACME's public DNS servers do not know."""
+    """The names looked up as the machine looks names up (1.0.205, 1.0.206): the
+    proxy's, the database's, the other node's - inside names ACME's public DNS
+    servers do not know; a database connection made again in an order's thread
+    asked them."""
+    out = set()
     try:
-        return (urllib.parse.urlsplit(str(CONFIG.get('proxy_url') or '')).hostname or '').lower()
+        out.add((urllib.parse.urlsplit(str(CONFIG.get('proxy_url') or '')).hostname or '').lower())
     except ValueError:
-        return ''
+        pass
+    for k in ('db_host', 'ha_peer', 'ha_address'):
+        out.add(str(CONFIG.get(k) or '').strip().strip('[]').lower())
+    out.discard('')
+    return out
 
 
 def _acme_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers() and \
-            (host.decode() if isinstance(host, bytes) else str(host)).lower() != _acme_proxy_host():
+            (host.decode() if isinstance(host, bytes) else str(host)).lower() not in _acme_proxy_host():
         h = host.decode() if isinstance(host, bytes) else str(host)
         try:
             ipaddress.ip_address(h.strip('[]'))

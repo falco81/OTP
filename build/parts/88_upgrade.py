@@ -397,7 +397,8 @@ def upgrade_tick(daemon):
         for n in ha_nodes(store):
             if n['name'] == me or n['name'] not in [x['name'] for x in steps]:
                 continue
-            if not n.get('alive') or maintenance_row(store, n['name']).get('on'):
+            alive = n.get('alive') or _peer_alive_there(n['name'])
+            if not alive or maintenance_row(store, n['name']).get('on'):
                 if turn.get('said') != 'waiting for %s to be in service' % n['name']:
                     _my_step(store, plan, state='waiting',
                              said='waiting for %s to be in service' % n['name'])
@@ -504,6 +505,32 @@ def upgrade_tick(daemon):
         if all((s.get('state') == 'done') or s['name'] == me for s in steps):
             store.add_event('starting and stopping', 'the upgrade to %s is done on every node'
                             % plan['version'])
+
+
+PEER_THERE = {}                   # name: (when asked, alive)
+
+
+def _peer_alive_there(name):
+    """Its heartbeat read in its own database (1.0.206): a node done with the new
+    version writes nothing that comes over to this older one any more - its
+    heartbeat looked stale here, and the last node waited for it for good.
+    Asked every 15 s at most."""
+    was = PEER_THERE.get(name)
+    if was and time.time() - was[0] < 15:
+        return was[1]
+    alive = False
+    try:
+        far = ha_peer_db()
+        try:
+            beat = json.loads(far.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,))
+                              or '{}')
+            alive = now_minus(beat.get('at')) < 120
+        finally:
+            far.close()
+    except Exception:                                   # noqa: BLE001
+        alive = False
+    PEER_THERE[name] = (time.time(), alive)
+    return alive
 
 
 def _peer_still_at_it(turn):

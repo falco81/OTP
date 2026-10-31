@@ -517,6 +517,35 @@ def _yes(data, key, default):
 class Storage(object):
     """Everything this daemon keeps, over whichever database it is."""
 
+    # The lists kept read (1.0.206): set to None by a save, which counts a new
+    # generation; a list read meanwhile - from before the save - is not kept
+    # over it. It was, and a client just added stayed unknown on that node until
+    # the next change or a restart.
+    def _cache_get(self, k):
+        return self.__dict__.get(k)
+
+    def _cache_set(self, k, v):
+        with self.__dict__.setdefault('_cache_lock', threading.Lock()):
+            if v is None:
+                self.__dict__['cache_gen'] = self.__dict__.get('cache_gen', 0) + 1
+            self.__dict__[k] = v
+
+    @property
+    def cache_gen(self):
+        return self.__dict__.get('cache_gen', 0)
+
+    def _cache_put(self, k, rows, gen):
+        with self.__dict__.setdefault('_cache_lock', threading.Lock()):
+            if self.cache_gen == gen:
+                self.__dict__[k] = rows
+
+    _clients = property(lambda self: self._cache_get('_clients'),
+                        lambda self, v: self._cache_set('_clients', v))
+    _realms = property(lambda self: self._cache_get('_realms'),
+                       lambda self, v: self._cache_set('_realms', v))
+    _dirs = property(lambda self: self._cache_get('_dirs'),
+                     lambda self, v: self._cache_set('_dirs', v))
+
     @classmethod
     def view(cls, db):
         """The same database through another connection, nothing made
@@ -1100,6 +1129,7 @@ class Storage(object):
         when a save empties the cache between two lines (1.0.33)."""
         rows = self._clients
         if rows is None:
+            gen = self.cache_gen
             rows = self.db.rows('SELECT * FROM clients ORDER BY position, name')
             for r in rows:
                 r['_secret'] = unseal_secret(r.get('secret') or '')
@@ -1107,7 +1137,7 @@ class Storage(object):
                     r['_net'] = address_net(r['address'])
                 except ValueError:
                     r['_net'] = None
-            self._clients = rows
+            self._cache_put('_clients', rows, gen)
         return rows
 
     def clients_seen(self):
@@ -1270,7 +1300,9 @@ class Storage(object):
 
     # ---- realms --------------------------------------------------------------
     def realms(self):
-        if self._realms is None:
+        rows = self._realms
+        if rows is None:
+            gen = self.cache_gen
             rows = self.db.rows('SELECT * FROM realms ORDER BY position, name')
             for r in rows:
                 try:
@@ -1288,8 +1320,8 @@ class Storage(object):
                 for k, dflt in (('nested', 1), ('check_disabled', 1)):
                     if r.get(k) is None:
                         r[k] = dflt
-            self._realms = rows
-        return [dict(r) for r in self._realms]
+            self._cache_put('_realms', rows, gen)
+        return [dict(r) for r in rows]
 
     def realm_for(self, user):
         """The realm a name belongs to: by what follows its @, else the realm
@@ -1541,13 +1573,15 @@ class Storage(object):
 
     # ---- directories -------------------------------------------------------
     def directories(self, with_secret=False, last=True):
-        if self._dirs is None:
+        rows = self._dirs
+        if rows is None:
+            gen = self.cache_gen
             rows = self.db.rows('SELECT * FROM directories ORDER BY name')
             for r in rows:
                 r['_pw'] = unseal_secret(r.get('bind_pw') or '')
-            self._dirs = rows
+            self._cache_put('_dirs', rows, gen)
         out = []
-        for r in self._dirs:
+        for r in rows:
             one = {k: v for k, v in r.items() if not k.startswith('_') and k != 'bind_pw'}
             one['bind_pw_set'] = bool(r['_pw'])
             one['bind_pw_lost'] = r['_pw'] is None

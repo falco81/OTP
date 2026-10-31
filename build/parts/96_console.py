@@ -2201,6 +2201,7 @@ class Console(object):
             return None
         sel = max(0, min(cur or 0, len(options) - 1))
         top = 0
+        typed, typed_at = '', 0.0
         while True:
             self._under()
             h, w = self.scr.getmaxyx()
@@ -2249,10 +2250,20 @@ class Console(object):
             elif k in ('end', 'pgdn'):
                 sel = len(options) - 1
             elif k and k.isdigit():
-                n = int(k) - 1
+                # A number typed as in the menus (1.0.206): taken at once only when
+                # no longer one can grow from it - "12" of a list of twelve picked
+                # the first ("all") on its 1, and cleared every lockout.
+                now = time.time()
+                typed = (typed if now - typed_at < 1.0 else '') + k
+                typed_at = now
+                n = int(typed) - 1
                 if 0 <= n < len(options):
                     sel = n
-                    return options[sel][0]
+                    if not any(str(i + 1).startswith(typed) and str(i + 1) != typed
+                               for i in range(len(options))):
+                        return options[sel][0]
+                else:
+                    typed = ''
             elif k in ('enter', 'right'):
                 return options[sel][0]
 

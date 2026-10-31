@@ -72,6 +72,8 @@ class MailError(RuntimeError):
         self.steps = steps or []
         self.permanent = bool(permanent)
         self.queued = None
+        # The recipients still to be sent to (1.0.206); None: every one of them.
+        self.left = None
 
 
 # ---- the recipients' servers, without a library to ask DNS with -----------------
@@ -594,9 +596,13 @@ def smtp_talk(store, host, port, security, auth, msg, to, steps, helo='', verify
             if refused:
                 step('handed the message over', False, '; '.join(
                     '%s: %s' % (k, v) for k, v in refused.items()))
-                raise MailError('the server refused %s' % ', '.join(refused), steps,
+                err = MailError('the server refused %s' % ', '.join(refused), steps,
                                 permanent=all(int((v or (0,))[0] or 0) >= 500
                                               for v in refused.values()))
+                # The others took it (1.0.206): only these are tried again - every
+                # try sent it once more to everybody who had it already.
+                err.left = list(refused)
+                raise err
             reply = getattr(conn, 'last_reply', None)
             said = ''
             if reply:
@@ -653,40 +659,56 @@ def mail_send(store, msg, to, mode=None):
     for one in to:
         by_domain.setdefault(one.rsplit('@', 1)[-1].lower(), []).append(one)
     port = int(CONFIG.get('mail_direct_port') or 25)
+    failed = []                         # (recipients still to do, the error) per domain
     for domain, who in by_domain.items():
         try:
-            mxs, how = dns_mx_full(domain)
-            mxs = [m for m in mxs if m[1] not in ('', '.')]
-            if not mxs:
-                raise MailError('%s takes no mail (its MX record is a null MX)' % domain,
-                                permanent=True)
-        except MailError as e:
-            steps.append({'what': 'look up the mail servers of %s' % domain, 'ok': False,
-                          'said': str(e)})
-            raise MailError(str(e), steps, permanent=e.permanent)
-        steps.append({'what': 'looked up the mail servers of %s' % domain, 'ok': True,
-                      'said': ', '.join('%s (%d)' % (h, p) for p, h in mxs) + ' · ' + how})
-        last = None
-        # One deadline over every MX of the domain (1.0.59): four servers of
-        # two addresses each at 20 s outlasted the page asking.
-        deadline = time.time() + MAIL_DIRECT_DEADLINE_S
-        for _pref, host in mxs[:4]:
-            left = deadline - time.time()
-            if left < 3:
-                last = last or MailError('no time left to try %s' % host, steps)
-                break
             try:
-                smtp_talk(store, host, port,
-                          'starttls' if CONFIG.get('mail_direct_tls') == 'required'
-                          else 'starttls-if', 'none', msg, who, steps, direct=True,
-                          timeout=min(float(CONFIG.get('smtp_timeout_s') or 20), left / 2))
-                last = None
-                break
+                mxs, how = dns_mx_full(domain)
+                mxs = [m for m in mxs if m[1] not in ('', '.')]
+                if not mxs:
+                    raise MailError('%s takes no mail (its MX record is a null MX)' % domain,
+                                    permanent=True)
             except MailError as e:
-                last = e
-        if last:
-            raise MailError('no mail server of %s took it: %s' % (domain, last), steps,
-                            permanent=getattr(last, 'permanent', False))
+                steps.append({'what': 'look up the mail servers of %s' % domain, 'ok': False,
+                              'said': str(e)})
+                raise MailError(str(e), steps, permanent=e.permanent)
+            steps.append({'what': 'looked up the mail servers of %s' % domain, 'ok': True,
+                          'said': ', '.join('%s (%d)' % (h, p) for p, h in mxs) + ' · ' + how})
+            last = None
+            # One deadline over every MX of the domain (1.0.59): four servers of
+            # two addresses each at 20 s outlasted the page asking.
+            deadline = time.time() + MAIL_DIRECT_DEADLINE_S
+            for _pref, host in mxs[:4]:
+                left = deadline - time.time()
+                if left < 3:
+                    last = last or MailError('no time left to try %s' % host, steps)
+                    break
+                try:
+                    smtp_talk(store, host, port,
+                              'starttls' if CONFIG.get('mail_direct_tls') == 'required'
+                              else 'starttls-if', 'none', msg, who, steps, direct=True,
+                              timeout=min(float(CONFIG.get('smtp_timeout_s') or 20), left / 2))
+                    last = None
+                    break
+                except MailError as e:
+                    last = e
+                    if e.left is not None and len(e.left) < len(who):
+                        break               # this server took the others: not the next one
+            if last:
+                err = MailError('no mail server of %s took it: %s' % (domain, last), steps,
+                                permanent=getattr(last, 'permanent', False))
+                err.left = list(last.left) if last.left is not None else list(who)
+                raise err
+        except MailError as e:
+            # Each domain on its own (1.0.206): one that would not take it no longer
+            # stops the next ones, nor sends it again to the ones that took it.
+            failed.append((e.left if e.left is not None else list(who), e))
+    if failed:
+        left = [a for one, _e in failed for a in one]
+        err = MailError('; '.join(str(e) for _l, e in failed), steps,
+                        permanent=all(e.permanent for _l, e in failed))
+        err.left = left
+        raise err
     return steps
 
 
@@ -1118,6 +1140,10 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
         steps = mail_send(store, msg, rec.get('to') or [])
     except MailError as e:
         err, steps = e, e.steps
+        if e.left is not None and e.left and len(e.left) < len(rec.get('to') or []):
+            rec['done_to'] = sorted(set(rec.get('done_to') or []) |
+                                    (set(rec.get('to') or []) - set(e.left)))
+            rec['to'] = list(e.left)            # the rest took it (1.0.206)
     except Exception as e:                              # noqa: BLE001
         err, steps = MailError(str(e) or e.__class__.__name__, []), []
     rec['tries'] = int(rec.get('tries') or 0) + 1
@@ -1228,14 +1254,21 @@ def mailq_tick(store):
                 continue
             if paused and rec.get('kind') not in ('code', 'verify'):
                 continue        # kept as it is until mail is switched on again
+            # A while past its time (1.0.206): the last try is due at the very time
+            # it runs out, and was given up here before it was made - with no word.
             if state in ('waiting', 'sending') and \
-                    now > float(rec.get('expires') or 0) + (0 if state != 'sending' else 600):
+                    now > float(rec.get('expires') or 0) + (120 if state != 'sending' else 600):
                 _, raw = mailq_read(store, qid)
                 if raw:
                     rec.pop('qid', None)
                     rec.update(state='expired', next_at=0, said=rec.get('said') or 'not sent in time')
                     if mailq_cas(store, qid, raw, rec):
                         mailq_body_drop(store, qid)
+                        store.add_event('mail', 'the mail to %s (%s) was given up after %d tries: %s'
+                                        % (', '.join(rec.get('to') or []),
+                                           MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'),
+                                           int(rec.get('tries') or 0), str(rec.get('said'))[:300]),
+                                        'bad')
                 continue
             if paused:
                 # Mail switched off (1.0.103): nothing tried while it is, as

@@ -272,7 +272,7 @@ def _sn_metrics(text):
 def snmp_mib(daemon, agent):
     """Every object answered now, sorted: [(oid, kind, value)]."""
     B = SNMP_BASE
-    up = int((time.time() - agent.started) * 100)
+    up = int((time.monotonic() - agent.started) * 100)
     rows = [
         (SNMP_SYS + (1, 0), 'str', 'otp %s - one-time password server (RADIUS), node %s'
          % (__version__, node_name())),
@@ -284,7 +284,7 @@ def snmp_mib(daemon, agent):
         (SNMP_SYS + (7, 0), 'int', 72),
         (SNMP_ENGINE_OID + (1, 0), 'str', agent.engine),
         (SNMP_ENGINE_OID + (2, 0), 'int', agent.boots),
-        (SNMP_ENGINE_OID + (3, 0), 'int', int(time.time() - agent.started)),
+        (SNMP_ENGINE_OID + (3, 0), 'int', int(time.monotonic() - agent.started)),
         (SNMP_ENGINE_OID + (4, 0), 'int', 65507),
     ]
     for i in range(1, 7):
@@ -372,7 +372,9 @@ class SnmpAgent(object):
         self.bound = None
         self.engine = snmp_engine_id()
         self.boots = snmp_boots_next()
-        self.started = time.time()
+        # Monotonic (1.0.206): RFC 3414's engine time never goes back - an NTP
+        # step back put it below zero, and the agent answered nothing.
+        self.started = time.monotonic()
         self.keys = None
         self.keyed = None
         self.mib = []
@@ -476,7 +478,7 @@ class SnmpAgent(object):
                             every=300)
 
     def now_time(self):
-        return int(time.time() - self.started)
+        return int(time.monotonic() - self.started)
 
     # -- one message ------------------------------------------------------------------------
     def answer(self, data, addr):
@@ -691,7 +693,7 @@ class SnmpAgent(object):
             raise ValueError('the SNMPv3 user and its two passphrases are not set')
         if not self.keys:
             self.keys = snmp_keys(c, self.engine)
-        vbs = [(SNMP_UPTIME_OID, snmp_value('ticks', int((time.time() - self.started) * 100))),
+        vbs = [(SNMP_UPTIME_OID, snmp_value('ticks', int((time.monotonic() - self.started) * 100))),
                (SNMP_TRAP_OID, ber_oid(SNMP_BASE + (0, what)))]
         for i, (kind, v) in enumerate(binds, 1):
             vbs.append((SNMP_BASE + (8, i, 0), snmp_value(kind, v)))
@@ -738,6 +740,9 @@ def snmp_trap_targets(text, strict=False):
     return out
 
 
+SNMP_SELF = {'until': 0.0}        # the page's own test under way (1.0.206)
+
+
 def snmp_allowed(client):
     nets = [w for w in re.split(r'[\s,;]+', str(CONFIG.get('snmp_from') or '')) if w]
     if not nets:
@@ -746,6 +751,11 @@ def snmp_allowed(client):
         a = ipaddress.ip_address(str(client or '').strip('[]'))
     except ValueError:
         return False
+    if time.time() < SNMP_SELF['until'] and (
+            a.is_loopback or str(a) == str(CONFIG.get('snmp_bind') or '').strip().strip('[]')):
+        # This machine itself, while the page's own test asks (1.0.206): it timed
+        # out wherever the managers' network was set - as advised.
+        return True
     for n in nets:
         try:
             if a in ipaddress.ip_network(n, strict=False):
@@ -855,7 +865,10 @@ def _ask_snmp(daemon, args):
     if not SNMP_STATE.get('listening'):
         raise ValueError(SNMP_STATE.get('error') or 'not listening')
     t0 = time.time()
-    got = snmp_get('127.0.0.1', int(SNMP_STATE.get('port') or 161), c,
+    bound = str(CONFIG.get('snmp_bind') or '').strip()
+    at = bound if bound and bound not in ('0.0.0.0', '::') else '127.0.0.1'
+    SNMP_SELF['until'] = time.time() + 5
+    got = snmp_get(at, int(SNMP_STATE.get('port') or 161), c,
                    [SNMP_SYS + (1, 0), SNMP_SYS + (3, 0), SNMP_BASE + (1, 1, 0)])
     return {'ok': True, 'said': got, 'ms': int((time.time() - t0) * 1000),
             'engine': ag.engine.hex()}
@@ -889,7 +902,7 @@ def snmp_get(host, port, c, oids, timeout=3.0):
         boots = int.from_bytes(raw[sec[1][1]:sec[1][2]], 'big')
         etime = int.from_bytes(raw[sec[2][1]:sec[2][2]], 'big')
         fake = SnmpAgent.__new__(SnmpAgent)
-        fake.engine, fake.boots, fake.started = engine, boots, time.time() - etime
+        fake.engine, fake.boots, fake.started = engine, boots, time.monotonic() - etime
         fake.keys = snmp_keys(c, engine)
         fake.salt = int.from_bytes(secrets.token_bytes(8), 'big')
         rid += 1

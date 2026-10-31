@@ -137,8 +137,12 @@ def sshotp_check(store, name, code):
             return False, 'this token gets its codes sent'
         secret = unseal_secret(rec.get('secret'), sshotp_key(name))
         code = ssh_code_typed(code)
-        step = totp_match(secret, code, digits=6, window=int(CONFIG.get('totp_window') or 1)) \
-            if secret else None
+        step = totp_match(secret, code, digits=6, window=mfa_window()) if secret else None
+        # Good once on either node (1.0.206): the step taken in token_once, as a
+        # token's - each node's own row let a code seen on one in on the other.
+        if step is not None and step > int(rec.get('step') or 0) and \
+                not once_take(store, 'step', 'sshotp:' + name.lower(), step):
+            step = int(rec.get('step') or 0)
         if step is None or step <= int(rec.get('step') or 0):
             fails.append(now)
             rec['failed_at'] = now
@@ -494,7 +498,13 @@ class SshGate(object):
         while not self.stop_flag:
             if time.time() - self.looked > 10:
                 self.looked = time.time()
-                self.configure()
+                try:
+                    self.configure()
+                except Exception as e:          # noqa: BLE001
+                    # Never the thread with it (1.0.206): a database away while
+                    # the gate was set up ended it, and SSH waited on a socket
+                    # nobody read until the service started again.
+                    log_sparing('ssh-gate-conf', 'the SSH gate: %s' % e, 'warn', every=600)
             s = self.sock
             if not s:
                 time.sleep(1.0)

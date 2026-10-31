@@ -210,12 +210,25 @@ class Siem(object):
             else:
                 until = self.down.get(key, 0.0)
                 if time.time() < until:
+                    # Counted (1.0.206): thrown away without a word, the metrics
+                    # said nothing was lost while events and sign-ins were.
+                    self.dropped += 1
                     return 'not reachable - tried again at %s' % time.strftime(
                         '%H:%M:%S', time.localtime(until))
                 # RFC 5425 / 6587: a length and a space before each message.
                 data = b'%d ' % len(raw) + raw
                 for attempt in (1, 2):
                     sock = self.conns.get(target)
+                    if sock is not None and not _conn_alive(sock):
+                        # Closed by the other side (1.0.206), as isemon's: written
+                        # into, the first line after a restart was lost - and
+                        # counted as sent.
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                        self.conns.pop(target, None)
+                        sock = None
                     if sock is None:
                         sock = socket.create_connection((host, port), timeout=5)
                         if proto == 'tls':

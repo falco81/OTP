@@ -376,6 +376,11 @@ if [[ -n "$DO_UNINSTALL" ]]; then
                /etc/php-fpm.d/otp.conf /etc/php/*/fpm/pool.d/otp.conf /etc/profile.d/zz-otp-console.sh /etc/otp-console-login; do
         [[ -e "$one" ]] && run rm -f "$one"
     done
+    # sshd's PAM no longer asking an otp that is gone (1.0.206): every password
+    # and code over SSH was refused after it - keys alone went on working.
+    if [[ -f "$SOURCE_DIR/deploy/otp_web.py" ]]; then
+        run python3 -I "$SOURCE_DIR/deploy/otp_web.py" --pam-off || warn "sshd's PAM could not be put back: take otp's block out of /etc/pam.d/sshd by hand"
+    fi
     [[ -d "$LIB_DIR" ]] && run rm -rf "$LIB_DIR"
     [[ -d "$WEB_DIR" ]] && run rm -rf "$WEB_DIR"
     run systemctl daemon-reload
@@ -957,6 +962,16 @@ install_program() {
             run cp -r "$SOURCE_DIR/$d" "$LIB_DIR/$d"
         fi
     done
+    # The drivers asked for with --with-db kept for the next upgrade (1.0.206): a
+    # later --upgrade - one from the pages too - has none, and took a Python
+    # without them; the database could no longer be moved from the pages.
+    local drivers="$LIB_DIR/db-drivers"
+    if [[ -n "$WITH_DB" && -z "$DRY_RUN" ]]; then
+        printf '%s\n' "$WITH_DB" > "$drivers" && chmod 600 "$drivers"
+    elif [[ -z "$WITH_DB" && -f "$drivers" && ! -L "$drivers" ]]; then
+        WITH_DB="$(head -n1 "$drivers" 2>/dev/null | tr -cd 'a-z')"
+        [[ -n "$WITH_DB" ]] && note "the database drivers asked for before are kept: $WITH_DB (--with-db to change)"
+    fi
     runtime_python
     # The command, on the same Python as the daemon (1.0.97): a link to
     # otp.py ran it on whatever python3 is first in PATH.
@@ -1095,7 +1110,13 @@ install_colour() {      # colorama: the command line in colour, as isemon's
 }
 
 install_db_drivers() {
-    [[ -n "$WITH_DB" ]] || return 0
+    # The engine in use too (1.0.206): moved to PostgreSQL from the pages and
+    # upgraded without --with-db, its pg_dump never came - the nightly dumps
+    # quietly became the portable copies.
+    local inuse0=""
+    inuse0="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("db_engine") or "")' \
+              "$CONFIG_DIR/config.json" 2>/dev/null || true)"
+    [[ -n "$WITH_DB" || "$inuse0" == postgres || "$inuse0" == mariadb ]] || return 0
     step "Database drivers"
     local want=()
     case "$WITH_DB" in

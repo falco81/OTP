@@ -1464,8 +1464,13 @@ class Shipper(object):
         self.targets = syslog_targets(CONFIG.get('isemon_targets')) if CONFIG.get('isemon') \
             else []
         self.ctx = None                 # the TLS settings may have changed (1.0.172)
+        # And every connection made again when they did (1.0.206): one made
+        # unchecked went on unchecked for weeks, as SIEM's did.
+        tls = (CONFIG.get('isemon_verify'), CONFIG.get('isemon_ca'), CONFIG.get('isemon_mtls'))
+        again = tls != getattr(self, '_tls_was', tls)
+        self._tls_was = tls
         for key, sock in list(self.tcp.items()):
-            if key not in self.targets:
+            if again or key not in self.targets:
                 try:
                     sock.close()
                 except OSError:

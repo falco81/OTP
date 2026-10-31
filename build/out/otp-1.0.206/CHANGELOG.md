@@ -4,6 +4,96 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.206 — 31 October 2026
+
+**A bug hunt, second round**: read through again across the whole program - the threads
+side by side, the settings and where each is used, the enrolment pages as somebody on
+the internet sees them, installing, upgrading and putting back, the protocols spoken by
+hand (SNMP, mail, syslog) - each finding shown to fail before it was mended
+(`tests/round/t_round2.py`, 23 of 23; the first round's still 29 of 29). On Python
+3.14.8: the whole suite, the console (56 of 56) and the cluster of two - signing in
+57/57, operations 17/17, maintenance 14/14, ACME 36/36, alerts 13/13, TLS 32/32.
+
+The enrolment pages:
+- **The directory password alone made a second token** in a realm of every suffix (`*`)
+  that looks accounts up by their account name: "jboss@whatever.x" was a new name, its
+  token the asker's, and RADIUS let it in. The account's token under any suffix is its
+  own now - replacing it asks for the old one first.
+- In a realm that looks names up by the account name, another account's
+  userPrincipalName no longer leads to this one's token (and the other way round): a
+  token is the same person's only as its realm reads its names.
+- A name more than one account answers to is refused, as RADIUS refuses it.
+
+Signing in and the cluster:
+- **An SSH code from the app was good once on each node**: taken in token_once now, on
+  either node, as a token's.
+- **A sign-in waited on the SMS gateway or the mail server** while the helpdesk sent
+  that person something (a test code, the token by mail): the token's lock is let go
+  while it is sent.
+- **The rolling upgrade could wait for good** for the node done first: its heartbeat no
+  longer comes over to the older one; it is read in that node's own database.
+- The SSH gate and the watch over the database's TLS no longer end on one database
+  error (the gate stayed silent until a restart).
+- A list of clients, realms or directories read just before a save is no longer kept
+  over it (a new client stayed unknown on one node).
+- A connection to the other node's database made before its address or TLS changed is
+  closed, not kept. ACME looks the database's and the other node's names up as the
+  machine does.
+- A node's own settings saved while it was alone become its own when the cluster is
+  made - the second node took the first one's RADIUS address and mail name.
+- A new node_name waits for the next start, as the page says - it took effect at once,
+  and every setting of the node's old name stopped applying.
+- An import of the settings into a cluster saves the cluster's values (it saved them for
+  the importing node, and "replace" then took them away).
+
+Settings:
+- An address, a host name or a time is kept without the spaces around it ("127.0.0.1 "
+  took RADIUS down). The mail's From is an address ("Name <addr>" broke every mail; one
+  saved before is read as its address). The sign-ins and the accounting on one port are
+  refused. The proxy's address and the SMS gateway's need a port that is one and an IPv6
+  address in brackets.
+- The proxy's "new versions" and "system updates" switched off stay off (a setting of
+  before 1.0.202 switched them on again at every save).
+- An IPv6 DNS server for RFC 2136 updates is written right in nsupdate's script.
+
+Mail, syslog, SNMP:
+- **Mail to several people, one of them refusing for now, went again to all the
+  others at every try**; now only to the ones left. Each domain on its own, and a server
+  that took some is not tried again by the next MX.
+- The last try of a mail before it runs out is made, and its giving up said (it ran out
+  without a word).
+- SIEM: a connection closed by the receiver is seen before it is written into (the first
+  line after its restart was lost and counted as sent); lines thrown away while it is
+  away are counted. isemon's connections made again when its TLS settings change.
+- SNMP's engine time from a clock that never goes back (an NTP step back stopped every
+  answer); the page's own test works where the managers' network is set (this machine
+  let in for the moment of the test only).
+
+The pages and the console:
+- **A change typed after a refresh was not saved**: on Time, Firewall and access and
+  the VIP address, the draft was taken again from the server under a box being worked
+  in - the box wrote to the old one, Save sent the new one unchanged and said "saved".
+  The draft is kept while a box of it is in use, and the boxes write to the draft as it
+  is (`tests/ui/draft_ntp.js`, `draft_fw.js`). A change in the moment after a save is
+  no longer lost (Time) nor an error (VIP).
+- The VIP address saved against what its draft was made from: another administrator's
+  change made meanwhile was sent back the way it was.
+- Enter in "Send a sample" sent another SMS at each press; a double click on "Export
+  it" made two files of the key. One at a time now.
+- Nine Czech sentences with no tags in them were never shown (the isemon and
+  Monitoring pages' first words among them); two more had no translation.
+- The outgoing mail's list refreshes again after the browser tab was away; the progress
+  of a backup put back stops when its window is closed, and says so after a minute of
+  nothing.
+- The console: a number of two digits in a list of ten and more is taken as typed - "12"
+  picked the first ("all") on its 1, and cleared every lockout.
+
+Installing:
+- `--with-db` kept for the next `--upgrade` (one from the pages has none: the drivers
+  were left out of the new Python); the engine in use gets its dump program anyway.
+- `--uninstall` takes otp out of sshd's PAM first: SSH by password or code was refused
+  after it, keys alone working.
+
 ## 1.0.205 — 31 October 2026
 
 **A bug hunt, first round**: the whole program read through by area - RADIUS and

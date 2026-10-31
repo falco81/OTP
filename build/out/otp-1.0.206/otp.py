@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.205'
+__version__ = '1.0.206'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1849,6 +1849,19 @@ def check_setting(key, value):
                          r'(?::\d{1,5})?/?\Z', str(got).strip()):
         raise BadSetting('proxy_url: http://host:port - the user name and the password go '
                          'in the fields below, not in the address')
+    if key in ('proxy_url', 'sms_tel_host') and str(got).strip():
+        # A port that is one, and an address a URL can be made of (1.0.206):
+        # :99999 or a bare IPv6 address was taken, and every try of it failed.
+        u = str(got).strip()
+        try:
+            sp = urllib.parse.urlsplit(u if '://' in u else 'http://' + u)
+            port_ = sp.port
+            host_ = sp.hostname
+        except ValueError:
+            port_, host_ = -1, None
+        if not host_ or (port_ is not None and not 1 <= port_ <= 65535) or u.endswith(':'):
+            raise BadSetting('%s: host or host:port (1-65535), an IPv6 address in brackets - '
+                             '[fd00::1]:443' % key)
     if key == 'proxy_user' and re.search(r'[\s:@/]', str(got)):
         raise BadSetting('proxy_user: no spaces, no : @ or /')
     if key == 'proxy_no' and str(got).strip() and \
@@ -1880,10 +1893,35 @@ def check_setting(key, value):
             and not re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z', str(got).strip()):
         raise BadSetting('isemon_hostname: a host name has letters, digits, dots and '
                          'dashes and nothing else')
+    if key in ('mail_from', 'mail_reply_to') and str(got).strip():
+        # An address, and only that (1.0.206): "OTP <otp@firma.cz>" was taken, and
+        # every mail went out with a From the server refused - the name goes in
+        # From (name). The address in it taken as the value.
+        import email.utils as _eu
+        addr = _eu.parseaddr(str(got).strip())[1]
+        if not re.match(r'^[^@\s<>"]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\Z', addr or ''):
+            raise BadSetting('%s: %r is not a mail address' % (key, got))
+        got = addr
+    if isinstance(got, str) and key in SETTING_STRIPPED:
+        # As it was checked (1.0.206): "127.0.0.1 " passed as an address and was
+        # kept with its space - RADIUS bound to it, and to nothing.
+        got = got.strip()
     return got
 
 
+SETTING_STRIPPED = frozenset((
+    'radius_bind', 'snmp_bind', 'snmp_user', 'snmp_trap_to', 'node_name', 'db_host', 'db_name',
+    'db_user', 'ha_address', 'ha_peer', 'alerts_url', 'backup_at', 'rbackup_at', 'report_at',
+    'osup_check_at', 'osup_auto_at', 'power_auto_at', 'acme_email', 'acme_url', 'acme_dns_url',
+    'acme_dns_server', 'acme_desec_domain', 'acme_dns_alias', 'acme_dns_zone',
+    'acme_dns_tsig_name', 'acme_dns_user', 'acme_dns_subdomain', 'acme_node_name',
+    'siem_hostname', 'isemon_hostname', 'proxy_url'))
+
+
 CONFIG_LOADED = [False]
+
+
+NAME_HELD = [False]               # the daemon running: its node's name kept until it starts again
 
 
 def load_config(path=None, saved=None):
@@ -1932,8 +1970,14 @@ def load_config(path=None, saved=None):
             return CONFIG
         raise SystemExit('otp: %s could not be read: %s - mend it (it is JSON) and start '
                          'again; nothing was started on the defaults' % (where, e))
+    was_loaded = CONFIG_LOADED[0]
     CONFIG_LOADED[0] = True
     FILE_CONFIG = dict(fresh)
+    if was_loaded and CONFIG and NAME_HELD[0] and this_node_name(fresh) != this_node_name(CONFIG):
+        # The name it runs under kept until it starts again (1.0.206), as the page
+        # says: read again at once, every setting of the node's old name stopped
+        # applying - RADIUS went to the cluster's address and port on the spot.
+        fresh['node_name'] = this_node_name(CONFIG)
     FILE_KEYS = named
     whole = dict(fresh)
     if saved:
@@ -6474,6 +6518,35 @@ def _yes(data, key, default):
 class Storage(object):
     """Everything this daemon keeps, over whichever database it is."""
 
+    # The lists kept read (1.0.206): set to None by a save, which counts a new
+    # generation; a list read meanwhile - from before the save - is not kept
+    # over it. It was, and a client just added stayed unknown on that node until
+    # the next change or a restart.
+    def _cache_get(self, k):
+        return self.__dict__.get(k)
+
+    def _cache_set(self, k, v):
+        with self.__dict__.setdefault('_cache_lock', threading.Lock()):
+            if v is None:
+                self.__dict__['cache_gen'] = self.__dict__.get('cache_gen', 0) + 1
+            self.__dict__[k] = v
+
+    @property
+    def cache_gen(self):
+        return self.__dict__.get('cache_gen', 0)
+
+    def _cache_put(self, k, rows, gen):
+        with self.__dict__.setdefault('_cache_lock', threading.Lock()):
+            if self.cache_gen == gen:
+                self.__dict__[k] = rows
+
+    _clients = property(lambda self: self._cache_get('_clients'),
+                        lambda self, v: self._cache_set('_clients', v))
+    _realms = property(lambda self: self._cache_get('_realms'),
+                       lambda self, v: self._cache_set('_realms', v))
+    _dirs = property(lambda self: self._cache_get('_dirs'),
+                     lambda self, v: self._cache_set('_dirs', v))
+
     @classmethod
     def view(cls, db):
         """The same database through another connection, nothing made
@@ -7057,6 +7130,7 @@ class Storage(object):
         when a save empties the cache between two lines (1.0.33)."""
         rows = self._clients
         if rows is None:
+            gen = self.cache_gen
             rows = self.db.rows('SELECT * FROM clients ORDER BY position, name')
             for r in rows:
                 r['_secret'] = unseal_secret(r.get('secret') or '')
@@ -7064,7 +7138,7 @@ class Storage(object):
                     r['_net'] = address_net(r['address'])
                 except ValueError:
                     r['_net'] = None
-            self._clients = rows
+            self._cache_put('_clients', rows, gen)
         return rows
 
     def clients_seen(self):
@@ -7227,7 +7301,9 @@ class Storage(object):
 
     # ---- realms --------------------------------------------------------------
     def realms(self):
-        if self._realms is None:
+        rows = self._realms
+        if rows is None:
+            gen = self.cache_gen
             rows = self.db.rows('SELECT * FROM realms ORDER BY position, name')
             for r in rows:
                 try:
@@ -7245,8 +7321,8 @@ class Storage(object):
                 for k, dflt in (('nested', 1), ('check_disabled', 1)):
                     if r.get(k) is None:
                         r[k] = dflt
-            self._realms = rows
-        return [dict(r) for r in self._realms]
+            self._cache_put('_realms', rows, gen)
+        return [dict(r) for r in rows]
 
     def realm_for(self, user):
         """The realm a name belongs to: by what follows its @, else the realm
@@ -7498,13 +7574,15 @@ class Storage(object):
 
     # ---- directories -------------------------------------------------------
     def directories(self, with_secret=False, last=True):
-        if self._dirs is None:
+        rows = self._dirs
+        if rows is None:
+            gen = self.cache_gen
             rows = self.db.rows('SELECT * FROM directories ORDER BY name')
             for r in rows:
                 r['_pw'] = unseal_secret(r.get('bind_pw') or '')
-            self._dirs = rows
+            self._cache_put('_dirs', rows, gen)
         out = []
-        for r in self._dirs:
+        for r in rows:
             one = {k: v for k, v in r.items() if not k.startswith('_') and k != 'bind_pw'}
             one['bind_pw_set'] = bool(r['_pw'])
             one['bind_pw_lost'] = r['_pw'] is None
@@ -9464,8 +9542,13 @@ class Shipper(object):
         self.targets = syslog_targets(CONFIG.get('isemon_targets')) if CONFIG.get('isemon') \
             else []
         self.ctx = None                 # the TLS settings may have changed (1.0.172)
+        # And every connection made again when they did (1.0.206): one made
+        # unchecked went on unchecked for weeks, as SIEM's did.
+        tls = (CONFIG.get('isemon_verify'), CONFIG.get('isemon_ca'), CONFIG.get('isemon_mtls'))
+        again = tls != getattr(self, '_tls_was', tls)
+        self._tls_was = tls
         for key, sock in list(self.tcp.items()):
-            if key not in self.targets:
+            if again or key not in self.targets:
                 try:
                     sock.close()
                 except OSError:
@@ -9884,12 +9967,25 @@ class Siem(object):
             else:
                 until = self.down.get(key, 0.0)
                 if time.time() < until:
+                    # Counted (1.0.206): thrown away without a word, the metrics
+                    # said nothing was lost while events and sign-ins were.
+                    self.dropped += 1
                     return 'not reachable - tried again at %s' % time.strftime(
                         '%H:%M:%S', time.localtime(until))
                 # RFC 5425 / 6587: a length and a space before each message.
                 data = b'%d ' % len(raw) + raw
                 for attempt in (1, 2):
                     sock = self.conns.get(target)
+                    if sock is not None and not _conn_alive(sock):
+                        # Closed by the other side (1.0.206), as isemon's: written
+                        # into, the first line after a restart was lost - and
+                        # counted as sent.
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                        self.conns.pop(target, None)
+                        sock = None
                     if sock is None:
                         sock = socket.create_connection((host, port), timeout=5)
                         if proto == 'tls':
@@ -11157,7 +11253,7 @@ def code_message(kind, to, code, purpose='signin', lang=None, name='', display='
     site = str(CONFIG.get('site_name') or socket.gethostname())
     msg = EmailMessage()
     msg['Subject'] = code_words(cp['subject'], lang=lang, w=w, code=code)
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     msg['From'] = formataddr((str(CONFIG.get('mail_from_name') or site), sender))
@@ -14055,6 +14151,14 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        if 'radius_auth_port' in checked or 'radius_acct_port' in checked:
+            # One port for both refused (1.0.206): the sign-ins (or the accounting)
+            # stopped there and then, with "saved" on the page.
+            auth = int(checked.get('radius_auth_port', CONFIG.get('radius_auth_port') or 1812))
+            acct = int(checked.get('radius_acct_port', CONFIG.get('radius_acct_port') or 1813))
+            if auth == acct:
+                raise BadSetting('the sign-ins and the accounting cannot listen on one port (%d)'
+                                 % auth)
         if 'node_name' in checked:
             taken = node_name_taken(self.store, checked['node_name'])
             if taken:
@@ -14067,6 +14171,14 @@ class Daemon(object):
                             'not from %s' % (', '.join(sorted(file_side)), node, node_name()))
         db_side = {k: v for k, v in checked.items() if k not in FILE_ONLY_KEYS}
         saved_now = self.store.settings_saved()
+        # The proxy's uses kept as rows of their own, off too (1.0.206): a 0 equal
+        # to the default was dropped, and the setting of before 1.0.202 that
+        # keeps a proxy on for the updates switched them on again at once. The
+        # proxy switched on now: its uses as they are set, off unless said.
+        if 'proxy' in db_side:
+            for k in ('proxy_update', 'proxy_os'):
+                if k not in saved_now and k not in db_side:
+                    db_side[k] = int(CONFIG.get(k) or 0) if not db_side.get('proxy') else 0
         for k, v in db_side.items():
             if k in NODE_KEYS and many and not cluster_wide:
                 shared = saved_now.get(k, FILE_CONFIG.get(k, DEFAULTS[k]))
@@ -14075,7 +14187,7 @@ class Daemon(object):
                 else:
                     self.store.save_setting(k + '@' + node, v, by)
                 continue
-            if v == FILE_CONFIG.get(k, DEFAULTS[k]):
+            if v == FILE_CONFIG.get(k, DEFAULTS[k]) and k not in ('proxy_update', 'proxy_os'):
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)
@@ -14302,6 +14414,7 @@ class Daemon(object):
 
     # ---- running -------------------------------------------------------------------
     def run(self):
+        NAME_HELD[0] = True                 # a new node_name waits for the next start (1.0.206)
         log('otp %s starting: the database is %s' % (__version__, self.store.db.where()))
         try:
             downgrade_floor_note(self.store)        # how far back it may go (1.0.143)
@@ -16637,6 +16750,8 @@ class MailError(RuntimeError):
         self.steps = steps or []
         self.permanent = bool(permanent)
         self.queued = None
+        # The recipients still to be sent to (1.0.206); None: every one of them.
+        self.left = None
 
 
 # ---- the recipients' servers, without a library to ask DNS with -----------------
@@ -17159,9 +17274,13 @@ def smtp_talk(store, host, port, security, auth, msg, to, steps, helo='', verify
             if refused:
                 step('handed the message over', False, '; '.join(
                     '%s: %s' % (k, v) for k, v in refused.items()))
-                raise MailError('the server refused %s' % ', '.join(refused), steps,
+                err = MailError('the server refused %s' % ', '.join(refused), steps,
                                 permanent=all(int((v or (0,))[0] or 0) >= 500
                                               for v in refused.values()))
+                # The others took it (1.0.206): only these are tried again - every
+                # try sent it once more to everybody who had it already.
+                err.left = list(refused)
+                raise err
             reply = getattr(conn, 'last_reply', None)
             said = ''
             if reply:
@@ -17218,40 +17337,56 @@ def mail_send(store, msg, to, mode=None):
     for one in to:
         by_domain.setdefault(one.rsplit('@', 1)[-1].lower(), []).append(one)
     port = int(CONFIG.get('mail_direct_port') or 25)
+    failed = []                         # (recipients still to do, the error) per domain
     for domain, who in by_domain.items():
         try:
-            mxs, how = dns_mx_full(domain)
-            mxs = [m for m in mxs if m[1] not in ('', '.')]
-            if not mxs:
-                raise MailError('%s takes no mail (its MX record is a null MX)' % domain,
-                                permanent=True)
-        except MailError as e:
-            steps.append({'what': 'look up the mail servers of %s' % domain, 'ok': False,
-                          'said': str(e)})
-            raise MailError(str(e), steps, permanent=e.permanent)
-        steps.append({'what': 'looked up the mail servers of %s' % domain, 'ok': True,
-                      'said': ', '.join('%s (%d)' % (h, p) for p, h in mxs) + ' · ' + how})
-        last = None
-        # One deadline over every MX of the domain (1.0.59): four servers of
-        # two addresses each at 20 s outlasted the page asking.
-        deadline = time.time() + MAIL_DIRECT_DEADLINE_S
-        for _pref, host in mxs[:4]:
-            left = deadline - time.time()
-            if left < 3:
-                last = last or MailError('no time left to try %s' % host, steps)
-                break
             try:
-                smtp_talk(store, host, port,
-                          'starttls' if CONFIG.get('mail_direct_tls') == 'required'
-                          else 'starttls-if', 'none', msg, who, steps, direct=True,
-                          timeout=min(float(CONFIG.get('smtp_timeout_s') or 20), left / 2))
-                last = None
-                break
+                mxs, how = dns_mx_full(domain)
+                mxs = [m for m in mxs if m[1] not in ('', '.')]
+                if not mxs:
+                    raise MailError('%s takes no mail (its MX record is a null MX)' % domain,
+                                    permanent=True)
             except MailError as e:
-                last = e
-        if last:
-            raise MailError('no mail server of %s took it: %s' % (domain, last), steps,
-                            permanent=getattr(last, 'permanent', False))
+                steps.append({'what': 'look up the mail servers of %s' % domain, 'ok': False,
+                              'said': str(e)})
+                raise MailError(str(e), steps, permanent=e.permanent)
+            steps.append({'what': 'looked up the mail servers of %s' % domain, 'ok': True,
+                          'said': ', '.join('%s (%d)' % (h, p) for p, h in mxs) + ' · ' + how})
+            last = None
+            # One deadline over every MX of the domain (1.0.59): four servers of
+            # two addresses each at 20 s outlasted the page asking.
+            deadline = time.time() + MAIL_DIRECT_DEADLINE_S
+            for _pref, host in mxs[:4]:
+                left = deadline - time.time()
+                if left < 3:
+                    last = last or MailError('no time left to try %s' % host, steps)
+                    break
+                try:
+                    smtp_talk(store, host, port,
+                              'starttls' if CONFIG.get('mail_direct_tls') == 'required'
+                              else 'starttls-if', 'none', msg, who, steps, direct=True,
+                              timeout=min(float(CONFIG.get('smtp_timeout_s') or 20), left / 2))
+                    last = None
+                    break
+                except MailError as e:
+                    last = e
+                    if e.left is not None and len(e.left) < len(who):
+                        break               # this server took the others: not the next one
+            if last:
+                err = MailError('no mail server of %s took it: %s' % (domain, last), steps,
+                                permanent=getattr(last, 'permanent', False))
+                err.left = list(last.left) if last.left is not None else list(who)
+                raise err
+        except MailError as e:
+            # Each domain on its own (1.0.206): one that would not take it no longer
+            # stops the next ones, nor sends it again to the ones that took it.
+            failed.append((e.left if e.left is not None else list(who), e))
+    if failed:
+        left = [a for one, _e in failed for a in one]
+        err = MailError('; '.join(str(e) for _l, e in failed), steps,
+                        permanent=all(e.permanent for _l, e in failed))
+        err.left = left
+        raise err
     return steps
 
 
@@ -17516,7 +17651,7 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
     text += ['-- ', plain('foot')]
     msg = EmailMessage()
     msg['Subject'] = w['subject'].format(site=site)
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     msg['From'] = formataddr((str(CONFIG.get('mail_from_name') or site), sender))
@@ -17541,7 +17676,7 @@ def test_mail(to, lang='cs'):
     site = str(CONFIG.get('site_name') or socket.gethostname())
     msg = EmailMessage()
     msg['Subject'] = ('Zkušební zpráva z %s' if lang == 'cs' else 'A test message from %s') % site
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     msg['From'] = formataddr((str(CONFIG.get('mail_from_name') or site), sender))
@@ -17683,6 +17818,10 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
         steps = mail_send(store, msg, rec.get('to') or [])
     except MailError as e:
         err, steps = e, e.steps
+        if e.left is not None and e.left and len(e.left) < len(rec.get('to') or []):
+            rec['done_to'] = sorted(set(rec.get('done_to') or []) |
+                                    (set(rec.get('to') or []) - set(e.left)))
+            rec['to'] = list(e.left)            # the rest took it (1.0.206)
     except Exception as e:                              # noqa: BLE001
         err, steps = MailError(str(e) or e.__class__.__name__, []), []
     rec['tries'] = int(rec.get('tries') or 0) + 1
@@ -17793,14 +17932,21 @@ def mailq_tick(store):
                 continue
             if paused and rec.get('kind') not in ('code', 'verify'):
                 continue        # kept as it is until mail is switched on again
+            # A while past its time (1.0.206): the last try is due at the very time
+            # it runs out, and was given up here before it was made - with no word.
             if state in ('waiting', 'sending') and \
-                    now > float(rec.get('expires') or 0) + (0 if state != 'sending' else 600):
+                    now > float(rec.get('expires') or 0) + (120 if state != 'sending' else 600):
                 _, raw = mailq_read(store, qid)
                 if raw:
                     rec.pop('qid', None)
                     rec.update(state='expired', next_at=0, said=rec.get('said') or 'not sent in time')
                     if mailq_cas(store, qid, raw, rec):
                         mailq_body_drop(store, qid)
+                        store.add_event('mail', 'the mail to %s (%s) was given up after %d tries: %s'
+                                        % (', '.join(rec.get('to') or []),
+                                           MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'),
+                                           int(rec.get('tries') or 0), str(rec.get('said'))[:300]),
+                                        'bad')
                 continue
             if paused:
                 # Mail switched off (1.0.103): nothing tried while it is, as
@@ -17898,6 +18044,14 @@ def mailq_drop(store, qids, by=''):
         store.add_event('mail', '%s took %d mail(s) out of the outgoing mail' % (
             by or 'somebody', n), 'warn', who=by or None)
     return n
+
+
+def mail_sender():
+    """The address mail goes out from (1.0.206): "Name <addr>" saved before it
+    was refused is taken as its address - the server refused the header."""
+    from email.utils import parseaddr as _pa
+    got = str(CONFIG.get('mail_from') or '').strip()
+    return (_pa(got)[1] or got) if got else ''
 
 # ---------------------------------------------------------------------------
 # The texts of the messages, edited on the pages (1.0.103)
@@ -21314,7 +21468,7 @@ def ha_peer_columns():
 # writing its own: of two nodes asked for the same code at the same moment,
 # at least one sees the other's row - so it is never let in twice. (One may
 # refuse it when both see each other; the next code then goes through.)
-ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0}
+ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0, 'gen': 0}
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
@@ -21334,6 +21488,7 @@ def once_peer_forget():
     with ONCE_PEER_LOCK:
         pool, ONCE_PEER['pool'] = ONCE_PEER['pool'], []
         ONCE_PEER['made'] = 0
+        ONCE_PEER['gen'] += 1           # one out on a question now is not taken back (1.0.206)
         ONCE_PEER['down_until'] = 0.0
         ONCE_PEER['fails'] = 0
     for db in pool:
@@ -21378,6 +21533,7 @@ def _once_peer_has(k, me, store=None):
         if db == 'wait':
             return None
     got = {'db': db}
+    gen = ONCE_PEER['gen']
 
     def ask():
         try:
@@ -21392,7 +21548,15 @@ def _once_peer_has(k, me, store=None):
     t.join(1.5)
     if 'v' in got:
         with ONCE_PEER_LOCK:
-            ONCE_PEER['pool'].append(got['db'])
+            if gen == ONCE_PEER['gen']:
+                ONCE_PEER['pool'].append(got['db'])
+            else:
+                # Made before the address or the TLS of the link changed (1.0.206):
+                # closed, not kept for good in the new pool.
+                try:
+                    got['db'].close()
+                except Exception:                       # noqa: BLE001
+                    pass
             ONCE_PEER['fails'] = 0
         return got['v']
     e = got.get('e') or TimeoutError('no answer within 1.5 s')
@@ -21973,7 +22137,8 @@ def upgrade_tick(daemon):
         for n in ha_nodes(store):
             if n['name'] == me or n['name'] not in [x['name'] for x in steps]:
                 continue
-            if not n.get('alive') or maintenance_row(store, n['name']).get('on'):
+            alive = n.get('alive') or _peer_alive_there(n['name'])
+            if not alive or maintenance_row(store, n['name']).get('on'):
                 if turn.get('said') != 'waiting for %s to be in service' % n['name']:
                     _my_step(store, plan, state='waiting',
                              said='waiting for %s to be in service' % n['name'])
@@ -22080,6 +22245,32 @@ def upgrade_tick(daemon):
         if all((s.get('state') == 'done') or s['name'] == me for s in steps):
             store.add_event('starting and stopping', 'the upgrade to %s is done on every node'
                             % plan['version'])
+
+
+PEER_THERE = {}                   # name: (when asked, alive)
+
+
+def _peer_alive_there(name):
+    """Its heartbeat read in its own database (1.0.206): a node done with the new
+    version writes nothing that comes over to this older one any more - its
+    heartbeat looked stale here, and the last node waited for it for good.
+    Asked every 15 s at most."""
+    was = PEER_THERE.get(name)
+    if was and time.time() - was[0] < 15:
+        return was[1]
+    alive = False
+    try:
+        far = ha_peer_db()
+        try:
+            beat = json.loads(far.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,))
+                              or '{}')
+            alive = now_minus(beat.get('at')) < 120
+        finally:
+            far.close()
+    except Exception:                                   # noqa: BLE001
+        alive = False
+    PEER_THERE[name] = (time.time(), alive)
+    return alive
 
 
 def _peer_still_at_it(turn):
@@ -26117,7 +26308,15 @@ def _dns_rfc2136(rr, txt):
     keyname = str(CONFIG.get('acme_dns_tsig_name') or '').strip()
     secret = unseal_secret(CONFIG.get('acme_dns_tsig_secret') or '') or ''
     alg = CONFIG.get('acme_dns_tsig_alg') or 'hmac-sha256'
-    host, _, port = server.partition(':')
+    # [v6]:port, a bare IPv6 address (port 53), or host:port (1.0.206): split on
+    # the first colon, an IPv6 server came out as "server 2001 db8::53".
+    m = re.match(r'^\[([^\]]+)\](?::(\d+))?\Z', server)
+    if m:
+        host, port = m.group(1), m.group(2) or ''
+    elif server.count(':') > 1:
+        host, port = server, ''
+    else:
+        host, _, port = server.partition(':')
     zone = str(CONFIG.get('acme_dns_zone') or '').strip()
 
     def run(op):
@@ -26383,17 +26582,24 @@ _SYS_GETADDRINFO = socket.getaddrinfo
 
 
 def _acme_proxy_host():
-    """The proxy's own name: looked up as the machine looks names up (1.0.205) -
-    an inside name ACME's public DNS servers do not know."""
+    """The names looked up as the machine looks names up (1.0.205, 1.0.206): the
+    proxy's, the database's, the other node's - inside names ACME's public DNS
+    servers do not know; a database connection made again in an order's thread
+    asked them."""
+    out = set()
     try:
-        return (urllib.parse.urlsplit(str(CONFIG.get('proxy_url') or '')).hostname or '').lower()
+        out.add((urllib.parse.urlsplit(str(CONFIG.get('proxy_url') or '')).hostname or '').lower())
     except ValueError:
-        return ''
+        pass
+    for k in ('db_host', 'ha_peer', 'ha_address'):
+        out.add(str(CONFIG.get(k) or '').strip().strip('[]').lower())
+    out.discard('')
+    return out
 
 
 def _acme_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     if getattr(_ACME_DNS, 'on', False) and host and acme_resolvers() and \
-            (host.decode() if isinstance(host, bytes) else str(host)).lower() != _acme_proxy_host():
+            (host.decode() if isinstance(host, bytes) else str(host)).lower() not in _acme_proxy_host():
         h = host.decode() if isinstance(host, bytes) else str(host)
         try:
             ipaddress.ip_address(h.strip('[]'))
@@ -30283,8 +30489,12 @@ def sshotp_check(store, name, code):
             return False, 'this token gets its codes sent'
         secret = unseal_secret(rec.get('secret'), sshotp_key(name))
         code = ssh_code_typed(code)
-        step = totp_match(secret, code, digits=6, window=int(CONFIG.get('totp_window') or 1)) \
-            if secret else None
+        step = totp_match(secret, code, digits=6, window=mfa_window()) if secret else None
+        # Good once on either node (1.0.206): the step taken in token_once, as a
+        # token's - each node's own row let a code seen on one in on the other.
+        if step is not None and step > int(rec.get('step') or 0) and \
+                not once_take(store, 'step', 'sshotp:' + name.lower(), step):
+            step = int(rec.get('step') or 0)
         if step is None or step <= int(rec.get('step') or 0):
             fails.append(now)
             rec['failed_at'] = now
@@ -30640,7 +30850,13 @@ class SshGate(object):
         while not self.stop_flag:
             if time.time() - self.looked > 10:
                 self.looked = time.time()
-                self.configure()
+                try:
+                    self.configure()
+                except Exception as e:          # noqa: BLE001
+                    # Never the thread with it (1.0.206): a database away while
+                    # the gate was set up ended it, and SSH waited on a socket
+                    # nobody read until the service started again.
+                    log_sparing('ssh-gate-conf', 'the SSH gate: %s' % e, 'warn', every=600)
             s = self.sock
             if not s:
                 time.sleep(1.0)
@@ -31323,7 +31539,13 @@ def dbtls_watch(daemon):
             log_sparing('dbtls-rescue-x', 'the connection to the database: %s' % e, 'warn',
                         every=600)
         if not DBTLS_WORK['at']:
-            dbtls_publish(daemon)       # one not written while the database was away
+            try:
+                dbtls_publish(daemon)   # one not written while the database was away
+            except Exception as e:      # noqa: BLE001
+                # The thread kept (1.0.206): the database away at its first look
+                # ended it, and the rescue it is for never ran.
+                log_sparing('dbtls-publish-x', 'the connection to the database: %s' % e,
+                            'warn', every=600)
 
 
 def dbtls_tick(daemon):
@@ -32202,7 +32424,7 @@ def _al_h(text):
 
 
 def _al_msg(subject, page, text, to):
-    sender = str(CONFIG.get('mail_from') or '').strip()
+    sender = mail_sender()
     if not sender:
         raise MailError('no sender address is set - Settings → Mail → From (address)')
     site = str(CONFIG.get('site_name') or socket.gethostname())
@@ -34807,7 +35029,27 @@ def _token_do(h):
     with contextlib.ExitStack() as held:
         for key in sorted(locks):       # always in one order, whoever takes two
             held.enter_context(locks[key])
-        return _token_act(h, s, b, act, name, who)
+        h._token_locks = [locks[key] for key in sorted(locks)]
+        try:
+            return _token_act(h, s, b, act, name, who)
+        finally:
+            h._token_locks = []
+
+
+@contextlib.contextmanager
+def token_locks_let_go(h):
+    """The token's lock let go while a mail or a code is sent (1.0.206): RADIUS
+    checks a code under it, and a person's sign-in waited on the SMS gateway or
+    the mail server - 20 s and more - while the helpdesk sent them something."""
+    held = list(getattr(h, '_token_locks', None) or [])
+    saved = []
+    for lk in reversed(held):
+        saved.append((lk, lk._release_save()))
+    try:
+        yield
+    finally:
+        for lk, st in reversed(saved):
+            lk._acquire_restore(st)
 
 
 def token_same_person(store, name):
@@ -34910,8 +35152,9 @@ def _token_act(h, s, b, act, name, who):
                                                                    tokrow.get('display') or ''),
                                  by=who, pending=bool(b.get('pending')),
                                  portal_url=h.portal_link())
-                steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
-                                     purpose='made')
+                with token_locks_let_go(h):
+                    steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
+                                         purpose='made')
                 out['mail_steps'] = steps
                 out['message'] += '; the QR code was sent to %s' % to
                 h.store.add_event('mail', '%s sent the token of %s to %s%s%s' % (
@@ -34974,8 +35217,9 @@ def _token_act(h, s, b, act, name, who):
                 SEND_TEST_SEEN.clear()
         began = time.time()
         try:
-            said = code_send(h.store, kind_now, tok.get('dest') or '', code_new(), 'signin',
-                             name=name)
+            with token_locks_let_go(h):
+                said = code_send(h.store, kind_now, tok.get('dest') or '', code_new(), 'signin',
+                                 name=name)
         except (MailError, SmsError, ValueError) as e:
             h.store.add_event('tokens', 'a test code for %s could not be sent: %s' % (name, e),
                               'warn', who=who)
@@ -35098,8 +35342,9 @@ def _token_act(h, s, b, act, name, who):
                              display=str(tok.get('display') or ''), by=who,
                              pending=tok.get('state') == 'pending',
                              portal_url=h.portal_link())
-            steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
-                                 purpose='again')
+            with token_locks_let_go(h):
+                steps = mail_deliver(h.store, msg, [to], kind='token', name=name, by=who,
+                                     purpose='again')
         except MailError as e:
             h.store.add_event('mail', 'the token of %s could not be sent to %s: %s' % (
                 name, to, mailq_said(e)), 'warn', who=who)
@@ -37247,7 +37492,11 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 else:
                     want[base] = v
             if want:
-                daemon.save_settings(want, by)
+                # The cluster's own value (1.0.206): a node's setting shared in the
+                # file was saved for the node that imported it alone - and with
+                # "replace" then taken away again.
+                daemon.save_settings(want, by, node='*')
+                imported_keys |= set(want)
                 said['settings'] += len(want)
             # A node's own after the shared ones (1.0.146): on a machine of its
             # own a node's value is kept as the plain key, and the file's shared
@@ -37713,6 +37962,10 @@ def _portal_login(h):
         entry = Authenticator.find_person(ad, full, how, realm)
         if not entry:
             raise LdapError('there is no such account')
+        if entry.get('many'):
+            # More than one account answers to the name (1.0.205): as RADIUS
+            # refuses it - the token could be made for the wrong one.
+            raise LdapError('more than one account answers to that name')
         if entry_unusable(entry):
             raise LdapError('the account may not sign in: %s' % entry_unusable(entry))
         ad.password_ok(entry, password)
@@ -37797,43 +38050,64 @@ def portal_same_person(store, realm, entry):
     any realm on the same directory, or bare - '' when none."""
     sam = str(entry.get('sam') or '').strip()
     upn = str(entry.get('upn') or '').strip()
-    names = []
+    names = []                          # (name, what it is: 'upn' or 'sam')
+    star = False
     if upn:
-        names.append(upn)
+        names.append((upn, 'upn'))
     if sam:
-        names.append(sam)
+        names.append((sam, 'sam'))
         for r in store.realms():
             if str(r.get('directory') or '').lower() != str(realm.get('directory') or '').lower():
                 continue
             suf = str(r.get('suffix') or '')
-            if suf and suf != '*':
-                names.append('%s@%s' % (sam, suf))
+            if suf == '*':
+                star = True
+            elif suf:
+                names.append(('%s@%s' % (sam, suf), 'sam'))
                 # And under its other suffixes (1.0.117), for a token made
                 # before they were.
                 for al in r.get('aliases') or []:
-                    names.append('%s@%s' % (sam, al))
+                    names.append(('%s@%s' % (sam, al), 'sam'))
     here = str(realm.get('directory') or '').lower()
 
-    def same_directory(cand):
+    def same_directory(cand, what):
         # Only a name whose own realm reads the same directory is the same
         # person (1.0.59): a bare "novak" can be a different Novak in a realm
-        # on another directory.
+        # on another directory. And only as that realm reads its names
+        # (1.0.205): in a realm that looks names up by the account name,
+        # "jan.novak@corp.cz" is the account jan.novak - not whoever has
+        # that userPrincipalName; another person's token was taken for his.
         r = store.realm_for(cand)
-        return bool(r) and str(r.get('directory') or '').lower() == here
-    names = [n for n in names if same_directory(n)]
+        if not r or str(r.get('directory') or '').lower() != here:
+            return False
+        how = r.get('lookup')
+        return how not in ('upn', 'sam') or how == what
+    names = [(n, w) for n, w in names if same_directory(n, w)]
     seen = set()
-    for n in names:
+    for n, w in names:
         for cand in (n, n.lower()):
             if cand in seen:
                 continue
             seen.add(cand)
             if store.token(cand):
                 return norm_name(cand)
-    want = set(x.lower() for x in names)
+    want = {}
+    for n, w in names:
+        want.setdefault(n.lower(), w)
     if want:
         for row in store.db.rows('SELECT name FROM tokens WHERE LOWER(name) IN (%s)'
                                  % ','.join('?' * len(want)), tuple(sorted(want))):
-            if same_directory(row['name']):
+            if same_directory(row['name'], want.get(row['name'].lower(), 'sam')):
+                return row['name']
+    if sam and star:
+        # A realm of every suffix on this directory (1.0.205): the account's
+        # token under any suffix is its own - typed with another one, a
+        # second token was made with the password alone, and let in.
+        like = re.sub(r'([!%_])', r'!\1', sam.lower()) + '@%'
+        for row in store.db.rows("SELECT name FROM tokens WHERE LOWER(name) LIKE ? ESCAPE '!'",
+                                 (like,)):
+            if row['name'].lower().split('@', 1)[0] == sam.lower() and \
+                    same_directory(row['name'], 'sam'):
                 return row['name']
     return ''
 
@@ -40993,7 +41267,7 @@ def _sn_metrics(text):
 def snmp_mib(daemon, agent):
     """Every object answered now, sorted: [(oid, kind, value)]."""
     B = SNMP_BASE
-    up = int((time.time() - agent.started) * 100)
+    up = int((time.monotonic() - agent.started) * 100)
     rows = [
         (SNMP_SYS + (1, 0), 'str', 'otp %s - one-time password server (RADIUS), node %s'
          % (__version__, node_name())),
@@ -41005,7 +41279,7 @@ def snmp_mib(daemon, agent):
         (SNMP_SYS + (7, 0), 'int', 72),
         (SNMP_ENGINE_OID + (1, 0), 'str', agent.engine),
         (SNMP_ENGINE_OID + (2, 0), 'int', agent.boots),
-        (SNMP_ENGINE_OID + (3, 0), 'int', int(time.time() - agent.started)),
+        (SNMP_ENGINE_OID + (3, 0), 'int', int(time.monotonic() - agent.started)),
         (SNMP_ENGINE_OID + (4, 0), 'int', 65507),
     ]
     for i in range(1, 7):
@@ -41093,7 +41367,9 @@ class SnmpAgent(object):
         self.bound = None
         self.engine = snmp_engine_id()
         self.boots = snmp_boots_next()
-        self.started = time.time()
+        # Monotonic (1.0.206): RFC 3414's engine time never goes back - an NTP
+        # step back put it below zero, and the agent answered nothing.
+        self.started = time.monotonic()
         self.keys = None
         self.keyed = None
         self.mib = []
@@ -41197,7 +41473,7 @@ class SnmpAgent(object):
                             every=300)
 
     def now_time(self):
-        return int(time.time() - self.started)
+        return int(time.monotonic() - self.started)
 
     # -- one message ------------------------------------------------------------------------
     def answer(self, data, addr):
@@ -41412,7 +41688,7 @@ class SnmpAgent(object):
             raise ValueError('the SNMPv3 user and its two passphrases are not set')
         if not self.keys:
             self.keys = snmp_keys(c, self.engine)
-        vbs = [(SNMP_UPTIME_OID, snmp_value('ticks', int((time.time() - self.started) * 100))),
+        vbs = [(SNMP_UPTIME_OID, snmp_value('ticks', int((time.monotonic() - self.started) * 100))),
                (SNMP_TRAP_OID, ber_oid(SNMP_BASE + (0, what)))]
         for i, (kind, v) in enumerate(binds, 1):
             vbs.append((SNMP_BASE + (8, i, 0), snmp_value(kind, v)))
@@ -41459,6 +41735,9 @@ def snmp_trap_targets(text, strict=False):
     return out
 
 
+SNMP_SELF = {'until': 0.0}        # the page's own test under way (1.0.206)
+
+
 def snmp_allowed(client):
     nets = [w for w in re.split(r'[\s,;]+', str(CONFIG.get('snmp_from') or '')) if w]
     if not nets:
@@ -41467,6 +41746,11 @@ def snmp_allowed(client):
         a = ipaddress.ip_address(str(client or '').strip('[]'))
     except ValueError:
         return False
+    if time.time() < SNMP_SELF['until'] and (
+            a.is_loopback or str(a) == str(CONFIG.get('snmp_bind') or '').strip().strip('[]')):
+        # This machine itself, while the page's own test asks (1.0.206): it timed
+        # out wherever the managers' network was set - as advised.
+        return True
     for n in nets:
         try:
             if a in ipaddress.ip_network(n, strict=False):
@@ -41576,7 +41860,10 @@ def _ask_snmp(daemon, args):
     if not SNMP_STATE.get('listening'):
         raise ValueError(SNMP_STATE.get('error') or 'not listening')
     t0 = time.time()
-    got = snmp_get('127.0.0.1', int(SNMP_STATE.get('port') or 161), c,
+    bound = str(CONFIG.get('snmp_bind') or '').strip()
+    at = bound if bound and bound not in ('0.0.0.0', '::') else '127.0.0.1'
+    SNMP_SELF['until'] = time.time() + 5
+    got = snmp_get(at, int(SNMP_STATE.get('port') or 161), c,
                    [SNMP_SYS + (1, 0), SNMP_SYS + (3, 0), SNMP_BASE + (1, 1, 0)])
     return {'ok': True, 'said': got, 'ms': int((time.time() - t0) * 1000),
             'engine': ag.engine.hex()}
@@ -41610,7 +41897,7 @@ def snmp_get(host, port, c, oids, timeout=3.0):
         boots = int.from_bytes(raw[sec[1][1]:sec[1][2]], 'big')
         etime = int.from_bytes(raw[sec[2][1]:sec[2][2]], 'big')
         fake = SnmpAgent.__new__(SnmpAgent)
-        fake.engine, fake.boots, fake.started = engine, boots, time.time() - etime
+        fake.engine, fake.boots, fake.started = engine, boots, time.monotonic() - etime
         fake.keys = snmp_keys(c, engine)
         fake.salt = int.from_bytes(secrets.token_bytes(8), 'big')
         rid += 1
@@ -43844,6 +44131,7 @@ class Console(object):
             return None
         sel = max(0, min(cur or 0, len(options) - 1))
         top = 0
+        typed, typed_at = '', 0.0
         while True:
             self._under()
             h, w = self.scr.getmaxyx()
@@ -43892,10 +44180,20 @@ class Console(object):
             elif k in ('end', 'pgdn'):
                 sel = len(options) - 1
             elif k and k.isdigit():
-                n = int(k) - 1
+                # A number typed as in the menus (1.0.206): taken at once only when
+                # no longer one can grow from it - "12" of a list of twelve picked
+                # the first ("all") on its 1, and cleared every lockout.
+                now = time.time()
+                typed = (typed if now - typed_at < 1.0 else '') + k
+                typed_at = now
+                n = int(typed) - 1
                 if 0 <= n < len(options):
                     sel = n
-                    return options[sel][0]
+                    if not any(str(i + 1).startswith(typed) and str(i + 1) != typed
+                               for i in range(len(options))):
+                        return options[sel][0]
+                else:
+                    typed = ''
             elif k in ('enter', 'right'):
                 return options[sel][0]
 
@@ -46000,6 +46298,16 @@ def cli_ha_setup_replicated(args, pal, store, ask):
         changes['node_name'] = args.node_name
     write_file_settings(changes)
     chown_to_service(CONFIG_FILE, 0o640)
+    load_config(saved=store.settings_saved())
+    # A node's own settings saved while it was alone made its own now (1.0.206):
+    # kept as the plain key, they became the cluster's - the second node bound
+    # RADIUS to the first one's address and greeted mail servers by its name.
+    me_now = node_name()
+    held = store.settings_saved()
+    for k in NODE_KEYS:
+        if k in held and (k + '@' + me_now) not in held:
+            store.save_setting(k + '@' + me_now, held[k], 'otp (cluster made)')
+            store.drop_setting(k)
     load_config(saved=store.settings_saved())
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.

@@ -166,7 +166,7 @@ for _ in range(50):
 otp.load_config(saved=st.settings_saved())
 otp.CONFIG.update(snmp_trap_to='127.0.0.1:%d' % (TRAP + 2), alerts_delay_min=0)
 fa = otp.SnmpAgent.__new__(otp.SnmpAgent)
-fa.engine, fa.boots, fa.started, fa.keys, fa.salt = bytes.fromhex(FE), 1, time.time() - 50, None, 7
+fa.engine, fa.boots, fa.started, fa.keys, fa.salt = bytes.fromhex(FE), 1, time.monotonic() - 50, None, 7
 
 
 class FD(object):
