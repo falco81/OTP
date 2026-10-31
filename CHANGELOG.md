@@ -4,6 +4,22 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.198 — 31 October 2026
+
+**In your DNS** (Automatic certificates), as isemon draws it: over the whole width,
+each column a share of its own, the copy button at the right of its text's cell.
+What a cell says - *not checked yet*, *there* - no longer moves the others, after a
+reload (F5) or Check DNS alike; a text too long for its column ends in "…" and shows
+whole under the pointer. *Edit the columns* takes this table again: since 1.0.196 a
+heading spread over two cells had left it out.
+
+**Edit the columns, through the whole administration**: every table of the pages and
+of the settings checked in a browser with editing on (`tests/ui/cols_audit.js`) -
+22 tables: each has its grips, the menu on the right button over its heading and
+over its rows, and a column carried to another place; the layout kept through the
+card's own refreshes and a reload (`tests/ui/colskeep.js`). Left out, as they should
+be: the tables of a key and its value, without headings.
+
 ## 1.0.197 — 31 October 2026
 
 **Automatic certificates**:

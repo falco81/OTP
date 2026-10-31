@@ -14576,29 +14576,41 @@ function acmeDnsGuide(d) {
     var c = checked && checked[i] && checked[i].record === r.record ? checked[i] : {};
     return Object.assign({}, r, {ok: c.ok, said: c.said});
   });
-  var t = listTable(['Certificate', 'Record', 'Type', 'Points at / value', 'In DNS now'], rows, function (r) {
+  /* Each column a share of the width of its own (1.0.198), as isemon draws it:
+     what a cell says - not checked yet, there - never moves the others, after
+     a reload or a check alike. Edit the columns sizes them as any table. */
+  var t = listTable([{words: 'Certificate', cls: 'dw-c'}, {words: 'Record', cls: 'dw-r'}, {words: 'Type', cls: 'dw-t'},
+                     {words: 'Points at / value', cls: 'dw-v'}, {words: 'In DNS now', cls: 'dw-s'}], rows, function (r) {
     var tr = el('tr');
     tr.appendChild(r.target === 'vip' ? el('td', '', 'the VIP address') : (r.type === 'NS' ? el('td', '', 'its zone at deSEC') : noI18n(el('td', '', r.target))));
-    /* The text and its copy button in cells of their own (1.0.196): the
-       buttons one under the other right after the longest text, laid out by
-       the table itself - nothing measured after drawing, nothing jumping at
-       each refresh. */
+    /* The text and its copy button in one cell (1.0.198), the button at the
+       cell's right edge: the column as wide as its longest text, so the
+       buttons stand one under the other right after it - laid out by the
+       table itself, nothing measured after drawing, nothing jumping at each
+       refresh. One cell per column, so Edit the columns takes this table
+       too (two cells under one heading it leaves alone). */
     var pair = function (text, under) {
-      var td = el('td', 'mono small dns-text'), tb = el('td', 'dns-copy');
-      td.appendChild(noI18n(el('span', '', text)));
-      if (under) td.appendChild(el('div', 'muted', under));
+      var td = el('td', 'mono small dns-cell'), box = el('div', 'dns-val');
+      var tx = noI18n(el('span', 'dns-t', text));
+      tx.title = text;
+      box.appendChild(tx);
       var b = iconButton('copy', 'Copy');
       b.onclick = function () { copyText(text, b); };
-      tb.appendChild(b);
-      tr.appendChild(td); tr.appendChild(tb);
+      box.appendChild(b);
+      td.appendChild(box);
+      if (under) td.appendChild(el('div', 'muted dns-under', under));
+      tr.appendChild(td);
     };
-    var lone = function (td) { td.colSpan = 2; tr.appendChild(td); };
-    if (r.record) pair(r.record);
-    else { var rw = el('td', 'mono small'); rw.appendChild(el('span', 'muted', r.why || '')); lone(rw); }
+    var lone = function (words) {
+      var td = el('td', 'mono small');
+      td.appendChild(el('span', 'muted', words || ''));
+      tr.appendChild(td);
+    };
+    if (r.record) pair(r.record); else lone(r.why);
     tr.appendChild(noI18n(el('td', 'mono small', r.type || '')));
     if (r.type === 'CNAME' || r.type === 'NS' || (r.type === 'A' && r.value))
       pair(r.value, r.type === 'A' ? 'or the public address in front of it' : '');
-    else { var vw = el('td', 'mono small'); vw.appendChild(el('span', 'muted', r.type === 'TXT' ? (r.value || r.why) : '')); lone(vw); }
+    else lone(r.type === 'TXT' ? (r.value || r.why) : '');
     var st = el('td', 'small');
     if (r.check) {
       if (r.ok === undefined) st.appendChild(el('span', 'muted', 'not checked yet'));
@@ -14612,10 +14624,6 @@ function acmeDnsGuide(d) {
     return tr;
   });
   card.appendChild(t);
-  /* Record and Points at / value each over two cells: the text and its button. */
-  Array.prototype.forEach.call(t.querySelectorAll('thead tr'), function (h) {
-    [3, 1].forEach(function (i) { if (h.children[i]) h.children[i].colSpan = 2; });
-  });
   var row = el('div', 'btnrow');
   var chk = cmdButton('Check DNS', 'search', 'small');
   explain(chk, 'Each record looked up from this node now, through its DNS servers - as the CA will look. A record just put in may take a while to show (its TTL).');
