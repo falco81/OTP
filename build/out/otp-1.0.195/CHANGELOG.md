@@ -4,6 +4,15 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.195 — 31 October 2026
+
+- **Backups to SMB**: "smbclient: ERROR: Could not determine network interfaces,
+  you must use a interfaces config line" - Samba reads the network interfaces over
+  netlink, and otp.service let the daemon open none (RestrictAddressFamilies), so
+  smbclient stopped before it connected. otp.service takes AF_NETLINK; and where
+  it is kept from it all the same (a hardening of one's own), smbclient is asked
+  again with an interfaces line of its own, which it needs nothing more for.
+
 ## 1.0.194 — 31 October 2026
 
 **Alerts: the database and its replication, and the VIP address, each a switch of
