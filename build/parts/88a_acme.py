@@ -125,7 +125,7 @@ class Acme(object):
         if data is not None:
             req.add_header('Content-Type', 'application/jose+json')
         try:
-            with url_open(req, timeout=30, context=_acme_ctx()) as r:
+            with url_open(req, timeout=30, context=_acme_ctx(), purpose='acme') as r:
                 body, headers, status = r.read(1 << 20), r.headers, r.status
         except urllib.error.HTTPError as e:
             body, headers, status = e.read(1 << 20), e.headers, e.code
@@ -1015,7 +1015,7 @@ def _cf(method, path, body=None):
                                           'Content-Type': 'application/json',
                                           'User-Agent': 'otp/%s (acme)' % __version__})
     try:
-        with url_open(req, timeout=30, context=ssl.create_default_context()
+        with url_open(req, purpose='acme_dns', timeout=30, context=ssl.create_default_context()
                       if base.startswith('https') else None) as r:
             got = json.loads(r.read(1 << 20).decode())
     except urllib.error.HTTPError as e:
@@ -1057,7 +1057,7 @@ def _dns_acmedns(txt):
                  'X-Api-Key': unseal_secret(CONFIG.get('acme_dns_key') or '') or '',
                  'Content-Type': 'application/json'})
     try:
-        with url_open(req, timeout=30, context=ssl.create_default_context()
+        with url_open(req, purpose='acme_dns', timeout=30, context=ssl.create_default_context()
                       if url.startswith('https') else None) as r:
             r.read(4096)
     except urllib.error.HTTPError as e:
@@ -1081,7 +1081,7 @@ def _desec(method, path, body=None):
                                               'Content-Type': 'application/json',
                                               'User-Agent': 'otp/%s (acme)' % __version__})
         try:
-            with url_open(req, timeout=30, context=ssl.create_default_context()
+            with url_open(req, purpose='acme_dns', timeout=30, context=ssl.create_default_context()
                           if base.startswith('https') else None) as r:
                 raw = r.read(1 << 20)
                 return json.loads(raw.decode()) if raw.strip() else None

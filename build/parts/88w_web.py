@@ -837,7 +837,7 @@ def vip_health_check(daemon):
             ctx.verify_mode = ssl.CERT_NONE
             req = urllib.request.Request(VIP_HEALTH_URL,
                                          headers={'User-Agent': 'otp-vip-check'})
-            with urllib.request.urlopen(req, timeout=4, context=ctx) as r:
+            with url_open(req, timeout=4, context=ctx) as r:     # straight, never a proxy
                 body = r.read(200).decode('utf-8', 'replace')
                 if r.status != 200 or not body.startswith('ok'):
                     why = 'its pages say: %s' % body.strip()[:80]

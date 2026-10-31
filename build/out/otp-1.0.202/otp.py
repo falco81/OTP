@@ -81,7 +81,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.200'
+# No proxy from the environment (1.0.201): http_proxy, https_proxy and the like
+# in /etc/environment or a shell are not for otp - the proxy is for the updates
+# only (Settings → Proxy, handed over by itself). Gone before anything opens a
+# connection, and from what otp runs too (smbclient, nsupdate, openssl…), so a
+# proxy never stands between RADIUS, the VIP address's check, ACME or SMS and
+# what they ask.
+for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
+            'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
+    os.environ.pop(_pk, None)
+
+__version__ = '1.0.202'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -333,8 +343,11 @@ DEFAULTS = {
     'proxy_user': '',
     'proxy_password': '',
     'proxy_no': 'localhost, 127.0.0.1, ::1',
-    'proxy_os': 1,
-    'proxy_sms': 1,
+    'proxy_update': 0,
+    'proxy_os': 0,
+    'proxy_acme': 0,
+    'proxy_acme_dns': 0,
+    'proxy_sms': 0,
     'logs_journal_mb': 0,
     'logs_journal_days': 0,
     'logs_keep': 30,
@@ -488,7 +501,8 @@ TUNABLE = {
     'power_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'power_auto_needed': (0, 1),
     'siem': (0, 1), 'siem_format': ('json', 'cef', 'rfc5424'), 'siem_events': (0, 1),
     'siem_signins': (0, 1), 'siem_facility': (0, 23), 'siem_verify': (0, 1),
-    'proxy': (0, 1), 'proxy_os': (0, 1), 'proxy_sms': (0, 1),
+    'proxy': (0, 1), 'proxy_update': (0, 1), 'proxy_os': (0, 1), 'proxy_acme': (0, 1),
+    'proxy_acme_dns': (0, 1), 'proxy_sms': (0, 1),
     'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
     'logs_max_mb': (1, 100000),
     'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
@@ -796,8 +810,11 @@ NAMES = {
     'proxy_user': 'User name at the proxy',
     'proxy_password': 'Password at the proxy',
     'proxy_no': 'Straight, not through the proxy',
-    'proxy_os': 'The system updates through it too',
-    'proxy_sms': 'The SMS gateway through it too',
+    'proxy_update': 'The new versions of otp',
+    'proxy_os': 'The system updates (dnf, apt)',
+    'proxy_acme': 'ACME: the CA (Let’s Encrypt)',
+    'proxy_acme_dns': 'ACME: the DNS APIs (deSEC, Cloudflare, acme-dns)',
+    'proxy_sms': 'The SMS gateway',
     'logs_journal_mb': 'The system journal at most (MB)',
     'logs_journal_days': 'The system journal kept for (days)',
     'logs_keep': 'otp’s own logs kept (files)',
@@ -1330,15 +1347,22 @@ SAYS = {
     'siem_verify': 'Off only for a test: anyone between could read and change the lines.',
     'siem_ca': 'The CA certificate (PEM) the server’s certificate is signed by, where it is not '
                'one the system trusts already.',
-    'proxy': 'An HTTP proxy for what otp asks of the web: the new versions, the SMS gateway, the '
-             'system updates. Mail, Active Directory, the database and syslog never use it.',
+    'proxy': 'An HTTP proxy for what is switched on below, and for nothing else; all of them '
+             'off, it is used nowhere. Mail, Active Directory, the database, syslog, isemon, '
+             'the backups, the other node and the VIP address’s check never use it.',
     'proxy_url': '<code>http://proxy.example.cz:3128</code>',
     'proxy_user': 'Where the proxy asks for one. Empty: none.',
     'proxy_password': 'Kept sealed, like the other passwords.',
     'proxy_no': 'Names and addresses reached without it, separated by commas: '
                 '<code>.example.cz</code> is every name under it, <code>10.0.0.0/8</code> a net.',
-    'proxy_os': 'dnf or apt fetch the updates of System → Updates through it.',
-    'proxy_sms': 'The HTTP SMS gateway asked through it.',
+    'proxy_update': 'Looking for a new version of otp and fetching it (Upgrades).',
+    'proxy_os': 'dnf or apt fetch the updates of System updates through it.',
+    'proxy_acme': 'Ordering and renewing the certificates, and the CA’s renewal window. A proxy '
+                  'down then stops the renewals - they are tried again, well before one runs out.',
+    'proxy_acme_dns': 'The TXT record put in and taken away again (DNS-01) through the API of '
+                      'deSEC, Cloudflare or acme-dns. RFC 2136 updates are DNS, never through it.',
+    'proxy_sms': 'The HTTP SMS gateway asked through it. A proxy down then stops the codes by '
+                 'SMS - leave it off unless the gateway can be reached no other way.',
     'logs_journal_mb': 'How much room systemd’s journal may take on each node; the oldest goes '
                        'first. 0: as the system has it.',
     'logs_journal_days': 'Nothing older is kept. 0: as the system has it.',
@@ -1484,8 +1508,8 @@ PANES = {
     'hisec': ['high_security'],
     'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
-    'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
-              'proxy_sms'],
+    'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_update',
+              'proxy_os', 'proxy_acme', 'proxy_acme_dns', 'proxy_sms'],
     'sshd': ['ssh_gate_port'],
     'monitor': ['snmp', 'snmp_port', 'snmp_bind', 'snmp_from', 'snmp_user', 'snmp_auth',
                 'snmp_auth_pass', 'snmp_priv', 'snmp_priv_pass', 'snmp_contact', 'snmp_location',
@@ -1567,7 +1591,8 @@ ONLY_WHEN = {
     'siem_signins': ['siem', '1'], 'siem_facility': ['siem', '1'],
     'siem_hostname': ['siem', '1'], 'siem_verify': ['siem', '1'], 'siem_ca': ['siem', '1'],
     'proxy_url': ['proxy', '1'], 'proxy_user': ['proxy', '1'], 'proxy_password': ['proxy', '1'],
-    'proxy_no': ['proxy', '1'], 'proxy_os': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
+    'proxy_no': ['proxy', '1'], 'proxy_update': ['proxy', '1'], 'proxy_os': ['proxy', '1'],
+    'proxy_acme': ['proxy', '1'], 'proxy_acme_dns': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
     'acme_for': ['acme', '1'], 'acme_email': ['acme', '1'], 'acme_ca': ['acme', '1'],
     'acme_url': ['acme_ca', 'custom'], 'acme_ca_pem': ['acme_ca', 'custom'],
     'acme_node_name': ['acme_for', 'vip-not'], 'acme_days': ['acme', '1'], 'acme_key': ['acme', '1'], 'acme_account_key': ['acme', '1'], 'acme_profile': ['acme', '1'],
@@ -1925,6 +1950,13 @@ def load_config(path=None, saved=None):
                     whole[key] = _coerce(DEFAULTS[key], saved[key + '@' + me])
                 except BadSetting:
                     pass
+        # The proxy for each thing on its own (1.0.202), all off by default: one
+        # switched on before goes on fetching the new versions and the system
+        # updates through it, as it did, until changed.
+        if saved.get('proxy'):
+            for key in ('proxy_update', 'proxy_os'):
+                if key not in saved:
+                    whole[key] = 1
     whole.update(FROM_ARGV)
     CONFIG = whole
     if unknown:
@@ -22104,7 +22136,7 @@ def _online_get(url, limit=4 * 1024 * 1024, accept='*/*', timeout=30):
     req = urllib.request.Request(url, headers={
         'User-Agent': 'otp/%s (+upgrade check)' % __version__, 'Accept': accept})
     ctx = ssl.create_default_context()
-    with url_open(req, timeout=timeout, context=ctx) as r:
+    with url_open(req, timeout=timeout, context=ctx, purpose='update') as r:
         final = r.geturl()
         if not str(final).startswith('https://'):
             raise ValueError('it was sent on to an address that is not https: %s' % final)
@@ -22323,24 +22355,34 @@ def online_fetch(store, version, by, older=False):
 
 
 # ---- going out through a proxy (1.0.166) --------------------------------------------
-# Settings → Proxy: what otp asks of the web itself - the new versions, the SMS
-# gateway - and, handed to the root helper in its request (never on a command
-# line), dnf or apt fetching the system updates. Mail, Active Directory, the
-# database, syslog and the other node never go through it.
-def proxy_on(purpose='web'):
-    if not CONFIG.get('proxy') or not str(CONFIG.get('proxy_url') or '').strip():
+# Settings → Proxy: each thing that may go through it has a switch of its own
+# (1.0.202), all off by default - the proxy switched on with none of them is
+# used nowhere. 'update' the new versions of otp, 'os' dnf or apt (handed to
+# the root helper in its request, never on a command line), 'acme' the CA,
+# 'acme_dns' the DNS APIs of DNS-01, 'sms' the HTTP SMS gateway. Anything else
+# - and anything asked without a purpose - goes straight: mail, Active
+# Directory, the database, syslog, isemon, the backups, the other node, the
+# VIP address's check never go through it.
+PROXY_FOR = {'update': 'proxy_update', 'os': 'proxy_os', 'acme': 'proxy_acme',
+             'acme_dns': 'proxy_acme_dns', 'sms': 'proxy_sms'}
+
+
+def proxy_set():
+    """The proxy switched on with an address - whatever goes through it."""
+    return bool(CONFIG.get('proxy')) and bool(str(CONFIG.get('proxy_url') or '').strip())
+
+
+def proxy_on(purpose='update'):
+    key = PROXY_FOR.get(purpose)
+    if not key or not proxy_set():
         return False
-    if purpose == 'sms':
-        return bool(CONFIG.get('proxy_sms', 1))
-    if purpose == 'os':
-        return bool(CONFIG.get('proxy_os', 1))
-    return True
+    return bool(CONFIG.get(key))
 
 
-def proxy_full(purpose='web'):
+def proxy_full(purpose='update'):
     """The proxy's address with its user and password in it, for urllib, dnf
     and apt - '' where none is to be used. Never logged, never shown."""
-    if not proxy_on(purpose):
+    if not (proxy_set() if purpose == 'try' else proxy_on(purpose)):
         return ''
     url = str(CONFIG.get('proxy_url') or '').strip().rstrip('/')
     user = str(CONFIG.get('proxy_user') or '').strip()
@@ -22398,9 +22440,10 @@ class _ProxyOnly(urllib.request.ProxyHandler):
         return None
 
 
-def url_open(req, timeout=30, context=None, purpose='web'):
-    """urllib.request.urlopen, through the proxy where one is set and the host
-    is not one reached straight; never through what the environment says."""
+def url_open(req, timeout=30, context=None, purpose=''):
+    """urllib.request.urlopen - straight, unless asked for a purpose whose
+    switch is on, a proxy set and the host not one reached straight; never
+    through what the environment says."""
     if not isinstance(req, urllib.request.Request):
         req = urllib.request.Request(req)
     proxy = proxy_full(purpose)
@@ -22426,12 +22469,13 @@ def proxy_try(url=''):
     tls_on = u.scheme == 'https'
     port = u.port or (443 if tls_on else 80)
     via, why = '', ''
-    if not proxy_on():
+    # The proxy itself tried, whatever is switched on to go through it.
+    if not proxy_set():
         why = 'no proxy is set' if not CONFIG.get('proxy') else 'the proxy has no address'
     elif proxy_skips(host):
         why = '%s is in the list reached straight' % host
     else:
-        via = proxy_full()
+        via = proxy_full('try')
     px = urllib.parse.urlsplit(via) if via else None
     out = {'url': url, 'host': host, 'port': port, 'mode': 'proxy' if via else 'direct',
            'why_direct': why, 'node': node_name(), 'steps': [], 'ok': False,
@@ -24239,7 +24283,7 @@ def vip_health_check(daemon):
             ctx.verify_mode = ssl.CERT_NONE
             req = urllib.request.Request(VIP_HEALTH_URL,
                                          headers={'User-Agent': 'otp-vip-check'})
-            with urllib.request.urlopen(req, timeout=4, context=ctx) as r:
+            with url_open(req, timeout=4, context=ctx) as r:     # straight, never a proxy
                 body = r.read(200).decode('utf-8', 'replace')
                 if r.status != 200 or not body.startswith('ok'):
                     why = 'its pages say: %s' % body.strip()[:80]
@@ -25022,7 +25066,7 @@ class Acme(object):
         if data is not None:
             req.add_header('Content-Type', 'application/jose+json')
         try:
-            with url_open(req, timeout=30, context=_acme_ctx()) as r:
+            with url_open(req, timeout=30, context=_acme_ctx(), purpose='acme') as r:
                 body, headers, status = r.read(1 << 20), r.headers, r.status
         except urllib.error.HTTPError as e:
             body, headers, status = e.read(1 << 20), e.headers, e.code
@@ -25912,7 +25956,7 @@ def _cf(method, path, body=None):
                                           'Content-Type': 'application/json',
                                           'User-Agent': 'otp/%s (acme)' % __version__})
     try:
-        with url_open(req, timeout=30, context=ssl.create_default_context()
+        with url_open(req, purpose='acme_dns', timeout=30, context=ssl.create_default_context()
                       if base.startswith('https') else None) as r:
             got = json.loads(r.read(1 << 20).decode())
     except urllib.error.HTTPError as e:
@@ -25954,7 +25998,7 @@ def _dns_acmedns(txt):
                  'X-Api-Key': unseal_secret(CONFIG.get('acme_dns_key') or '') or '',
                  'Content-Type': 'application/json'})
     try:
-        with url_open(req, timeout=30, context=ssl.create_default_context()
+        with url_open(req, purpose='acme_dns', timeout=30, context=ssl.create_default_context()
                       if url.startswith('https') else None) as r:
             r.read(4096)
     except urllib.error.HTTPError as e:
@@ -25978,7 +26022,7 @@ def _desec(method, path, body=None):
                                               'Content-Type': 'application/json',
                                               'User-Agent': 'otp/%s (acme)' % __version__})
         try:
-            with url_open(req, timeout=30, context=ssl.create_default_context()
+            with url_open(req, purpose='acme_dns', timeout=30, context=ssl.create_default_context()
                           if base.startswith('https') else None) as r:
                 raw = r.read(1 << 20)
                 return json.loads(raw.decode()) if raw.strip() else None
@@ -46782,7 +46826,7 @@ def cli_main(argv=None):
             import urllib.request
             req = urllib.request.Request('http://127.0.0.1:%d/api/health'
                                          % int(CONFIG.get('api_port') or 9861))
-            with urllib.request.urlopen(req, timeout=3) as r:
+            with url_open(req, timeout=3) as r:
                 alive = json.loads(r.read().decode()).get('ok')
         except Exception:
             alive = False

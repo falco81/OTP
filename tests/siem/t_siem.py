@@ -284,6 +284,60 @@ ok('proxy_skips: .domain, a net, not others', otp.proxy_skips('a.b.invalid') is 
 otp.CONFIG.update(proxy_no='.example.cz, 10.0.0.0/8, ::1')
 ok('... checked: %s' % [otp.proxy_skips(h) for h in ('x.example.cz', 'example.cz', '10.2.3.4', '::1', 'github.com', '11.0.0.1')],
    [otp.proxy_skips(h) for h in ('x.example.cz', 'example.cz', '10.2.3.4', '::1', 'github.com', '11.0.0.1')] == [True, True, True, True, False, False])
+# The proxy for what is switched on only (1.0.202): all off by default - used nowhere.
+ok('every use of the proxy off by default', not any(otp.DEFAULTS[k] for k in
+   ('proxy', 'proxy_update', 'proxy_os', 'proxy_acme', 'proxy_acme_dns', 'proxy_sms')))
+otp.CONFIG.update(proxy=1, proxy_url='http://127.0.0.1:%d' % PPORT, proxy_user='', proxy_no='',
+                  proxy_update=0, proxy_os=0, proxy_acme=0, proxy_acme_dns=0, proxy_sms=0)
+
+
+def seen_after(purpose, path):
+    n0 = len(PX['seen'])
+    try:
+        otp.url_open('http://127.0.0.1:%d/%s' % (PPORT, path), timeout=5, **({'purpose': purpose} if purpose is not None else {})).read()
+    except Exception:                                   # noqa: BLE001
+        pass
+    return PX['seen'][n0:]
+
+
+def through(got, path):
+    return bool(got) and got[0].startswith('GET http://127.0.0.1:%d/%s' % (PPORT, path))
+
+
+got = [seen_after(p_, p_ or 'plain') for p_ in (None, 'update', 'acme', 'acme_dns', 'sms')]
+ok('the proxy on, nothing switched on: everything straight (%s)' % got,
+   all(g == ['GET /%s HTTP/1.1' % (p_ or 'plain')] for g, p_ in zip(got, (None, 'update', 'acme', 'acme_dns', 'sms'))))
+ok('... and dnf, apt none (%r)' % otp.proxy_full('os'), otp.proxy_full('os') == '')
+for key, purpose in (('proxy_update', 'update'), ('proxy_acme', 'acme'), ('proxy_acme_dns', 'acme_dns'), ('proxy_sms', 'sms')):
+    otp.CONFIG[key] = 1
+    got = seen_after(purpose, purpose)
+    others = [p_ for p_ in ('update', 'acme', 'acme_dns', 'sms') if p_ != purpose]
+    straight = [seen_after(p_, p_) for p_ in others]
+    ok('%s on: %s through it (%s), the others straight (%s)' % (key, purpose, got, straight),
+       through(got, purpose) and all(not through(g, p_) for g, p_ in zip(straight, others)))
+    otp.CONFIG[key] = 0
+otp.CONFIG['proxy_os'] = 1
+ok('proxy_os on: dnf and apt are given it', otp.proxy_full('os').startswith('http://127.0.0.1'))
+got = seen_after(None, 'plain')
+ok('... anything asked without a purpose straight, all of them on (%s)' % got, got == ['GET /plain HTTP/1.1'])
+otp.CONFIG.update(proxy=0, proxy_update=1, proxy_acme=1, proxy_sms=1)
+ok('the proxy off: nothing through it, whatever is switched on', not any(otp.proxy_on(p_) for p_ in otp.PROXY_FOR))
+# Switched on before 1.0.202: the new versions and the system updates go on through it.
+c_ = otp.load_config(saved={'proxy': 1, 'proxy_url': 'http://127.0.0.1:3128'})
+ok('a proxy switched on before: the new versions and the system updates through it still, the rest not (%s)'
+   % [c_[k] for k in ('proxy_update', 'proxy_os', 'proxy_acme', 'proxy_acme_dns', 'proxy_sms')],
+   [c_[k] for k in ('proxy_update', 'proxy_os', 'proxy_acme', 'proxy_acme_dns', 'proxy_sms')] == [1, 1, 0, 0, 0])
+c_ = otp.load_config(saved={'proxy': 1, 'proxy_url': 'http://127.0.0.1:3128', 'proxy_os': 0})
+ok('... one changed since stays as it is', c_['proxy_os'] == 0 and c_['proxy_update'] == 1)
+c_ = otp.load_config(saved={})
+ok('... a new install: all off', not any(c_[k] for k in ('proxy', 'proxy_update', 'proxy_os', 'proxy_acme', 'proxy_acme_dns', 'proxy_sms')))
+r_ = subprocess.run([sys.executable, '-I', '-c', 'import sys, os; sys.path.insert(0, %r); sys.argv = ["x"]; import otp; '
+                     'print([k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "no_proxy", "all_proxy", "ftp_proxy")])' % V],
+                    env=dict(os.environ, https_proxy='http://10.9.9.9:3128', HTTP_PROXY='http://10.9.9.9:3128', no_proxy='x'),
+                    capture_output=True, text=True)
+ok('none from the environment: https_proxy and the like gone at the start (%s)' % r_.stdout.strip(),
+   r_.stdout.strip() == '[]')
+otp.CONFIG.update(proxy=0)
 d_out = open(D + '/d.out').read()
 ok('the proxy\'s password nowhere in the log', 'p@ss' not in d_out and 'p%40ss' not in d_out)
 # ---- the journal and the logs ---------------------------------------------------------

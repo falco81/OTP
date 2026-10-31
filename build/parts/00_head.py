@@ -81,7 +81,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.200'
+# No proxy from the environment (1.0.201): http_proxy, https_proxy and the like
+# in /etc/environment or a shell are not for otp - the proxy is for the updates
+# only (Settings → Proxy, handed over by itself). Gone before anything opens a
+# connection, and from what otp runs too (smbclient, nsupdate, openssl…), so a
+# proxy never stands between RADIUS, the VIP address's check, ACME or SMS and
+# what they ask.
+for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
+            'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
+    os.environ.pop(_pk, None)
+
+__version__ = '1.0.202'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -333,8 +343,11 @@ DEFAULTS = {
     'proxy_user': '',
     'proxy_password': '',
     'proxy_no': 'localhost, 127.0.0.1, ::1',
-    'proxy_os': 1,
-    'proxy_sms': 1,
+    'proxy_update': 0,
+    'proxy_os': 0,
+    'proxy_acme': 0,
+    'proxy_acme_dns': 0,
+    'proxy_sms': 0,
     'logs_journal_mb': 0,
     'logs_journal_days': 0,
     'logs_keep': 30,
@@ -488,7 +501,8 @@ TUNABLE = {
     'power_auto_day': ('1', '2', '3', '4', '5', '6', '7'), 'power_auto_needed': (0, 1),
     'siem': (0, 1), 'siem_format': ('json', 'cef', 'rfc5424'), 'siem_events': (0, 1),
     'siem_signins': (0, 1), 'siem_facility': (0, 23), 'siem_verify': (0, 1),
-    'proxy': (0, 1), 'proxy_os': (0, 1), 'proxy_sms': (0, 1),
+    'proxy': (0, 1), 'proxy_update': (0, 1), 'proxy_os': (0, 1), 'proxy_acme': (0, 1),
+    'proxy_acme_dns': (0, 1), 'proxy_sms': (0, 1),
     'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
     'logs_max_mb': (1, 100000),
     'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
@@ -796,8 +810,11 @@ NAMES = {
     'proxy_user': 'User name at the proxy',
     'proxy_password': 'Password at the proxy',
     'proxy_no': 'Straight, not through the proxy',
-    'proxy_os': 'The system updates through it too',
-    'proxy_sms': 'The SMS gateway through it too',
+    'proxy_update': 'The new versions of otp',
+    'proxy_os': 'The system updates (dnf, apt)',
+    'proxy_acme': 'ACME: the CA (Let’s Encrypt)',
+    'proxy_acme_dns': 'ACME: the DNS APIs (deSEC, Cloudflare, acme-dns)',
+    'proxy_sms': 'The SMS gateway',
     'logs_journal_mb': 'The system journal at most (MB)',
     'logs_journal_days': 'The system journal kept for (days)',
     'logs_keep': 'otp’s own logs kept (files)',
@@ -1330,15 +1347,22 @@ SAYS = {
     'siem_verify': 'Off only for a test: anyone between could read and change the lines.',
     'siem_ca': 'The CA certificate (PEM) the server’s certificate is signed by, where it is not '
                'one the system trusts already.',
-    'proxy': 'An HTTP proxy for what otp asks of the web: the new versions, the SMS gateway, the '
-             'system updates. Mail, Active Directory, the database and syslog never use it.',
+    'proxy': 'An HTTP proxy for what is switched on below, and for nothing else; all of them '
+             'off, it is used nowhere. Mail, Active Directory, the database, syslog, isemon, '
+             'the backups, the other node and the VIP address’s check never use it.',
     'proxy_url': '<code>http://proxy.example.cz:3128</code>',
     'proxy_user': 'Where the proxy asks for one. Empty: none.',
     'proxy_password': 'Kept sealed, like the other passwords.',
     'proxy_no': 'Names and addresses reached without it, separated by commas: '
                 '<code>.example.cz</code> is every name under it, <code>10.0.0.0/8</code> a net.',
-    'proxy_os': 'dnf or apt fetch the updates of System → Updates through it.',
-    'proxy_sms': 'The HTTP SMS gateway asked through it.',
+    'proxy_update': 'Looking for a new version of otp and fetching it (Upgrades).',
+    'proxy_os': 'dnf or apt fetch the updates of System updates through it.',
+    'proxy_acme': 'Ordering and renewing the certificates, and the CA’s renewal window. A proxy '
+                  'down then stops the renewals - they are tried again, well before one runs out.',
+    'proxy_acme_dns': 'The TXT record put in and taken away again (DNS-01) through the API of '
+                      'deSEC, Cloudflare or acme-dns. RFC 2136 updates are DNS, never through it.',
+    'proxy_sms': 'The HTTP SMS gateway asked through it. A proxy down then stops the codes by '
+                 'SMS - leave it off unless the gateway can be reached no other way.',
     'logs_journal_mb': 'How much room systemd’s journal may take on each node; the oldest goes '
                        'first. 0: as the system has it.',
     'logs_journal_days': 'Nothing older is kept. 0: as the system has it.',
@@ -1484,8 +1508,8 @@ PANES = {
     'hisec': ['high_security'],
     'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
-    'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_os',
-              'proxy_sms'],
+    'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_update',
+              'proxy_os', 'proxy_acme', 'proxy_acme_dns', 'proxy_sms'],
     'sshd': ['ssh_gate_port'],
     'monitor': ['snmp', 'snmp_port', 'snmp_bind', 'snmp_from', 'snmp_user', 'snmp_auth',
                 'snmp_auth_pass', 'snmp_priv', 'snmp_priv_pass', 'snmp_contact', 'snmp_location',
@@ -1567,7 +1591,8 @@ ONLY_WHEN = {
     'siem_signins': ['siem', '1'], 'siem_facility': ['siem', '1'],
     'siem_hostname': ['siem', '1'], 'siem_verify': ['siem', '1'], 'siem_ca': ['siem', '1'],
     'proxy_url': ['proxy', '1'], 'proxy_user': ['proxy', '1'], 'proxy_password': ['proxy', '1'],
-    'proxy_no': ['proxy', '1'], 'proxy_os': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
+    'proxy_no': ['proxy', '1'], 'proxy_update': ['proxy', '1'], 'proxy_os': ['proxy', '1'],
+    'proxy_acme': ['proxy', '1'], 'proxy_acme_dns': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
     'acme_for': ['acme', '1'], 'acme_email': ['acme', '1'], 'acme_ca': ['acme', '1'],
     'acme_url': ['acme_ca', 'custom'], 'acme_ca_pem': ['acme_ca', 'custom'],
     'acme_node_name': ['acme_for', 'vip-not'], 'acme_days': ['acme', '1'], 'acme_key': ['acme', '1'], 'acme_account_key': ['acme', '1'], 'acme_profile': ['acme', '1'],
@@ -1925,6 +1950,13 @@ def load_config(path=None, saved=None):
                     whole[key] = _coerce(DEFAULTS[key], saved[key + '@' + me])
                 except BadSetting:
                     pass
+        # The proxy for each thing on its own (1.0.202), all off by default: one
+        # switched on before goes on fetching the new versions and the system
+        # updates through it, as it did, until changed.
+        if saved.get('proxy'):
+            for key in ('proxy_update', 'proxy_os'):
+                if key not in saved:
+                    whole[key] = 1
     whole.update(FROM_ARGV)
     CONFIG = whole
     if unknown:

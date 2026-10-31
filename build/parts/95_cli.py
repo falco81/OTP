@@ -2335,7 +2335,7 @@ def cli_main(argv=None):
             import urllib.request
             req = urllib.request.Request('http://127.0.0.1:%d/api/health'
                                          % int(CONFIG.get('api_port') or 9861))
-            with urllib.request.urlopen(req, timeout=3) as r:
+            with url_open(req, timeout=3) as r:
                 alive = json.loads(r.read().decode()).get('ok')
         except Exception:
             alive = False

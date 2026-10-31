@@ -748,7 +748,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node as root over SSH: made here, added or taken away.">SSH keys of root</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="network" data-icon="net" title="Each node's address, gateway, DNS servers, host name and IPv6 - put in by the node itself, a cluster kept whole.">Network</button>
-    <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy for what otp asks of the web - new versions, the SMS gateway, the system updates.">Proxy</button>
+    <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy, for what you switch on: the new versions, the system updates, ACME, the SMS gateway.">Proxy</button>
     <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of each node: chrony, its time servers, how far off it is - codes from the app are worked out from it.">Time</button>
     <button type="button" data-pane="ha" data-icon="ethernet" title="Two servers, both answering: the nodes, and the wizard that makes the second one.">High availability</button>
     <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this node, the other, or both - the VIP address moved out of the way first.">Restart and power off</button>
@@ -980,9 +980,11 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   </div>
   <div class="ctl-pane" id="pane-proxy" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Proxy</h2>
-      <p class="ctl-lede">Where the servers may reach the web only through an HTTP proxy: the new versions,
-        the SMS gateway and the system updates (dnf, apt) go through it - on every node. Mail, Active Directory,
-        the database, syslog and the other node never do.</p></div>
+      <p class="ctl-lede">Where the servers may reach the web only through an HTTP proxy - on every node. Off
+        by default, and switched on it is used only for what is switched on below: the new versions of otp, the
+        system updates, ACME and its DNS APIs, the SMS gateway; all of them off, nowhere. RADIUS, mail, Active
+        Directory, the database, syslog, isemon, the backups, the other node and the VIP address's check never go
+        through it.</p></div>
     <div class="card full"><h2>Settings</h2><div id="sect-proxy"></div></div>
     <div id="px-host"></div>
   </div>

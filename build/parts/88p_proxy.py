@@ -1,24 +1,34 @@
 
 
 # ---- going out through a proxy (1.0.166) --------------------------------------------
-# Settings → Proxy: what otp asks of the web itself - the new versions, the SMS
-# gateway - and, handed to the root helper in its request (never on a command
-# line), dnf or apt fetching the system updates. Mail, Active Directory, the
-# database, syslog and the other node never go through it.
-def proxy_on(purpose='web'):
-    if not CONFIG.get('proxy') or not str(CONFIG.get('proxy_url') or '').strip():
+# Settings → Proxy: each thing that may go through it has a switch of its own
+# (1.0.202), all off by default - the proxy switched on with none of them is
+# used nowhere. 'update' the new versions of otp, 'os' dnf or apt (handed to
+# the root helper in its request, never on a command line), 'acme' the CA,
+# 'acme_dns' the DNS APIs of DNS-01, 'sms' the HTTP SMS gateway. Anything else
+# - and anything asked without a purpose - goes straight: mail, Active
+# Directory, the database, syslog, isemon, the backups, the other node, the
+# VIP address's check never go through it.
+PROXY_FOR = {'update': 'proxy_update', 'os': 'proxy_os', 'acme': 'proxy_acme',
+             'acme_dns': 'proxy_acme_dns', 'sms': 'proxy_sms'}
+
+
+def proxy_set():
+    """The proxy switched on with an address - whatever goes through it."""
+    return bool(CONFIG.get('proxy')) and bool(str(CONFIG.get('proxy_url') or '').strip())
+
+
+def proxy_on(purpose='update'):
+    key = PROXY_FOR.get(purpose)
+    if not key or not proxy_set():
         return False
-    if purpose == 'sms':
-        return bool(CONFIG.get('proxy_sms', 1))
-    if purpose == 'os':
-        return bool(CONFIG.get('proxy_os', 1))
-    return True
+    return bool(CONFIG.get(key))
 
 
-def proxy_full(purpose='web'):
+def proxy_full(purpose='update'):
     """The proxy's address with its user and password in it, for urllib, dnf
     and apt - '' where none is to be used. Never logged, never shown."""
-    if not proxy_on(purpose):
+    if not (proxy_set() if purpose == 'try' else proxy_on(purpose)):
         return ''
     url = str(CONFIG.get('proxy_url') or '').strip().rstrip('/')
     user = str(CONFIG.get('proxy_user') or '').strip()
@@ -76,9 +86,10 @@ class _ProxyOnly(urllib.request.ProxyHandler):
         return None
 
 
-def url_open(req, timeout=30, context=None, purpose='web'):
-    """urllib.request.urlopen, through the proxy where one is set and the host
-    is not one reached straight; never through what the environment says."""
+def url_open(req, timeout=30, context=None, purpose=''):
+    """urllib.request.urlopen - straight, unless asked for a purpose whose
+    switch is on, a proxy set and the host not one reached straight; never
+    through what the environment says."""
     if not isinstance(req, urllib.request.Request):
         req = urllib.request.Request(req)
     proxy = proxy_full(purpose)
@@ -104,12 +115,13 @@ def proxy_try(url=''):
     tls_on = u.scheme == 'https'
     port = u.port or (443 if tls_on else 80)
     via, why = '', ''
-    if not proxy_on():
+    # The proxy itself tried, whatever is switched on to go through it.
+    if not proxy_set():
         why = 'no proxy is set' if not CONFIG.get('proxy') else 'the proxy has no address'
     elif proxy_skips(host):
         why = '%s is in the list reached straight' % host
     else:
-        via = proxy_full()
+        via = proxy_full('try')
     px = urllib.parse.urlsplit(via) if via else None
     out = {'url': url, 'host': host, 'port': port, 'mode': 'proxy' if via else 'direct',
            'why_direct': why, 'node': node_name(), 'steps': [], 'ok': False,
