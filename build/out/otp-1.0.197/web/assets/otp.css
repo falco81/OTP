@@ -3298,6 +3298,9 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .acme-dns td.dns-text > div{white-space:normal}
 .acme-dns td.dns-copy{width:1%;white-space:nowrap;padding-left:0;vertical-align:middle}
 .acme-dns table td:last-child,.acme-dns table th:last-child{width:100%}
+.acme-dns table td,.acme-dns table th{white-space:nowrap}
+.acme-dns table td:first-child,.acme-dns table th:first-child{padding-right:18px}
+.acme-dns table td > div{white-space:normal}
 .node-other .node-now{font-size:12px}
 /* A setting's name: the words wrap, the (i) and the tags of a node stay one
    block at the right (1.0.172) */
@@ -3309,7 +3312,10 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .set-item label > .node-tags{flex:none;display:inline-flex;gap:4px;white-space:nowrap;align-items:center}
 .hal-nodes.wide .hal-node{grid-template-columns:minmax(110px,max-content) auto 1fr}
 .mon-pre{max-height:60vh;overflow:auto;white-space:pre}
-.acme-steps-done{margin:6px 0}.acme-steps-done summary{cursor:pointer}.acme-steps-done .si-row{gap:8px}
+.acme-steps-done{margin:6px 0}.acme-steps-done summary{cursor:pointer}
+.acme-step{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--line)}
+.acme-step-t{white-space:nowrap;text-align:right;min-width:4.5em}
+.acme-step-w{text-align:left;overflow-wrap:anywhere}
 /* a switch of another node right under the box's own switch (1.0.177) */
 .node-others.bool{border-left:0;padding-left:0}
 .node-others.bool .node-other > .sw{margin:0;flex:none}

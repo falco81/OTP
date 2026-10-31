@@ -14389,9 +14389,11 @@ function drawAcme() {
         det.appendChild(el('summary', 'small muted', 'What the last order did'));
         var t0 = st.steps[0][0];
         st.steps.forEach(function (x) {
-          var r = el('div', 'si-row small');
-          r.appendChild(noI18n(el('span', 'muted mono', '+' + Math.round(x[0] - t0) + ' s')));
-          r.appendChild(el('span', '', x[1]));
+          /* The time in a column of its own, never broken; the step beside it,
+             from the left (1.0.196 - the time took the room and broke in two). */
+          var r = el('div', 'acme-step small');
+          r.appendChild(noI18n(el('span', 'muted mono acme-step-t', '+' + Math.round(x[0] - t0) + ' s')));
+          r.appendChild(el('span', 'acme-step-w', x[1]));
           det.appendChild(r);
         });
         c.appendChild(det);
