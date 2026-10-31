@@ -138,6 +138,70 @@ def _openssl(args, data=None, env=None, what='openssl'):
     return got.stdout
 
 
+TLS_EXPORT_KINDS = {
+    # kind: (what it is, its file's ending, the private key in it)
+    'pem': ('the certificate, PEM', '.crt', False),
+    'fullchain': ('the certificate and its chain, PEM', '-fullchain.pem', False),
+    'der': ('the certificate, DER', '.cer', False),
+    'p7b': ('the certificate and its chain, PKCS#7', '.p7b', False),
+    'pfx': ('the certificate, its chain and its private key, PKCS#12', '.pfx', True),
+    'pemkey': ('the certificate, its chain and its private key, PEM (the key locked)', '-with-key.pem', True),
+}
+
+
+def tls_export(prof, kind, passphrase='', legacy=False):
+    """One certificate as a file to download (1.0.191): (bytes, ending). A private
+    key in it is always locked with the passphrase - given to openssl on its
+    stdin, never on a command line; its file only in a folder of 0700, gone after."""
+    if kind not in TLS_EXPORT_KINDS:
+        raise ValueError('pem, fullchain, der, p7b, pfx or pemkey')
+    cert = str(prof.get('cert') or '').strip()
+    if not cert:
+        raise ValueError('no certificate is kept for it')
+    chain = '\n'.join(x.strip() for x in (prof.get('chain') or '', prof.get('root') or '') if x and x.strip())
+    _what, ending, with_key = TLS_EXPORT_KINDS[kind]
+    if kind == 'pem':
+        return (cert + '\n').encode(), ending
+    if kind == 'fullchain':
+        return (cert + '\n' + (chain + '\n' if chain else '')).encode(), ending
+    if kind == 'der':
+        return _openssl(['x509', '-outform', 'DER'], cert.encode(), what='the certificate'), ending
+    with tempfile.TemporaryDirectory(prefix='otp-tlsx-') as t:
+        os.chmod(t, 0o700)
+        cf = os.path.join(t, 'cert.pem')
+        with open(cf, 'w') as f:
+            f.write(cert + '\n' + (chain + '\n' if chain else ''))
+        if kind == 'p7b':
+            return _openssl(['crl2pkcs7', '-nocrl', '-certfile', cf, '-outform', 'DER'],
+                            what='the PKCS#7 bundle'), ending
+        if len(passphrase) < 10:
+            raise ValueError('a passphrase of 10 characters at least locks the private key')
+        key = unseal_secret(prof.get('key') or '', 'web:tls') if prof.get('key') else ''
+        if not key:
+            raise ValueError('the private key is not kept here (made elsewhere, or let go)')
+        kf = os.path.join(t, 'key.pem')
+        fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(key)
+        try:
+            if kind == 'pfx':
+                args = ['pkcs12', '-export', '-inkey', kf, '-in', cf, '-passout', 'stdin',
+                        '-name', (cert_info(cert).get('cn') or 'otp')[:64]]
+                if legacy:
+                    # Windows before 10 1709 / Server 2016 open no AES PKCS#12.
+                    args += ['-keypbe', 'PBE-SHA1-3DES', '-certpbe', 'PBE-SHA1-3DES', '-macalg', 'sha1']
+                return _openssl(args, (passphrase + '\n').encode(), what='the PKCS#12 file'), ending
+            locked = _openssl(['pkey', '-in', kf, '-aes256', '-passout', 'stdin'],
+                              (passphrase + '\n').encode(), what='locking the key').decode()
+            return (cert + '\n' + (chain + '\n' if chain else '') + locked).encode(), ending
+        finally:
+            try:
+                with open(kf, 'w') as f:
+                    f.write('\0' * len(key))
+            except OSError:
+                pass
+
+
 PEM_CERT = re.compile(r'-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----')
 PEM_KEY = re.compile(r'-----BEGIN ((?:RSA |EC |ENCRYPTED )?PRIVATE KEY)-----[A-Za-z0-9+/=\s:,-]+?'
                      r'-----END \1-----')

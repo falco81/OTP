@@ -106,6 +106,23 @@ and later end a Match at the end of the file it is in); where it would, the
 change is refused and everything stays as it was. Each of those accounts needs a
 key of its own in `~/.ssh/authorized_keys` on every node.
 
+**Root signing in with a key only** (*Root signs in: With a key only*, `PermitRootLogin
+prohibit-password`) and the code asked of root too (1.0.191): sshd hands PAM the
+fake password `"\b\n\r\177INCORRECT"` for whatever root types, wherever root may
+not sign in with a password - every code was refused. otp gives root a block of
+its own: `Match User root` with `PermitRootLogin yes`, `PasswordAuthentication no`
+and `AuthenticationMethods publickey,keyboard-interactive` - root needs the key
+and the code, never a password alone; with *the system password when otp does
+not answer*, root still gets none (a line of otp's PAM block refuses it). A node
+upgraded writes its files anew once by itself, with no trial (nothing chosen
+differently).
+
+**Hide the code as it is typed** (1.0.191): pam_radius takes RADIUS's Prompt
+attribute (`prompt_attribute`), and the gate asks with echo off - the SSH client
+shows nothing as the code is typed, as for a password. PuTTY and OpenSSH show
+no stars for it: that is the client's, not the server's. Every prompt ends with
+": " - a space after the colon.
+
 From 1.0.178-1.0.180 (a RADIUS client and the VPN's tokens): the client *SSH of
 the nodes - pam_radius* is removed by itself and each node's pam_radius is told
 the gate. Make an SSH token for every account that signed in with a code.

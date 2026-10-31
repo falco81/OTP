@@ -32,20 +32,23 @@ otp.Daemon(st, serve=False).save_settings({'mail_mode': 'smtp', 'smtp_host': '12
                                             'mail_from': 'otp@example.cz'}, by='test')
 st.set_meta('host:sshd:conf', json.dumps({'manage': True, 'radius': True}))
 SECRET = otp.ssh_gate_secret(st, make=True)
-USERS = {'sshapp': 'app', 'sshmail': 'mail', 'sshlate': 'mail', 'sshnone': 'mail', 'sshcz': 'mail'}
+USERS = {'sshapp': 'app', 'sshmail': 'mail', 'sshlate': 'mail', 'sshnone': 'mail', 'sshcz': 'mail', 'sshhide': 'app'}
 K = None
+KS = {}
 for u, kind in USERS.items():
     if subprocess.run(['id', u], capture_output=True).returncode:
         subprocess.run(['useradd', '-m', '-s', '/bin/bash', u], check=True)
     got = otp.sshotp_make(st, u, 'test', kind=kind, dest='%s@example.cz' % u if kind == 'mail' else '',
                           lang='en', replace=True)
     if kind == 'app':
-        K = got['secret'].replace(' ', '')
+        KS[u] = got['secret'].replace(' ', '')
+        K = K or KS[u]
 d = subprocess.Popen([PY, V + '/otp.py', '--daemon'], env=env, stdout=open(D + '/d.out', 'w'), stderr=subprocess.STDOUT)
 atexit.register(lambda: d.poll() is None and d.terminate())
 time.sleep(6)
 GATE = int(st.get_meta('sshotp:port:otp1') or 0)
 R = []
+RAW = []
 
 
 def ok(w, c, more=''):
@@ -72,18 +75,27 @@ atexit.register(lambda: os.path.exists('/etc/pam.d/otpsshd') and os.unlink('/etc
 drop = ''.join(open(f).read() for f in glob.glob(E + '/ssh/sshd_config.d/*.conf'))
 subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', D + '/hostkey'], check=True)
 subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', D + '/userkey'], check=True)
-for u in USERS:
+ROOTKEYS = '/root/.ssh/authorized_keys'
+had_root = open(ROOTKEYS).read() if os.path.exists(ROOTKEYS) else None
+atexit.register(lambda: open(ROOTKEYS, 'w').write(had_root) if had_root is not None else
+                (os.path.exists(ROOTKEYS) and os.unlink(ROOTKEYS)))
+for u in list(USERS) + ['root']:
     home = pwd.getpwnam(u).pw_dir
     os.makedirs(home + '/.ssh', exist_ok=True)
+    if u == 'root':
+        open(ROOTKEYS, 'a').write(open(D + '/userkey.pub').read())
+        continue
     shutil.copy(D + '/userkey.pub', home + '/.ssh/authorized_keys')
     subprocess.run(['chown', '-R', '%s:%s' % (u, u), home + '/.ssh'])
     os.chmod(home + '/.ssh/authorized_keys', 0o600)
 # What otp's drop-in says, here on a port of its own.
 lines = [ln for ln in drop.split('\n') if ln.strip() and not ln.startswith(('Port', 'Include', '#', 'Match', 'ListenAddress'))]
+tail = drop.split('\n')
+at = next((i for i, ln in enumerate(tail) if ln.startswith(('# A key', '# Root', 'Match', 'AuthenticationMethods'))), len(tail))
 conf = ['Port %d' % PORT, 'ListenAddress 127.0.0.1', 'HostKey %s/hostkey' % D, 'PidFile %s/sshd.pid' % D,
-        'AllowUsers %s' % ' '.join(USERS), 'UsePAM yes', 'KbdInteractiveAuthentication yes',
-        'PasswordAuthentication no', 'PubkeyAuthentication yes'] + \
-    [ln for ln in lines if ln.split()[0] in ('AuthenticationMethods',)]
+        'AllowUsers %s root' % ' '.join(USERS), 'UsePAM yes', 'KbdInteractiveAuthentication yes',
+        'PermitRootLogin prohibit-password',
+        'PasswordAuthentication no', 'PubkeyAuthentication yes'] + [ln for ln in tail[at:] if ln.strip()]
 open(D + '/sshd_config', 'w').write('\n'.join(conf) + '\n')
 ok('otp\'s drop-in: a key and then keyboard-interactive', 'publickey,keyboard-interactive' in drop, drop)
 os.symlink('/usr/sbin/sshd', D + '/otpsshd')      # its name is its PAM service
@@ -127,10 +139,15 @@ def sign_in(user, answers):
                       encoding='utf-8', timeout=40)
     seen, said = [], ''
     while True:
-        i = c.expect([r'@127\.0\.0\.1\) ([^\r\n]*[^\r\n ])[ \t]*$', 'SIGNED-IN-42', pexpect.EOF, pexpect.TIMEOUT])
+        i = c.expect([r'@127\.0\.0\.1\) ([^\r\n]*:)[ \t]*$', 'SIGNED-IN-42', pexpect.EOF, pexpect.TIMEOUT])
         said += (c.before or '') + (c.after if isinstance(c.after, str) else '')
         if i == 0:
             time.sleep(0.3)
+            try:
+                more = c.read_nonblocking(200, timeout=0.2)
+            except Exception:                           # noqa: BLE001
+                more = ''
+            RAW.append(c.after + more)
             prompt = c.match.group(1).strip()
             seen.append(prompt)
             if len(seen) > 6:
@@ -262,7 +279,44 @@ def czech(p):
 
 good, seen, said = sign_in('sshcz', czech)
 ok('the code typed on a Czech keyboard\'s top row (%s): in' % ''.join(CZ[x] for x in (c5.get('c') or '0')), good, said[-300:])
+# Root, signing in with a key only (PermitRootLogin prohibit-password), the code asked of it
+# too: sshd handed PAM "\b\n\r\177INCORRECT" for whatever root typed - now its own Match.
+ok('root\'s own Match: PermitRootLogin yes, no password alone, a key and the code',
+   'Match User root' in drop and 'PermitRootLogin yes' in drop, drop)
+otp.sshotp_make(st, 'root', 'test', kind='mail', dest='root@example.cz', lang='en', replace=True)
+time.sleep(2)
+before6 = set(glob.glob(D + '/mail/*.eml'))
+c6 = {}
+
+
+def rootc(p):
+    c6['c'] = c6.get('c') or last_code(before6)
+    return c6['c'] or 'none'
+
+
+good, seen, said = sign_in('root', rootc)
+ok('root with a key, then the code mailed: in (%s)' % seen, good, said[-300:] + str(
+    [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id DESC LIMIT 2")]))
+ok('... the prompt ends with ": " (a space after it)', any(x.endswith(': ') for x in RAW), [repr(x[-12:]) for x in RAW[-2:]])
+# The code hidden as it is typed: pam_radius asks with echo off (RADIUS Prompt 0).
+ok('pam_radius takes the Prompt attribute (prompt_attribute)', 'prompt_attribute' in open('/etc/pam.d/otpsshd').read())
+for hide in (False, True):
+    cf = json.loads(st.get_meta('host:sshd:conf') or '{}')
+    cf['radius_hide'] = hide
+    st.set_meta('host:sshd:conf', json.dumps(cf))
+    time.sleep(31)
+    typed = {}
+
+    def appc(p):
+        k = KS['sshhide']
+        typed['c'] = otp.totp(base64.b32decode(k + '=' * (-len(k) % 8)), time.time())
+        return typed['c']
+    good, seen, said = sign_in('sshhide', appc)
+    shown = typed.get('c', 'x') in said.split('Code from the app:', 1)[-1]
+    ok('the code %s as typed: in, and %s' % ('hidden' if hide else 'shown', 'not on the screen' if hide else 'on the screen'),
+       good and shown != hide, (good, shown, seen, said[-300:], [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id DESC LIMIT 2")]))
 ev = [r['words'] for r in st.db.rows("SELECT words FROM events WHERE kind = 'ssh' ORDER BY id")]
 print('    events:', ev[-6:])
 print('    sshd:', open(D + '/sshd.out').read()[-800:])
+print('    raw prompts:', [repr(x[-30:]) for x in RAW[:3]])
 print('ALL %d / %d' % (sum(R), len(R)), flush=True)

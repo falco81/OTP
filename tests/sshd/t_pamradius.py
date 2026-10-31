@@ -103,7 +103,7 @@ got = apply()
 text = open(E + '/pam.d/sshd').read()
 ok('put in: our block before the first auth line', text.index(otp_web.PAM_BEGIN) < text.index('@include common-auth'), text[:300])
 ok('... pam_radius with its own file, no "Password:" first (skip_passwd), the fallback',
-   'pam_radius_auth.so conf=%s/otp/pam_radius.conf skip_passwd localifdown' % E in text, text)
+   'pam_radius_auth.so conf=%s/otp/pam_radius.conf skip_passwd prompt_attribute localifdown' % E in text, text)
 ok('... root left out', 'pam_succeed_if.so quiet user = root' in text)
 cf = E + '/otp/pam_radius.conf'
 ok('... the secret in a file of 0600', oct(os.stat(cf).st_mode & 0o777) == '0o600' and SECRET in open(cf).read())

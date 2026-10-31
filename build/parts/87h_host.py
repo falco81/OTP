@@ -616,8 +616,9 @@ SSHD_DEFAULT = {'manage': False, 'permit_root': 'prohibit-password', 'password':
                 # A code from otp at SSH sign-in (1.0.178): pam_radius asking
                 # this node's own RADIUS.
                 'radius': False, 'radius_users': [], 'radius_root': False,
-                'radius_fallback': True, 'radius_with_key': False}
+                'radius_fallback': True, 'radius_with_key': False, 'radius_hide': False}
 HOST_WORK.update(sshd=False, sshd_read=0.0)
+SSHD_FMT = '191'           # how this version writes sshd's files (see sshd_tick)
 
 
 def sshd_conf(store):
@@ -674,6 +675,8 @@ def sshd_checked_conf(b):
     # Passwords off: a node otp cannot ask lets nobody in with one either.
     c['radius_fallback'] = bool(b.get('radius_fallback', True)) and c['password']
     c['radius_with_key'] = bool(b.get('radius_with_key')) and c['radius']
+    # The code not shown as it is typed (1.0.191): pam_radius asks with echo off.
+    c['radius_hide'] = bool(b.get('radius_hide')) and c['radius']
     return c
 
 
@@ -712,6 +715,8 @@ def sshd_save(store, b, by):
             ', the system password when otp does not answer' if c['radius_fallback'] else '')
         if c['radius_with_key']:
             what += ', a key first'
+        if c.get('radius_hide'):
+            what += ', the code hidden as typed'
     notes = [w for k, w in (('notice_ssh', 'SSH'), ('notice_console', 'console'),
                             ('notice_motd', 'after sign-in')) if c[k]]
     store.add_event('settings', '%s set the SSH server: %s%s%s' % (
@@ -794,6 +799,13 @@ def sshd_tick(daemon):
              (now.get('radius') or {}).get('skip_passwd') is False):
         # ... or its PAM block from before 1.0.188: "Password:" asked before the code.
         todo.append(('pamconf', None))
+    # The files written anew once after an upgrade that writes them otherwise for
+    # the same settings (1.0.191: root's own Match block) - no trial, nothing in
+    # them chosen differently.
+    if c.get('manage') and c.get('hash') and not todo and now.get('hash') == c.get('hash') and \
+            not (now.get('trial') or {}).get('until') and now.get('failed') != c.get('hash') and \
+            store.get_meta('host:sshd:fmt:' + me) != SSHD_FMT:
+        todo.append(('apply', {'refit': True}))
     if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
         return
     HOST_WORK['sshd'] = True
@@ -811,7 +823,8 @@ def sshd_tick(daemon):
                                         'warn')
                         got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
                     elif what == 'apply':
-                        ask = {'do': 'apply', 'conf': c, 'trial_min': c.get('trial_min') or 0,
+                        refit = bool((extra or {}).get('refit'))
+                        ask = {'do': 'apply', 'conf': c, 'trial_min': 0 if refit else (c.get('trial_min') or 0),
                                'hash': c['hash'], 'id': secrets.token_hex(4)}
                         if c.get('radius'):
                             # The secret pam_radius shows otp, for its file of
@@ -820,6 +833,10 @@ def sshd_tick(daemon):
                             ask.update(radius_secret=ssh_gate_secret(store, make=True),
                                        radius_port=ssh_gate_port(store))
                         got = root_ask('sshd.ask', 'sshd.json', ask, 120)
+                        store.set_meta('host:sshd:fmt:' + me, SSHD_FMT)
+                        if refit:
+                            log('the SSH server\'s files written anew on %s, as this version '
+                                'writes them' % me)
                         row.update(hash=c['hash'], failed='', error='', applied_at=time.time(),
                                    # Changed again while on trial: the helper
                                    # goes back to the first, so its port stays open.

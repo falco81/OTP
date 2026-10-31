@@ -4,6 +4,28 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.191 — 31 October 2026
+
+**SSH with a code: root let in - the real reason the code was refused**
+- With root signing in with a key only (`PermitRootLogin prohibit-password`) and
+  the code asked of root too, sshd handed PAM `"\b\n\r\177INCORRECT"` for
+  whatever root typed - its guard against root's passwords - and every code was
+  refused, whatever keyboard. Root gets a `Match User root` block of its own:
+  `PermitRootLogin yes`, `PasswordAuthentication no`, a key and then the code -
+  never a password alone, and no system password for root when otp does not
+  answer. Each node writes its files anew once after the upgrade, by itself.
+- *Hide the code as it is typed* (Settings → SSH server): the code asked with
+  echo off (pam_radius `prompt_attribute`, RADIUS Prompt 0) - nothing shown as it
+  is typed, as for a password. The SSH clients show no stars for it.
+- A space after the colon of every prompt: the RADIUS words were trimmed on their
+  way, and the code was typed right against the ":".
+
+**Certificates: Download in the format wanted** (Settings → Certificates and TLS):
+a window with the formats - PEM, PEM with the chain, DER, PKCS#7 - and with the
+private key: PFX (PKCS#12, AES or 3DES for older Windows) or PEM with the key
+locked. With the key always behind a password typed twice, full administrators
+only, each an event. `otp --tls-export FORMAT FILE` on the command line.
+
 ## 1.0.190 — 31 October 2026
 
 - **SSH with a code**: a code typed on the top row of a Czech keyboard without

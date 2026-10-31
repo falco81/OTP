@@ -850,6 +850,12 @@ def build_parser():
     g.add_argument('--org', metavar='TEXT', default='', help='with --tls-csr, --tls-selfsigned: the '
                    'organisation')
     g.add_argument('--days', type=int, default=825, help='with --tls-selfsigned: how long [825]')
+    g.add_argument('--tls-export', nargs=2, metavar=('FORMAT', 'FILE'), help='the certificate of '
+                   '--tls-for into FILE: pem, fullchain, der, p7b, pfx or pemkey (the last two with '
+                   'its private key, locked with a password asked for; --legacy: a PFX older Windows '
+                   'open)')
+    g.add_argument('--legacy', action='store_true', help='with --tls-export pfx: 3DES, for Windows '
+                   'before 10 (1709) and Server 2016')
     g.add_argument('--tls-forget', action='store_true', help='otp no longer looks after the TLS of '
                    '--tls-for (nginx keeps the files it has; --yes)')
     g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the VIP address (192.0.2.10/24), '
@@ -3687,6 +3693,20 @@ def cli_main(argv=None):
         return shown(api('POST', '/api/web', {'action': 'tls_selfsigned', 'target': target,
                                               'cn': args.tls_selfsigned, 'names': args.names or '',
                                               'days': args.days, 'org': args.org}))
+    if args.tls_export:
+        kind, path = args.tls_export
+        if kind not in TLS_EXPORT_KINDS:
+            raise SystemExit('otp: --tls-export %s FILE' % '|'.join(TLS_EXPORT_KINDS))
+        body = {'action': 'tls_export', 'target': target, 'kind': kind, 'legacy': args.legacy}
+        if TLS_EXPORT_KINDS[kind][2]:
+            body['passphrase'] = os.environ.get('OTP_PASSPHRASE') or ask_password(
+                'a password for the file (10 characters or more)', twice=True, env=None)
+        got = api('POST', '/api/web', body)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if TLS_EXPORT_KINDS[kind][2] else 0o644)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(base64.b64decode(got['file']))
+        print(pal.ok_line('%s: %s' % (path, TLS_EXPORT_KINDS[kind][0])))
+        return 0
     if args.tls_forget:
         cli_sure(args, 'otp no longer looks after the TLS of %s; nginx keeps the files it has' % target)
         return shown(api('POST', '/api/web', {'action': 'tls_forget', 'target': target}))

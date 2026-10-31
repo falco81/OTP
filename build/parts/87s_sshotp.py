@@ -350,6 +350,22 @@ def sshotp_app_answer(store, state, name, code):
     return ok, said, again
 
 
+def ssh_prompt_attr(words, hide=False):
+    """Reply-Message with the prompt as it is - attr_bytes strips the space after
+    the ":" (1.0.191), and the code was typed right against it - and Prompt
+    (76): 0 where the code is hidden as it is typed (pam_radius prompt_attribute)."""
+    raw = ssh_prompt(words).encode('utf-8')[:253]
+    return bytes([18, len(raw) + 2]) + raw + bytes([76, 6]) + struct.pack('!I', 0 if hide else 1)
+
+
+def ssh_code_hidden(store):
+    """Settings -> SSH server: the code hidden as it is typed (1.0.191)."""
+    try:
+        return bool(json.loads(store.get_meta('host:sshd:conf') or '{}').get('radius_hide'))
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def ssh_prompt(words):
     """A prompt ending as one does - the code typed after ": ", not stuck to the text."""
     words = str(words or '').rstrip()
@@ -547,11 +563,11 @@ class SshGate(object):
                 # Each wrong code an event too (1.0.189), with why - not only the last.
                 store.add_event('ssh', '%s typed a wrong code for SSH on %s (asked again): %s'
                                 % (who, node_name(), said), 'warn', who=who)
-                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(code_words('again', lang=lang))),
+                return build_reply(p, 11, [ssh_prompt_attr(code_words('again', lang=lang), ssh_code_hidden(store)),
                                            bytes([24, len(state) + 2]) + state.encode()], secret)
         elif rec and rec.get('kind', 'app') == 'app' and not code:
             st, ask = sshotp_ask_app(store, user)
-            return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
+            return build_reply(p, 11, [ssh_prompt_attr(ask, ssh_code_hidden(store)),
                                        bytes([24, len(st) + 2]) + st.encode()], secret)
         elif rec and rec.get('kind') in ('mail', 'sms'):
             # By mail or SMS (1.0.181): whatever was typed first, a code is
@@ -567,7 +583,7 @@ class SshGate(object):
                     sent = [x['at'] for x in SSHOTP_GONE.get(user.lower()) or []]
                 if sent:
                     ask = '%s (%s)' % (str(ask).rstrip(' :'), time.strftime('%H:%M', time.localtime(sent[-1])))
-                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
+                return build_reply(p, 11, [ssh_prompt_attr(ask, ssh_code_hidden(store)),
                                            bytes([24, len(st) + 2]) + st.encode()], secret)
         else:
             ok, said = sshotp_check(store, user, code)

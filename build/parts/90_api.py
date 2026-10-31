@@ -5694,6 +5694,28 @@ def _web_do(h):
                         'what it has)' % (who, words), 'warn', who=who)
         return {'message': 'otp no longer looks after the TLS of %s; nginx keeps the files it '
                            'has' % words}
+    if act == 'tls_export':
+        # A certificate as a file, in the format asked for (1.0.191); with its
+        # private key only locked with a passphrase, only by a full
+        # administrator (this route's), and each time an event.
+        kind = str(b.get('kind') or 'pem')
+        if not prof.get('cert'):
+            raise ApiError(404, 'no certificate is kept for %s' % words)
+        try:
+            blob, ending = tls_export(prof, kind, str(b.get('passphrase') or ''), bool(b.get('legacy')))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        name = (re.sub(r'[^A-Za-z0-9._-]', '_', (prof.get('info') or {}).get('cn') or '') or
+                ('web-address' if target == 'vip' else target)) + ending
+        if TLS_EXPORT_KINDS[kind][2]:
+            store.add_event('settings', '%s downloaded the certificate of %s WITH ITS PRIVATE KEY (%s, '
+                            'locked with a passphrase)' % (who, words, TLS_EXPORT_KINDS[kind][0]),
+                            'warn', who=who)
+        else:
+            store.add_event('settings', '%s downloaded the certificate of %s (%s)'
+                            % (who, words, TLS_EXPORT_KINDS[kind][0]), who=who)
+        return {'name': name, 'file': base64.b64encode(blob).decode(),
+                'type': 'application/x-pkcs12' if kind == 'pfx' else 'application/octet-stream'}
     if act == 'tls_pem':
         if not prof.get('cert'):
             raise ApiError(404, 'no certificate is kept for %s' % words)

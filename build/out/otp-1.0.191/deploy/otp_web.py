@@ -2916,6 +2916,7 @@ def sshd_checked(c):
     out['radius_fallback'] = bool(c.get('radius_fallback')) and out['password']
     # A key and then the code (1.0.183): AuthenticationMethods for those asked.
     out['radius_with_key'] = bool(c.get('radius_with_key')) and out['radius']
+    out['radius_hide'] = bool(c.get('radius_hide')) and out['radius']
     return out
 
 
@@ -2978,8 +2979,12 @@ def pam_block(c):
     # skip_passwd (1.0.188): no "Password:" first - otp's gate asks for the code
     # itself (the app's, or one it mails or texts), in the one prompt it shows.
     lines.append('auth [success=done new_authtok_reqd=done ignore=ignore default=die] '
-                 'pam_radius_auth.so conf=%s skip_passwd%s' % (pam_radius_conf_path(),
+                 'pam_radius_auth.so conf=%s skip_passwd prompt_attribute%s' % (pam_radius_conf_path(),
                                                                ' localifdown' if c['radius_fallback'] else ''))
+    if c['radius_fallback'] and sshd_root_code_key_only(c):
+        # otp not answering (1.0.191): root, made to reach PAM for its code, gets
+        # no system password - it signs in with a key only, as set.
+        lines.append('auth [success=ignore default=die] pam_succeed_if.so quiet user != root')
     if not c['password']:
         # Passwords off: nobody left out of the code gets in by a password here.
         lines.append('auth requisite pam_deny.so')
@@ -3025,11 +3030,14 @@ def pam_radius_conf_fp():
 
 
 def pam_skip_passwd(text):
-    """Our block's pam_radius line with skip_passwd (1.0.188), the rest as it is."""
+    """Our block's pam_radius line with skip_passwd (1.0.188) and prompt_attribute
+    (1.0.191: the code hidden as typed, where set), the rest as it is."""
     def one(m):
         block = m.group(0)
-        return re.sub(r'(?m)^(auth\b.*pam_radius_auth\.so conf=\S+)(?!.*\bskip_passwd\b)(.*)$',
-                      r'\1 skip_passwd\2', block)
+        for opt in ('skip_passwd', 'prompt_attribute'):
+            block = re.sub(r'(?m)^(auth\b.*pam_radius_auth\.so conf=\S+)(?!.*\b%s\b)(.*)$' % opt,
+                           r'\1 %s\2' % opt, block)
+        return block
     return re.sub(r'(?ms)^' + re.escape(PAM_BEGIN) + r'\n.*?^' + re.escape(PAM_END) + r'$', one, text)
 
 
@@ -3088,13 +3096,34 @@ def sshd_key_and_code(c):
     if not (c.get('radius') and c.get('radius_with_key')):
         return []
     both = 'AuthenticationMethods publickey,keyboard-interactive'
-    if c.get('radius_users'):
-        return ['# A key, then the code from otp - these accounts only',
-                'Match User %s' % ','.join(c['radius_users']), '    ' + both]
-    if c.get('radius_root'):
+    out = []
+    users = list(c.get('radius_users') or [])
+    if sshd_root_code_key_only(c):
+        # Root with a key only, and the code asked of it too (1.0.191): sshd hands
+        # PAM "\b\n\r\177INCORRECT" for whatever root types where root may not use
+        # a password - every code was refused. For root alone: what it types
+        # reaches PAM, a key and the code both needed, never a password alone.
+        out += ['# Root: a key, then the code from otp - never a password alone',
+                'Match User root', '    PermitRootLogin yes', '    PasswordAuthentication no',
+                '    ' + both]
+        users = [u for u in users if u != 'root']
+        if c.get('radius_users') and not users:
+            return out
+    if users:
+        return out + ['# A key, then the code from otp - these accounts only',
+                      'Match User %s' % ','.join(users), '    ' + both]
+    if c.get('radius_root') and not out:
         return ['# A key, then the code from otp', both]
-    return ['# A key, then the code from otp - root as before',
-            'Match User *,!root', '    ' + both]
+    return out + ['# A key, then the code from otp%s' % ('' if out else ' - root as before'),
+                  'Match User *,!root', '    ' + both]
+
+
+def sshd_root_code_key_only(c):
+    """The code asked of root, root signing in with a key only, a key then the code."""
+    if not (c.get('radius') and c.get('radius_with_key')) or c.get('permit_root') != 'prohibit-password':
+        return False
+    users = c.get('radius_users') or []
+    return 'root' in users if users else bool(c.get('radius_root'))
 
 
 def sshd_match_kept():
@@ -3110,7 +3139,9 @@ def sshd_match_kept():
     b, rb = t('otp-nobody-check')
     if ra or rb:
         return 'sshd -T did not answer'
-    diff = sorted(k for k in set(a) | set(b) if k != 'authenticationmethods' and a.get(k) != b.get(k))
+    # Root's own block (1.0.191) sets these two for it, on purpose.
+    ours = ('authenticationmethods', 'permitrootlogin', 'passwordauthentication')
+    diff = sorted(k for k in set(a) | set(b) if k not in ours and a.get(k) != b.get(k))
     return ', '.join(diff[:5])
 
 
