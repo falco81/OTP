@@ -4,6 +4,28 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.202 — 31 October 2026
+
+**The proxy: a switch for each thing that may go through it, all off by default**
+(Settings → Proxy). Until now, switched on, everything otp asked of the web went
+through it - ACME (Let's Encrypt, the deSEC, Cloudflare and acme-dns APIs) and the SMS
+gateway too, so a proxy down or wrong stopped the certificates and the codes by SMS.
+Now it is used only for what is switched on, each on its own:
+- *The new versions of otp* (Upgrades), *The system updates (dnf, apt)*,
+  *ACME: the CA (Let's Encrypt)*, *ACME: the DNS APIs (deSEC, Cloudflare, acme-dns)*,
+  *The SMS gateway*. All of them off, it is used nowhere; the proxy itself is off by
+  default. *Try it* tries the proxy, whatever is switched on.
+- RADIUS, mail, Active Directory, the database, syslog, isemon, the backups (FTP, SFTP,
+  SCP, SMB), the other node and the VIP address's check never go through it, nor does
+  anything else otp asks.
+- `http_proxy`, `https_proxy` and the like from the environment (`/etc/environment`, a
+  shell) are dropped as otp starts - not taken by the VIP address's check, ACME, SMS or
+  what otp runs (smbclient, nsupdate, openssl).
+- A proxy switched on before: the new versions and the system updates go on through it,
+  as they did, until changed; ACME and SMS go straight from now on unless switched on.
+- Tested (`tests/siem/t_siem.py`, 54 of 54): each switch sends its own through the proxy
+  and nothing else; off, nothing; none from the environment. (1.0.201 was not released.)
+
 ## 1.0.200 — 31 October 2026
 
 **Automatic certificates: Order certificates now…** - one button above the cards opens a
