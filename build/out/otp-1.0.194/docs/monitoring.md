@@ -156,3 +156,20 @@ authUser log,execute otpmon priv
 ```
 
 The page writes those lines with the engine IDs filled in.
+
+## The alerts of the database and of the VIP address (1.0.194)
+
+*Settings → Alerts and reports* has a switch for each:
+
+- **The database and its replication**: the replication stopped, or the database
+  of a node in trouble (RADIUS could not use it).
+- **The VIP address (VRRP)**: the VIP address on no node, or on both (the nodes do
+  not see each other over VRRP), a node whose keepalived gave it up (FAULT), or
+  keepalived not running on a node.
+
+Neither is mailed while the cluster is worked on - a node in maintenance, an
+upgrade, the system's updates or a restart going on - nor for 10 minutes after
+the last of them, while the replication catches up and the VIP address settles.
+The same outside of them is mailed as any alert, after *Only once it has lasted*.
+One already mailed is not said to be over because maintenance started: it is
+kept as it was until it is looked at again.

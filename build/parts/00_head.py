@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.193'
+__version__ = '1.0.194'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -286,6 +286,8 @@ DEFAULTS = {
     'alerts_repeat_h': 24,
     'alerts_resolved': 1,
     'alerts_nodes': 1,
+    'alerts_db': 1,
+    'alerts_vrrp': 1,
     'alerts_backup': 1,
     'alerts_cert_days': 21,
     'alerts_disk_pct': 85,
@@ -470,6 +472,7 @@ TUNABLE = {
     'rbackup_verify': ('off', 'after', 'weekly'),
     'alerts': (0, 1), 'alerts_delay_min': (0, 120), 'alerts_repeat_h': (0, 168),
     'alerts_resolved': (0, 1), 'alerts_nodes': (0, 1), 'alerts_backup': (0, 1),
+    'alerts_db': (0, 1), 'alerts_vrrp': (0, 1),
     'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
     'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
@@ -739,6 +742,8 @@ NAMES = {
     'alerts_repeat_h': 'Remind every (hours)',
     'alerts_resolved': 'Say when it is over',
     'alerts_nodes': 'A node, RADIUS, the replication or the database down',
+    'alerts_db': 'The database and its replication',
+    'alerts_vrrp': 'The VIP address (VRRP)',
     'alerts_backup': 'A backup that failed or did not come',
     'alerts_cert_days': 'A certificate running out within (days)',
     'alerts_disk_pct': 'A disk fuller than (%)',
@@ -1247,6 +1252,12 @@ SAYS = {
     'alerts_resolved': 'A mail when what was mailed is over.',
     'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS, the '
                     'replication stopped, the database in trouble, the nodes on different versions.',
+    'alerts_db': 'The replication stopped, or the database of a node in trouble. Not while a node '
+                 'is in maintenance, being upgraded, updated or restarted, nor 10 min after - '
+                 'the same outside of them is mailed.',
+    'alerts_vrrp': 'The VIP address on no node or on both, a node whose keepalived gave it up '
+                   '(FAULT) or is not running. Not during maintenance, upgrades, updates or '
+                   'restarts, nor 10 min after.',
     'alerts_backup': 'A nightly copy older than 36 hours; a backup to the destinations that '
                      'failed, or none that went in time.',
     'alerts_cert_days': 'A certificate of a node or of the VIP address running out within so '
@@ -1464,7 +1475,7 @@ PANES = {
              'acme_dns_key', 'acme_dns_subdomain', 'acme_desec_domain', 'acme_desec_token',
              'acme_dns_alias', 'acme_dns_wait', 'acme_resolvers'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
-               'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
+               'alerts_nodes', 'alerts_db', 'alerts_vrrp', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
                'alerts_lang', 'alerts_url', 'report', 'report_to', 'report_lang', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
@@ -1518,6 +1529,7 @@ ONLY_WHEN = {
     'alerts_to': ['alerts', '1'], 'alerts_delay_min': ['alerts', '1'],
     'alerts_repeat_h': ['alerts', '1'], 'alerts_resolved': ['alerts', '1'],
     'alerts_nodes': ['alerts', '1'], 'alerts_backup': ['alerts', '1'],
+    'alerts_db': ['alerts', '1'], 'alerts_vrrp': ['alerts', '1'],
     'alerts_cert_days': ['alerts', '1'], 'alerts_disk_pct': ['alerts', '1'],
     'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
