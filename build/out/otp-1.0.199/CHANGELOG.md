@@ -4,6 +4,21 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.199 — 31 October 2026
+
+**Automatic certificates: a renewal refused after the account changed** - "Could not
+validate ARI 'replaces' field :: requester account did not request the certificate being
+replaced by this order". Since 1.0.196 each order says which certificate it renews
+(ARI), and Let's Encrypt takes that only from the account that ordered it; another key
+of the account (The key of the ACME account), an account made again or another CA is
+another account. Now:
+- the account that ordered a certificate is kept with it, and an order says it replaces
+  it only from that same account;
+- one the CA refuses all the same (a certificate of 1.0.196, whose account was not kept)
+  is ordered again at once as a new one, and its steps say so.
+- Tested (`tests/acme/t_acme.py`, 67 of 67): the test CA refuses as Let's Encrypt does.
+  `docs/acme-ari-replaces-check.md` describes it for other projects that use ARI.
+
 ## 1.0.198 — 31 October 2026
 
 **In your DNS** (Automatic certificates), as isemon draws it: over the whole width,

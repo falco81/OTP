@@ -33,6 +33,7 @@ run(['openssl', 'x509', '-req', '-in', W + '/srv.csr', '-CA', W + '/ca.pem', '-C
 NONCES, ACCTS, ORDERS, AUTHZ, CERTS = set(), {}, {}, {}, {}
 LOCK = threading.Lock()
 ORDERS_ASKED, ARI_ASKED, ALGS = [], [], []
+OWNER = {}
 LOG = []
 
 
@@ -191,6 +192,15 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.err(400, 'malformed', 'a kid is needed')
         if p == '/order':
             ORDERS_ASKED.append({'profile': payload.get('profile'), 'replaces': payload.get('replaces')})
+            rep = payload.get('replaces')
+            if rep:
+                try:
+                    who = OWNER.get(int.from_bytes(b64d(rep.split('.')[-1]), 'big'))
+                except Exception:                       # noqa: BLE001
+                    who = None
+                if who and who != kid:
+                    return self.err(409, 'conflict', "Could not validate ARI 'replaces' field :: requester account "
+                                    'did not request the certificate being replaced by this order')
             names = [i['value'] for i in payload['identifiers']]
             if any(n.endswith('.example') for n in names):
                 return self.err(400, 'rejectedIdentifier', 'the CA may not give a certificate for %s' % names)
@@ -273,6 +283,10 @@ class H(http.server.BaseHTTPRequestHandler):
                        (open(W + '/days').read().strip() if os.path.exists(W + '/days') else '90'),
                        '-extfile', W + '/e']).decode()
             CERTS[oid] = pem + open(W + '/ca.pem').read()
+            # Which account ordered it: only that one may say an order replaces it (as LE).
+            open(W + '/s.pem', 'w').write(pem)
+            ser = run(['openssl', 'x509', '-in', W + '/s.pem', '-noout', '-serial']).decode().strip().split('=')[-1]
+            OWNER[int(ser, 16)] = o['kid']
             o['status'] = 'valid'
             return self.send(200, self.order(oid))
         if p.startswith('/cert/'):

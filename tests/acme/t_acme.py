@@ -446,4 +446,38 @@ SET({'acme_desec_domain': 'otpdesec.dedyn.io'})
 v = call('/api/acme', None, S)[1]
 ok('... a dedyn.io domain needs none', not [r for r in v['dns_guide']['rows'] if r['type'] == 'NS'])
 SET({'acme_challenge': 'http-01'})
+
+# Another kind of key of the account (1.0.199): a new account, which may not say it replaces
+# what the one before ordered - Let's Encrypt refuses it ("requester account did not request
+# the certificate being replaced by this order").
+def asked_orders():
+    import ssl as _ssl
+    c_ = _ssl.create_default_context(cafile=CAW + '/ca.pem')
+    with urllib.request.build_opener(urllib.request.HTTPSHandler(context=c_), urllib.request.ProxyHandler({})).open(
+            'https://127.0.0.1:14000/asked', timeout=10) as r:
+        return json.loads(r.read())['orders']
+
+
+c, stt, v = order_now('before the account changes')
+ok('ordered (%s) - the account that did it kept with it' % (stt.get('said') or 'ok'), stt.get('ok') and stt.get('kid'))
+kid0 = stt.get('kid')
+SET({'acme_account_key': 'ec384'})
+n0 = len(asked_orders())
+c, stt, v = order_now('with a new account')
+o = asked_orders()[n0:]
+ok('the account key P-384: a new account, the certificate came (%s)' % (stt.get('said') or 'ok'),
+   stt.get('ok') and stt.get('kid') and stt.get('kid') != kid0)
+ok('... not said to replace what the old account ordered (%s)' % o, o and not any(x.get('replaces') for x in o))
+# A certificate ordered before the account was kept with it (1.0.196): tried, refused, ordered again.
+s_ = json.loads(st.get_meta('acme:state:otp1') or '{}')
+s_.pop('kid', None)
+st.set_meta('acme:state:otp1', json.dumps(s_))
+SET({'acme_account_key': 'ec'})
+n0 = len(asked_orders())
+c, stt, v = order_now('the account unknown')
+o = asked_orders()[n0:]
+said = ' | '.join(x[1] for x in stt.get('steps') or [])
+ok('... one of 1.0.196, the account not kept: the CA refuses replaces, ordered as a new one (%s)'
+   % ((stt.get('said') or 'ok') + ' / ' + said[:300]), stt.get('ok') and 'does not take it as the renewal' in said)
+ok('... asked with replaces, then without (%s)' % o, len(o) >= 2 and o[0].get('replaces') and not o[1].get('replaces'))
 print('ALL %d / %d' % (sum(R), len(R)))
