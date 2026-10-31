@@ -4,6 +4,11 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.193 — 31 October 2026
+
+- **System updates**: "restart needed" / "restart after the update" on a line of
+  its own on every node's card, always - not where the room ran out.
+
 ## 1.0.192 — 31 October 2026
 
 - **The pages**: the tags at the head of a node's card (*System updates*: "this
