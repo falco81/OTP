@@ -3061,7 +3061,9 @@ button.mebtn { cursor: pointer; }
 .net-job.failed{border-color:rgba(248,81,73,.5)}
 .net-job.done{border-color:rgba(63,185,80,.45)}
 .pw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;margin-bottom:16px}
-.pw-head{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:15px}
+.pw-head{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin-bottom:10px;font-size:15px;min-width:0}
+/* Its tags go on to the next line, whole, rather than out of the card (1.0.192). */
+.pw-head .tag{white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .pw-node .btnrow{margin-top:14px}
 #net-host .msect{margin-top:14px}
 #net-host .net-nodes + .card{margin-top:0}
