@@ -133,7 +133,8 @@ def write_root(path, text, mode):
     try:
         with os.fdopen(fd, 'w') as f:
             f.write(text)
-        os.chmod(tmp, mode)
+            f.flush()
+            os.fchmod(f.fileno(), mode)        # the file itself, never a link (1.0.205)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -594,6 +595,21 @@ def dh_file(choice, path, had):
     return path
 
 
+TLS_FILES_NEW = [False]           # a certificate or key file of nginx's changed (1.0.205)
+
+
+def _tls_put(path, text, mode):
+    """A certificate or key file written; noted when it is not what was there."""
+    try:
+        with open(path, 'rb') as f:
+            same = f.read() == text.encode('utf-8')
+    except OSError:
+        same = False
+    write_root(path, text, mode)
+    if not same:
+        TLS_FILES_NEW[0] = True
+
+
 def tls_into(block, t, files, had_dh):
     """A server { } with the TLS of `t`: its files written, its lines set.
     Returns (block, words, dh made)."""
@@ -601,20 +617,20 @@ def tls_into(block, t, files, had_dh):
     progress('writing the certificate and the TLS settings', 3)
     if t['pem']:
         full = t['pem']['cert'] + t['pem']['chain']
-        write_root(files['cert'], full, 0o644)
-        write_root(files['key'], t['pem']['key'], 0o600)
+        _tls_put(files['cert'], full, 0o644)
+        _tls_put(files['key'], t['pem']['key'], 0o600)
         alt = t['pem'].get('alt')
         if alt:
             # RSA first, the default; ECDSA to the clients that take it (1.0.196).
-            write_root(files['cert2'], alt['cert'] + alt['chain'], 0o644)
-            write_root(files['key2'], alt['key'], 0o600)
+            _tls_put(files['cert2'], alt['cert'] + alt['chain'], 0o644)
+            _tls_put(files['key2'], alt['key'], 0o600)
             block = set_directive(block, 'ssl_certificate', [files['cert'], files['cert2']])
             block = set_directive(block, 'ssl_certificate_key', [files['key'], files['key2']])
         else:
             block = set_directive(block, 'ssl_certificate', files['cert'])
             block = set_directive(block, 'ssl_certificate_key', files['key'])
         if t['pem']['root']:
-            write_root(files['root'], t['pem']['root'] + t['pem']['chain'], 0o644)
+            _tls_put(files['root'], t['pem']['root'] + t['pem']['chain'], 0o644)
             block = set_directive(block, 'ssl_trusted_certificate', files['root'])
         else:
             block = set_directive(block, 'ssl_trusted_certificate', None)
@@ -673,7 +689,8 @@ def put_back(snap):
             fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p))
             with os.fdopen(fd, 'wb') as f:
                 f.write(was[0])
-            os.chmod(tmp, was[1])
+                f.flush()
+                os.fchmod(f.fileno(), was[1])     # the file itself (1.0.205)
             os.replace(tmp, p)
             # Its SELinux label too, not the folder's (1.0.57).
             if shutil.which('restorecon'):
@@ -862,6 +879,7 @@ def nginx_part(r, last):
     paths = [NGINX_MAIN, NGINX_VIP] + list(NODE_FILES.values()) + list(VIP_FILES.values())
     snap = snapshot(paths)
     changed = False
+    TLS_FILES_NEW[0] = False
     try:
         try:
             with open(NGINX_MAIN) as f:
@@ -944,6 +962,11 @@ def nginx_part(r, last):
             changed = True
             said.append('nginx: the web address\'s own server taken away (it answers with this '
                         'node\'s certificate)')
+        # A certificate renewed changes no line of nginx's (1.0.205): its files
+        # alone were written, nginx was not reloaded, and went on giving the
+        # old one until it ran out.
+        if TLS_FILES_NEW[0]:
+            changed = True
         if changed and not NO_SERVICES:
             progress('asking nginx, and reloading it', 4)
             t = subprocess.run(['nginx', '-t'], capture_output=True, text=True)
@@ -2804,8 +2827,16 @@ def sshd_values():
 
 
 def _read_or(path, most=65536):
+    # A plain file only (1.0.205): a FIFO put there held the helper - and every
+    # request behind it - for good.
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return None
         with os.fdopen(fd, 'rb') as f:
             return f.read(most).decode('utf-8', 'replace')
     except OSError:
@@ -2822,7 +2853,11 @@ def _put_file(path, text, mode=0o644):
     try:
         with os.fdopen(fd, 'w') as f:
             f.write(text)
-        os.chmod(tmp, mode)
+            # On the file itself, not by its name (1.0.205): /etc/otp is the otp
+            # group's to write in, and a link put in place of the temporary file
+            # had root change the mode of whatever it pointed at.
+            f.flush()
+            os.fchmod(f.fileno(), mode)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -2909,7 +2944,7 @@ def sshd_checked(c):
     users = [str(u) for u in raw if u] if isinstance(raw, list) else \
         [u for u in re.split(r'[\s,]+', str(raw)) if u]
     for u in users:
-        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}$', u):
+        if not re.match(r'^[A-Za-z0-9._@*?-]{1,64}\Z', u):
             raise Refused('%r is not a user name' % u)
     out['allow_users'] = users[:50]
     try:
@@ -2929,7 +2964,7 @@ def sshd_checked(c):
     ru = [str(u) for u in raw if u] if isinstance(raw, list) else \
         [u for u in re.split(r'[\s,]+', str(raw)) if u]
     for u in ru:
-        if not re.match(r'^[A-Za-z0-9._@-]{1,64}$', u):
+        if not re.match(r'^[A-Za-z0-9._@-]{1,64}\Z', u):
             raise Refused('%r is not a user name' % u)
     out['radius_users'] = ru[:100]
     out['radius_root'] = bool(c.get('radius_root'))
@@ -3274,9 +3309,11 @@ def sshd_do(r):
                 raise Refused('root may sign in only with a key and has none here - add a key '
                               'first')
         old = sshd_trial_read()
-        if old:
-            sshd_disarm(old)            # a change on trial changed again: one timer, the first state
+        # A change on trial changed again: one timer, the first state - its timer
+        # stopped only once the new change is in (1.0.205). Stopped before it,
+        # a change sshd refused left the one on trial with nothing to put it back.
         drop = os.path.join(SSH_DIR, SSHD_DROPIN)
+        now_dropin = _read_or(drop)     # what this change, refused, goes back to
         paths = notice_paths()
         before = old or {'dropin': _read_or(drop), 'banner': _read_or(paths['banner']),
                          'issue': None, 'motd': None, 'pam': _read_or(pam_sshd_path()),
@@ -3296,19 +3333,19 @@ def sshd_do(r):
             got = subprocess.run([SSHD_BIN, '-t', '-f', sshd_conf_path()], capture_output=True,
                                  text=True)
             if got.returncode != 0:
-                if before['dropin'] is None:
+                if now_dropin is None:
                     _drop(drop)
                 else:
-                    _put_file(drop, before['dropin'], 0o600)
+                    _put_file(drop, now_dropin, 0o600)
                 raise Refused('sshd does not take it, so it is as it was: %s'
                               % (got.stderr or got.stdout).strip()[-300:])
             if c.get('radius_with_key'):
                 drift = sshd_match_kept()
                 if drift:
-                    if before['dropin'] is None:
+                    if now_dropin is None:
                         _drop(drop)
                     else:
-                        _put_file(drop, before['dropin'], 0o600)
+                        _put_file(drop, now_dropin, 0o600)
                     raise Refused('this sshd lets a Match of a file it includes reach its own '
                                   'settings (%s) - a key and the code cannot be set here; it is '
                                   'as it was' % drift)
@@ -3318,10 +3355,10 @@ def sshd_do(r):
             try:
                 w = pam_set(c, r.get('radius_secret'), r.get('radius_port'))
             except Refused:
-                if before['dropin'] is None:
+                if now_dropin is None:
                     _drop(drop)
                 else:
-                    _put_file(drop, before['dropin'], 0o600)
+                    _put_file(drop, now_dropin, 0o600)
                 raise
             if w:
                 said.append(w)
@@ -3334,6 +3371,8 @@ def sshd_do(r):
         if not (c['manage'] and c['notice_ssh']):
             _drop(paths['banner'])
         sshd_reload()
+        if old:
+            sshd_disarm(old)
         ident = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:12] or 'x'
         if trial and c['manage']:
             before.update(hash=str(r.get('hash') or '')[:64], until=time.time() + trial * 60,

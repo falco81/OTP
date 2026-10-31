@@ -4,6 +4,82 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.205 — 31 October 2026
+
+**A bug hunt, first round**: the whole program read through by area - RADIUS and
+signing in, the database and the cluster, the pages and their API, the root helper,
+ACME, TLS and the backups, the pages' scripts and the command line - each finding shown
+to fail before it was mended (`tests/round/t_round1.py`, 29 of 29). On Python 3.14.8: the
+whole suite, the cluster of two (`t_ha_auth.py` 57 of 57, `t_ha_acme.py` 36 of 36,
+`t_ha_alerts.py` 13 of 13).
+
+Signing in and the cluster:
+- **A code used on one node was taken again on the other while the replication from it
+  stood still**: the other node's database was asked only while its heartbeat - which
+  comes over that same replication - was fresh. It is asked always now; a node really
+  gone costs one sign-in 1.5 s now and then, not every one.
+- **The key that opens the tokens, lost, was made anew by the first secret sealed** (a
+  client saved, an enrolment) - past the daemon's own refusal at its start: the tokens
+  stayed lost, and two nodes sealed each with a key of its own. No new key while the
+  database holds tokens sealed with one, whatever seals.
+- **On SQLite a name with a capital letter outside A-Z** ("Žofie") was never found again:
+  not signed in, not changed, not dropped. LOWER() takes every letter, as PostgreSQL's.
+- The administration's second step: a code from the app taken on either node once, as
+  a token's (it could be used again on the other node); `totp_window` 0 is 0 there too.
+- A group named without its place, the directory slow or away while it was looked up:
+  refused as "the directory has gone away" - it was "not in the group", and counted as
+  somebody guessing (five people behind one address blocked for 30 minutes). A group's
+  DN written with spaces after its commas matches.
+- No Calling-Station-Id from the NAS: the recovery codes are no longer stopped for a day
+  by 20 wrong tries of anyone who knows the name - the day's 100 counts.
+- A new address asked by the other node is worked on in a thread of its own: it held
+  the heartbeat up to a minute, and the other node took this one for gone.
+- Going over to another database: a recovery code used between the carry and the
+  switch is counted (it was usable again on the new one).
+
+The machine (root helper):
+- **A renewed certificate was not served**: only its files changed, no line of nginx's,
+  and nginx was not reloaded - it went on giving the old one until it ran out. A
+  certificate or key file changed reloads nginx.
+- A change of sshd on trial changed again and refused by sshd lost its timer: nothing
+  would have put it back. The timer goes only once the new change is in.
+- Files written in /etc/otp take their mode on the file itself, never by its name (a
+  link put there had root change another file's mode); a FIFO there no longer holds the
+  helper. A user name ending in a new line is refused (it broke PAM's file).
+
+Certificates (ACME, TLS):
+- RSA and ECDSA ordered: the second refused, the first is put in alone - it was thrown
+  away with it, and the CA's weekly limit spent on nothing.
+- An order puts its certificate into the TLS settings as they are when it comes, not as
+  they were when it began (changes made meanwhile were undone); one no longer looked
+  after is left alone.
+- A name longer than 64 characters gets a certificate (in its names only, as Let's
+  Encrypt takes it). What is due is worked out off the main loop. The renewal window is
+  asked through ACME's DNS servers; the proxy's own name through the machine's.
+- A CA not answering left a folder behind each time - after a refused account, with a
+  key in it.
+- openssl is given passphrases on a pipe of its own, never in the environment.
+
+Backups, mail, the rest:
+- **A backup could go out unlocked** (sent away, or downloaded from the page) when its
+  password was taken away during a long dump: it is not sent nor handed out then.
+- A backup the server does not list after it was sent is not taken as sent; trying a
+  backup looks at this node's own, never another node's in its place. A broken upload
+  leaves nothing behind.
+- An alert going between warning and trouble is mailed once more, not at every turn.
+  SIEM: a connection made again when its TLS check is switched on.
+- isemon over TLS switched on and off where a target is an IPv6 address.
+- An export of the settings carries the ECDSA certificate's key as the other's (it
+  could not be opened elsewhere, and nginx's every change was refused there).
+- An account that only reads no longer sees the firewall's rules and the access lists
+  through the cluster's pages.
+- Pages: a certificate's issuer escaped in the confirmations; a generated passphrase
+  back to dots once typed over and gone after the file is saved.
+- Command line: `--secret -` and the like read one line of stdin with no terminal
+  (it ended in a traceback); `@env…` is no longer taken as a secret on the command
+  line; `--directory-test --json` and `--isemon-test` exit 1 on failure;
+  `--lockouts-clear` finds the name whatever its case.
+
 ## 1.0.204 — 31 October 2026
 
 **Python 3.14**: install.sh runs otp on `python3.14` where the distribution offers it
