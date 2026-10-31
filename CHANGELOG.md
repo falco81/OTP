@@ -4,6 +4,15 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.197 — 31 October 2026
+
+**Automatic certificates**:
+- *What the last order did*: the time of each step in a column of its own, never
+  broken in two (it took the room and stood "+ 1 s" one under the other), the step
+  beside it from the left.
+- *In your DNS*: the texts not wrapped - "its zone at deSEC", "the VIP address", a
+  record - the table scrolls on a narrow screen instead.
+
 ## 1.0.196 — 31 October 2026
 
 **Automatic certificates (ACME): every key Let's Encrypt takes, as upsmon has it**
