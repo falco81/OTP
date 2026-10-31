@@ -533,7 +533,7 @@ machines**. You build one server from the copy, then the second node from it.
 
    ```bash
    otp --set db_engine=postgres --set db_host=127.0.0.1 --set db_port=5432 \
-       --set db_name=otp --set db_user=otp --set db_password='...'
+       --set db_name=otp --set db_user=otp --set db_password=- --yes   # the password asked for
    ```
 
 2. **Put the copy back** on otp1, key beside it (or a downloaded copy):

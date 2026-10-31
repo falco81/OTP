@@ -23,6 +23,7 @@ It opens on the **live log** (every line); Esc goes to the main menu.
      9  Backups
     10  Upgrades
     11  The service
+    12  Certificates, updates, restarts, tests
 
  Up/Down move   Enter choose   Esc back   ! shell   q leave
 ```
@@ -73,6 +74,17 @@ It opens on the **live log** (every line); Esc goes to the main menu.
   paused / resumed. **Upgrades → from the web**: what is newer at
   upgrade_url, a version picked, Yes, then every node upgraded one at a time
   with its progress bars.
+- **RADIUS clients, realms and directories**: a realm or a directory added or
+  changed in a form (its suffix, other suffixes, what the password is, the
+  directory, the groups - their replies kept - and the codes people may
+  choose; a directory's password asked, shown as stars).
+- **Certificates, updates, restarts, tests** (1.0.187) - what the pages do,
+  for a server without them (installed `--no-web`) or with them down: the
+  certificates by ACME and one ordered now, followed; the updates of the
+  system looked for, put in one node at a time, or stopped; a machine
+  restarted, the service kept on the others; a test mail or SMS; the SSH
+  tokens made and taken away (the app's QR code shown once); who is locked
+  out, and a lockout forgotten on every node.
 
 ## The live views
 

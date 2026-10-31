@@ -3,7 +3,7 @@
   "code": "cs",
   "name": "Čeština",
   "english": "Czech",
-  "version": "1.0.186",
+  "version": "1.0.187",
   "made": "2026-10-23",
   "about": "Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen \"text\", nikdy \"source\". Prázdný text znamená: zobrazit anglicky."
  },

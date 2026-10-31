@@ -68,6 +68,26 @@ otp --log --rejects         # who was refused, and why
 journalctl -u otp -n 100    # the service's own log; also /var/log/otp/otp.log
 ```
 
+What the pages do, from the command line too (1.0.187) - for a server
+installed `--no-web`, or with its pages down:
+
+```bash
+otp --acme                  # the certificates by ACME: name, days left, last order
+otp --acme-order all        # order now (a node's name, vip, or all), followed here
+otp --updates status        # the updates of the system on each node
+otp --updates check         # look for them now;  start [--node A,B] [--reboot auto]  /  cancel
+otp --restart-nodes all     # restart the machines one at a time, the service kept (--yes)
+otp --restarts              # how the restarts went
+otp --mail-test a@b.cz      # a test mail, every step said;  --sms-test +420...
+otp --ssh-tokens            # SSH tokens;  --ssh-token-add NAME [--by mail|sms --to ...]  /  --ssh-token-del NAME
+otp --lockouts              # who is locked out, on every node;  --lockouts-clear all|KIND:WHO
+otp --set smtp_password=-   # a secret: asked for (or one line of stdin, or OTP_VALUE_SMTP_PASSWORD)
+otp --set backup_at=02:30 --node otp2      # a node's own setting for another node ('*': the cluster's)
+```
+
+A secret is never taken written out on the command line, where `ps` and the
+shell's history keep it: `--secret -`, `--bind-pw -`, `--set KEY=-` ask for it.
+
 What lives where:
 
 | | |
@@ -232,8 +252,11 @@ carry everything: settings, tokens, accounts, logs, events.
 
    ```bash
    otp --set db_engine=postgres --set db_host=127.0.0.1 --set db_port=5432 \
-       --set db_name=otp --set db_user=otp --set db_password='a-long-random-password'
+       --set db_name=otp --set db_user=otp --set db_password=- --yes
    ```
+
+   The password is asked for (or one line of stdin, or `OTP_VALUE_DB_PASSWORD`):
+   a secret is never written out on the command line.
 
 4. Put the copy into PostgreSQL:
 

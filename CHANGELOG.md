@@ -4,6 +4,94 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.187 — 31 October 2026
+
+**A cluster of two, tested as it runs: PostgreSQL replicated both ways and the
+VIP address by keepalived (VRRP)** - five new tests (`tests/hasb/full`) on two
+nodes, a prober asking RADIUS on each node and on the VIP address every 0.3 s all
+the way through:
+- signing in on node a, node b and the VIP address: a code from the app, the
+  directory's password and a code, a code by e-mail and by SMS (a challenge, its
+  answer on the other node too), realms by name and by alias, backup codes, a
+  locked user locked on both nodes - 57 of 57;
+- a daemon ended (the VIP address on the other node in 5 s), a machine off
+  (4-5 s), maintenance (handed over, nothing lost) - 17 of 17;
+- the link between the databases and the daemons' own connections encrypted
+  (verify-full); a node's certificate near its end and the cluster's authority
+  near its end, each renewed by itself, replication and every connection on TLS
+  all the way, no request left unanswered - 32 of 32;
+- the updates on a schedule and the restart on a schedule: one node at a time,
+  never both down, the VIP address unanswered for 2 s at most, a code let in
+  through it every time - 14 of 14;
+- ACME for each node and for the VIP address: ordered by themselves, then,
+  running out, renewed by themselves - the CA having forgotten its account
+  meanwhile - each node's nginx files with them - 16 of 16.
+
+What they found, put right:
+- The link between the databases: the cluster's authority within two years of
+  its end was looked at only when a certificate of the node that may make a new
+  one ended soon. With only the other node's ending, no new authority was made -
+  and that node, not allowed to make it, renewed nothing at all: its
+  certificate ran out and replication stopped. The authority is now looked at
+  all the time, a node not making it renews its own as ever, and making it
+  failed is tried again the next day (it was the next month).
+- A node that had just renewed its own certificate stayed on the old
+  authority's when a new authority came meanwhile: it now takes the new one.
+- ACME: an account the CA no longer knows (deleted, deactivated, a CA of the
+  same address started anew) had every renewal refused, until the certificates
+  ran out. A new account is now made by itself and the request asked again.
+- ACME: a CA giving fewer days than `acme_days` (short-lived certificates, a
+  test CA) had each new certificate due at once - ordered again every hour,
+  until the CA's limits refused them all. Such a certificate is renewed at a
+  third of its life.
+- The web part of a node that could not be set up when the daemon started
+  (nginx not there yet, a disk full) was never tried again until a restart: it
+  is tried again every 15 minutes.
+- keepalived's check of the VIP address gives it up at once when the daemon is
+  gone (its lock file's process), and after 10 s of no word (20 before): a
+  daemon that ended took the VIP address with it for up to 20 s.
+- A new authority of the cluster has the minute it was made in its name: two
+  made on the same day had the same name.
+
+**The command line and the console: everything an operator needs without the
+pages** - a review of both against the pages, with tests of their own
+(`tests/cli/t_cli.py`, 152 checks; `tests/cli/t_console.py`):
+- New: `--acme`, `--acme-order TARGET|all` (followed), `--updates
+  status|check|start|cancel` (`--node A,B`, `--reboot ask|auto|never`),
+  `--restart-nodes`, `--restarts`, `--mail-test`, `--sms-test`, `--ssh-tokens`,
+  `--ssh-token-add` (the app's QR code shown once, or `--by mail|sms --to`),
+  `--ssh-token-del`, `--lockouts`, `--lockouts-clear all|KIND:WHO` (on every
+  node). The console has them in a menu of its own (12), and adds and changes
+  realms and directories in a form.
+- A secret is no longer taken written out on the command line (`ps` and the
+  shell's history keep it): `--set KEY=-` asks for it (or reads one line of
+  stdin, or `OTP_VALUE_KEY`); `--secret`, `--bind-pw` and the secret of
+  `--radtest` take `-` only. The docs' examples that wrote passwords out are
+  put right.
+- `--enroll` under another suffix of a realm (novak@corp.local) made a second
+  token beside novak@corp.cz - the one RADIUS looks up first, so the QR code
+  shown never let anyone in. It is made under the realm's own suffix, as the
+  pages do.
+- Unlock (the pages, the command line, the console) gave the recovery codes
+  back only in the process that was asked: each daemon kept refusing them from
+  the places it had counted, for a day, and the other node of a cluster too.
+  It is now marked in the database every node reads.
+- `--add-realm --groups` emptied the replies of every group (Class,
+  Filter-Id: the VPN's policies): a group it had keeps them.
+- The second step of signing in switched on from the command line or the
+  console left every sign-in to the pages open, as made with the password
+  alone; it ends them, as the pages do. `--set-role` and `--disable-user`
+  sign that account out.
+- `--tls-import`: a certificate put in by hand is kept - ACME's next renewal
+  replaced it - and one run out is refused, as on the pages. A TLS setting
+  changed here is written in the events.
+- `--settings --search` showed every setting; `--set` takes `--node` for a
+  node's own setting of another node, or `*` for the cluster's own value.
+- `--realms` cut the realm's other suffixes at 16 characters; the console did
+  not show them at all.
+- Who is locked out is written to the database on a server alone too (it was
+  in a cluster only), for `--lockouts`.
+
 ## 1.0.186 — 30 October 2026
 
 **Signing in: always answered, quickly, whatever else runs** - a review of the
