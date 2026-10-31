@@ -740,14 +740,14 @@ def acme_start(store, which, by):
     def go():
         _ACME_DNS.on = True
         try:
-            for t, n in which:
-                ACME_WORK['target'] = t
+            for i, (t, n) in enumerate(which):
+                ACME_WORK.update(target=t, n=i + 1, of=len(which))
                 try:
                     acme_order(store, t, n, by, lambda s: ACME_WORK.update(says=s))
                 except AcmeError as e:
                     log('ACME: %s' % e, 'warn')
         finally:
-            ACME_WORK.update(busy=False, says='', target='')
+            ACME_WORK.update(busy=False, says='', target='', n=0, of=0)
     threading.Thread(target=go, name='otp-acme', daemon=True).start()
 
 

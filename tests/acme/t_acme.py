@@ -480,4 +480,18 @@ said = ' | '.join(x[1] for x in stt.get('steps') or [])
 ok('... one of 1.0.196, the account not kept: the CA refuses replaces, ordered as a new one (%s)'
    % ((stt.get('said') or 'ok') + ' / ' + said[:300]), stt.get('ok') and 'does not take it as the renewal' in said)
 ok('... asked with replaces, then without (%s)' % o, len(o) >= 2 and o[0].get('replaces') and not o[1].get('replaces'))
+# Every certificate at once (1.0.200).
+forget()
+t0 = time.time()
+c, x = call('/api/acme', {'action': 'order_all', 'targets': []}, S)
+ok('Order certificates now, none switched on: refused (%s %s)' % (c, x.get('error')), c == 400)
+c, x = call('/api/acme', {'action': 'order_all', 'targets': ['otp1']}, S)
+ok('... the one switched on: asked (%s %s)' % (c, x.get('message')), c == 200 and 'acme1.otp.test' in (x.get('message') or ''))
+v = until(lambda: (lambda x: x if [t for t in mine(x) if (t['state'].get('at') or 0) >= t0] and not x['work']['busy'] else None)(
+    call('/api/acme', None, S)[1]), 120)
+t = mine(v)
+ok('... the certificate came (%s)' % (t and t[0]['state'].get('said') or 'ok'), t and t[0]['state'].get('ok'))
+SET({'acme': 0})
+c, x = call('/api/acme', {'action': 'order_all'}, S)
+ok('... ACME off: refused (%s)' % c, c == 400)
 print('ALL %d / %d' % (sum(R), len(R)))

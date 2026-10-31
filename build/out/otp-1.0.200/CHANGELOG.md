@@ -4,6 +4,17 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.200 — 31 October 2026
+
+**Automatic certificates: Order certificates now…** - one button above the cards opens a
+window with every certificate asked for (each node's, the VIP address's): each with a
+switch of its own, all on to begin with, and what it has now (from the CA, days left, the
+last try failed, one put in by hand). The ones switched on are ordered from the CA one
+after another, as *Order it now* on each card - after the account or the CA changed,
+say; the progress says which and how far ("2 of 3"), and ACME renews each from then on.
+Shown where there is more than one; from any node, as each card's own.
+Tested (`tests/acme/t_acme.py`, 71 of 71).
+
 ## 1.0.199 — 31 October 2026
 
 **Automatic certificates: a renewal refused after the account changed** - "Could not

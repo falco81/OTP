@@ -81,7 +81,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.199'
+__version__ = '1.0.200'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -25637,14 +25637,14 @@ def acme_start(store, which, by):
     def go():
         _ACME_DNS.on = True
         try:
-            for t, n in which:
-                ACME_WORK['target'] = t
+            for i, (t, n) in enumerate(which):
+                ACME_WORK.update(target=t, n=i + 1, of=len(which))
                 try:
                     acme_order(store, t, n, by, lambda s: ACME_WORK.update(says=s))
                 except AcmeError as e:
                     log('ACME: %s' % e, 'warn')
         finally:
-            ACME_WORK.update(busy=False, says='', target='')
+            ACME_WORK.update(busy=False, says='', target='', n=0, of=0)
     threading.Thread(target=go, name='otp-acme', daemon=True).start()
 
 
@@ -40016,6 +40016,35 @@ def _acme_do(h):
             acme_care_set(h.store, target, True, s['name'], 'ordered by hand')
             acme_start(h.store, [(target, name)], s['name'])
             return dict(acme_view(h.store), message='the certificate of %s is being ordered' % name)
+        if act == 'order_all':
+            # Every certificate asked for at once (1.0.200), one after another in
+            # the one thread that orders: the same as Order it now on each card.
+            if not CONFIG.get('acme'):
+                raise ValueError('certificates by ACME are off - switch them on and save first')
+            which, left = [], []
+            # The ones chosen in the window (1.0.200); none given: all of them.
+            chosen = b.get('targets')
+            if chosen is not None and not isinstance(chosen, list):
+                raise ValueError('targets is a list')
+            for target in acme_wanted(h.store):
+                if chosen is not None and target not in [str(x) for x in chosen]:
+                    continue
+                if target == 'vip' and not vip_conf(h.store).get('address'):
+                    continue
+                name = acme_name_of(h.store, target)
+                if name:
+                    which.append((target, name))
+                else:
+                    left.append(target)
+            if not which:
+                raise ValueError('none chosen' if chosen is not None and not left else
+                                 'no certificate has a name to order it for - give one (Its name…)')
+            for target, _n in which:
+                acme_care_set(h.store, target, True, s['name'], 'ordered by hand')
+            acme_start(h.store, which, s['name'])
+            return dict(acme_view(h.store), message='%d certificate(s) being ordered, one after another: %s%s' % (
+                len(which), ', '.join(n for _t, n in which),
+                ('; no name for ' + ', '.join(left)) if left else ''))
         if act == 'dns_check':
             return acme_dns_check(h.store)
         if act == 'put_back':
