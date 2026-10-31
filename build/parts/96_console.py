@@ -513,6 +513,7 @@ class Console(object):
             ('10', 'Upgrades', self.m_upgrades),
             ('11', 'The service', self.m_service),
             ('12', 'Certificates, updates, restarts, tests', self.m_ops),
+            ('13', 'Encryption, sending out, time, network, high security', self.m_more),
         ]
         os.environ.setdefault('ESCDELAY', '25')     # Esc at once, not after a second
         # Lines and blocks drawn as UTF-8 characters, as PuTTY in UTF-8 shows
@@ -2797,6 +2798,76 @@ class Console(object):
             ('13', 'Take an SSH token away', ssh_del),
             ('14', 'Lockouts: who is locked out now', lambda: self.act('--lockouts')),
             ('15', 'Forget a lockout', lockout_clear),
+        ])
+
+    def m_more(self):
+        """The rest of the pages (1.0.188): the wizards' looks and tries, the tests
+        of what is sent out, the time and network of each node, high security."""
+        def db_probe():
+            m = self.choose('Try encryption to the database server (nothing changed)', [
+                ('verify-full', 'verify-full - the certificate and its name checked'),
+                ('verify-ca', 'verify-ca - the certificate checked'), ('require', 'require - encrypted only')])
+            if m:
+                self.act('--db-tls-probe', m)
+
+        def db_apply():
+            ph = self.choose('A step of encryption to the database server, on every node', [
+                ('server', 'otp\'s certificates into the PostgreSQLs (each reloaded)'),
+                ('connect', 'each node\'s connection made again, verify-full'),
+                ('server_off', 'otp\'s certificates out of the PostgreSQLs')])
+            if ph and self.confirm('Encryption to the database server', {
+                    'server': 'Each node\'s PostgreSQL gets otp\'s certificate and is reloaded; '
+                              'the connections stay as they are.',
+                    'connect': 'Each node connects to its database again, with TLS that checks the '
+                               'certificate and its name; the requests are answered meanwhile.',
+                    'server_off': 'otp\'s certificates are taken out of the PostgreSQLs.'}[ph],
+                    'Do it', danger=True):
+                self.act('--db-tls-apply', ph, '--db-tls-mode', 'verify-full', '--yes')
+
+        def isemon_probe():
+            got = self.form('Try isemon over TLS from every node', [
+                {'key': 'at', 'label': 'isemon at', 'need': True, 'help': 'HOST or HOST:PORT (6514).'}])
+            if got:
+                self.act('--isemon-tls-probe', got['at'])
+
+        def proxy():
+            got = self.form('Try the way out (proxy) from every node', [
+                {'key': 'url', 'label': 'an address', 'help': 'Empty: the one upgrades are looked for at.'}])
+            if got is not None:
+                self.act('--proxy-test', got.get('url') or '')
+
+        def waive():
+            got = self.out('--hisec') or {}
+            rows = (got.get('block') or []) + (got.get('waived') or [])
+            if not rows:
+                self.note('High security', 'Every rule is kept: there is nothing to make an exception of.')
+                return
+            r = self.choose('An exception of high security (or not any more)', [
+                (x['rule'], '%s %s - %s' % ('[exception]' if x in (got.get('waived') or []) else '[not kept]',
+                                           x['rule'], x.get('title') or x.get('what'))) for x in rows])
+            if r:
+                on = r not in [x['rule'] for x in got.get('waived') or []]
+                if self.confirm('High security', ('%s becomes an exception: high security holds without it.'
+                                                  if on else '%s is a rule again.') % r,
+                                'Yes', danger=on):
+                    self.act('--hisec-waive', r, 'on' if on else 'off')
+
+        return self.sub('Encryption, sending out, time, network, high security', [
+            ('1', 'Encryption to the database server: how it stands', lambda: self.act('--db-tls')),
+            ('2', 'Encryption to the database server: try a mode', db_probe),
+            ('3', 'Encryption to the database server: a step on every node', db_apply),
+            ('4', 'Encrypted sending to isemon: how it stands', lambda: self.act('--isemon-tls')),
+            ('5', 'Encrypted sending to isemon: try it', isemon_probe),
+            ('6', 'A test line to isemon, from every node', lambda: self.act('--isemon-test')),
+            ('7', 'A test line to the syslog servers (SIEM), from every node', lambda: self.act('--siem-test')),
+            ('8', 'The way out (proxy): try it', proxy),
+            ('9', 'SNMPv3: ask each node\'s agent', lambda: self.act('--snmp-test')),
+            ('10', 'SNMPv3: a test trap', lambda: self.act('--snmp-trap')),
+            ('11', 'The time of each node', lambda: self.act('--ntp')),
+            ('12', 'Set this node\'s clock now', lambda: self.act('--ntp-sync')),
+            ('13', 'The network of each node', lambda: self.act('--net')),
+            ('14', 'High security: every rule', lambda: self.act('--hisec')),
+            ('15', 'High security: an exception, or not any more', waive),
         ])
 
     def m_upgrades(self):

@@ -102,7 +102,8 @@ atexit.register(lambda: os.path.exists('/etc/pam.d/otptest') and os.unlink('/etc
 got = apply()
 text = open(E + '/pam.d/sshd').read()
 ok('put in: our block before the first auth line', text.index(otp_web.PAM_BEGIN) < text.index('@include common-auth'), text[:300])
-ok('... pam_radius with its own file, the fallback', 'pam_radius_auth.so conf=%s/otp/pam_radius.conf localifdown' % E in text)
+ok('... pam_radius with its own file, no "Password:" first (skip_passwd), the fallback',
+   'pam_radius_auth.so conf=%s/otp/pam_radius.conf skip_passwd localifdown' % E in text, text)
 ok('... root left out', 'pam_succeed_if.so quiet user = root' in text)
 cf = E + '/otp/pam_radius.conf'
 ok('... the secret in a file of 0600', oct(os.stat(cf).st_mode & 0o777) == '0o600' and SECRET in open(cf).read())
@@ -124,17 +125,19 @@ ev = json.dumps(st.db.rows("SELECT words FROM events WHERE kind = 'ssh'"))
 ok('each sign-in an event (in, and not)', 'jan signed in to SSH on otp1' in ev and 'was not let into SSH' in ev, ev[:300])
 rl = st.db.value('SELECT COUNT(*) FROM radius_log')
 ok('nothing in the log of RADIUS', not rl, rl)
-# By SMS (1.0.181): Enter at the first prompt, the code sent, asked in a second one.
+# By SMS (1.0.181; 1.0.188: no "Password:" first): the code sent, asked in the one prompt.
 otp.sshotp_make(st, 'eva', 'test', kind='sms', dest='+420777123456')
-good, said = pam('eva', '', '@sms:' + D + '/sms')
-ok('an SSH token by SMS: Enter, the code by SMS asked in a second prompt - in (%s)' % said.replace('\n', ' | '),
-   good and said.count('prompt') >= 2)
+good, said = pam('eva', '@sms:' + D + '/sms')
+ok('an SSH token by SMS: the code by SMS asked in the one prompt - in (%s)' % said.replace('\n', ' | '),
+   good and said.count('prompt') == 1, said)
 time.sleep(21)
-good, said = pam('eva', '', '111111')
+good, said = pam('eva', '111111', '111111', '111111')
 ok('... a wrong code sent back: asked again, then not in', not good and said.count('prompt') >= 3, said)
 time.sleep(1)
+n_sms = len(os.listdir(D + '/sms'))
 good, said = pam('eva', '')
-ok('... asked again at once: no second SMS within 20 s', not good and 'prompt' in said, said)
+ok('... at once again, its code given up: no second SMS within 20 s, not in',
+   not good and len(os.listdir(D + '/sms')) == n_sms, said)
 otp.sshotp_make(st, 'ann', 'test', kind='sms', dest='+420777123457', lang='en')
 for f in os.listdir(D + '/sms'):
     os.unlink(os.path.join(D + '/sms', f))

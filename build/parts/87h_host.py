@@ -789,8 +789,10 @@ def sshd_tick(daemon):
     # the RADIUS client before, or a port changed): only that file is put right.
     if c.get('manage') and c.get('radius') and (now.get('radius') or {}).get('pam') and \
             now.get('hash') == c.get('hash') and not todo and \
-            (now.get('radius') or {}).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
-                                                               ssh_gate_port(store)):
+            ((now.get('radius') or {}).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
+                                                                ssh_gate_port(store)) or
+             (now.get('radius') or {}).get('skip_passwd') is False):
+        # ... or its PAM block from before 1.0.188: "Password:" asked before the code.
         todo.append(('pamconf', None))
     if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
         return

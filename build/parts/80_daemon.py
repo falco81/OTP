@@ -918,6 +918,7 @@ def php_state():
 class Daemon(object):
     def __init__(self, store, serve=True):
         self.store = store
+        self.serving = serve        # the daemon itself, not the command line (1.0.188)
         # RADIUS on a connection of its own (1.0.136) - the serving daemon
         # only; the command line keeps its one.
         if serve:

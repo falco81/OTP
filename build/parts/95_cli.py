@@ -306,6 +306,100 @@ def ask_secret_value(key):
     return sys.stdin.readline().rstrip('\r\n')
 
 
+class CliApiHandler(ApiHandler):
+    """What a page asks, asked by the command line (1.0.188): the route's own
+    checks, events and words, as a full administrator called 'command line'
+    (root on this machine is that already). No HTTP: no socket, no session."""
+
+    def __init__(self, daemon, who, body=None, args=None, path=''):
+        self.server = type('S', (), {'daemon': daemon})()
+        self.headers = {'X-Otp-Client': '127.0.0.1'}
+        self.client_address = ('127.0.0.1', 0)
+        self.args = dict(args or {})
+        self._body = dict(body or {})
+        self.route_path = path
+        self.who = who
+
+    def me(self, role='readonly'):
+        return {'id': 0, 'name': self.who, 'role': 'fulladmin', 'kind': 'admin',
+                'account': {'name': self.who, 'role': 'fulladmin', 'source': 'local'}}
+
+    def session(self, kind='admin'):
+        return self.me()
+
+
+def cli_api(daemon, who, method, path, body=None, args=None):
+    """One route of the pages, run here: its answer, or SystemExit with its words."""
+    fn = ROUTES.get((method, path))
+    if not fn:
+        raise SystemExit('otp: the pages have no %s %s' % (method, path))
+    h = CliApiHandler(daemon, who, body, args, path)
+    try:
+        return fn(h)
+    except ApiError as e:
+        raise SystemExit('otp: %s' % e)
+    except (ValueError, BadSetting) as e:
+        raise SystemExit('otp: %s' % e)
+
+
+def cli_ask_wait(store, kind, asked, secs=90, say=None):
+    """What every node answered to an ask (asked = {'id', 'nodes'}): waited for
+    until all have, or secs. {node: answer or None}."""
+    end = time.time() + secs
+    got = {}
+    while time.time() < end:
+        got = {n: v for n, v in node_ask_results(store, kind, asked['id']).items()
+               if n in asked['nodes']}
+        if got and all(got.get(n) for n in asked['nodes']):
+            break
+        time.sleep(0.5)
+    return {n: got.get(n) for n in asked['nodes']}
+
+
+def cli_show(obj, pal, indent=2, depth=0, most=60):
+    """A view of the pages as lines: KEY  value, nested ones indented."""
+    pad = ' ' * indent
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if v in (None, '', [], {}):
+                continue
+            if isinstance(v, (dict, list)) and depth < 3:
+                print('%s%s' % (pad, pal.dim(str(k)) if pal else k))
+                cli_show(v, pal, indent + 2, depth + 1, most)
+            else:
+                text = json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, (dict, list)) \
+                    else (stamp(v) if isinstance(v, float) and v > 1e9 and str(k).endswith(('at', 'end', 'since', 'after', 'before')) else str(v))
+                print('%s%-24s %s' % (pad, k, text[:200]))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj[:most]):
+            if isinstance(v, (dict, list)):
+                print('%s- %s' % (pad, next((str(v[k]) for k in ('name', 'node', 'target', 'rule', 'key',
+                                                               'kind', 'what') if v.get(k)), '')
+                                  if isinstance(v, dict) else ''))
+                cli_show(v, pal, indent + 2, depth + 1, most)
+            else:
+                print('%s- %s' % (pad, v))
+        if len(obj) > most:
+            print('%s… %d more' % (pad, len(obj) - most))
+    else:
+        print('%s%s' % (pad, obj))
+
+
+def cli_ask_said(pal, answers):
+    """Each node's answer to an ask, one block each; the exit code."""
+    bad = 0
+    for n, got in answers.items():
+        if not got:
+            bad += 1
+            print(pal.bad_line('%s: no answer - is otp running there?' % n))
+            continue
+        ok = got.get('ok', not got.get('error'))
+        bad += 0 if ok else 1
+        print((pal.ok_line if ok else pal.bad_line)('%s: %s' % (n, got.get('error') or got.get('said') or ('ok' if ok else 'failed'))))
+        cli_show({k: v for k, v in got.items() if k not in ('id', 'at', 'node', 'ok', 'error', 'said')}, pal, 4)
+    return 1 if bad else 0
+
+
 class HelpfulParser(argparse.ArgumentParser):
     """An ArgumentParser whose help is isemon's: two columns, in colour.
     Anything going wrong in the drawing falls back to argparse's own."""
@@ -604,6 +698,51 @@ def build_parser():
                    'tokens, the pages\' sign-ins, places refused')
     g.add_argument('--lockouts-clear', metavar='all|KIND:WHO', help='forget a lockout (the KIND '
                    'and WHO --lockouts shows), or every one, on every node')
+    g.add_argument('--siem-test', action='store_true', help='a test line to the syslog servers '
+                   '(SIEM), sent by every node (--node: one), and what each said')
+    g.add_argument('--proxy-test', metavar='URL', nargs='?', const='', help='the way out through '
+                   'the proxy tried on every node (an address of your own, or the upgrades\' one)')
+    g.add_argument('--snmp-test', action='store_true', help='each node\'s SNMPv3 agent asked as a '
+                   'manager would ask it')
+    g.add_argument('--snmp-trap', action='store_true', help='a test trap from every node to the '
+                   'receivers set')
+    g.add_argument('--db-tls', action='store_true', help='encryption to the database server: how '
+                   'each node reaches it, and its certificates')
+    g.add_argument('--db-tls-probe', metavar='MODE', choices=('require', 'verify-ca', 'verify-full'),
+                   help='try that mode from every node, changing nothing')
+    g.add_argument('--db-tls-apply', metavar='PHASE', choices=('server', 'connect', 'server_off'),
+                   help='a step of the wizard on every node: server (otp\'s certificates into the '
+                   'PostgreSQLs), connect (each node\'s connection to --db-tls-mode), server_off')
+    g.add_argument('--db-tls-mode', choices=('', 'require', 'verify-ca', 'verify-full'), default=None,
+                   help='with --db-tls-apply connect: the mode ("" no TLS) [verify-full]')
+    g.add_argument('--db-tls-ca', choices=('otp', 'system', 'given', 'keep'), default='otp',
+                   help='whose authority checks the server: otp\'s, the system\'s, one given '
+                   'with --ca FILE, the one kept [otp]')
+    g.add_argument('--isemon-tls', action='store_true', help='the encrypted sending to isemon: '
+                   'how it stands on each node')
+    g.add_argument('--isemon-tls-probe', metavar='HOST[:PORT]', help='isemon over TLS tried from '
+                   'every node (--db-tls-ca otp|system|given --ca FILE; --no-verify; --mtls)')
+    g.add_argument('--isemon-tls-apply', metavar='HOST[:PORT]', help='send to isemon over TLS from '
+                   'now on')
+    g.add_argument('--isemon-tls-off', metavar='HOST', nargs='?', const='', help='back to plain '
+                   'TCP (514)')
+    g.add_argument('--isemon-tls-bundle', metavar='FILE', help='the zip for isemon\'s side (its '
+                   'certificate and key, locked with a passphrase asked for; --names, --mtls)')
+    g.add_argument('--names', metavar='N1,N2', help='with --isemon-tls-bundle, --tls-csr, '
+                   '--tls-selfsigned: the names it is for')
+    g.add_argument('--mtls', action='store_true', help='with --isemon-tls-*: each node shows its '
+                   'own certificate too')
+    g.add_argument('--ntp', action='store_true', help='the time: each node\'s servers and how far off')
+    g.add_argument('--ntp-sync', action='store_true', help='set the clock of this node (--node: '
+                   'another) from its servers now')
+    g.add_argument('--net', action='store_true', help='each node\'s network as it read it')
+    g.add_argument('--hisec', action='store_true', help='high security: every rule, kept or not, '
+                   'and its exceptions')
+    g.add_argument('--hisec-waive', nargs=2, metavar=('RULE', 'on|off'), help='make RULE an '
+                   'exception of high security, or not any more')
+    g.add_argument('--api', nargs='+', metavar=('METHOD PATH', 'BODY'), help='any page\'s question '
+                   'as the pages ask it: GET /api/ntp, or POST /api/osup \'{"action": "check"}\' '
+                   '(BODY - : read from stdin, for one holding a secret) - the answer as JSON')
     g = p.add_argument_group('MAINTENANCE AND UPGRADES')
     g.add_argument('--maintenance', choices=('on', 'off', 'status'), help='this node out of '
                    'service (RADIUS not answered, /healthz 503) or back; status says which')
@@ -703,6 +842,16 @@ def build_parser():
     g.add_argument('--tls-dh', choices=sorted(DH_WORDS), help='the DH parameters')
     g.add_argument('--tls-hsts', type=int, metavar='SECONDS', help='Strict-Transport-Security '
                    '(0 = none)')
+    g.add_argument('--tls-csr', metavar='CN', help='a certificate request for --tls-for (its key '
+                   'waits here; --names, --org): printed, for your authority - then --tls-import what '
+                   'it sends back')
+    g.add_argument('--tls-selfsigned', metavar='CN', help='a certificate of its own for --tls-for '
+                   '(--names; --days [825])')
+    g.add_argument('--org', metavar='TEXT', default='', help='with --tls-csr, --tls-selfsigned: the '
+                   'organisation')
+    g.add_argument('--days', type=int, default=825, help='with --tls-selfsigned: how long [825]')
+    g.add_argument('--tls-forget', action='store_true', help='otp no longer looks after the TLS of '
+                   '--tls-for (nginx keeps the files it has; --yes)')
     g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the VIP address (192.0.2.10/24), '
                    'with --vip-fqdn, --vip-vrid, --vip-iface')
     g.add_argument('--vip-fqdn', metavar='NAME', help='its host name')
@@ -3446,6 +3595,171 @@ def cli_main(argv=None):
             print(pal.dim('  not heard from of late: %s (its list may be old)' % ', '.join(stale)))
         return 0
 
+    # ---- 1.0.188: the rest of what the pages do ----------------------------------------
+    def api(method, path, body=None, qs=None):
+        return cli_api(Daemon(store, serve=False), who, method, path, body, qs)
+
+    def asked(kind, got, secs=90):
+        if args.json:
+            out(cli_ask_wait(store, kind, got, secs))
+            return 0
+        print(pal.dim('  asked of %s - each answers within seconds' % ', '.join(got['nodes'])))
+        return cli_ask_said(pal, cli_ask_wait(store, kind, got, secs))
+
+    def shown(got):
+        if args.json:
+            out(got)
+        else:
+            if isinstance(got, dict) and got.get('message'):
+                print(pal.ok_line(got['message']))
+                got = {k: v for k, v in got.items() if k != 'message'}
+            cli_show(got, pal)
+        return 0
+
+    only = args.node or ''
+    if args.siem_test:
+        return asked('siem', api('POST', '/api/siem', {'action': 'test', 'node': only}))
+    if args.proxy_test is not None:
+        return asked('proxy', api('POST', '/api/proxy', {'action': 'try', 'url': args.proxy_test}), 60)
+    if args.snmp_test or args.snmp_trap:
+        return asked('snmp', api('POST', '/api/snmp', {'action': 'trap' if args.snmp_trap else 'test',
+                                                      'node': only}))
+    ca_pem = Path(args.ca).read_text() if args.ca else ''
+    if args.db_tls:
+        return shown(api('GET', '/api/dbtls'))
+    if args.db_tls_probe:
+        return asked('dbtls_probe', api('POST', '/api/dbtls', {
+            'action': 'probe', 'mode': args.db_tls_probe, 'ca_source': args.db_tls_ca,
+            'ca_pem': ca_pem, 'node': only}), 120)
+    if args.db_tls_apply:
+        mode = args.db_tls_mode if args.db_tls_mode is not None else 'verify-full'
+        cli_sure(args, 'encryption to the database server, on %s: %s' % (only or 'every node', {
+            'server': 'otp\'s certificates put into the PostgreSQLs (each reloaded)',
+            'connect': 'each node\'s connection to its database made again with %s' % (mode or 'no TLS'),
+            'server_off': 'otp\'s certificates taken out of the PostgreSQLs'}[args.db_tls_apply]))
+        return asked('dbtls_apply', api('POST', '/api/dbtls', {
+            'action': 'apply', 'phase': args.db_tls_apply, 'mode': mode, 'ca_source': args.db_tls_ca,
+            'ca_pem': ca_pem, 'node': only}), 300)
+
+    def host_port(v):
+        host, _, port = str(v).rpartition(':') if re.match(r'^[^:]+:\d+$', str(v)) else (v, '', '')
+        return {'host': host, 'port': int(port) if port else 6514}
+
+    isemon_src = args.db_tls_ca if args.db_tls_ca in ('otp', 'system', 'given') else 'otp'
+    if args.isemon_tls:
+        got = api('GET', '/api/isemon')
+        return shown(got.get('tls') or {})
+    if args.isemon_tls_probe:
+        return asked('isemon_tls', api('POST', '/api/isemon', dict(
+            host_port(args.isemon_tls_probe), action='tls_probe', ca_source=isemon_src,
+            ca_pem=ca_pem, verify=not args.no_verify, mtls=args.mtls)), 60)
+    if args.isemon_tls_apply:
+        cli_sure(args, 'every node sends to isemon at %s over TLS from now on' % args.isemon_tls_apply)
+        return shown(api('POST', '/api/isemon', dict(
+            host_port(args.isemon_tls_apply), action='tls_apply', ca_source=isemon_src,
+            ca_pem=ca_pem, verify=not args.no_verify, mtls=args.mtls)))
+    if args.isemon_tls_off is not None:
+        cli_sure(args, 'isemon is sent to over plain TCP (514) again - not encrypted')
+        return shown(api('POST', '/api/isemon', {'action': 'tls_off', 'host': args.isemon_tls_off}))
+    if args.isemon_tls_bundle:
+        phrase = os.environ.get('OTP_PASSPHRASE') or ask_password(
+            'a passphrase to lock the zip with (12 characters or more)', twice=True, env=None)
+        got = api('POST', '/api/isemon', {'action': 'tls_bundle', 'port': 6514, 'mtls': args.mtls,
+                                          'names': args.names or '', 'passphrase': phrase})
+        fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(base64.b64decode(got['file']))
+        print(pal.ok_line('%s: isemon\'s certificate and key, locked with the passphrase given'
+                          % args.isemon_tls_bundle))
+        return 0
+    target = args.tls_for or node_name()
+    if args.tls_csr:
+        got = api('POST', '/api/web', {'action': 'tls_csr', 'target': target, 'cn': args.tls_csr,
+                                       'names': args.names or '', 'org': args.org})
+        if args.json:
+            out(got)
+            return 0
+        print(pal.ok_line(got.get('message') or 'made'))
+        print(got.get('csr') or '')
+        return 0
+    if args.tls_selfsigned:
+        cli_sure(args, 'a certificate of its own, made here, for %s - in place of the one it has' % target)
+        return shown(api('POST', '/api/web', {'action': 'tls_selfsigned', 'target': target,
+                                              'cn': args.tls_selfsigned, 'names': args.names or '',
+                                              'days': args.days, 'org': args.org}))
+    if args.tls_forget:
+        cli_sure(args, 'otp no longer looks after the TLS of %s; nginx keeps the files it has' % target)
+        return shown(api('POST', '/api/web', {'action': 'tls_forget', 'target': target}))
+    if args.ntp:
+        return shown(api('GET', '/api/ntp'))
+    if args.ntp_sync:
+        return shown(api('POST', '/api/ntp', {'action': 'sync', 'node': only or node_name()}))
+    if args.net:
+        return shown(api('GET', '/api/net'))
+    if args.hisec:
+        got = api('GET', '/api/hisec')
+        if args.json:
+            out(got)
+            return 0
+        print(pal.head('high security: %s' % ('on' if got.get('on') else 'off (otp --set high_security=1)')))
+        for part, words in (('block', 'not kept'), ('waived', 'exceptions'), ('warn', 'to look at')):
+            rows = got.get(part) or []
+            if rows:
+                print(pal.head('  %s (%d)' % (words, len(rows))))
+                print(table([(r.get('rule'), r.get('title') or r.get('what'), r.get('fix') or '')
+                             for r in rows], ['rule', 'what', 'put right by'], [18, 70, 40]))
+        if not any(got.get(p) for p in ('block', 'waived', 'warn')):
+            print(pal.ok_line('every rule kept'))
+        return 0
+    if args.hisec_waive:
+        rule, on = args.hisec_waive
+        if on not in ('on', 'off'):
+            raise SystemExit('otp: --hisec-waive RULE on|off')
+        return shown(api('POST', '/api/hisec', {'action': 'waive', 'rule': rule, 'on': on == 'on'}))
+    if args.api:
+        method = args.api[0].upper()
+        if method not in ('GET', 'POST') or len(args.api) < 2:
+            raise SystemExit('otp: --api GET|POST /api/... [BODY]')
+        path, _, query = args.api[1].partition('?')
+        body = None
+        if len(args.api) > 2:
+            raw = sys.stdin.read() if args.api[2] == '-' else args.api[2]
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                raise SystemExit('otp: the body is JSON: {"action": "..."}')
+            if not isinstance(body, dict):
+                raise SystemExit('otp: the body is a JSON object')
+            def keys(o):
+                if isinstance(o, dict):
+                    for k, v in o.items():
+                        yield str(k)
+                        yield from keys(v)
+                elif isinstance(o, list):
+                    for v in o:
+                        yield from keys(v)
+            secretish = [k for k in keys(body) if k in SECRET_KEYS or re.search(
+                r'pass|secret|token|key|pin', k, re.I)]
+            if args.api[2] != '-' and secretish:
+                raise SystemExit('otp: %s - a secret is not taken written out on the command '
+                                 'line: give the body through stdin (--api POST PATH -)'
+                                 % ', '.join(sorted(set(secretish))))
+        qs = dict(x.split('=', 1) if '=' in x else (x, '') for x in query.split('&') if x)
+        got = cli_api(Daemon(store, serve=False), who, method, path,
+                      body if method == 'POST' else None, qs)
+        print(json.dumps(got, indent=1, ensure_ascii=False, default=str))
+        return 0
+
+    def daemon_here():
+        try:
+            os.kill(int((Path(STATE_DIR) / 'otp.lock').read_text().strip() or 0), 0)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    if args.isemon_test and CONFIG.get('isemon') and daemon_here():
+        # From every node, by each daemon's own sender (1.0.188), as the pages do.
+        return asked('isemon', api('POST', '/api/isemon', {'action': 'test', 'node': only}), 60)
     if args.isemon_test:
         if not CONFIG.get('isemon_targets'):
             raise SystemExit('nothing to send to: otp --set isemon_targets=HOST:514')

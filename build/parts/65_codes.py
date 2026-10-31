@@ -103,6 +103,7 @@ CODE_TEXTS = {
         'h_av_facts': 'Zadejte ho na přihlašovací stránce administrace. Platí {minutes} min.',
         'h_av_note': 'Pokud jste o nic nežádali, e-mail smažte – bez kódu se nic nezmění.',
         'h_av_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
+        'ssh_ask_app': 'Kód z aplikace',
         'ssh_subject': 'Kód pro přihlášení přes SSH: {code}',
         'ssh_body': ('Váš kód pro přihlášení přes SSH na server {site} je\n\n    {code}\n\nPlatí '
                      '{minutes} min a jen jednou. Pokud se právě nepřihlašujete, kód nikomu '
@@ -184,6 +185,7 @@ CODE_TEXTS = {
         'h_av_note': 'If you asked for nothing, delete this mail - without the code nothing '
                      'changes.',
         'h_av_foot': 'Sent automatically by {site}. Do not reply to this mail.',
+        'ssh_ask_app': 'Code from the app',
         'ssh_subject': 'Your SSH sign-in code: {code}',
         'ssh_body': ('Your code for signing in over SSH to {site} is\n\n    {code}\n\nIt is good '
                      'for {minutes} min and once. If you are not signing in just now, tell '

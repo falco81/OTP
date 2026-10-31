@@ -72,7 +72,9 @@ def sshotp_make(store, name, by, note='', replace=False, kind='app', dest='', la
         if had and not replace:
             raise ValueError('%s has an SSH token already - make a new one in its place, or '
                              'remove it' % name)
-        rec = {'name': name, 'kind': kind, 'at': time.time(), 'by': by, 'note': note, 'step': 0}
+        # The language of its prompt in SSH too, an app's as well (1.0.188).
+        rec = {'name': name, 'kind': kind, 'at': time.time(), 'by': by, 'note': note, 'step': 0,
+               'lang': lang}
         if kind == 'app':
             secret = b32_new(20)
             rec['secret'] = seal_secret(secret, sshotp_key(name))
@@ -195,10 +197,20 @@ def sshotp_send(store, name):
     if kind not in code_channels():
         raise ValueError('sending %s is not set up now' % ('mail' if kind == 'mail' else 'SMS'))
     now = time.time()
+    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms', lang=rec.get('lang') or None,
+                     dest=dest_masked(kind, rec['dest']))
     with SSHOTP_LOCK:
         sent = [t for t in SSHOTP_SENT[name.lower()] if now - t < SSHOTP_SEND_WINDOW_S]
         SSHOTP_SENT[name.lower()] = sent
         if sent and now - sent[-1] < SSHOTP_SEND_GAP_S:
+            # Signed in again at once (1.0.188): the code that went a moment ago
+            # is asked for again, not refused - and no second one sent.
+            good = [v for v in SSHOTP_CHALLENGES.values()
+                    if v.get('name') == name and v.get('hash') and now <= v['exp']]
+            if good:
+                state = secrets.token_hex(16)
+                SSHOTP_CHALLENGES[state] = {'name': name, 'exp': max(v['exp'] for v in good), 'tries': 0}
+                return state, ask
             raise ValueError('a code went a moment ago - wait %d s' % SSHOTP_SEND_GAP_S)
         if len(sent) >= SSHOTP_SEND_MOST:
             raise ValueError('%d codes in %d min - wait' % (SSHOTP_SEND_MOST,
@@ -219,8 +231,6 @@ def sshotp_send(store, name):
         SSHOTP_CHALLENGES[state] = {'name': name, 'hash': code_hash(salt, code), 'salt': salt,
                                     'exp': now + int(CONFIG.get('code_ttl_s') or 300),
                                     'tries': 0}
-    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms', lang=rec.get('lang') or None,
-                     dest=dest_masked(kind, rec['dest']))
     return state, ask
 
 
@@ -231,13 +241,24 @@ def sshotp_answer(store, state, name, code):
         ch = SSHOTP_CHALLENGES.get(state)
         if not ch or ch['name'] != name or now > ch['exp']:
             SSHOTP_CHALLENGES.pop(state, None)
-            return False, 'the code is no longer good - sign in again', False
+            # Its prompt gone, a code still good of the same account is taken.
+            ch = {'name': name, 'tries': 3, 'exp': now}
+            if not any(v.get('name') == name and v.get('hash') and now <= v['exp']
+                       for v in SSHOTP_CHALLENGES.values()):
+                return False, 'the code is no longer good - sign in again', False
         fails = _sshotp_fails(name, now)
         if len(fails) >= SSHOTP_TRIES:
             SSHOTP_CHALLENGES.pop(state, None)
             return False, 'too many wrong codes - wait %d min' % (SSHOTP_WINDOW_S // 60), False
-        if hmac.compare_digest(code_hash(ch['salt'], str(code or '').strip()), ch['hash']):
-            SSHOTP_CHALLENGES.pop(state, None)
+        typed = str(code or '').strip()
+        # Any code still good that went to this account (1.0.188), each once: a
+        # mail come late was the one typed, while a later sign-in had sent
+        # another - and the right code was refused.
+        mine = [(k, v) for k, v in SSHOTP_CHALLENGES.items()
+                if v.get('name') == name and v.get('hash') and now <= v['exp']]
+        if any(hmac.compare_digest(code_hash(v['salt'], typed), v['hash']) for _k, v in mine):
+            for k, _v in mine:
+                SSHOTP_CHALLENGES.pop(k, None)
             SSHOTP_FAILS.pop(name.lower(), None)
             ok = True
         else:
@@ -251,6 +272,42 @@ def sshotp_answer(store, state, name, code):
     if ok:
         return True, 'signed in', False
     return False, 'the code is not right', again
+
+
+def sshotp_ask_app(store, name):
+    """pam_radius with skip_passwd (1.0.188) asks with no password: the app's code is
+    asked for here, in the one prompt sshd shows - not after a "Password:"."""
+    rec = sshotp_get(store, name) or {}
+    now = time.time()
+    state = secrets.token_hex(16)
+    with SSHOTP_LOCK:
+        for k in [k for k, v in SSHOTP_CHALLENGES.items() if now > v['exp'] + 60]:
+            SSHOTP_CHALLENGES.pop(k, None)
+        SSHOTP_CHALLENGES[state] = {'name': name, 'app': True, 'exp': now + 300, 'tries': 0}
+    return state, code_words('ssh_ask_app', lang=rec.get('lang') or None)
+
+
+def sshotp_app_answer(store, state, name, code):
+    """The app's code typed after that prompt: (let in, what is said, ask again)."""
+    now = time.time()
+    with SSHOTP_LOCK:
+        ch = SSHOTP_CHALLENGES.get(state)
+        if not ch or ch['name'] != name or now > ch['exp']:
+            SSHOTP_CHALLENGES.pop(state, None)
+            return False, 'the code is no longer good - sign in again', False
+    ok, said = sshotp_check(store, name, code)
+    with SSHOTP_LOCK:
+        ch['tries'] += 1
+        again = not ok and ch['tries'] < 3 and 'too many' not in said
+        if ok or not again:
+            SSHOTP_CHALLENGES.pop(state, None)
+    return ok, said, again
+
+
+def ssh_prompt(words):
+    """A prompt ending as one does - the code typed after ": ", not stuck to the text."""
+    words = str(words or '').rstrip()
+    return words if words.endswith((':', '?')) else words + ': '
 
 
 def ssh_gate_port(store=None):
@@ -435,11 +492,18 @@ class SshGate(object):
         who = re.sub(r'[^\w.@-]', '?', user)[:64]
         state = (p.get(24) or b'').decode('ascii', 'replace')
         rec = sshotp_get(store, user) if SSHOTP_NAME_RE.match(user or '') else None
+        lang = (rec or {}).get('lang') or None
         if state:
-            ok, said, again = sshotp_answer(store, state, user, code)
+            with SSHOTP_LOCK:
+                app = (SSHOTP_CHALLENGES.get(state) or {}).get('app')
+            ok, said, again = (sshotp_app_answer if app else sshotp_answer)(store, state, user, code)
             if again:
-                return build_reply(p, 11, [attr_bytes('Reply-Message', code_words('again')),
+                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(code_words('again', lang=lang))),
                                            bytes([24, len(state) + 2]) + state.encode()], secret)
+        elif rec and rec.get('kind', 'app') == 'app' and not code:
+            st, ask = sshotp_ask_app(store, user)
+            return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
+                                       bytes([24, len(st) + 2]) + st.encode()], secret)
         elif rec and rec.get('kind') in ('mail', 'sms'):
             # By mail or SMS (1.0.181): whatever was typed first, a code is
             # sent and asked for in a second prompt (Access-Challenge).
@@ -449,7 +513,7 @@ class SshGate(object):
                 ok, said = False, str(e)
             else:
                 log('SSH: a code for %s went by %s' % (who, rec['kind']))
-                return build_reply(p, 11, [attr_bytes('Reply-Message', ask),
+                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
                                            bytes([24, len(st) + 2]) + st.encode()], secret)
         else:
             ok, said = sshotp_check(store, user, code)

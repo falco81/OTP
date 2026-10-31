@@ -79,10 +79,12 @@ def key(k, t=1.0):
 screen_ok('the main menu', 'Certificates, updates, restarts, tests', 3)
 MAIN = ['Status and checks', 'Tokens', 'Accounts of the administration', 'Settings',
         'RADIUS clients, realms and directories', 'Cluster, VIP address and maintenance', 'Backups', 'Upgrades',
-        'The service', 'Certificates, updates, restarts, tests']
+        'The service', 'Certificates, updates, restarts, tests',
+        'Encryption, sending out, time, network, high security']
 NUM = {'Status and checks': '1', 'Tokens': '4', 'Accounts of the administration': '5', 'Settings': '6',
        'RADIUS clients, realms and directories': '7', 'Cluster, VIP address and maintenance': '8', 'Backups': '9',
-       'Upgrades': '10', 'The service': '11', 'Certificates, updates, restarts, tests': '12'}
+       'Upgrades': '10', 'The service': '11', 'Certificates, updates, restarts, tests': '12',
+       'Encryption, sending out, time, network, high security': '13'}
 
 
 def pick(num, many):
@@ -97,11 +99,12 @@ def pick(num, many):
 
 
 SIZE = {'Status and checks': 5, 'RADIUS clients, realms and directories': 6,
-        'Cluster, VIP address and maintenance': 7, 'Upgrades': 7, 'Certificates, updates, restarts, tests': 15}
+        'Cluster, VIP address and maintenance': 7, 'Upgrades': 7, 'Certificates, updates, restarts, tests': 15,
+        'Encryption, sending out, time, network, high security': 15}
 
 
 def open_menu(name):
-    pick(NUM[name], 12)
+    pick(NUM[name], 13)
     return screen_ok('menu: %s' % name, re.escape(name))
 
 
@@ -143,6 +146,11 @@ item(OPS, '3', 'connode', 'updates status')
 item(OPS, '7', 'connode', 'restarts')
 item(OPS, '11', '(?i)account|none', 'SSH tokens')
 item(OPS, '14', '(?i)kind|none', 'lockouts')
+MORE = 'Encryption, sending out, time, network, high security'
+item(MORE, '1', '(?i)sqlite|kind|mode', 'DB TLS status')
+item(MORE, '11', 'connode', 'the time')
+item(MORE, '13', '(?i)node|connode', 'the network')
+item(MORE, '14', '(?i)high security', 'high security')
 # An SSH token made through the console: seen by the command line.
 open_menu(OPS)
 pick('12', 15)

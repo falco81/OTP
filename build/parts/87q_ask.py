@@ -43,7 +43,10 @@ def _node_ask_run(daemon, kind, want):
 def node_ask(daemon, kind, args, by):
     want = {'id': secrets.token_hex(6), 'args': args or {}, 'at': time.time(), 'by': by}
     daemon.store.set_meta('ask:want:' + kind, json.dumps(want))
-    _node_ask_run(daemon, kind, want)
+    # Asked from the command line (1.0.188), this node's daemon does it too, as
+    # the other's: not in a process that ends when the command does.
+    if getattr(daemon, 'serving', True):
+        _node_ask_run(daemon, kind, want)
     nodes = [n for n, a in host_alive(daemon.store).items() if a] or [node_name()]
     nodes = sorted(set(nodes) | {node_name()})
     if (args or {}).get('only'):
