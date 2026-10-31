@@ -866,9 +866,11 @@ PY
 # The program, the account, the folders
 # ---------------------------------------------------------------------------
 # The Python otp runs on (1.0.97): the newest the distribution offers beside
-# its own - on RHEL, Rocky and AlmaLinux 9 that is python3.12 from AppStream
-# (the system's python3 is 3.9) - with the database driver for it, and only
-# one that is shown to run otp. The choice is a link, $LIB_DIR/python, which
+# its own - python3.14 where AppStream has it (1.0.204), else python3.12 on
+# RHEL, Rocky and AlmaLinux 9 (the system's python3 is 3.9) - with the database
+# driver for it, and only one that is shown to run otp. From the distribution
+# only, never one built or fetched by otp: its security fixes come with the
+# system updates. The choice is a link, $LIB_DIR/python, which
 # the service and the otp command start; the root helpers stay on the
 # system's own python3. --python PATH or --system-python decide instead.
 py_mods_wanted() {
@@ -909,10 +911,10 @@ runtime_python() {
             note "the Python chosen before is tried first: $was (--python PATH or --system-python to change it)"
         fi
     fi
-    if [[ ${#cand[@]} -gt 0 ]]; then cand+=(/usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3)
+    if [[ ${#cand[@]} -gt 0 ]]; then cand+=(/usr/bin/python3.14 /usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3)
     elif [[ -n "$PY_FORCE" ]]; then cand=("$PY_FORCE")
     elif [[ -n "$PY_SYSTEM" ]]; then cand=("/usr/bin/python3")
-    else cand=(/usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3); fi
+    else cand=(/usr/bin/python3.14 /usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3); fi
     OTP_PY=""
     for py in "${cand[@]}"; do
         v="${py##*/python}"
@@ -934,12 +936,12 @@ runtime_python() {
         if [[ -n "$DRY_RUN" ]] || py_runs_otp "$py" "${mods[@]}"; then OTP_PY="$py"; break; fi
         note "$py ($("$py" --version 2>&1)) cannot run otp here (a module missing: ${mods[*]:-none}) - the next one is tried"
     done
-    [[ -n "$OTP_PY" ]] || fail "no Python here runs otp${mods[*]:+ with ${mods[*]}} - install python3.12 and python3.12-psycopg2 (dnf), or say which with --python"
+    [[ -n "$OTP_PY" ]] || fail "no Python here runs otp${mods[*]:+ with ${mods[*]}} - install python3.14 and python3.14-psycopg2 (or python3.12, python3.12-psycopg2) with dnf, or say which with --python"
     run ln -sfn "$OTP_PY" "$LIB_DIR/python"
     good "otp runs on $("$OTP_PY" --version 2>&1) - $OTP_PY${mods[*]:+ (with ${mods[*]})}"
     if [[ "$OTP_PY" == /usr/bin/python3 && -z "$PY_SYSTEM" && -z "$PY_FORCE" ]] && \
             /usr/bin/python3 -c 'import sys; sys.exit(0 if sys.version_info < (3, 11) else 1)' 2>/dev/null; then
-        note "the system's own python3 is used; a newer one (dnf install python3.12 python3.12-psycopg2) is faster, and is taken by the next upgrade"
+        note "the system's own python3 is used; a newer one (dnf install python3.14 python3.14-psycopg2, or python3.12) is faster, and is taken by the next upgrade"
     fi
 }
 
