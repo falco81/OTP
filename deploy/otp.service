@@ -42,7 +42,9 @@ NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK (1.0.195): the network interfaces read - smbclient (backups over
+# SMB) stopped without them: "Could not determine network interfaces".
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 SystemCallFilter=@system-service

@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.194'
+__version__ = '1.0.195'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -19080,6 +19080,14 @@ class RbSmb(object):
         got = subprocess.run(self.args + ['-c', '; '.join(cmds)], capture_output=True, text=True,
                              timeout=timeout, cwd=self.d, start_new_session=True)
         text = (got.stdout or '') + (got.stderr or '')
+        if 'Could not determine network interfaces' in text and \
+                not any(a.startswith('--option=interfaces=') for a in self.args):
+            # Samba lists the network interfaces over netlink, and a service
+            # kept from netlink sockets (otp.service before 1.0.195) gets none -
+            # it then stops before it connects at all. A client needs no
+            # interface of its own to reach a server by its name or address.
+            self.args.append('--option=interfaces=127.0.0.1/8')
+            return self._run(cmds, ignore, timeout)
         bad = [x for x in text.splitlines() if 'NT_STATUS_' in x and
                not any(i in x for i in ignore)]
         if got.returncode != 0 or bad:
