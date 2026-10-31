@@ -4,6 +4,40 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.188 — 31 October 2026
+
+**SSH with a code: one prompt, and the code that came is taken** - tried with a
+real sshd and ssh client (a key, then keyboard-interactive, as PuTTY does it;
+`tests/sshd/t_sshreal.py`):
+- No `Password:` before the code any more: pam_radius runs with `skip_passwd`, and
+  otp's gate asks itself - *Code from the app:* for an app's token, or the code is
+  sent by mail or SMS and asked for at once. A PAM block put in by an older
+  version is given `skip_passwd` by itself on each node.
+- The code mailed was refused when a later sign-in had sent another one - a mail
+  that came late, the code from it typed. Every code still good that went to the
+  account is taken now, each once.
+- Signing in again within 20 s was refused (a code went a moment ago); the code
+  already sent is asked for again instead, and no second one goes.
+- The prompts end with ": " - the code typed was stuck to the words
+  (`...@merit.cz590292`); an app's token keeps its language for its prompt too.
+
+**The command line and the console: the rest of what the pages do**:
+- `--siem-test`, `--proxy-test [URL]`, `--snmp-test`, `--snmp-trap`, and
+  `--isemon-test` from every node, each answering for itself (`--node`: one).
+- Encryption to the database server: `--db-tls`, `--db-tls-probe MODE`,
+  `--db-tls-apply server|connect|server_off` (`--db-tls-mode`, `--db-tls-ca`,
+  `--ca FILE`); to isemon: `--isemon-tls`, `--isemon-tls-probe`,
+  `--isemon-tls-apply`, `--isemon-tls-off`, `--isemon-tls-bundle FILE`.
+- Certificates: `--tls-csr CN`, `--tls-selfsigned CN` (`--names`, `--org`,
+  `--days`), `--tls-forget`.
+- `--ntp`, `--ntp-sync`, `--net`, `--hisec`, `--hisec-waive RULE on|off`.
+- `--api GET|POST /api/... [BODY]`: any question of the pages, answered as JSON -
+  run by the page's own code, with its checks and events; a body holding a secret
+  only through stdin (`-`).
+- The console: menu 13 (encryption, sending out, time, network, high security).
+- What the command line asks of every node is done by each node's daemon - it
+  was done a second time in the command's own process, which ends with it.
+
 ## 1.0.187 — 31 October 2026
 
 **A cluster of two, tested as it runs: PostgreSQL replicated both ways and the

@@ -83,6 +83,12 @@ otp --ssh-tokens            # SSH tokens;  --ssh-token-add NAME [--by mail|sms -
 otp --lockouts              # who is locked out, on every node;  --lockouts-clear all|KIND:WHO
 otp --set smtp_password=-   # a secret: asked for (or one line of stdin, or OTP_VALUE_SMTP_PASSWORD)
 otp --set backup_at=02:30 --node otp2      # a node's own setting for another node ('*': the cluster's)
+otp --siem-test / --proxy-test / --snmp-test / --snmp-trap / --isemon-test   # from every node (1.0.188)
+otp --db-tls ; otp --db-tls-probe verify-full ; otp --db-tls-apply server|connect --yes
+otp --isemon-tls ; otp --isemon-tls-probe isemon.example.cz:6514
+otp --tls-csr otp.example.cz --names otp.example.cz,otp1.example.cz   # then --tls-import
+otp --ntp ; otp --net ; otp --hisec ; otp --hisec-waive RULE on|off
+otp --api GET /api/osup                      # any page's question, as JSON (a secret in the body: -, stdin)
 ```
 
 A secret is never taken written out on the command line, where `ps` and the

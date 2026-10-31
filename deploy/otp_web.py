@@ -2975,9 +2975,11 @@ def pam_block(c):
                      % ':'.join(c['radius_users']))
     elif not c['radius_root']:
         lines.append('auth [success=1 default=ignore] pam_succeed_if.so quiet user = root')
+    # skip_passwd (1.0.188): no "Password:" first - otp's gate asks for the code
+    # itself (the app's, or one it mails or texts), in the one prompt it shows.
     lines.append('auth [success=done new_authtok_reqd=done ignore=ignore default=die] '
-                 'pam_radius_auth.so conf=%s%s' % (pam_radius_conf_path(),
-                                                   ' localifdown' if c['radius_fallback'] else ''))
+                 'pam_radius_auth.so conf=%s skip_passwd%s' % (pam_radius_conf_path(),
+                                                               ' localifdown' if c['radius_fallback'] else ''))
     if not c['password']:
         # Passwords off: nobody left out of the code gets in by a password here.
         lines.append('auth requisite pam_deny.so')
@@ -3020,6 +3022,15 @@ def pam_radius_conf_fp():
         if m:
             return hashlib.sha256(('%d %s' % (int(m.group(1)), m.group(2))).encode()).hexdigest()[:12]
     return ''
+
+
+def pam_skip_passwd(text):
+    """Our block's pam_radius line with skip_passwd (1.0.188), the rest as it is."""
+    def one(m):
+        block = m.group(0)
+        return re.sub(r'(?m)^(auth\b.*pam_radius_auth\.so conf=\S+)(?!.*\bskip_passwd\b)(.*)$',
+                      r'\1 skip_passwd\2', block)
+    return re.sub(r'(?ms)^' + re.escape(PAM_BEGIN) + r'\n.*?^' + re.escape(PAM_END) + r'$', one, text)
 
 
 def pam_set(c, secret, port):
@@ -3290,8 +3301,13 @@ def sshd_do(r):
     elif do == 'pamconf':
         # The gate's secret and port, nothing else (1.0.181): only where our
         # block is in sshd's PAM.
-        if PAM_BEGIN in (_read_or(pam_sshd_path()) or ''):
+        text = _read_or(pam_sshd_path()) or ''
+        if PAM_BEGIN in text:
             pam_radius_conf_write(r.get('radius_secret'), r.get('radius_port'))
+            # A block from before 1.0.188: skip_passwd put in its pam_radius line.
+            fixed = pam_skip_passwd(text)
+            if fixed != text:
+                _put_file(pam_sshd_path(), fixed, 0o644)
     elif do != 'read':
         raise Refused('read, apply, keep, back or pamconf')
     v = sshd_values()
@@ -3302,6 +3318,8 @@ def sshd_do(r):
             'paths': notice_paths(),
             'radius': {'module': bool(pam_radius_module()),
                        'pam': PAM_BEGIN in (_read_or(pam_sshd_path()) or ''),
+                       'skip_passwd': pam_skip_passwd(_read_or(pam_sshd_path()) or '') ==
+                       (_read_or(pam_sshd_path()) or ''),
                        'conf': os.path.exists(pam_radius_conf_path()),
                        'fp': pam_radius_conf_fp()},
             'selinux': subprocess.run(['getenforce'], capture_output=True, text=True).stdout.strip()

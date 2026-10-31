@@ -66,12 +66,18 @@ administrators only; each is an event.
 
 **By mail or SMS** (where sending is set up; in Czech or English, chosen for each
 token - *Settings → Mail*, *Codes by e-mail
-and SMS*): choose *By mail* or *By SMS* and the address or number. At `ssh`, press
-Enter at the first prompt (`Password:`); otp sends a code and pam_radius asks for
-it in a second prompt (*Type the code from the SMS sent to +420\*\*\*\*\*\*456*) -
-RADIUS's Access-Challenge, as the VPN's second window. A wrong code is asked
-again, three times; a code goes at most every 20 s and five in 15 minutes per
-account, so a name typed at `ssh` is no way to send SMS. The words are their own
+and SMS*): choose *By mail* or *By SMS* and the address or number.
+
+**One prompt, no `Password:`** (1.0.188): pam_radius runs with `skip_passwd`, so
+sshd asks nothing first - otp's gate asks for the code itself: *Code from the app:*
+for an app's token, or a code is sent and asked for at once (*Type the code mailed
+to f\*\*\*\*@example.cz:*) - RADIUS's Access-Challenge, as the VPN's second
+window. A block put in by an older version is given `skip_passwd` by itself. A
+wrong code is asked again, three times. Every code sent to the account and still
+good (5 min) is taken, each once - a mail that came late, after a later sign-in
+sent another, still lets in. Signing in again within 20 s sends no second code:
+the one sent is asked for again. A code goes at most every 20 s and five in 15
+minutes per account, so a name typed at `ssh` is no way to send SMS. The words are their own
 under *Settings → Message texts* (*SSH: a sign-in code by mail / by SMS*). The
 sending happens in a thread of its own; pam_radius waits up to 30 s for it.
 

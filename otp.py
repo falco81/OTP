@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.187'
+__version__ = '1.0.188'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -9912,6 +9912,7 @@ CODE_TEXTS = {
         'h_av_facts': 'Zadejte ho na přihlašovací stránce administrace. Platí {minutes} min.',
         'h_av_note': 'Pokud jste o nic nežádali, e-mail smažte – bez kódu se nic nezmění.',
         'h_av_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
+        'ssh_ask_app': 'Kód z aplikace',
         'ssh_subject': 'Kód pro přihlášení přes SSH: {code}',
         'ssh_body': ('Váš kód pro přihlášení přes SSH na server {site} je\n\n    {code}\n\nPlatí '
                      '{minutes} min a jen jednou. Pokud se právě nepřihlašujete, kód nikomu '
@@ -9993,6 +9994,7 @@ CODE_TEXTS = {
         'h_av_note': 'If you asked for nothing, delete this mail - without the code nothing '
                      'changes.',
         'h_av_foot': 'Sent automatically by {site}. Do not reply to this mail.',
+        'ssh_ask_app': 'Code from the app',
         'ssh_subject': 'Your SSH sign-in code: {code}',
         'ssh_body': ('Your code for signing in over SSH to {site} is\n\n    {code}\n\nIt is good '
                      'for {minutes} min and once. If you are not signing in just now, tell '
@@ -13736,6 +13738,7 @@ def php_state():
 class Daemon(object):
     def __init__(self, store, serve=True):
         self.store = store
+        self.serving = serve        # the daemon itself, not the command line (1.0.188)
         # RADIUS on a connection of its own (1.0.136) - the serving daemon
         # only; the command line keeps its one.
         if serve:
@@ -29362,8 +29365,10 @@ def sshd_tick(daemon):
     # the RADIUS client before, or a port changed): only that file is put right.
     if c.get('manage') and c.get('radius') and (now.get('radius') or {}).get('pam') and \
             now.get('hash') == c.get('hash') and not todo and \
-            (now.get('radius') or {}).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
-                                                               ssh_gate_port(store)):
+            ((now.get('radius') or {}).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
+                                                                ssh_gate_port(store)) or
+             (now.get('radius') or {}).get('skip_passwd') is False):
+        # ... or its PAM block from before 1.0.188: "Password:" asked before the code.
         todo.append(('pamconf', None))
     if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
         return
@@ -29594,7 +29599,9 @@ def sshotp_make(store, name, by, note='', replace=False, kind='app', dest='', la
         if had and not replace:
             raise ValueError('%s has an SSH token already - make a new one in its place, or '
                              'remove it' % name)
-        rec = {'name': name, 'kind': kind, 'at': time.time(), 'by': by, 'note': note, 'step': 0}
+        # The language of its prompt in SSH too, an app's as well (1.0.188).
+        rec = {'name': name, 'kind': kind, 'at': time.time(), 'by': by, 'note': note, 'step': 0,
+               'lang': lang}
         if kind == 'app':
             secret = b32_new(20)
             rec['secret'] = seal_secret(secret, sshotp_key(name))
@@ -29717,10 +29724,20 @@ def sshotp_send(store, name):
     if kind not in code_channels():
         raise ValueError('sending %s is not set up now' % ('mail' if kind == 'mail' else 'SMS'))
     now = time.time()
+    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms', lang=rec.get('lang') or None,
+                     dest=dest_masked(kind, rec['dest']))
     with SSHOTP_LOCK:
         sent = [t for t in SSHOTP_SENT[name.lower()] if now - t < SSHOTP_SEND_WINDOW_S]
         SSHOTP_SENT[name.lower()] = sent
         if sent and now - sent[-1] < SSHOTP_SEND_GAP_S:
+            # Signed in again at once (1.0.188): the code that went a moment ago
+            # is asked for again, not refused - and no second one sent.
+            good = [v for v in SSHOTP_CHALLENGES.values()
+                    if v.get('name') == name and v.get('hash') and now <= v['exp']]
+            if good:
+                state = secrets.token_hex(16)
+                SSHOTP_CHALLENGES[state] = {'name': name, 'exp': max(v['exp'] for v in good), 'tries': 0}
+                return state, ask
             raise ValueError('a code went a moment ago - wait %d s' % SSHOTP_SEND_GAP_S)
         if len(sent) >= SSHOTP_SEND_MOST:
             raise ValueError('%d codes in %d min - wait' % (SSHOTP_SEND_MOST,
@@ -29741,8 +29758,6 @@ def sshotp_send(store, name):
         SSHOTP_CHALLENGES[state] = {'name': name, 'hash': code_hash(salt, code), 'salt': salt,
                                     'exp': now + int(CONFIG.get('code_ttl_s') or 300),
                                     'tries': 0}
-    ask = code_words('ask_mail' if kind == 'mail' else 'ask_sms', lang=rec.get('lang') or None,
-                     dest=dest_masked(kind, rec['dest']))
     return state, ask
 
 
@@ -29753,13 +29768,24 @@ def sshotp_answer(store, state, name, code):
         ch = SSHOTP_CHALLENGES.get(state)
         if not ch or ch['name'] != name or now > ch['exp']:
             SSHOTP_CHALLENGES.pop(state, None)
-            return False, 'the code is no longer good - sign in again', False
+            # Its prompt gone, a code still good of the same account is taken.
+            ch = {'name': name, 'tries': 3, 'exp': now}
+            if not any(v.get('name') == name and v.get('hash') and now <= v['exp']
+                       for v in SSHOTP_CHALLENGES.values()):
+                return False, 'the code is no longer good - sign in again', False
         fails = _sshotp_fails(name, now)
         if len(fails) >= SSHOTP_TRIES:
             SSHOTP_CHALLENGES.pop(state, None)
             return False, 'too many wrong codes - wait %d min' % (SSHOTP_WINDOW_S // 60), False
-        if hmac.compare_digest(code_hash(ch['salt'], str(code or '').strip()), ch['hash']):
-            SSHOTP_CHALLENGES.pop(state, None)
+        typed = str(code or '').strip()
+        # Any code still good that went to this account (1.0.188), each once: a
+        # mail come late was the one typed, while a later sign-in had sent
+        # another - and the right code was refused.
+        mine = [(k, v) for k, v in SSHOTP_CHALLENGES.items()
+                if v.get('name') == name and v.get('hash') and now <= v['exp']]
+        if any(hmac.compare_digest(code_hash(v['salt'], typed), v['hash']) for _k, v in mine):
+            for k, _v in mine:
+                SSHOTP_CHALLENGES.pop(k, None)
             SSHOTP_FAILS.pop(name.lower(), None)
             ok = True
         else:
@@ -29773,6 +29799,42 @@ def sshotp_answer(store, state, name, code):
     if ok:
         return True, 'signed in', False
     return False, 'the code is not right', again
+
+
+def sshotp_ask_app(store, name):
+    """pam_radius with skip_passwd (1.0.188) asks with no password: the app's code is
+    asked for here, in the one prompt sshd shows - not after a "Password:"."""
+    rec = sshotp_get(store, name) or {}
+    now = time.time()
+    state = secrets.token_hex(16)
+    with SSHOTP_LOCK:
+        for k in [k for k, v in SSHOTP_CHALLENGES.items() if now > v['exp'] + 60]:
+            SSHOTP_CHALLENGES.pop(k, None)
+        SSHOTP_CHALLENGES[state] = {'name': name, 'app': True, 'exp': now + 300, 'tries': 0}
+    return state, code_words('ssh_ask_app', lang=rec.get('lang') or None)
+
+
+def sshotp_app_answer(store, state, name, code):
+    """The app's code typed after that prompt: (let in, what is said, ask again)."""
+    now = time.time()
+    with SSHOTP_LOCK:
+        ch = SSHOTP_CHALLENGES.get(state)
+        if not ch or ch['name'] != name or now > ch['exp']:
+            SSHOTP_CHALLENGES.pop(state, None)
+            return False, 'the code is no longer good - sign in again', False
+    ok, said = sshotp_check(store, name, code)
+    with SSHOTP_LOCK:
+        ch['tries'] += 1
+        again = not ok and ch['tries'] < 3 and 'too many' not in said
+        if ok or not again:
+            SSHOTP_CHALLENGES.pop(state, None)
+    return ok, said, again
+
+
+def ssh_prompt(words):
+    """A prompt ending as one does - the code typed after ": ", not stuck to the text."""
+    words = str(words or '').rstrip()
+    return words if words.endswith((':', '?')) else words + ': '
 
 
 def ssh_gate_port(store=None):
@@ -29957,11 +30019,18 @@ class SshGate(object):
         who = re.sub(r'[^\w.@-]', '?', user)[:64]
         state = (p.get(24) or b'').decode('ascii', 'replace')
         rec = sshotp_get(store, user) if SSHOTP_NAME_RE.match(user or '') else None
+        lang = (rec or {}).get('lang') or None
         if state:
-            ok, said, again = sshotp_answer(store, state, user, code)
+            with SSHOTP_LOCK:
+                app = (SSHOTP_CHALLENGES.get(state) or {}).get('app')
+            ok, said, again = (sshotp_app_answer if app else sshotp_answer)(store, state, user, code)
             if again:
-                return build_reply(p, 11, [attr_bytes('Reply-Message', code_words('again')),
+                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(code_words('again', lang=lang))),
                                            bytes([24, len(state) + 2]) + state.encode()], secret)
+        elif rec and rec.get('kind', 'app') == 'app' and not code:
+            st, ask = sshotp_ask_app(store, user)
+            return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
+                                       bytes([24, len(st) + 2]) + st.encode()], secret)
         elif rec and rec.get('kind') in ('mail', 'sms'):
             # By mail or SMS (1.0.181): whatever was typed first, a code is
             # sent and asked for in a second prompt (Access-Challenge).
@@ -29971,7 +30040,7 @@ class SshGate(object):
                 ok, said = False, str(e)
             else:
                 log('SSH: a code for %s went by %s' % (who, rec['kind']))
-                return build_reply(p, 11, [attr_bytes('Reply-Message', ask),
+                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
                                            bytes([24, len(st) + 2]) + st.encode()], secret)
         else:
             ok, said = sshotp_check(store, user, code)
@@ -30027,7 +30096,10 @@ def _node_ask_run(daemon, kind, want):
 def node_ask(daemon, kind, args, by):
     want = {'id': secrets.token_hex(6), 'args': args or {}, 'at': time.time(), 'by': by}
     daemon.store.set_meta('ask:want:' + kind, json.dumps(want))
-    _node_ask_run(daemon, kind, want)
+    # Asked from the command line (1.0.188), this node's daemon does it too, as
+    # the other's: not in a process that ends when the command does.
+    if getattr(daemon, 'serving', True):
+        _node_ask_run(daemon, kind, want)
     nodes = [n for n, a in host_alive(daemon.store).items() if a] or [node_name()]
     nodes = sorted(set(nodes) | {node_name()})
     if (args or {}).get('only'):
@@ -41171,6 +41243,7 @@ class Console(object):
             ('10', 'Upgrades', self.m_upgrades),
             ('11', 'The service', self.m_service),
             ('12', 'Certificates, updates, restarts, tests', self.m_ops),
+            ('13', 'Encryption, sending out, time, network, high security', self.m_more),
         ]
         os.environ.setdefault('ESCDELAY', '25')     # Esc at once, not after a second
         # Lines and blocks drawn as UTF-8 characters, as PuTTY in UTF-8 shows
@@ -43457,6 +43530,76 @@ class Console(object):
             ('15', 'Forget a lockout', lockout_clear),
         ])
 
+    def m_more(self):
+        """The rest of the pages (1.0.188): the wizards' looks and tries, the tests
+        of what is sent out, the time and network of each node, high security."""
+        def db_probe():
+            m = self.choose('Try encryption to the database server (nothing changed)', [
+                ('verify-full', 'verify-full - the certificate and its name checked'),
+                ('verify-ca', 'verify-ca - the certificate checked'), ('require', 'require - encrypted only')])
+            if m:
+                self.act('--db-tls-probe', m)
+
+        def db_apply():
+            ph = self.choose('A step of encryption to the database server, on every node', [
+                ('server', 'otp\'s certificates into the PostgreSQLs (each reloaded)'),
+                ('connect', 'each node\'s connection made again, verify-full'),
+                ('server_off', 'otp\'s certificates out of the PostgreSQLs')])
+            if ph and self.confirm('Encryption to the database server', {
+                    'server': 'Each node\'s PostgreSQL gets otp\'s certificate and is reloaded; '
+                              'the connections stay as they are.',
+                    'connect': 'Each node connects to its database again, with TLS that checks the '
+                               'certificate and its name; the requests are answered meanwhile.',
+                    'server_off': 'otp\'s certificates are taken out of the PostgreSQLs.'}[ph],
+                    'Do it', danger=True):
+                self.act('--db-tls-apply', ph, '--db-tls-mode', 'verify-full', '--yes')
+
+        def isemon_probe():
+            got = self.form('Try isemon over TLS from every node', [
+                {'key': 'at', 'label': 'isemon at', 'need': True, 'help': 'HOST or HOST:PORT (6514).'}])
+            if got:
+                self.act('--isemon-tls-probe', got['at'])
+
+        def proxy():
+            got = self.form('Try the way out (proxy) from every node', [
+                {'key': 'url', 'label': 'an address', 'help': 'Empty: the one upgrades are looked for at.'}])
+            if got is not None:
+                self.act('--proxy-test', got.get('url') or '')
+
+        def waive():
+            got = self.out('--hisec') or {}
+            rows = (got.get('block') or []) + (got.get('waived') or [])
+            if not rows:
+                self.note('High security', 'Every rule is kept: there is nothing to make an exception of.')
+                return
+            r = self.choose('An exception of high security (or not any more)', [
+                (x['rule'], '%s %s - %s' % ('[exception]' if x in (got.get('waived') or []) else '[not kept]',
+                                           x['rule'], x.get('title') or x.get('what'))) for x in rows])
+            if r:
+                on = r not in [x['rule'] for x in got.get('waived') or []]
+                if self.confirm('High security', ('%s becomes an exception: high security holds without it.'
+                                                  if on else '%s is a rule again.') % r,
+                                'Yes', danger=on):
+                    self.act('--hisec-waive', r, 'on' if on else 'off')
+
+        return self.sub('Encryption, sending out, time, network, high security', [
+            ('1', 'Encryption to the database server: how it stands', lambda: self.act('--db-tls')),
+            ('2', 'Encryption to the database server: try a mode', db_probe),
+            ('3', 'Encryption to the database server: a step on every node', db_apply),
+            ('4', 'Encrypted sending to isemon: how it stands', lambda: self.act('--isemon-tls')),
+            ('5', 'Encrypted sending to isemon: try it', isemon_probe),
+            ('6', 'A test line to isemon, from every node', lambda: self.act('--isemon-test')),
+            ('7', 'A test line to the syslog servers (SIEM), from every node', lambda: self.act('--siem-test')),
+            ('8', 'The way out (proxy): try it', proxy),
+            ('9', 'SNMPv3: ask each node\'s agent', lambda: self.act('--snmp-test')),
+            ('10', 'SNMPv3: a test trap', lambda: self.act('--snmp-trap')),
+            ('11', 'The time of each node', lambda: self.act('--ntp')),
+            ('12', 'Set this node\'s clock now', lambda: self.act('--ntp-sync')),
+            ('13', 'The network of each node', lambda: self.act('--net')),
+            ('14', 'High security: every rule', lambda: self.act('--hisec')),
+            ('15', 'High security: an exception, or not any more', waive),
+        ])
+
     def m_upgrades(self):
         def online():
             self.working('working…  looking for a new version')
@@ -44046,6 +44189,100 @@ def ask_secret_value(key):
     return sys.stdin.readline().rstrip('\r\n')
 
 
+class CliApiHandler(ApiHandler):
+    """What a page asks, asked by the command line (1.0.188): the route's own
+    checks, events and words, as a full administrator called 'command line'
+    (root on this machine is that already). No HTTP: no socket, no session."""
+
+    def __init__(self, daemon, who, body=None, args=None, path=''):
+        self.server = type('S', (), {'daemon': daemon})()
+        self.headers = {'X-Otp-Client': '127.0.0.1'}
+        self.client_address = ('127.0.0.1', 0)
+        self.args = dict(args or {})
+        self._body = dict(body or {})
+        self.route_path = path
+        self.who = who
+
+    def me(self, role='readonly'):
+        return {'id': 0, 'name': self.who, 'role': 'fulladmin', 'kind': 'admin',
+                'account': {'name': self.who, 'role': 'fulladmin', 'source': 'local'}}
+
+    def session(self, kind='admin'):
+        return self.me()
+
+
+def cli_api(daemon, who, method, path, body=None, args=None):
+    """One route of the pages, run here: its answer, or SystemExit with its words."""
+    fn = ROUTES.get((method, path))
+    if not fn:
+        raise SystemExit('otp: the pages have no %s %s' % (method, path))
+    h = CliApiHandler(daemon, who, body, args, path)
+    try:
+        return fn(h)
+    except ApiError as e:
+        raise SystemExit('otp: %s' % e)
+    except (ValueError, BadSetting) as e:
+        raise SystemExit('otp: %s' % e)
+
+
+def cli_ask_wait(store, kind, asked, secs=90, say=None):
+    """What every node answered to an ask (asked = {'id', 'nodes'}): waited for
+    until all have, or secs. {node: answer or None}."""
+    end = time.time() + secs
+    got = {}
+    while time.time() < end:
+        got = {n: v for n, v in node_ask_results(store, kind, asked['id']).items()
+               if n in asked['nodes']}
+        if got and all(got.get(n) for n in asked['nodes']):
+            break
+        time.sleep(0.5)
+    return {n: got.get(n) for n in asked['nodes']}
+
+
+def cli_show(obj, pal, indent=2, depth=0, most=60):
+    """A view of the pages as lines: KEY  value, nested ones indented."""
+    pad = ' ' * indent
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if v in (None, '', [], {}):
+                continue
+            if isinstance(v, (dict, list)) and depth < 3:
+                print('%s%s' % (pad, pal.dim(str(k)) if pal else k))
+                cli_show(v, pal, indent + 2, depth + 1, most)
+            else:
+                text = json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, (dict, list)) \
+                    else (stamp(v) if isinstance(v, float) and v > 1e9 and str(k).endswith(('at', 'end', 'since', 'after', 'before')) else str(v))
+                print('%s%-24s %s' % (pad, k, text[:200]))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj[:most]):
+            if isinstance(v, (dict, list)):
+                print('%s- %s' % (pad, next((str(v[k]) for k in ('name', 'node', 'target', 'rule', 'key',
+                                                               'kind', 'what') if v.get(k)), '')
+                                  if isinstance(v, dict) else ''))
+                cli_show(v, pal, indent + 2, depth + 1, most)
+            else:
+                print('%s- %s' % (pad, v))
+        if len(obj) > most:
+            print('%s… %d more' % (pad, len(obj) - most))
+    else:
+        print('%s%s' % (pad, obj))
+
+
+def cli_ask_said(pal, answers):
+    """Each node's answer to an ask, one block each; the exit code."""
+    bad = 0
+    for n, got in answers.items():
+        if not got:
+            bad += 1
+            print(pal.bad_line('%s: no answer - is otp running there?' % n))
+            continue
+        ok = got.get('ok', not got.get('error'))
+        bad += 0 if ok else 1
+        print((pal.ok_line if ok else pal.bad_line)('%s: %s' % (n, got.get('error') or got.get('said') or ('ok' if ok else 'failed'))))
+        cli_show({k: v for k, v in got.items() if k not in ('id', 'at', 'node', 'ok', 'error', 'said')}, pal, 4)
+    return 1 if bad else 0
+
+
 class HelpfulParser(argparse.ArgumentParser):
     """An ArgumentParser whose help is isemon's: two columns, in colour.
     Anything going wrong in the drawing falls back to argparse's own."""
@@ -44344,6 +44581,51 @@ def build_parser():
                    'tokens, the pages\' sign-ins, places refused')
     g.add_argument('--lockouts-clear', metavar='all|KIND:WHO', help='forget a lockout (the KIND '
                    'and WHO --lockouts shows), or every one, on every node')
+    g.add_argument('--siem-test', action='store_true', help='a test line to the syslog servers '
+                   '(SIEM), sent by every node (--node: one), and what each said')
+    g.add_argument('--proxy-test', metavar='URL', nargs='?', const='', help='the way out through '
+                   'the proxy tried on every node (an address of your own, or the upgrades\' one)')
+    g.add_argument('--snmp-test', action='store_true', help='each node\'s SNMPv3 agent asked as a '
+                   'manager would ask it')
+    g.add_argument('--snmp-trap', action='store_true', help='a test trap from every node to the '
+                   'receivers set')
+    g.add_argument('--db-tls', action='store_true', help='encryption to the database server: how '
+                   'each node reaches it, and its certificates')
+    g.add_argument('--db-tls-probe', metavar='MODE', choices=('require', 'verify-ca', 'verify-full'),
+                   help='try that mode from every node, changing nothing')
+    g.add_argument('--db-tls-apply', metavar='PHASE', choices=('server', 'connect', 'server_off'),
+                   help='a step of the wizard on every node: server (otp\'s certificates into the '
+                   'PostgreSQLs), connect (each node\'s connection to --db-tls-mode), server_off')
+    g.add_argument('--db-tls-mode', choices=('', 'require', 'verify-ca', 'verify-full'), default=None,
+                   help='with --db-tls-apply connect: the mode ("" no TLS) [verify-full]')
+    g.add_argument('--db-tls-ca', choices=('otp', 'system', 'given', 'keep'), default='otp',
+                   help='whose authority checks the server: otp\'s, the system\'s, one given '
+                   'with --ca FILE, the one kept [otp]')
+    g.add_argument('--isemon-tls', action='store_true', help='the encrypted sending to isemon: '
+                   'how it stands on each node')
+    g.add_argument('--isemon-tls-probe', metavar='HOST[:PORT]', help='isemon over TLS tried from '
+                   'every node (--db-tls-ca otp|system|given --ca FILE; --no-verify; --mtls)')
+    g.add_argument('--isemon-tls-apply', metavar='HOST[:PORT]', help='send to isemon over TLS from '
+                   'now on')
+    g.add_argument('--isemon-tls-off', metavar='HOST', nargs='?', const='', help='back to plain '
+                   'TCP (514)')
+    g.add_argument('--isemon-tls-bundle', metavar='FILE', help='the zip for isemon\'s side (its '
+                   'certificate and key, locked with a passphrase asked for; --names, --mtls)')
+    g.add_argument('--names', metavar='N1,N2', help='with --isemon-tls-bundle, --tls-csr, '
+                   '--tls-selfsigned: the names it is for')
+    g.add_argument('--mtls', action='store_true', help='with --isemon-tls-*: each node shows its '
+                   'own certificate too')
+    g.add_argument('--ntp', action='store_true', help='the time: each node\'s servers and how far off')
+    g.add_argument('--ntp-sync', action='store_true', help='set the clock of this node (--node: '
+                   'another) from its servers now')
+    g.add_argument('--net', action='store_true', help='each node\'s network as it read it')
+    g.add_argument('--hisec', action='store_true', help='high security: every rule, kept or not, '
+                   'and its exceptions')
+    g.add_argument('--hisec-waive', nargs=2, metavar=('RULE', 'on|off'), help='make RULE an '
+                   'exception of high security, or not any more')
+    g.add_argument('--api', nargs='+', metavar=('METHOD PATH', 'BODY'), help='any page\'s question '
+                   'as the pages ask it: GET /api/ntp, or POST /api/osup \'{"action": "check"}\' '
+                   '(BODY - : read from stdin, for one holding a secret) - the answer as JSON')
     g = p.add_argument_group('MAINTENANCE AND UPGRADES')
     g.add_argument('--maintenance', choices=('on', 'off', 'status'), help='this node out of '
                    'service (RADIUS not answered, /healthz 503) or back; status says which')
@@ -44443,6 +44725,16 @@ def build_parser():
     g.add_argument('--tls-dh', choices=sorted(DH_WORDS), help='the DH parameters')
     g.add_argument('--tls-hsts', type=int, metavar='SECONDS', help='Strict-Transport-Security '
                    '(0 = none)')
+    g.add_argument('--tls-csr', metavar='CN', help='a certificate request for --tls-for (its key '
+                   'waits here; --names, --org): printed, for your authority - then --tls-import what '
+                   'it sends back')
+    g.add_argument('--tls-selfsigned', metavar='CN', help='a certificate of its own for --tls-for '
+                   '(--names; --days [825])')
+    g.add_argument('--org', metavar='TEXT', default='', help='with --tls-csr, --tls-selfsigned: the '
+                   'organisation')
+    g.add_argument('--days', type=int, default=825, help='with --tls-selfsigned: how long [825]')
+    g.add_argument('--tls-forget', action='store_true', help='otp no longer looks after the TLS of '
+                   '--tls-for (nginx keeps the files it has; --yes)')
     g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the VIP address (192.0.2.10/24), '
                    'with --vip-fqdn, --vip-vrid, --vip-iface')
     g.add_argument('--vip-fqdn', metavar='NAME', help='its host name')
@@ -47186,6 +47478,171 @@ def cli_main(argv=None):
             print(pal.dim('  not heard from of late: %s (its list may be old)' % ', '.join(stale)))
         return 0
 
+    # ---- 1.0.188: the rest of what the pages do ----------------------------------------
+    def api(method, path, body=None, qs=None):
+        return cli_api(Daemon(store, serve=False), who, method, path, body, qs)
+
+    def asked(kind, got, secs=90):
+        if args.json:
+            out(cli_ask_wait(store, kind, got, secs))
+            return 0
+        print(pal.dim('  asked of %s - each answers within seconds' % ', '.join(got['nodes'])))
+        return cli_ask_said(pal, cli_ask_wait(store, kind, got, secs))
+
+    def shown(got):
+        if args.json:
+            out(got)
+        else:
+            if isinstance(got, dict) and got.get('message'):
+                print(pal.ok_line(got['message']))
+                got = {k: v for k, v in got.items() if k != 'message'}
+            cli_show(got, pal)
+        return 0
+
+    only = args.node or ''
+    if args.siem_test:
+        return asked('siem', api('POST', '/api/siem', {'action': 'test', 'node': only}))
+    if args.proxy_test is not None:
+        return asked('proxy', api('POST', '/api/proxy', {'action': 'try', 'url': args.proxy_test}), 60)
+    if args.snmp_test or args.snmp_trap:
+        return asked('snmp', api('POST', '/api/snmp', {'action': 'trap' if args.snmp_trap else 'test',
+                                                      'node': only}))
+    ca_pem = Path(args.ca).read_text() if args.ca else ''
+    if args.db_tls:
+        return shown(api('GET', '/api/dbtls'))
+    if args.db_tls_probe:
+        return asked('dbtls_probe', api('POST', '/api/dbtls', {
+            'action': 'probe', 'mode': args.db_tls_probe, 'ca_source': args.db_tls_ca,
+            'ca_pem': ca_pem, 'node': only}), 120)
+    if args.db_tls_apply:
+        mode = args.db_tls_mode if args.db_tls_mode is not None else 'verify-full'
+        cli_sure(args, 'encryption to the database server, on %s: %s' % (only or 'every node', {
+            'server': 'otp\'s certificates put into the PostgreSQLs (each reloaded)',
+            'connect': 'each node\'s connection to its database made again with %s' % (mode or 'no TLS'),
+            'server_off': 'otp\'s certificates taken out of the PostgreSQLs'}[args.db_tls_apply]))
+        return asked('dbtls_apply', api('POST', '/api/dbtls', {
+            'action': 'apply', 'phase': args.db_tls_apply, 'mode': mode, 'ca_source': args.db_tls_ca,
+            'ca_pem': ca_pem, 'node': only}), 300)
+
+    def host_port(v):
+        host, _, port = str(v).rpartition(':') if re.match(r'^[^:]+:\d+$', str(v)) else (v, '', '')
+        return {'host': host, 'port': int(port) if port else 6514}
+
+    isemon_src = args.db_tls_ca if args.db_tls_ca in ('otp', 'system', 'given') else 'otp'
+    if args.isemon_tls:
+        got = api('GET', '/api/isemon')
+        return shown(got.get('tls') or {})
+    if args.isemon_tls_probe:
+        return asked('isemon_tls', api('POST', '/api/isemon', dict(
+            host_port(args.isemon_tls_probe), action='tls_probe', ca_source=isemon_src,
+            ca_pem=ca_pem, verify=not args.no_verify, mtls=args.mtls)), 60)
+    if args.isemon_tls_apply:
+        cli_sure(args, 'every node sends to isemon at %s over TLS from now on' % args.isemon_tls_apply)
+        return shown(api('POST', '/api/isemon', dict(
+            host_port(args.isemon_tls_apply), action='tls_apply', ca_source=isemon_src,
+            ca_pem=ca_pem, verify=not args.no_verify, mtls=args.mtls)))
+    if args.isemon_tls_off is not None:
+        cli_sure(args, 'isemon is sent to over plain TCP (514) again - not encrypted')
+        return shown(api('POST', '/api/isemon', {'action': 'tls_off', 'host': args.isemon_tls_off}))
+    if args.isemon_tls_bundle:
+        phrase = os.environ.get('OTP_PASSPHRASE') or ask_password(
+            'a passphrase to lock the zip with (12 characters or more)', twice=True, env=None)
+        got = api('POST', '/api/isemon', {'action': 'tls_bundle', 'port': 6514, 'mtls': args.mtls,
+                                          'names': args.names or '', 'passphrase': phrase})
+        fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(base64.b64decode(got['file']))
+        print(pal.ok_line('%s: isemon\'s certificate and key, locked with the passphrase given'
+                          % args.isemon_tls_bundle))
+        return 0
+    target = args.tls_for or node_name()
+    if args.tls_csr:
+        got = api('POST', '/api/web', {'action': 'tls_csr', 'target': target, 'cn': args.tls_csr,
+                                       'names': args.names or '', 'org': args.org})
+        if args.json:
+            out(got)
+            return 0
+        print(pal.ok_line(got.get('message') or 'made'))
+        print(got.get('csr') or '')
+        return 0
+    if args.tls_selfsigned:
+        cli_sure(args, 'a certificate of its own, made here, for %s - in place of the one it has' % target)
+        return shown(api('POST', '/api/web', {'action': 'tls_selfsigned', 'target': target,
+                                              'cn': args.tls_selfsigned, 'names': args.names or '',
+                                              'days': args.days, 'org': args.org}))
+    if args.tls_forget:
+        cli_sure(args, 'otp no longer looks after the TLS of %s; nginx keeps the files it has' % target)
+        return shown(api('POST', '/api/web', {'action': 'tls_forget', 'target': target}))
+    if args.ntp:
+        return shown(api('GET', '/api/ntp'))
+    if args.ntp_sync:
+        return shown(api('POST', '/api/ntp', {'action': 'sync', 'node': only or node_name()}))
+    if args.net:
+        return shown(api('GET', '/api/net'))
+    if args.hisec:
+        got = api('GET', '/api/hisec')
+        if args.json:
+            out(got)
+            return 0
+        print(pal.head('high security: %s' % ('on' if got.get('on') else 'off (otp --set high_security=1)')))
+        for part, words in (('block', 'not kept'), ('waived', 'exceptions'), ('warn', 'to look at')):
+            rows = got.get(part) or []
+            if rows:
+                print(pal.head('  %s (%d)' % (words, len(rows))))
+                print(table([(r.get('rule'), r.get('title') or r.get('what'), r.get('fix') or '')
+                             for r in rows], ['rule', 'what', 'put right by'], [18, 70, 40]))
+        if not any(got.get(p) for p in ('block', 'waived', 'warn')):
+            print(pal.ok_line('every rule kept'))
+        return 0
+    if args.hisec_waive:
+        rule, on = args.hisec_waive
+        if on not in ('on', 'off'):
+            raise SystemExit('otp: --hisec-waive RULE on|off')
+        return shown(api('POST', '/api/hisec', {'action': 'waive', 'rule': rule, 'on': on == 'on'}))
+    if args.api:
+        method = args.api[0].upper()
+        if method not in ('GET', 'POST') or len(args.api) < 2:
+            raise SystemExit('otp: --api GET|POST /api/... [BODY]')
+        path, _, query = args.api[1].partition('?')
+        body = None
+        if len(args.api) > 2:
+            raw = sys.stdin.read() if args.api[2] == '-' else args.api[2]
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                raise SystemExit('otp: the body is JSON: {"action": "..."}')
+            if not isinstance(body, dict):
+                raise SystemExit('otp: the body is a JSON object')
+            def keys(o):
+                if isinstance(o, dict):
+                    for k, v in o.items():
+                        yield str(k)
+                        yield from keys(v)
+                elif isinstance(o, list):
+                    for v in o:
+                        yield from keys(v)
+            secretish = [k for k in keys(body) if k in SECRET_KEYS or re.search(
+                r'pass|secret|token|key|pin', k, re.I)]
+            if args.api[2] != '-' and secretish:
+                raise SystemExit('otp: %s - a secret is not taken written out on the command '
+                                 'line: give the body through stdin (--api POST PATH -)'
+                                 % ', '.join(sorted(set(secretish))))
+        qs = dict(x.split('=', 1) if '=' in x else (x, '') for x in query.split('&') if x)
+        got = cli_api(Daemon(store, serve=False), who, method, path,
+                      body if method == 'POST' else None, qs)
+        print(json.dumps(got, indent=1, ensure_ascii=False, default=str))
+        return 0
+
+    def daemon_here():
+        try:
+            os.kill(int((Path(STATE_DIR) / 'otp.lock').read_text().strip() or 0), 0)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    if args.isemon_test and CONFIG.get('isemon') and daemon_here():
+        # From every node, by each daemon's own sender (1.0.188), as the pages do.
+        return asked('isemon', api('POST', '/api/isemon', {'action': 'test', 'node': only}), 60)
     if args.isemon_test:
         if not CONFIG.get('isemon_targets'):
             raise SystemExit('nothing to send to: otp --set isemon_targets=HOST:514')
