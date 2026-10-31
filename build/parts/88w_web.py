@@ -381,12 +381,15 @@ def _subject(cn, org='', unit='', country='', city=''):
 
 
 def new_key(kind):
-    if kind == 'ec':
+    # ECDSA P-256 or P-384, RSA 2048, 3072 or 4096 (1.0.196): what Let's Encrypt
+    # takes for a certificate.
+    curve = {'ec': 'P-256', 'ec256': 'P-256', 'ec384': 'P-384'}.get(kind)
+    if curve:
         return _openssl(['genpkey', '-algorithm', 'EC', '-pkeyopt',
-                         'ec_paramgen_curve:P-256']).decode()
+                         'ec_paramgen_curve:%s' % curve]).decode()
     bits = {'rsa2048': 2048, 'rsa3072': 3072, 'rsa4096': 4096}.get(kind)
     if not bits:
-        raise ValueError('the key is ec, rsa2048, rsa3072 or rsa4096')
+        raise ValueError('the key is ec (P-256), ec384, rsa2048, rsa3072 or rsa4096')
     return _openssl(['genpkey', '-algorithm', 'RSA', '-pkeyopt',
                      'rsa_keygen_bits:%d' % bits]).decode()
 
@@ -433,8 +436,12 @@ def tls_view(prof):
     """A profile as the pages may see it: no key."""
     if not prof:
         return None
-    out = {k: v for k, v in prof.items() if k not in ('key', 'pending_key')}
+    out = {k: v for k, v in prof.items() if k not in ('key', 'pending_key', 'alt')}
     out['has_key'] = bool(prof.get('key'))
+    alt = tls_alt(prof)
+    if alt:
+        # The second certificate (1.0.196): what it is, never its key.
+        out['alt'] = {'info': alt.get('info') or {}}
     out['pending'] = bool(prof.get('pending_key'))
     return out
 
@@ -472,6 +479,21 @@ def tls_policy_checked(b):
     return out
 
 
+def tls_alt_for(cert):
+    """What ties the ECDSA certificate to its RSA one (1.0.196): a certificate put
+    in another way - uploaded, self-signed - leaves the second one out."""
+    first = PEM_CERT.search(str(cert or ''))
+    return hashlib.sha256((first.group(0) if first else str(cert or '')).strip().encode()).hexdigest()[:32]
+
+
+def tls_alt(prof):
+    a = (prof or {}).get('alt') or {}
+    if a.get('cert') and a.get('key') and (prof or {}).get('cert') and \
+            a.get('for') == tls_alt_for(prof['cert']):
+        return a
+    return None
+
+
 def tls_resolved(prof):
     """What root is handed for a profile: the parts and the lines."""
     if not prof:
@@ -485,6 +507,12 @@ def tls_resolved(prof):
     if prof.get('cert') and prof.get('key'):
         out.update(cert=prof['cert'], chain=prof.get('chain') or '', root=prof.get('root') or '',
                    key=unseal_secret(prof['key'], 'web:tls'))
+        # A second certificate of the same names (1.0.196, ACME's "both"): ECDSA
+        # beside the RSA one - nginx gives each client the one it takes.
+        alt = tls_alt(prof)
+        if alt:
+            out['alt'] = {'cert': alt['cert'], 'chain': alt.get('chain') or '',
+                          'key': unseal_secret(alt['key'], 'web:tls')}
     return out
 
 

@@ -237,6 +237,12 @@ def tls_checked(t, name):
     if not isinstance(t, dict):
         raise Refused('the TLS of %s is not an object' % name)
     out = {'pem': pem_set(t.get('cert'), t.get('key'), t.get('chain'), t.get('root'))}
+    alt = t.get('alt')
+    if alt and out['pem']:
+        # Its second certificate (1.0.196): ECDSA beside RSA, the same names.
+        if not isinstance(alt, dict):
+            raise Refused('the second certificate of %s is not an object' % name)
+        out['pem']['alt'] = pem_set(alt.get('cert'), alt.get('key'), alt.get('chain'), '')
     prot = t.get('protocols') or list(PROTOCOLS)
     if not isinstance(prot, list) or not prot or any(p not in PROTOCOLS for p in prot):
         raise Refused('the protocols are TLSv1.2 and/or TLSv1.3')
@@ -534,13 +540,16 @@ def set_directive(block, name, value):
         for n in reversed(at):
             del lines[n]
         return '\n'.join(lines)
-    text = '    %-25s %s;' % (name, value)
+    # Several of one name (1.0.196: two certificates, RSA and ECDSA) - a list.
+    values = value if isinstance(value, (list, tuple)) else [value]
+    texts = ['    %-25s %s;' % (name, v) for v in values]
     if at:
-        lines[at[0]] = text
         for n in reversed(at[1:]):
             del lines[n]
+        lines[at[0]:at[0] + 1] = texts
     else:
-        lines.insert(insert_at if insert_at is not None else 1, text)
+        pos = insert_at if insert_at is not None else 1
+        lines[pos:pos] = texts
     return '\n'.join(lines)
 
 
@@ -594,8 +603,16 @@ def tls_into(block, t, files, had_dh):
         full = t['pem']['cert'] + t['pem']['chain']
         write_root(files['cert'], full, 0o644)
         write_root(files['key'], t['pem']['key'], 0o600)
-        block = set_directive(block, 'ssl_certificate', files['cert'])
-        block = set_directive(block, 'ssl_certificate_key', files['key'])
+        alt = t['pem'].get('alt')
+        if alt:
+            # RSA first, the default; ECDSA to the clients that take it (1.0.196).
+            write_root(files['cert2'], alt['cert'] + alt['chain'], 0o644)
+            write_root(files['key2'], alt['key'], 0o600)
+            block = set_directive(block, 'ssl_certificate', [files['cert'], files['cert2']])
+            block = set_directive(block, 'ssl_certificate_key', [files['key'], files['key2']])
+        else:
+            block = set_directive(block, 'ssl_certificate', files['cert'])
+            block = set_directive(block, 'ssl_certificate_key', files['key'])
         if t['pem']['root']:
             write_root(files['root'], t['pem']['root'] + t['pem']['chain'], 0o644)
             block = set_directive(block, 'ssl_trusted_certificate', files['root'])
@@ -623,10 +640,13 @@ def tls_into(block, t, files, had_dh):
 
 
 NODE_FILES = {'cert': os.path.join(CERT_DIR, 'otp.pem'), 'key': os.path.join(CERT_DIR, 'otp.key'),
+              'cert2': os.path.join(CERT_DIR, 'otp-ecdsa.pem'), 'key2': os.path.join(CERT_DIR, 'otp-ecdsa.key'),
               'root': os.path.join(CERT_DIR, 'otp-ca.pem'),
               'dh': os.path.join(CERT_DIR, 'otp-dh.pem')}
 VIP_FILES = {'cert': os.path.join(CERT_DIR, 'otp-vip.pem'),
              'key': os.path.join(CERT_DIR, 'otp-vip.key'),
+             'cert2': os.path.join(CERT_DIR, 'otp-vip-ecdsa.pem'),
+             'key2': os.path.join(CERT_DIR, 'otp-vip-ecdsa.key'),
              'root': os.path.join(CERT_DIR, 'otp-vip-ca.pem'),
              'dh': os.path.join(CERT_DIR, 'otp-vip-dh.pem')}
 

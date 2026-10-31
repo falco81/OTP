@@ -102,7 +102,20 @@ def mine(x):
 
 
 S = call('/api/auth/login', {'name': 'local', 'password': 'Local-Admin-Pass-169!'})[1]['token']
-SET = lambda dd: call('/api/settings', {'settings': dd}, S)
+def forget():
+    """The CA forgets the names proven (it uses them again, as Let's Encrypt does): a test
+    of a challenge has the name proven by that challenge."""
+    import ssl as _ssl
+    c_ = _ssl.create_default_context(cafile=CAW + '/ca.pem')
+    with urllib.request.build_opener(urllib.request.HTTPSHandler(context=c_), urllib.request.ProxyHandler({})).open(
+            'https://127.0.0.1:14000/forget', timeout=10) as r:
+        r.read()
+
+
+def SET(dd):
+    if os.path.exists(CAW + '/ca.pem'):
+        forget()
+    return call('/api/settings', {'settings': dd}, S)
 ok('off by default', not otp.DEFAULTS['acme'])
 c, x = call('/api/acme/challenge?token=nothing-here-at-all', None)
 ok('a challenge nobody asked: 404 (%s)' % c, c == 404)
@@ -282,6 +295,7 @@ SET({'acme_node_name': NAME})
 
 
 def order_now(what):
+    forget()
     t0 = time.time()
     c, x = call('/api/acme', {'action': 'order', 'target': 'otp1'}, S)
     v = until(lambda: (lambda x: x if [t for t in mine(x) if (t['state'].get('at') or 0) >= t0] and not x['work']['busy'] else None)(

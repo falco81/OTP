@@ -32,6 +32,7 @@ run(['openssl', 'x509', '-req', '-in', W + '/srv.csr', '-CA', W + '/ca.pem', '-C
      '-days', '30', '-extfile', W + '/ext', '-out', W + '/srv.pem'])
 NONCES, ACCTS, ORDERS, AUTHZ, CERTS = set(), {}, {}, {}, {}
 LOCK = threading.Lock()
+ORDERS_ASKED, ARI_ASKED, ALGS = [], [], []
 LOG = []
 
 
@@ -43,33 +44,57 @@ def b64e(b):
     return base64.urlsafe_b64encode(b).rstrip(b'=').decode()
 
 
+def _der_len(n):
+    if n < 128:
+        return bytes([n])
+    b = n.to_bytes((n.bit_length() + 7) // 8, 'big')
+    return bytes([0x80 | len(b)]) + b
+
+
+def _der(tag, body):
+    return bytes([tag]) + _der_len(len(body)) + body
+
+
+def _der_int(b):
+    b = b.lstrip(b'\x00') or b'\x00'
+    if b[0] & 0x80:
+        b = b'\x00' + b
+    return _der(2, b)
+
+
 def jwk_pem(jwk):
-    if jwk.get('kty') != 'EC' or jwk.get('crv') != 'P-256':
-        raise ValueError('only EC P-256')
-    der = bytes.fromhex('3059301306072a8648ce3d020106082a8648ce3d030107034200') + b'\x04' + b64d(jwk['x']) + b64d(jwk['y'])
+    """The account's public key as PEM: EC P-256, P-384, or RSA (as Let's Encrypt takes)."""
+    if jwk.get('kty') == 'EC' and jwk.get('crv') in ('P-256', 'P-384'):
+        pre = '3059301306072a8648ce3d020106082a8648ce3d030107034200' if jwk['crv'] == 'P-256' else \
+            '3076301006072a8648ce3d020106052b81040022036200'
+        der = bytes.fromhex(pre) + b'\x04' + b64d(jwk['x']) + b64d(jwk['y'])
+    elif jwk.get('kty') == 'RSA':
+        rsa = _der(0x30, _der_int(b64d(jwk['n'])) + _der_int(b64d(jwk['e'])))
+        alg = _der(0x30, _der(6, bytes.fromhex('2a864886f70d010101')) + b'\x05\x00')
+        der = _der(0x30, alg + _der(3, b'\x00' + rsa))
+    else:
+        raise ValueError('an account key Let\'s Encrypt does not take')
     return b'-----BEGIN PUBLIC KEY-----\n' + base64.encodebytes(der) + b'-----END PUBLIC KEY-----\n'
 
 
 def thumb(jwk):
-    return b64e(hashlib.sha256(json.dumps({'crv': jwk['crv'], 'kty': jwk['kty'], 'x': jwk['x'], 'y': jwk['y']},
+    keys = ('e', 'kty', 'n') if jwk.get('kty') == 'RSA' else ('crv', 'kty', 'x', 'y')
+    return b64e(hashlib.sha256(json.dumps({k: jwk[k] for k in keys},
                                           separators=(',', ':'), sort_keys=True).encode()).digest())
 
 
-def verify(pem, signing_input, sig):
-    if len(sig) != 64:
-        raise ValueError('the signature is not 64 bytes')
-
-    def integer(b):
-        b = b.lstrip(b'\x00') or b'\x00'
-        if b[0] & 0x80:
-            b = b'\x00' + b
-        return b'\x02' + bytes([len(b)]) + b
-    body = integer(sig[:32]) + integer(sig[32:])
-    der = b'\x30' + bytes([len(body)]) + body
+def verify(pem, signing_input, sig, alg='ES256'):
+    if alg == 'RS256':
+        der, digest = sig, '-sha256'
+    else:
+        size, digest = (48, '-sha384') if alg == 'ES384' else (32, '-sha256')
+        if len(sig) != 2 * size:
+            raise ValueError('the signature is not %d bytes' % (2 * size))
+        der = _der(0x30, _der_int(sig[:size]) + _der_int(sig[size:]))
     k = '%s/k%s.pem' % (W, secrets.token_hex(4)); s = k + '.sig'
     open(k, 'wb').write(pem); open(s, 'wb').write(der)
     try:
-        p = subprocess.run(['openssl', 'dgst', '-sha256', '-verify', k, '-signature', s], input=signing_input, capture_output=True)
+        p = subprocess.run(['openssl', 'dgst', digest, '-verify', k, '-signature', s], input=signing_input, capture_output=True)
         if p.returncode:
             raise ValueError('the signature does not check')
     finally:
@@ -103,11 +128,27 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/dir':
-            return self.send(200, {'newNonce': B + '/nonce', 'newAccount': B + '/acct', 'newOrder': B + '/order'})
+            # Profiles and ARI (RFC 9773) as Let's Encrypt has them.
+            return self.send(200, {'newNonce': B + '/nonce', 'newAccount': B + '/acct', 'newOrder': B + '/order',
+                                   'renewalInfo': B + '/ari',
+                                   'meta': {'profiles': {'classic': '90 days', 'tlsserver': '90 days, TLS server',
+                                                         'shortlived': '6 days'}}})
+        if self.path == '/forget':
+            for v in AUTHZ.values():
+                if v['status'] == 'valid':
+                    v['status'] = 'deactivated'
+            return self.send(200, {'ok': True})
+        if self.path.startswith('/ari/'):
+            ARI_ASKED.append(self.path[5:])
+            if os.path.exists(W + '/ari'):
+                return self.send(200, json.loads(open(W + '/ari').read()))
+            return self.send(200, {'suggestedWindow': {'start': '2099-01-01T00:00:00Z', 'end': '2099-01-02T00:00:00Z'}})
         if self.path == '/nonce':
             return self.send(204)
         if self.path == '/log':
             return self.send(200, LOG)
+        if self.path == '/asked':
+            return self.send(200, {'orders': ORDERS_ASKED, 'ari': ARI_ASKED, 'algs': sorted(set(ALGS))})
         self.err(405, 'malformed', 'POST-as-GET')
 
     def do_POST(self):
@@ -119,8 +160,9 @@ class H(http.server.BaseHTTPRequestHandler):
             NONCES.discard(prot['nonce'])
         if prot.get('url') != B + self.path:
             return self.err(400, 'unauthorized', 'url %s is not %s' % (prot.get('url'), B + self.path))
-        if prot.get('alg') != 'ES256':
+        if prot.get('alg') not in ('ES256', 'ES384', 'RS256'):
             return self.err(400, 'badSignatureAlgorithm', prot.get('alg'))
+        ALGS.append(prot.get('alg'))
         if 'jwk' in prot:
             jwk = prot['jwk']; kid = None
         else:
@@ -129,7 +171,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self.err(400, 'accountDoesNotExist', kid)
             jwk = ACCTS[kid]['jwk']
         try:
-            verify(jwk_pem(jwk), ('%s.%s' % (raw['protected'], raw['payload'])).encode(), b64d(raw['signature']))
+            verify(jwk_pem(jwk), ('%s.%s' % (raw['protected'], raw['payload'])).encode(), b64d(raw['signature']),
+                   prot.get('alg'))
         except ValueError as e:
             return self.err(400, 'unauthorized', str(e))
         payload = json.loads(b64d(raw['payload'])) if raw['payload'] else None
@@ -147,16 +190,25 @@ class H(http.server.BaseHTTPRequestHandler):
         if kid is None:
             return self.err(400, 'malformed', 'a kid is needed')
         if p == '/order':
+            ORDERS_ASKED.append({'profile': payload.get('profile'), 'replaces': payload.get('replaces')})
             names = [i['value'] for i in payload['identifiers']]
             if any(n.endswith('.example') for n in names):
                 return self.err(400, 'rejectedIdentifier', 'the CA may not give a certificate for %s' % names)
             oid = secrets.token_hex(4)
             azs = []
             for n in names:
+                # A valid authorization of the same account and name is used again, as LE does -
+                # forgotten by /forget, so a test of a challenge has the name proven by it.
+                old_ = [a_ for a_, v in AUTHZ.items() if v['name'] == n and v['kid'] == kid and v['status'] == 'valid']
+                if old_:
+                    azs.append(B + '/authz/' + old_[0])
+                    continue
                 aid = secrets.token_hex(4)
-                AUTHZ[aid] = {'name': n, 'status': 'pending', 'token': secrets.token_urlsafe(24), 'kid': kid}
+                AUTHZ[aid] = {'name': n, 'status': 'pending', 'token': secrets.token_urlsafe(24), 'kid': kid,
+                              'at': time.time()}
                 azs.append(B + '/authz/' + aid)
-            ORDERS[oid] = {'status': 'pending', 'names': names, 'authz': azs, 'kid': kid}
+            ORDERS[oid] = {'status': 'pending', 'names': names, 'authz': azs, 'kid': kid,
+                           'profile': payload.get('profile')}
             return self.send(201, self.order(oid), {'Location': B + '/order/' + oid})
         if p.startswith('/order/'):
             return self.send(200, self.order(p.split('/')[-1]))
@@ -183,6 +235,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 txt = []
             LOG.append({'dns': a['name'], 'txt': txt})
             a['status'] = 'valid' if want in txt else 'invalid'
+            a['at'] = time.time()
             if want not in txt:
                 a['error'] = {'detail': 'no TXT record %s at _acme-challenge.%s (found %s)' % (want, a['name'], txt)}
             return self.send(200, {'type': 'dns-01', 'status': 'processing', 'token': a['token']})
@@ -195,6 +248,7 @@ class H(http.server.BaseHTTPRequestHandler):
                         'http://%s/.well-known/acme-challenge/%s' % (a['name'], a['token']), timeout=10) as r:
                     got = r.read().decode().strip()
                 a['status'] = 'valid' if got == want else 'invalid'
+                a['at'] = time.time()
                 if got != want:
                     a['error'] = {'detail': 'the answer is not the key authorization: %r' % got[:60]}
             except Exception as e:
@@ -213,9 +267,10 @@ class H(http.server.BaseHTTPRequestHandler):
             for n in o['names']:
                 if 'DNS:' + n not in text:
                     return self.err(400, 'badCSR', 'the request does not name %s' % n)
-            open(W + '/e', 'w').write('subjectAltName=' + ','.join('DNS:' + n for n in o['names']) + '\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n')
+            open(W + '/e', 'w').write('subjectAltName=' + ','.join('DNS:' + n for n in o['names']) + '\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid\n')
             pem = run(['openssl', 'x509', '-req', '-in', W + '/c.csr', '-CA', W + '/ca.pem', '-CAkey', W + '/ca.key',
-                       '-CAcreateserial', '-days', (open(W + '/days').read().strip() if os.path.exists(W + '/days') else '90'),
+                       '-CAcreateserial', '-days', '6' if o.get('profile') == 'shortlived' else
+                       (open(W + '/days').read().strip() if os.path.exists(W + '/days') else '90'),
                        '-extfile', W + '/e']).decode()
             CERTS[oid] = pem + open(W + '/ca.pem').read()
             o['status'] = 'valid'

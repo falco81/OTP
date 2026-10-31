@@ -144,6 +144,7 @@ ok('ordered by themselves: each node\'s and the VIP address\'s (%s)' % c,
 ok('... from the CA giving 20 days', all(0 < (c.get(t) or [0, 0])[1] < 25 for t in NAMES), c)
 # Fewer days than acme_days (30), but not yet a third of its life: not ordered again and
 # again (it was, every few seconds, until the CA's limits refused them all).
+time.sleep(10)                  # the events of the orders above written first
 n0 = int(dbq('a', "SELECT count(*) FROM events WHERE words LIKE 'a certificate for %came from the CA%'") or 0)
 time.sleep(40)
 n1 = int(dbq('a', "SELECT count(*) FROM events WHERE words LIKE 'a certificate for %came from the CA%'") or 0)
@@ -170,6 +171,83 @@ ok('the CA was asked over port 80 (%d)' % len(SEEN), SEEN)
 gone = [l for l in open(S + '/a/log/otp.log').read().split('\n')[-3000:] + open(S + '/b/log/otp.log').read().split('\n')[-3000:]
         if 'does not know the account any more' in l]
 ok('... the account it forgot: a new one made by itself (%d)' % len(gone), gone)
+# ---- 1.0.196: both an RSA and an ECDSA certificate, a profile, the CA's renewal window ----
+import ssl as _ssl, urllib.request as _ur
+
+
+def asked():
+    c = _ssl.create_default_context(cafile=CAW + '/ca.pem')
+    with _ur.build_opener(_ur.HTTPSHandler(context=c), _ur.ProxyHandler({})).open('https://127.0.0.1:14000/asked', timeout=10) as r:
+        return json.loads(r.read())
+
+
+st_, got = call('a', '/api/settings', {'settings': {'acme_key': 'dual-strong', 'acme_account_key': 'ec384',
+                                                    'acme_profile': 'shortlived'}})
+ok('both certificates (RSA 4096 + ECDSA P-384), the account on P-384, the shortlived profile (%s)' % st_, st_ == 200, got)
+n0 = len(asked()['orders'])
+call('a', '/api/acme', {'action': 'order', 'target': 'nodea'})
+
+
+def alt_of(t):
+    out = in_node('a', 'p = otp.tls_profile(st, %r) or {}; a = p.get("alt") or {}; print(json.dumps([(p.get("info") or {}).get("key"), (a.get("info") or {}).get("key"), (float((p.get("info") or {}).get("not_after") or 0) - time.time()) / 86400]))' % t)
+    return json.loads(out.strip().split('\n')[-1])
+
+
+got = None
+for _ in range(60):
+    time.sleep(2)
+    got = alt_of('nodea')
+    if got[1] and 'RSA 4096' in str(got[0]).upper():
+        break
+ok('nodea: an RSA 4096 certificate and an ECDSA P-384 one beside it (%s)' % got,
+   got and got[1] and 'RSA 4096' in str(got[0]).upper() and 'EC 384' in str(got[1]).upper(), got)
+ok('... the account signs with ES384 (%s)' % asked()['algs'], 'ES384' in asked()['algs'])
+acc = json.loads(dbq('a', "SELECT v FROM meta WHERE k = 'acme:account'") or '{}')
+ok('... a new account for the new kind of key (%s)' % acc.get('kind'), acc.get('kind') == 'ec384')
+ok('... from the shortlived profile: 6 days (%.1f)' % (got[2] if got else 0), got and 5 < got[2] < 7, got)
+o = asked()['orders'][n0:]
+ok('... the CA asked with the profile, and as the renewal of the one before (%s)' % o,
+   o and all(x.get('profile') == 'shortlived' for x in o) and o[0].get('replaces'), o)
+time.sleep(15)
+conf = open('%s/a/nginx/otp.conf' % S).read()
+ok('nginx of nodea: both certificates (RSA first)', conf.count('ssl_certificate ') == 2 and
+   conf.index('otp.pem') < conf.index('otp-ecdsa.pem'), [l for l in conf.split('\n') if 'ssl_certificate' in l])
+ok('... their files: the ECDSA one written', os.path.exists('%s/a/certs/otp-ecdsa.pem' % S) and
+   'BEGIN' in open('%s/a/certs/otp-ecdsa.key' % S).read())
+# The CA's renewal window (ARI), now: renewed by itself, though 6 days are left.
+import datetime as _dt
+now_ = _dt.datetime.utcnow()
+open(CAW + '/ari', 'w').write(json.dumps({'suggestedWindow': {
+    'start': (now_ - _dt.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'end': (now_ - _dt.timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}}))
+before = alt_of('nodea')
+n1 = len(asked()['orders'])
+renewed = False
+for _ in range(60):
+    time.sleep(3)
+    if len(asked()['orders']) > n1 and asked()['ari']:
+        renewed = True
+        break
+evs = dbq('a', "SELECT words FROM events WHERE words LIKE 'a certificate for nodea%%' ORDER BY id DESC LIMIT 1")
+ok('the CA\'s renewal window come (ARI): renewed by itself (%s)' % evs, renewed, asked()['ari'][-2:])
+os.unlink(CAW + '/ari')
+# The account on RSA (RS256), and one key, ECDSA P-256: a certificate of that alone.
+call('a', '/api/settings', {'settings': {'acme_key': 'ec', 'acme_account_key': 'rsa2048', 'acme_profile': ''}})
+time.sleep(2)
+call('a', '/api/acme', {'action': 'order', 'target': 'nodea'})
+for _ in range(60):
+    time.sleep(2)
+    got = alt_of('nodea')
+    if got and not got[1] and 'EC 256' in str(got[0]).upper():
+        break
+ok('one key, ECDSA P-256: that certificate alone, the second one gone (%s)' % got,
+   got and not got[1] and 'EC 256' in str(got[0]).upper(), got)
+ok('... the account signs with RS256 (%s)' % asked()['algs'], 'RS256' in asked()['algs'])
+time.sleep(15)
+conf = open('%s/a/nginx/otp.conf' % S).read()
+ok('... nginx: one certificate again', conf.count('ssl_certificate ') == 1,
+   [l for l in conf.split('\n') if 'ssl_certificate' in l])
+call('a', '/api/settings', {'settings': {'acme_key': 'dual', 'acme_account_key': 'ec', 'acme_profile': ''}})
 s0 = int(time.time()) // 30
 while int(time.time()) // 30 == s0:
     time.sleep(0.5)

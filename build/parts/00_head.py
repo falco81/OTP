@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import base64
 import bisect
+import calendar
 import binascii
 import collections
 import contextlib
@@ -80,7 +81,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.195'
+__version__ = '1.0.196'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -346,7 +347,9 @@ DEFAULTS = {
     'acme_for': 'vip',
     'acme_node_name': '',
     'acme_days': 30,
-    'acme_key': 'ec',
+    'acme_key': 'dual',
+    'acme_account_key': 'ec',
+    'acme_profile': '',
     'acme_challenge': 'http-01',
     'acme_dns': 'manual',
     'acme_dns_server': '',
@@ -489,7 +492,9 @@ TUNABLE = {
     'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
     'logs_max_mb': (1, 100000),
     'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
-    'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('ec', 'rsa2048'),
+    'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('dual', 'dual-strong', 'ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
+    'acme_account_key': ('ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
+    'acme_profile': ('', 'classic', 'tlsserver', 'shortlived'),
     'acme_challenge': ('http-01', 'dns-01'), 'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns',
                                                                              'desec'),
     'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384', 'hmac-sha224', 'hmac-sha1',
@@ -525,7 +530,16 @@ CHOICE_WORDS = {
                 'custom': 'another ACME CA (step-ca, an internal CA...)'},
     'acme_for': {'vip': 'the VIP address (or this node, where there is none)',
                  'node': 'each node\u2019s own name', 'both': 'the VIP address and each node'},
-    'acme_key': {'ec': 'ECDSA P-256', 'rsa2048': 'RSA 2048'},
+    'acme_key': {'dual': 'Both: RSA 2048 + ECDSA P-256 (advised)',
+                 'dual-strong': 'Both: RSA 4096 + ECDSA P-384',
+                 'ec': 'ECDSA P-256', 'ec384': 'ECDSA P-384',
+                 'rsa2048': 'RSA 2048', 'rsa3072': 'RSA 3072', 'rsa4096': 'RSA 4096'},
+    'acme_account_key': {'ec': 'ECDSA P-256 (ES256)', 'ec384': 'ECDSA P-384 (ES384)',
+                         'rsa2048': 'RSA 2048 (RS256)', 'rsa3072': 'RSA 3072 (RS256)',
+                         'rsa4096': 'RSA 4096 (RS256)'},
+    'acme_profile': {'': 'the CA\u2019s own (classic at Let\u2019s Encrypt)',
+                     'classic': 'classic - 90 days', 'tlsserver': 'tlsserver - 90 days, for TLS servers only',
+                     'shortlived': 'shortlived - 6 days'},
     'rbackup_verify': {'off': 'only by hand', 'after': 'after every backup, the one just sent',
                        'weekly': 'once a week, the newest one'},
     'mail_mode': {'off': 'off - no mail is sent',
@@ -797,6 +811,8 @@ NAMES = {
     'acme_node_name': 'The node\u2019s DNS name',
     'acme_days': 'Renewed when fewer days are left than',
     'acme_key': 'The key of the certificate',
+    'acme_account_key': 'The key of the ACME account',
+    'acme_profile': 'The profile of the certificate',
     'acme_challenge': 'How the CA checks the name',
     'acme_dns': 'Who puts the TXT record in DNS',
     'acme_dns_server': 'The DNS server taking the updates',
@@ -1341,7 +1357,14 @@ SAYS = {
                       'under the box. Empty: the name of the certificate it has now, else its full host '
                       'name. The VIP address\u2019s: <i>Its name\u2026</i> on its card above.',
     'acme_days': 'Let\u2019s Encrypt\u2019s certificates last 90 days; 30 is what it advises.',
-    'acme_key': 'ECDSA is smaller and quicker; RSA for old clients.',
+    'acme_profile': 'What the CA makes the certificate as, where it offers profiles (Let\u2019s '
+                    'Encrypt does): shortlived lasts 6 days and is renewed every two or three - '
+                    'no revoking needed if its key is lost. Another CA without profiles: its own.',
+    'acme_key': 'Let\u2019s Encrypt takes RSA keys of 2048, 3072 or 4096 bits and ECDSA keys on P-256 or P-384. '
+                'Both - what Let\u2019s Encrypt advises - orders two certificates for the name: RSA served by default, '
+                'the much smaller ECDSA one to the clients that say they take it.',
+    'acme_account_key': 'The key the account with the CA signs with - never one of a certificate. '
+                        'RSA 2048, 3072, 4096 or ECDSA P-256, P-384. A change makes a new account at the next order.',
     'acme_challenge': 'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, '
                       'for a CA of your own). DNS-01 needs nothing open: the CA reads a TXT record.',
     'acme_dns': 'By hand the order waits up to an hour for you; the others renew by themselves.',
@@ -1469,7 +1492,7 @@ PANES = {
                 'snmp_traps', 'snmp_trap_to', 'metrics', 'metrics_token', 'metrics_from'],
     'logs': ['logs_journal_mb', 'logs_journal_days', 'logs_keep', 'logs_max_mb'],
     'acme': ['acme', 'acme_for', 'acme_email', 'acme_ca', 'acme_url', 'acme_ca_pem',
-             'acme_node_name', 'acme_days', 'acme_key', 'acme_challenge', 'acme_dns',
+             'acme_node_name', 'acme_days', 'acme_key', 'acme_account_key', 'acme_profile', 'acme_challenge', 'acme_dns',
              'acme_dns_server', 'acme_dns_zone', 'acme_dns_tsig_name', 'acme_dns_tsig_alg',
              'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_url', 'acme_dns_user',
              'acme_dns_key', 'acme_dns_subdomain', 'acme_desec_domain', 'acme_desec_token',
@@ -1547,7 +1570,7 @@ ONLY_WHEN = {
     'proxy_no': ['proxy', '1'], 'proxy_os': ['proxy', '1'], 'proxy_sms': ['proxy', '1'],
     'acme_for': ['acme', '1'], 'acme_email': ['acme', '1'], 'acme_ca': ['acme', '1'],
     'acme_url': ['acme_ca', 'custom'], 'acme_ca_pem': ['acme_ca', 'custom'],
-    'acme_node_name': ['acme_for', 'vip-not'], 'acme_days': ['acme', '1'], 'acme_key': ['acme', '1'],
+    'acme_node_name': ['acme_for', 'vip-not'], 'acme_days': ['acme', '1'], 'acme_key': ['acme', '1'], 'acme_account_key': ['acme', '1'], 'acme_profile': ['acme', '1'],
     'acme_challenge': ['acme', '1'], 'acme_dns': ['acme_challenge', 'dns-01'],
     'acme_dns_wait': ['acme_challenge', 'dns-01'],
     'acme_dns_server': ['acme_dns', 'rfc2136'], 'acme_dns_zone': ['acme_dns', 'rfc2136'],

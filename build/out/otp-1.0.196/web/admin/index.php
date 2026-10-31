@@ -1696,8 +1696,12 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
       <h2>What root said last <span class="mono small muted" id="up-log-node" data-no-i18n></span></h2>
       <p class="note"><span>The output of install.sh, the last time this node was upgraded from these pages.</span>
         <span class="mono" data-no-i18n>/var/lib/otp/upgrade/last.log</span></p>
-      <div class="seg" id="up-log-nodes" hidden style="margin-bottom:10px"></div>
-      <pre class="lines" id="up-log">–</pre>
+      <!-- Folded until asked for (1.0.196): a long log pushed the rest down. -->
+      <details class="fold" id="up-log-fold">
+        <summary>the output</summary>
+        <div class="seg" id="up-log-nodes" hidden style="margin:10px 0"></div>
+        <pre class="lines" id="up-log">–</pre>
+      </details>
     </div>
     <div class="card full">
       <h2>On the command line</h2>

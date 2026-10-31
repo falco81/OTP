@@ -4,6 +4,37 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.196 — 31 October 2026
+
+**Automatic certificates (ACME): every key Let's Encrypt takes, as upsmon has it**
+(Settings → Automatic certificates):
+- *The key of the certificate*: **Both: RSA 2048 + ECDSA P-256** (advised - the new
+  default), Both: RSA 4096 + ECDSA P-384, or one key: ECDSA P-256 or P-384, RSA
+  2048, 3072 or 4096. Both orders two certificates for the name - the second one
+  only signed, the name already proven: nginx gets `ssl_certificate` twice, RSA
+  (`otp.pem`) served by default, ECDSA (`otp-ecdsa.pem`) to the clients that take
+  it. A certificate put in by hand on Certificates and TLS leaves the ECDSA one out.
+- *The key of the ACME account*, new: ECDSA P-256 (ES256), P-384 (ES384), RSA
+  2048, 3072 or 4096 (RS256) - never one of a certificate; a change makes a new
+  account at the next order.
+- Shown on the ACME card (*Keys*), beside the certificate's key, beside the account
+  at the CA, and in the order's steps.
+- Where the CA offers them: a profile asked for (classic, tlsserver, shortlived -
+  6 days), and its renewal window (ARI, RFC 9773) followed - earlier than otp's own
+  measure only, never later; each order says which certificate it replaces. The
+  CA's Retry-After waited for.
+- A key left at its default renews as **Both** at the next renewal (*Order it now*
+  for it at once); one saved before stays until changed.
+- Tested on the cluster of two (`tests/hasb/full/t_ha_acme.py`, 28 of 28) and on one
+  server (`tests/acme/t_acme.py`, 62 of 62); the test CA uses a name proven before
+  again, as Let's Encrypt does.
+
+**In your DNS** (the ACME card): the copy buttons one under the other right after the text,
+and still at each refresh - they jumped about, put in place only after the card was drawn.
+
+**Upgrades**: *What root said last* folded until opened - a long log pushed the
+rest of the page down.
+
 ## 1.0.195 — 31 October 2026
 
 - **Backups to SMB**: "smbclient: ERROR: Could not determine network interfaces,
