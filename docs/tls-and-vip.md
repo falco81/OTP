@@ -47,6 +47,17 @@ says so). `install.sh` (1.0.47 and later) installs the helper and the units.
 
 ## Certificates
 
+### Download (1.0.191)
+
+*Download* on a certificate's card opens a window with the format: the certificate
+as PEM (`.crt`), with its chain (`.pem`), as DER (`.cer`), PKCS#7 with its chain
+(`.p7b`) - or **with its private key**: PKCS#12 (`.pfx`) or PEM with the key
+locked (PKCS#8, AES-256). With the key, a password of 10 characters at least,
+typed twice, locks the file - never without one; *For older Windows* makes a PFX
+with 3DES that Windows before 10 (1709) and Server 2016 open. Full administrators
+only; each download with the key is an event (*warn*). On the command line:
+`otp --tls-for NODE|vip --tls-export pfx FILE` (the password asked for; `--legacy`).
+
 ### Upload
 
 On the pages: *Upload…* on the node's (or the VIP address's) card. Drop the

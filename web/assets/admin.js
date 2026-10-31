@@ -5878,6 +5878,87 @@ if ($('db-tune-undo')) {
 }
 
 /* ---- export and import ---------------------------------------------------- */
+/* A certificate downloaded (1.0.191): its format chosen in a window - with its
+   private key (PFX, PEM) only locked with a passphrase typed twice. */
+var CERT_FORMATS = [
+  ['pem', '.crt', 'The certificate', 'PEM - the certificate alone. nginx, Apache, most of Linux.', false],
+  ['fullchain', '.pem', 'Certificate and chain', 'PEM - the certificate and the authorities that signed it, one file.', false],
+  ['der', '.cer', 'Certificate, binary', 'DER - the certificate alone. Windows, Java, network devices.', false],
+  ['p7b', '.p7b', 'Certificate and chain, PKCS#7', 'The certificate with its chain, no key. Windows and IIS import it.', false],
+  ['pfx', '.pfx', 'With the private key, PKCS#12', 'The certificate, its chain and its private key in one file locked with a password. Windows, IIS, Exchange, Azure, browsers.', true],
+  ['pemkey', '.pem', 'With the private key, PEM', 'The certificate, its chain and its private key locked with a passphrase (PKCS#8, AES-256).', true]
+];
+function certExport(target, prof) {
+  var info = prof.info || {};
+  var st = {kind: 'pfx', legacy: false};
+  modal('Download the certificate of ' + webTargetWords(target), function (body) {
+    if (info.subject) body.appendChild(el('p', 'muted small', info.subject + (info.not_after ? ' · until ' + stamp(info.not_after) : '')));
+    var list = el('div', 'fmt-list');
+    var keyBox = el('div', 'fmt-key');
+    var draw = function () {
+      list.querySelectorAll('.fmt').forEach(function (b) { b.classList.toggle('on', b.dataset.kind === st.kind); b.setAttribute('aria-checked', b.dataset.kind === st.kind ? 'true' : 'false'); });
+      var f = CERT_FORMATS.filter(function (x) { return x[0] === st.kind; })[0];
+      keyBox.hidden = !f[4];
+      $('cx-legacy-row').hidden = st.kind !== 'pfx';
+    };
+    CERT_FORMATS.forEach(function (f) {
+      var b = el('button', 'fmt' + (f[4] ? ' with-key' : ''));
+      b.type = 'button';
+      b.dataset.kind = f[0];
+      b.setAttribute('role', 'radio');
+      b.appendChild(el('span', 'fmt-ext', f[1]));
+      var t = el('span', 'fmt-text');
+      t.appendChild(el('b', '', f[2]));
+      t.appendChild(el('span', 'fmt-says', f[3]));
+      if (f[4]) t.appendChild(el('span', 'tag warn', 'private key'));
+      b.appendChild(t);
+      b.onclick = function () { st.kind = f[0]; draw(); };
+      list.appendChild(b);
+    });
+    body.appendChild(list);
+    keyBox.appendChild(el('p', 'note warn', 'The private key leaves this machine. Whoever holds the file and its password can be ' + webTargetWords(target) + '. The download, and by whom, goes into Events.'));
+    var p1 = secretBox('', '10 characters at least', 'mono');
+    var p2 = secretBox('', 'the same again', 'mono');
+    p1.id = 'cx-p1'; p2.id = 'cx-p2';
+    p1.autocomplete = p2.autocomplete = 'new-password';
+    var g = el('div', 'formgrid');
+    g.appendChild(formField('Password of the file', p1));
+    g.appendChild(formField('The password again', p2));
+    keyBox.appendChild(g);
+    var lg = switchBox(false);
+    lg._input.onchange = function () { st.legacy = !!lg._get(); };
+    var row = formField('For older Windows', lg, 'Windows before 10 (1709) and Server 2016 open no AES-protected PFX: 3DES then, as they need.');
+    row.id = 'cx-legacy-row';
+    keyBox.appendChild(row);
+    body.appendChild(keyBox);
+    draw();
+  }, [
+    {words: 'Cancel', close: true},
+    {words: 'Download', cls: 'primary', icon: 'download', go: function (button) {
+      var f = CERT_FORMATS.filter(function (x) { return x[0] === st.kind; })[0];
+      var req = {action: 'tls_export', target: target, kind: st.kind};
+      if (f[4]) {
+        var a = $('cx-p1').value, b2 = $('cx-p2').value;
+        if (a.length < 10) { toast('a password of 10 characters at least', 'bad'); $('cx-p1').focus(); return; }
+        if (a !== b2) { toast('the two passwords are not the same', 'bad'); $('cx-p2').focus(); return; }
+        req.passphrase = a;
+        req.legacy = st.legacy;
+      }
+      busy(button, true);
+      api('web', req).then(function (x) {
+        var raw = atob(x.file), bytes = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        var a2 = el('a');
+        a2.href = URL.createObjectURL(new Blob([bytes], {type: x.type || 'application/octet-stream'}));
+        a2.download = x.name;
+        document.body.appendChild(a2);
+        a2.click();
+        setTimeout(function () { URL.revokeObjectURL(a2.href); a2.remove(); }, 500);
+        closeModal();
+        toast(x.name + (f[4] ? ' - keep its password apart from the file' : ''), 'good');
+      }).catch(oops).then(function () { busy(button, false); });
+    }}], 'medium');
+}
 function saveFile(name, text) {
   var a = el('a');
   a.href = URL.createObjectURL(new Blob([text], {type: 'application/json'}));
@@ -8418,12 +8499,8 @@ function certCard(d, target) {
     if (bef && !bef.ran_out) tools.appendChild(acmePutBackButton(target, bef, function () { loadWeb(); }));
     if (prof && prof.cert) {
       var dl = cmdButton('Download', 'download', 'small');
-      dl.title = 'The certificate and its chain, as PEM - without the key';
-      dl.onclick = function () {
-        api('web', {action: 'tls_pem', target: target}).then(function (x) {
-          saveFile((target === 'vip' ? 'web-address' : target) + '.pem', x.pem);
-        }).catch(oops);
-      };
+      dl.title = 'The certificate in the format chosen - PEM, DER, PKCS#7, or PFX with its private key';
+      dl.onclick = function () { certExport(target, prof); };
       tools.appendChild(dl);
       var fg = cmdButton('Let go', 'forget', 'small danger-soft');
       fg.title = 'otp stops looking after it (nginx keeps what it has)';
@@ -13847,6 +13924,11 @@ function drawSshd(live) {
     rk._input.onchange = function () { dr.radius_with_key = !!rk._get(); sdDirty(); drawSshd(); };
     rg.appendChild(formField('A key, and then the code', rk, 'On: an SSH key alone no longer lets in - after the key sshd asks for the code too (AuthenticationMethods publickey,keyboard-interactive), for the accounts the code is asked of. Off: a key alone lets in, the code is asked only where a password would be.'));
     rg.appendChild(formField('The system password when otp does not answer', rf, dr.password ? 'pam_radius steps aside (localifdown) and the account\'s own password is asked.' : 'Needs passwords on - with them off, nobody gets in without the code.'));
+    /* The code hidden as it is typed (1.0.191). */
+    var rh = switchBox(dr.radius_hide);
+    rh._input.disabled = !dr.manage || !dr.radius;
+    rh._input.onchange = function () { dr.radius_hide = !!rh._get(); sdDirty(); };
+    rg.appendChild(formField('Hide the code as it is typed', rh, 'On: the SSH client shows nothing as the code is typed, as for a password (PuTTY and ssh show no stars). Off: the code is seen as it is typed.'));
     rc.appendChild(rg);
     if (dr.manage && dr.radius) {
       var miss = nodes.filter(function (n) { return n.radius && n.radius.module === false; }).map(function (n) { return n.name; });

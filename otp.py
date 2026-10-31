@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.190'
+__version__ = '1.0.191'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -23497,6 +23497,70 @@ def _openssl(args, data=None, env=None, what='openssl'):
     return got.stdout
 
 
+TLS_EXPORT_KINDS = {
+    # kind: (what it is, its file's ending, the private key in it)
+    'pem': ('the certificate, PEM', '.crt', False),
+    'fullchain': ('the certificate and its chain, PEM', '-fullchain.pem', False),
+    'der': ('the certificate, DER', '.cer', False),
+    'p7b': ('the certificate and its chain, PKCS#7', '.p7b', False),
+    'pfx': ('the certificate, its chain and its private key, PKCS#12', '.pfx', True),
+    'pemkey': ('the certificate, its chain and its private key, PEM (the key locked)', '-with-key.pem', True),
+}
+
+
+def tls_export(prof, kind, passphrase='', legacy=False):
+    """One certificate as a file to download (1.0.191): (bytes, ending). A private
+    key in it is always locked with the passphrase - given to openssl on its
+    stdin, never on a command line; its file only in a folder of 0700, gone after."""
+    if kind not in TLS_EXPORT_KINDS:
+        raise ValueError('pem, fullchain, der, p7b, pfx or pemkey')
+    cert = str(prof.get('cert') or '').strip()
+    if not cert:
+        raise ValueError('no certificate is kept for it')
+    chain = '\n'.join(x.strip() for x in (prof.get('chain') or '', prof.get('root') or '') if x and x.strip())
+    _what, ending, with_key = TLS_EXPORT_KINDS[kind]
+    if kind == 'pem':
+        return (cert + '\n').encode(), ending
+    if kind == 'fullchain':
+        return (cert + '\n' + (chain + '\n' if chain else '')).encode(), ending
+    if kind == 'der':
+        return _openssl(['x509', '-outform', 'DER'], cert.encode(), what='the certificate'), ending
+    with tempfile.TemporaryDirectory(prefix='otp-tlsx-') as t:
+        os.chmod(t, 0o700)
+        cf = os.path.join(t, 'cert.pem')
+        with open(cf, 'w') as f:
+            f.write(cert + '\n' + (chain + '\n' if chain else ''))
+        if kind == 'p7b':
+            return _openssl(['crl2pkcs7', '-nocrl', '-certfile', cf, '-outform', 'DER'],
+                            what='the PKCS#7 bundle'), ending
+        if len(passphrase) < 10:
+            raise ValueError('a passphrase of 10 characters at least locks the private key')
+        key = unseal_secret(prof.get('key') or '', 'web:tls') if prof.get('key') else ''
+        if not key:
+            raise ValueError('the private key is not kept here (made elsewhere, or let go)')
+        kf = os.path.join(t, 'key.pem')
+        fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(key)
+        try:
+            if kind == 'pfx':
+                args = ['pkcs12', '-export', '-inkey', kf, '-in', cf, '-passout', 'stdin',
+                        '-name', (cert_info(cert).get('cn') or 'otp')[:64]]
+                if legacy:
+                    # Windows before 10 1709 / Server 2016 open no AES PKCS#12.
+                    args += ['-keypbe', 'PBE-SHA1-3DES', '-certpbe', 'PBE-SHA1-3DES', '-macalg', 'sha1']
+                return _openssl(args, (passphrase + '\n').encode(), what='the PKCS#12 file'), ending
+            locked = _openssl(['pkey', '-in', kf, '-aes256', '-passout', 'stdin'],
+                              (passphrase + '\n').encode(), what='locking the key').decode()
+            return (cert + '\n' + (chain + '\n' if chain else '') + locked).encode(), ending
+        finally:
+            try:
+                with open(kf, 'w') as f:
+                    f.write('\0' * len(key))
+            except OSError:
+                pass
+
+
 PEM_CERT = re.compile(r'-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----')
 PEM_KEY = re.compile(r'-----BEGIN ((?:RSA |EC |ENCRYPTED )?PRIVATE KEY)-----[A-Za-z0-9+/=\s:,-]+?'
                      r'-----END \1-----')
@@ -29192,8 +29256,9 @@ SSHD_DEFAULT = {'manage': False, 'permit_root': 'prohibit-password', 'password':
                 # A code from otp at SSH sign-in (1.0.178): pam_radius asking
                 # this node's own RADIUS.
                 'radius': False, 'radius_users': [], 'radius_root': False,
-                'radius_fallback': True, 'radius_with_key': False}
+                'radius_fallback': True, 'radius_with_key': False, 'radius_hide': False}
 HOST_WORK.update(sshd=False, sshd_read=0.0)
+SSHD_FMT = '191'           # how this version writes sshd's files (see sshd_tick)
 
 
 def sshd_conf(store):
@@ -29250,6 +29315,8 @@ def sshd_checked_conf(b):
     # Passwords off: a node otp cannot ask lets nobody in with one either.
     c['radius_fallback'] = bool(b.get('radius_fallback', True)) and c['password']
     c['radius_with_key'] = bool(b.get('radius_with_key')) and c['radius']
+    # The code not shown as it is typed (1.0.191): pam_radius asks with echo off.
+    c['radius_hide'] = bool(b.get('radius_hide')) and c['radius']
     return c
 
 
@@ -29288,6 +29355,8 @@ def sshd_save(store, b, by):
             ', the system password when otp does not answer' if c['radius_fallback'] else '')
         if c['radius_with_key']:
             what += ', a key first'
+        if c.get('radius_hide'):
+            what += ', the code hidden as typed'
     notes = [w for k, w in (('notice_ssh', 'SSH'), ('notice_console', 'console'),
                             ('notice_motd', 'after sign-in')) if c[k]]
     store.add_event('settings', '%s set the SSH server: %s%s%s' % (
@@ -29370,6 +29439,13 @@ def sshd_tick(daemon):
              (now.get('radius') or {}).get('skip_passwd') is False):
         # ... or its PAM block from before 1.0.188: "Password:" asked before the code.
         todo.append(('pamconf', None))
+    # The files written anew once after an upgrade that writes them otherwise for
+    # the same settings (1.0.191: root's own Match block) - no trial, nothing in
+    # them chosen differently.
+    if c.get('manage') and c.get('hash') and not todo and now.get('hash') == c.get('hash') and \
+            not (now.get('trial') or {}).get('until') and now.get('failed') != c.get('hash') and \
+            store.get_meta('host:sshd:fmt:' + me) != SSHD_FMT:
+        todo.append(('apply', {'refit': True}))
     if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
         return
     HOST_WORK['sshd'] = True
@@ -29387,7 +29463,8 @@ def sshd_tick(daemon):
                                         'warn')
                         got = root_ask('sshd.ask', 'sshd.json', {'do': 'read'}, 60)
                     elif what == 'apply':
-                        ask = {'do': 'apply', 'conf': c, 'trial_min': c.get('trial_min') or 0,
+                        refit = bool((extra or {}).get('refit'))
+                        ask = {'do': 'apply', 'conf': c, 'trial_min': 0 if refit else (c.get('trial_min') or 0),
                                'hash': c['hash'], 'id': secrets.token_hex(4)}
                         if c.get('radius'):
                             # The secret pam_radius shows otp, for its file of
@@ -29396,6 +29473,10 @@ def sshd_tick(daemon):
                             ask.update(radius_secret=ssh_gate_secret(store, make=True),
                                        radius_port=ssh_gate_port(store))
                         got = root_ask('sshd.ask', 'sshd.json', ask, 120)
+                        store.set_meta('host:sshd:fmt:' + me, SSHD_FMT)
+                        if refit:
+                            log('the SSH server\'s files written anew on %s, as this version '
+                                'writes them' % me)
                         row.update(hash=c['hash'], failed='', error='', applied_at=time.time(),
                                    # Changed again while on trial: the helper
                                    # goes back to the first, so its port stays open.
@@ -29877,6 +29958,22 @@ def sshotp_app_answer(store, state, name, code):
     return ok, said, again
 
 
+def ssh_prompt_attr(words, hide=False):
+    """Reply-Message with the prompt as it is - attr_bytes strips the space after
+    the ":" (1.0.191), and the code was typed right against it - and Prompt
+    (76): 0 where the code is hidden as it is typed (pam_radius prompt_attribute)."""
+    raw = ssh_prompt(words).encode('utf-8')[:253]
+    return bytes([18, len(raw) + 2]) + raw + bytes([76, 6]) + struct.pack('!I', 0 if hide else 1)
+
+
+def ssh_code_hidden(store):
+    """Settings -> SSH server: the code hidden as it is typed (1.0.191)."""
+    try:
+        return bool(json.loads(store.get_meta('host:sshd:conf') or '{}').get('radius_hide'))
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def ssh_prompt(words):
     """A prompt ending as one does - the code typed after ": ", not stuck to the text."""
     words = str(words or '').rstrip()
@@ -30074,11 +30171,11 @@ class SshGate(object):
                 # Each wrong code an event too (1.0.189), with why - not only the last.
                 store.add_event('ssh', '%s typed a wrong code for SSH on %s (asked again): %s'
                                 % (who, node_name(), said), 'warn', who=who)
-                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(code_words('again', lang=lang))),
+                return build_reply(p, 11, [ssh_prompt_attr(code_words('again', lang=lang), ssh_code_hidden(store)),
                                            bytes([24, len(state) + 2]) + state.encode()], secret)
         elif rec and rec.get('kind', 'app') == 'app' and not code:
             st, ask = sshotp_ask_app(store, user)
-            return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
+            return build_reply(p, 11, [ssh_prompt_attr(ask, ssh_code_hidden(store)),
                                        bytes([24, len(st) + 2]) + st.encode()], secret)
         elif rec and rec.get('kind') in ('mail', 'sms'):
             # By mail or SMS (1.0.181): whatever was typed first, a code is
@@ -30094,7 +30191,7 @@ class SshGate(object):
                     sent = [x['at'] for x in SSHOTP_GONE.get(user.lower()) or []]
                 if sent:
                     ask = '%s (%s)' % (str(ask).rstrip(' :'), time.strftime('%H:%M', time.localtime(sent[-1])))
-                return build_reply(p, 11, [attr_bytes('Reply-Message', ssh_prompt(ask)),
+                return build_reply(p, 11, [ssh_prompt_attr(ask, ssh_code_hidden(store)),
                                            bytes([24, len(st) + 2]) + st.encode()], secret)
         else:
             ok, said = sshotp_check(store, user, code)
@@ -38024,6 +38121,28 @@ def _web_do(h):
                         'what it has)' % (who, words), 'warn', who=who)
         return {'message': 'otp no longer looks after the TLS of %s; nginx keeps the files it '
                            'has' % words}
+    if act == 'tls_export':
+        # A certificate as a file, in the format asked for (1.0.191); with its
+        # private key only locked with a passphrase, only by a full
+        # administrator (this route's), and each time an event.
+        kind = str(b.get('kind') or 'pem')
+        if not prof.get('cert'):
+            raise ApiError(404, 'no certificate is kept for %s' % words)
+        try:
+            blob, ending = tls_export(prof, kind, str(b.get('passphrase') or ''), bool(b.get('legacy')))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        name = (re.sub(r'[^A-Za-z0-9._-]', '_', (prof.get('info') or {}).get('cn') or '') or
+                ('web-address' if target == 'vip' else target)) + ending
+        if TLS_EXPORT_KINDS[kind][2]:
+            store.add_event('settings', '%s downloaded the certificate of %s WITH ITS PRIVATE KEY (%s, '
+                            'locked with a passphrase)' % (who, words, TLS_EXPORT_KINDS[kind][0]),
+                            'warn', who=who)
+        else:
+            store.add_event('settings', '%s downloaded the certificate of %s (%s)'
+                            % (who, words, TLS_EXPORT_KINDS[kind][0]), who=who)
+        return {'name': name, 'file': base64.b64encode(blob).decode(),
+                'type': 'application/x-pkcs12' if kind == 'pfx' else 'application/octet-stream'}
     if act == 'tls_pem':
         if not prof.get('cert'):
             raise ApiError(404, 'no certificate is kept for %s' % words)
@@ -44787,6 +44906,12 @@ def build_parser():
     g.add_argument('--org', metavar='TEXT', default='', help='with --tls-csr, --tls-selfsigned: the '
                    'organisation')
     g.add_argument('--days', type=int, default=825, help='with --tls-selfsigned: how long [825]')
+    g.add_argument('--tls-export', nargs=2, metavar=('FORMAT', 'FILE'), help='the certificate of '
+                   '--tls-for into FILE: pem, fullchain, der, p7b, pfx or pemkey (the last two with '
+                   'its private key, locked with a password asked for; --legacy: a PFX older Windows '
+                   'open)')
+    g.add_argument('--legacy', action='store_true', help='with --tls-export pfx: 3DES, for Windows '
+                   'before 10 (1709) and Server 2016')
     g.add_argument('--tls-forget', action='store_true', help='otp no longer looks after the TLS of '
                    '--tls-for (nginx keeps the files it has; --yes)')
     g.add_argument('--vip-set', metavar='ADDRESS/PREFIX', help='the VIP address (192.0.2.10/24), '
@@ -47624,6 +47749,20 @@ def cli_main(argv=None):
         return shown(api('POST', '/api/web', {'action': 'tls_selfsigned', 'target': target,
                                               'cn': args.tls_selfsigned, 'names': args.names or '',
                                               'days': args.days, 'org': args.org}))
+    if args.tls_export:
+        kind, path = args.tls_export
+        if kind not in TLS_EXPORT_KINDS:
+            raise SystemExit('otp: --tls-export %s FILE' % '|'.join(TLS_EXPORT_KINDS))
+        body = {'action': 'tls_export', 'target': target, 'kind': kind, 'legacy': args.legacy}
+        if TLS_EXPORT_KINDS[kind][2]:
+            body['passphrase'] = os.environ.get('OTP_PASSPHRASE') or ask_password(
+                'a password for the file (10 characters or more)', twice=True, env=None)
+        got = api('POST', '/api/web', body)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if TLS_EXPORT_KINDS[kind][2] else 0o644)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(base64.b64decode(got['file']))
+        print(pal.ok_line('%s: %s' % (path, TLS_EXPORT_KINDS[kind][0])))
+        return 0
     if args.tls_forget:
         cli_sure(args, 'otp no longer looks after the TLS of %s; nginx keeps the files it has' % target)
         return shown(api('POST', '/api/web', {'action': 'tls_forget', 'target': target}))
