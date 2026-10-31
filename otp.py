@@ -81,7 +81,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.198'
+__version__ = '1.0.199'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -25240,7 +25240,20 @@ class Acme(object):
         # a renewal, its rate limits too.
         if replaces and self.dir.get('renewalInfo'):
             ask['replaces'] = replaces
-        got, headers = self.post_json(self.dir['newOrder'], ask)
+        try:
+            got, headers = self.post_json(self.dir['newOrder'], ask)
+        except AcmeError as e:
+            # Only the account that ordered a certificate may say it replaces
+            # it (1.0.199): an account made since - another kind of its key,
+            # one the CA forgot - is refused ("requester account did not
+            # request the certificate being replaced"). Ordered again as a new
+            # one: a renewal all the same, just not counted as one.
+            if 'replaces' not in ask or 'replace' not in str(e).lower():
+                raise
+            say('the CA does not take it as the renewal of the one before (another account ordered '
+                'that one) - ordered as a new certificate')
+            ask.pop('replaces', None)
+            got, headers = self.post_json(self.dir['newOrder'], ask)
         order_url = headers.get('Location')
         thumb = self.thumbprint()
         for az in got.get('authorizations') or []:
@@ -25479,6 +25492,11 @@ def acme_order(store, target, name, by, say=None):
         kinds = ACME_CERT_KEYS.get(choice) or ('ec',)
         prof = tls_profile(store, target) or {}
         replaces = ari_cert_id(prof.get('cert')) if prof.get('how') == 'ACME' else ''
+        # Said only by the account that ordered it (1.0.199); one of before
+        # this was kept is tried, and ordered again without it if refused.
+        was = acme_state(store, target)
+        if replaces and was.get('kid') and was['kid'] != a.kid:
+            replaces = ''
         say('the key%s: %s' % ('s' if len(kinds) > 1 else '', ' + '.join(ACME_KEY_WORDS[k] for k in kinds)))
         key, chain = a.order([name], say, kinds[0], replaces)
         got = cert_bundle(chain, key)
@@ -25514,6 +25532,7 @@ def acme_order(store, target, name, by, say=None):
         prof.setdefault('preset', 'standard')
         prof.setdefault('dh', 'none')
         tls_save(store, target, prof, by)
+        st['kid'] = a.kid or ''
         st.update(ok=True, not_after=info.get('not_after'), issuer=info.get('issuer'),
                   ordered_at=time.time(), keys=' + '.join(ACME_KEY_WORDS[k] for k in kinds))
         st['steps'] = steps[-25:]
@@ -25530,7 +25549,7 @@ def acme_order(store, target, name, by, say=None):
                           'to it stops (the CNAME, or the delegation of its zone)' % e)
         st.update(ok=False, failed_at=time.time(), said=str(e)[:600])
         old = acme_state(store, target)
-        for k in ('not_after', 'issuer', 'ordered_at'):
+        for k in ('not_after', 'issuer', 'ordered_at', 'kid'):
             if old.get(k):
                 st[k] = old[k]
         st['steps'] = steps[-25:]
