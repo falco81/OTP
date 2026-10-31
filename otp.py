@@ -80,7 +80,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '1.0.193'
+__version__ = '1.0.194'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -286,6 +286,8 @@ DEFAULTS = {
     'alerts_repeat_h': 24,
     'alerts_resolved': 1,
     'alerts_nodes': 1,
+    'alerts_db': 1,
+    'alerts_vrrp': 1,
     'alerts_backup': 1,
     'alerts_cert_days': 21,
     'alerts_disk_pct': 85,
@@ -470,6 +472,7 @@ TUNABLE = {
     'rbackup_verify': ('off', 'after', 'weekly'),
     'alerts': (0, 1), 'alerts_delay_min': (0, 120), 'alerts_repeat_h': (0, 168),
     'alerts_resolved': (0, 1), 'alerts_nodes': (0, 1), 'alerts_backup': (0, 1),
+    'alerts_db': (0, 1), 'alerts_vrrp': (0, 1),
     'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
     'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
@@ -739,6 +742,8 @@ NAMES = {
     'alerts_repeat_h': 'Remind every (hours)',
     'alerts_resolved': 'Say when it is over',
     'alerts_nodes': 'A node, RADIUS, the replication or the database down',
+    'alerts_db': 'The database and its replication',
+    'alerts_vrrp': 'The VIP address (VRRP)',
     'alerts_backup': 'A backup that failed or did not come',
     'alerts_cert_days': 'A certificate running out within (days)',
     'alerts_disk_pct': 'A disk fuller than (%)',
@@ -1247,6 +1252,12 @@ SAYS = {
     'alerts_resolved': 'A mail when what was mailed is over.',
     'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS, the '
                     'replication stopped, the database in trouble, the nodes on different versions.',
+    'alerts_db': 'The replication stopped, or the database of a node in trouble. Not while a node '
+                 'is in maintenance, being upgraded, updated or restarted, nor 10 min after - '
+                 'the same outside of them is mailed.',
+    'alerts_vrrp': 'The VIP address on no node or on both, a node whose keepalived gave it up '
+                   '(FAULT) or is not running. Not during maintenance, upgrades, updates or '
+                   'restarts, nor 10 min after.',
     'alerts_backup': 'A nightly copy older than 36 hours; a backup to the destinations that '
                      'failed, or none that went in time.',
     'alerts_cert_days': 'A certificate of a node or of the VIP address running out within so '
@@ -1464,7 +1475,7 @@ PANES = {
              'acme_dns_key', 'acme_dns_subdomain', 'acme_desec_domain', 'acme_desec_token',
              'acme_dns_alias', 'acme_dns_wait', 'acme_resolvers'],
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
-               'alerts_nodes', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
+               'alerts_nodes', 'alerts_db', 'alerts_vrrp', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
                'alerts_lang', 'alerts_url', 'report', 'report_to', 'report_lang', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
@@ -1518,6 +1529,7 @@ ONLY_WHEN = {
     'alerts_to': ['alerts', '1'], 'alerts_delay_min': ['alerts', '1'],
     'alerts_repeat_h': ['alerts', '1'], 'alerts_resolved': ['alerts', '1'],
     'alerts_nodes': ['alerts', '1'], 'alerts_backup': ['alerts', '1'],
+    'alerts_db': ['alerts', '1'], 'alerts_vrrp': ['alerts', '1'],
     'alerts_cert_days': ['alerts', '1'], 'alerts_disk_pct': ['alerts', '1'],
     'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
@@ -31307,6 +31319,41 @@ def _al_when(t):
     return time.strftime('%d.%m.%Y %H:%M', time.localtime(float(t))) if t else '–'
 
 
+ALERTS_QUIET_AFTER_S = float(os.environ.get('OTP_ALERTS_QUIET_S') or 600)
+
+
+def alerts_quiet(store, names):
+    """Why the cluster is being worked on now, or '' (1.0.194): a node in
+    maintenance, an upgrade, the system's updates or a restart under way - and
+    for 10 min after the last of them, while replication catches up and the VIP
+    address settles."""
+    why = ''
+    try:
+        for n in names:
+            if (maintenance_row(store, n) or {}).get('on'):
+                why = '%s in maintenance' % n
+                break
+        if not why:
+            up = upgrade_plan(store) or {}
+            if up.get('id') and up.get('state') not in ('done', 'failed') and \
+                    time.time() - float(up.get('at') or 0) < 6 * 3600:
+                why = 'an upgrade'
+        if not why and (osup_plan(store) or {}).get('state') == 'running':
+            why = 'the system\'s updates'
+        if not why and power_busy(store):
+            why = 'a restart'
+    except Exception:                                   # noqa: BLE001
+        why = ''
+    now = time.time()
+    if why:
+        store.set_meta('alerts:quiet', json.dumps({'why': why, 'until': now + ALERTS_QUIET_AFTER_S}))
+        return why
+    was = _meta_json(store, 'alerts:quiet') or {}
+    if float(was.get('until') or 0) > now:
+        return '%s (ended - quiet %d s more)' % (was.get('why'), int(float(was['until']) - now))
+    return ''
+
+
 def alert_problems(store, lang='en'):
     """What is wrong now, every node together: {key: {level, node, title, said, pane}}."""
     out = {}
@@ -31351,6 +31398,11 @@ def alert_problems(store, lang='en'):
                                                   'different versions'),
                 ', '.join('%s %s' % (k, b.get('version')) for k, b in sorted(beats.items())),
                 'upgrade')
+    # The database and its replication (1.0.194): a switch of their own, and
+    # quiet while the cluster is being worked on (maintenance, an upgrade, the
+    # system's updates, a restart) and 10 min after - not otherwise.
+    quiet = alerts_quiet(store, names)
+    if CONFIG.get('alerts_db', 1) and not quiet:
         if CONFIG.get('ha_mode') == 'replicated':
             try:
                 rs = ha_repl_state(store)
@@ -31372,6 +31424,40 @@ def alert_problems(store, lang='en'):
                     _al(lang, 'RADIUS na %s nemohl použít databázi: %s',
                         'RADIUS on %s could not use the database: %s') % (n, str(trouble)[:300]),
                     'db')
+    # The VIP address (1.0.194): where keepalived put it, from each node's heartbeat.
+    if CONFIG.get('alerts_vrrp', 1) and cluster and not quiet:
+        try:
+            vc = vip_conf(store)
+        except Exception:                               # noqa: BLE001
+            vc = {}
+        if vc.get('on') and vc.get('address'):
+            up = {n: b for n, b in beats.items() if b.get('alive', True) or b.get('me')}
+            webs = {n: (b.get('web') or {}) for n, b in up.items()}
+            holders = sorted(n for n, w in webs.items() if w.get('vip_here'))
+            addr = str(vc.get('address')).split('/')[0]
+            if up and not holders:
+                add('vip:none', 'bad', '', _al(lang, 'VIP adresu %s nedrží žádný uzel' % addr,
+                                               'No node holds the VIP address %s' % addr),
+                    _al(lang, 'Kdo se na ni ptá, nedostane odpověď - stránky ani RADIUS přes ni.',
+                        'Whoever asks it gets no answer - neither the pages nor RADIUS through it.'), 'ha')
+            elif len(holders) > 1:
+                add('vip:both', 'bad', '', _al(lang, 'VIP adresu %s drží oba uzly' % addr,
+                                               'Both nodes hold the VIP address %s' % addr),
+                    _al(lang, 'Uzly se přes VRRP nevidí (%s) - odpovědi chodí střídavě z obou.',
+                        'The nodes do not see each other over VRRP (%s) - answers come from '
+                        'either.') % ', '.join(holders), 'ha')
+            for n, w in sorted(webs.items()):
+                role = str(w.get('role') or '')
+                why = str((w.get('health') or {}).get('why') or '')
+                if role == 'FAULT':
+                    add('vip:fault:' + n, 'warn', n,
+                        _al(lang, '%s nemůže držet VIP adresu' % n, '%s cannot hold the VIP address' % n),
+                        why or _al(lang, 'keepalived hlásí FAULT.', 'keepalived says FAULT.'), 'ha')
+                elif not role and w:
+                    add('vip:ka:' + n, 'warn', n,
+                        _al(lang, 'keepalived na %s neběží' % n, 'keepalived is not running on %s' % n),
+                        _al(lang, 'Uzel VIP adresu nepřevezme, kdyby druhý vypadl.',
+                            'The node does not take the VIP address if the other goes.'), 'ha')
     # Backups: the nightly copy of each node, and the backups sent away.
     if CONFIG.get('alerts_backup', 1):
         if CONFIG.get('backup_daily'):
@@ -31726,8 +31812,16 @@ def alerts_evaluate(store, force=False):
         elif p['sent'] and was.get('level') == 'warn' and p['level'] == 'bad':
             new.append(p)                               # worse than said
         known[k] = dict(p)
+    # Held while the cluster is worked on (1.0.194): the database's and the VIP
+    # address's, not looked at then, are not "over" - kept as they were, the
+    # time they were said too, until they are looked at again.
+    held = ('repl', 'db:', 'vip:')
+    quiet = bool(_meta_json(store, 'alerts:quiet') or {}) and \
+        float((_meta_json(store, 'alerts:quiet') or {}).get('until') or 0) > now
     for k in list(known):
         if k not in cur:
+            if quiet and k.startswith(held):
+                continue
             p = known.pop(k)
             if p.get('sent') and CONFIG.get('alerts_resolved', 1):
                 gone.append(p)

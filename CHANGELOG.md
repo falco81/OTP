@@ -4,6 +4,19 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.194 — 31 October 2026
+
+**Alerts: the database and its replication, and the VIP address, each a switch of
+its own** (Settings → Alerts and reports):
+- *The database and its replication*: the replication stopped, a node's database
+  in trouble.
+- *The VIP address (VRRP)*, new: the VIP address on no node or on both, a node
+  whose keepalived says FAULT or is not running.
+- Neither while the cluster is worked on - a node in maintenance, an upgrade, the
+  system's updates, a restart - nor for 10 min after; the same outside of them is
+  mailed. One mailed before is not said to be over because maintenance began.
+- Tested on the cluster of two (`tests/hasb/full/t_ha_alerts.py`, 13 of 13).
+
 ## 1.0.193 — 31 October 2026
 
 - **System updates**: "restart needed" / "restart after the update" on a line of
