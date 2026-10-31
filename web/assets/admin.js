@@ -14320,6 +14320,50 @@ function acPoll(on) {
   }, 2000);
   if (!on && AC.poll) { clearInterval(AC.poll); AC.poll = null; }
 }
+/* Which certificates to order now (1.0.200): each with a switch of its own, all on
+   to begin with, and ordered one after another. */
+function acmeOrderPick(all) {
+  var boxes = [];
+  modal('Order certificates now', function (body) {
+    body.appendChild(el('p', 'note', 'The ones switched on are ordered from the CA now, one after another; ACME renews each from then on.'));
+    var list = el('div', 'ac-pick');
+    all.forEach(function (t) {
+      var row = el('div', 'me-row ac-pick-row');
+      var say = el('div', 'me-say');
+      var top = el('div', '');
+      top.appendChild(el('b', '', t.target === 'vip' ? 'the VIP address' : ''));
+      if (t.target !== 'vip') top.appendChild(noI18n(el('b', '', t.target)));
+      top.appendChild(noI18n(el('span', 'mono muted', '  ' + t.name)));
+      say.appendChild(top);
+      var left = t.not_after ? Math.floor((t.not_after - Date.now() / 1000) / 86400) : null;
+      var st = t.state || {};
+      say.appendChild(el('div', 'small muted', t.how === 'ACME'
+        ? (st.ok === false ? 'from the CA - the last try failed' : 'from the CA') + (left !== null ? ' · ' + left + ' days left' : '')
+        : (t.how ? 'put in on Certificates and TLS - the one from the CA takes its place' : 'none yet')));
+      row.appendChild(say);
+      var sw = el('label', 'sw');
+      var box = el('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      box.setAttribute('aria-label', t.name);
+      box._target = t.target;
+      boxes.push(box);
+      sw.appendChild(box);
+      sw.appendChild(el('span', 'knob'));
+      row.appendChild(sw);
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+  }, [{words: 'No, leave it', close: true},
+      {words: 'Order the ones switched on', cls: 'primary', go: function (button) {
+        var targets = boxes.filter(function (b) { return b.checked; }).map(function (b) { return b._target; });
+        if (!targets.length) { toast('none is switched on', 'bad'); return; }
+        busy(button, true);
+        api('acme', {action: 'order_all', targets: targets}).then(function (x) {
+          closeModal(); toast(x.message, 'good'); AC.d = x; drawAcme(); acPoll(true);
+        }).catch(function (e) { busy(button, false); oops(e); });
+      }}], true);
+}
 function drawAcme() {
   var real = $('ac-host');
   if (!real || !AC.d) return;
@@ -14337,8 +14381,22 @@ function drawAcme() {
         w.appendChild(document.createTextNode(': '));
       }
       w.appendChild(el('span', '', d.work.says || 'ordering…'));
+      if (d.work.of > 1) w.appendChild(el('span', 'muted', ' (' + d.work.n + ' of ' + d.work.of + ')'));
       g.appendChild(w);
       host.appendChild(g);
+    }
+    /* Every certificate at once (1.0.200): one after another, as Order it now on
+       each card - after the account changed, say, or a new CA. */
+    var all = (d.targets || []).filter(function (t) { return t.wanted && t.name; });
+    if (d.on && all.length > 1) {
+      var ar = el('div', 'btnrow ac-all');
+      var oa = cmdButton('Order certificates now…', 'download', 'small primary');
+      oa.disabled = !!(d.work && d.work.busy);
+      explain(oa, 'Several at once: choose which of them - ' + all.map(function (t) { return t.name; }).join(', ')
+        + ' - and they are ordered from the CA one after another. ACME renews each from then on.');
+      oa.onclick = function () { acmeOrderPick(all); };
+      ar.appendChild(oa);
+      host.appendChild(ar);
     }
     /* By hand (DNS-01): the record to put in, and the order waiting for it. */
     if (d.manual) {

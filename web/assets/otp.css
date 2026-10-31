@@ -3291,6 +3291,10 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .node-other > button{flex:none}
 /* In your DNS (1.0.170) */
 .acme-dns{margin-top:14px}
+.ac-all{margin:0 0 12px}
+.ac-pick{display:flex;flex-direction:column;gap:2px;margin-top:10px}
+.ac-pick-row{padding:10px 0;border-bottom:1px solid var(--line)}
+.ac-pick-row:last-child{border-bottom:0}
 .acme-steps{margin:6px 0 12px 18px;padding:0;display:flex;flex-direction:column;gap:4px;color:var(--muted)}
 /* the records and their copy buttons: the text left, the button at the column's right edge, one under the other */
 .acme-dns td{vertical-align:middle}
