@@ -480,6 +480,21 @@ said = ' | '.join(x[1] for x in stt.get('steps') or [])
 ok('... one of 1.0.196, the account not kept: the CA refuses replaces, ordered as a new one (%s)'
    % ((stt.get('said') or 'ok') + ' / ' + said[:300]), stt.get('ok') and 'does not take it as the renewal' in said)
 ok('... asked with replaces, then without (%s)' % o, len(o) >= 2 and o[0].get('replaces') and not o[1].get('replaces'))
+# Side by side or one after another (1.0.203): by hand and acme-dns one after another.
+two = [('otp1', 'a.otp.test'), ('vip', 'b.otp.test')]
+saved_ = dict((k, otp.CONFIG.get(k)) for k in ('acme_challenge', 'acme_dns'))
+otp.CONFIG.update(acme_challenge='http-01')
+ok('HTTP-01, two certificates: side by side', otp.acme_parallel_why(two) == '')
+ok('... one: as it is', otp.acme_parallel_why(two[:1]) == 'one')
+otp.CONFIG.update(acme_challenge='dns-01', acme_dns='desec')
+ok('... DNS-01 by deSEC: side by side', otp.acme_parallel_why(two) == '')
+otp.CONFIG.update(acme_dns='manual')
+ok('... by hand: one after another (%s)' % otp.acme_parallel_why(two), otp.acme_parallel_why(two) == 'by hand')
+otp.CONFIG.update(acme_dns='acmedns')
+ok('... acme-dns (one subdomain, two TXT records kept): one after another', otp.acme_parallel_why(two) == 'acme-dns')
+otp.CONFIG.update(acme_challenge='http-01')
+ok('... the same name twice: one after another', otp.acme_parallel_why([('otp1', 'a.otp.test'), ('vip', 'a.otp.test')]) != '')
+otp.CONFIG.update(saved_)
 # Every certificate at once (1.0.200).
 forget()
 t0 = time.time()

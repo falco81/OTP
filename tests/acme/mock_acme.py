@@ -191,7 +191,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if kid is None:
             return self.err(400, 'malformed', 'a kid is needed')
         if p == '/order':
-            ORDERS_ASKED.append({'profile': payload.get('profile'), 'replaces': payload.get('replaces')})
+            ORDERS_ASKED.append({'profile': payload.get('profile'), 'replaces': payload.get('replaces'), 'at': time.time(),
+                                 'names': [i['value'] for i in payload.get('identifiers') or []]})
             rep = payload.get('replaces')
             if rep:
                 try:
@@ -250,6 +251,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 a['error'] = {'detail': 'no TXT record %s at _acme-challenge.%s (found %s)' % (want, a['name'], txt)}
             return self.send(200, {'type': 'dns-01', 'status': 'processing', 'token': a['token']})
         if p.startswith('/chal/'):
+            # Slow to answer when asked to (W/slow, seconds): orders side by side then
+            # start together, one after another seconds apart.
+            if os.path.exists(W + '/slow'):
+                time.sleep(float(open(W + '/slow').read().strip() or 0))
             aid = p.split('/')[-1]
             a = AUTHZ[aid]
             want = a['token'] + '.' + thumb(ACCTS[a['kid']]['jwk'])

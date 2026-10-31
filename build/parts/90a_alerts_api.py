@@ -203,8 +203,9 @@ def _acme_do(h):
             for target, _n in which:
                 acme_care_set(h.store, target, True, s['name'], 'ordered by hand')
             acme_start(h.store, which, s['name'])
-            return dict(acme_view(h.store), message='%d certificate(s) being ordered, one after another: %s%s' % (
-                len(which), ', '.join(n for _t, n in which),
+            how = 'one after another' if acme_parallel_why(which) else 'side by side'
+            return dict(acme_view(h.store), message='%d certificate(s) being ordered, %s: %s%s' % (
+                len(which), how, ', '.join(n for _t, n in which),
                 ('; no name for ' + ', '.join(left)) if left else ''))
         if act == 'dns_check':
             return acme_dns_check(h.store)

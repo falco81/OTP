@@ -14371,7 +14371,17 @@ function drawAcme() {
   liveFill(real, function (host) {
     var d = AC.d;
     if (!d.on) host.appendChild(el('p', 'note', 'Off - switch it on below, say which certificates and the CA, and save.'));
-    if (d.work && d.work.busy) {
+    var each = (d.work && d.work.each) || {};
+    if (d.work && d.work.busy && Object.keys(each).length > 1) {
+      /* Side by side (1.0.203): how many, and each one's words on its own card. */
+      var gs = el('div', 'going wide');
+      gs.innerHTML = '<div class="bar"><span style="width:60%"></span></div>';
+      var ws = el('div', 'says');
+      ws.appendChild(el('span', '', Object.keys(each).length + ' certificates being ordered side by side'));
+      if (d.work.of > 1) ws.appendChild(el('span', 'muted', ' (' + d.work.done + ' of ' + d.work.of + ' done)'));
+      gs.appendChild(ws);
+      host.appendChild(gs);
+    } else if (d.work && d.work.busy) {
       var g = el('div', 'going wide');
       g.innerHTML = '<div class="bar"><span style="width:60%"></span></div>';
       /* Which certificate, and what is being waited for now (1.0.176). */
@@ -14440,7 +14450,14 @@ function drawAcme() {
         ['Last ordered', st.ordered_at ? ago(st.ordered_at) : 'never'],
         ['Ordered by', t.target === 'vip' ? 'the first node by name' : t.target]
       ]));
-      if (st.ok === false && st.said) c.appendChild(nodeSaid({ok: false, error: st.said, at: st.failed_at}, ''));
+      /* Its own order under way (1.0.203), what it waits for now. */
+      if (each[t.target]) {
+        var gc = el('div', 'going ac-going');
+        gc.innerHTML = '<div class="bar"><span style="width:60%"></span></div>';
+        gc.appendChild(el('div', 'says small', each[t.target].says || 'ordering…'));
+        c.appendChild(gc);
+      }
+      if (st.ok === false && st.said && !each[t.target]) c.appendChild(nodeSaid({ok: false, error: st.said, at: st.failed_at}, ''));
       /* What the last order did, step by step (1.0.175). */
       if ((st.steps || []).length) {
         var det = el('details', 'acme-steps-done');

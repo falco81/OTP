@@ -206,8 +206,10 @@ acc = json.loads(dbq('a', "SELECT v FROM meta WHERE k = 'acme:account'") or '{}'
 ok('... a new account for the new kind of key (%s)' % acc.get('kind'), acc.get('kind') == 'ec384')
 ok('... from the shortlived profile: 6 days (%.1f)' % (got[2] if got else 0), got and 5 < got[2] < 7, got)
 o = asked()['orders'][n0:]
-ok('... the CA asked with the profile, and as the renewal of the one before (%s)' % o,
-   o and all(x.get('profile') == 'shortlived' for x in o) and o[0].get('replaces'), o)
+# A new account (P-384) in the same step: it may not say it replaces what the old one
+# ordered (1.0.199) - Let's Encrypt refuses that.
+ok('... the CA asked with the profile, not as a renewal - a new account (%s)' % o,
+   o and all(x.get('profile') == 'shortlived' for x in o) and not any(x.get('replaces') for x in o), o)
 time.sleep(15)
 conf = open('%s/a/nginx/otp.conf' % S).read()
 ok('nginx of nodea: both certificates (RSA first)', conf.count('ssl_certificate ') == 2 and
@@ -230,6 +232,12 @@ for _ in range(60):
         break
 evs = dbq('a', "SELECT words FROM events WHERE words LIKE 'a certificate for nodea%%' ORDER BY id DESC LIMIT 1")
 ok('the CA\'s renewal window come (ARI): renewed by itself (%s)' % evs, renewed, asked()['ari'][-2:])
+for _ in range(20):
+    if not call('a', '/api/acme')[1].get('work', {}).get('busy'):
+        break
+    time.sleep(2)
+o = [x for x in asked()['orders'][n1:] if 'nodea.otp.test' in (x.get('names') or [])]
+ok('... the same account now: said to replace the one before (%s)' % o, o and o[0].get('replaces'), o)
 os.unlink(CAW + '/ari')
 # The account on RSA (RS256), and one key, ECDSA P-256: a certificate of that alone.
 call('a', '/api/settings', {'settings': {'acme_key': 'ec', 'acme_account_key': 'rsa2048', 'acme_profile': ''}})
@@ -248,6 +256,40 @@ conf = open('%s/a/nginx/otp.conf' % S).read()
 ok('... nginx: one certificate again', conf.count('ssl_certificate ') == 1,
    [l for l in conf.split('\n') if 'ssl_certificate' in l])
 call('a', '/api/settings', {'settings': {'acme_key': 'dual', 'acme_account_key': 'ec', 'acme_profile': ''}})
+# Every certificate at once, side by side (1.0.203): the CA slow to answer each challenge
+# (4 s) - side by side they all begin together, one after another 4 s and more apart.
+time.sleep(3)
+open(CAW + '/slow', 'w').write('4')
+n0 = len(asked()['orders'])
+t0 = time.time()
+c_, x_ = call('a', '/api/acme', {'action': 'order_all'})
+ok('Order certificates now, all three: asked (%s %s)' % (c_, (x_ or {}).get('message')), c_ == 200)
+most, v_ = 0, None
+for _ in range(120):
+    time.sleep(1)
+    v_ = call('a', '/api/acme')[1]
+    most = max(most, len((v_.get('work') or {}).get('each') or {}))
+    if not (v_.get('work') or {}).get('busy'):
+        break
+os.unlink(CAW + '/slow')
+st_ = {t['target']: t['state'] for t in v_['targets']}
+ok('... all three came (%s)' % {t: (s.get('ok'), round((s.get('at') or 0) - t0)) for t, s in st_.items()},
+   all(st_[t].get('ok') and (st_[t].get('at') or 0) >= t0 - 1 for t in ('nodea', 'nodeb', 'vip')))
+firsts = {}
+for o in asked()['orders'][n0:]:
+    for nm in o.get('names') or []:
+        firsts.setdefault(nm, o['at'])
+spread = max(firsts.values()) - min(firsts.values()) if len(firsts) == 3 else 99
+ok('... side by side: the three orders began within %.1f s of each other' % spread, spread < 3, firsts)
+ok('... each on its own card while ordered (%d at once seen)' % most, most >= 2)
+took = time.time() - t0
+ok('... in %d s - one after another it takes 3 × 4 s and more' % took, took < 60)
+time.sleep(15)
+for n in 'ab':
+    f = files(n)
+    ok('%s: nginx has all of them, renewed (%s)' % (n, {k: round(v[0]) for k, v in f.items()}),
+       all(v[0] > 85 for k, v in f.items() if k in ('otp.pem', 'otp-vip.pem', 'otp-ecdsa.pem', 'otp-vip-ecdsa.pem'))
+       and 'otp.pem' in f and 'otp-vip.pem' in f)
 s0 = int(time.time()) // 30
 while int(time.time()) // 30 == s0:
     time.sleep(0.5)

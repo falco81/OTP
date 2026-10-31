@@ -4,6 +4,26 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.203 — 31 October 2026
+
+**Automatic certificates: several ordered side by side** - *Order certificates now…*
+and the renewals by themselves order up to three certificates at once (each node's,
+the VIP address's), not one after another: with DNS-01 most of an order is waiting for
+DNS (deSEC: three minutes and more each), and the waits now run together. Each card
+shows its own order under way and what it waits for; the bar above says how many are
+being ordered and how many are done.
+- The account at the CA is made ready first, once: orders side by side would otherwise
+  each make one of their own (after a new kind of its key, or one the CA forgot).
+- One after another as before where side by side cannot work: DNS-01 by hand (the page
+  shows one TXT record at a time), acme-dns (one subdomain for every name, the last two
+  TXT records kept), the same name twice. An order gone wrong never stops the others.
+- RSA and ECDSA of one name stay one after another: the second one uses the name the
+  first one proved.
+- Tested on the cluster of two (`tests/hasb/full/t_ha_acme.py`, 36 of 36): all three at
+  once with the test CA slow to answer each challenge by 4 s - begun in the same second,
+  done in 7 s, put in nginx on both nodes, RADIUS answering every time (708 of 708); and
+  on one server (`tests/acme/t_acme.py`, 77 of 77).
+
 ## 1.0.202 — 31 October 2026
 
 **The proxy: a switch for each thing that may go through it, all off by default**
