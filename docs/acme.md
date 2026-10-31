@@ -13,10 +13,35 @@ certificate running out as always.
 | `acme_for` | the VIP address (or this node where there is none), each node's own name, or both |
 | `acme_node_name` | a node's DNS name; empty: its full host name |
 | `acme_challenge` | HTTP-01 or DNS-01 |
-| `acme_key` | ECDSA P-256 or RSA 2048 |
+| `acme_key` | **Both: RSA 2048 + ECDSA P-256** (advised, the default), Both: RSA 4096 + ECDSA P-384, or one: ECDSA P-256 or P-384, RSA 2048, 3072 or 4096 |
+| `acme_account_key` | the account's key: ECDSA P-256 (ES256), P-384 (ES384), RSA 2048/3072/4096 (RS256) - a change makes a new account |
+| `acme_profile` | the CA's own, or classic, tlsserver, shortlived (6 days) - where the CA offers profiles |
 
-The account key (ECDSA P-256) is made once and kept sealed in the database; every
-request is signed with it (ES256, with openssl). An account the CA no longer knows
+**The keys** (1.0.196) are what Let's Encrypt takes: RSA of 2048, 3072 or 4096
+bits, ECDSA P-256 or P-384 - for the account and for a certificate alike, never the
+same key for both. **Both** is what it advises: an RSA certificate, given
+by default, and a much smaller ECDSA one beside it, for the clients that take it -
+two orders of the same name (the second has no challenge left to answer), and
+nginx given the two (`ssl_certificate` twice, RSA first; the ECDSA files
+`otp-ecdsa.pem/.key`, `otp-vip-ecdsa.pem/.key`). The keys show on the ACME card
+(*Keys*), beside the certificate's key, beside the account and in the order's
+steps. A certificate put in by hand on Certificates and TLS leaves the ECDSA one
+out. Every renewal makes new keys; the account's key
+is never one of a certificate.
+
+**Profiles**: where the CA offers them (Let's Encrypt: classic, tlsserver,
+shortlived), the one chosen is asked for; *shortlived* lasts 6 days and is renewed
+at a third of its life, every two days or so. A CA without them makes its own.
+
+**When it is renewed**: where the CA tells (ARI, RFC 9773 - Let's Encrypt does),
+at a moment picked in the window the CA gives, asked every 6 hours - earlier too,
+when the CA says so (a revocation). Each renewal tells the CA which certificate it
+replaces. Otherwise, when fewer than `acme_days` days are left, or a third of its
+life. The CA's Retry-After is waited for; the chain is the one the CA sends, never
+one written in here. Let's Encrypt has no OCSP any more: nothing is stapled.
+
+The account key (ECDSA P-256 unless chosen otherwise) is made once and kept sealed in
+the database; every request is signed with it (ES256, ES384 or RS256, with openssl). An account the CA no longer knows
 (deleted, deactivated) is made anew by itself, with a new key, and the request asked
 again. The certificate and its key go
 where an uploaded one goes, and every node serving it puts it in.

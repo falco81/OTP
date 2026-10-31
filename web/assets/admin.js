@@ -8404,7 +8404,7 @@ function certCard(d, target) {
     b.appendChild(bar);
     var facts = [['Issued by', noI18n(el('span', '', info.self_signed ? 'itself (self-signed)' : (info.issuer || '').replace(/^CN=/, '')))],
                  ['Valid until', info.not_after ? stamp(info.not_after) : '–'],
-                 ['Key', info.key || '–']];
+                 ['Key', (info.key || '–') + (prof && prof.alt && prof.alt.info && prof.alt.info.key ? ' + ' + prof.alt.info.key + ' (a second certificate beside it)' : '')]];
     if (info.san && info.san.length) facts.push(['Names', noI18n(el('span', '', info.san.join(', ')))]);
     if (prof) {
       facts.push(['Chain', prof.chain_info ? (prof.chain_info.length + ' between it and the root') : '–']);
@@ -14377,7 +14377,7 @@ function drawAcme() {
       c.querySelector('.pw-head') ? c.querySelector('.pw-head').appendChild(care) : c.appendChild(care);
       nodeBig(c, left !== null ? num(left) : '–', left !== null ? 'days left' : '');
       c.appendChild(netFacts([
-        ['For', t.name || '', true], ['Issued by', t.issuer || '', true],
+        ['For', t.name || '', true], ['Issued by', t.issuer || '', true], ['Keys', t.keys || '', true],
         ['Good until', t.not_after ? new Date(t.not_after * 1000).toLocaleDateString(numLang()) : ''],
         ['Last ordered', st.ordered_at ? ago(st.ordered_at) : 'never'],
         ['Ordered by', t.target === 'vip' ? 'the first node by name' : t.target]
@@ -14452,6 +14452,7 @@ function drawAcme() {
     if (d.account && d.account.kid) {
       var a = el('p', 'muted small', 'The account at the CA: ');
       a.appendChild(noI18n(el('span', 'mono', d.account.kid)));
+      if (d.account.key) a.appendChild(noI18n(el('span', '', ' · ' + d.account.key)));
       host.appendChild(a);
     }
   });
@@ -14576,24 +14577,26 @@ function acmeDnsGuide(d) {
   var t = listTable(['Certificate', 'Record', 'Type', 'Points at / value', 'In DNS now'], rows, function (r) {
     var tr = el('tr');
     tr.appendChild(r.target === 'vip' ? el('td', '', 'the VIP address') : (r.type === 'NS' ? el('td', '', 'its zone at deSEC') : noI18n(el('td', '', r.target))));
-    var rec = el('td', 'mono small dns-cell');
-    if (r.record) {
-      rec.appendChild(noI18n(el('span', '', r.record)));
-      var cp = iconButton('copy', 'Copy');
-      cp.onclick = function () { copyText(r.record, cp); };
-      rec.appendChild(cp);
-    } else rec.appendChild(el('span', 'muted', r.why || ''));
-    tr.appendChild(rec);
+    /* The text and its copy button in cells of their own (1.0.196): the
+       buttons one under the other right after the longest text, laid out by
+       the table itself - nothing measured after drawing, nothing jumping at
+       each refresh. */
+    var pair = function (text, under) {
+      var td = el('td', 'mono small dns-text'), tb = el('td', 'dns-copy');
+      td.appendChild(noI18n(el('span', '', text)));
+      if (under) td.appendChild(el('div', 'muted', under));
+      var b = iconButton('copy', 'Copy');
+      b.onclick = function () { copyText(text, b); };
+      tb.appendChild(b);
+      tr.appendChild(td); tr.appendChild(tb);
+    };
+    var lone = function (td) { td.colSpan = 2; tr.appendChild(td); };
+    if (r.record) pair(r.record);
+    else { var rw = el('td', 'mono small'); rw.appendChild(el('span', 'muted', r.why || '')); lone(rw); }
     tr.appendChild(noI18n(el('td', 'mono small', r.type || '')));
-    var val = el('td', 'mono small dns-cell');
-    if (r.type === 'CNAME' || r.type === 'NS' || (r.type === 'A' && r.value)) {
-      val.appendChild(noI18n(el('span', '', r.value)));
-      var cv = iconButton('copy', 'Copy');
-      cv.onclick = function () { copyText(r.value, cv); };
-      val.appendChild(cv);
-      if (r.type === 'A') val.appendChild(el('div', 'muted', 'or the public address in front of it'));
-    } else val.appendChild(el('span', 'muted', r.type === 'TXT' ? (r.value || r.why) : ''));
-    tr.appendChild(val);
+    if (r.type === 'CNAME' || r.type === 'NS' || (r.type === 'A' && r.value))
+      pair(r.value, r.type === 'A' ? 'or the public address in front of it' : '');
+    else { var vw = el('td', 'mono small'); vw.appendChild(el('span', 'muted', r.type === 'TXT' ? (r.value || r.why) : '')); lone(vw); }
     var st = el('td', 'small');
     if (r.check) {
       if (r.ok === undefined) st.appendChild(el('span', 'muted', 'not checked yet'));
@@ -14604,28 +14607,13 @@ function acmeDnsGuide(d) {
       }
     } else st.appendChild(el('span', 'muted', r.type === 'TXT' && !r.value ? 'otp puts it in' : '–'));
     tr.appendChild(st);
-    /* The text and its button in one box: the button at the column's edge. */
-    Array.prototype.forEach.call(tr.querySelectorAll('td.dns-cell'), function (td) {
-      var box = el('div', 'dns-val');
-      while (td.firstChild) box.appendChild(td.firstChild);
-      td.appendChild(box);
-    });
     return tr;
   });
   card.appendChild(t);
-  /* The copy buttons right after the text, one under the other: the text of
-     a column as wide as its longest (1.0.172). */
-  setTimeout(function () {
-    [1, 3].forEach(function (col) {
-      var spans = Array.prototype.map.call(t.querySelectorAll('tbody tr'), function (tr) {
-        var td = tr.children[col];
-        return td && td.querySelector('.dns-val > span:first-child');
-      }).filter(Boolean);
-      var w = 0;
-      spans.forEach(function (sp) { sp.style.width = ''; w = Math.max(w, sp.getBoundingClientRect().width); });
-      spans.forEach(function (sp) { sp.style.width = Math.ceil(w) + 'px'; });
-    });
-  }, 0);
+  /* Record and Points at / value each over two cells: the text and its button. */
+  Array.prototype.forEach.call(t.querySelectorAll('thead tr'), function (h) {
+    [3, 1].forEach(function (i) { if (h.children[i]) h.children[i].colSpan = 2; });
+  });
   var row = el('div', 'btnrow');
   var chk = cmdButton('Check DNS', 'search', 'small');
   explain(chk, 'Each record looked up from this node now, through its DNS servers - as the CA will look. A record just put in may take a while to show (its TTL).');
