@@ -83,8 +83,9 @@ try:
     ok('... an alert of node a\'s apart (%s)' % [p for p in pr if p.startswith('split')], 'split:nodea' in pr)
     code = T['scratch'][0]
     r = rad('a', 'splitu', code)
-    ok('a recovery code on node a while apart: refused (%s)' % (r[1].get('Reply-Message') or r[0]),
-       r[0] == 'reject' and 'recovery code cannot be used' in str(r[1].get('Reply-Message') or ''))
+    why = halib.dbq('a', "SELECT reason FROM radius_log WHERE username = 'splitu' ORDER BY id DESC LIMIT 1")
+    ok('a recovery code on node a while apart: refused (%s)' % why[:90],
+       r[0] == 'reject' and 'recovery code cannot be used' in why)
     st, got = call('b', '/api/settings', {'settings': {'code_send_max': 50}})
     ok('a change on node b (not the preferred one): refused while apart (%s)' % str(got.get('error'))[:60],
        st == 409 and got.get('split'))

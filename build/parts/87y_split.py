@@ -308,6 +308,20 @@ def _split_loop(daemon):
         time.sleep(SPLIT_STEP_S)
 
 
+def split_watching():
+    """Whether this process runs the watch (the daemon does; a command line does not - it
+    reads the daemon's row instead)."""
+    t = SPLIT['thread']
+    return t is not None and t.is_alive()
+
+
+def split_state_of(store, name):
+    """A node's state: this node's own live where the watch runs here, else its row."""
+    if name == node_name() and split_watching():
+        return split_state_here()
+    return _meta_json(store, 'split:state:' + name) or {}
+
+
 def split_apart():
     return bool(SPLIT['apart_since']) and split_engaged()
 
@@ -515,8 +529,8 @@ SPLIT_KEYS = ('split_mode', 'split_prefer', 'split_after_s', 'split_scratch', 's
 def split_view(store):
     nodes = []
     for n in ha_nodes(store):
-        st = _meta_json(store, 'split:state:' + n['name']) or {}
-        if n.get('me'):
+        st = split_state_of(store, n['name'])
+        if n.get('me') and not st:
             st = split_state_here()
         saved = store.settings_saved()
         nodes.append({'name': n['name'], 'me': bool(n.get('me')), 'alive': bool(n.get('alive')),

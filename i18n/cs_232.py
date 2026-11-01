@@ -60,6 +60,7 @@ S232 = {
  "needed before saving": "nutné před uložením",
  "asking…": "ptám se…",
  "no answer": "bez odpovědi",
+ "its default gateway": "jeho výchozí brána",
  "replies": "odpovídá",
  "cannot be asked": "nelze se zeptat",
  "no arbiter: no default gateway - give one": "žádný arbitr: chybí výchozí brána – zadejte ho",

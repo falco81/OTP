@@ -296,6 +296,10 @@ leaving the cluster): [operations.md](operations.md).
 - **Replicated: a code is used up on one node, and the other learns of it a
   moment later** - normally well under a second. A code asked on both nodes in
   that moment, or on both halves of a split network, can be accepted twice.
+  What the nodes do when they lose each other (split brain) - which one goes on,
+  recovery codes, the tries, changes, a report - is chosen on *Settings → High
+  availability → When the nodes lose each other* (1.0.218): see
+  [split-brain.md](split-brain.md). By default nothing of it runs, as before.
   A TOTP code lives 30 seconds at most, so the risk is small, but it is there.
   The shared layout does not have it.
 - **Replicated: the same row changed on both nodes at the same moment.** For

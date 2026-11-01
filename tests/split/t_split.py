@@ -180,7 +180,7 @@ otp.CONFIG['split_prefer'] = ''
 
 # ---- the alert while apart ---------------------------------------------------------------------
 step(2100, peer='x'); step(2130, peer='x')
-otp.SPLIT['written'] = 0
+st.set_meta('split:state:spa', json.dumps(otp.split_state_here()))     # as the daemon writes it, now
 probs = otp.alert_problems(st)
 ok('apart: an alert of this node\'s', any(k.startswith('split:spa') for k in probs), list(probs))
 step(2140, peer=True)

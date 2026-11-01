@@ -216,7 +216,7 @@ def alert_problems(store, lang='en'):
     # The nodes apart (1.0.218): each node's own word, and the report of the time apart.
     if CONFIG.get('split_report') and split_engaged():
         for n in names:
-            st = split_state_here() if n == node_name() else (_meta_json(store, 'split:state:' + n) or {})
+            st = split_state_of(store, n)
             if st.get('apart') and now - float(st.get('at') or 0) < 90:
                 aside = st.get('role') == 'aside'
                 add('split:' + n, 'bad', n,

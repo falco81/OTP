@@ -4,6 +4,35 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.218 — 2 November 2026
+
+**When the two nodes lose each other (split brain)** - a card of its own on Settings → High
+availability. Two replicating nodes that cannot reach each other each take the other for gone
+and go on alone: a code may be let in on both halves, the wrong tries are counted on each half
+apart, and what is changed on each half goes its own way. Without a third machine it cannot be
+ruled out; what can be done is chosen here (docs/split-brain.md says all of it):
+
+- **Who answers while they are apart** - one of three:
+  - *As until now: both nodes go on* - the default. With every switch below off nothing of
+    this runs at all: no question to the other node, no arbiter, nothing written - exactly as
+    before. An upgrade changes nothing.
+  - *The node that still sees the network* - each node asks its arbiter (its default gateway,
+    or addresses given, each node its own; ping, or host:port over TCP). The node that reaches
+    neither the other node nor its arbiter is the one cut off: it steps aside - RADIUS is not
+    answered there, the VIP address goes to the other node - and comes back by itself. Saved
+    only once the arbiter was tried from every node.
+  - *Only the preferred node* - the other one steps aside while they are apart.
+- **And while they are apart** - any of: recovery codes only with the other node asked
+  (refused meanwhile, not counted); half the tries to the pause and the lockout; changes on
+  the pages only on the preferred node; a warning while apart and, together again, a report of
+  the codes let in without the other node asked - by name, those let in on both.
+- The card shows both nodes as they are now, the three choices as cards with what each gains
+  and costs, and a table of what happens - a node switched off, a node cut off from the
+  network, the link between them broken - worked out from the choices before saving.
+- "Apart" is told by the other node's own database - the very one asked before a code is let
+  in - every two seconds; after its answer comes back, codes are checked against it again at
+  once, not after the back-off of up to five minutes.
+
 ## 1.0.217 — 1 November 2026
 
 A hunt for bugs - the database pane, RADIUS, acme push, the cluster - and what it found:
