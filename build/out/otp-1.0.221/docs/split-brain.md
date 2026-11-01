@@ -405,8 +405,12 @@ before the generic settings of the pane. It is drawn only when the node is one o
                      [ Save the changes ] [ Put them back ]  1 change not saved
 ```
 
-Below 720 px the two node tiles stack, the link between them turns horizontal; the
-choices and the switches wrap (auto-fit grids: 240 px and 320 px minimum).
+Below 720 px the two node tiles stack, the link between them turns horizontal, the switches
+go one under the other; the choices wrap (an auto-fit grid, 240 px minimum). The four
+switches are always two by two (never three and one alone). The table of what happens has
+**fixed column widths** (25 / 13 / 13 / 17 / 32 %, at least 760 px, scrolled sideways in its box
+below that): laid out by their words its columns moved with every switch, the costs being
+longer or shorter with each choice.
 
 ### 11.2 Behaviour
 
@@ -625,7 +629,7 @@ switch). Light and dark themes come from the tokens.
 .split-arb{margin-top:14px;padding:14px;border:1px dashed var(--line);border-radius:var(--rad)}
 .split-arb .btnrow{margin-top:10px}
 .split-tried{margin-top:10px;display:flex;flex-direction:column;gap:6px}
-.split-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
+.split-opts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .split-opt{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border:1px solid var(--line);
   border-radius:var(--rad);background:var(--panel)}
 .split-opt.on{border-color:var(--accent);background:var(--info-bg)}
@@ -635,7 +639,16 @@ switch). Light and dark themes come from the tokens.
 .split-opt-k{font-weight:650;font-size:14px}
 .split-opt-s{font-size:12.5px;color:var(--tx-mut);margin-top:3px;line-height:1.45}
 .split-scen td{vertical-align:top}
-.split-when{font-weight:600;max-width:260px}
+/* Columns of fixed widths (1.0.221): laid out by their words, they moved with every switch -
+   the costs are longer or shorter with each choice. */
+table.split-scen{table-layout:fixed;width:100%;min-width:760px}
+.split-scen th:nth-child(1),.split-scen td:nth-child(1){width:25%}
+.split-scen th:nth-child(2),.split-scen td:nth-child(2),
+.split-scen th:nth-child(3),.split-scen td:nth-child(3){width:13%}
+.split-scen th:nth-child(4),.split-scen td:nth-child(4){width:17%}
+.split-scen th:nth-child(5),.split-scen td:nth-child(5){width:32%}
+.split-scen td .tag{white-space:nowrap}
+.split-when{font-weight:600}
 .split-out{font-size:12.5px}
 .split-out.ok{color:var(--ok)}
 .split-out.warn{color:var(--warn)}
@@ -648,7 +661,7 @@ switch). Light and dark themes come from the tokens.
 .split-said.same{color:var(--ok)}
 .split-said.new{color:var(--tx-mut)}
 .split-said svg{flex:none}
-@media (max-width:720px){.split-now{grid-template-columns:1fr}.split-link{flex-direction:row;padding:4px 0}
+@media (max-width:720px){.split-opts{grid-template-columns:1fr}.split-now{grid-template-columns:1fr}.split-link{flex-direction:row;padding:4px 0}
   .split-link::before,.split-link::after{width:auto;height:2px;min-height:0;min-width:20px}}
 ```
 

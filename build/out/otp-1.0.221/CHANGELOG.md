@@ -4,6 +4,13 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.221 — 2 November 2026
+
+- **The table *What happens* on *When the nodes lose each other* moved with every switch** - its
+  columns took their widths from their words, and the costs are longer or shorter with each
+  choice. The columns are fixed now. The four switches are two by two on a wide page (not three
+  and one alone), one under the other on a phone.
+
 ## 1.0.220 — 2 November 2026
 
 - **A switch clicked on the card *When the nodes lose each other* sent the page to the top** -

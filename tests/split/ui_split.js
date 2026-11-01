@@ -48,6 +48,21 @@ const VIEW = {active: true, engaged: false, ha_mode: 'replicated',
       ok('... the save bar says a change waits', await pg.evaluate(() => $('save-bar').classList.contains('dirty')));
       const rows = await pg.$$eval('.split-scen tbody tr', trs => trs.map(tr => tr.textContent));
       ok('... the table: a node losing the network steps aside, the other answers', rows.some(r => /steps aside|ustoup/i.test(r)));
+      /* The table's columns stay where they are whatever is switched (1.0.221). */
+      const cols = () => pg.$$eval('.split-scen thead th', ths => ths.map(t => Math.round(t.getBoundingClientRect().left)).join(','));
+      const c0 = await cols();
+      let same = true;
+      for (let i = 0; i < 4; i++) {
+        await pg.evaluate((i) => document.querySelectorAll('.split-opt input[type=checkbox]')[i].click(), i); await pg.waitForTimeout(200);
+        if (await cols() !== c0) same = false;
+      }
+      for (let i = 0; i < 4; i++) {
+        await pg.evaluate((i) => document.querySelectorAll('.split-opt input[type=checkbox]')[i].click(), i); await pg.waitForTimeout(150);
+      }
+      await pg.evaluate(() => document.querySelectorAll('.split-choice')[2].click()); await pg.waitForTimeout(200);
+      if (await cols() !== c0) same = false;
+      await pg.evaluate(() => document.querySelectorAll('.split-choice')[1].click()); await pg.waitForTimeout(200);
+      ok('the table of what happens: its columns stay put whatever is switched (' + c0 + ')', same);
       await pg.evaluate(() => document.querySelectorAll('.split-opt input[type=checkbox]')[0].click()); await pg.waitForTimeout(300);
       await (await pg.$('#ha-split-card')).screenshot({path: '/home/claude/shots/split-arbiter.png'});
       await pg.evaluate(() => document.querySelectorAll('.split-choice')[2].click()); await pg.waitForTimeout(300);
