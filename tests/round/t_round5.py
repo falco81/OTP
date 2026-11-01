@@ -174,4 +174,24 @@ ok('the upgrader: a signed package with a folder added refused', 'no file of it 
    (r.stdout + r.stderr)[-300:])
 r = subprocess.run([sys.executable, '-I', V + '/deploy/otp_upgrade.py', '--inspect', pkg], capture_output=True, text=True)
 ok('... the package itself taken', '"ok": true' in r.stdout, (r.stdout + r.stderr)[-300:])
+# ---- the console (1.0.210): only errors of the kernel on it, an admin's own setting kept ---------
+I = open(V + '/install.sh').read()
+if 'console_quiet()' in I:
+    C = tempfile.mkdtemp(prefix='otp-cq-')
+    fn = '\n'.join(l for l in I.split('\n') if l.startswith(('say()', 'CONSOLE_SYSCTL=')))
+    body = I[I.index('console_quiet() {'):]
+    body = body[:body.index('\n}\n') + 3]
+    fn = (fn + '\n' + body).replace('/etc/sysctl.d/80-otp-console.conf', C + '/80-otp-console.conf') \
+        .replace('/etc/sysctl.d/*.conf /etc/sysctl.conf', C + '/*.conf')
+    open(C + '/f.sh', 'w').write(fn)
+    subprocess.run(['bash', '-c', '. %s/f.sh; DRY_RUN=""; console_quiet; console_quiet' % C], capture_output=True)
+    got = open(C + '/80-otp-console.conf').read() if os.path.exists(C + '/80-otp-console.conf') else ''
+    ok('install.sh: the console shows the kernel\'s errors only (kernel.printk = 4 4 1 7), written once',
+       got.count('kernel.printk = 4 4 1 7') == 1)
+    os.rename(C + '/80-otp-console.conf', C + '/was.txt')
+    open(C + '/50-mine.conf', 'w').write('kernel.printk = 7 4 1 7\n')
+    out = subprocess.run(['bash', '-c', '. %s/f.sh; DRY_RUN=""; console_quiet' % C], capture_output=True, text=True).stdout
+    ok('... an admin\'s own kernel.printk left as it is', not os.path.exists(C + '/80-otp-console.conf')
+       and 'set by hand' in out)
+    ok('... taken away again when otp is', '"$CONSOLE_SYSCTL"' in I[I.index('for one in "$UNIT_FILE"'):][:200])
 print('ALL %d / %d' % (sum(R), len(R)))
