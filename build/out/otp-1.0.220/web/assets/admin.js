@@ -7763,7 +7763,15 @@ function splitScenarios() {
              risk: linkB === aside ? safe('none') : risk(twice)});
   return {rows: rows, A: A, B: B};
 }
+/* Drawn again where it is (1.0.220): emptied for a moment, the pane was short and a
+   switch clicked half-way down sent the page to the top. */
 function drawSplit() {
+  var host_ = $('ha-split'), held_ = host_ ? scrollHeld(host_) : null;
+  var r_ = drawSplitIn();
+  if (held_) scrollBack(held_);
+  return r_;
+}
+function drawSplitIn() {
   var host = $('ha-split');
   var v = SPLITC.view, d = SPLITC.draft;
   if (!host || !v || !d) return;
@@ -9742,7 +9750,15 @@ function pushSave() {
     return true;
   });
 }
+/* Drawn again where it is (1.0.220): emptied for a moment, the pane was short and a
+   switch clicked half-way down sent the page to the top. */
 function drawPush(d) {
+  var host_ = $('web-push'), held_ = host_ ? scrollHeld(host_) : null;
+  var r_ = drawPushIn(d);
+  if (held_) scrollBack(held_);
+  return r_;
+}
+function drawPushIn(d) {
   PUSH = d || {};
   var W = PUSH_WANT;
   var host = $('web-push');

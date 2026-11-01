@@ -4,6 +4,12 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.220 — 2 November 2026
+
+- **A switch clicked on the card *When the nodes lose each other* sent the page to the top** -
+  the card is drawn again whole on every change, and for that moment the pane was short. The
+  page stays where it is now; the same on *Certificates from acme*.
+
 ## 1.0.219 — 2 November 2026
 
 - **The settings of *When the nodes lose each other* were drawn under every pane** of the

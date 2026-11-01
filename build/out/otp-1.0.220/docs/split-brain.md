@@ -431,6 +431,11 @@ choices and the switches wrap (auto-fit grids: 240 px and 320 px minimum).
   tiles show the stored state rows; a tile older than 60 s is dimmed ("its word has not
   come over yet" / "nothing heard from it").
 - **Who may**: only a full administrator changes anything; everyone else sees it disabled.
+- **The page stays where it is**: the card is drawn again whole on every change; around it
+  the scroll position of every scrolled box is kept and put back (`scrollHeld` / `scrollBack`
+  of the page; `drawSplit` wraps `drawSplitIn`). Without it the card is empty for a moment,
+  the pane is short, and a switch clicked half-way down sends the page to the top (otp 1.0.218
+  and 1.0.219 did). Test it with a real mouse click on the switch, not a script's click.
 
 ### 11.3 The texts, English and Czech
 
@@ -844,7 +849,15 @@ function splitScenarios() {
              risk: linkB === aside ? safe('none') : risk(twice)});
   return {rows: rows, A: A, B: B};
 }
+/* Drawn again where it is (1.0.220): emptied for a moment, the pane was short and a
+   switch clicked half-way down sent the page to the top. */
 function drawSplit() {
+  var host_ = $('ha-split'), held_ = host_ ? scrollHeld(host_) : null;
+  var r_ = drawSplitIn();
+  if (held_) scrollBack(held_);
+  return r_;
+}
+function drawSplitIn() {
   var host = $('ha-split');
   var v = SPLITC.view, d = SPLITC.draft;
   if (!host || !v || !d) return;

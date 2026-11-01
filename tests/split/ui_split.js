@@ -75,6 +75,39 @@ const VIEW = {active: true, engaged: false, ha_mode: 'replicated',
     ok(tag + ': no error in the page', errs.length === 0, errs);
     await ctx.close();
   }
+  /* A switch clicked half-way down the page: the page stays where it is (1.0.220). */
+  {
+    const ctx = await b.newContext({ignoreHTTPSErrors: true, viewport: {width: 1300, height: 900}});
+    const pg = await ctx.newPage();
+    await pg.goto('https://127.0.0.1/admin/'); await pg.waitForTimeout(700);
+    await pg.fill('#in-name', 'admin'); await pg.fill('#in-pass', PW); await pg.keyboard.press('Enter');
+    await pg.waitForTimeout(2000);
+    const where = () => pg.evaluate(() => {
+      var out = [document.scrollingElement.scrollTop];
+      document.querySelectorAll('*').forEach(function (e) { if (e.scrollTop > 0) out.push(e.tagName + '.' + e.className + ':' + e.scrollTop); });
+      return JSON.stringify(out);
+    });
+    for (const [pane, card, sel] of [['ha', '#ha-split-card', '.split-opt input[type=checkbox]'],
+                                     ['web', '#web-push-card', '#web-push .set-grid input[type=checkbox]']]) {
+      await pg.goto('https://127.0.0.1/admin/#settings/' + pane); await pg.reload(); await pg.waitForTimeout(3000);
+      if (pane === 'ha') await pg.evaluate((v) => { $('ha-split-card').hidden = false; SPLITC.view = v; SPLITC.draft = splitFresh(v); drawSplit(); }, VIEW);
+      /* Clicked with the mouse on the switch as a person does - a click by script on the box
+         inside did not send the page up, and the test passed on the version that did. */
+      const sws = await pg.$$(sel.replace(' input[type=checkbox]', ' .sw'));
+      const sw = sws[sws.length - 1];
+      await sw.scrollIntoViewIfNeeded(); await pg.waitForTimeout(400);
+      const top = () => pg.evaluate(() => document.querySelector('.ctl-main').scrollTop);
+      const before = await top();
+      const box = await sw.boundingBox();
+      await pg.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      await pg.waitForTimeout(600);
+      const after = await top();
+      ok(pane + ': a switch clicked with the mouse half-way down - the page stays where it was (' + before + ' -> ' + after + ')',
+         before > 200 && Math.abs(after - before) < 60, [before, after]);
+      await pg.evaluate(() => { if ($('set-reset')) $('set-reset').click(); }); await pg.waitForTimeout(800);
+    }
+    await ctx.close();
+  }
   console.log('ALL ' + R.filter(x => x).length + ' / ' + R.length);
   await b.close();
 })();
