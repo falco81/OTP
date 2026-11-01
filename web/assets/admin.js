@@ -4909,6 +4909,12 @@ function engineWord(name) { return ENGINE_SAID[name] || name; }
 
 function drawEngine(d) {
   $('db-engine-file').textContent = d.config_file || 'the config file';
+  /* Not for a node of a cluster (1.0.214): the wizard and the buttons by hand stay
+     shut there, and say why. */
+  if ($('db-wizard-cluster')) $('db-wizard-cluster').hidden = !d.cluster;
+  ['db-wizard', 'db-engine-setup', 'db-engine-move', 'db-engine-empty', 'db-engine-use'].forEach(function (id) {
+    if ($(id) && d.cluster) $(id).disabled = true;
+  });
   $('db-engine-now').textContent = (ENGINE_SAID[d.engine] || d.engine) + ' · ' + d.where;
   var host = $('db-engine-says');
   clear(host);
@@ -4949,6 +4955,326 @@ function engineFacts(d) {
     facts.push(['May this account write', d.writable ? 'yes' : 'NO']);
   }
   return peekFacts(facts);
+}
+
+/* ---- moving to another database: a wizard (1.0.214) ------------------------
+   One step at a time with Back and Next: which kind, its address, reaching it
+   (and setting it up when it is not there yet), what will happen, and then the
+   whole of it - a copy first, everything carried across, counted, and the daemon
+   started again on it. Each step uses the same requests the buttons did. Not for
+   a node of a cluster: there the database is the cluster's, and it is refused
+   before it starts. */
+var DBW = null;
+function dbWizard() {
+  var d = DBSTATE || {};
+  if (d.cluster) {
+    modal('Move to another database', function (body) {
+      body.appendChild(el('p', 'note warn', 'This node is one of a cluster' + (d.ha_mode ? ' (' + d.ha_mode + ')' : '') + ': its database is the cluster’s, and moving it from here would break the cluster.'));
+      body.appendChild(el('p', 'note', 'To move it: make this node one alone first (Settings → High availability → Switch it off), move it here, and build the cluster again from it.'));
+    }, [{words: 'Close', close: true}], true);
+    return;
+  }
+  DBW = {step: 0, engine: '', addr: {}, tried: null, empty: false, use: true, made: '', running: false};
+  modal('Move to another database', function () {}, [], 'medium');
+  dbwDraw();
+}
+var DBW_STEPS = ['Which one', 'Its address', 'Reaching it', 'What happens', 'Moving'];
+function dbwSettings() {
+  var a = DBW.addr;
+  if (DBW.engine === 'sqlite') return {db_engine: 'sqlite'};
+  var out = {db_engine: DBW.engine, db_host: (a.host || '').trim(), db_port: Number(a.port) || 0,
+             db_name: (a.name || '').trim(), db_user: (a.user || '').trim(),
+             db_timeout_s: Number(a.timeout) || 10};
+  if (a.password) out.db_password = a.password;
+  return out;
+}
+function dbwSteps() {
+  var row = el('div', 'wiz-steps');
+  DBW_STEPS.forEach(function (w, i) {
+    if (i === 1 && DBW.engine === 'sqlite') return;
+    var s = el('div', 'wiz-step' + (i === DBW.step ? ' now' : (i < DBW.step ? ' done' : '')));
+    s.appendChild(el('span', 'wiz-n', String(i + 1)));
+    s.appendChild(el('span', '', w));
+    row.appendChild(s);
+  });
+  return row;
+}
+function dbwFoot(back, next, nextWords, nextCls, nextIcon) {
+  var foot = $('modal-foot');
+  clear(foot);
+  var close = cmdButton(DBW.running ? 'Close - it carries on' : 'Close', 'close', '');
+  close.onclick = function () { closeModal(); if (!DBW.running) DBW = null; loadDb(); };
+  foot.appendChild(close);
+  if (back) {
+    var b = cmdButton('Back', 'prev', '');
+    b.onclick = back;
+    foot.appendChild(b);
+  }
+  if (next) {
+    var n = cmdButton(nextWords || 'Next', nextIcon || 'next', nextCls || 'primary');
+    n.onclick = function () { next(n); };
+    foot.appendChild(n);
+    return n;
+  }
+  return null;
+}
+function dbwGo(step) { DBW.step = step; dbwDraw(); }
+function dbwDraw() {
+  if (!DBW) return;
+  var body = $('modal-body');
+  clear(body);
+  body.appendChild(dbwSteps());
+  var d = DBSTATE || {};
+  var page = el('div', 'wiz-page');
+  body.appendChild(page);
+  if (DBW.step === 0) {
+    page.appendChild(el('p', 'note', 'Everything this installation keeps - tokens, accounts, settings, the logs - is copied into the database chosen here; this one is left as it is, and a copy of it is made first. In use now: ' + engineWord(d.engine) + ' · ' + (d.where || '') + '.'));
+    var grid = el('div', 'wiz-choices');
+    [['sqlite', 'The file on this machine', 'SQLite: nothing to install or look after. One machine alone.'],
+     ['postgres', 'PostgreSQL', 'A server of its own, here or elsewhere - and what a cluster of two nodes needs.'],
+     ['mariadb', 'MariaDB', 'A server of its own, here or elsewhere.']].forEach(function (c) {
+      var b = el('button', 'wiz-choice' + (DBW.engine === c[0] ? ' on' : ''));
+      b.type = 'button';
+      b.appendChild(el('div', 'wiz-choice-k', c[1]));
+      b.appendChild(el('div', 'small muted', c[2]));
+      var no = c[0] !== 'sqlite' && d.drivers && d.drivers[c[0]] === false;
+      if (c[0] === d.engine) b.appendChild(el('span', 'tag info', 'in use now'));
+      if (no) {
+        b.disabled = true;
+        b.appendChild(el('div', 'small bad', 'its driver is not on this machine: install.sh --upgrade --with-db ' + c[0]));
+      }
+      if (c[0] === 'sqlite' && d.engine === 'sqlite') b.disabled = true;
+      b.onclick = function () {
+        DBW.engine = c[0];
+        if (c[0] !== 'sqlite' && !DBW.addr.port) {
+          DBW.addr = {host: '', port: c[0] === 'postgres' ? 5432 : 3306, name: 'otp', user: 'otp', password: '', timeout: 10};
+        }
+        DBW.tried = null;
+        dbwDraw();
+      };
+      grid.appendChild(b);
+    });
+    page.appendChild(grid);
+    var n = dbwFoot(null, function () { dbwGo(DBW.engine === 'sqlite' ? 2 : 1); });
+    n.disabled = !DBW.engine;
+    return;
+  }
+  if (DBW.step === 1) {
+    page.appendChild(el('p', 'note', 'Where ' + engineWord(DBW.engine) + ' is, and the database and account this installation will use there. If they are not there yet, the next step makes them - with an administrator of that server, used once and kept nowhere.'));
+    var g = el('div', 'formgrid');
+    var a = DBW.addr;
+    var box = function (k, words, ph, help, secret) {
+      var i = secret ? secretBox(a[k] || '', ph, 'mono') : textBox(a[k] === undefined ? '' : String(a[k]), ph, 'mono');
+      i.oninput = function () { a[k] = secret ? i.value : i.value; DBW.tried = null; };
+      if (secret) i.addEventListener('input', function () { a[k] = i.value; });
+      g.appendChild(formField(words, i, help));
+      return i;
+    };
+    box('host', 'Server', 'db.example.cz, or 127.0.0.1 when it runs here', 'Its name or address, as this machine reaches it.');
+    box('port', 'Port', DBW.engine === 'postgres' ? '5432' : '3306');
+    box('name', 'Database', 'otp');
+    box('user', 'Account', 'otp');
+    box('password', 'Its password', 'empty: one is made when it is set up', 'Leave it empty when the next step is to make the account - a password is made then and shown once.', true);
+    box('timeout', 'Wait for it, seconds', '10');
+    page.appendChild(g);
+    dbwFoot(function () { dbwGo(0); }, function () {
+      if (!String(a.host || '').trim() || !String(a.name || '').trim() || !String(a.user || '').trim()) {
+        toast('the server, the database and the account, please', 'bad'); return;
+      }
+      dbwGo(2);
+    });
+    return;
+  }
+  if (DBW.step === 2) {
+    var say = el('div', 'wiz-said');
+    page.appendChild(say);
+    var nextB = dbwFoot(function () { dbwGo(DBW.engine === 'sqlite' ? 0 : 1); }, function () { dbwGo(3); });
+    nextB.disabled = true;
+    var judge = function (t) {
+      clear(say);
+      say.appendChild(engineFacts(t));
+      var ok = false;
+      if (t.in_use) say.appendChild(el('p', 'note bad', 'That is the database in use now - choose another one.'));
+      else if (!t.reached) say.appendChild(el('p', 'note bad', String(t.trouble || 'it does not answer')));
+      else if (!t.writable) say.appendChild(el('p', 'note warn', 'It answers, but this account may not make anything in it.'));
+      else if (t.rows) {
+        var w = el('div', 'note warn');
+        w.appendChild(el('div', '', 'There are ' + num(t.rows) + ' record(s) of otp in it already - a move into it would mix two installations.'));
+        var lab = el('label', 'check small');
+        var cb = el('input'); cb.type = 'checkbox'; cb.checked = DBW.empty;
+        cb.onchange = function () { DBW.empty = cb.checked; nextB.disabled = !cb.checked; };
+        lab.appendChild(cb);
+        lab.appendChild(el('span', '', 'Empty it first - throw away what is in THAT database (never the one in use)'));
+        w.appendChild(lab);
+        say.appendChild(w);
+        ok = DBW.empty;
+      } else {
+        say.appendChild(el('p', 'note good', 'It answers, this account may write in it, and it holds nothing of otp yet: ready.'));
+        ok = true;
+      }
+      nextB.disabled = !ok;
+      if (DBW.engine !== 'sqlite' && t.in_use === false && (!t.reached || !t.writable)) {
+        /* Not there yet: made here, with an administrator used once. */
+        var s = el('div', 'wiz-setup');
+        s.appendChild(el('h4', '', 'Set it up'));
+        s.appendChild(el('p', 'note', 'Makes the database and the account on that server and gives the account rights on that one database alone. It needs an administrator of the server - ' + (DBW.engine === 'postgres' ? 'postgres' : 'root') + ', or anyone who may make a database - used for this one connection and kept nowhere.'));
+        var g2 = el('div', 'formgrid');
+        var who = textBox('', DBW.engine === 'postgres' ? 'postgres' : 'root', '');
+        who.autocomplete = 'off';
+        var word = secretBox('', '', '');
+        g2.appendChild(formField('An administrator on that server', who));
+        g2.appendChild(formField('Its password', word));
+        s.appendChild(g2);
+        var go = cmdButton('Set it up', 'key', 'primary');
+        go.onclick = function () {
+          busy(go, true);
+          api('db', {action: 'setup', settings: dbwSettings(), admin_user: who.value.trim(), admin_password: word.value}).then(function (r) {
+            if (r.password) { DBW.addr.password = r.password; DBW.made = r.password; }
+            toast((r.made || []).join('; ') || 'set up', 'good');
+            run();
+          }).catch(function (e) { busy(go, false); oops(e); });
+        };
+        s.appendChild(go);
+        say.appendChild(s);
+      }
+      if (DBW.made) {
+        var m = el('div', 'note good');
+        m.appendChild(el('div', '', 'The password made for the account - written into the config file when the move starts using it, shown only now:'));
+        var pw = el('input'); pw.type = 'text'; pw.readOnly = true; pw.className = 'mono'; pw.value = DBW.made;
+        pw.onclick = function () { pw.select(); };
+        noI18n(pw);
+        m.appendChild(pw);
+        say.appendChild(m);
+      }
+    };
+    var run = function () {
+      clear(say);
+      say.appendChild(el('p', 'note', 'Reaching ' + engineWord(DBW.engine) + ' exactly as the daemon would…'));
+      api('db', {action: 'try', settings: dbwSettings()}).then(function (t) { DBW.tried = t; judge(t); })
+        .catch(function (e) { clear(say); say.appendChild(el('p', 'note bad', String(e.message || e))); });
+    };
+    run();
+    return;
+  }
+  if (DBW.step === 3) {
+    var t = DBW.tried || {};
+    var c = d.counts || {};
+    var total = 0;
+    Object.keys(c).forEach(function (k) { total += Number(c[k]) || 0; });
+    page.appendChild(peekFacts([['From', engineWord(d.engine) + ' · ' + (d.where || '')],
+      ['Into', engineWord(DBW.engine) + ' · ' + (t.where || '')],
+      ['Records to carry', num(total)], ['Tokens', num(c.tokens || 0)], ['Accounts', num(c.accounts || 0)]]));
+    var ol = el('ol', 'wiz-plan');
+    if (DBW.empty) ol.appendChild(el('li', 'bad', 'what is in ' + engineWord(DBW.engine) + ' is thrown away'));
+    ol.appendChild(el('li', '', 'a copy of everything here is made first, and kept with the others'));
+    ol.appendChild(el('li', '', 'every table is carried across, in batches, and counted on both sides'));
+    var useLi = el('li', '', '');
+    ol.appendChild(useLi);
+    page.appendChild(ol);
+    var lab = el('label', 'check small');
+    var cb = el('input'); cb.type = 'checkbox'; cb.checked = DBW.use;
+    var paint = function () {
+      useLi.textContent = DBW.use ? 'the daemon starts again on ' + engineWord(DBW.engine) + ' - a few seconds without sign-ins - and the page with it'
+                                  : 'nothing starts using it yet: Start using it later, on this pane';
+    };
+    cb.onchange = function () { DBW.use = cb.checked; paint(); };
+    lab.appendChild(cb);
+    lab.appendChild(el('span', '', 'Start using it as soon as everything is across'));
+    page.appendChild(lab);
+    paint();
+    page.appendChild(el('p', 'note', 'What is here now is not changed by any of it: going back is this same wizard the other way.'));
+    dbwFoot(function () { dbwGo(2); }, function () { dbwGo(4); }, 'Move it', 'primary', 'save');
+    return;
+  }
+  if (DBW.step === 4) {
+    var bar = el('div', 'going wide');
+    var track = el('div', 'bar');
+    var fill = el('span');
+    track.appendChild(fill);
+    bar.appendChild(track);
+    var says = el('div', 'says', '');
+    bar.appendChild(says);
+    page.appendChild(bar);
+    var log = haSteps([]);
+    page.appendChild(log);
+    var line = function (ok, what) {
+      var row = el('div', 'si-row');
+      row.appendChild(el('span', 'dot ' + (ok === true ? 'ok' : (ok === false ? 'bad' : 'warn'))));
+      row.appendChild(el('span', '', what));
+      log.appendChild(row);
+    };
+    var fail = function (e) {
+      DBW.running = false;
+      line(false, String(e && e.message || e));
+      dbwFoot(function () { dbwGo(3); }, null);
+    };
+    var target = DBW.engine;
+    DBW.running = true;
+    dbwFoot(null, null);
+    var watch = function () {
+      return new Promise(function (resolve, reject) {
+        var step = function () {
+          api('db', {action: 'job'}).then(function (x) {
+            var j = x.job || {};
+            var pct = j.whole ? Math.min(100, Math.round(100 * j.done / j.whole)) : (j.running ? 5 : 100);
+            fill.style.width = pct + '%';
+            says.textContent = (j.says || j.what || '') + (j.whole ? ' (' + num(j.done) + ' of ' + num(j.whole) + ')' : '');
+            if (j.running) { setTimeout(step, 1000); return; }
+            if (j.error) { reject(new Error(j.error)); return; }
+            resolve(j.result || {});
+          }).catch(reject);
+        };
+        step();
+      });
+    };
+    var settings = dbwSettings();
+    var chain = Promise.resolve();
+    if (DBW.empty) {
+      chain = chain.then(function () { return api('db', {action: 'empty', settings: settings}); })
+        .then(function (r) { line(true, r.message || 'emptied'); });
+    }
+    chain.then(function () {
+      line(null, 'a copy of what is here, then every table carried across…');
+      return api('db', {action: 'move', settings: settings});
+    }).then(function () { return watch(); }).then(function (r) {
+      line(true, 'everything is in ' + (r.where || engineWord(target)) + ': ' + num(r.rows || 0) + ' record(s) · a copy made first: ' + (r.copy || ''));
+      var short = r.short || {};
+      var bad = Object.keys(short);
+      if (bad.length) {
+        line(false, 'fewer rows arrived than were sent: ' + bad.map(function (k) { return k + ' ' + short[k][1] + '/' + short[k][0]; }).join(', '));
+        throw new Error('not started on it: the counts do not match');
+      }
+      if (!DBW.use) {
+        DBW.running = false;
+        line(true, 'nothing uses it yet: Start using it on this pane when you are ready');
+        dbwFoot(null, null);
+        return;
+      }
+      return api('db', {action: 'use', settings: settings}).then(function (u) {
+        line(true, u.message || 'the daemon starts again on it');
+        says.textContent = 'waiting for the daemon to come back…';
+        var end = Date.now() + 90000;
+        var again = function () {
+          api('db').then(function (s) {
+            if (s.engine === target) {
+              DBW.running = false;
+              fill.style.width = '100%';
+              line(true, 'it runs on ' + engineWord(s.engine) + ' now: ' + (s.where || '') + ' · ' + num((s.counts || {}).tokens || 0) + ' token(s)');
+              says.textContent = 'done';
+              dbwFoot(null, function () { closeModal(); DBW = null; location.reload(); }, 'Done', 'primary', 'check');
+              return;
+            }
+            if (Date.now() > end) { fail(new Error('the daemon has not come back on ' + engineWord(target) + ' in a minute and a half - look at systemctl status otp')); return; }
+            setTimeout(again, 2000);
+          }).catch(function () {
+            if (Date.now() > end) { fail(new Error('the daemon does not answer - look at systemctl status otp')); return; }
+            setTimeout(again, 2000);
+          });
+        };
+        setTimeout(again, 4000);
+      });
+    }).catch(fail);
+  }
 }
 
 /* ---- the job going on, and the bar that says how far ---------------------- */
@@ -5665,6 +5991,7 @@ function markErase() {
   setButtonIcon(go, 'forget', picked.length ? 'Erase ' + picked.length + ' of these…' : 'Erase what is ticked…');
 }
 
+if ($('db-wizard')) $('db-wizard').onclick = dbWizard;
 if ($('db-engine-test')) {
   $('db-engine-test').onclick = function () {
     busy($('db-engine-test'), true);
@@ -5720,9 +6047,12 @@ if ($('db-engine-test')) {
             toast(ok ? 'copied' : 'press Ctrl+C — it is selected', ok ? 'good' : 'warn');
           };
           body.appendChild(copy);
-          body.appendChild(el('p', 'note', 'It is saved in ' + (d.kept_in || 'the config file') + ' and nowhere else, so nothing has to be typed in above. This is the only time it is shown — keep a copy if you want one, though nothing here needs it again.'));
+          body.appendChild(el('p', 'note', d.kept_in
+            ? 'It is saved in ' + d.kept_in + ' and nowhere else, so nothing has to be typed in above. This is the only time it is shown — keep a copy if you want one, though nothing here needs it again.'
+            : 'It is not written into the config file while another server is in use (that would point the database in use at it): type it into the password box above before carrying everything across - this is the only time it is shown.'));
         }
-        body.appendChild(el('p', 'note', 'The address is saved. Nothing has moved yet: carry everything across when you are ready.'));
+        body.appendChild(el('p', 'note', d.kept_in ? 'The address is saved. Nothing has moved yet: carry everything across when you are ready.'
+          : 'Nothing has moved yet: carry everything across when you are ready.'));
         clear($('modal-foot'));
         var close = cmdButton('Close', 'close', '');
         close.onclick = closeModal;

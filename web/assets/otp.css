@@ -3368,3 +3368,28 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .ha-drop.has{border-style:solid;border-color:var(--ok, #3fb950)}
 .ha-prep{margin-top:10px}
 .ha-prep h4{margin:8px 0 4px}
+
+/* Moving to another database: the wizard (1.0.214). */
+.wiz-steps{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px}
+.wiz-step{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;
+          background:var(--panel2);color:var(--tx-mut);font-size:13px}
+.wiz-step .wiz-n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;
+                 border-radius:50%;background:var(--line);color:var(--tx);font-size:12px;font-weight:600}
+.wiz-step.now{background:var(--info-bg);color:var(--tx)}
+.wiz-step.now .wiz-n{background:var(--accent);color:#fff}
+.wiz-step.done .wiz-n{background:var(--ok, #3fb950);color:#fff}
+.wiz-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:10px}
+.wiz-choice{text-align:left;padding:14px;border:1.5px solid var(--line);border-radius:10px;
+            background:var(--panel2);color:var(--tx);cursor:pointer;display:flex;flex-direction:column;gap:6px;
+            transition:border-color .12s,background .12s}
+.wiz-choice:hover:not(:disabled){border-color:var(--accent)}
+.wiz-choice.on{border-color:var(--accent);background:var(--info-bg)}
+.wiz-choice:disabled{opacity:.55;cursor:not-allowed}
+.wiz-choice .wiz-choice-k{font-weight:600;font-size:15px}
+.wiz-choice .tag{align-self:flex-start}
+.wiz-plan{margin:10px 0 12px 18px}
+.wiz-plan li{margin:4px 0}
+.wiz-setup{margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px}
+.wiz-setup h4{margin:0 0 6px}
+.wiz-page .going{margin:6px 0 12px}
+.db-by-hand{margin-top:10px}

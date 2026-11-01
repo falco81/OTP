@@ -1124,32 +1124,37 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 
     <div class="card full" id="db-engine-card">
       <h2>Which one it is <span class="right" id="db-engine-now"></span></h2>
-      <p class="note">The settings above say which database to open and how to reach it, and
-        they are the only settings kept in <b id="db-engine-file">the config file</b> rather
-        than in the database — a database cannot hold the address of itself, and a machine
-        whose database will not open still has to be able to be put right from this page.</p>
-      <p class="note">Changing the setting moves nothing. The order is: fill the address in,
-        <b>try it</b>, <b>set it up</b> if the database and the account are not there yet,
-        <b>carry everything across</b>, and only then <b>start using it</b>. Until that last
-        step this installation carries on exactly as it is, and what is in it is never
-        touched by any of this.</p>
+      <p class="note">This installation keeps everything in one database: the file on this machine
+        (SQLite), PostgreSQL or MariaDB. Moving to another one is done by the wizard below, step by
+        step - which kind, its address, reaching it (and setting it up when it is not there yet),
+        what will happen - and then all of it: a copy of what is here first, every table carried
+        across and counted, and the daemon started again on the new one. What is here now is never
+        changed by it, so going back is the same wizard the other way. Where it is kept is the only
+        thing written into <b id="db-engine-file">the config file</b>.</p>
       <div id="db-engine-says"></div>
+      <p class="note warn" id="db-wizard-cluster" hidden>This node is one of a cluster: its database
+        is the cluster's, and it is not moved from here - make this node one alone first
+        (Settings → High availability), then move it, then build the cluster again from it.</p>
       <div class="btnrow admin-only" style="margin-top:12px">
-        <button class="btn cmd" id="db-engine-test" data-icon="check"
-                title="Reach that server with the address above, exactly as the daemon would, and say what answered. Nothing is saved and nothing is written.">Try it</button>
-        <button class="btn cmd" id="db-engine-setup" data-icon="key"
-                title="Make the database and the account on that server, and give that account rights on that one database and no other, with a password made here and shown once. The first time it asks for an administrator on the server, uses it for this one connection and stores it nowhere. Afterwards it needs none: it opens the database and puts its tables right, which is worth doing after every upgrade.">Set it up…</button>
-        <button class="btn cmd primary" id="db-engine-move" data-icon="save"
-                title="Copy everything that is here into that database: every token, every request, every setting and every account. What is here is left exactly as it is.">Carry everything across…</button>
-        <button class="btn cmd danger" id="db-engine-empty" data-icon="forget"
-                title="Throw away what is in the OTHER database, so that a move can be tried again. Never the one in use.">Empty it…</button>
-        <button class="btn cmd" id="db-engine-use" data-icon="power"
-                title="Start using it. This writes the address into the config file and restarts the daemon; nothing in either database is touched, and coming back is the same four steps the other way.">Start using it…</button>
+        <button class="btn cmd primary" id="db-wizard" data-icon="db"
+                title="Step by step to another database, with Back and Next: nothing is done until the last step.">Move to another database…</button>
       </div>
-      <p class="btnhelp">Once everything is in the other database and it is the one in use,
-        the one it came from is just a spare copy: the file may be deleted, or the server
-        uninstalled. Going the other way is these same steps with the file chosen instead —
-        which is what makes it safe to try a server at all.</p>
+      <details class="db-by-hand">
+        <summary class="small muted">Step by step by hand, as before</summary>
+        <div class="btnrow admin-only" style="margin-top:10px">
+          <button class="btn cmd" id="db-engine-test" data-icon="check"
+                  title="Reach that server with the address above, exactly as the daemon would, and say what answered. Nothing is saved and nothing is written.">Try it</button>
+          <button class="btn cmd" id="db-engine-setup" data-icon="key"
+                  title="Make the database and the account on that server, and give that account rights on that one database and no other, with a password made here and shown once. The first time it asks for an administrator on the server, uses it for this one connection and stores it nowhere. Afterwards it needs none: it opens the database and puts its tables right, which is worth doing after every upgrade.">Set it up…</button>
+          <button class="btn cmd" id="db-engine-move" data-icon="save"
+                  title="Copy everything that is here into that database: every token, every request, every setting and every account. What is here is left exactly as it is.">Carry everything across…</button>
+          <button class="btn cmd danger" id="db-engine-empty" data-icon="forget"
+                  title="Throw away what is in the OTHER database, so that a move can be tried again. Never the one in use.">Empty it…</button>
+          <button class="btn cmd" id="db-engine-use" data-icon="power"
+                  title="Start using it. This writes the address into the config file and restarts the daemon; nothing in either database is touched, and coming back is the same four steps the other way.">Start using it…</button>
+        </div>
+        <p class="btnhelp">These take the address from the settings above. The wizard asks for its own.</p>
+      </details>
     </div>
 
     <div class="card full">

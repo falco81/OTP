@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.213'
+__version__ = '1.0.214'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2682,6 +2682,13 @@ def scratch_hash_old(user, code):
     return 'sha256:' + hashlib.sha256(_scratch_text(user, code)).hexdigest()
 
 
+def scratch_id_hash(token_id, code, key):
+    """A recovery code as token_once keeps it by the token's id (1.0.214): the same
+    whatever the token is called - a rename did not let a used code in again."""
+    return hmac.new(key or b'', ('#%s\n%s' % (token_id, code)).encode('utf-8'),
+                    hashlib.sha256).hexdigest()[:48]
+
+
 def scratch_find(user, code, kept, key=None):
     """The entry of `kept` (the list a token row holds) that is `code`, or
     None - and how that entry should be written now, which differs from the
@@ -3678,6 +3685,34 @@ class Db(object):
                 except Exception:                       # noqa: BLE001
                     pass
 
+    @contextlib.contextmanager
+    def transaction(self):
+        """What is under it written all or nothing, on one connection (1.0.214): a code used
+        up and its row in token_once were two writes, and a database that dropped between
+        them left the code used here and the request unanswered - the other node, asked
+        next, then refused it as used. SQLite and a transaction already open: as before."""
+        if self.engine == 'sqlite' or getattr(self, 'in_tx', False):
+            yield
+            return
+        with self._pinned(), self.lock:
+            if self.conn is None:
+                self.connect()
+            self.run(RawSql('START TRANSACTION' if self.engine == 'mariadb' else 'BEGIN'))
+            self.in_tx = True
+            try:
+                yield
+                self.run(RawSql('COMMIT'))
+            except BaseException:
+                self.in_tx = False
+                try:
+                    if self.conn is not None:
+                        self.run(RawSql('ROLLBACK'))
+                except Exception:                       # noqa: BLE001
+                    self.close(lane_only=True)
+                raise
+            finally:
+                self.in_tx = False
+
     # ---- the tables ----------------------------------------------------------
     def make_tables(self):
         with self.unlimited():
@@ -3750,6 +3785,8 @@ LANGUAGE plpgsql SET search_path FROM CURRENT AS $f$
 DECLARE
   now_ double precision := extract(epoch FROM clock_timestamp());
   same_key boolean;
+  other text;
+  merged jsonb;
 BEGIN
   IF current_setting('session_replication_role') <> 'replica' THEN
     IF TG_OP = 'INSERT' THEN
@@ -3762,24 +3799,26 @@ BEGIN
     IF NEW.secret IS DISTINCT FROM OLD.secret
        OR NEW.pending_secret IS DISTINCT FROM OLD.pending_secret
        OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.dest IS DISTINCT FROM OLD.dest THEN
-      NEW.key_at := now_;
+      -- Never before the stamp it has (1.0.214): one written by the other node with
+      -- a clock ahead made this node's later change the older, and it was lost there.
+      NEW.key_at := GREATEST(now_, COALESCE(OLD.key_at, 0) + 0.000001);
     END IF;
     IF NEW.state IS DISTINCT FROM OLD.state THEN
-      NEW.state_at := now_;
+      NEW.state_at := GREATEST(now_, COALESCE(OLD.state_at, 0) + 0.000001);
     END IF;
     IF NEW.failures IS DISTINCT FROM OLD.failures
        OR NEW.locked_until IS DISTINCT FROM OLD.locked_until
        OR NEW.fail_times IS DISTINCT FROM OLD.fail_times THEN
-      NEW.lock_at := now_;
+      NEW.lock_at := GREATEST(now_, COALESCE(OLD.lock_at, 0) + 0.000001);
     END IF;
     BEGIN
       -- Issued (a code that was not there before), not merely used.
       IF NEW.scratch IS DISTINCT FROM OLD.scratch
          AND NOT (otp_codes(OLD.scratch) @> otp_codes(NEW.scratch)) THEN
-        NEW.scratch_at := now_;
+        NEW.scratch_at := GREATEST(now_, COALESCE(OLD.scratch_at, 0) + 0.000001);
       END IF;
     EXCEPTION WHEN others THEN
-      NEW.scratch_at := now_;
+      NEW.scratch_at := GREATEST(now_, COALESCE(OLD.scratch_at, 0) + 0.000001);
     END;
     RETURN NEW;
   END IF;
@@ -3805,6 +3844,9 @@ BEGIN
     NEW.created := OLD.created; NEW.created_by := OLD.created_by;
     NEW.activated := OLD.activated;
     NEW.kind := OLD.kind; NEW.dest := OLD.dest;     -- how codes go, with the key (1.0.76)
+    -- Its name too (1.0.214): a rename re-seals the key bound to the new name; the
+    -- other node's older row put the old name back on it, and the key opened no more.
+    NEW.name := OLD.name; NEW.display := OLD.display;
     NEW.last_step := CASE WHEN same_key
                           THEN GREATEST(COALESCE(NEW.last_step, 0), COALESCE(OLD.last_step, 0))
                           ELSE OLD.last_step END;
@@ -3812,10 +3854,50 @@ BEGIN
   ELSIF NEW.secret IS NOT DISTINCT FROM OLD.secret THEN
     NEW.last_step := GREATEST(COALESCE(NEW.last_step, 0), COALESCE(OLD.last_step, 0));
   END IF;
+  -- Renamed on the other node to a name a token here already has (1.0.214): the
+  -- update stopped replication for good on the duplicate. The same one of the two is
+  -- kept as when both made one (otp_same_key, by byte order); the other's change is
+  -- not taken here.
+  IF NEW.name IS DISTINCT FROM OLD.name THEN
+    SELECT row_to_json(t)::text INTO other FROM tokens t WHERE t.name = NEW.name AND t.id <> NEW.id;
+    IF other IS NOT NULL THEN
+      IF row_to_json(NEW)::text COLLATE "C" > other COLLATE "C" THEN
+        DELETE FROM tokens WHERE name = NEW.name AND id <> NEW.id;
+      ELSE
+        -- The one renamed loses here as it lost there: gone on both nodes.
+        DELETE FROM tokens WHERE id = OLD.id;
+        RETURN NULL;
+      END IF;
+    END IF;
+  END IF;
   IF COALESCE(NEW.state_at, 0) < COALESCE(OLD.state_at, 0) THEN
     NEW.state := OLD.state; NEW.state_at := OLD.state_at;
   END IF;
-  IF COALESCE(NEW.lock_at, 0) < COALESCE(OLD.lock_at, 0) THEN
+  IF COALESCE(NEW.failures, 0) > 0 AND COALESCE(OLD.failures, 0) > 0
+     AND (NEW.fail_times IS DISTINCT FROM OLD.fail_times
+          OR NEW.locked_until IS DISTINCT FROM OLD.locked_until) THEN
+    -- Wrong codes on both nodes at once (1.0.214): the newer row alone was kept - the
+    -- other node's wrong codes and its lock lost, and the pause a guesser meets came
+    -- after twice the tries. Both nodes' times kept, the higher count, the later lock.
+    BEGIN
+      merged := (SELECT COALESCE(jsonb_agg(DISTINCT e), '[]'::jsonb)
+                   FROM (SELECT jsonb_array_elements(otp_codes(OLD.fail_times)) e
+                         UNION SELECT jsonb_array_elements(otp_codes(NEW.fail_times))) x);
+      NEW.fail_times := merged::text;
+      -- The higher count, not the sum: the lock is set at every lockout_after-th wrong
+      -- code by the node that counts it, and a sum jumped past it - never locked.
+      -- The pause after a few wrong codes counts both nodes' times above.
+      NEW.failures := GREATEST(COALESCE(NEW.failures, 0), COALESCE(OLD.failures, 0));
+      -- GREATEST passes NULLs by: none on either node stays none, alike on both.
+      NEW.locked_until := GREATEST(NEW.locked_until, OLD.locked_until);
+      NEW.lock_at := GREATEST(NEW.lock_at, OLD.lock_at);
+    EXCEPTION WHEN others THEN
+      IF COALESCE(NEW.lock_at, 0) < COALESCE(OLD.lock_at, 0) THEN
+        NEW.failures := OLD.failures; NEW.fail_times := OLD.fail_times;
+        NEW.locked_until := OLD.locked_until; NEW.lock_at := OLD.lock_at;
+      END IF;
+    END;
+  ELSIF COALESCE(NEW.lock_at, 0) < COALESCE(OLD.lock_at, 0) THEN
     NEW.failures := OLD.failures; NEW.fail_times := OLD.fail_times;
     NEW.locked_until := OLD.locked_until; NEW.lock_at := OLD.lock_at;
   END IF;
@@ -3856,6 +3938,24 @@ BEGIN
     RETURN NEW;
   END IF;
   came := row_to_json(NEW)::text;
+  -- A setting saved first on both nodes (1.0.214): the later one kept, as an update
+  -- of it is (otp_newer_setting) - byte order kept the older on one node for good.
+  IF TG_TABLE_NAME = 'settings' THEN
+    BEGIN
+      IF COALESCE((came::json ->> 'at')::double precision, 0)
+         <> COALESCE((here::json ->> 'at')::double precision, 0) THEN
+        IF COALESCE((came::json ->> 'at')::double precision, 0)
+           > COALESCE((here::json ->> 'at')::double precision, 0) THEN
+          EXECUTE format('DELETE FROM %I.%I WHERE %I = $1', TG_TABLE_SCHEMA, TG_TABLE_NAME, col)
+             USING key;
+          RETURN NEW;
+        END IF;
+        RETURN NULL;
+      END IF;
+    EXCEPTION WHEN others THEN
+      NULL;
+    END;
+  END IF;
   -- Byte order on both nodes (1.0.94): under a language's collation the
   -- two could pick different winners and stay different for good.
   IF came COLLATE "C" > here COLLATE "C" THEN
@@ -7886,7 +7986,20 @@ class Storage(object):
                    'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
                    'created': time.time(), 'window_steps': -1}
             row.update(fields)
-            return self.db.insert('tokens', row)
+            try:
+                return self.db.insert('tokens', row)
+            except Exception as e:
+                # Made on the other node a moment ago, and come over between the look and
+                # the INSERT (1.0.214): a raw "duplicate key" error for the admin. Changed
+                # instead, as a token there was is.
+                said = str(e).lower()
+                if not ('duplicate' in said or 'unique' in said):
+                    raise
+                old = self.token(name)
+                if not old:
+                    raise
+                self.db.update('tokens', old['id'], fields)
+                return old['id']
 
     def token_update(self, ident, fields):
         """Fields changed on the token that was read, by its id, and never a
@@ -9370,6 +9483,9 @@ class Tokens(object):
         if not secret and token_kind(tok) == 'totp':
             return False, SAY_LOST, facts
         digits = int(tok.get('digits') or 6)
+        # "123 456" as the phone shows it (1.0.214): taken on the pages, a wrong code
+        # through RADIUS - and counted. The spaces inside go, as there.
+        code = re.sub(r'\s', '', str(code or ''))
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other
         # digits, which then broke the comparison and left the request
         # unanswered and unwritten (1.0.33).
@@ -9423,17 +9539,27 @@ class Tokens(object):
                     # Only if the codes are still the ones read: a recovery
                     # code used on the other node at the same moment is not
                     # used twice. (1.0.13)
-                    won = self.store.db.run(
-                        'UPDATE tokens SET scratch = ?, scratch_sealed = ?, scratch_left = ?, '
-                        "last_used = ?, last_how = 'scratch', failures = 0, fail_times = '[]' "
-                        'WHERE id = ? AND scratch = ?',
-                        (json.dumps(kept), seal_codes(shown, token_bind(name)) if shown is not None else
-                         (tok.get('scratch_sealed') or ''), len(kept), t, tok['id'], was))
-                    if not won:
-                        return False, SAY_REUSED, facts
-                    # And used once anywhere (1.0.101): the row above can be
-                    # written back by the other node's older copy of it.
-                    if not once_take(self.store, 'scratch', name, h):
+                    id_h = scratch_id_hash(tok['id'], code, key)
+                    # In one transaction (1.0.214), as a code from the phone: a database
+                    # dropping half way left the code used here and refused by the other node.
+                    with self.store.db.transaction():
+                        won = self.store.db.run(
+                            'UPDATE tokens SET scratch = ?, scratch_sealed = ?, scratch_left = ?, '
+                            "last_used = ?, last_how = 'scratch', failures = 0, fail_times = '[]' "
+                            'WHERE id = ? AND scratch = ?',
+                            (json.dumps(kept), seal_codes(shown, token_bind(name)) if shown is not None else
+                             (tok.get('scratch_sealed') or ''), len(kept), t, tok['id'], was))
+                        if not won:
+                            return False, SAY_REUSED, facts
+                        # And used once anywhere (1.0.101): the row above can be
+                        # written back by the other node's older copy of it.
+                        if not once_take(self.store, 'scratch', name, h, peer=False):
+                            return False, SAY_REUSED, facts
+                        # By the id too (1.0.214), whatever the token is called by then.
+                        if not once_take(self.store, 'scratch', '#%d' % tok['id'], id_h, peer=False):
+                            return False, SAY_REUSED, facts
+                    if not once_peer_free(self.store, 'scratch', name, h) or \
+                            not once_peer_free(self.store, 'scratch', '#%d' % tok['id'], id_h):
                         return False, SAY_REUSED, facts
                 elif hit != h:
                     # Dry, so the code stays; but an entry in the old shape is
@@ -9443,6 +9569,19 @@ class Tokens(object):
                                       (json.dumps(kept), tok['id'], was))
                 facts['scratch_left'] = len(kept)
                 return True, SAY_SCRATCH, facts
+            # A recovery code used once and sent again (1.0.214): said as used, not
+            # counted as a wrong code - as a code from the phone used again is not. A
+            # NAS asking again, or a person trying it twice, paused or locked the token.
+            if key and re.fullmatch(r'\d{6,12}', code or ''):
+                try:
+                    if self.store.db.value('SELECT 1 FROM token_once WHERE k IN (?, ?)',
+                                           (once_key('scratch', name,
+                                                     scratch_hash(name, code, key)),
+                                            once_key('scratch', '#%d' % tok['id'],
+                                                     scratch_id_hash(tok['id'], code, key)))):
+                        return False, SAY_REUSED, facts
+                except Exception:                       # noqa: BLE001
+                    pass
             return None
         if token_kind(tok) != 'totp':
             # A token that gets its codes sent (1.0.76): what is checked here
@@ -9470,19 +9609,32 @@ class Tokens(object):
             if CONFIG.get('totp_disallow_reuse', 1):
                 # Used up with one conditional UPDATE: of two nodes asked for
                 # the same code at the same moment, only one changes the row.
-                won = self.store.db.run(
-                    'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
-                    "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
-                    'COALESCE(last_step, 0) < ?', (step, t, tok['id'], step))
-                if not won:
-                    return False, SAY_REUSED, facts
                 # The step used once anywhere (1.0.101): on two replicating
-                # nodes the UPDATE above holds only on its own database.
+                # nodes the UPDATE below holds only on its own database.
                 # Tied to this key - the key itself, through an HMAC: the same
                 # on both nodes whatever its sealed form, new with every key.
-                if not once_take(self.store, 'step', name, '%s:%s:%s' % (
-                        tok['id'], hmac.new(sealing_key() or b'', str(secret).encode(),
-                                            hashlib.sha256).hexdigest()[:16], step)):
+                once_v = '%s:%s:%s' % (tok['id'], hmac.new(sealing_key() or b'', str(secret).encode(),
+                                                          hashlib.sha256).hexdigest()[:16], step)
+                # All three in one transaction (1.0.214): the database dropping between
+                # them left the code used here, the request unanswered, and the other
+                # node - asked next by the NAS - refused it as used. The other node's
+                # database asked after, the row not held meanwhile.
+                with self.store.db.transaction():
+                    won = self.store.db.run(
+                        'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
+                        "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
+                        'COALESCE(last_step, 0) < ?', (step, t, tok['id'], step))
+                    if not won:
+                        return False, SAY_REUSED, facts
+                    if not once_take(self.store, 'step', name, once_v, peer=False):
+                        return False, SAY_REUSED, facts
+                    # By the token's id as well (1.0.214): renamed on the other node meanwhile,
+                    # the step used under the old name was not found under the new one. The
+                    # name's key stays for a node of an older version, in a rolling upgrade.
+                    if not once_take(self.store, 'step', '#%d' % tok['id'], once_v, peer=False):
+                        return False, SAY_REUSED, facts
+                if not once_peer_free(self.store, 'step', name, once_v) or \
+                        not once_peer_free(self.store, 'step', '#%d' % tok['id'], once_v):
                     return False, SAY_REUSED, facts
             else:
                 self.store.token_update(tok['id'], {'last_step': step, 'last_used': t,
@@ -11836,13 +11988,21 @@ class Authenticator(object):
             sd = int(CONFIG.get('scratch_digits') or 8)
             if len(password) > sd and sd != digits:
                 splits.append((password[-sd:], password[:-sd]))
+            # Every length a recovery code may have (1.0.214): 6 to 12 since 1.0.207 (an
+            # import, a .totp file, scratch_digits changed later) - one of another length
+            # than scratch_digits was never found, and the password before it went to the
+            # directory with digits at its end, a wrong password counted there too. Tried
+            # only by the dry check below, after the two above.
+            for ln in range(6, 13):
+                if ln not in (digits, sd) and len(password) > ln:
+                    splits.append((password[-ln:], password[:-ln]))
             if not splits:
                 d.step('the code', False, 'nothing after the password looks like a code')
                 d.otp = SAY_BAD
                 return d.refuse('Denied by the token server: ' + SAY_BAD)
             code, ad_password = splits[0]
             if len(splits) > 1:
-                guessed = splits[1][1]
+                guessed = splits[1][1] if (len(password) > sd and sd != digits) else False
                 # Which one: the code that is right now, found with a dry
                 # check that counts nothing and writes nothing - so one
                 # password costs the directory one try, not two.
@@ -12159,6 +12319,10 @@ class SentReply(bytes):
     late = False
 
 
+# Each RADIUS socket's receive buffer (1.0.214): a burst of a few thousand requests held.
+RADIUS_RCVBUF = 8 << 20
+
+
 class RadiusServer(object):
     """Two UDP sockets - authentication and accounting - read by a thread
     each and answered by a pool of workers."""
@@ -12281,6 +12445,17 @@ class RadiusServer(object):
                 troubles.append('%s:%d (%s) could not be listened on: %s' % (bind, port, kind, err))
                 sock.close()
                 continue
+            # A larger receive buffer (1.0.214): the default 208 KB held about 256
+            # requests, and a burst of more (a NAS reconnecting its VPN users) was
+            # dropped by the kernel before the queue of 5000 ever saw it.
+            for opt in (getattr(socket, 'SO_RCVBUFFORCE', None), socket.SO_RCVBUF):
+                if opt is None:
+                    continue
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, opt, RADIUS_RCVBUF)
+                    break
+                except OSError:
+                    continue
             sock.settimeout(1.0)
             self.socks[kind] = (bind, port, sock)
             self.bound.append('%s:%d/%s' % (bind, port, kind))
@@ -15068,6 +15243,14 @@ def same_database(c, db):
     a, b = str(c.get('db_host') or '').lower(), str(db.host or '').lower()
     return ((a == b or (a in here and b in here)) and port == int(db.port or port)
             and str(c.get('db_name')) == str(db.name))
+
+
+def db_driver_here(engine):
+    """Whether this machine's Python can speak to that kind of server (1.0.214): the
+    wizard says what to install before it asks anything else."""
+    import importlib.util
+    name = {'postgres': 'psycopg2', 'mariadb': 'pymysql'}.get(engine)
+    return bool(name and importlib.util.find_spec(name))
 
 
 def db_try(c):
@@ -22204,10 +22387,12 @@ def _once_peer_has(k, me, store=None):
     return None
 
 
-def once_take(store, kind, name, value):
+def once_take(store, kind, name, value, peer=True):
     """True if this is the first use of it anywhere; False if it was used
     before, here or on the other node. A database error here raises: the
-    request then goes unanswered, never let in."""
+    request then goes unanswered, never let in. peer=False: this database only,
+    the other node asked after by once_peer_free (1.0.214: inside a transaction,
+    never waited for the other node with the row held)."""
     k = once_key(kind, name, value)
     me = once_node()
     db = store.db
@@ -22221,9 +22406,18 @@ def once_take(store, kind, name, value):
         return False                    # this node took it already
     if db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?', (k, me)):
         return False                    # the other node took it, and it came over
+    if peer and not once_peer_free(store, kind, name, value):
+        return False                    # the other node took it, not over yet
+    return True
+
+
+def once_peer_free(store, kind, name, value):
+    """False when the other node's database has its own row for it - used
+    there, not come over yet."""
+    me = once_node()
     if me and CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer'):
-        if _once_peer_has(k, me, store):
-            return False                # the other node took it, not over yet
+        if _once_peer_has(once_key(kind, name, value), me, store):
+            return False
     return True
 
 
@@ -37825,6 +38019,10 @@ def _db(h):
             'counts': h.store.counts(), 'tables': db_table_sizes(db), 'backups': backups(),
             'key': str(sealing_key_path()), 'key_there': bool(sealing_key()),
             'config_file': str(CONFIG_FILE), 'job': job_read(), 'node': node_name(),
+            # The move to another database is not for a node of a cluster (1.0.214):
+            # the page's wizard says so before it starts.
+            'cluster': in_cluster(h.store), 'ha_mode': CONFIG.get('ha_mode') or '',
+            'drivers': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
             'tuned': bool(json.loads(h.store.get_meta('tune_before:' + node_name()) or '{}')),
             'retain': {k: CONFIG.get(k) for k in ('retain_radius_days', 'retain_otp_days',
                                                     'retain_events_days')}})
@@ -38116,8 +38314,16 @@ def _db_do(h):
                     if not c.get('db_password'):
                         fresh = c['db_password'] = db_password_made()
                     made = db_make(c, who, str(b.get('admin_password') or ''))
-                keep = {k: c[k] for k in DB_KEYS if k != 'db_engine'}
-                write_file_settings(keep)
+                # Written into config.json only where it cannot point the database in use
+                # elsewhere (1.0.214): on PostgreSQL, another server set up wrote its address
+                # and password under the engine in use - the next connection went there, and
+                # the copy before a move failed. The file alone keeps it (SQLite), or it is
+                # the same database; else the page keeps it until it is used.
+                kept_in = ''
+                if h.store.db.engine == 'sqlite' or same_database(c, h.store.db):
+                    keep = {k: c[k] for k in DB_KEYS if k != 'db_engine'}
+                    write_file_settings(keep)
+                    kept_in = str(CONFIG_FILE)
                 far = db_open(c)
                 try:
                     far.make_tables()
@@ -38127,7 +38333,7 @@ def _db_do(h):
                 got = db_try(c)
                 h.store.add_event('settings', '%s set up %s at %s' % (s['name'], words,
                                                                        db_where(c)), who=s['name'])
-                return {'made': made, 'password': fresh, 'kept_in': str(CONFIG_FILE),
+                return {'made': made, 'password': fresh, 'kept_in': kept_in,
                         'try': got, 'message': '%s at %s is ready' % (words, db_where(c))}
             if same_database(c, h.store.db) and act in ('empty', 'move'):
                 raise ApiError(400, 'that is the database in use; this only ever touches the '
