@@ -3359,3 +3359,12 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .fmt-key{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .fmt-key .formgrid{margin-top:10px}
 #cx-legacy-row{margin-top:14px}
+
+/* Join a cluster (1.0.213): the bundle dropped or chosen, its name shown; the steps
+   tried before joining under it. */
+.ha-drop{flex-direction:column;gap:4px;margin:4px 0 14px}
+.ha-drop .ha-drop-k{font-weight:600;color:var(--tx)}
+.ha-drop .ha-drop-v{font-size:13px}
+.ha-drop.has{border-style:solid;border-color:var(--ok, #3fb950)}
+.ha-prep{margin-top:10px}
+.ha-prep h4{margin:8px 0 4px}

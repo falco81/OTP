@@ -7514,19 +7514,43 @@ function drawHaLb(d) {
 
 if ($('ha-bundle')) {
   $('ha-bundle').onclick = function () {
-    var host;
+    var host, peer, listen = null, said;
+    var repl = HA && HA.replication && HA.replication.mode === 'replicated';
     modal('The bundle for the second node', function (body) {
       body.appendChild(el('p', 'note', 'What the second node needs and nothing else: the database’s address and password and the key that opens the tokens - locked with a passphrase made here and shown once. Keep the two apart: the file over scp or a USB stick, the passphrase typed.'));
-      if (HA && HA.replication && HA.replication.mode === 'replicated') {
+      if (repl) {
         body.appendChild(el('p', 'note', 'This node replicates with its own PostgreSQL: the bundle makes the other node of the two - or makes it again, after it was lost or reinstalled.'));
-        host = {value: ''};
+        host = {value: ''}; peer = {value: ''};
         return;
       }
+      var g = el('div', 'formgrid');
       host = textBox((HA && HA.db_host && ['localhost', '127.0.0.1', '::1', ''].indexOf(HA.db_host) < 0) ? HA.db_host : (HA && HA.address) || '', 'the address the second node reaches PostgreSQL at', 'mono');
-      body.appendChild(formField('PostgreSQL, as the second node reaches it', host, 'This machine’s address when PostgreSQL runs here - which then has to listen on the network and let the second node in (otp --ha-setup does it, as root).'));
+      g.appendChild(formField('PostgreSQL, as the second node reaches it', host, 'This machine’s address when PostgreSQL runs here.'));
+      /* The second node made welcome before it comes (1.0.213): its address let in by
+         pg_hba.conf and by this node's firewall - the join failed on both. */
+      peer = textBox('', '192.0.2.12', 'mono');
+      g.appendChild(formField('The second node’s address', peer, 'Let into PostgreSQL here (pg_hba.conf) and through this node’s firewall for a day - for good once it has joined.'));
+      body.appendChild(g);
+      said = el('div', 'ha-prep');
+      body.appendChild(said);
+      api('ha', {action: 'bundle_check'}).then(function (c) {
+        if (!c.local || !c.listen_local) {
+          if (c.local) said.appendChild(haSteps([{ok: true, what: 'PostgreSQL here listens on the network (listen_addresses = ' + (c.listen || '*') + ')'}]));
+          return;
+        }
+        var box = el('div', 'note warn');
+        box.appendChild(el('div', '', 'PostgreSQL here listens on this machine alone (listen_addresses = ' + (c.listen || 'localhost') + '): the second node could not reach it.'));
+        var lab = el('label', 'check small');
+        listen = el('input'); listen.type = 'checkbox'; listen.checked = true;
+        lab.appendChild(listen);
+        lab.appendChild(el('span', '', 'Let it listen on the network - PostgreSQL is restarted for it (a few seconds without sign-ins)'));
+        box.appendChild(lab);
+        said.appendChild(box);
+      }).catch(function () {});
     }, [{words: 'Close', close: true}, {words: 'Make it', cls: 'primary', icon: 'key', go: function (b) {
       busy(b, true);
-      api('ha', {action: 'bundle', db_host: host.value.trim()}).then(function (d) {
+      api('ha', {action: 'bundle', db_host: host.value.trim(), peer: peer.value.trim(),
+                 listen: !!(listen && listen.checked)}).then(function (d) {
         var blob = new Blob([JSON.stringify(d.bundle, null, 1) + '\n'], {type: 'application/json'});
         var link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
@@ -7536,6 +7560,10 @@ if ($('ha-bundle')) {
         setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 1500);
         var body = $('modal-body');
         clear(body);
+        if ((d.steps || []).length) {
+          body.appendChild(el('h4', '', 'This node, made ready'));
+          body.appendChild(haSteps(d.steps));
+        }
         body.appendChild(el('p', 'note good', 'The bundle was saved as ' + d.name + '. Its passphrase, shown only now:'));
         var pw = el('input'); pw.type = 'text'; pw.readOnly = true; pw.className = 'mono'; pw.value = d.passphrase;
         pw.style.fontSize = '18px';
@@ -7549,38 +7577,89 @@ if ($('ha-bundle')) {
           : 'or sign in to its pages and press Join a cluster… there. The database it will open: ' + d.db_host + '.'));
         clear($('modal-foot'));
         var c = cmdButton('Close', 'close', ''); c.onclick = closeModal; $('modal-foot').appendChild(c);
+        loadHa();
       }).catch(function (e) { busy(b, false); oops(e); });
     }}], 'medium');
   };
+  /* Join a cluster (1.0.213): the bundle dropped or chosen, tried from here first -
+     each step said with what to do - and joined only then. */
   $('ha-join').onclick = function () {
-    var file = null, phrase, name, even;
+    var file = null, text = '', phrase, name, even, drop, fname, checked;
+    var send = function (act) {
+      return api('ha', {action: act, bundle: text, passphrase: phrase.value.trim(),
+                        name: name.value.trim(), even_if_data: !!even._get()});
+    };
+    var take = function (f) {
+      file = f || null;
+      text = '';
+      clear(checked);
+      clear(fname);
+      if (!file) { fname.appendChild(el('span', 'muted', 'none chosen yet')); drop.classList.remove('has'); return; }
+      fname.appendChild(noI18n(el('span', 'mono', file.name + ' · ' + Math.max(1, Math.round(file.size / 1024)) + ' kB')));
+      drop.classList.add('has');
+      var r = new FileReader();
+      r.onload = function () { text = String(r.result || ''); };
+      r.readAsText(file);
+    };
     modal('Join a cluster', function (body) {
-      body.appendChild(el('p', 'note bad', 'This node then opens the cluster’s database and takes its key: what this node holds now - its own database, its own accounts and tokens - is no longer used. Do it on a node just installed.'));
-      var pick = el('input'); pick.type = 'file'; pick.accept = '.json,application/json';
-      pick.onchange = function () { file = pick.files && pick.files[0]; };
-      body.appendChild(formField('The bundle (otp-join-….json)', pick));
+      body.appendChild(el('p', 'note warn', 'This node then opens the cluster’s database and takes its key: what it holds now - its own database, accounts and tokens - is no longer used. Join a node just installed.'));
+      var pick = el('input'); pick.type = 'file'; pick.accept = '.json,application/json'; pick.hidden = true;
+      pick.onchange = function () { take(pick.files && pick.files[0]); };
+      drop = el('label', 'drop ha-drop');
+      drop.appendChild(pick);
+      drop.appendChild(el('div', 'ha-drop-k', 'The bundle'));
+      fname = el('div', 'ha-drop-v', '');
+      drop.appendChild(fname);
+      drop.appendChild(el('div', 'small muted', 'otp-join-….json from the first node - drop it here, or press to choose it'));
+      ['dragenter', 'dragover'].forEach(function (k) { drop.addEventListener(k, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+      ['dragleave', 'drop'].forEach(function (k) { drop.addEventListener(k, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
+      drop.addEventListener('drop', function (e) { take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+      body.appendChild(drop);
+      var g = el('div', 'formgrid');
       phrase = secretBox('', 'xxxxx-xxxxx-xxxxx-xxxxx-xxxxx', 'mono');
       noI18n(phrase);
-      body.appendChild(formField('Its passphrase', phrase));
+      g.appendChild(formField('Its passphrase', phrase, 'Shown once on the first node as the bundle was made.'));
       name = textBox((HA && HA.node) || '', '', '');
-      body.appendChild(formField('This node’s name', name, 'How it is called among the nodes.'));
+      g.appendChild(formField('This node’s name', name, 'How it is called among the nodes.'));
+      body.appendChild(g);
       even = switchBox(false);
       body.appendChild(formField('Even though this node has tokens of its own (they are left behind)', even));
-    }, [{words: 'Close', close: true}, {words: 'Join', cls: 'danger', icon: 'net', go: function (b) {
-      if (!file) { toast('choose the bundle first', 'bad'); return; }
-      busy(b, true);
-      var reader = new FileReader();
-      reader.onload = function () {
-        api('ha', {action: 'join', bundle: String(reader.result || ''), passphrase: phrase.value.trim(),
-                   name: name.value.trim(), even_if_data: !!even._get()}).then(function (d) {
-          toast(d.message, 'good');
-          closeModal();
-          setTimeout(function () { location.reload(); }, 9000);
-        }).catch(function (e) { busy(b, false); oops(e); });
-      };
-      reader.readAsText(file);
-    }}], 'medium');
+      checked = el('div', 'ha-prep');
+      body.appendChild(checked);
+      take(null);
+    }, [{words: 'Close', close: true},
+        {words: 'Check it', icon: 'check', go: function (b) {
+          if (!text) { toast('choose the bundle first', 'bad'); return; }
+          busy(b, true);
+          send('join_check').then(function (d) {
+            clear(checked);
+            checked.appendChild(el('h4', '', d.ready ? 'Ready to join' : 'Not yet'));
+            checked.appendChild(haSteps(d.steps || []));
+          }).catch(oops).then(function () { busy(b, false); });
+        }},
+        {words: 'Join', cls: 'danger', icon: 'net', go: function (b) {
+          if (!text) { toast('choose the bundle first', 'bad'); return; }
+          busy(b, true);
+          send('join').then(function (d) {
+            toast(d.message, 'good');
+            closeModal();
+            setTimeout(function () { location.reload(); }, 9000);
+          }).catch(function (e) { busy(b, false); oops(e); });
+        }}], 'medium');
   };
+}
+
+
+/* A list of steps, each with its dot (1.0.213): ok, failed, or left to look at. */
+function haSteps(list) {
+  var box = el('div', 'pt-steps');
+  (list || []).forEach(function (st) {
+    var row = el('div', 'si-row');
+    row.appendChild(el('span', 'dot ' + (st.ok === true ? 'ok' : (st.ok === false ? 'bad' : 'warn'))));
+    row.appendChild(el('span', '', st.what));
+    box.appendChild(row);
+  });
+  return box;
 }
 
 

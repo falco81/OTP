@@ -1566,8 +1566,8 @@ def pgtls_checked(r):
     if not re.match(r'^[0-9a-f]{8,40}\Z', out['id']):
         raise Refused('the request has no id')
     out['do'] = r.get('do')
-    if out['do'] not in ('server', 'hba', 'peer', 'hba_off', 'server_off'):
-        raise Refused('server, hba, peer, hba_off or server_off')
+    if out['do'] not in ('server', 'hba', 'peer', 'hba_off', 'server_off', 'listen'):
+        raise Refused('server, hba, peer, hba_off, server_off or listen')
     try:
         out['port'] = int(r.get('port') or 5432)
     except (TypeError, ValueError):
@@ -1619,6 +1619,41 @@ def pgtls_checked(r):
             openssl(['verify', '-CAfile', cf, sf], 'the certificate is not from these authorities')
         out['trust'] = '\n'.join(certs) + '\n'
     return out
+
+
+def pgtls_listen(r):
+    """PostgreSQL listening on the network for the second node of a cluster
+    (1.0.213): a bundle made on the pages left it on localhost alone, and the join
+    said "Connection refused". listen_addresses = '*', and PostgreSQL started again
+    - asked for on the page, which says it restarts it."""
+    now = pg_sql(r['port'], 'SHOW listen_addresses').strip()
+    if now == '*' or (r.get('peer') and now not in ('', 'localhost', '127.0.0.1', '::1')):
+        return {'said': 'PostgreSQL listens on the network already (listen_addresses = %s)' % now}
+    pg_sql(r['port'], "ALTER SYSTEM SET listen_addresses = '*'")
+    units = []
+    if shutil.which('systemctl'):
+        got = subprocess.run(['systemctl', 'list-units', '--type=service', '--state=active',
+                              '--plain', '--no-legend', '--no-pager', 'postgresql*'],
+                             capture_output=True, text=True, timeout=10)
+        units = [l.split()[0] for l in got.stdout.splitlines()
+                 if l.split() and re.match(r'^postgresql(-\d+)?(@[\w.-]+)?\.service\Z', l.split()[0])]
+    if len(units) != 1 or NO_SERVICES:
+        return {'said': 'listen_addresses = * is set; PostgreSQL takes it at its next start - '
+                        'restart it:  systemctl restart postgresql', 'restart': True}
+    got = subprocess.run(['systemctl', 'restart', units[0]], capture_output=True, text=True,
+                         timeout=120)
+    if got.returncode != 0:
+        raise Refused('%s did not start again: %s' % (units[0], (got.stderr or '').strip()[-200:]))
+    for _ in range(30):
+        try:
+            if pg_sql(r['port'], 'SHOW listen_addresses').strip() == '*':
+                return {'said': '%s started again: it listens on the network (listen_addresses = *)'
+                                % units[0]}
+        except Refused:
+            pass
+        time.sleep(1)
+    raise Refused('%s was restarted and does not answer yet - look:  systemctl status %s'
+                  % (units[0], units[0]))
 
 
 def pgtls_server(r):
@@ -1872,7 +1907,8 @@ def pgtls_part():
         out['id'] = str((r or {}).get('id') or '')[:40] if isinstance(r, dict) else ''
         r = pgtls_checked(r)
         out.update({'server': pgtls_server, 'peer': pgtls_peer, 'hba': pgtls_hba,
-                    'hba_off': pgtls_hba_off, 'server_off': pgtls_server_off}[r['do']](r))
+                    'hba_off': pgtls_hba_off, 'server_off': pgtls_server_off,
+                    'listen': pgtls_listen}[r['do']](r))
         out['ok'] = True
     except Refused as e:
         out['said'] = str(e)[:400]

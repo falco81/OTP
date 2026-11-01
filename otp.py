@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.212'
+__version__ = '1.0.213'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -21036,6 +21036,67 @@ def ha_nodes(store):
     return out
 
 
+HA_JOINING_FILE = STATE_DIR / 'ha-joining.json'
+HA_JOINING_S = 86400
+
+
+def ha_joining():
+    """The node a cluster is being made with, before it is one (1.0.213): its
+    addresses, let in by the firewall of this node until the join is done or a day
+    has gone by. In a file of this machine, not in the database - a join puts the
+    other node's rows over this one's. [] when none."""
+    try:
+        got = json.loads(HA_JOINING_FILE.read_text())
+    except (OSError, ValueError):
+        return []
+    if float(got.get('until') or 0) < time.time():
+        return []
+    out = []
+    for a in got.get('addrs') or []:
+        try:
+            out.append(str(plain_ip(str(a), 'address')))
+        except ValueError:
+            continue
+    return out
+
+
+def ha_joining_info():
+    try:
+        got = json.loads(HA_JOINING_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    if float(got.get('until') or 0) < time.time():
+        return {}
+    return got
+
+
+def ha_joining_set(addrs, by='', why=''):
+    """Lets `addrs` in for a day (the firewall's "The other node", at once)."""
+    good = []
+    for a in addrs or []:
+        if not a:
+            continue
+        try:
+            good.append(str(plain_ip(str(a).split('/')[0], 'address')))
+        except ValueError:
+            # A host name: its addresses.
+            good += [x for x in addresses_cached(str(a)) if x]
+    if not good:
+        return []
+    write_replacing(HA_JOINING_FILE, json.dumps({'addrs': sorted(set(good)), 'by': by, 'why': why,
+                                                  'at': time.time(),
+                                                  'until': time.time() + HA_JOINING_S}) + '\n',
+                    0o644, owner=service_ids() if os.geteuid() == 0 else None)
+    return sorted(set(good))
+
+
+def ha_joining_done():
+    try:
+        HA_JOINING_FILE.unlink()
+    except OSError:
+        pass
+
+
 def in_cluster(store=None):
     """One of two nodes, whatever kind (1.0.211): a cluster of one shared database
     leaves ha_mode empty on both nodes - another node heard from in the last day
@@ -21327,6 +21388,55 @@ def ha_replicated_bundle_data(store):
     return data
 
 
+def pg_reach_why(said, host='', port=5432):
+    """What a failed connection to PostgreSQL means, and what to do (1.0.213): the join
+    said only what psycopg2 said."""
+    t = str(said or '')
+    where = '%s:%s' % (host or 'the server', port or 5432)
+    if re.search(r'Connection refused', t, re.I):
+        return ('nothing takes connections at %s: PostgreSQL there listens on its own machine '
+                'alone (listen_addresses), or a firewall refuses - on the first node make the '
+                'bundle again on its pages (it lets PostgreSQL listen and opens its firewall), or '
+                'as root there:  otp --ha-setup --ha-shared --ha-peer THIS-NODE' % where)
+    if re.search(r'No route to host|Network is unreachable|host is unreachable', t, re.I):
+        return ('%s cannot be reached: a firewall turns it away (on the first node, or between '
+                'the nodes) - the first node lets this one in when its address is given as the '
+                'bundle is made' % where)
+    if re.search(r'timeout expired|timed out', t, re.I):
+        return ('%s does not answer: a firewall drops it, or the address is not the server\'s'
+                % where)
+    if re.search(r'no pg_hba\.conf entry', t, re.I):
+        return ('PostgreSQL at %s does not let this node in (pg_hba.conf): make the bundle again '
+                'with this node\'s address, or add the line there' % where)
+    if re.search(r'password authentication failed', t, re.I):
+        return ('PostgreSQL at %s took another password: the bundle is older than the account\'s '
+                'password - make it again' % where)
+    return t
+
+
+def ha_mark_shared(peer=''):
+    """This node the first of a cluster of one shared database (1.0.213): ha_mode
+    'shared' written, and the other node's address when it is known - let in by the
+    firewall at once, for the join."""
+    if CONFIG.get('ha_mode'):
+        return
+    changes = {'ha_mode': 'shared', 'ha_address': CONFIG.get('ha_address') or node_address()}
+    if peer:
+        changes['ha_peer'] = str(peer).strip()
+    write_file_settings(changes)
+    if os.geteuid() == 0:
+        try:
+            chown_to_service(CONFIG_FILE, 0o640)
+        except Exception:                               # noqa: BLE001
+            pass
+    if peer:
+        ha_joining_set([peer], 'bundle', 'the second node')
+    try:
+        os.kill(int((STATE_DIR / 'otp.lock').read_text().strip() or 0), signal.SIGHUP)
+    except (OSError, ValueError):
+        pass
+
+
 def ha_join(data, name='', even_if_data=False, by=''):
     """This node into the cluster: the database's address into config.json and
     the key beside it. The daemon starts again on it afterwards."""
@@ -21347,7 +21457,8 @@ def ha_join(data, name='', even_if_data=False, by=''):
     got = db_try(db)
     if not got.get('reached'):
         raise ValueError('the database in the bundle cannot be reached from here: %s'
-                         % (got.get('trouble') or 'no answer'))
+                         % pg_reach_why(got.get('trouble') or 'no answer', db.get('db_host'),
+                                        db.get('db_port')))
     now = sealing_key()
     if now and now.hex() != key_hex and not even_if_data:
         # This node has a key of its own: whatever it sealed would be lost.
@@ -21369,6 +21480,15 @@ def ha_join(data, name='', even_if_data=False, by=''):
     changes = {k: db.get(k) for k in DB_KEYS if k in db}
     if name:
         changes['node_name'] = name
+    # One of a cluster of one shared database, said so (1.0.213): ha_mode stayed empty
+    # and both nodes ran as two servers alone - no VIP, no "The other node" in the
+    # firewall, nothing asked of the other. The other node's address with it.
+    if not CONFIG.get('ha_mode'):
+        changes['ha_mode'] = 'shared'
+        peer = str((data.get('peer') or {}).get('address') or '').strip()
+        if peer:
+            changes['ha_peer'] = peer
+            ha_joining_set([peer], by or 'join', 'the node this one joined')
     write_file_settings(changes)
     return {'where': db_where(db), 'rows': got.get('rows'), 'peer': data.get('peer') or {},
             'message': 'this node joins the cluster: it starts again on %s' % db_where(db)}
@@ -21797,9 +21917,11 @@ def ha_subscribe(db, sub, conninfo, copy_data):
     except ImportError:
         pass
     except Exception as e:                              # noqa: BLE001
+        said = scrub_secret(' '.join(str(e).split())[:400])
+        why = pg_reach_why(said)
         raise ValueError('the other node\'s database cannot be reached from here, so the '
-                         'subscription %s was not made: %s'
-                         % (sub, scrub_secret(str(e).split('\n')[0][:300])))
+                         'subscription %s was not made: %s%s'
+                         % (sub, said, '' if why == said else ' - ' + why))
     for quiet in ("SET log_statement = 'none'", "SET log_min_error_statement = 'panic'"):
         try:
             db.run(quiet)
@@ -25349,6 +25471,10 @@ def cluster_addresses(store, node):
     v = vip_conf(store)
     if v.get('on') and v.get('address'):
         out.add(str(v['address']).split('/')[0])
+    if node == me:
+        # The node a cluster is being made with (1.0.213): let in before the join -
+        # replication goes both ways from its first row.
+        out.update(ha_joining())
     good = set()
     for a in out:
         try:
@@ -25489,11 +25615,16 @@ def fw_auto(store, node):
                                'source': n} for n in nets] or
                     [{'family': f, 'proto': 'udp', 'port': port, 'source': ''} for f in (4, 6)]})
     # Inside the cluster: always, never turned off.
-    if peers and in_cluster(store):             # shared too (1.0.211)
+    if peers and (in_cluster(store) or ha_joining()):   # shared too (1.0.211), joining (1.0.213)
         nodes_only = [p for p in peers if p != str(v.get('address') or '').split('/')[0]]
+        joining = ha_joining_info() if not in_cluster(store) else {}
         out.append({'key': 'cluster', 'title': 'The other node', 'fixed': True,
-                    'why': 'replication (PostgreSQL), its pages and the health check - inside '
-                    'the cluster everything has to work',
+                    'why': ('the node a cluster is being made with (%s): let in for the join, '
+                            'until %s at most' % (', '.join(joining.get('addrs') or []),
+                                                  time.strftime('%d.%m. %H:%M', time.localtime(
+                                                      float(joining.get('until') or 0)))))
+                    if joining else 'replication (PostgreSQL), its pages and the health check - '
+                    'inside the cluster everything has to work',
                     # Everything from it (1.0.59): its answers to this node's
                     # own asking came from other ports and were dropped.
                     'rules': [{'family': _fam(p), 'proto': 'any', 'port': '',
@@ -28210,6 +28341,74 @@ def _readdress_ip(text, what):
         return str(peer_address(text))
     except ValueError:
         raise ValueError('%s is one plain address (192.0.2.10), not %r' % (what, text[:60]))
+
+
+def pg_root_ask(what, wait=150):
+    """One request to this node's root helper about PostgreSQL (pgtls.ask), and its
+    answer - ValueError with what it said when it refused (1.0.213)."""
+    ask_id = secrets.token_hex(8)
+    data = dict({'port': int(CONFIG.get('db_port') or 5432),
+                 'db': str(CONFIG.get('db_name') or 'otp'), 'user': str(CONFIG.get('db_user') or 'otp'),
+                 'peer': '', 'ca_file': str(HA_CA_FILE)}, **what)
+    data['id'] = ask_id
+    pgtls_send(data)
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            got = json.loads((WEB_DIR / PGTLS_FILE).read_text())
+        except (OSError, ValueError):
+            got = None
+        if isinstance(got, dict) and got.get('id') == ask_id:
+            if not got.get('ok'):
+                raise ValueError(got.get('said') or 'the root helper said no')
+            return got
+        time.sleep(0.5)
+    raise ValueError('the root helper of this node did not answer - is otp-web.path running?  '
+                     'systemctl status otp-web.path')
+
+
+def ha_bundle_prepare(store, peer, listen=False, by=''):
+    """The first node of a cluster of one shared PostgreSQL on this machine made ready
+    for the second (1.0.213), each step said as it went: PostgreSQL listening on the
+    network (only when asked - it restarts it), the second node in pg_hba.conf, let in
+    by this node's firewall, ha_mode 'shared'. The bundle made on the pages did none of
+    it, and the join said "Connection refused"."""
+    steps = []
+    peer = str(peer or '').strip()
+    if peer:
+        peer = _readdress_ip(peer, 'the second node\'s address')
+    host = str(CONFIG.get('db_host') or '').lower()
+    local = store.db.engine == 'postgres' and host in ('', 'localhost', '127.0.0.1', '::1')
+    if local:
+        try:
+            now = str(store.db.value('SHOW listen_addresses') or '')
+        except Exception:                               # noqa: BLE001
+            now = ''
+        if now in ('', 'localhost', '127.0.0.1', '::1'):
+            if not listen:
+                raise ValueError('PostgreSQL here listens on this machine alone (listen_addresses = '
+                                 '%s): the second node could not reach it. Tick that it may listen '
+                                 'on the network - it is restarted for it' % (now or 'localhost'))
+            got = pg_root_ask({'do': 'listen'}, wait=180)
+            steps.append({'ok': not got.get('restart'), 'what': got.get('said') or 'listening'})
+        else:
+            steps.append({'ok': True, 'what': 'PostgreSQL listens on the network '
+                                              '(listen_addresses = %s)' % now})
+        if peer:
+            try:
+                said = _readdress_hba('', peer, False)
+                steps.append({'ok': True, 'what': 'pg_hba.conf lets %s in: %s' % (peer, said)})
+            except ValueError as e:
+                steps.append({'ok': False, 'what': 'pg_hba.conf: %s' % e})
+    if peer:
+        let = ha_joining_set([peer], by, 'the second node')
+        steps.append({'ok': bool(let), 'what': 'this node\'s firewall lets %s in for the join '
+                                               '(a day at most; for good once it has joined)'
+                                               % ', '.join(let or [peer])})
+    ha_mark_shared(peer)
+    steps.append({'ok': True, 'what': 'this node is the first of a cluster of one shared database '
+                                      '(ha_mode = shared)'})
+    return steps
 
 
 def _readdress_hba(old_peer, new_peer, root_now, keep_old=False, drop_old=False):
@@ -39709,7 +39908,22 @@ def _ha_do(h):
                           'on)' % (s['name'], node_name()), who=s['name'])
         return {'message': 'cleared: the errors are counted from now on', **repl_errors(
             h.store, ask_log=False)}
+    if act == 'bundle_check':
+        # What the dialog says before the bundle is made (1.0.213).
+        host = str(CONFIG.get('db_host') or '').lower()
+        local = h.store.db.engine == 'postgres' and host in ('', 'localhost', '127.0.0.1', '::1')
+        listen = ''
+        if local:
+            try:
+                listen = str(h.store.db.value('SHOW listen_addresses') or '')
+            except Exception:                           # noqa: BLE001
+                listen = ''
+        return {'local': local, 'listen': listen,
+                'listen_local': local and listen in ('', 'localhost', '127.0.0.1', '::1'),
+                'mode': CONFIG.get('ha_mode') or '', 'engine': h.store.db.engine,
+                'joining': ha_joining_info()}
     if act == 'bundle':
+        steps = []
         try:
             if CONFIG.get('ha_mode') == 'replicated':
                 # The second node of two replicating ones - or the same one
@@ -39717,6 +39931,9 @@ def _ha_do(h):
                 data = ha_replicated_bundle_data(h.store)
             else:
                 data = ha_bundle_data(h.store, str(b.get('db_host') or '').strip())
+                # The first node made ready for the second (1.0.213).
+                steps = ha_bundle_prepare(h.store, str(b.get('peer') or ''),
+                                          listen=bool(b.get('listen')), by=s['name'])
         except ValueError as e:
             raise ApiError(400, str(e))
         phrase = ha_passphrase()
@@ -39725,8 +39942,38 @@ def _ha_do(h):
                           '(the database at %s) - it carries the key that opens every token'
                           % (s['name'], data['db']['db_host']), 'warn', who=s['name'])
         return {'bundle': locked, 'passphrase': phrase, 'db_host': data['db'].get('db_host', ''),
-                'mode': data.get('mode') or 'shared',
+                'mode': data.get('mode') or 'shared', 'steps': steps,
                 'name': 'otp-join-%s-%s.json' % (node_name(), datetime.now().strftime('%Y%m%d'))}
+    if act == 'join_check':
+        # Before joining (1.0.213): the bundle opened, the database tried from here, each
+        # said - nothing changed.
+        steps = []
+        try:
+            data = bundle_open(b.get('bundle'), str(b.get('passphrase') or ''))
+        except ValueError as e:
+            return {'ready': False, 'steps': [{'ok': False, 'what': 'the bundle: %s' % e}]}
+        peer = data.get('peer') or {}
+        steps.append({'ok': True, 'what': 'the bundle opens: the cluster %s, made on %s (%s)' % (
+            data.get('cluster') or '?', peer.get('name') or '?', peer.get('address') or '?')})
+        if data.get('mode') == 'replicated':
+            steps.append({'ok': False, 'what': 'it makes this node replicate with its own PostgreSQL, '
+                                               'which takes root: copy it here and run  otp --ha-join '
+                                               'FILE  as root'})
+            return {'ready': False, 'steps': steps}
+        db = data.get('db') or {}
+        got = db_try({k: db.get(k) for k in DB_KEYS if k in db})
+        if got.get('reached'):
+            steps.append({'ok': True, 'what': 'its database answers from here: %s, %s row(s)' % (
+                db.get('db_host'), got.get('rows') or 0)})
+        else:
+            steps.append({'ok': False, 'what': pg_reach_why(got.get('trouble') or 'no answer',
+                                                            db.get('db_host'), db.get('db_port'))})
+        now = sealing_key()
+        if now and now.hex() != str(data.get('key') or ''):
+            steps.append({'ok': None, 'what': 'this node has a key of its own: what it holds now is '
+                                              'left behind (tick that it may be)'})
+        return {'ready': all(x['ok'] is not False for x in steps), 'steps': steps,
+                'peer': peer, 'cluster': data.get('cluster') or ''}
     if act == 'join':
         try:
             data = bundle_open(b.get('bundle'), str(b.get('passphrase') or ''))
@@ -47076,6 +47323,7 @@ def cli_ha(args, pal):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for a second node was made on the command line '
                     '(the database at %s)' % db_host, 'warn', who='command line')
+    ha_mark_shared(args.ha_peer or '')
     print('')
     print(pal.ok_line('the bundle for the second node: %s' % target))
     print('  ' + pal.bold('its passphrase, shown only now: ') + pal.info(phrase))
@@ -47093,17 +47341,76 @@ def cli_ha(args, pal):
 
 
 def firewall_peer(peer, pal, port=5432):
-    """firewalld letting the other node - one address - reach PostgreSQL."""
-    if shutil.which('firewall-cmd'):
+    """The other node let in by the firewall that really runs here (1.0.213) -
+    otp's own (OTP-IN), firewalld, or the system's iptables with its REJECT at the
+    end - checked, and said as it is. It said "firewalld lets ..." whether firewalld
+    ran or not, otp's own firewall let the other node in only once the cluster was
+    made, and the join stopped on "No route to host". Kept as a node being joined
+    for a day: otp's firewall keeps it in its rules, the pages show it."""
+    try:
         a = peer_address(peer)
-        rule = ('rule family="%s" source address="%s/%d" port port="%d" protocol="tcp" accept'
-                % ('ipv4' if a.version == 4 else 'ipv6', a, 32 if a.version == 4 else 128,
-                   port))
-        subprocess.run(['firewall-cmd', '--permanent', '--add-rich-rule=' + rule],
-                       capture_output=True)
-        subprocess.run(['firewall-cmd', '--reload'], capture_output=True)
-        print(pal.ok_line('firewalld lets %s reach PostgreSQL (TCP %d)' % (peer, port)))
+    except ValueError as e:
+        print(pal.bad_line('the firewall: %s is not an address (%s)' % (peer, e)))
+        return False
+    ha_joining_set([str(a)], 'command line', 'a cluster made with it')
+    fam = 'ipv4' if a.version == 4 else 'ipv6'
+    ipt = 'iptables' if a.version == 4 else 'ip6tables'
+    net = '%s/%d' % (a, 32 if a.version == 4 else 128)
+    did, ok_all = [], True
 
+    def run(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            return subprocess.CompletedProcess(cmd, 1, '', str(e))
+    # otp's own firewall: its chain, rebuilt by root from the rules - the node
+    # being joined is among them from now on; put in at once meanwhile.
+    if shutil.which(ipt) and run([ipt, '-n', '-L', 'OTP-IN']).returncode == 0:
+        rule = ['-s', net, '-m', 'comment', '--comment', 'otp: The other node', '-j', 'ACCEPT']
+        if run([ipt, '-C', 'OTP-IN'] + rule).returncode != 0:
+            run([ipt, '-I', 'OTP-IN', '1'] + rule)
+        if run([ipt, '-C', 'OTP-IN'] + rule).returncode == 0:
+            did.append('otp\'s firewall (OTP-IN) lets %s in' % a)
+        else:
+            ok_all = False
+            print(pal.bad_line('otp\'s firewall (OTP-IN): %s could not be let in' % a))
+    # firewalld - only when it runs: installed and stopped, its rule changed nothing.
+    fw = run(['firewall-cmd', '--state']) if shutil.which('firewall-cmd') else None
+    if fw is not None and fw.returncode == 0 and 'running' in (fw.stdout or ''):
+        rich = ('rule family="%s" source address="%s" port port="%d" protocol="tcp" accept'
+                % (fam, net, port))
+        r1 = run(['firewall-cmd', '--permanent', '--add-rich-rule=' + rich])
+        r2 = run(['firewall-cmd', '--add-rich-rule=' + rich])
+        q = run(['firewall-cmd', '--query-rich-rule=' + rich])
+        if q.returncode == 0 and r1.returncode == 0:
+            did.append('firewalld lets %s reach PostgreSQL (TCP %d)' % (a, port))
+        else:
+            ok_all = False
+            print(pal.bad_line('firewalld did not take the rule for %s: %s' % (
+                a, ((r1.stderr or '') + (r2.stderr or '')).strip()[:200] or 'no answer')))
+    elif shutil.which(ipt) and run([ipt, '-n', '-L', 'OTP-IN']).returncode != 0:
+        # The system's own iptables (iptables-services: a REJECT at the end of INPUT):
+        # let in at the top, as the cluster's other node.
+        got = run([ipt, '-S', 'INPUT'])
+        shut = got.returncode == 0 and (re.search(r'-j (REJECT|DROP)', got.stdout or '') or
+                                        '-P INPUT DROP' in (got.stdout or ''))
+        if shut:
+            rule = ['-s', net, '-m', 'comment', '--comment', 'otp: The other node', '-j', 'ACCEPT']
+            if run([ipt, '-C', 'INPUT'] + rule).returncode != 0:
+                run([ipt, '-I', 'INPUT', '1'] + rule)
+            if run([ipt, '-C', 'INPUT'] + rule).returncode == 0:
+                did.append('%s lets %s in (INPUT, first)' % (ipt, a))
+                print(pal.warn_line('the system\'s %s rule is not saved: kept over a restart by  '
+                                    'service %s save  - or switch otp\'s firewall on '
+                                    '(Settings → Firewall), which keeps it' % (ipt, ipt)))
+            else:
+                ok_all = False
+                print(pal.bad_line('%s: %s could not be let in' % (ipt, a)))
+    for line in did:
+        print(pal.ok_line(line))
+    if not did and ok_all:
+        print(pal.ok_line('no firewall here stands between this node and %s' % a))
+    return ok_all
 
 def cli_ha_bundle_again(args, pal, store):
     """--ha-bundle on a node already replicating: the bundle for the other
@@ -47235,9 +47542,14 @@ def cli_ha_join_replicated(args, pal, data, ask):
         local.make_tables()
         local.add_missing_columns()
         pg_publication(port, name)
-        remote = db_open({'db_engine': 'postgres', 'db_host': peer['address'],
-                          'db_port': int(peer.get('port') or 5432), 'db_name': name,
-                          'db_user': user, 'db_password': pw})
+        try:
+            remote = db_open({'db_engine': 'postgres', 'db_host': peer['address'],
+                              'db_port': int(peer.get('port') or 5432), 'db_name': name,
+                              'db_user': user, 'db_password': pw})
+        except DbError as e:
+            # Said what it means (1.0.213), not only what psycopg2 said.
+            raise ValueError('the first node\'s PostgreSQL cannot be reached: %s'
+                             % pg_reach_why(str(e), peer['address'], peer.get('port') or 5432))
         me = args.ha_address or node_address()
         # The daemon stopped while the rows come over, as --ha-resync does
         # (1.0.59): its heartbeat written into the tables being copied
@@ -47784,11 +48096,26 @@ def cli_store():
     try:
         db = open_db()
     except DbError as e:
-        raise SystemExit('otp: %s' % e)
+        raise SystemExit('otp: %s%s' % (e, half_joined_words(e)))
     store = Storage(db, quick=True)
     _cli_name_held()
     load_config(saved=store.settings_saved())
     return store
+
+
+def half_joined_words(e):
+    """A join that stopped half way said so (1.0.213): the cluster's key and its
+    password taken, this machine's PostgreSQL not made ready yet - "password
+    authentication failed" was all there was to read."""
+    t = str(e)
+    if not (sealing_key_path().with_name('secrets.key.before-join').exists() or
+            HA_JOINING_FILE.exists()):
+        return ''
+    if not re.search(r'password authentication failed|no pg_hba\.conf entry|does not exist', t):
+        return ''
+    return ('\notp: this node looks half joined to a cluster (its key and password are the '
+            'cluster\'s, its PostgreSQL is not ready for them): run the join again as root - '
+            'otp --ha-join BUNDLE --node-name NAME - it starts over from where it stopped')
 
 
 def _cli_name_held():
