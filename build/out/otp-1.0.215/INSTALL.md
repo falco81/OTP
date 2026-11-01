@@ -9,8 +9,8 @@ library, and PHP pages that only relay to it.
 ## The short version
 
 ```bash
-tar xzf otp-1.0.214.tar.gz
-cd otp-1.0.214
+tar xzf otp-1.0.215.tar.gz
+cd otp-1.0.215
 sudo ./install.sh --server-name otp.example.local
 ```
 
@@ -31,7 +31,7 @@ token it has:
 
 ```bash
 mkdir /root/old-otp && cd /root/old-otp && unzip /root/otp.zip   # its etc/raddb and etc/totpcgi
-cd /root/otp-1.0.214
+cd /root/otp-1.0.215
 sudo ./install.sh --server-name otp.example.local \
      --import-legacy /root/old-otp \
      --radius-from 192.0.2.1/32 \
@@ -87,7 +87,28 @@ check afterwards.
 | the first password | printed at the end of the install; only where the service had to make an account itself is it in `/var/lib/otp/first-login.txt` (gone once the password is changed) |
 
 Accounts: `otp` runs the daemon; `otp-www` runs PHP; the group `otp-web`
-may read the API token. Nothing runs as root after the start.
+may read the API token. The daemon runs as `otp`, never as root. What needs root - the
+network, the firewall, the time, sshd, PostgreSQL's own files, a restart, an update of
+the system - is done by the root helper (`otp-web.service`, started by `otp-web.path`),
+which does only the few things it knows, checked word by word, and only what the daemon
+asks of it.
+
+### Who can write the database is root on every node
+
+The daemon asks the root helper through files it writes; in a cluster a node's asks for
+the other node go through the database (the asks of the pages: a new address, a restart,
+a firewall rule, sshd). So **whoever can write otp's database - the `otp` account on any
+node, the database user `otp`, the database server's administrator - can have every node's
+root helper do what the pages could**: change its network, firewall and sshd, restart it.
+Nothing of that runs a command it was given: only the helper's own actions, checked.
+Keep it in mind as you would root itself:
+
+- the database's password (`db_password`, and in a cluster the replication password) is
+  as precious as root's - it is in `/etc/otp/config.json`, readable by `otp` and root alone;
+- let only the nodes reach the database server (the firewall pane does it for
+  PostgreSQL on a node), and encrypt the connection (Settings → The database → encryption);
+- a database server shared with other applications: its administrators can do this too;
+- nobody but administrators logs in to a node as `otp`.
 
 ---
 

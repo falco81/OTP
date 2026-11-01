@@ -4421,6 +4421,11 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
+                    if '@' in k:
+                        # A node's own value kept (1.0.215): a file seldom has them -
+                        # another RADIUS port on the second node, its own mail server -
+                        # and "Exactly the file" took them away from every node unseen.
+                        continue
                     if k not in have and base in DEFAULTS and base not in FILE_ONLY_KEYS and \
                             not (base in SEALED_KEYS and conf.get('secrets') is not True):
                         store.drop_setting(k)

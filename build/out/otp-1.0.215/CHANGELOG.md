@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.215 — 1 November 2026
+
+- **Import → "Exactly the file" took away every node's own settings** the file did not
+  have - another RADIUS port on the second node, its own mail server - on every node of
+  a cluster, unseen. They stay now unless the file has them; the shared settings not in
+  the file still go back to their defaults, as before. The import dialog says so.
+- INSTALL.md says what needs root and who does it, and that **whoever can write otp's
+  database is root on every node** (the asks of the pages for each node go through it) -
+  with how to keep that as safe as root itself.
+- A RADIUS client's shared secret stays as it is: shown whole, to a full admin only, each
+  look written down; the list shows it masked.
+
 ## 1.0.214 — 1 November 2026
 
 **Moving to another database, a wizard** - Settings → The database → *Move to another
