@@ -4,6 +4,55 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.211 — 1 November 2026
+
+**Every pane looked through for both nodes**: what each shows of each node, what each
+changes on which, and what could take both nodes down or stop replication
+(`tests/round/t_round6.py`, 27 of 27). This version mends what could stop the
+service or the replication; what is only shown of one node follows in the next.
+
+A cluster of one shared database:
+- **It was not seen as a cluster**: ha_mode stays empty there, and the guards that
+  keep a node answering looked at ha_mode alone. A node heard from in the last day
+  makes it one now: a restart (on a schedule, after a system update, a new network)
+  waits for the other node to answer and takes this one out of service first; the
+  firewall always lets the other node in; the alerts and the periodic report are sent
+  by one node, not both; the disks and logs pane shows both; NTP peers with the other.
+- A new address of a node is not carried to the other node's db_host or pg_hba.conf
+  from here: the change is refused until it is ticked as done by hand.
+
+One thing at a time on the cluster:
+- A new network, a restart or power-off, a system update and an upgrade of otp on
+  different nodes at once are refused - each looked at its own node only, and both
+  nodes could be down together.
+- A job on the database (a copy put back, erasing, giving the disk back) is refused
+  while the other node runs one; putting a copy or a dump back too.
+
+The database pane:
+- **"Set it up…" is refused in a cluster**: it could give otp's account of the database a
+  new password, and the other node - its replication, or its one database - was shut out.
+- **Restarting PostgreSQL from the pages**: never the server both nodes share, never
+  while the other node does not answer, never on both at once - and this node's RADIUS
+  steps aside meanwhile, the other answers.
+- **Tuning a replicating PostgreSQL keeps replication's workers free**: parallel queries
+  as many as the processors could take every background worker, and the replication's
+  apply worker found none. A max_worker_processes someone raised is never lowered. What
+  was there before is noted only once it is changed.
+- A copy sealed with another key is refused in a cluster of one shared database too
+  (this node's key file was replaced, and the other node opened no token any more). A
+  copy put back keeps each node's own tuning, encryption to the database and asks.
+- Erasing a log goes in batches, with a breath between.
+
+Elsewhere:
+- Maintenance: the last node in service is said to be the last (the dialog said the
+  VPN would go to the other node, already in maintenance).
+- High availability: Resume is possible after only what goes out was paused; a pause
+  or resume the other node could not be reached for says what was done.
+- Alerts: "Look again" on the node that does not send them no longer mails them too.
+- SSH: Keep keeps the change only on the nodes it was on trial on when pressed.
+- RADIUS: the sign-ins' and the accounting's ports are checked on the node they are
+  saved for.
+
 ## 1.0.210 — 1 November 2026
 
 - **The machine's console filled with "systemd-rc-local-generator: /etc/rc.d/rc.local

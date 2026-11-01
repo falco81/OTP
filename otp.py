@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.210'
+__version__ = '1.0.211'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -4219,7 +4219,11 @@ def _load_tables_held(db, src, keep_logs, say, gzip):
     return counts
 
 
-META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:')
+# The machines' own state, not the data (1.0.211: the database server's tuning, the
+# encryption to it, what a page asked of every node and a restart going on - put
+# back from a copy, both nodes took the copy's).
+META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:',
+                  'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):
@@ -14303,11 +14307,29 @@ class Daemon(object):
         if 'radius_auth_port' in checked or 'radius_acct_port' in checked:
             # One port for both refused (1.0.206): the sign-ins (or the accounting)
             # stopped there and then, with "saved" on the page.
-            auth = int(checked.get('radius_auth_port', CONFIG.get('radius_auth_port') or 1812))
-            acct = int(checked.get('radius_acct_port', CONFIG.get('radius_acct_port') or 1813))
-            if auth == acct:
-                raise BadSetting('the sign-ins and the accounting cannot listen on one port (%d)'
-                                 % auth)
+            # The ports of the node it is saved for (1.0.211): another node's were
+            # checked against this node's, and the cluster's against no node's own.
+            held = self.store.settings_saved()
+
+            def port_of(k, n):
+                if k in checked:
+                    return int(checked[k])
+                if n == node_name() and not cluster_wide:
+                    return int(CONFIG.get(k) or DEFAULTS[k] or 0)
+                v = held.get(k + '@' + n, held.get(k, DEFAULTS[k]))
+                try:
+                    return int(v or 0)
+                except (TypeError, ValueError):
+                    return 0
+            whom = [n for n in (self.cluster_nodes() + [node_name()])
+                    if not cluster_wide or ('radius_auth_port@' + n not in held and
+                                            'radius_acct_port@' + n not in held)] \
+                if cluster_wide else [node]
+            for n in sorted(set(whom)) or [node]:
+                auth, acct = port_of('radius_auth_port', n), port_of('radius_acct_port', n)
+                if auth and auth == acct:
+                    raise BadSetting('the sign-ins and the accounting cannot listen on one port '
+                                     '(%d)%s' % (auth, (' on %s' % n) if many else ''))
         if 'node_name' in checked:
             taken = node_name_taken(self.store, checked['node_name'])
             if taken:
@@ -15187,7 +15209,29 @@ DB_JOB = {'id': 0, 'what': '', 'running': False, 'done': 0, 'whole': 0, 'says': 
 DB_JOB_LOCK = threading.Lock()
 
 
+def db_job_elsewhere():
+    """A job on the database going on on another node now, or None (1.0.211):
+    one of each node at once - a copy put back on one while the other erased -
+    and replication stopped on the rows they both wrote."""
+    store = HA_STORE.get('store')
+    if store is None or not in_cluster(store):
+        return None
+    try:
+        for r in store.db.rows("SELECT v FROM meta WHERE k LIKE 'db!_job:%' ESCAPE '!'"):
+            one = json.loads(r['v'] or 'null') or {}
+            if one.get('running') and one.get('node') and one['node'] != node_name() and \
+                    time.time() - float(one.get('at') or one.get('began') or 0) < 300:
+                return one
+    except Exception:                                   # noqa: BLE001
+        return None
+    return None
+
+
 def db_job(what, work):
+    other = db_job_elsewhere()
+    if other:
+        raise ValueError('%s is going on on %s - one at a time'
+                         % (other.get('what') or 'a job on the database', other['node']))
     with DB_JOB_LOCK:
         if DB_JOB['running']:
             raise ValueError('%s is going on already' % DB_JOB['what'])
@@ -15557,6 +15601,39 @@ def tune_plan(engine, m):
     }
 
 
+def tune_keep_workers(db, plan, now):
+    """The background workers as replication needs them (1.0.211): parallel queries
+    as many as the processors and max_worker_processes no more than that left
+    replication's apply and table-sync workers no slot, and its rows stopped
+    coming. Its own kept free; a value someone raised is never lowered."""
+    out = dict(plan)
+    try:
+        repl = CONFIG.get('ha_mode') == 'replicated' or \
+            int(db.value('SELECT COUNT(*) FROM pg_subscription') or 0) > 0
+    except Exception:                                   # noqa: BLE001
+        repl = CONFIG.get('ha_mode') == 'replicated'
+    reserve = 0
+    if repl:
+        try:
+            reserve = int(db.value('SHOW max_logical_replication_workers') or 4) + 2
+        except Exception:                               # noqa: BLE001
+            reserve = 6
+    try:
+        have = int(now.get('max_worker_processes') or 0)
+    except ValueError:
+        have = 0
+    v, why, rs = out['max_worker_processes']
+    want = max(int(v) + reserve, have)
+    out['max_worker_processes'] = (str(want), why + (' - and replication\'s own workers'
+                                                    if reserve else ''), rs)
+    v, why, rs = out['max_parallel_workers']
+    out['max_parallel_workers'] = (str(max(1, min(int(v), want - reserve))), why, rs)
+    v, why, rs = out['max_parallel_workers_per_gather']
+    out['max_parallel_workers_per_gather'] = (
+        str(max(1, min(int(v), int(out['max_parallel_workers'][0])))), why, rs)
+    return out
+
+
 def tune_current(db, names):
     out = {}
     for n in names:
@@ -15648,6 +15725,8 @@ def tune_plan_for(store, typed, probe=True):
         return out
     plan = tune_plan(db.engine, m)
     now = tune_current(db, plan.keys())
+    if db.engine == 'postgres':
+        plan = tune_keep_workers(db, plan, now)
     pending = set(tune_pending(db))
     last = out['last'] or {}
     mine = last.get('engine') == db.engine and not last.get('undone') \
@@ -15683,10 +15762,12 @@ def tune_apply(store, typed, admin_user, admin_password, by):
         for r in plan['rows']:
             if not r['change']:
                 continue
-            before.setdefault(r['name'], r['now'])
             try:
+                # What it was kept once it is changed (1.0.211): kept first, one that
+                # failed was put back on Undo, and one a later change made was not.
                 if plan['engine'] == 'postgres':
                     db.run("ALTER SYSTEM SET %s = '%s'" % (r['name'], r['want'].replace("'", '')))
+                    before.setdefault(r['name'], r['now'])
                     (later if r['restart'] else done).append(r['name'])
                 else:
                     if r['restart']:
@@ -15694,11 +15775,16 @@ def tune_apply(store, typed, admin_user, admin_password, by):
                         continue
                     db.run('SET GLOBAL %s = %s' % (r['name'], r['want'] if r['want'].isdigit()
                                                   else "'%s'" % r['want']))
+                    before.setdefault(r['name'], r['now'])
                     done.append(r['name'])
             except Exception as e:
                 failed.append('%s: %s' % (r['name'], str(e).split('\n')[0][:160]))
         if plan['engine'] == 'postgres' and (done or later):
-            db.run('SELECT pg_reload_conf()')
+            try:
+                db.run('SELECT pg_reload_conf()')
+            except Exception as e:                      # noqa: BLE001
+                # Set, not read yet (1.0.211): written down all the same.
+                failed.append('pg_reload_conf: %s' % str(e).split('\n')[0][:160])
     finally:
         if db is not store.db:
             db.close()
@@ -15769,6 +15855,27 @@ def tune_restart(store, by):
     waiting = tune_pending(db)
     if not waiting:
         raise ValueError('nothing waits for a restart')
+    # In a cluster (1.0.211): never the server both nodes use, never while the
+    # other node does not answer, never both at once - and this node's RADIUS
+    # steps aside meanwhile, as when a backup is put back.
+    rest = False
+    if in_cluster(store):
+        if CONFIG.get('ha_mode') != 'replicated':
+            raise ValueError('the nodes share this database server: restarted, both stop - '
+                             'restart it at a quiet time as root:  systemctl restart %s' % unit)
+        others = [n for n in ha_nodes(store) if not n.get('me')]
+        if not any(n.get('alive') for n in others):
+            raise ValueError('the other node is not answering: restarting PostgreSQL here would '
+                             'leave nothing to sign people in - bring it back first')
+        for n in others:
+            try:
+                other = json.loads(store.get_meta('db_restart:' + n['name']) or '{}')
+            except ValueError:
+                other = {}
+            if time.time() - float(other.get('at') or 0) < 300 and not other.get('done'):
+                raise ValueError('%s is restarting its PostgreSQL now - one at a time' % n['name'])
+        store.set_meta('db_restart:' + node_name(), json.dumps({'at': time.time(), 'by': by}))
+        rest = True
     try:
         if str(db.value('SHOW huge_pages')).lower() == 'on':
             raise ValueError('huge_pages is on, and a start needs enough of them for the new '
@@ -15797,6 +15904,22 @@ def tune_restart(store, by):
                              '%d MB - restarted now, PostgreSQL might not start. Free some '
                              'memory, or put back as it was' % (avail // 1048576,
                                                                  want // 1048576))
+    if rest:
+        RESTORE_WHY[0] = 'its PostgreSQL is restarted'
+        RESTORE_RUNNING.set()
+    try:
+        return _tune_restart_go(store, db, unit, waiting, by)
+    finally:
+        if rest:
+            RESTORE_RUNNING.clear()
+            try:
+                store.set_meta('db_restart:' + node_name(), json.dumps({'at': time.time(),
+                                                                        'done': True}))
+            except Exception:                           # noqa: BLE001
+                pass
+
+
+def _tune_restart_go(store, db, unit, waiting, by):
     began = time.time()
     try:
         said = subprocess.run(['systemctl', '--no-ask-password', '--no-block', 'restart', unit],
@@ -16420,6 +16543,11 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
     if said is None:
         raise ValueError(why)
     kind = said['kind']
+    other = db_job_elsewhere()
+    if other:
+        # One at a time on the cluster (1.0.211).
+        raise ValueError('%s is going on on %s - wait for it to end'
+                         % (other.get('what') or 'a job on the database', other['node']))
     if CONFIG.get('ha_mode') == 'replicated' and kind in ('postgres', 'mariadb'):
         raise ValueError('a dump puts tables back by making them again, which replication '
                          'does not carry to the other node: put a copy back instead (it goes '
@@ -16474,7 +16602,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     # In a cluster the other node keeps its own key, and the rows going over
     # would be ones it cannot open (1.0.44): a copy sealed with another key
     # is refused there before anything is replaced.
-    if CONFIG.get('ha_mode') == 'replicated' and re.match(r'^[0-9a-f]{64}\Z', key_hex):
+    # Every kind of cluster (1.0.211): with one shared database the key file of
+    # this node alone was replaced, and the other opened no token any more.
+    if in_cluster(store) and re.match(r'^[0-9a-f]{64}\Z', key_hex):
         now = sealing_key()
         if now and now.hex() != key_hex:
             raise ValueError('this copy was sealed with another key than the one both nodes '
@@ -16746,7 +16876,11 @@ def db_erase_job(store, groups, tidy, by):
         gone = {}
         for i, (t, n) in enumerate(tables):
             progress(i + 1, len(tables) + 2, 'emptying %s' % n)
-            gone[t] = store.db.run('DELETE FROM %s' % t)
+            # In batches, with a breath between (1.0.211): one DELETE of a whole log
+            # held RADIUS up meanwhile, and went to the other node as one huge
+            # transaction. What has no time left is taken with the last word.
+            gone[t] = store.delete_older(t, time.time() + 100 * 365 * 86400)
+            gone[t] += int(store.db.run('DELETE FROM %s' % t) or 0)
         given = None
         if tidy:
             progress(len(tables) + 1, len(tables) + 2, 'giving the disk back')
@@ -20902,6 +21036,22 @@ def ha_nodes(store):
     return out
 
 
+def in_cluster(store=None):
+    """One of two nodes, whatever kind (1.0.211): a cluster of one shared database
+    leaves ha_mode empty on both nodes - another node heard from in the last day
+    says so. The guards that keep the service up looked at ha_mode alone, and were
+    off there."""
+    if CONFIG.get('ha_mode'):
+        return True
+    store = store or HA_STORE.get('store')
+    if store is None:
+        return False
+    try:
+        return any(not n.get('me') and float(n.get('age') or 1e9) < 86400 for n in ha_nodes(store))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
@@ -22005,7 +22155,14 @@ def ha_control(store, act, by=''):
             if has(far, sub_out):
                 far.run('ALTER SUBSCRIPTION %s DISABLE' % sub_out)
                 said.append('the other node takes nothing from this one for now')
-        on_peer(p)
+        try:
+            on_peer(p)
+        except ValueError as e:
+            # Half done is said (1.0.211): this node's side was paused, then the
+            # other could not be reached - a bare error, and the page not drawn again.
+            if not said:
+                raise
+            said.append('%s - its side as it was' % e)
     if act in ('resume_in', 'resume'):
         if has(here, sub_in):
             here.run('ALTER SUBSCRIPTION %s ENABLE' % sub_in)
@@ -22017,7 +22174,12 @@ def ha_control(store, act, by=''):
                 far.run('ALTER SUBSCRIPTION %s ENABLE' % sub_out)
                 said.append('the other node takes this one\'s rows again, from where it '
                             'stopped')
-        on_peer(r)
+        try:
+            on_peer(r)
+        except ValueError as e:
+            if not said:
+                raise
+            said.append('%s - its side as it was' % e)
     if act == 'refresh':
         if has(here, sub_in):
             here.run('ALTER SUBSCRIPTION %s REFRESH PUBLICATION WITH (copy_data = false)'
@@ -25315,7 +25477,7 @@ def fw_auto(store, node):
                                'source': n} for n in nets] or
                     [{'family': f, 'proto': 'udp', 'port': port, 'source': ''} for f in (4, 6)]})
     # Inside the cluster: always, never turned off.
-    if CONFIG.get('ha_mode') and peers:
+    if peers and in_cluster(store):             # shared too (1.0.211)
         nodes_only = [p for p in peers if p != str(v.get('address') or '').split('/')[0]]
         out.append({'key': 'cluster', 'title': 'The other node', 'fixed': True,
                     'why': 'replication (PostgreSQL), its pages and the health check - inside '
@@ -28455,7 +28617,7 @@ def net_check(store, node, want, rollback=False):
         raise ValueError('the host name is the whole name: otp1.example.cz')
     old_ip = net_current_ip(now).split('/')[0]
     new_ip = str(a4.ip)
-    many = bool(CONFIG.get('ha_mode'))
+    many = in_cluster(store)                    # a shared database's cluster too (1.0.211)
     others = [n for n in ha_nodes(store) if n['name'] != node]
     for n in others:
         if str(n.get('address') or '') == new_ip:
@@ -28480,6 +28642,16 @@ def net_check(store, node, want, rollback=False):
     if ip_changed and many and CONFIG.get('ha_mode') == 'replicated':
         plan.append('the other node is told %s: its pg_hba.conf, its subscription and its '
                     'ha_peer move to it' % new_ip)
+    elif ip_changed and many:
+        # One database for both (1.0.211): the other node reaches it - or is let into it -
+        # at the old address, and nothing here moves that. Done by hand, and said so.
+        if not want.get('shared_db_ok'):
+            raise ValueError('the nodes share one database: the other node reaches it (db_host) '
+                             'or is let into it (pg_hba.conf) at %s - that is not moved from '
+                             'here. Change it there by hand, then tick that it is done'
+                             % old_ip)
+        plan.append('the other node\'s db_host and pg_hba.conf at %s: changed by hand, as '
+                    'ticked' % old_ip)
     if ip_changed:
         plan.append('this node\'s settings that name %s - and its own certificate, where it was '
                     'made here - are made again for %s' % (old_ip, new_ip))
@@ -28511,6 +28683,27 @@ def net_job_active(job):
         time.time() - float(job.get('moved') or job.get('at') or 0) < NET_JOB_LIVE_S
 
 
+def cluster_busy(store, skip=()):
+    """What takes a node out of service and is going on anywhere in the cluster
+    now, or '' (1.0.211): a new network on one node, a restart, a system update
+    or an upgrade of otp were each checked on their own node only - the page of
+    the other node let a second one start, and both nodes were down at once."""
+    try:
+        if 'net' not in skip:
+            for n in host_nodes(store):
+                if net_job_active(_meta_json(store, 'net:job:' + n)):
+                    return '%s is changing its network' % n
+        if 'osup' not in skip and (osup_plan(store) or {}).get('state') == 'running':
+            return 'the system is being updated'
+        if 'upgrade' not in skip and (upgrade_plan(store) or {}).get('state') == 'running':
+            return 'otp is being upgraded'
+        if 'power' not in skip and power_busy(store):
+            return 'a restart or a power-off is under way'
+    except Exception:                                   # noqa: BLE001
+        return ''
+    return ''
+
+
 def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     """The page asks: written for the node, which does it. `rollback`: the
     old network asked back by the node itself - not put on trial again."""
@@ -28518,6 +28711,10 @@ def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
         raise ValueError('%s is changing its network already' % node)
     if power_busy(store):
         raise ValueError('a restart or a power-off is under way')
+    if not rollback:
+        busy = cluster_busy(store, skip=('power',))
+        if busy:
+            raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     checked = net_check(store, node, want, rollback=rollback)
     ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
            'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
@@ -28648,7 +28845,7 @@ def net_job_run(daemon, ask):
     by = '%s (network)' % (ask.get('by') or 'otp')
     job = {'id': ask['id'], 'node': me, 'state': 'running', 'at': time.time(), 'pct': 0,
            'by': ask.get('by'), 'want': w, 'steps': [], 'boot': boot_time()}
-    many = bool(CONFIG.get('ha_mode'))
+    many = in_cluster(store)                    # (1.0.211)
     # On trial (1.0.137): what the node has now kept, to go back to unless the
     # new one is kept in time.
     if net_trial_min() and not ask.get('rollback'):
@@ -29077,7 +29274,7 @@ def power_busy(store):
     return False
 
 
-def power_ask(store, how, targets, order, by, keep_service=False):
+def power_ask(store, how, targets, order, by, keep_service=False, from_osup=False):
     """`keep_service` (1.0.165): a node goes down only while another one
     answers - asked of every restart one after the other, on a schedule and
     after an update; a node that does not come back stops the rest."""
@@ -29089,6 +29286,9 @@ def power_ask(store, how, targets, order, by, keep_service=False):
         raise ValueError('which node?')
     if order not in ('one', 'rolling', 'together'):
         order = 'one' if len(targets) == 1 else 'rolling'
+    busy = cluster_busy(store, skip=('power',) + (('osup',) if from_osup else ()))
+    if busy:
+        raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     if how == 'poweroff' and order == 'rolling':
         order = 'together'
     if power_busy(store):
@@ -29101,7 +29301,7 @@ def power_ask(store, how, targets, order, by, keep_service=False):
         # while the first restarts.
         targets.sort(key=lambda n: n == node_name())
     keep_service = bool(keep_service or (order == 'rolling' and len(targets) > 1))
-    if keep_service and CONFIG.get('ha_mode') and how == 'reboot':
+    if keep_service and in_cluster(store) and how == 'reboot':     # shared too (1.0.211)
         alive = [n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me')]
         if len(alive) < 2:
             raise ValueError('only %s answers: restarting it would stop the service - bring the '
@@ -29127,7 +29327,7 @@ def power_go(daemon, plan):
     store = daemon.store
     row = {'id': plan['id'], 'how': plan['how'], 'at': time.time(), 'boot': boot_time()}
     try:
-        many = bool(CONFIG.get('ha_mode'))
+        many = in_cluster(store)                # a shared database's cluster too (1.0.211)
         if many and plan.get('keep_service') and plan['how'] == 'reboot' and \
                 not any(n.get('alive') and not n.get('me') for n in ha_nodes(store)):
             # Its turn come, nobody else answers (1.0.165): it stays up.
@@ -29267,6 +29467,9 @@ def net_view(store):
                     else {}})
     v = vip_conf(store)
     return {'nodes': out, 'cluster': len(out) > 1, 'now': time.time(),
+            # One database shared by the nodes (1.0.211): an address changed is not
+            # carried to the other node - said, and ticked by whoever changes it.
+            'shared_db': in_cluster(store) and CONFIG.get('ha_mode') != 'replicated',
             'vip': {'on': bool(v.get('on')), 'address': v.get('address') or '',
                     'address6': v.get('address6') or ''} if CONFIG.get('ha_mode') else {}}
 # ---- changes that could cut the server off: kept, or taken back (1.0.137) -------------
@@ -29588,9 +29791,12 @@ def ntp_conf(store):
 def ntp_desired(store):
     c = ntp_conf(store)
     peers = []
-    if c.get('manage') and c.get('peers') and CONFIG.get('ha_mode') and CONFIG.get('ha_peer'):
+    other = CONFIG.get('ha_peer') if CONFIG.get('ha_mode') else ''
+    if not other and c.get('manage') and c.get('peers') and in_cluster(store):
+        other = vip_peer_seen(store)            # a shared database's cluster (1.0.211)
+    if c.get('manage') and c.get('peers') and other:
         try:
-            peers = [str(ipaddress.ip_address(str(CONFIG['ha_peer'])))]
+            peers = [str(ipaddress.ip_address(str(other)))]
         except ValueError:
             peers = []
     return {'manage': bool(c.get('manage')), 'servers': c.get('servers') or [],
@@ -29879,7 +30085,7 @@ def _logs_tick(daemon, force):
 
 
 def logs_view(store):
-    nodes = [n['name'] for n in ha_nodes(store)] if CONFIG.get('ha_mode') else [node_name()]
+    nodes = [n['name'] for n in ha_nodes(store)] if in_cluster(store) else [node_name()]
     want = logs_desired()
     h = logs_hash(want)
     out = []
@@ -30186,7 +30392,7 @@ def osup_view(store):
     _osup_cleared(store, nodes)
     hidden = bool(plan) and seen == plan.get('id') and plan.get('state') != 'running'
     return {'plan': {} if hidden else plan, 'nodes': nodes, 'now': time.time(),
-            'cluster': bool(CONFIG.get('ha_mode')), 'helper': WEB_DIR.is_dir(),
+            'cluster': in_cluster(store), 'helper': WEB_DIR.is_dir(),
             'power': power_plan(store) if power_busy(store) else {}}
 
 
@@ -30243,6 +30449,9 @@ def osup_start(store, nodes, reboot, by, security=False):
         raise ValueError('an upgrade of otp is going on - wait for it to end')
     if power_busy(store):
         raise ValueError('a restart or a power off is going on - wait for it to end')
+    busy = cluster_busy(store, skip=('osup', 'upgrade', 'power'))
+    if busy:
+        raise ValueError('%s - wait for it to end' % busy)
     known = host_nodes(store)
     alive = host_alive(store)
     nodes = [n for n in known if n in (nodes or known)]
@@ -30490,7 +30699,7 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
     if reboot and plan.get('reboot') == 'auto':
         osup_put(store, row, state='rebooting', said='updated - restarting, as it needs')
         try:
-            power_ask(store, 'reboot', [me], 'one', by, keep_service=True)
+            power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
         except ValueError as e:
             osup_put(store, row, state='done', said='updated; the restart was not started: %s' % e)
         return
@@ -30690,8 +30899,11 @@ def sshd_tick(daemon):
     if c.get('hash') and c['hash'] != now.get('hash') and c['hash'] != now.get('failed') and \
             c['hash'] != now.get('back_hash'):
         todo.append(('apply', None))
+    # Kept only where it was on trial when Keep was pressed (1.0.211): a node that
+    # was away put the change in later and kept it at once - nobody had tried it there.
     if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
-            float(keep.get('at') or 0) > float(now.get('kept_at') or 0):
+            float(keep.get('at') or 0) > float(now.get('kept_at') or 0) and \
+            float(keep.get('at') or 0) > float(now.get('applied_at') or 0):
         todo.append(('keep', None))
     if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
         todo.append(('back', back))
@@ -32576,7 +32788,9 @@ def disks_now():
 def alerts_lead(store):
     """The node that looks and sends: the first by name of the nodes heard
     from, in every kind of cluster - ha_lead is every node of a shared one."""
-    if not CONFIG.get('ha_mode'):
+    # A cluster of one shared database too (1.0.211): there ha_mode is empty, and
+    # each node took itself for the one that sends - alerts and reports went twice.
+    if not in_cluster(store):
         return True
     return lead_of(store)
 
@@ -37659,9 +37873,15 @@ def _db_do(h):
             return tune_restart(h.store, s['name'])
         except ValueError as e:
             raise ApiError(400, str(e))
-    if CONFIG.get('ha_mode') and act in ('move', 'use', 'empty'):
+    if in_cluster(h.store) and act in ('move', 'use', 'empty'):
         raise ApiError(409, 'this node is one of a cluster: its database is not moved from here '
                             '(switch the replication off first - Settings → High availability)')
+    if in_cluster(h.store) and act == 'setup':
+        # Set up from here (1.0.211), it gave otp's account of the database a new password
+        # and wrote this node's config.json: the other node - its subscription, or its
+        # connection to the one database - was shut out.
+        raise ApiError(409, 'this node is one of a cluster: the database and its account are not '
+                            'set up from here - the other node uses that account too')
     try:
         if act in ('try', 'setup', 'empty', 'move', 'use'):
             c = engine_asked(b.get('settings') or {})
@@ -41090,7 +41310,10 @@ def _alerts_do(h):
     lang = alerts_lang()
     try:
         if act == 'check':
-            alerts_evaluate(h.store)
+            # Looked at again by the node that sends them only (1.0.211): from the
+            # other node's page it could mail them too, beside the lead's own.
+            if alerts_lead(h.store):
+                alerts_evaluate(h.store)
             return alerts_view(h.store)
         if act == 'test':
             to = _alerts_to()
