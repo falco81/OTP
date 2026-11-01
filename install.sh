@@ -40,6 +40,7 @@ WEB_PATH_UNIT="/etc/systemd/system/otp-web.path"
 WEB_SERVICE_UNIT="/etc/systemd/system/otp-web.service"
 UNIT_FILE="/etc/systemd/system/otp.service"
 LOGROTATE_FILE="/etc/logrotate.d/otp"
+CONSOLE_SYSCTL="/etc/sysctl.d/80-otp-console.conf"
 
 DRY_RUN=""
 ASSUME_YES=""
@@ -370,7 +371,7 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     fi
     [[ -e /etc/nginx/conf.d/otp_vip.conf ]] && run rm -f /etc/nginx/conf.d/otp_vip.conf
     [[ -e /usr/libexec/keepalived/otp-vip-check ]] && run rm -f /usr/libexec/keepalived/otp-vip-check
-    for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$NGINX_CONF" "$BIN_LINK" \
+    for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$CONSOLE_SYSCTL" "$NGINX_CONF" "$BIN_LINK" \
                "$UPGRADE_PATH_UNIT" "$UPGRADE_SERVICE_UNIT" "$WEB_PATH_UNIT" "$WEB_SERVICE_UNIT" \
                /etc/polkit-1/rules.d/49-otp-database.rules "$CONFIG_DIR/may-restart-database" \
                /etc/php-fpm.d/otp.conf /etc/php/*/fpm/pool.d/otp.conf /etc/profile.d/zz-otp-console.sh /etc/otp-console-login; do
@@ -997,6 +998,7 @@ install_program() {
     run install -d -m 2770 -o root -g "$SERVICE_USER" "$CONFIG_DIR"
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp.service" "$UNIT_FILE"
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp.logrotate" "$LOGROTATE_FILE"
+    console_quiet
     install_upgrader
     run systemctl daemon-reload
     if [[ -f "$UPGRADE_PATH_UNIT" ]]; then
@@ -1016,6 +1018,30 @@ install_program() {
 # Upgrades from the pages (1.0.37): root's helper, the keys it trusts, and
 # the systemd units that start it when the pages ask. The keys are root's
 # alone, in the program's folder - never anywhere the otp account may write.
+# The machine's console shows errors only (1.0.210): with every message of the
+# kernel's up to debug on it, each systemctl daemon-reload of an update (dnf's,
+# otp's own) wrote "rc.local is not marked executable" over the console and over
+# otp's own screen there. The journal keeps every message as before. An admin's
+# own kernel.printk anywhere in sysctl.d is left as it is.
+console_quiet() {
+    local own
+    own=$(grep -ls '^[[:space:]]*kernel\.printk' /etc/sysctl.d/*.conf /etc/sysctl.conf 2>/dev/null | grep -v "^$CONSOLE_SYSCTL\$" || true)
+    if [[ -n "$own" ]]; then
+        say "kernel.printk is set by hand ($own): the console's messages left as they are"
+        return 0
+    fi
+    if [[ -n "$DRY_RUN" ]]; then
+        say "would write $CONSOLE_SYSCTL (kernel.printk = 4 4 1 7: only errors on the console)"
+        return 0
+    fi
+    printf '%s\n' '# Written by otp (install.sh): only errors of the kernel and of systemd on the' \
+        '# machine'"'"'s console - every message is still in the journal (journalctl -k).' \
+        '# Take this file away (or set kernel.printk elsewhere) for the old behaviour.' \
+        'kernel.printk = 4 4 1 7' > "$CONSOLE_SYSCTL"
+    chmod 0644 "$CONSOLE_SYSCTL"
+    sysctl -q -p "$CONSOLE_SYSCTL" >/dev/null 2>&1 || true
+}
+
 install_upgrader() {
     [[ -f "$SOURCE_DIR/deploy/otp_upgrade.py" ]] || return 0
     run install -D -m 0755 "$SOURCE_DIR/deploy/otp_upgrade.py" "$LIB_DIR/otp_upgrade.py"

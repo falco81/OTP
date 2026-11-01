@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.210 — 1 November 2026
+
+- **The machine's console filled with "systemd-rc-local-generator: /etc/rc.d/rc.local
+  is not marked executable, skipping"** - a harmless notice of systemd's, written at each
+  `systemctl daemon-reload` (every package an update installs, otp's own upgrade), and
+  put on the console because the kernel's console showed every message up to debug -
+  over otp's own screen there too. install.sh writes
+  `/etc/sysctl.d/80-otp-console.conf` (`kernel.printk = 4 4 1 7`, as RHEL comes): the
+  console shows errors only, the journal keeps everything (`journalctl -k`). A
+  kernel.printk an administrator set in sysctl.d is left as it is; the file goes when
+  otp is taken away.
+
 ## 1.0.209 — 1 November 2026
 
 **A bug hunt, fifth round**: the border between otp and root (every request the root
