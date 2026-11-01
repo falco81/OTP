@@ -271,6 +271,9 @@ for _k, _v in P229.items(): P.setdefault(_k, _v)
 from cs_230 import S230, P230
 for _k, _v in S230.items(): S.setdefault(_k, _v)
 for _k, _v in P230.items(): P.setdefault(_k, _v)
+from cs_231 import S231, P231
+for _k, _v in S231.items(): S.setdefault(_k, _v)
+for _k, _v in P231.items(): P.setdefault(_k, _v)
 P.pop('{0} out', None)    # took 'timed out' (1.0.103)
 for _k in list(S):
     if '<' in _k and re.search(r'</?(b|i|code|kbd|em|strong)>', _k):
@@ -303,9 +306,9 @@ def ids(d,pre):
     for i,(k,v) in enumerate(sorted(d.items())):
         out['%s%04d'%(pre,i+1)]={'source':k,'text':v}
     return out
-pack={'_meta':{'code':'cs','name':'Čeština','english':'Czech','version':'1.0.215','made':'2026-10-23',
+pack={'_meta':{'code':'cs','name':'Čeština','english':'Czech','version':'1.0.216','made':'2026-10-23',
   'about':'Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen "text", nikdy "source". Prázdný text znamená: zobrazit anglicky.'},
   'strings':ids(S,'s'),'patterns':ids(P,'p'),'rich':ids(R,'r')}
-out='/home/claude/build/out/otp-1.0.215/web/lang/cs.json'
+out='/home/claude/build/out/otp-1.0.216/web/lang/cs.json'
 json.dump(pack,open(out,'w'),ensure_ascii=False,indent=1)
 print(len(S),len(P),len(R))

@@ -29,6 +29,40 @@ if (($_SERVER['OTP_AUTH_ONLY'] ?? '') === '1') {
 if (isset($_GET['api'])) {
     $what = (string) $_GET['api'];
     $post = $_SERVER['REQUEST_METHOD'] === 'POST';
+    /* acme push (docs/acme-push-protocol.md): an acme putting its certificates on
+       these pages - Settings → Certificates and TLS → Certificates from acme. No
+       sign-in: the daemon checks acme's signature over the body as it came, so the
+       body (as base64) and the X-Acme-Push-* headers go to it untouched, in its JSON. */
+    if (preg_match('/^acme-push-(hello|pair|inventory|install)$/', $what, $push)) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        $op = $push[1];
+        if (($op === 'hello') === $post) {
+            http_response_code(405);
+            echo json_encode(['ok' => false, 'code' => 'bad_request',
+                              'error' => $op === 'hello' ? 'hello is a GET' : 'a POST, signed']);
+            exit;
+        }
+        $payload = null;
+        if ($post) {
+            $raw = (string) file_get_contents('php://input', false, null, 0, 1048577);
+            if (strlen($raw) > 1048576) {
+                http_response_code(413);
+                echo json_encode(['ok' => false, 'code' => 'too_big', 'error' => 'that is more than a certificate']);
+                exit;
+            }
+            $signed = [];
+            foreach (['Version', 'Key', 'Time', 'Nonce', 'Signature'] as $h) {
+                $signed[$h] = substr((string) ($_SERVER['HTTP_X_ACME_PUSH_' . strtoupper($h)] ?? ''), 0, 300);
+            }
+            $payload = ['body' => base64_encode($raw), 'headers' => $signed];
+        }
+        [$status, $body] = otp_call('/api/acme-push/' . $op, $post ? 'POST' : 'GET', $payload, 60.0);
+        http_response_code($status ?: 503);
+        echo $status ? $body : json_encode(['ok' => false, 'code' => 'down',
+                                            'error' => 'the daemon is not answering']);
+        exit;
+    }
     if ($what === 'lang' && !$post) {
         otp_serve_lang();
     }
@@ -294,6 +328,7 @@ if (isset($_GET['api'])) {
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
+        'acme-push' => '/api/acme-push',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -310,6 +345,7 @@ if (isset($_GET['api'])) {
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
+        'acme-push' => '/api/acme-push',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -1617,6 +1653,15 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
         without; or the request is made here and only what the authority sends back is
         uploaded. Root puts it in nginx and asks nginx before reloading it.</p>
       <div id="web-certs" class="cert-grid"></div>
+    </div>
+    <div class="card full" id="web-push-card">
+      <h2>Certificates from acme <span class="right" id="web-push-state"></span></h2>
+      <p class="note">acme, the certificate manager, can give this server its certificate and renew it
+        by itself (acme push). Paired once with a code shown here, acme signs every request with its key and
+        sends the certificate's private key sealed for this server alone; the certificate is kept exactly where
+        an upload above keeps it, and the Automatic certificates leave it alone from then on. Off until switched
+        on; acme's address must be among those that may reach these pages.</p>
+      <div id="web-push"></div>
     </div>
 
   </div>

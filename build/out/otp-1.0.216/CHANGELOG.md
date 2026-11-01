@@ -4,6 +4,36 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.216 — 1 November 2026
+
+**Certificates from acme (acme push)** - a new, additional way for a certificate to arrive:
+an acme of yours (the certificate manager) puts its certificates on these pages and renews
+them by itself. Settings → Certificates and TLS → **Certificates from acme**: switch it on,
+*Pair with an acme* (a code shown once, 15 minutes, five tries) or paste acme's key; in acme a
+target *An application of ours (acme push)* with `https://otp…/admin/`, *Try*, *Discover*.
+
+- Off until switched on: nothing else behaves differently. Every request of acme is signed
+  (Ed25519; 5 minutes at most, never twice - on either node), the private key travels sealed
+  to this server (X25519 + HKDF + AES-256-GCM). acme's address must be one that may reach the
+  administration.
+- What acme puts in is kept exactly where an upload by hand is, and is put into nginx the same
+  way, on every node; in a cluster any node answers for all of them and the other takes its
+  own by replication. Automatic certificates leaves that card alone, as after an upload. An
+  upload, a request, a self-signed one or *Look after it* takes the card back, as before.
+- Only a certificate holding the card's name, valid now, with its own key - unless *Take
+  certificates of other names* is on. Each install, pairing, wrong code and forgotten key is
+  an event. Switched off or forgotten: what was put in stays.
+- The receiver is acme's own reference part (acme 1.0.7), unchanged but for the
+  application's name; otp's own certificate code is called by it, not changed. The protocol is in
+  `docs/acme-push-protocol.md`; Certificates and TLS in `docs/tls-and-vip.md`.
+- The card is the same as ai's (1.0.60), tile for tile and word for word: its state in the
+  corner, the two switches, the address for acme, this server's id and its sealing key as
+  tiles a click copies, *Pair with an acme* showing the code in a window of its own (with the
+  address, and until when it is good), *Take it back*, *Or paste acme's key…* in a window of
+  its own, the acmes paired and what acme sees here as tables. The two switches and *Forget it*
+  wait for the save bar at the bottom, as every other setting does; *Put them back* forgets
+  them.
+
 ## 1.0.215 — 1 November 2026
 
 - **Import → "Exactly the file" took away every node's own settings** the file did not
