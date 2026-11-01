@@ -23,7 +23,10 @@ def _alerts_do(h):
     lang = alerts_lang()
     try:
         if act == 'check':
-            alerts_evaluate(h.store)
+            # Looked at again by the node that sends them only (1.0.211): from the
+            # other node's page it could mail them too, beside the lead's own.
+            if alerts_lead(h.store):
+                alerts_evaluate(h.store)
             return alerts_view(h.store)
         if act == 'test':
             to = _alerts_to()

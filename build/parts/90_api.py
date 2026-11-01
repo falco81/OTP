@@ -3808,9 +3808,15 @@ def _db_do(h):
             return tune_restart(h.store, s['name'])
         except ValueError as e:
             raise ApiError(400, str(e))
-    if CONFIG.get('ha_mode') and act in ('move', 'use', 'empty'):
+    if in_cluster(h.store) and act in ('move', 'use', 'empty'):
         raise ApiError(409, 'this node is one of a cluster: its database is not moved from here '
                             '(switch the replication off first - Settings → High availability)')
+    if in_cluster(h.store) and act == 'setup':
+        # Set up from here (1.0.211), it gave otp's account of the database a new password
+        # and wrote this node's config.json: the other node - its subscription, or its
+        # connection to the one database - was shut out.
+        raise ApiError(409, 'this node is one of a cluster: the database and its account are not '
+                            'set up from here - the other node uses that account too')
     try:
         if act in ('try', 'setup', 'empty', 'move', 'use'):
             c = engine_asked(b.get('settings') or {})

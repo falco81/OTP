@@ -1273,7 +1273,7 @@ def fw_auto(store, node):
                                'source': n} for n in nets] or
                     [{'family': f, 'proto': 'udp', 'port': port, 'source': ''} for f in (4, 6)]})
     # Inside the cluster: always, never turned off.
-    if CONFIG.get('ha_mode') and peers:
+    if peers and in_cluster(store):             # shared too (1.0.211)
         nodes_only = [p for p in peers if p != str(v.get('address') or '').split('/')[0]]
         out.append({'key': 'cluster', 'title': 'The other node', 'fixed': True,
                     'why': 'replication (PostgreSQL), its pages and the health check - inside '

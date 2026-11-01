@@ -1186,7 +1186,11 @@ def _load_tables_held(db, src, keep_logs, say, gzip):
     return counts
 
 
-META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:')
+# The machines' own state, not the data (1.0.211: the database server's tuning, the
+# encryption to it, what a page asked of every node and a restart going on - put
+# back from a copy, both nodes took the copy's).
+META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:',
+                  'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):

@@ -11,7 +11,7 @@ import otp_upgrade as U
 R = []
 def ok(w, c): R.append(bool(c)); print('ok  ' if c else 'FAIL', w)
 import glob as _g
-OLD = sorted((os.path.basename(x)[4:-7] for x in _g.glob('/home/claude/otp/release/otp-1.0.1*.tar.gz')),
+OLD = sorted((os.path.basename(x)[4:-7] for x in _g.glob('/home/claude/otp/release/otp-1.0.*.tar.gz')),
              key=lambda v: tuple(int(x) for x in v.split('.')))[0]   # the oldest kept there
 ABOVE = '1.0.%d' % (int(OLD.split('.')[2]) + 1)
 pkg = '/home/claude/otp/release/otp-%s.tar.gz' % OLD

@@ -41,7 +41,7 @@ ok('root floor 1.0.141: 1.0.140 refused', otp.downgrade_why_not(st, '1.0.140') !
 open(os.path.join(lib, 'downgrade-floor'), 'w').write('1.0.139\n')
 # the package and the tables
 import glob as _g
-OLD = sorted((os.path.basename(x)[4:-7] for x in _g.glob('/home/claude/otp/release/otp-1.0.1*.tar.gz')),
+OLD = sorted((os.path.basename(x)[4:-7] for x in _g.glob('/home/claude/otp/release/otp-1.0.*.tar.gz')),
              key=otp._ver_tuple)[0]          # the oldest kept there (the newest ten are)
 pkg = '/home/claude/otp/release/otp-%s.tar.gz' % OLD
 ok('the tables of %s read off its otp.py' % OLD, 'tokens' in otp.downgrade_package_schema(pkg)['tables'])

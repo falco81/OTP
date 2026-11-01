@@ -292,7 +292,7 @@ def osup_view(store):
     _osup_cleared(store, nodes)
     hidden = bool(plan) and seen == plan.get('id') and plan.get('state') != 'running'
     return {'plan': {} if hidden else plan, 'nodes': nodes, 'now': time.time(),
-            'cluster': bool(CONFIG.get('ha_mode')), 'helper': WEB_DIR.is_dir(),
+            'cluster': in_cluster(store), 'helper': WEB_DIR.is_dir(),
             'power': power_plan(store) if power_busy(store) else {}}
 
 
@@ -349,6 +349,9 @@ def osup_start(store, nodes, reboot, by, security=False):
         raise ValueError('an upgrade of otp is going on - wait for it to end')
     if power_busy(store):
         raise ValueError('a restart or a power off is going on - wait for it to end')
+    busy = cluster_busy(store, skip=('osup', 'upgrade', 'power'))
+    if busy:
+        raise ValueError('%s - wait for it to end' % busy)
     known = host_nodes(store)
     alive = host_alive(store)
     nodes = [n for n in known if n in (nodes or known)]
@@ -596,7 +599,7 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
     if reboot and plan.get('reboot') == 'auto':
         osup_put(store, row, state='rebooting', said='updated - restarting, as it needs')
         try:
-            power_ask(store, 'reboot', [me], 'one', by, keep_service=True)
+            power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
         except ValueError as e:
             osup_put(store, row, state='done', said='updated; the restart was not started: %s' % e)
         return
@@ -796,8 +799,11 @@ def sshd_tick(daemon):
     if c.get('hash') and c['hash'] != now.get('hash') and c['hash'] != now.get('failed') and \
             c['hash'] != now.get('back_hash'):
         todo.append(('apply', None))
+    # Kept only where it was on trial when Keep was pressed (1.0.211): a node that
+    # was away put the change in later and kept it at once - nobody had tried it there.
     if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
-            float(keep.get('at') or 0) > float(now.get('kept_at') or 0):
+            float(keep.get('at') or 0) > float(now.get('kept_at') or 0) and \
+            float(keep.get('at') or 0) > float(now.get('applied_at') or 0):
         todo.append(('keep', None))
     if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
         todo.append(('back', back))

@@ -44,9 +44,12 @@ def ntp_conf(store):
 def ntp_desired(store):
     c = ntp_conf(store)
     peers = []
-    if c.get('manage') and c.get('peers') and CONFIG.get('ha_mode') and CONFIG.get('ha_peer'):
+    other = CONFIG.get('ha_peer') if CONFIG.get('ha_mode') else ''
+    if not other and c.get('manage') and c.get('peers') and in_cluster(store):
+        other = vip_peer_seen(store)            # a shared database's cluster (1.0.211)
+    if c.get('manage') and c.get('peers') and other:
         try:
-            peers = [str(ipaddress.ip_address(str(CONFIG['ha_peer'])))]
+            peers = [str(ipaddress.ip_address(str(other)))]
         except ValueError:
             peers = []
     return {'manage': bool(c.get('manage')), 'servers': c.get('servers') or [],

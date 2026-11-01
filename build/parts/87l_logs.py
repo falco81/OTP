@@ -89,7 +89,7 @@ def _logs_tick(daemon, force):
 
 
 def logs_view(store):
-    nodes = [n['name'] for n in ha_nodes(store)] if CONFIG.get('ha_mode') else [node_name()]
+    nodes = [n['name'] for n in ha_nodes(store)] if in_cluster(store) else [node_name()]
     want = logs_desired()
     h = logs_hash(want)
     out = []

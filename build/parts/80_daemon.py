@@ -1155,11 +1155,29 @@ class Daemon(object):
         if 'radius_auth_port' in checked or 'radius_acct_port' in checked:
             # One port for both refused (1.0.206): the sign-ins (or the accounting)
             # stopped there and then, with "saved" on the page.
-            auth = int(checked.get('radius_auth_port', CONFIG.get('radius_auth_port') or 1812))
-            acct = int(checked.get('radius_acct_port', CONFIG.get('radius_acct_port') or 1813))
-            if auth == acct:
-                raise BadSetting('the sign-ins and the accounting cannot listen on one port (%d)'
-                                 % auth)
+            # The ports of the node it is saved for (1.0.211): another node's were
+            # checked against this node's, and the cluster's against no node's own.
+            held = self.store.settings_saved()
+
+            def port_of(k, n):
+                if k in checked:
+                    return int(checked[k])
+                if n == node_name() and not cluster_wide:
+                    return int(CONFIG.get(k) or DEFAULTS[k] or 0)
+                v = held.get(k + '@' + n, held.get(k, DEFAULTS[k]))
+                try:
+                    return int(v or 0)
+                except (TypeError, ValueError):
+                    return 0
+            whom = [n for n in (self.cluster_nodes() + [node_name()])
+                    if not cluster_wide or ('radius_auth_port@' + n not in held and
+                                            'radius_acct_port@' + n not in held)] \
+                if cluster_wide else [node]
+            for n in sorted(set(whom)) or [node]:
+                auth, acct = port_of('radius_auth_port', n), port_of('radius_acct_port', n)
+                if auth and auth == acct:
+                    raise BadSetting('the sign-ins and the accounting cannot listen on one port '
+                                     '(%d)%s' % (auth, (' on %s' % n) if many else ''))
         if 'node_name' in checked:
             taken = node_name_taken(self.store, checked['node_name'])
             if taken:
@@ -2039,7 +2057,29 @@ DB_JOB = {'id': 0, 'what': '', 'running': False, 'done': 0, 'whole': 0, 'says': 
 DB_JOB_LOCK = threading.Lock()
 
 
+def db_job_elsewhere():
+    """A job on the database going on on another node now, or None (1.0.211):
+    one of each node at once - a copy put back on one while the other erased -
+    and replication stopped on the rows they both wrote."""
+    store = HA_STORE.get('store')
+    if store is None or not in_cluster(store):
+        return None
+    try:
+        for r in store.db.rows("SELECT v FROM meta WHERE k LIKE 'db!_job:%' ESCAPE '!'"):
+            one = json.loads(r['v'] or 'null') or {}
+            if one.get('running') and one.get('node') and one['node'] != node_name() and \
+                    time.time() - float(one.get('at') or one.get('began') or 0) < 300:
+                return one
+    except Exception:                                   # noqa: BLE001
+        return None
+    return None
+
+
 def db_job(what, work):
+    other = db_job_elsewhere()
+    if other:
+        raise ValueError('%s is going on on %s - one at a time'
+                         % (other.get('what') or 'a job on the database', other['node']))
     with DB_JOB_LOCK:
         if DB_JOB['running']:
             raise ValueError('%s is going on already' % DB_JOB['what'])
@@ -2409,6 +2449,39 @@ def tune_plan(engine, m):
     }
 
 
+def tune_keep_workers(db, plan, now):
+    """The background workers as replication needs them (1.0.211): parallel queries
+    as many as the processors and max_worker_processes no more than that left
+    replication's apply and table-sync workers no slot, and its rows stopped
+    coming. Its own kept free; a value someone raised is never lowered."""
+    out = dict(plan)
+    try:
+        repl = CONFIG.get('ha_mode') == 'replicated' or \
+            int(db.value('SELECT COUNT(*) FROM pg_subscription') or 0) > 0
+    except Exception:                                   # noqa: BLE001
+        repl = CONFIG.get('ha_mode') == 'replicated'
+    reserve = 0
+    if repl:
+        try:
+            reserve = int(db.value('SHOW max_logical_replication_workers') or 4) + 2
+        except Exception:                               # noqa: BLE001
+            reserve = 6
+    try:
+        have = int(now.get('max_worker_processes') or 0)
+    except ValueError:
+        have = 0
+    v, why, rs = out['max_worker_processes']
+    want = max(int(v) + reserve, have)
+    out['max_worker_processes'] = (str(want), why + (' - and replication\'s own workers'
+                                                    if reserve else ''), rs)
+    v, why, rs = out['max_parallel_workers']
+    out['max_parallel_workers'] = (str(max(1, min(int(v), want - reserve))), why, rs)
+    v, why, rs = out['max_parallel_workers_per_gather']
+    out['max_parallel_workers_per_gather'] = (
+        str(max(1, min(int(v), int(out['max_parallel_workers'][0])))), why, rs)
+    return out
+
+
 def tune_current(db, names):
     out = {}
     for n in names:
@@ -2500,6 +2573,8 @@ def tune_plan_for(store, typed, probe=True):
         return out
     plan = tune_plan(db.engine, m)
     now = tune_current(db, plan.keys())
+    if db.engine == 'postgres':
+        plan = tune_keep_workers(db, plan, now)
     pending = set(tune_pending(db))
     last = out['last'] or {}
     mine = last.get('engine') == db.engine and not last.get('undone') \
@@ -2535,10 +2610,12 @@ def tune_apply(store, typed, admin_user, admin_password, by):
         for r in plan['rows']:
             if not r['change']:
                 continue
-            before.setdefault(r['name'], r['now'])
             try:
+                # What it was kept once it is changed (1.0.211): kept first, one that
+                # failed was put back on Undo, and one a later change made was not.
                 if plan['engine'] == 'postgres':
                     db.run("ALTER SYSTEM SET %s = '%s'" % (r['name'], r['want'].replace("'", '')))
+                    before.setdefault(r['name'], r['now'])
                     (later if r['restart'] else done).append(r['name'])
                 else:
                     if r['restart']:
@@ -2546,11 +2623,16 @@ def tune_apply(store, typed, admin_user, admin_password, by):
                         continue
                     db.run('SET GLOBAL %s = %s' % (r['name'], r['want'] if r['want'].isdigit()
                                                   else "'%s'" % r['want']))
+                    before.setdefault(r['name'], r['now'])
                     done.append(r['name'])
             except Exception as e:
                 failed.append('%s: %s' % (r['name'], str(e).split('\n')[0][:160]))
         if plan['engine'] == 'postgres' and (done or later):
-            db.run('SELECT pg_reload_conf()')
+            try:
+                db.run('SELECT pg_reload_conf()')
+            except Exception as e:                      # noqa: BLE001
+                # Set, not read yet (1.0.211): written down all the same.
+                failed.append('pg_reload_conf: %s' % str(e).split('\n')[0][:160])
     finally:
         if db is not store.db:
             db.close()
@@ -2621,6 +2703,27 @@ def tune_restart(store, by):
     waiting = tune_pending(db)
     if not waiting:
         raise ValueError('nothing waits for a restart')
+    # In a cluster (1.0.211): never the server both nodes use, never while the
+    # other node does not answer, never both at once - and this node's RADIUS
+    # steps aside meanwhile, as when a backup is put back.
+    rest = False
+    if in_cluster(store):
+        if CONFIG.get('ha_mode') != 'replicated':
+            raise ValueError('the nodes share this database server: restarted, both stop - '
+                             'restart it at a quiet time as root:  systemctl restart %s' % unit)
+        others = [n for n in ha_nodes(store) if not n.get('me')]
+        if not any(n.get('alive') for n in others):
+            raise ValueError('the other node is not answering: restarting PostgreSQL here would '
+                             'leave nothing to sign people in - bring it back first')
+        for n in others:
+            try:
+                other = json.loads(store.get_meta('db_restart:' + n['name']) or '{}')
+            except ValueError:
+                other = {}
+            if time.time() - float(other.get('at') or 0) < 300 and not other.get('done'):
+                raise ValueError('%s is restarting its PostgreSQL now - one at a time' % n['name'])
+        store.set_meta('db_restart:' + node_name(), json.dumps({'at': time.time(), 'by': by}))
+        rest = True
     try:
         if str(db.value('SHOW huge_pages')).lower() == 'on':
             raise ValueError('huge_pages is on, and a start needs enough of them for the new '
@@ -2649,6 +2752,22 @@ def tune_restart(store, by):
                              '%d MB - restarted now, PostgreSQL might not start. Free some '
                              'memory, or put back as it was' % (avail // 1048576,
                                                                  want // 1048576))
+    if rest:
+        RESTORE_WHY[0] = 'its PostgreSQL is restarted'
+        RESTORE_RUNNING.set()
+    try:
+        return _tune_restart_go(store, db, unit, waiting, by)
+    finally:
+        if rest:
+            RESTORE_RUNNING.clear()
+            try:
+                store.set_meta('db_restart:' + node_name(), json.dumps({'at': time.time(),
+                                                                        'done': True}))
+            except Exception:                           # noqa: BLE001
+                pass
+
+
+def _tune_restart_go(store, db, unit, waiting, by):
     began = time.time()
     try:
         said = subprocess.run(['systemctl', '--no-ask-password', '--no-block', 'restart', unit],

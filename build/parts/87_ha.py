@@ -217,6 +217,22 @@ def ha_nodes(store):
     return out
 
 
+def in_cluster(store=None):
+    """One of two nodes, whatever kind (1.0.211): a cluster of one shared database
+    leaves ha_mode empty on both nodes - another node heard from in the last day
+    says so. The guards that keep the service up looked at ha_mode alone, and were
+    off there."""
+    if CONFIG.get('ha_mode'):
+        return True
+    store = store or HA_STORE.get('store')
+    if store is None:
+        return False
+    try:
+        return any(not n.get('me') and float(n.get('age') or 1e9) < 86400 for n in ha_nodes(store))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
@@ -1320,7 +1336,14 @@ def ha_control(store, act, by=''):
             if has(far, sub_out):
                 far.run('ALTER SUBSCRIPTION %s DISABLE' % sub_out)
                 said.append('the other node takes nothing from this one for now')
-        on_peer(p)
+        try:
+            on_peer(p)
+        except ValueError as e:
+            # Half done is said (1.0.211): this node's side was paused, then the
+            # other could not be reached - a bare error, and the page not drawn again.
+            if not said:
+                raise
+            said.append('%s - its side as it was' % e)
     if act in ('resume_in', 'resume'):
         if has(here, sub_in):
             here.run('ALTER SUBSCRIPTION %s ENABLE' % sub_in)
@@ -1332,7 +1355,12 @@ def ha_control(store, act, by=''):
                 far.run('ALTER SUBSCRIPTION %s ENABLE' % sub_out)
                 said.append('the other node takes this one\'s rows again, from where it '
                             'stopped')
-        on_peer(r)
+        try:
+            on_peer(r)
+        except ValueError as e:
+            if not said:
+                raise
+            said.append('%s - its side as it was' % e)
     if act == 'refresh':
         if has(here, sub_in):
             here.run('ALTER SUBSCRIPTION %s REFRESH PUBLICATION WITH (copy_data = false)'

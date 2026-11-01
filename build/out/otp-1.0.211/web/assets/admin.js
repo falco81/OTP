@@ -7638,7 +7638,9 @@ function drawHaRep(d, live) {
   if (r.lost) host.appendChild(el('p', 'note bad', 'The other node was away longer than what is kept for it: rebuild it from this one - on the other node, Rebuild this node from the other.'));
   if (r.trouble) host.appendChild(el('p', 'note bad', r.trouble));
   }, live);
-  var paused = (r.incoming || []).some(function (x) { return !x.enabled; });
+  /* Only what goes out paused counts too (1.0.211): Resume stayed grey after it. */
+  var paused = (r.incoming || []).some(function (x) { return !x.enabled; }) ||
+    (r.outgoing || []).some(function (x) { return x.active === false; });
   $('ha-pause').disabled = paused;
   $('ha-resume').disabled = !paused && r.healthy;
   if (d.job && d.job.running) haWatch();
@@ -7839,7 +7841,12 @@ document.addEventListener('visibilitychange', function () {
   if (!document.hidden && UP.sleeping) { UP.sleeping = false; if (paneLive('upgrade')) loadUpgrade(); }
 });
 function maintenanceAsk(n, on, then) {
-  var alone = (UP.last && (UP.last.nodes || []).filter(function (x) { return x.alive; }).length) <= 1;
+  /* Alone also when every other node answering is in maintenance already (1.0.211):
+     the dialog said the VPN goes to the other node, and nobody answered. */
+  var alone = !(UP.last && (UP.last.nodes || []).some(function (x) {
+    var m = x.maintenance && typeof x.maintenance === 'object' ? x.maintenance : {on: !!x.maintenance};
+    return x.name !== n.name && x.alive && !m.on;
+  }));
   if (!on) {
     api('upgrade', {action: 'maintenance', node: n.name, on: false}).then(function (r) { toast(r.message, 'good'); then(r); }).catch(oops);
     return;
@@ -7847,7 +7854,7 @@ function maintenanceAsk(n, on, then) {
   modal('Take ' + n.name + ' out of service', function (body) {
     var p = el('p', 'note');
     p.textContent = alone
-      ? 'This is the only server: while it is in maintenance nobody can sign in to the VPN. Its pages go on working.'
+      ? ((UP.last && (UP.last.nodes || []).length > 1) ? 'No other node is answering in service: while ' + n.name + ' is in maintenance nobody can sign in to the VPN. Its pages go on working.' : 'This is the only server: while it is in maintenance nobody can sign in to the VPN. Its pages go on working.')
       : 'It stops answering RADIUS and its /healthz says 503: the VPN and the load balancer go to the other node. Its pages go on working.';
     if (alone) p.className = 'note bad';
     body.appendChild(p);
@@ -12481,8 +12488,24 @@ function netFormCard(n) {
     a4.addEventListener('input', paintVip);
     setTimeout(paintVip, 0);
   }
+  /* One database shared by the nodes (1.0.211): the other node's db_host or
+     pg_hba.conf names this address - moved by hand, and ticked. */
+  var sharedOk = null;
+  if (NET.d.shared_db) {
+    sharedOk = el('div', 'note warn net-elsewhere');
+    var scb = el('input');
+    scb.type = 'checkbox';
+    var slab = el('label', 'check small');
+    slab.appendChild(scb);
+    slab.appendChild(el('span', '', 'The other node reaches the database at the new address (its db_host and pg_hba.conf are changed by hand)'));
+    sharedOk.appendChild(el('div', 'small', 'The nodes share one database: a new address of this node is not carried to the other node from here.'));
+    sharedOk.appendChild(slab);
+    sharedOk._get = function () { return scb.checked; };
+    card.appendChild(sharedOk);
+  }
   var want = function () {
     return {con: con.value || data.con, hostname: host.value.trim(),
+            shared_db_ok: sharedOk ? sharedOk._get() : false,
             ipv4: {addr: a4.value.trim(), gw: gw.value.trim(), dns: dns.value, search: search.value},
             ipv6: {on: !!s6._get(), mode: mode6.value, addr: a6.value.trim(), gw: gw6.value.trim(), dns: dns6.value},
             vip_elsewhere: elsewhere ? elsewhere._get() : false};

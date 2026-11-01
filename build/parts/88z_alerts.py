@@ -49,7 +49,9 @@ def disks_now():
 def alerts_lead(store):
     """The node that looks and sends: the first by name of the nodes heard
     from, in every kind of cluster - ha_lead is every node of a shared one."""
-    if not CONFIG.get('ha_mode'):
+    # A cluster of one shared database too (1.0.211): there ha_mode is empty, and
+    # each node took itself for the one that sends - alerts and reports went twice.
+    if not in_cluster(store):
         return True
     return lead_of(store)
 

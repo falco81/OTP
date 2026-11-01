@@ -539,6 +539,11 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
     if said is None:
         raise ValueError(why)
     kind = said['kind']
+    other = db_job_elsewhere()
+    if other:
+        # One at a time on the cluster (1.0.211).
+        raise ValueError('%s is going on on %s - wait for it to end'
+                         % (other.get('what') or 'a job on the database', other['node']))
     if CONFIG.get('ha_mode') == 'replicated' and kind in ('postgres', 'mariadb'):
         raise ValueError('a dump puts tables back by making them again, which replication '
                          'does not carry to the other node: put a copy back instead (it goes '
@@ -593,7 +598,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     # In a cluster the other node keeps its own key, and the rows going over
     # would be ones it cannot open (1.0.44): a copy sealed with another key
     # is refused there before anything is replaced.
-    if CONFIG.get('ha_mode') == 'replicated' and re.match(r'^[0-9a-f]{64}\Z', key_hex):
+    # Every kind of cluster (1.0.211): with one shared database the key file of
+    # this node alone was replaced, and the other opened no token any more.
+    if in_cluster(store) and re.match(r'^[0-9a-f]{64}\Z', key_hex):
         now = sealing_key()
         if now and now.hex() != key_hex:
             raise ValueError('this copy was sealed with another key than the one both nodes '
@@ -865,7 +872,11 @@ def db_erase_job(store, groups, tidy, by):
         gone = {}
         for i, (t, n) in enumerate(tables):
             progress(i + 1, len(tables) + 2, 'emptying %s' % n)
-            gone[t] = store.db.run('DELETE FROM %s' % t)
+            # In batches, with a breath between (1.0.211): one DELETE of a whole log
+            # held RADIUS up meanwhile, and went to the other node as one huge
+            # transaction. What has no time left is taken with the last word.
+            gone[t] = store.delete_older(t, time.time() + 100 * 365 * 86400)
+            gone[t] += int(store.db.run('DELETE FROM %s' % t) or 0)
         given = None
         if tidy:
             progress(len(tables) + 1, len(tables) + 2, 'giving the disk back')

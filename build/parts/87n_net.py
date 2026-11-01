@@ -204,7 +204,7 @@ def net_check(store, node, want, rollback=False):
         raise ValueError('the host name is the whole name: otp1.example.cz')
     old_ip = net_current_ip(now).split('/')[0]
     new_ip = str(a4.ip)
-    many = bool(CONFIG.get('ha_mode'))
+    many = in_cluster(store)                    # a shared database's cluster too (1.0.211)
     others = [n for n in ha_nodes(store) if n['name'] != node]
     for n in others:
         if str(n.get('address') or '') == new_ip:
@@ -229,6 +229,16 @@ def net_check(store, node, want, rollback=False):
     if ip_changed and many and CONFIG.get('ha_mode') == 'replicated':
         plan.append('the other node is told %s: its pg_hba.conf, its subscription and its '
                     'ha_peer move to it' % new_ip)
+    elif ip_changed and many:
+        # One database for both (1.0.211): the other node reaches it - or is let into it -
+        # at the old address, and nothing here moves that. Done by hand, and said so.
+        if not want.get('shared_db_ok'):
+            raise ValueError('the nodes share one database: the other node reaches it (db_host) '
+                             'or is let into it (pg_hba.conf) at %s - that is not moved from '
+                             'here. Change it there by hand, then tick that it is done'
+                             % old_ip)
+        plan.append('the other node\'s db_host and pg_hba.conf at %s: changed by hand, as '
+                    'ticked' % old_ip)
     if ip_changed:
         plan.append('this node\'s settings that name %s - and its own certificate, where it was '
                     'made here - are made again for %s' % (old_ip, new_ip))
@@ -260,6 +270,27 @@ def net_job_active(job):
         time.time() - float(job.get('moved') or job.get('at') or 0) < NET_JOB_LIVE_S
 
 
+def cluster_busy(store, skip=()):
+    """What takes a node out of service and is going on anywhere in the cluster
+    now, or '' (1.0.211): a new network on one node, a restart, a system update
+    or an upgrade of otp were each checked on their own node only - the page of
+    the other node let a second one start, and both nodes were down at once."""
+    try:
+        if 'net' not in skip:
+            for n in host_nodes(store):
+                if net_job_active(_meta_json(store, 'net:job:' + n)):
+                    return '%s is changing its network' % n
+        if 'osup' not in skip and (osup_plan(store) or {}).get('state') == 'running':
+            return 'the system is being updated'
+        if 'upgrade' not in skip and (upgrade_plan(store) or {}).get('state') == 'running':
+            return 'otp is being upgraded'
+        if 'power' not in skip and power_busy(store):
+            return 'a restart or a power-off is under way'
+    except Exception:                                   # noqa: BLE001
+        return ''
+    return ''
+
+
 def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     """The page asks: written for the node, which does it. `rollback`: the
     old network asked back by the node itself - not put on trial again."""
@@ -267,6 +298,10 @@ def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
         raise ValueError('%s is changing its network already' % node)
     if power_busy(store):
         raise ValueError('a restart or a power-off is under way')
+    if not rollback:
+        busy = cluster_busy(store, skip=('power',))
+        if busy:
+            raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     checked = net_check(store, node, want, rollback=rollback)
     ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
            'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
@@ -397,7 +432,7 @@ def net_job_run(daemon, ask):
     by = '%s (network)' % (ask.get('by') or 'otp')
     job = {'id': ask['id'], 'node': me, 'state': 'running', 'at': time.time(), 'pct': 0,
            'by': ask.get('by'), 'want': w, 'steps': [], 'boot': boot_time()}
-    many = bool(CONFIG.get('ha_mode'))
+    many = in_cluster(store)                    # (1.0.211)
     # On trial (1.0.137): what the node has now kept, to go back to unless the
     # new one is kept in time.
     if net_trial_min() and not ask.get('rollback'):
@@ -826,7 +861,7 @@ def power_busy(store):
     return False
 
 
-def power_ask(store, how, targets, order, by, keep_service=False):
+def power_ask(store, how, targets, order, by, keep_service=False, from_osup=False):
     """`keep_service` (1.0.165): a node goes down only while another one
     answers - asked of every restart one after the other, on a schedule and
     after an update; a node that does not come back stops the rest."""
@@ -838,6 +873,9 @@ def power_ask(store, how, targets, order, by, keep_service=False):
         raise ValueError('which node?')
     if order not in ('one', 'rolling', 'together'):
         order = 'one' if len(targets) == 1 else 'rolling'
+    busy = cluster_busy(store, skip=('power',) + (('osup',) if from_osup else ()))
+    if busy:
+        raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     if how == 'poweroff' and order == 'rolling':
         order = 'together'
     if power_busy(store):
@@ -850,7 +888,7 @@ def power_ask(store, how, targets, order, by, keep_service=False):
         # while the first restarts.
         targets.sort(key=lambda n: n == node_name())
     keep_service = bool(keep_service or (order == 'rolling' and len(targets) > 1))
-    if keep_service and CONFIG.get('ha_mode') and how == 'reboot':
+    if keep_service and in_cluster(store) and how == 'reboot':     # shared too (1.0.211)
         alive = [n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me')]
         if len(alive) < 2:
             raise ValueError('only %s answers: restarting it would stop the service - bring the '
@@ -876,7 +914,7 @@ def power_go(daemon, plan):
     store = daemon.store
     row = {'id': plan['id'], 'how': plan['how'], 'at': time.time(), 'boot': boot_time()}
     try:
-        many = bool(CONFIG.get('ha_mode'))
+        many = in_cluster(store)                # a shared database's cluster too (1.0.211)
         if many and plan.get('keep_service') and plan['how'] == 'reboot' and \
                 not any(n.get('alive') and not n.get('me') for n in ha_nodes(store)):
             # Its turn come, nobody else answers (1.0.165): it stays up.
@@ -1016,5 +1054,8 @@ def net_view(store):
                     else {}})
     v = vip_conf(store)
     return {'nodes': out, 'cluster': len(out) > 1, 'now': time.time(),
+            # One database shared by the nodes (1.0.211): an address changed is not
+            # carried to the other node - said, and ticked by whoever changes it.
+            'shared_db': in_cluster(store) and CONFIG.get('ha_mode') != 'replicated',
             'vip': {'on': bool(v.get('on')), 'address': v.get('address') or '',
                     'address6': v.get('address6') or ''} if CONFIG.get('ha_mode') else {}}
