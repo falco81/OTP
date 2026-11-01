@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.218'
+__version__ = '1.0.219'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -14643,6 +14643,10 @@ class Daemon(object):
             if key in ('ha_mode', 'ha_slot', 'ha_peer', 'ha_peer_port', 'ha_address', 'ha_tls',
                        'ha_tls_ca'):
                 continue                    # the cluster's own wiring, set by its wizard
+            if key.startswith('split_'):
+                # Its own card on High availability (1.0.219): in the list of the rest they
+                # were drawn under every pane, the card's rules (try the arbiter first) aside.
+                continue
             value = CONFIG.get(key)
             shape = TUNABLE.get(key)
             source = 'saved' if key in saved else ('file' if key in FILE_KEYS else 'default')

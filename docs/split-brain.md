@@ -1088,6 +1088,10 @@ replicating both ways, a shared settings store, an admin page with a save bar):
       node, keep the last report, alert.
 - [ ] **Alerts**: one problem per node apart, one for "let in on both" (24 h).
 - [ ] **API** of 9 (GET view, POST save/try/poll), the try made by every node for itself.
+- [ ] **The page's relay passes it on**: in otp's `web/admin/index.php` the name `split` is in
+      both `$reads` and `$writes` (`'split' => '/api/split'`). Without it the card shows its
+      title and nothing else (otp 1.0.218 shipped so; 1.0.219 mended it) - test the card
+      through the real relay, not with its view handed to it.
 - [ ] **The card** of 11: HTML, CSS, JS as they are; the helpers of 11.6 mapped to the
       application's own; the texts of 11.3 into its translation files.
 - [ ] **Docs**: this file.
