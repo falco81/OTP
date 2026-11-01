@@ -621,6 +621,15 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         live_sessions = store.db.rows('SELECT * FROM sessions')
     except Exception:                                   # noqa: BLE001
         live_sessions = None
+    # This node's own rows of meta (META_TRANSIENT) stay as they are now (1.0.217): a
+    # copy read in row by row skips the copy's, but a PostgreSQL or MariaDB dump replaced
+    # the table whole - another node's heartbeat came back (this node then took itself
+    # for one of a cluster), a job "running", the tuning and the asks of the copy's day.
+    try:
+        live_transient = [r for r in store.db.rows('SELECT k, v FROM meta')
+                          if str(r.get('k') or '').startswith(META_TRANSIENT)]
+    except Exception:                                   # noqa: BLE001
+        live_transient = None
     c = _db_conf()
     if kind == 'copy':
         load_tables(store.db, path)
@@ -672,6 +681,15 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         finally:
             os.unlink(pf)
     store.db.make_tables()
+    if kind in ('mariadb', 'postgres') and live_transient is not None:
+        try:
+            for r in store.db.rows('SELECT k FROM meta'):
+                if str(r.get('k') or '').startswith(META_TRANSIENT):
+                    store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+            for r in live_transient:
+                store.set_meta(r['k'], r['v'])
+        except Exception as e:                          # noqa: BLE001
+            log('putting back: this node\'s own rows of meta could not be kept: %s' % e, 'warn')
     if CONFIG.get('ha_mode') == 'replicated' and store.db.engine == 'postgres':
         ha_sequences(store.db, int(CONFIG.get('ha_slot') or 1))
     if live_sessions is not None:

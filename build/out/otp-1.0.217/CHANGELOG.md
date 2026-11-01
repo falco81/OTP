@@ -4,6 +4,50 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.217 — 1 November 2026
+
+A hunt for bugs - the database pane, RADIUS, acme push, the cluster - and what it found:
+
+**The database pane**
+- **"Empty it first" could drop the tables of the database in use**, reached under another
+  name (127.1, the machine's own name or address, an alias): the server is told now by what
+  it is, not by the name typed. The move, *Use it* and *Set it up* the same.
+- **The password of the database in use was sent to another server** typed in without one,
+  and given to the account set up there instead of a new one. Never now: a new one is made.
+- **Setting up another database under the account in use changed its password** - the next
+  start could not reach this node's own database. Refused, with what to do instead.
+- **A PostgreSQL or MariaDB copy put back brought back the copy's own rows of this node** -
+  another node's heartbeat (a node alone took itself for one of a cluster), a job "running",
+  the tuning of that day. Kept as they are now, as a copy of otp's own always did.
+- Import: a bad value stopped it after the clients were in - every value is checked first
+  now. *Exactly the file* signed out an administrator signed in through the directory (its
+  way in went back to none), kept a cluster's value the file did not have when it had only
+  one node's own, and a file without clients (or realms, directories) took them all away.
+
+**RADIUS and the tokens**
+- The transaction of 1.0.214 (a code used up all or nothing) was skipped now and then under
+  load - workers sharing a connection took another's transaction for their own.
+- Password + code: a recovery code sent again gave the directory the password with the code's
+  first digits on it - a wrong password counted by AD, and "refused" said for "used once".
+
+**The cluster**
+- **A system update with an automatic restart could leave its node in maintenance for good**
+  when the restart could not start (the other node down): RADIUS was not answered there
+  again, and every later restart was refused. Ended as an update without a restart now.
+- A system update, a restart and a power-off of one node took a node in maintenance by hand
+  for one that answers - both went silent. Only nodes in service count now.
+
+**Certificates from acme** - none of the hunt got past the signature, the nonce or the time:
+- A request sent to both nodes at once could be sent again to the other: the nonces are kept
+  as otp's codes used once are, row by row, the other node asked.
+- What the card keeps is in rows of their own: an acme paired on one node while the other
+  refused a wrong code was lost, the two nodes kept different acmes, and the wrong tries were
+  counted on each node apart (and thirty at once were all tried).
+- The second certificate (another key type) was not checked: one of the same type or of
+  other names took the card unchecked. Odd input is said as the protocol says, a ninth acme
+  is refused (not the first dropped), a pasted key's name is cleaned, refusals are logged by
+  their code only, and the page passes on the protocol's headers as ASCII only.
+
 ## 1.0.216 — 1 November 2026
 
 **Certificates from acme (acme push)** - a new, additional way for a certificate to arrive:

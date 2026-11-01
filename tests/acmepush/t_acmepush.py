@@ -84,7 +84,8 @@ def setUpModule():
     for leaf, names, kind in (('a', 'app1.example.test', 'ec'), ('b', 'app1.example.test', 'ec'),
                               ('r', 'app1.example.test', 'rsa'),
                               ('o', 'other.example.test', 'ec'),
-                              ('w', '*.example.test', 'ec')):
+                              ('w', '*.example.test', 'ec'),
+                              ('ro', 'other.example.test', 'rsa')):
         key = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256'] if kind == 'ec' else \
             ['-newkey', 'rsa:2048']
         openssl('req', *key, '-nodes', '-keyout', j(leaf + '.key'), '-out', j(leaf + '.csr'),
@@ -148,6 +149,8 @@ def receiver_reset(on=True):
     for k in ('acme_push:conf', 'acme_push:nonces', 'web:tls:' + NODE, 'web:tls:vip'):
         OSTORE.db.run('DELETE FROM meta WHERE k = ?', (k,))
     OSTORE.db.run("DELETE FROM meta WHERE k LIKE 'acme:care:%'")
+    for pre in ('acme_push:key:', 'acme_push:try:', 'acme_push:pairing', 'acme_push:last'):
+        OSTORE.db.run("DELETE FROM meta WHERE k LIKE ?", (pre + '%',))
     ASTORE.db.run('DELETE FROM meta WHERE k LIKE ?', ('certs:kv:target:%',))
     ASTORE.db.run("DELETE FROM meta WHERE k LIKE 'acme_push:pin:%'")
     if on:
@@ -479,6 +482,110 @@ class Receiver(unittest.TestCase):
             O.CONFIG.clear()
             O.CONFIG.update(was)
             OSTORE.db.run("DELETE FROM meta WHERE k IN ('web:vip', 'node:app2', 'web:tls:app2')")
+
+
+class Mended217(unittest.TestCase):
+    """What the hunt of 1.0.217 found, mended in otp's copy of the part."""
+    def setUp(self):
+        receiver_reset()
+
+    def paired(self):
+        t, ctx = target({'pair_code': code()})
+        t.test()
+        return t, ctx
+
+    def test_alt_of_the_same_type_or_other_names_refused(self):
+        t, ctx = self.paired()
+        with self.assertRaises(base.PluginError) as e:
+            t.deploy(Bundle('a', alt='b'), {})
+        self.assertIn('another key type', str(e.exception))
+        with self.assertRaises(base.PluginError) as e:
+            t.deploy(Bundle('a', alt='ro'), {})
+        self.assertIn('other names', str(e.exception))
+        self.assertIsNone((O.tls_profile(OSTORE, NODE) or {}).get('alt'))
+
+    def test_pairing_tries_counted_under_the_lock(self):
+        import threading
+        from collections import Counter
+        code()
+        box = O.push_box(OSTORE)
+        said = Counter()
+
+        def one():
+            seed = os.urandom(32)
+            pub = O.ed25519_public(seed)
+            body = json.dumps({'acme_key': O.push_key_text(pub), 'proof': 'f' * 64}).encode()
+            st, out = O.push_handle(OSTORE, 'pair', body, A.push_signed(seed, 'pair', box['app_id'], body))
+            said[out.get('code')] += 1
+        th = [threading.Thread(target=one) for _ in range(20)]
+        [x.start() for x in th]
+        [x.join() for x in th]
+        self.assertEqual(said['bad_code'], O.PUSH_CODE_TRIES, said)
+        self.assertIsNone(O.push_conf(OSTORE)['pairing'])
+
+    def test_replay_refused_after_many_requests(self):
+        t, ctx = self.paired()
+        box, me = O.push_box(OSTORE), A.push_identity(ASTORE)
+        first = A.push_signed(me['seed'], 'inventory', box['app_id'], b'{}')
+        self.assertEqual(O.push_handle(OSTORE, 'inventory', b'{}', first)[0], 200)
+        for _ in range(300):
+            O.push_handle(OSTORE, 'inventory', b'{}', A.push_signed(me['seed'], 'inventory', box['app_id'], b'{}'))
+        self.assertEqual(O.push_handle(OSTORE, 'inventory', b'{}', first)[1]['code'], 'replay')
+
+    def test_odd_input_said_as_the_protocol_says(self):
+        t, ctx = self.paired()
+        box, me = O.push_box(OSTORE), A.push_identity(ASTORE)
+        b = Bundle('a')
+        for slots in (5, True, {'x': 1}):
+            body = json.dumps({'slots': slots, 'cert_pem': b.cert_pem, 'fingerprint': b.fingerprint,
+                               'key': A.push_seal_key(b.key_pem, O.x25519_public(box['priv']), box['app_id'],
+                                                      b.fingerprint)}).encode()
+            st, out = O.push_handle(OSTORE, 'install', body, A.push_signed(me['seed'], 'install', box['app_id'], body))
+            self.assertEqual(out.get('code'), 'bad_request', (slots, out))
+
+    def test_a_ninth_acme_refused_not_the_first_dropped(self):
+        for i in range(O.PUSH_KEYS_MOST):
+            O.push_card_do(OSTORE, {'action': 'key_add', 'key': O.push_key_text(O.ed25519_public(os.urandom(32)), 'k%d' % i)}, 't')
+        first = O.push_conf(OSTORE)['keys'][0]['id']
+        t, _ = target({'pair_code': code()})
+        with self.assertRaises(base.PluginError) as e:
+            t.test()
+        self.assertIn('8 acmes already', str(e.exception))
+        self.assertEqual(O.push_conf(OSTORE)['keys'][0]['id'], first)
+
+    def test_last_push_does_not_write_the_conf_back(self):
+        t, ctx = self.paired()
+        t.deploy(Bundle('a'), {})
+        self.assertTrue(O.push_conf(OSTORE)['last'])
+        self.assertNotIn('last', json.loads(OSTORE.get_meta('acme_push:conf') or '{}'))
+
+    def test_pasted_name_cleaned(self):
+        O.push_card_do(OSTORE, {'action': 'key_add', 'key': O.push_key_text(O.ed25519_public(os.urandom(32))) + ' evil\nname <b>'}, 't')
+        self.assertTrue(all('\n' not in k['name'] and '<' not in k['name'] for k in O.push_conf(OSTORE)['keys']))
+
+    def test_two_saves_at_once_lose_nothing(self):
+        """As two nodes do: both read, one pairs, the other counts a wrong try - both kept."""
+        code()
+        c1, c2 = O.push_conf(OSTORE), O.push_conf(OSTORE)
+        c1['keys'] = c1['keys'] + [{'id': 'aa11bb22cc33dd44', 'public': O.push_b64(os.urandom(32)), 'name': 'x', 'at': time.time()}]
+        c1['pairing'] = None
+        O.push_conf_save(OSTORE, c1)
+        c2['pairing']['tries'] = int(c2['pairing'].get('tries') or 0) + 1
+        O.push_conf_save(OSTORE, c2)
+        got = O.push_conf(OSTORE)
+        self.assertIn('aa11bb22cc33dd44', [k['id'] for k in got['keys']], 'the acme paired is kept')
+        self.assertIsNone(got['pairing'], 'and the code used stays used')
+
+    def test_the_row_of_1_0_216_read_and_parted(self):
+        pub = O.ed25519_public(os.urandom(32))
+        OSTORE.set_meta('acme_push:conf', json.dumps({'on': True, 'other_names': False, 'keys': [
+            {'id': O.push_key_id(pub), 'public': O.push_b64(pub), 'name': 'old', 'at': 1}]}))
+        self.assertEqual([k['name'] for k in O.push_conf(OSTORE)['keys']], ['old'])
+        O.push_card_do(OSTORE, {'action': 'other_names', 'on': True}, 't')
+        row = json.loads(OSTORE.get_meta('acme_push:conf'))
+        self.assertNotIn('keys', row)
+        self.assertTrue(OSTORE.get_meta('acme_push:key:' + O.push_key_id(pub)))
+        self.assertEqual([k['name'] for k in O.push_conf(OSTORE)['keys']], ['old'])
 
 
 if __name__ == '__main__':

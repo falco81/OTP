@@ -1,5 +1,8 @@
 # Taken whole from acme 1.0.7 (acmelib/engine/467_certificates_pushed_here_by.py) in otp 1.0.216:
-# only PUSH_APP differs. docs/acme-push-protocol.md is the protocol. (acme 1.0.6's _gf_mul,
+# only PUSH_APP differed. 1.0.217 mended in it what a hunt found (each marked 1.0.217): the
+# nonces kept as otp's codes used once are (token_once, both nodes), the last push in a row of
+# its own, the alt certificate's names and key type, the pairing tries counted under the lock,
+# odd input refused as the protocol says, a ninth acme refused, a pasted key's name cleaned. docs/acme-push-protocol.md is the protocol. (acme 1.0.6's _gf_mul,
 # which in otp would have replaced the QR codes' own, is _push_gcm_mul from 1.0.7 on.)
 # ---------------------------------------------------------------------------
 # acme push (protocol 1): certificates put on these pages by an acme
@@ -361,7 +364,10 @@ def push_open_key(sealed, app_priv, app_id, fingerprint):
     nonce = push_unb64(sealed.get('nonce'), 12, 'key.nonce')
     ct = push_unb64(sealed.get('ct'), None, 'key.ct')
     app_pub = x25519_public(app_priv)
-    shared = x25519(app_priv, epk)
+    try:
+        shared = x25519(app_priv, epk)
+    except ValueError:
+        shared = bytes(32)      # `cryptography` refuses a point of small order (1.0.217)
     if shared == bytes(32):
         raise PushError(400, 'bad_key', 'the key was sealed to nothing')
     k = hkdf_sha256(shared, epk + app_pub, b'acme-push/1 key_pem')
@@ -429,34 +435,92 @@ def push_box(store):
     return {'app_id': got['app_id'], 'priv': priv, 'pub': x25519_public(priv)}
 
 
+# What the card keeps, in rows of their own (1.0.217): the whole of it in one row of meta,
+# written whole by both nodes of a cluster, lost one node's change to the other's - an acme
+# paired on one node while the other refused a wrong code was gone again, the two nodes kept
+# different acmes for good, and the wrong tries were counted on each node apart. Now:
+#   acme_push:conf          on, other_names - changed only by an administrator
+#   acme_push:key:<id>      each acme paired
+#   acme_push:pairing       the code waiting
+#   acme_push:try:<p>:<x>   each wrong try of pairing <p>, counted over both nodes
+#   acme_push:last          the last push
+# The row of 1.0.216 (with keys and pairing in it) is read still, and parted at the next save.
 def push_conf(store):
     got = _meta_json(store, 'acme_push:conf') or {}
-    keys = [k for k in (got.get('keys') or []) if isinstance(k, dict) and k.get('public')]
-    return {'on': bool(got.get('on')), 'keys': keys[:PUSH_KEYS_MOST],
-            'other_names': bool(got.get('other_names')),
-            'pairing': got.get('pairing') if isinstance(got.get('pairing'), dict) else None,
-            'last': got.get('last') if isinstance(got.get('last'), dict) else None}
+    keys = {}
+    for k in (got.get('keys') or []):
+        if isinstance(k, dict) and k.get('public') and k.get('id'):
+            keys[k['id']] = k
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'acme_push:key:%'"):
+        try:
+            k = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if isinstance(k, dict) and k.get('public') and k.get('id'):
+            keys[k['id']] = k
+    keys = sorted(keys.values(), key=lambda k: float(k.get('at') or 0))
+    pairing = _meta_json(store, 'acme_push:pairing')
+    if not isinstance(pairing, dict):
+        pairing = got.get('pairing') if isinstance(got.get('pairing'), dict) else None
+    if pairing:
+        pairing = dict(pairing)
+        pid = str(pairing.get('id') or '')
+        tries = int(pairing.get('tries') or 0)
+        if pid:
+            tries = max(tries, int(store.db.value(
+                "SELECT COUNT(*) FROM meta WHERE k LIKE ?", ('acme_push:try:%s:%%' % pid,)) or 0))
+        pairing['tries'] = tries
+        if tries >= PUSH_CODE_TRIES:
+            pairing = None
+    last = _meta_json(store, 'acme_push:last')
+    if not isinstance(last, dict):
+        last = got.get('last') if isinstance(got.get('last'), dict) else None
+    conf = {'on': bool(got.get('on')), 'keys': keys[:PUSH_KEYS_MOST],
+            'other_names': bool(got.get('other_names')), 'pairing': pairing, 'last': last}
+    conf['_was'] = json.loads(json.dumps(dict(conf, _old=('keys' in got or 'pairing' in got))))
+    return conf
 
 
 def push_conf_save(store, conf):
-    store.set_meta('acme_push:conf', json.dumps(conf))
+    """What changed since push_conf() read it - only that - written."""
+    was = conf.get('_was') or {}
+    old_row = bool(was.get('_old'))
+    if old_row or bool(conf.get('on')) != bool(was.get('on')) or \
+            bool(conf.get('other_names')) != bool(was.get('other_names')):
+        store.set_meta('acme_push:conf', json.dumps({'on': bool(conf.get('on')),
+                                                     'other_names': bool(conf.get('other_names'))}))
+    before = {k['id']: k for k in (was.get('keys') or [])}
+    now = {k['id']: k for k in (conf.get('keys') or []) if k.get('id')}
+    for kid, k in now.items():
+        if kid not in before or old_row:
+            store.set_meta('acme_push:key:' + kid, json.dumps(k))
+    for kid in before:
+        if kid not in now:
+            store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:key:' + kid,))
+    p0, p1 = was.get('pairing'), conf.get('pairing')
+    if p1 and (not p0 or p0.get('id') != p1.get('id') or old_row):
+        store.set_meta('acme_push:pairing', json.dumps(dict(p1, tries=0)))
+    elif p1 and p0 and int(p1.get('tries') or 0) > int(p0.get('tries') or 0):
+        store.set_meta('acme_push:try:%s:%s' % (p1.get('id') or '', secrets.token_hex(8)),
+                       json.dumps({'at': time.time(), 'node': node_name()}))
+    elif p0 and not p1:
+        if int((p0 or {}).get('tries') or 0) + 1 >= PUSH_CODE_TRIES and p0.get('id'):
+            # The last wrong try: counted, so that the other node closes it too.
+            store.set_meta('acme_push:try:%s:%s' % (p0['id'], secrets.token_hex(8)),
+                           json.dumps({'at': time.time(), 'node': node_name()}))
+        store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:pairing',))
+    conf['_was'] = json.loads(json.dumps(dict({k: v for k, v in conf.items() if k != '_was'},
+                                              _old=False)))
 
 
 def push_nonce_take(store, key_id, nonce, ts):
-    """False when the nonce was seen already (a replay)."""
-    with PUSH_LOCK:
-        seen = _meta_json(store, 'acme_push:nonces') or {}
-        t = time.time()
-        seen = {k: v for k, v in seen.items() if t - float(v) < PUSH_NONCE_S}
-        k = '%s:%s' % (key_id, nonce)
-        if k in seen:
-            return False
-        if len(seen) >= PUSH_NONCES_MOST:
-            for old in sorted(seen, key=seen.get)[:len(seen) // 4]:
-                seen.pop(old, None)
-        seen[k] = t
-        store.set_meta('acme_push:nonces', json.dumps(seen))
-        return True
+    """False when the nonce was seen already (a replay) - here or on the other node.
+    Kept as otp's codes used once are (1.0.217): a row of its own for each, written by
+    each node under its own number, and the other node asked (once_take). One meta row
+    of every nonce, written whole by both nodes, lost the other node's nonces within the
+    replication's lag - a request sent again to the other node was taken there; and the
+    list cut at 20000 dropped nonces still in their 900 s."""
+    return once_take(store, 'push', key_id, str(nonce))
 
 
 # ---- the slots: where a certificate can go here ---------------------------------------------
@@ -546,6 +610,8 @@ def push_pick(slots, asked, cert_names):
     holds), 'nodes', 'vip', 'this', or slot ids."""
     if isinstance(asked, str):
         asked = [asked]
+    if asked is not None and not isinstance(asked, list):
+        raise PushError(400, 'bad_request', 'slots is a list of slot ids, or one')   # 1.0.217
     asked = [str(a).strip() for a in (asked or ['auto']) if str(a).strip()] or ['auto']
     ids = {s['id']: s for s in slots}
     out = []
@@ -723,24 +789,36 @@ def push_do_pair(store, raw, headers, conf, box):
                                                'Certificates from acme (it lasts 15 minutes)')
     key = {'id': push_key_id(pub), 'public': push_b64(pub)}
     _k, nonce = push_check(store, 'pair', raw, headers, conf, box, key=key)
-    code = unseal_secret(p.get('code') or '', 'acme_push:code') or ''
-    if not code or not hmac.compare_digest(
-            push_proof(code, 'pair', box['app_id'], key['id'], nonce), str(b.get('proof') or '')):
-        with PUSH_LOCK:
-            c2 = push_conf(store)
-            pp = c2.get('pairing') or {}
-            pp['tries'] = int(pp.get('tries') or 0) + 1
-            c2['pairing'] = pp if pp['tries'] < PUSH_CODE_TRIES else None
+    # Compared and counted under the lock, read again there (1.0.217): requests at the same
+    # moment each compared against the code read before - thirty tries for five.
+    with PUSH_LOCK:
+        c2 = push_conf(store)
+        p = c2.get('pairing') or {}
+        if not p or float(p.get('until') or 0) < time.time() or \
+                int(p.get('tries') or 0) >= PUSH_CODE_TRIES:
+            raise PushError(403, 'pairing_closed', 'no pairing code is waiting here: make one on '
+                                                   'Certificates from acme (it lasts 15 minutes)')
+        code = unseal_secret(p.get('code') or '', 'acme_push:code') or ''
+        right = bool(code) and hmac.compare_digest(
+            push_proof(code, 'pair', box['app_id'], key['id'], nonce), str(b.get('proof') or ''))
+        if not right:
+            p['tries'] = int(p.get('tries') or 0) + 1
+            c2['pairing'] = p if p['tries'] < PUSH_CODE_TRIES else None
             push_conf_save(store, c2)
+    if not right:
         store.add_event('settings', 'acme push: a pairing with a wrong code was refused (key %s)'
                         % key['id'], 'warn', who='acme push')
         raise PushError(403, 'bad_code', 'the pairing code is not the one shown here%s' % (
-            '' if int(p.get('tries') or 0) + 1 < PUSH_CODE_TRIES else
+            '' if int(p.get('tries') or 0) < PUSH_CODE_TRIES else
             ' - and it is gone now: make a new one'))
     name = re.sub(r'[^A-Za-z0-9 ._@()+:-]', '', str(b.get('acme_name') or comment or 'acme'))[:80]
     with PUSH_LOCK:
         c2 = push_conf(store)
         keys = [k for k in c2['keys'] if k.get('id') != key['id']]
+        if len(keys) >= PUSH_KEYS_MOST:
+            # Refused as a pasted ninth is (1.0.217): the oldest was dropped without a word.
+            raise PushError(409, 'bad_request', 'this server is paired with %d acmes already - '
+                            'forget one on Certificates from acme first' % PUSH_KEYS_MOST)
         keys.append(dict(key, name=name, at=time.time(), by='pairing code'))
         c2['keys'] = keys[-PUSH_KEYS_MOST:]
         c2['pairing'] = None
@@ -760,7 +838,10 @@ def push_do_install(store, b, conf, box, key):
     first = PEM_CERT.search(cert_pem)
     if not first:
         raise PushError(400, 'bad_request', 'cert_pem holds no certificate')
-    der = base64.b64decode(''.join(first.group(0).strip().splitlines()[1:-1]))
+    try:
+        der = base64.b64decode(''.join(first.group(0).strip().splitlines()[1:-1]))
+    except (ValueError, binascii.Error):
+        raise PushError(422, 'bad_cert', 'cert_pem cannot be read')                    # 1.0.217
     if hashlib.sha256(der).hexdigest() != fp:
         raise PushError(400, 'bad_request', 'fingerprint is not the one of cert_pem')
     key_pem = push_open_key(b.get('key'), box['priv'], box['app_id'], fp)
@@ -777,6 +858,18 @@ def push_do_install(store, b, conf, box, key):
         alt_fp = str(alt['info'].get('fingerprint') or '').replace(':', '').lower()
         if alt_fp != afp:
             raise PushError(400, 'bad_request', 'alt.fingerprint is not the one of alt.cert_pem')
+        # Another key type, the same names (1.0.217): an alt of the main one's type was
+        # the one nginx gave everybody, and one of other names took the slot unchecked.
+        kt, akt = push_key_type(got['info'].get('key') or ''), push_key_type(alt['info'].get('key') or '')
+        if kt and akt and kt.split('-')[0] == akt.split('-')[0]:
+            raise PushError(422, 'bad_cert', 'alt is the twin of another key type: both are %s'
+                            % kt.split('-')[0].upper())
+        alt_names = [str(n) for n in (alt['info'].get('san') or [])] or [alt['info'].get('cn') or '']
+        if sorted(n.lower() for n in alt_names) != sorted(n.lower() for n in
+                                                          ([str(n) for n in (got['info'].get('san') or [])]
+                                                           or [got['info'].get('cn') or ''])):
+            raise PushError(422, 'names', 'alt holds other names than the certificate (%s, not %s)'
+                            % (', '.join(alt_names), ', '.join(str(n) for n in (got['info'].get('san') or []))))
     names = [str(n) for n in (got['info'].get('san') or [])] or [got['info'].get('cn') or '']
     slots = push_pick(push_slots(store), b.get('slots'), names)
     check = b.get('check_names') is not False or not conf['other_names']
@@ -805,11 +898,9 @@ def push_do_install(store, b, conf, box, key):
             continue
         push_put(store, s, got, alt, by)
         put.append(s)
-    with PUSH_LOCK:
-        c2 = push_conf(store)
-        c2['last'] = {'at': time.time(), 'by': by, 'fingerprint': fp,
-                      'slots': [s['id'] for s in slots], 'put': [s['id'] for s in put]}
-        push_conf_save(store, c2)
+    store.set_meta('acme_push:last', json.dumps(
+        {'at': time.time(), 'by': by, 'fingerprint': fp,
+         'slots': [s['id'] for s in slots], 'put': [s['id'] for s in put]}))
     one = lambda s, st: {'slot': s['id'], 'names': s['names'], 'node': s['node'],  # noqa: E731
                          'fingerprint': fp, 'not_after': got['info'].get('not_after'),
                          'state': st}
@@ -845,7 +936,9 @@ def _push_route(op):
             return
         status, out = push_handle(h.store, op, raw, hd)
         if not out.get('ok'):
-            log('acme push %s refused (%s): %s' % (op, out.get('code'), out.get('error')), 'info')
+            # The code only (1.0.217, chapter 13): the words of a request anybody may send
+            # are not written down.
+            log('acme push %s refused (%s)' % (op, out.get('code')), 'info')
         h.send_json(out, status)
     run.__name__ = '_push_' + op
     route('GET' if op == 'hello' else 'POST', '/api/acme-push/' + op)(run)
@@ -901,7 +994,7 @@ def push_card_do(store, b, who):
                 raise ApiError(409, 'switch it on first')
             abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
             code = ''.join(secrets.choice(abc) for _ in range(16))
-            conf['pairing'] = {'code': seal_secret(code, 'acme_push:code'),
+            conf['pairing'] = {'code': seal_secret(code, 'acme_push:code'), 'id': secrets.token_hex(6),
                                'until': time.time() + PUSH_CODE_S, 'tries': 0, 'by': who}
             out['code'] = '-'.join(code[i:i + 4] for i in range(0, 16, 4))
             msg = 'the pairing code waits for acme for 15 minutes'
@@ -919,6 +1012,7 @@ def push_card_do(store, b, who):
             keys = [k for k in conf['keys'] if k.get('id') != kid]
             if len(keys) >= PUSH_KEYS_MOST:
                 raise ApiError(409, 'at most %d acme keys - forget one first' % PUSH_KEYS_MOST)
+            comment = re.sub(r'[^A-Za-z0-9 ._@()+:-]', '', str(comment or ''))   # 1.0.217
             keys.append({'id': kid, 'public': push_b64(pub), 'name': comment[:80] or 'acme',
                          'at': time.time(), 'by': who})
             conf['keys'] = keys

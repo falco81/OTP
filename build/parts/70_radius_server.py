@@ -309,6 +309,7 @@ class Authenticator(object):
                 # Which one: the code that is right now, found with a dry
                 # check that counts nothing and writes nothing - so one
                 # password costs the directory one try, not two.
+                reused = None
                 for c, rest in splits:
                     ok, _said, _f = self.tokens.check(d.token_name, c, how=how, src=src,
                                                       rid=rid, dry=True, quiet=True)
@@ -316,6 +317,16 @@ class Authenticator(object):
                         code, ad_password = c, rest
                         guessed = False
                         break
+                    if _said == SAY_REUSED and reused is None:
+                        reused = (c, rest)
+                else:
+                    if reused:
+                        # A code used already, sent again (1.0.217): the directory was
+                        # given the password with the code's first digits on it - a
+                        # wrong password counted by AD, and "refused" said instead of
+                        # "used once".
+                        code, ad_password = reused
+                        guessed = False
         # ---- the directory -----------------------------------------------
         entry = None
         lookup = realm.get('lookup') or ''

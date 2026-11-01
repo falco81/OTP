@@ -1622,6 +1622,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osup-sched', 'the schedule of updates: %s' % e, 'warn', every=600)
                 try:
+                    split_tick(self)            # the nodes losing each other (1.0.218)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('split-tick', 'watching the other node: %s' % e, 'warn', every=600)
+                try:
                     node_ask_tick(self)         # tests asked of every node (1.0.169)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('node-ask', 'a test asked of every node: %s' % e, 'warn', every=600)
@@ -1871,13 +1875,19 @@ def engine_asked(given):
             kept_pw = True
             continue
         c[k] = v
-    if kept_pw and was.get('db_password') and any(
-            str(c.get(k) or '') != str(was.get(k) or '')
-            for k in ('db_engine', 'db_host', 'db_port', 'db_user')):
+    elsewhere = any(str(c.get(k) or '') != str(was.get(k) or '')
+                    for k in ('db_engine', 'db_host', 'db_port', 'db_user'))
+    if kept_pw and was.get('db_password') and elsewhere:
         # The password kept goes to the database it was given for only (1.0.207):
         # another server typed in was sent the one of this - asked for in clear,
         # libpq gives it.
         raise ValueError('another database server or account: type its password')
+    given_pw = (given or {}).get('db_password')
+    if elsewhere and (given_pw is None or given_pw == '') and not kept_pw:
+        # None typed for another server or account (1.0.217): the one in use was taken
+        # all the same - sent to the server typed in, and given to the account set up
+        # there instead of a new one.
+        c['db_password'] = ''
     if c.get('db_engine') not in ('sqlite', 'mariadb', 'postgres'):
         raise ValueError('the engine is sqlite, mariadb or postgres')
     for k in ('db_name', 'db_user'):
@@ -1916,6 +1926,46 @@ def same_database(c, db):
     a, b = str(c.get('db_host') or '').lower(), str(db.host or '').lower()
     return ((a == b or (a in here and b in here)) and port == int(db.port or port)
             and str(c.get('db_name')) == str(db.name))
+
+
+# A server told by what it is, not by the name it was reached by (1.0.217): 127.1, 0.0.0.0,
+# the machine's own name or address, an alias - each was taken for another server, and
+# "Empty it first" dropped the tables of the database in use.
+DB_SERVER_ID_SQL = {
+    'postgres': "SELECT pg_postmaster_start_time()::text || ' ' || current_setting('port')",
+    'mariadb': "SELECT CONCAT(@@hostname, ' ', @@port, ' ', @@datadir)",
+}
+
+
+def db_server_id(db):
+    """Who the server of an open Db is: '' when it cannot be said."""
+    try:
+        return str(db.value(RawSql(DB_SERVER_ID_SQL[db.engine])) or '')
+    except Exception:                                   # noqa: BLE001
+        return ''
+
+
+def db_same_place(store, c):
+    """Whether the page's database is the one in use - by its address, or by asking
+    the server it reaches who it is. A server that cannot be reached is not it."""
+    if same_database(c, store.db):
+        return True
+    if c.get('db_engine') != store.db.engine or store.db.engine == 'sqlite':
+        return False
+    here = db_server_id(store.db)
+    if not here:
+        return False
+    try:
+        far = db_open(c)
+    except Exception:                                   # noqa: BLE001
+        return False
+    try:
+        return db_server_id(far) == here and str(c.get('db_name')) == str(store.db.name)
+    finally:
+        try:
+            far.close()
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 def db_driver_here(engine):
@@ -1964,9 +2014,27 @@ def db_password_made():
     return ''.join(secrets.choice(alphabet) for _ in range(24))
 
 
-def db_make(c, admin_user, admin_password):
+def _db_make_not_live(live, eng, user, cur):
+    if not live or live.get('engine') != eng or not live.get('server'):
+        return
+    try:
+        cur.execute(DB_SERVER_ID_SQL[eng])
+        there = str((cur.fetchone() or [''])[0] or '')
+    except Exception:                                   # noqa: BLE001
+        there = ''
+    if there == live['server'] and str(user) == str(live.get('user') or ''):
+        raise ValueError('the account %s is the one this node uses now on that server: give '
+                         'the new database another account name (its password would change '
+                         'under the database in use)' % user)
+
+
+def db_make(c, admin_user, admin_password, live=None):
     """The database and its account, made by an administrator of that
-    server who is used for this one connection and kept nowhere."""
+    server who is used for this one connection and kept nowhere. `live`:
+    {'engine', 'server', 'user'} of the database in use - its account is never
+    given a new password here (1.0.217): another database set up on the same
+    server under the same account name changed the password this node signs in
+    with, and the next restart could not reach its own database."""
     eng = c['db_engine']
     host = str(c.get('db_host') or '127.0.0.1')
     port = int(c.get('db_port') or {'mariadb': 3306, 'postgres': 5432}[eng])
@@ -1978,6 +2046,7 @@ def db_make(c, admin_user, admin_password):
                                connect_timeout=int(c.get('db_timeout_s') or 10), autocommit=True)
         try:
             cur = conn.cursor()
+            _db_make_not_live(live, eng, user, cur)
             cur.execute('CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 '
                         'COLLATE utf8mb4_unicode_ci' % name)
             done.append('the database %s' % name)
@@ -2010,6 +2079,7 @@ def db_make(c, admin_user, admin_password):
                 cur.execute(quiet)
             except Exception:                           # noqa: BLE001
                 pass
+        _db_make_not_live(live, eng, user, cur)
         cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (user,))
         if cur.fetchone():
             cur.execute('ALTER ROLE "%s" WITH LOGIN PASSWORD %%s' % user, (pw,))

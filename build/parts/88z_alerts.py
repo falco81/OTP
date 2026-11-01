@@ -213,6 +213,30 @@ def alert_problems(store, lang='en'):
                     _al(lang, 'RADIUS na %s nemohl použít databázi: %s',
                         'RADIUS on %s could not use the database: %s') % (n, str(trouble)[:300]),
                     'db')
+    # The nodes apart (1.0.218): each node's own word, and the report of the time apart.
+    if CONFIG.get('split_report') and split_engaged():
+        for n in names:
+            st = split_state_here() if n == node_name() else (_meta_json(store, 'split:state:' + n) or {})
+            if st.get('apart') and now - float(st.get('at') or 0) < 90:
+                aside = st.get('role') == 'aside'
+                add('split:' + n, 'bad', n,
+                    _al(lang, '%s nevidí druhý uzel%s' % (n, ' a ustoupil stranou' if aside else ''),
+                        '%s cannot reach the other node%s' % (n, ' and stepped aside' if aside else '')),
+                    _al(lang, 'Databáze druhého uzlu neodpovídá od %s. %s',
+                        'The other node\'s database has not answered since %s. %s')
+                    % (_al_when(st.get('since') or now),
+                       _al(lang, 'RADIUS tento uzel neobsluhuje.' if aside else
+                           'Tento uzel obsluhuje RADIUS sám.',
+                           'This node does not answer RADIUS.' if aside else
+                           'This node answers RADIUS alone.')), 'ha')
+        rep = _meta_json(store, 'split:report') or {}
+        if rep.get('twice_n') and now - float(rep.get('at') or 0) < 86400:
+            add('split:twice', 'warn', '',
+                _al(lang, 'Během rozpojení prošly kódy na obou uzlech',
+                    'Codes were let in on both nodes while they were apart'),
+                _al(lang, '%d kód(ů): %s', '%d code(s): %s') % (
+                    rep['twice_n'], ', '.join('%s (%s)' % (x.get('name'), x.get('kind'))
+                                              for x in (rep.get('twice') or [])[:10])), 'ha')
     # The VIP address (1.0.194): where keepalived put it, from each node's heartbeat.
     if CONFIG.get('alerts_vrrp', 1) and cluster and not quiet:
         try:

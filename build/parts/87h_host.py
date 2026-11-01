@@ -510,7 +510,7 @@ def _osup_go(daemon, what, ctx):
             if what == 'upgrade':
                 # Out of service first where another node answers meanwhile:
                 # the VIP address moves to it, RADIUS is answered there.
-                many = any(n.get('alive') and not n.get('me') for n in ha_nodes(store))
+                many = bool(others_in_service(store))
                 if many:
                     maintenance_set(store, True, 'the system is being updated', by)
                     osup_put(store, row, state='draining', drain_at=time.time(), maint=True,
@@ -600,10 +600,14 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
         osup_put(store, row, state='rebooting', said='updated - restarting, as it needs')
         try:
             power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
+            return
         except ValueError as e:
-            osup_put(store, row, state='done', said='updated; the restart was not started: %s' % e)
-        return
-    osup_put(store, row, state='done', said='updated' + (' - it needs a restart' if reboot else ''))
+            # Not restarted, ended as an update without a restart is (1.0.217): it was left
+            # "done" in maintenance with the plan running - the node never answered RADIUS
+            # again, and every later restart was refused.
+            said = 'updated; the restart was not started: %s' % e
+    osup_put(store, row, state='done', said=said if (reboot and plan.get('reboot') == 'auto' and said)
+             else 'updated' + (' - it needs a restart' if reboot else ''))
     # What is waiting looked at again, not left at what was there before.
     store.set_meta(node_key('host:osup:checkwant', me),
                    json.dumps({'id': secrets.token_hex(6), 'by': by, 'at': time.time()}))

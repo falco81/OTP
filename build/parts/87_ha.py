@@ -1277,7 +1277,8 @@ def ha_peer_columns():
 ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0, 'gen': 0}
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
-ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
+ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400,
+               'push': 3600}          # acme push's nonces (1.0.217), seen for 900 s
 
 
 def once_node():
@@ -1409,14 +1410,23 @@ def once_take(store, kind, name, value, peer=True):
     return True
 
 
-def once_peer_free(store, kind, name, value):
-    """False when the other node's database has its own row for it - used
-    there, not come over yet."""
+def once_peer_state(store, kind, name, value):
+    """The other node's word on it: True (used there), False (not), None (it cannot be
+    asked now). Not a cluster of two databases: False."""
     me = once_node()
     if me and CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer'):
-        if _once_peer_has(once_key(kind, name, value), me, store):
-            return False
-    return True
+        return _once_peer_has(once_key(kind, name, value), me, store)
+    return False
+
+
+def once_peer_free(store, kind, name, value):
+    """False when the other node's database has its own row for it - used
+    there, not come over yet. Let in without its word (it cannot be asked): written
+    down for the report of the time apart (1.0.218)."""
+    got = once_peer_state(store, kind, name, value)
+    if got is None:
+        split_took(store, kind, name, once_key(kind, name, value))
+    return not got
 
 
 def once_tidy(store):

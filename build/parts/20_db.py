@@ -651,10 +651,16 @@ class Db(object):
         up and its row in token_once were two writes, and a database that dropped between
         them left the code used here and the request unanswered - the other node, asked
         next, then refused it as used. SQLite and a transaction already open: as before."""
-        if self.engine == 'sqlite' or getattr(self, 'in_tx', False):
+        if self.engine == 'sqlite':
             yield
             return
         with self._pinned(), self.lock:
+            # Asked with the lane's lock held (1.0.217): a lane is shared by several RADIUS
+            # workers, and one seeing another's transaction open took itself for inside
+            # one - its writes went in one by one again. Held, it can only be its own.
+            if getattr(self, 'in_tx', False):
+                yield
+                return
             if self.conn is None:
                 self.connect()
             self.run(RawSql('START TRANSACTION' if self.engine == 'mariadb' else 'BEGIN'))
@@ -1283,7 +1289,10 @@ def _load_tables_held(db, src, keep_logs, say, gzip):
 # encryption to it, what a page asked of every node and a restart going on - put
 # back from a copy, both nodes took the copy's).
 META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:',
-                  'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:')
+                  'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:',
+                  # acme push's nonces seen (1.0.217): a copy's older list put back let a
+                  # request of the last minutes be sent again once.
+                  'acme_push:nonces')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):

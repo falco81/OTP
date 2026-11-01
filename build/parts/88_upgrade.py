@@ -80,6 +80,14 @@ def maintenance_row(store, name=None):
     return _meta_json(store, 'maint:' + (name or node_name())) or {'on': False}
 
 
+def others_in_service(store):
+    """The other nodes heard from and not in maintenance - those that answer RADIUS while
+    this one is out of service (1.0.217: alive alone was counted, and a node already in
+    maintenance by hand was taken for one that answers - both went silent)."""
+    return [n['name'] for n in ha_nodes(store) if n.get('alive') and not n.get('me')
+            and not (maintenance_row(store, n['name']) or {}).get('on')]
+
+
 def maintenance_now(store):
     """This node's maintenance, read at most every two seconds - asked for
     every RADIUS packet."""
@@ -91,6 +99,11 @@ def maintenance_now(store):
         # given back in a cluster too (1.0.150): VACUUM FULL holds each table
         # shut - the other node answers meanwhile.
         return {'on': True, 'why': RESTORE_WHY[0] or 'a backup is being put back'}
+    if split_aside():
+        # Stepped aside while the nodes cannot reach each other (1.0.218): maintenance
+        # nobody asked for, ended by itself - RADIUS is not answered, the VIP address goes.
+        return {'on': True, 'why': 'stepped aside: ' + (SPLIT['why'] or 'the nodes are apart'),
+                'split': True}
     now = time.monotonic()      # not held by a clock stepped back (1.0.207)
     if now - MAINT_CACHE['at'] > 2:
         MAINT_CACHE['at'] = now

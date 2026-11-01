@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.216'
+__version__ = '1.0.217'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -3691,10 +3691,16 @@ class Db(object):
         up and its row in token_once were two writes, and a database that dropped between
         them left the code used here and the request unanswered - the other node, asked
         next, then refused it as used. SQLite and a transaction already open: as before."""
-        if self.engine == 'sqlite' or getattr(self, 'in_tx', False):
+        if self.engine == 'sqlite':
             yield
             return
         with self._pinned(), self.lock:
+            # Asked with the lane's lock held (1.0.217): a lane is shared by several RADIUS
+            # workers, and one seeing another's transaction open took itself for inside
+            # one - its writes went in one by one again. Held, it can only be its own.
+            if getattr(self, 'in_tx', False):
+                yield
+                return
             if self.conn is None:
                 self.connect()
             self.run(RawSql('START TRANSACTION' if self.engine == 'mariadb' else 'BEGIN'))
@@ -4323,7 +4329,10 @@ def _load_tables_held(db, src, keep_logs, say, gzip):
 # encryption to it, what a page asked of every node and a restart going on - put
 # back from a copy, both nodes took the copy's).
 META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:',
-                  'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:')
+                  'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:',
+                  # acme push's nonces seen (1.0.217): a copy's older list put back let a
+                  # request of the last minutes be sent again once.
+                  'acme_push:nonces')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):
@@ -12006,6 +12015,7 @@ class Authenticator(object):
                 # Which one: the code that is right now, found with a dry
                 # check that counts nothing and writes nothing - so one
                 # password costs the directory one try, not two.
+                reused = None
                 for c, rest in splits:
                     ok, _said, _f = self.tokens.check(d.token_name, c, how=how, src=src,
                                                       rid=rid, dry=True, quiet=True)
@@ -12013,6 +12023,16 @@ class Authenticator(object):
                         code, ad_password = c, rest
                         guessed = False
                         break
+                    if _said == SAY_REUSED and reused is None:
+                        reused = (c, rest)
+                else:
+                    if reused:
+                        # A code used already, sent again (1.0.217): the directory was
+                        # given the password with the code's first digits on it - a
+                        # wrong password counted by AD, and "refused" said instead of
+                        # "used once".
+                        code, ad_password = reused
+                        guessed = False
         # ---- the directory -----------------------------------------------
         entry = None
         lookup = realm.get('lookup') or ''
@@ -15198,13 +15218,19 @@ def engine_asked(given):
             kept_pw = True
             continue
         c[k] = v
-    if kept_pw and was.get('db_password') and any(
-            str(c.get(k) or '') != str(was.get(k) or '')
-            for k in ('db_engine', 'db_host', 'db_port', 'db_user')):
+    elsewhere = any(str(c.get(k) or '') != str(was.get(k) or '')
+                    for k in ('db_engine', 'db_host', 'db_port', 'db_user'))
+    if kept_pw and was.get('db_password') and elsewhere:
         # The password kept goes to the database it was given for only (1.0.207):
         # another server typed in was sent the one of this - asked for in clear,
         # libpq gives it.
         raise ValueError('another database server or account: type its password')
+    given_pw = (given or {}).get('db_password')
+    if elsewhere and (given_pw is None or given_pw == '') and not kept_pw:
+        # None typed for another server or account (1.0.217): the one in use was taken
+        # all the same - sent to the server typed in, and given to the account set up
+        # there instead of a new one.
+        c['db_password'] = ''
     if c.get('db_engine') not in ('sqlite', 'mariadb', 'postgres'):
         raise ValueError('the engine is sqlite, mariadb or postgres')
     for k in ('db_name', 'db_user'):
@@ -15243,6 +15269,46 @@ def same_database(c, db):
     a, b = str(c.get('db_host') or '').lower(), str(db.host or '').lower()
     return ((a == b or (a in here and b in here)) and port == int(db.port or port)
             and str(c.get('db_name')) == str(db.name))
+
+
+# A server told by what it is, not by the name it was reached by (1.0.217): 127.1, 0.0.0.0,
+# the machine's own name or address, an alias - each was taken for another server, and
+# "Empty it first" dropped the tables of the database in use.
+DB_SERVER_ID_SQL = {
+    'postgres': "SELECT pg_postmaster_start_time()::text || ' ' || current_setting('port')",
+    'mariadb': "SELECT CONCAT(@@hostname, ' ', @@port, ' ', @@datadir)",
+}
+
+
+def db_server_id(db):
+    """Who the server of an open Db is: '' when it cannot be said."""
+    try:
+        return str(db.value(RawSql(DB_SERVER_ID_SQL[db.engine])) or '')
+    except Exception:                                   # noqa: BLE001
+        return ''
+
+
+def db_same_place(store, c):
+    """Whether the page's database is the one in use - by its address, or by asking
+    the server it reaches who it is. A server that cannot be reached is not it."""
+    if same_database(c, store.db):
+        return True
+    if c.get('db_engine') != store.db.engine or store.db.engine == 'sqlite':
+        return False
+    here = db_server_id(store.db)
+    if not here:
+        return False
+    try:
+        far = db_open(c)
+    except Exception:                                   # noqa: BLE001
+        return False
+    try:
+        return db_server_id(far) == here and str(c.get('db_name')) == str(store.db.name)
+    finally:
+        try:
+            far.close()
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 def db_driver_here(engine):
@@ -15291,9 +15357,27 @@ def db_password_made():
     return ''.join(secrets.choice(alphabet) for _ in range(24))
 
 
-def db_make(c, admin_user, admin_password):
+def _db_make_not_live(live, eng, user, cur):
+    if not live or live.get('engine') != eng or not live.get('server'):
+        return
+    try:
+        cur.execute(DB_SERVER_ID_SQL[eng])
+        there = str((cur.fetchone() or [''])[0] or '')
+    except Exception:                                   # noqa: BLE001
+        there = ''
+    if there == live['server'] and str(user) == str(live.get('user') or ''):
+        raise ValueError('the account %s is the one this node uses now on that server: give '
+                         'the new database another account name (its password would change '
+                         'under the database in use)' % user)
+
+
+def db_make(c, admin_user, admin_password, live=None):
     """The database and its account, made by an administrator of that
-    server who is used for this one connection and kept nowhere."""
+    server who is used for this one connection and kept nowhere. `live`:
+    {'engine', 'server', 'user'} of the database in use - its account is never
+    given a new password here (1.0.217): another database set up on the same
+    server under the same account name changed the password this node signs in
+    with, and the next restart could not reach its own database."""
     eng = c['db_engine']
     host = str(c.get('db_host') or '127.0.0.1')
     port = int(c.get('db_port') or {'mariadb': 3306, 'postgres': 5432}[eng])
@@ -15305,6 +15389,7 @@ def db_make(c, admin_user, admin_password):
                                connect_timeout=int(c.get('db_timeout_s') or 10), autocommit=True)
         try:
             cur = conn.cursor()
+            _db_make_not_live(live, eng, user, cur)
             cur.execute('CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 '
                         'COLLATE utf8mb4_unicode_ci' % name)
             done.append('the database %s' % name)
@@ -15337,6 +15422,7 @@ def db_make(c, admin_user, admin_password):
                 cur.execute(quiet)
             except Exception:                           # noqa: BLE001
                 pass
+        _db_make_not_live(live, eng, user, cur)
         cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (user,))
         if cur.fetchone():
             cur.execute('ALTER ROLE "%s" WITH LOGIN PASSWORD %%s' % user, (pw,))
@@ -16808,6 +16894,15 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         live_sessions = store.db.rows('SELECT * FROM sessions')
     except Exception:                                   # noqa: BLE001
         live_sessions = None
+    # This node's own rows of meta (META_TRANSIENT) stay as they are now (1.0.217): a
+    # copy read in row by row skips the copy's, but a PostgreSQL or MariaDB dump replaced
+    # the table whole - another node's heartbeat came back (this node then took itself
+    # for one of a cluster), a job "running", the tuning and the asks of the copy's day.
+    try:
+        live_transient = [r for r in store.db.rows('SELECT k, v FROM meta')
+                          if str(r.get('k') or '').startswith(META_TRANSIENT)]
+    except Exception:                                   # noqa: BLE001
+        live_transient = None
     c = _db_conf()
     if kind == 'copy':
         load_tables(store.db, path)
@@ -16859,6 +16954,15 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         finally:
             os.unlink(pf)
     store.db.make_tables()
+    if kind in ('mariadb', 'postgres') and live_transient is not None:
+        try:
+            for r in store.db.rows('SELECT k FROM meta'):
+                if str(r.get('k') or '').startswith(META_TRANSIENT):
+                    store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+            for r in live_transient:
+                store.set_meta(r['k'], r['v'])
+        except Exception as e:                          # noqa: BLE001
+            log('putting back: this node\'s own rows of meta could not be kept: %s' % e, 'warn')
     if CONFIG.get('ha_mode') == 'replicated' and store.db.engine == 'postgres':
         ha_sequences(store.db, int(CONFIG.get('ha_slot') or 1))
     if live_sessions is not None:
@@ -22279,7 +22383,8 @@ def ha_peer_columns():
 ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0, 'gen': 0}
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
-ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400}
+ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400,
+               'push': 3600}          # acme push's nonces (1.0.217), seen for 900 s
 
 
 def once_node():
@@ -22649,6 +22754,14 @@ def _row_write(store, k, data, mine=True, mirror=True):
 # ---- maintenance ---------------------------------------------------------------------
 def maintenance_row(store, name=None):
     return _meta_json(store, 'maint:' + (name or node_name())) or {'on': False}
+
+
+def others_in_service(store):
+    """The other nodes heard from and not in maintenance - those that answer RADIUS while
+    this one is out of service (1.0.217: alive alone was counted, and a node already in
+    maintenance by hand was taken for one that answers - both went silent)."""
+    return [n['name'] for n in ha_nodes(store) if n.get('alive') and not n.get('me')
+            and not (maintenance_row(store, n['name']) or {}).get('on')]
 
 
 def maintenance_now(store):
@@ -29707,10 +29820,11 @@ def power_ask(store, how, targets, order, by, keep_service=False, from_osup=Fals
         targets.sort(key=lambda n: n == node_name())
     keep_service = bool(keep_service or (order == 'rolling' and len(targets) > 1))
     if keep_service and in_cluster(store) and how == 'reboot':     # shared too (1.0.211)
-        alive = [n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me')]
+        alive = [n['name'] for n in ha_nodes(store) if n.get('me')] + others_in_service(store)
         if len(alive) < 2:
             raise ValueError('only %s answers: restarting it would stop the service - bring the '
-                             'other node back first' % (', '.join(alive) or 'this node'))
+                             'other node back first (or out of maintenance)'
+                             % (', '.join(alive) or 'this node'))
     plan = {'id': secrets.token_hex(6), 'how': how, 'targets': targets, 'order': order,
             'by': by, 'at': time.time(), 'from': node_name(), 'keep_service': keep_service}
     store.set_meta('power:plan', json.dumps(plan))
@@ -29734,7 +29848,7 @@ def power_go(daemon, plan):
     try:
         many = in_cluster(store)                # a shared database's cluster too (1.0.211)
         if many and plan.get('keep_service') and plan['how'] == 'reboot' and \
-                not any(n.get('alive') and not n.get('me') for n in ha_nodes(store)):
+                not others_in_service(store):
             # Its turn come, nobody else answers (1.0.165): it stays up.
             raise ValueError('no other node answers now - not restarted, the service goes on here')
         if many and plan.get('order') != 'together' and not (maintenance_row(store) or {}).get('on'):
@@ -31015,7 +31129,7 @@ def _osup_go(daemon, what, ctx):
             if what == 'upgrade':
                 # Out of service first where another node answers meanwhile:
                 # the VIP address moves to it, RADIUS is answered there.
-                many = any(n.get('alive') and not n.get('me') for n in ha_nodes(store))
+                many = bool(others_in_service(store))
                 if many:
                     maintenance_set(store, True, 'the system is being updated', by)
                     osup_put(store, row, state='draining', drain_at=time.time(), maint=True,
@@ -31105,10 +31219,14 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
         osup_put(store, row, state='rebooting', said='updated - restarting, as it needs')
         try:
             power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
+            return
         except ValueError as e:
-            osup_put(store, row, state='done', said='updated; the restart was not started: %s' % e)
-        return
-    osup_put(store, row, state='done', said='updated' + (' - it needs a restart' if reboot else ''))
+            # Not restarted, ended as an update without a restart is (1.0.217): it was left
+            # "done" in maintenance with the plan running - the node never answered RADIUS
+            # again, and every later restart was refused.
+            said = 'updated; the restart was not started: %s' % e
+    osup_put(store, row, state='done', said=said if (reboot and plan.get('reboot') == 'auto' and said)
+             else 'updated' + (' - it needs a restart' if reboot else ''))
     # What is waiting looked at again, not left at what was there before.
     store.set_meta(node_key('host:osup:checkwant', me),
                    json.dumps({'id': secrets.token_hex(6), 'by': by, 'at': time.time()}))
@@ -38297,7 +38415,7 @@ def _db_do(h):
             words = ENGINE_WORDS.get(c['db_engine'])
             if act == 'try':
                 got = db_try(c)
-                got['in_use'] = same_database(c, h.store.db)
+                got['in_use'] = db_same_place(h.store, c)
                 return got
             if act == 'setup':
                 if c['db_engine'] == 'sqlite':
@@ -38313,14 +38431,16 @@ def _db_do(h):
                                             'a database and an account on it')
                     if not c.get('db_password'):
                         fresh = c['db_password'] = db_password_made()
-                    made = db_make(c, who, str(b.get('admin_password') or ''))
+                    live = {'engine': h.store.db.engine, 'user': getattr(h.store.db, 'user', ''),
+                            'server': db_server_id(h.store.db) if h.store.db.engine != 'sqlite' else ''}
+                    made = db_make(c, who, str(b.get('admin_password') or ''), live=live)
                 # Written into config.json only where it cannot point the database in use
                 # elsewhere (1.0.214): on PostgreSQL, another server set up wrote its address
                 # and password under the engine in use - the next connection went there, and
                 # the copy before a move failed. The file alone keeps it (SQLite), or it is
                 # the same database; else the page keeps it until it is used.
                 kept_in = ''
-                if h.store.db.engine == 'sqlite' or same_database(c, h.store.db):
+                if h.store.db.engine == 'sqlite' or db_same_place(h.store, c):
                     keep = {k: c[k] for k in DB_KEYS if k != 'db_engine'}
                     write_file_settings(keep)
                     kept_in = str(CONFIG_FILE)
@@ -38335,7 +38455,7 @@ def _db_do(h):
                                                                        db_where(c)), who=s['name'])
                 return {'made': made, 'password': fresh, 'kept_in': kept_in,
                         'try': got, 'message': '%s at %s is ready' % (words, db_where(c))}
-            if same_database(c, h.store.db) and act in ('empty', 'move'):
+            if act in ('empty', 'move') and db_same_place(h.store, c):
                 raise ApiError(400, 'that is the database in use; this only ever touches the '
                                     'other one')
             if act == 'empty':
@@ -38360,7 +38480,7 @@ def _db_do(h):
                                    % got['rows'])
                 return {'job': db_move(h.store, c, s['name'])}
             if act == 'use':
-                if same_database(c, h.store.db):
+                if db_same_place(h.store, c):
                     raise ApiError(400, 'that is the database in use already')
                 got = db_try(c)
                 if not got.get('reached'):
@@ -38590,6 +38710,18 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
     for part in ('settings', 'web', 'firewall'):
         if not isinstance(conf.get(part) or {}, dict):
             raise ApiError(400, '%s is not an object' % part)
+    # Every setting checked before anything is saved (1.0.217), as the clients and realms
+    # are: a value that was refused stopped the import after the clients were in.
+    for k, v in (conf.get('settings') or {}).items():
+        base = str(k).partition('@')[0]
+        if base not in DEFAULTS or base in FILE_ONLY_KEYS:
+            continue
+        if base in SEALED_KEYS and str(v or '').startswith('sealed:'):
+            continue
+        try:
+            check_setting(base, v)
+        except (BadSetting, ValueError) as e:
+            raise ApiError(400, '%s - nothing was imported' % e)
     # Checked before anything is saved (1.0.44): a realm naming a directory
     # that neither is here nor comes with it stopped the import halfway.
     dirs = set(x['name'].lower() for x in store.directories()) | \
@@ -38748,7 +38880,12 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 try:
                     daemon.save_settings({base: v}, by, node=node)
                     said['settings'] += 1
-                    imported_keys.update((base, '%s@%s' % (base, node)))
+                    # The plain key counted as the file's only where the node's value was kept
+                    # as it (a machine of its own) - in a cluster, a value for one node kept the
+                    # cluster's own from going back to its default (1.0.217).
+                    imported_keys.add('%s@%s' % (base, node))
+                    if '%s@%s' % (base, node) not in store.settings_saved():
+                        imported_keys.add(base)
                 except BadSetting:
                     pass            # a node this cluster does not have
         for a in conf.get('accounts') or []:
@@ -38869,16 +39006,27 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             # defaults. Realms before the directories they name.
             def names(part):
                 return set(str(x.get('name') or '').lower() for x in conf.get(part) or [])
-            for c in store.clients():
+            # The importer signed in through the directory keeps that way in (1.0.217): the
+            # file without admin_directory (or without that directory) put it back to none,
+            # and the next look at the directory signed the importer out of the pages.
+            keep_dir_keys, keep_dir = set(), ''
+            me_acc = store.account(keep_account) if keep_account else None
+            if me_acc and str(me_acc.get('source') or '') == 'directory':
+                keep_dir_keys = {'admin_directory', 'admin_group_full', 'admin_group_token',
+                                 'admin_group_readonly'}
+                keep_dir = str(CONFIG.get('admin_directory') or '').lower()
+            # A part the file does not have is not "none of them" (1.0.217): a file of the
+            # settings alone took every RADIUS client away. Accounts and settings were spared so.
+            for c in (store.clients() if 'clients' in conf else []):
                 if c['name'].lower() not in names('clients'):
                     store.client_drop(c['id'])
                     said['clients taken away'] += 1
-            for r in store.realms():
+            for r in (store.realms() if 'realms' in conf else []):
                 if r['name'].lower() not in names('realms'):
                     store.realm_drop(r['id'], force=True)
                     said['realms taken away'] += 1
-            for d in store.directories():
-                if d['name'].lower() not in names('directories'):
+            for d in (store.directories() if 'directories' in conf else []):
+                if d['name'].lower() not in names('directories') and d['name'].lower() != keep_dir:
                     store.directory_drop(d['id'])
                     said['directories taken away'] += 1
             if 'accounts' in conf:
@@ -38891,6 +39039,8 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
+                    if base in keep_dir_keys:
+                        continue
                     if '@' in k:
                         # A node's own value kept (1.0.215): a file seldom has them -
                         # another RADIUS port on the second node, its own mail server -
@@ -43228,7 +43378,10 @@ def snmp_get(host, port, c, oids, timeout=3.0):
     finally:
         s.close()
 # Taken whole from acme 1.0.7 (acmelib/engine/467_certificates_pushed_here_by.py) in otp 1.0.216:
-# only PUSH_APP differs. docs/acme-push-protocol.md is the protocol. (acme 1.0.6's _gf_mul,
+# only PUSH_APP differed. 1.0.217 mended in it what a hunt found (each marked 1.0.217): the
+# nonces kept as otp's codes used once are (token_once, both nodes), the last push in a row of
+# its own, the alt certificate's names and key type, the pairing tries counted under the lock,
+# odd input refused as the protocol says, a ninth acme refused, a pasted key's name cleaned. docs/acme-push-protocol.md is the protocol. (acme 1.0.6's _gf_mul,
 # which in otp would have replaced the QR codes' own, is _push_gcm_mul from 1.0.7 on.)
 # ---------------------------------------------------------------------------
 # acme push (protocol 1): certificates put on these pages by an acme
@@ -43590,7 +43743,10 @@ def push_open_key(sealed, app_priv, app_id, fingerprint):
     nonce = push_unb64(sealed.get('nonce'), 12, 'key.nonce')
     ct = push_unb64(sealed.get('ct'), None, 'key.ct')
     app_pub = x25519_public(app_priv)
-    shared = x25519(app_priv, epk)
+    try:
+        shared = x25519(app_priv, epk)
+    except ValueError:
+        shared = bytes(32)      # `cryptography` refuses a point of small order (1.0.217)
     if shared == bytes(32):
         raise PushError(400, 'bad_key', 'the key was sealed to nothing')
     k = hkdf_sha256(shared, epk + app_pub, b'acme-push/1 key_pem')
@@ -43658,34 +43814,92 @@ def push_box(store):
     return {'app_id': got['app_id'], 'priv': priv, 'pub': x25519_public(priv)}
 
 
+# What the card keeps, in rows of their own (1.0.217): the whole of it in one row of meta,
+# written whole by both nodes of a cluster, lost one node's change to the other's - an acme
+# paired on one node while the other refused a wrong code was gone again, the two nodes kept
+# different acmes for good, and the wrong tries were counted on each node apart. Now:
+#   acme_push:conf          on, other_names - changed only by an administrator
+#   acme_push:key:<id>      each acme paired
+#   acme_push:pairing       the code waiting
+#   acme_push:try:<p>:<x>   each wrong try of pairing <p>, counted over both nodes
+#   acme_push:last          the last push
+# The row of 1.0.216 (with keys and pairing in it) is read still, and parted at the next save.
 def push_conf(store):
     got = _meta_json(store, 'acme_push:conf') or {}
-    keys = [k for k in (got.get('keys') or []) if isinstance(k, dict) and k.get('public')]
-    return {'on': bool(got.get('on')), 'keys': keys[:PUSH_KEYS_MOST],
-            'other_names': bool(got.get('other_names')),
-            'pairing': got.get('pairing') if isinstance(got.get('pairing'), dict) else None,
-            'last': got.get('last') if isinstance(got.get('last'), dict) else None}
+    keys = {}
+    for k in (got.get('keys') or []):
+        if isinstance(k, dict) and k.get('public') and k.get('id'):
+            keys[k['id']] = k
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'acme_push:key:%'"):
+        try:
+            k = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if isinstance(k, dict) and k.get('public') and k.get('id'):
+            keys[k['id']] = k
+    keys = sorted(keys.values(), key=lambda k: float(k.get('at') or 0))
+    pairing = _meta_json(store, 'acme_push:pairing')
+    if not isinstance(pairing, dict):
+        pairing = got.get('pairing') if isinstance(got.get('pairing'), dict) else None
+    if pairing:
+        pairing = dict(pairing)
+        pid = str(pairing.get('id') or '')
+        tries = int(pairing.get('tries') or 0)
+        if pid:
+            tries = max(tries, int(store.db.value(
+                "SELECT COUNT(*) FROM meta WHERE k LIKE ?", ('acme_push:try:%s:%%' % pid,)) or 0))
+        pairing['tries'] = tries
+        if tries >= PUSH_CODE_TRIES:
+            pairing = None
+    last = _meta_json(store, 'acme_push:last')
+    if not isinstance(last, dict):
+        last = got.get('last') if isinstance(got.get('last'), dict) else None
+    conf = {'on': bool(got.get('on')), 'keys': keys[:PUSH_KEYS_MOST],
+            'other_names': bool(got.get('other_names')), 'pairing': pairing, 'last': last}
+    conf['_was'] = json.loads(json.dumps(dict(conf, _old=('keys' in got or 'pairing' in got))))
+    return conf
 
 
 def push_conf_save(store, conf):
-    store.set_meta('acme_push:conf', json.dumps(conf))
+    """What changed since push_conf() read it - only that - written."""
+    was = conf.get('_was') or {}
+    old_row = bool(was.get('_old'))
+    if old_row or bool(conf.get('on')) != bool(was.get('on')) or \
+            bool(conf.get('other_names')) != bool(was.get('other_names')):
+        store.set_meta('acme_push:conf', json.dumps({'on': bool(conf.get('on')),
+                                                     'other_names': bool(conf.get('other_names'))}))
+    before = {k['id']: k for k in (was.get('keys') or [])}
+    now = {k['id']: k for k in (conf.get('keys') or []) if k.get('id')}
+    for kid, k in now.items():
+        if kid not in before or old_row:
+            store.set_meta('acme_push:key:' + kid, json.dumps(k))
+    for kid in before:
+        if kid not in now:
+            store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:key:' + kid,))
+    p0, p1 = was.get('pairing'), conf.get('pairing')
+    if p1 and (not p0 or p0.get('id') != p1.get('id') or old_row):
+        store.set_meta('acme_push:pairing', json.dumps(dict(p1, tries=0)))
+    elif p1 and p0 and int(p1.get('tries') or 0) > int(p0.get('tries') or 0):
+        store.set_meta('acme_push:try:%s:%s' % (p1.get('id') or '', secrets.token_hex(8)),
+                       json.dumps({'at': time.time(), 'node': node_name()}))
+    elif p0 and not p1:
+        if int((p0 or {}).get('tries') or 0) + 1 >= PUSH_CODE_TRIES and p0.get('id'):
+            # The last wrong try: counted, so that the other node closes it too.
+            store.set_meta('acme_push:try:%s:%s' % (p0['id'], secrets.token_hex(8)),
+                           json.dumps({'at': time.time(), 'node': node_name()}))
+        store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:pairing',))
+    conf['_was'] = json.loads(json.dumps(dict({k: v for k, v in conf.items() if k != '_was'},
+                                              _old=False)))
 
 
 def push_nonce_take(store, key_id, nonce, ts):
-    """False when the nonce was seen already (a replay)."""
-    with PUSH_LOCK:
-        seen = _meta_json(store, 'acme_push:nonces') or {}
-        t = time.time()
-        seen = {k: v for k, v in seen.items() if t - float(v) < PUSH_NONCE_S}
-        k = '%s:%s' % (key_id, nonce)
-        if k in seen:
-            return False
-        if len(seen) >= PUSH_NONCES_MOST:
-            for old in sorted(seen, key=seen.get)[:len(seen) // 4]:
-                seen.pop(old, None)
-        seen[k] = t
-        store.set_meta('acme_push:nonces', json.dumps(seen))
-        return True
+    """False when the nonce was seen already (a replay) - here or on the other node.
+    Kept as otp's codes used once are (1.0.217): a row of its own for each, written by
+    each node under its own number, and the other node asked (once_take). One meta row
+    of every nonce, written whole by both nodes, lost the other node's nonces within the
+    replication's lag - a request sent again to the other node was taken there; and the
+    list cut at 20000 dropped nonces still in their 900 s."""
+    return once_take(store, 'push', key_id, str(nonce))
 
 
 # ---- the slots: where a certificate can go here ---------------------------------------------
@@ -43775,6 +43989,8 @@ def push_pick(slots, asked, cert_names):
     holds), 'nodes', 'vip', 'this', or slot ids."""
     if isinstance(asked, str):
         asked = [asked]
+    if asked is not None and not isinstance(asked, list):
+        raise PushError(400, 'bad_request', 'slots is a list of slot ids, or one')   # 1.0.217
     asked = [str(a).strip() for a in (asked or ['auto']) if str(a).strip()] or ['auto']
     ids = {s['id']: s for s in slots}
     out = []
@@ -43952,24 +44168,36 @@ def push_do_pair(store, raw, headers, conf, box):
                                                'Certificates from acme (it lasts 15 minutes)')
     key = {'id': push_key_id(pub), 'public': push_b64(pub)}
     _k, nonce = push_check(store, 'pair', raw, headers, conf, box, key=key)
-    code = unseal_secret(p.get('code') or '', 'acme_push:code') or ''
-    if not code or not hmac.compare_digest(
-            push_proof(code, 'pair', box['app_id'], key['id'], nonce), str(b.get('proof') or '')):
-        with PUSH_LOCK:
-            c2 = push_conf(store)
-            pp = c2.get('pairing') or {}
-            pp['tries'] = int(pp.get('tries') or 0) + 1
-            c2['pairing'] = pp if pp['tries'] < PUSH_CODE_TRIES else None
+    # Compared and counted under the lock, read again there (1.0.217): requests at the same
+    # moment each compared against the code read before - thirty tries for five.
+    with PUSH_LOCK:
+        c2 = push_conf(store)
+        p = c2.get('pairing') or {}
+        if not p or float(p.get('until') or 0) < time.time() or \
+                int(p.get('tries') or 0) >= PUSH_CODE_TRIES:
+            raise PushError(403, 'pairing_closed', 'no pairing code is waiting here: make one on '
+                                                   'Certificates from acme (it lasts 15 minutes)')
+        code = unseal_secret(p.get('code') or '', 'acme_push:code') or ''
+        right = bool(code) and hmac.compare_digest(
+            push_proof(code, 'pair', box['app_id'], key['id'], nonce), str(b.get('proof') or ''))
+        if not right:
+            p['tries'] = int(p.get('tries') or 0) + 1
+            c2['pairing'] = p if p['tries'] < PUSH_CODE_TRIES else None
             push_conf_save(store, c2)
+    if not right:
         store.add_event('settings', 'acme push: a pairing with a wrong code was refused (key %s)'
                         % key['id'], 'warn', who='acme push')
         raise PushError(403, 'bad_code', 'the pairing code is not the one shown here%s' % (
-            '' if int(p.get('tries') or 0) + 1 < PUSH_CODE_TRIES else
+            '' if int(p.get('tries') or 0) < PUSH_CODE_TRIES else
             ' - and it is gone now: make a new one'))
     name = re.sub(r'[^A-Za-z0-9 ._@()+:-]', '', str(b.get('acme_name') or comment or 'acme'))[:80]
     with PUSH_LOCK:
         c2 = push_conf(store)
         keys = [k for k in c2['keys'] if k.get('id') != key['id']]
+        if len(keys) >= PUSH_KEYS_MOST:
+            # Refused as a pasted ninth is (1.0.217): the oldest was dropped without a word.
+            raise PushError(409, 'bad_request', 'this server is paired with %d acmes already - '
+                            'forget one on Certificates from acme first' % PUSH_KEYS_MOST)
         keys.append(dict(key, name=name, at=time.time(), by='pairing code'))
         c2['keys'] = keys[-PUSH_KEYS_MOST:]
         c2['pairing'] = None
@@ -43989,7 +44217,10 @@ def push_do_install(store, b, conf, box, key):
     first = PEM_CERT.search(cert_pem)
     if not first:
         raise PushError(400, 'bad_request', 'cert_pem holds no certificate')
-    der = base64.b64decode(''.join(first.group(0).strip().splitlines()[1:-1]))
+    try:
+        der = base64.b64decode(''.join(first.group(0).strip().splitlines()[1:-1]))
+    except (ValueError, binascii.Error):
+        raise PushError(422, 'bad_cert', 'cert_pem cannot be read')                    # 1.0.217
     if hashlib.sha256(der).hexdigest() != fp:
         raise PushError(400, 'bad_request', 'fingerprint is not the one of cert_pem')
     key_pem = push_open_key(b.get('key'), box['priv'], box['app_id'], fp)
@@ -44006,6 +44237,18 @@ def push_do_install(store, b, conf, box, key):
         alt_fp = str(alt['info'].get('fingerprint') or '').replace(':', '').lower()
         if alt_fp != afp:
             raise PushError(400, 'bad_request', 'alt.fingerprint is not the one of alt.cert_pem')
+        # Another key type, the same names (1.0.217): an alt of the main one's type was
+        # the one nginx gave everybody, and one of other names took the slot unchecked.
+        kt, akt = push_key_type(got['info'].get('key') or ''), push_key_type(alt['info'].get('key') or '')
+        if kt and akt and kt.split('-')[0] == akt.split('-')[0]:
+            raise PushError(422, 'bad_cert', 'alt is the twin of another key type: both are %s'
+                            % kt.split('-')[0].upper())
+        alt_names = [str(n) for n in (alt['info'].get('san') or [])] or [alt['info'].get('cn') or '']
+        if sorted(n.lower() for n in alt_names) != sorted(n.lower() for n in
+                                                          ([str(n) for n in (got['info'].get('san') or [])]
+                                                           or [got['info'].get('cn') or ''])):
+            raise PushError(422, 'names', 'alt holds other names than the certificate (%s, not %s)'
+                            % (', '.join(alt_names), ', '.join(str(n) for n in (got['info'].get('san') or []))))
     names = [str(n) for n in (got['info'].get('san') or [])] or [got['info'].get('cn') or '']
     slots = push_pick(push_slots(store), b.get('slots'), names)
     check = b.get('check_names') is not False or not conf['other_names']
@@ -44034,11 +44277,9 @@ def push_do_install(store, b, conf, box, key):
             continue
         push_put(store, s, got, alt, by)
         put.append(s)
-    with PUSH_LOCK:
-        c2 = push_conf(store)
-        c2['last'] = {'at': time.time(), 'by': by, 'fingerprint': fp,
-                      'slots': [s['id'] for s in slots], 'put': [s['id'] for s in put]}
-        push_conf_save(store, c2)
+    store.set_meta('acme_push:last', json.dumps(
+        {'at': time.time(), 'by': by, 'fingerprint': fp,
+         'slots': [s['id'] for s in slots], 'put': [s['id'] for s in put]}))
     one = lambda s, st: {'slot': s['id'], 'names': s['names'], 'node': s['node'],  # noqa: E731
                          'fingerprint': fp, 'not_after': got['info'].get('not_after'),
                          'state': st}
@@ -44074,7 +44315,9 @@ def _push_route(op):
             return
         status, out = push_handle(h.store, op, raw, hd)
         if not out.get('ok'):
-            log('acme push %s refused (%s): %s' % (op, out.get('code'), out.get('error')), 'info')
+            # The code only (1.0.217, chapter 13): the words of a request anybody may send
+            # are not written down.
+            log('acme push %s refused (%s)' % (op, out.get('code')), 'info')
         h.send_json(out, status)
     run.__name__ = '_push_' + op
     route('GET' if op == 'hello' else 'POST', '/api/acme-push/' + op)(run)
@@ -44130,7 +44373,7 @@ def push_card_do(store, b, who):
                 raise ApiError(409, 'switch it on first')
             abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
             code = ''.join(secrets.choice(abc) for _ in range(16))
-            conf['pairing'] = {'code': seal_secret(code, 'acme_push:code'),
+            conf['pairing'] = {'code': seal_secret(code, 'acme_push:code'), 'id': secrets.token_hex(6),
                                'until': time.time() + PUSH_CODE_S, 'tries': 0, 'by': who}
             out['code'] = '-'.join(code[i:i + 4] for i in range(0, 16, 4))
             msg = 'the pairing code waits for acme for 15 minutes'
@@ -44148,6 +44391,7 @@ def push_card_do(store, b, who):
             keys = [k for k in conf['keys'] if k.get('id') != kid]
             if len(keys) >= PUSH_KEYS_MOST:
                 raise ApiError(409, 'at most %d acme keys - forget one first' % PUSH_KEYS_MOST)
+            comment = re.sub(r'[^A-Za-z0-9 ._@()+:-]', '', str(comment or ''))   # 1.0.217
             keys.append({'id': kid, 'public': push_b64(pub), 'name': comment[:80] or 'acme',
                          'at': time.time(), 'by': who})
             conf['keys'] = keys

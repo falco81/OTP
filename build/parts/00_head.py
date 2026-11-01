@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.216'
+__version__ = '1.0.217'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -396,6 +396,15 @@ DEFAULTS = {
     'ha_slot': 0,
     'ha_peer': '',
     'ha_peer_port': 5432,
+    # When the two nodes lose each other (1.0.218, docs/split-brain.md).
+    'split_mode': 'off',
+    'split_prefer': '',
+    'split_arbiter': '',
+    'split_after_s': 20,
+    'split_scratch': 0,
+    'split_halve': 0,
+    'split_freeze': 0,
+    'split_report': 0,
     'ha_address': '',
     # The link to the other node's PostgreSQL, its own (1.0.104): set by the
     # High availability page's button, apart from Database → TLS.
@@ -427,7 +436,8 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # name isemon files its lines under and the debug switches.
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
              'isemon_hostname', 'siem_hostname', 'acme_node_name', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
-             'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes', 'snmp_bind')
+             'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes', 'snmp_bind',
+             'split_arbiter')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
 # when, whether, how many.
@@ -506,6 +516,8 @@ TUNABLE = {
     'logs_journal_mb': (0, 100000), 'logs_journal_days': (0, 3650), 'logs_keep': (1, 3650),
     'logs_max_mb': (1, 100000),
     'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
+    'split_mode': ('off', 'arbiter', 'priority'), 'split_after_s': (5, 300),
+    'split_scratch': (0, 1), 'split_halve': (0, 1), 'split_freeze': (0, 1), 'split_report': (0, 1),
     'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('dual', 'dual-strong', 'ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
     'acme_account_key': ('ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
     'acme_profile': ('', 'classic', 'tlsserver', 'shortlived'),
@@ -825,6 +837,14 @@ NAMES = {
     'acme_url': 'Its ACME directory',
     'acme_ca_pem': 'The CA\u2019s own certificate',
     'acme_for': 'For',
+    'split_mode': 'Who answers while the nodes are apart',
+    'split_prefer': 'The preferred node',
+    'split_arbiter': 'The arbiter',
+    'split_after_s': 'Apart after',
+    'split_scratch': 'Recovery codes only with the other node asked',
+    'split_halve': 'Half the tries while apart',
+    'split_freeze': 'Changes only on the preferred node while apart',
+    'split_report': 'Warn while apart, report afterwards',
     'acme_node_name': 'The node\u2019s DNS name',
     'acme_days': 'Renewed when fewer days are left than',
     'acme_key': 'The key of the certificate',

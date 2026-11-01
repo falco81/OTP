@@ -889,10 +889,11 @@ def power_ask(store, how, targets, order, by, keep_service=False, from_osup=Fals
         targets.sort(key=lambda n: n == node_name())
     keep_service = bool(keep_service or (order == 'rolling' and len(targets) > 1))
     if keep_service and in_cluster(store) and how == 'reboot':     # shared too (1.0.211)
-        alive = [n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me')]
+        alive = [n['name'] for n in ha_nodes(store) if n.get('me')] + others_in_service(store)
         if len(alive) < 2:
             raise ValueError('only %s answers: restarting it would stop the service - bring the '
-                             'other node back first' % (', '.join(alive) or 'this node'))
+                             'other node back first (or out of maintenance)'
+                             % (', '.join(alive) or 'this node'))
     plan = {'id': secrets.token_hex(6), 'how': how, 'targets': targets, 'order': order,
             'by': by, 'at': time.time(), 'from': node_name(), 'keep_service': keep_service}
     store.set_meta('power:plan', json.dumps(plan))
@@ -916,7 +917,7 @@ def power_go(daemon, plan):
     try:
         many = in_cluster(store)                # a shared database's cluster too (1.0.211)
         if many and plan.get('keep_service') and plan['how'] == 'reboot' and \
-                not any(n.get('alive') and not n.get('me') for n in ha_nodes(store)):
+                not others_in_service(store):
             # Its turn come, nobody else answers (1.0.165): it stays up.
             raise ValueError('no other node answers now - not restarted, the service goes on here')
         if many and plan.get('order') != 'together' and not (maintenance_row(store) or {}).get('on'):

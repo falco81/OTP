@@ -66,7 +66,8 @@ for ln, c in ((10, '1234567890'), (7, '7654321')):
 
 # ---- the database pane ---------------------------------------------------------------------------------
 ok('Set it up writes the address into config.json only when it cannot point the database in use elsewhere',
-   "if h.store.db.engine == 'sqlite' or same_database(c, h.store.db):" in src)
+   ("if h.store.db.engine == 'sqlite' or same_database(c, h.store.db):" in src or
+    "if h.store.db.engine == 'sqlite' or db_same_place(h.store, c):" in src))
 ok('GET /api/db says whether this node is one of a cluster, and which drivers are here',
    "'cluster': in_cluster(h.store)" in src and "db_driver_here(e)" in src)
 ok('... the drivers of this Python: PostgreSQL %s, MariaDB %s' % (otp.db_driver_here('postgres'), otp.db_driver_here('mariadb')),

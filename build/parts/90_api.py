@@ -203,6 +203,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         if not fn:
             return self.send_json({'ok': False, 'error': 'no such endpoint: %s %s'
                                    % (method, path)}, 404)
+        # Changes wait while the nodes are apart, on all but the preferred node (1.0.218,
+        # split_freeze): what was changed on each half went its own way.
+        frozen = split_refuses(method, path)
+        if frozen:
+            return self.send_json({'ok': False, 'error': frozen, 'split': True}, 409)
         self._held = None
         self._failed = False
         try:
@@ -3827,7 +3832,7 @@ def _db_do(h):
             words = ENGINE_WORDS.get(c['db_engine'])
             if act == 'try':
                 got = db_try(c)
-                got['in_use'] = same_database(c, h.store.db)
+                got['in_use'] = db_same_place(h.store, c)
                 return got
             if act == 'setup':
                 if c['db_engine'] == 'sqlite':
@@ -3843,14 +3848,16 @@ def _db_do(h):
                                             'a database and an account on it')
                     if not c.get('db_password'):
                         fresh = c['db_password'] = db_password_made()
-                    made = db_make(c, who, str(b.get('admin_password') or ''))
+                    live = {'engine': h.store.db.engine, 'user': getattr(h.store.db, 'user', ''),
+                            'server': db_server_id(h.store.db) if h.store.db.engine != 'sqlite' else ''}
+                    made = db_make(c, who, str(b.get('admin_password') or ''), live=live)
                 # Written into config.json only where it cannot point the database in use
                 # elsewhere (1.0.214): on PostgreSQL, another server set up wrote its address
                 # and password under the engine in use - the next connection went there, and
                 # the copy before a move failed. The file alone keeps it (SQLite), or it is
                 # the same database; else the page keeps it until it is used.
                 kept_in = ''
-                if h.store.db.engine == 'sqlite' or same_database(c, h.store.db):
+                if h.store.db.engine == 'sqlite' or db_same_place(h.store, c):
                     keep = {k: c[k] for k in DB_KEYS if k != 'db_engine'}
                     write_file_settings(keep)
                     kept_in = str(CONFIG_FILE)
@@ -3865,7 +3872,7 @@ def _db_do(h):
                                                                        db_where(c)), who=s['name'])
                 return {'made': made, 'password': fresh, 'kept_in': kept_in,
                         'try': got, 'message': '%s at %s is ready' % (words, db_where(c))}
-            if same_database(c, h.store.db) and act in ('empty', 'move'):
+            if act in ('empty', 'move') and db_same_place(h.store, c):
                 raise ApiError(400, 'that is the database in use; this only ever touches the '
                                     'other one')
             if act == 'empty':
@@ -3890,7 +3897,7 @@ def _db_do(h):
                                    % got['rows'])
                 return {'job': db_move(h.store, c, s['name'])}
             if act == 'use':
-                if same_database(c, h.store.db):
+                if db_same_place(h.store, c):
                     raise ApiError(400, 'that is the database in use already')
                 got = db_try(c)
                 if not got.get('reached'):
@@ -4120,6 +4127,18 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
     for part in ('settings', 'web', 'firewall'):
         if not isinstance(conf.get(part) or {}, dict):
             raise ApiError(400, '%s is not an object' % part)
+    # Every setting checked before anything is saved (1.0.217), as the clients and realms
+    # are: a value that was refused stopped the import after the clients were in.
+    for k, v in (conf.get('settings') or {}).items():
+        base = str(k).partition('@')[0]
+        if base not in DEFAULTS or base in FILE_ONLY_KEYS:
+            continue
+        if base in SEALED_KEYS and str(v or '').startswith('sealed:'):
+            continue
+        try:
+            check_setting(base, v)
+        except (BadSetting, ValueError) as e:
+            raise ApiError(400, '%s - nothing was imported' % e)
     # Checked before anything is saved (1.0.44): a realm naming a directory
     # that neither is here nor comes with it stopped the import halfway.
     dirs = set(x['name'].lower() for x in store.directories()) | \
@@ -4278,7 +4297,12 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 try:
                     daemon.save_settings({base: v}, by, node=node)
                     said['settings'] += 1
-                    imported_keys.update((base, '%s@%s' % (base, node)))
+                    # The plain key counted as the file's only where the node's value was kept
+                    # as it (a machine of its own) - in a cluster, a value for one node kept the
+                    # cluster's own from going back to its default (1.0.217).
+                    imported_keys.add('%s@%s' % (base, node))
+                    if '%s@%s' % (base, node) not in store.settings_saved():
+                        imported_keys.add(base)
                 except BadSetting:
                     pass            # a node this cluster does not have
         for a in conf.get('accounts') or []:
@@ -4399,16 +4423,27 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             # defaults. Realms before the directories they name.
             def names(part):
                 return set(str(x.get('name') or '').lower() for x in conf.get(part) or [])
-            for c in store.clients():
+            # The importer signed in through the directory keeps that way in (1.0.217): the
+            # file without admin_directory (or without that directory) put it back to none,
+            # and the next look at the directory signed the importer out of the pages.
+            keep_dir_keys, keep_dir = set(), ''
+            me_acc = store.account(keep_account) if keep_account else None
+            if me_acc and str(me_acc.get('source') or '') == 'directory':
+                keep_dir_keys = {'admin_directory', 'admin_group_full', 'admin_group_token',
+                                 'admin_group_readonly'}
+                keep_dir = str(CONFIG.get('admin_directory') or '').lower()
+            # A part the file does not have is not "none of them" (1.0.217): a file of the
+            # settings alone took every RADIUS client away. Accounts and settings were spared so.
+            for c in (store.clients() if 'clients' in conf else []):
                 if c['name'].lower() not in names('clients'):
                     store.client_drop(c['id'])
                     said['clients taken away'] += 1
-            for r in store.realms():
+            for r in (store.realms() if 'realms' in conf else []):
                 if r['name'].lower() not in names('realms'):
                     store.realm_drop(r['id'], force=True)
                     said['realms taken away'] += 1
-            for d in store.directories():
-                if d['name'].lower() not in names('directories'):
+            for d in (store.directories() if 'directories' in conf else []):
+                if d['name'].lower() not in names('directories') and d['name'].lower() != keep_dir:
                     store.directory_drop(d['id'])
                     said['directories taken away'] += 1
             if 'accounts' in conf:
@@ -4421,6 +4456,8 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
+                    if base in keep_dir_keys:
+                        continue
                     if '@' in k:
                         # A node's own value kept (1.0.215): a file seldom has them -
                         # another RADIUS port on the second node, its own mail server -

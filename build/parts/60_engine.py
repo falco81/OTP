@@ -524,7 +524,7 @@ def lockout_minutes(n):
     back to 0 only when a right code is given or an administrator unlocks
     the token; the owner's first typo after a lock does not lock it again.
     """
-    after = int(CONFIG.get('lockout_after') or 0)
+    after = split_limit('lockout_after')
     if not after or n < after or n % after:
         return 0
     base = max(1, int(CONFIG.get('lockout_min') or 15))
@@ -977,7 +977,7 @@ class Tokens(object):
                                         else json.loads(tok.get('fail_times') or '[]')) or []]
         except (ValueError, TypeError):
             fails = []
-        tries = int(CONFIG.get('rate_limit_tries') or 0)
+        tries = split_limit('rate_limit_tries')
         fails = [x for x in fails if t - x < int(CONFIG.get('rate_limit_s') or 30)]
         if float(tok.get('locked_until') or 0) > t:
             self._said(name, False, SAY_LOCKED + ' (confirming a new token)', how, src, '')
@@ -994,7 +994,7 @@ class Tokens(object):
             # past the lockout count it is thrown away, to be made again.
             shape['fail_times'] = fails + [t]
             shape['fails'] = int(shape.get('fails') or 0) + 1
-            after = int(CONFIG.get('lockout_after') or 0)
+            after = split_limit('lockout_after')
             if after and shape['fails'] >= after:
                 self.drop_staged(name)
                 self._said(name, False, SAY_BAD + ' (confirming a new token - too many, '
@@ -1176,7 +1176,7 @@ class Tokens(object):
             return SAY_OFF
         if float(tok.get('locked_until') or 0) > t:
             return SAY_LOCKED
-        tries = int(CONFIG.get('rate_limit_tries') or 0)
+        tries = split_limit('rate_limit_tries')
         span = int(CONFIG.get('rate_limit_s') or 30)
         try:
             fails = [float(x) for x in json.loads(tok.get('fail_times') or '[]')]
@@ -1200,7 +1200,7 @@ class Tokens(object):
             fails = [float(x) for x in json.loads(tok.get('fail_times') or '[]')]
         except (ValueError, TypeError):
             fails = []
-        tries = int(CONFIG.get('rate_limit_tries') or 0)
+        tries = split_limit('rate_limit_tries')
         span = int(CONFIG.get('rate_limit_s') or 30)
         fails = [x for x in fails if t - x < span]
         # A lockout after many wrong codes in a row, however slowly they
@@ -1255,6 +1255,11 @@ class Tokens(object):
             hit, h = scratch_find(name, code, kept, key)
             if hit:
                 was = tok.get('scratch') or '[]'
+                if not dry and split_scratch_refused(self.store, 'scratch', name, h):
+                    # Recovery codes only with the other node asked (1.0.218, split_scratch):
+                    # one used up for good is the code most worth not letting in twice.
+                    # Refused before anything is written, and not counted as wrong.
+                    return False, SPLIT_SAY_SCRATCH, facts
                 if not dry:
                     kept.remove(hit)
                     shown = codes_open(tok)
