@@ -317,7 +317,13 @@ def ask_secret_value(key):
         return os.environ[env]
     if sys.stdin.isatty():
         return ask_password(key, twice=True, env=None)
-    return sys.stdin.readline().rstrip('\r\n')
+    line = sys.stdin.readline().rstrip('\r\n')
+    if not line:
+        # Nothing on stdin (a cron job, ssh without -t) saved an empty value
+        # over the secret (1.0.207). Emptied on purpose: KEY= with nothing.
+        raise SystemExit('otp: %s: nothing came on stdin and there is no terminal to ask on '
+                         '(to empty it on purpose: --set %s=)' % (key, key))
+    return line
 
 
 class CliApiHandler(ApiHandler):
@@ -1079,6 +1085,8 @@ def cli_ha(args, pal):
     host0 = str(CONFIG.get('db_host') or '')
     if store.db.engine == 'postgres' and host0 in ('', 'localhost', '127.0.0.1', '::1') \
             and not args.ha_shared and (args.ha_setup or CONFIG.get('ha_mode') == 'replicated'):
+        if not args.ha_setup and CONFIG.get('ha_mode') == 'replicated':
+            return cli_ha_bundle_again(args, pal, store)
         return cli_ha_setup_replicated(args, pal, store, ask)
     print(pal.head('high availability - the first node') + pal.dim('  (%s)' % node_name()))
     bad = False
@@ -1160,6 +1168,25 @@ def firewall_peer(peer, pal, port=5432):
                        capture_output=True)
         subprocess.run(['firewall-cmd', '--reload'], capture_output=True)
         print(pal.ok_line('firewalld lets %s reach PostgreSQL (TCP %d)' % (peer, port)))
+
+
+def cli_ha_bundle_again(args, pal, store):
+    """--ha-bundle on a node already replicating: the bundle for the other
+    node, made again - nothing set up, nothing restarted (1.0.207)."""
+    data = ha_replicated_bundle_data(store)
+    if data['db'].get('db_password') in (None, '') or is_masked(str(data['db'].get('db_password'))):
+        raise SystemExit('otp: the database password is not in config.json here - the bundle '
+                         'could not carry it')
+    phrase = ha_passphrase()
+    target = Path(args.ha_bundle or '/root/otp-join-%s.json' % node_name())
+    write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
+    store.add_event('settings', 'a bundle for the other node (slot %d) was made again on the '
+                    'command line - it carries the key that opens every token' % data['slot'],
+                    'warn', who='command line')
+    print(pal.ok_line('the bundle for the other node (slot %d): %s' % (data['slot'], target)))
+    print('  ' + pal.bold('its passphrase, shown only now: ') + pal.info(phrase))
+    print('  on the other node: otp --ha-join %s --node-name NAME' % target.name)
+    return 0
 
 
 def cli_ha_setup_replicated(args, pal, store, ask):
@@ -1448,6 +1475,21 @@ def cli_ha_standalone(args, pal):
     return 0
 
 
+# What a row of each table of the configuration holds, compared between the
+# nodes - without what changes at every sign-in (1.0.207).
+HA_CONTENT = {
+    'settings': ('k', "concat_ws('/', k, v)"),
+    'accounts': ('name', "concat_ws('/', name, role, pw, source, disabled, must_change, dn)"),
+    'clients': ('name', "concat_ws('/', name, address, secret, realm, realms, require_ma, "
+                        "enabled, nas_type, position)"),
+    'realms': ('name', "concat_ws('/', name, suffix, directory, lookup, auth_mode, group_list, "
+                       "check_disabled, reply, enabled, position, token_name, nested, methods, "
+                       "aliases)"),
+    'directories': ('name', "concat_ws('/', name, hosts, port, tls, verify, ca, base, bind_dn, "
+                            "bind_pw, user_attr, nested, timeout_s, enabled, weak)"),
+}
+
+
 def cli_ha_compare(store, pal, as_json=False):
     """Every table counted here and on the other node (1.0.47)."""
     if CONFIG.get('ha_mode') != 'replicated':
@@ -1475,6 +1517,13 @@ def cli_ha_compare(store, pal, as_json=False):
                 else:
                     here_m = there_m = None
             ok = int(here_n or 0) == int(there_n or 0) and here_m == there_m
+            if ok and t in HA_CONTENT:
+                # The same number of rows, but what is in them (1.0.207): a
+                # setting or an account changed on both nodes while the link
+                # was down stayed swapped and was counted "same".
+                q = ("SELECT md5(COALESCE(string_agg(%s, '|' ORDER BY %s COLLATE \"C\"), '')) "
+                     "FROM %s" % (HA_CONTENT[t][1], HA_CONTENT[t][0], t))
+                ok = store.db.value(q) == far.value(q)
             same = same and ok
             rows.append((t, here_n, there_n, here_m, there_m, ok))
     finally:
@@ -1800,8 +1849,30 @@ def cli_store():
     except DbError as e:
         raise SystemExit('otp: %s' % e)
     store = Storage(db, quick=True)
+    _cli_name_held()
     load_config(saved=store.settings_saved())
     return store
+
+
+def _cli_name_held():
+    """The name the running daemon answers under (1.0.207): node_name changed in
+    config.json applies when it starts again - the command line took the new
+    one at once and acted as a node that was not there (maintenance of a phantom,
+    --ha-forget of the running node)."""
+    try:
+        pid = int((STATE_DIR / 'otp.lock').read_text().strip() or 0)
+        held = NODE_NAME_FILE.read_text().strip()
+        if pid > 1 and held:
+            os.kill(pid, 0)
+        else:
+            return
+    except (OSError, ValueError):
+        return
+    if held != node_name():
+        print('otp: the daemon runs as %s until it starts again (node_name %s is for then) - '
+              'this acts as %s' % (held, node_name(), held), file=sys.stderr)
+        CONFIG['node_name'] = held
+        NAME_HELD[0] = True
 
 
 def bump(store):
@@ -1922,12 +1993,19 @@ def cli_main(argv=None):
         return 0
     global CONFIG_FILE
     if args.config:
+        # A file that is not there was the defaults (1.0.207): a mistyped path ran
+        # on SQLite and an empty local database.
+        if not Path(args.config).is_file():
+            raise SystemExit('otp: there is no config file %s' % args.config)
         CONFIG_FILE = Path(args.config)
     if args.debug:
         FROM_ARGV['debug'] = True
     # 0 is an answer (1.0.94): --tls-hsts 0 is "none", and 0 == False made it
     # "nothing asked" - the daemon started in the foreground from a script.
-    acted = any(v is not None and v is not False and v != [] and v != ''
+    # Anything not its default is asked (1.0.207) - --proxy-test alone is '' -,
+    # and a default is not: --reboot, --db-tls-ca and --days have one, and
+    # `otp` alone printed the help, not the status.
+    acted = any(v != parser.get_default(k) and v != []
                 for k, v in vars(args).items()
                 if k not in ('no_color', 'json', 'debug', 'config', 'limit', 'hours', 'search',
                              'role', 'note', 'yes', 'replace', 'invert', 'pending', 'no_qr',
@@ -2019,6 +2097,9 @@ def cli_main(argv=None):
             print(pal.ok_line(got['message']))
             print('the daemons of both nodes go through the steps; follow them with  otp --ha-tls')
         v = hatls_view(store)
+        if args.json:
+            print(json.dumps(v, indent=2, default=str, ensure_ascii=False))
+            return 0
         print('the link between the databases: %s%s' % (v['mode'] or 'not encrypted',
                                                        ' (its own setting, ha_tls)' if v['own'] else ''))
         for n in v['nodes']:
@@ -2391,8 +2472,9 @@ def cli_main(argv=None):
             out(dict(s, check={'ok': not rc, 'exit': rc or 0, 'lines': lines}))
             return rc or 0
         if args.json:
+            # The same exit code as the text (1.0.207): 0 with the daemon down.
             out(s)
-            return 0
+            return 0 if alive and not s['problems'] else 1
         print(pal.head('otp %s on %s' % (__version__, s['host'])))
         print((pal.ok_line if alive else pal.bad_line)(
             'the daemon %s' % ('answers on 127.0.0.1:%s' % CONFIG.get('api_port') if alive
@@ -2557,7 +2639,7 @@ def cli_main(argv=None):
         checks, _ = store.otp_rows(hours=24 * 365, name=norm_name(args.token), limit=args.limit)
         if args.json:
             out({'token': tok, 'checks': checks})
-            return 0
+            return 0 if tok else 1
         if not tok:
             print(pal.bad_line('%s has no token' % norm_name(args.token)))
             return 1
@@ -2574,7 +2656,11 @@ def cli_main(argv=None):
         return 0
 
     if args.events:
-        rows, total = store.events(args.limit, 0, args.search)
+        # --hours when given (1.0.207): every event of any age was listed.
+        given = any(w == '--hours' or w.startswith('--hours=')
+                    for w in (sys.argv[1:] if argv is None else list(argv)))
+        rows, total = store.events(args.limit, 0, args.search, extra=(
+            'ts >= ?', [time.time() - float(args.hours) * 3600]) if given else None)
         if args.json:
             out({'rows': rows, 'total': total})
             return 0
@@ -2589,7 +2675,8 @@ def cli_main(argv=None):
         # RADIUS looks up first - the QR code just shown never let anyone in.
         main = norm_name(realm_main_name(args.enroll, store.realm_for(args.enroll)))
         if main != norm_name(args.enroll):
-            print('  %s is %s - another suffix of its realm' % (args.enroll, main))
+            print('  %s is %s - another suffix of its realm' % (args.enroll, main),
+                  file=sys.stderr if args.json else sys.stdout)
             args.enroll = main
     if args.enroll:
         had = store.token(args.enroll)
@@ -2836,6 +2923,7 @@ def cli_main(argv=None):
                    None)
         if not one:
             raise SystemExit('there is no client called %s' % args.del_client)
+        cli_sure(args, 'the client %s is taken away' % one['name'])
         store.client_drop(one['id'])
         store.add_event('clients', 'command line took away the client %s' % one['name'],
                         who='command line')
@@ -2867,6 +2955,14 @@ def cli_main(argv=None):
             # Filter-Id - the VPN's policies) were emptied by every --groups.
             had = {str(g.get('group') or '').lower(): g for g in groups}
             groups = [dict(had.get(g.lower()) or {'reply': ''}, group=g) for g in dn_list(args.groups)]
+        if args.methods:
+            # A word not known was dropped without a word (1.0.207): totp,mial
+            # left the mail out.
+            unknown = [m.strip() for m in args.methods.split(',')
+                       if m.strip() and m.strip().lower() not in CODE_KINDS]
+            if unknown:
+                raise SystemExit('otp: --methods: %s is not one of %s'
+                                 % (', '.join(unknown), ', '.join(CODE_KINDS)))
         store.realm_save({'id': old.get('id'), 'name': args.add_realm,
                           'suffix': args.suffix if args.suffix is not None else old.get(
                               'suffix', args.add_realm),
@@ -2896,6 +2992,7 @@ def cli_main(argv=None):
                    None)
         if not one:
             raise SystemExit('there is no realm called %s' % args.del_realm)
+        cli_sure(args, 'the realm %s is taken away' % one['name'])
         try:
             store.realm_drop(one['id'])
         except ValueError as e:
@@ -2953,6 +3050,7 @@ def cli_main(argv=None):
         one = store.directory(args.del_directory)
         if not one:
             raise SystemExit('there is no directory called %s' % args.del_directory)
+        cli_sure(args, 'the directory %s is taken away' % one['name'])
         try:
             store.directory_drop(one['id'])
         except ValueError as e:
@@ -3012,7 +3110,22 @@ def cli_main(argv=None):
 
     if args.export_config:
         conf = config_export(store, bool(args.with_secrets))
-        text = json.dumps({'config': conf}, indent=1, ensure_ascii=False, default=str)
+        made_phrase = ''
+        if args.with_secrets:
+            # Locked as the pages lock it (1.0.207): with the secrets it was plain JSON
+            # here - every client's secret, every password, the TLS keys.
+            if getattr(args, 'passphrase_file', None):
+                phrase = Path(args.passphrase_file).read_text().strip()
+            else:
+                phrase = os.environ.get('OTP_PASSPHRASE') or ''
+            if not phrase:
+                phrase = made_phrase = ha_passphrase()
+            if len(phrase) < 10:
+                raise SystemExit('otp: a passphrase of 10 characters at least locks the secrets')
+            text = json.dumps(bundle_lock({'config': conf}, phrase, kind=CONFIG_BUNDLE_KIND),
+                              indent=1, ensure_ascii=False, default=str)
+        else:
+            text = json.dumps({'config': conf}, indent=1, ensure_ascii=False, default=str)
         if args.export_config == '-':
             print(text)
         else:
@@ -3026,11 +3139,15 @@ def cli_main(argv=None):
             with os.fdopen(fd, 'w') as f:
                 f.write(text + '\n')
             print(pal.ok_line('%s: the configuration%s' % (
-                args.export_config, ', with its secrets in the clear - keep it safe'
+                args.export_config, ', with its secrets, locked with the passphrase'
                 if args.with_secrets else ' (without the secrets)')))
+        if made_phrase:
+            # Said once, where the file is not (stdout may be the file itself).
+            sys.stderr.write('the passphrase, written down now - it is not kept anywhere: %s\n'
+                             % made_phrase)
         if args.with_secrets:
             store.add_event('settings', 'the configuration was exported with the secrets in it, '
-                            'on the command line', 'warn', who=who)
+                            'locked, on the command line', 'warn', who=who)
         return 0
 
     if args.import_config:
@@ -3207,6 +3324,7 @@ def cli_main(argv=None):
             if flag == 'set_role':
                 store.set_account(name, role=args.role)
             elif flag == 'del_user':
+                cli_sure(args, 'the account %s is removed' % acc['name'])
                 store.drop_account(name)
             else:
                 store.set_account(name, disabled=1 if flag == 'disable_user' else 0)
@@ -3224,6 +3342,9 @@ def cli_main(argv=None):
 
     if args.backup:
         got = make_backup(store, 'on the command line')
+        if args.json:                   # --json kept (1.0.207)
+            out({'file': str(got)})
+            return 0
         print(pal.ok_line('%s, and the key beside it' % got))
         return 0
 
@@ -3267,6 +3388,9 @@ def cli_main(argv=None):
 
     if args.rbackup_status:
         v = rb_page(store)
+        if args.json:
+            out(v)
+            return 0
         print('backups to the destinations: %s%s; %s' % (
             'on a schedule, next %s' % v['next'] if CONFIG.get('rbackup') else 'by hand only',
             '', 'locked with the password' if v['locked'] else 'NOT LOCKED (no password set)'))
@@ -3413,7 +3537,7 @@ def cli_main(argv=None):
             name = acme_name_of(store, t)
             if not name:
                 raise SystemExit('otp: the name of this certificate is not known - give it on the pages '
-                                 '(Its name...) or otp --set acme_node_name@%s=NAME' % t)
+                                 '(Its name...) or otp --set acme_node_name=NAME --node %s' % t)
             # Ordered by hand, ACME looks after it from now on - as on the pages.
             acme_care_set(store, t, True, who, 'ordered by hand')
             which = [(t, name)]
@@ -3565,6 +3689,7 @@ def cli_main(argv=None):
         return 0
 
     if args.ssh_token_del:
+        cli_sure(args, 'the SSH token of %s is taken away' % args.ssh_token_del)
         try:
             sshotp_remove(store, args.ssh_token_del, who)
         except ValueError as e:
@@ -3787,8 +3912,11 @@ def cli_main(argv=None):
                 elif isinstance(o, list):
                     for v in o:
                         yield from keys(v)
-            secretish = [k for k in keys(body) if k in SECRET_KEYS or re.search(
-                r'pass|secret|token|key|pin', k, re.I)]
+            # A setting known not to be one is not taken for a secret (1.0.207):
+            # acme_key, admin_show_key, token_names_case were refused.
+            secretish = [k for k in keys(body) if k in SECRET_KEYS or (re.search(
+                r'pass|secret|token|key|pin', k, re.I) and not (k in DEFAULTS and k not in
+                                                                SECRET_KEYS))]
             if args.api[2] != '-' and secretish:
                 raise SystemExit('otp: %s - a secret is not taken written out on the command '
                                  'line: give the body through stdin (--api POST PATH -)'

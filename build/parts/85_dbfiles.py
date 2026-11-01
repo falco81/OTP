@@ -85,14 +85,15 @@ def _my_cnf(c):
     """A defaults file holding the password and nothing else, 0600, gone the
     moment the program has finished with it: `--password=` on a command line
     is readable by everybody on the machine while it runs."""
+    said = str(c.get('db_password') or '')
+    if any(ord(ch) < 32 for ch in said):
+        # Asked before the file is made (1.0.208): an empty one was left behind.
+        raise DbError('the database password has a line break or another control '
+                      'character in it')
     handle, name = tempfile.mkstemp(prefix='otp-my-', suffix='.cnf')
     os.close(handle)
     os.chmod(name, 0o600)
     with open(name, 'w') as f:
-        said = str(c.get('db_password') or '')
-        if any(ord(ch) < 32 for ch in said):
-            raise DbError('the database password has a line break or another control '
-                          'character in it')
         f.write('[client]\npassword="%s"\n' % said.replace('\\', '\\\\').replace('"', '\\"'))
     return name
 
@@ -121,9 +122,27 @@ def _pg_args(c):
             '--username=%s' % (c.get('db_user') or ''), '--no-password']
 
 
-def _pg_env(c):
+def _pg_passfile(c):
+    """A password file for pg_dump / pg_restore (1.0.207): 0600, for this one run,
+    gone after it - PGPASSWORD in their environment was readable in /proc as
+    they ran, as the MariaDB side's defaults file already avoids."""
+    handle, name = tempfile.mkstemp(prefix='otp-pg-', suffix='.pass')
+    os.fchmod(handle, 0o600)
+    said = str(c.get('db_password') or '')
+    if any(ord(ch) < 32 for ch in said):
+        os.close(handle)
+        os.unlink(name)
+        raise DbError('the database password has a line break or another control character in it')
+    with os.fdopen(handle, 'w') as f:
+        f.write('*:*:*:*:%s\n' % said.replace('\\', '\\\\').replace(':', '\\:'))
+    return name
+
+
+def _pg_env(c, passfile=None):
     env = dict(os.environ)
-    env['PGPASSWORD'] = str(c.get('db_password') or '')
+    env.pop('PGPASSWORD', None)
+    if passfile:
+        env['PGPASSFILE'] = passfile
     env['PGCONNECT_TIMEOUT'] = str(int(c.get('db_timeout_s') or 10))
     mode = str((c.get('db_tls') if 'db_tls' in c else CONFIG.get('db_tls')) or '')
     ca = str((c.get('db_tls_ca') if 'db_tls_ca' in c else CONFIG.get('db_tls_ca')) or '')
@@ -276,10 +295,14 @@ def make_dump(store, label='daily', folder=None):
                 os.unlink(cnf)
         else:
             tool = _tool(('pg_dump',))
-            _run([tool] + _pg_args(c) + ['--format=custom', '--compress=6', '--no-owner',
-                                         '--no-privileges', '--file=%s' % part,
-                                         '--dbname=%s' % safe_db_name(c)],
-                 'pg_dump', env=_pg_env(c))
+            pf = _pg_passfile(c)
+            try:
+                _run([tool] + _pg_args(c) + ['--format=custom', '--compress=6', '--no-owner',
+                                             '--no-privileges', '--file=%s' % part,
+                                             '--dbname=%s' % safe_db_name(c)],
+                     'pg_dump', env=_pg_env(c, pf))
+            finally:
+                os.unlink(pf)
         os.chmod(str(part), 0o640)
         part.replace(target)
     finally:
@@ -350,9 +373,48 @@ def _peek_sqlite(path):
             'tables': len([t for t in TABLES if t in names])}, ''
 
 
+ACCOUNT_COLS_FIRST = ('id', 'name', 'role', 'pw', 'source', 'disabled')
+
+
+def _my_rows(text):
+    """The rows of a mysqldump VALUES list: (a,'b',NULL),(...) - each a list
+    of its values as text, quotes taken off, NULL as 'NULL'."""
+    rows, row, cur, depth, quote, esc, had_q = [], [], [], 0, False, False, False
+    for ch in text:
+        if quote:
+            if esc:
+                cur.append(ch)
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == "'":
+                quote = False
+            else:
+                cur.append(ch)
+            continue
+        if ch == "'":
+            quote, had_q = True, True
+        elif ch == '(':
+            depth += 1
+            if depth == 1:
+                row, cur, had_q = [], [], False
+        elif ch == ')' and depth:
+            depth -= 1
+            if depth == 0:
+                row.append(''.join(cur) if had_q else ''.join(cur).strip())
+                rows.append(row)
+        elif ch == ',' and depth == 1:
+            row.append(''.join(cur) if had_q else ''.join(cur).strip())
+            cur, had_q = [], False
+        elif depth:
+            cur.append(ch)
+    return rows
+
+
 def _peek_mariadb(path):
     import gzip
     tables, admins, users, in_users = set(), 0, 0, False
+    cols = None
     with gzip.open(str(path), 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
             if line.startswith('CREATE TABLE'):
@@ -366,8 +428,17 @@ def _peek_mariadb(path):
             elif in_users and not line.startswith('('):
                 in_users = False
             if in_users:
-                admins += line.count(",'fulladmin',")
+                head = re.match(r"INSERT INTO `accounts` \(([^)]*)\)", line)
+                if head:
+                    cols = [c.strip(' `') for c in head.group(1).split(',')]
                 rest = line.split('VALUES', 1)[-1] if first else line
+                # A full administrator switched off is nobody who signs in (1.0.208).
+                for row in _my_rows(rest):
+                    names = cols or ACCOUNT_COLS_FIRST
+                    got = dict(zip(names, row))
+                    if got.get('role') == 'fulladmin' and str(got.get('disabled') or '0') in (
+                            '0', 'NULL', ''):
+                        admins += 1
                 users += rest.count('),(') + (1 if '(' in rest else 0)
                 if line.rstrip().endswith(';'):
                     in_users = False
@@ -390,15 +461,21 @@ def _peek_postgres(path):
                 'pg_restore', seconds=300).decode('utf-8', 'replace')
     users = admins = 0
     inside = False
+    cols = list(ACCOUNT_COLS_FIRST)
     for line in rows.split('\n'):
         if line.startswith('COPY '):
             inside = True
+            got = re.match(r'COPY \S+ \(([^)]*)\)', line)
+            if got:
+                cols = [c.strip(' "') for c in got.group(1).split(',')]
             continue
         if inside:
             if line == '\\.':
                 break
             users += 1
-            if '\tfulladmin\t' in line:
+            row = dict(zip(cols, line.split('\t')))
+            # A full administrator switched off is nobody who signs in (1.0.208).
+            if row.get('role') == 'fulladmin' and row.get('disabled', '\\N') in ('\\N', '0', ''):
                 admins += 1
     return {'kind': 'postgres', 'counts': {'accounts': users}, 'admins': admins,
             'tables': len(tables)}, ''
@@ -579,10 +656,14 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
                 pass
     else:
         tool = _tool(('pg_restore',))
-        _run([tool] + _pg_args(c) + ['--single-transaction', '--clean', '--if-exists',
-                                     '--no-owner', '--no-privileges',
-                                     '--dbname=%s' % safe_db_name(c), str(path)],
-             'pg_restore', env=_pg_env(c))
+        pf = _pg_passfile(c)
+        try:
+            _run([tool] + _pg_args(c) + ['--single-transaction', '--clean', '--if-exists',
+                                         '--no-owner', '--no-privileges',
+                                         '--dbname=%s' % safe_db_name(c), str(path)],
+                 'pg_restore', env=_pg_env(c, pf))
+        finally:
+            os.unlink(pf)
     store.db.make_tables()
     if CONFIG.get('ha_mode') == 'replicated' and store.db.engine == 'postgres':
         ha_sequences(store.db, int(CONFIG.get('ha_slot') or 1))

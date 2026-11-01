@@ -229,8 +229,44 @@ def ha_lead(store):
     this one when it hears no other."""
     if CONFIG.get('ha_mode') != 'replicated':
         return True
-    alive = sorted(n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me'))
-    return not alive or alive[0] == node_name()
+    return lead_of(store)
+
+
+LEAD_FAR = {}
+LEAD_FAR_LOCK = threading.Lock()
+
+
+def _alive_far(name):
+    """A node whose heartbeat looks stale here, asked in its own database
+    (1.0.207): with one way of the replication stopped (an error, a paused
+    subscription, the rolling upgrade) the network is fine - the node that
+    got nothing took the lead, and the other kept it too. Asked every 15 s
+    while it answers, every 60 s while it does not; one asks at a time."""
+    if CONFIG.get('ha_mode') != 'replicated':
+        return False
+    was = LEAD_FAR.get(name)
+    if was and time.monotonic() - was[0] < (15 if was[1] else 60):
+        return was[1]
+    if not LEAD_FAR_LOCK.acquire(blocking=False):
+        return bool(was and was[1])
+    try:
+        alive = bool(_peer_alive_there(name))
+    except Exception:                                   # noqa: BLE001
+        alive = False
+    finally:
+        LEAD_FAR_LOCK.release()
+    LEAD_FAR[name] = (time.monotonic(), alive)
+    return alive
+
+
+def lead_of(store):
+    """The first by name of the nodes heard from - this one when it hears no
+    other. A node that sorts before this one and only looks stale here is
+    asked in its own database first."""
+    me = node_name()
+    alive = sorted(n['name'] for n in ha_nodes(store)
+                   if n.get('alive') or n.get('me') or (n['name'] < me and _alive_far(n['name'])))
+    return not alive or alive[0] == me
 
 
 def claim_once(store, key, value):
@@ -434,6 +470,25 @@ def ha_bundle_data(store, peer_db_host='', with_tls=None):
             'peer': {'name': node_name(), 'address': node_address()}}
     if with_tls:
         data['tls'] = with_tls
+    return data
+
+
+def ha_replicated_bundle_data(store):
+    """The bundle of a node already replicating: for the other one, made
+    again after it was lost or reinstalled - its slot the other one's, and
+    nothing on this node changed (1.0.207: the command line made this node
+    the first one again, slot 1, and restarted it)."""
+    me = int(CONFIG.get('ha_slot') or 1)
+    data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(),
+            'pg_major': int(store.db.value('SHOW server_version_num')) // 10000,
+            'slot': 3 - me,
+            'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),
+                   'db_password': CONFIG.get('db_password')},
+            'peer': {'name': node_name(), 'slot': me,
+                     'address': CONFIG.get('ha_address') or node_address(),
+                     'port': int(CONFIG.get('db_port') or 5432)},
+            'cluster': CONFIG.get('site_name') or 'otp'}
+    data['db']['db_host'] = data['peer']['address']
     return data
 
 

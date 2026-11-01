@@ -442,7 +442,7 @@ def acme_name_of(store, target):
     name = str(saved.get(k) or (CONFIG.get('acme_node_name') if target == node_name() else '')
                or '').strip()
     if not name and target == node_name():
-        name = socket.getfqdn()
+        name = fqdn_cached()
     if not name:
         # The name of the certificate it has now (1.0.170) - what Certificates
         # and TLS shows: otp2's card said "for -" beside otp2.example.cz.
@@ -453,12 +453,36 @@ def acme_name_of(store, target):
                 name = n
                 break
     if not name and target == node_name():
-        name = socket.getfqdn()
+        name = fqdn_cached()
     elif not name and target != 'vip':
         # Another node's own name, as that node publishes it (1.0.170): its
         # card said "for -" and Try port 80 asked http://?/.
         name = str((_meta_json(store, 'acme:host:' + target) or {}).get('fqdn') or '').strip()
     return name
+
+
+FQDN_CACHE = {'name': '', 'at': 0.0, 'asking': False}
+
+
+def fqdn_cached():
+    """This machine's full name, asked of DNS in a thread of its own and kept for
+    ten minutes (1.0.207): socket.getfqdn() waits on a DNS that does not answer -
+    20 s and more, twice a loop - and the main loop's heartbeat went late until
+    the other node took this one for gone. The host name meanwhile."""
+    now = time.monotonic()
+    if (not FQDN_CACHE['at'] or now - FQDN_CACHE['at'] > 600) and not FQDN_CACHE['asking']:
+        FQDN_CACHE['asking'] = True
+
+        def ask():
+            try:
+                FQDN_CACHE['name'] = socket.getfqdn() or ''
+            except Exception:                           # noqa: BLE001
+                pass
+            finally:
+                FQDN_CACHE['at'] = time.monotonic()
+                FQDN_CACHE['asking'] = False
+        threading.Thread(target=ask, name='otp-fqdn', daemon=True).start()
+    return FQDN_CACHE['name'] or socket.gethostname()
 
 
 def acme_before(store, target):

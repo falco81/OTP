@@ -393,6 +393,9 @@ def _osup_job(kind, security=False):
     return got
 
 
+OSUP_SILENT_S = int(os.environ.get('OTP_OSUP_SILENT_S') or 3600)
+
+
 def _osup_read():
     try:
         return json.loads((WEB_DIR / 'osup.json').read_text())
@@ -556,6 +559,14 @@ def _osup_follow(daemon, plan, row):
             _osup_end(store, plan, row, False, 'the helper did not start the update')
         return
     if got.get('state') == 'running':
+        # A helper that has said nothing for an hour is gone (1.0.207): killed half
+        # way, it left "running" for ever - the node in maintenance, RADIUS silent
+        # on it, every later update refused.
+        if got.get('at') and time.time() - float(got['at']) > OSUP_SILENT_S:
+            _osup_end(store, plan, row, False, 'the helper stopped answering half way (nothing '
+                      'from it for %d min) - look at the system\'s package manager'
+                      % (OSUP_SILENT_S // 60))
+            return
         if time.time() - HOST_WORK['osup_read'] > 2:
             HOST_WORK['osup_read'] = time.time()
             osup_put(store, row, pct=int(got.get('pct') or 0), phase=got.get('phase') or '',

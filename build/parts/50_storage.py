@@ -14,7 +14,8 @@ def secret_shown(value, last=True):
         return ''
     if not last:
         return '••••••••'
-    return '•' * min(10, max(4, len(said) - 2)) + said[-2:] if len(said) > 4 else '•' * 6
+    # Always eight dots (1.0.207): as many as the secret was long told its length.
+    return '•' * 8 + said[-2:] if len(said) > 4 else '•' * 8
 
 
 def is_masked(value):
@@ -1130,7 +1131,7 @@ class Storage(object):
         rows = self._clients
         if rows is None:
             gen = self.cache_gen
-            rows = self.db.rows('SELECT * FROM clients ORDER BY position, name')
+            rows = self.db.rows('SELECT * FROM clients ORDER BY position, ' + self.db.name_order())
             for r in rows:
                 r['_secret'] = unseal_secret(r.get('secret') or '')
                 try:
@@ -1303,7 +1304,7 @@ class Storage(object):
         rows = self._realms
         if rows is None:
             gen = self.cache_gen
-            rows = self.db.rows('SELECT * FROM realms ORDER BY position, name')
+            rows = self.db.rows('SELECT * FROM realms ORDER BY position, ' + self.db.name_order())
             for r in rows:
                 try:
                     r['groups'] = json.loads(r.get('group_list') or '[]')
@@ -1686,6 +1687,14 @@ class Storage(object):
         pw = data.get('bind_pw')
         if pw is not None and not is_masked(pw):
             row['bind_pw'] = seal_secret(pw) if str(pw) else ''
+        elif old and old.get('bind_pw') and (
+                str(old.get('hosts') or '') != row['hosts'] or int(old.get('port') or 0) != port or
+                str(old.get('tls') or '') != tls or int(old.get('verify') or 0) != row['verify'] or
+                str(old.get('bind_dn') or '') != row['bind_dn']):
+            # The password kept goes to the server it was given for only (1.0.207):
+            # another host typed in, it was sent there - in clear with TLS off -
+            # while the page never showed it.
+            raise ValueError('the server changed: type the password of the binding account again')
         with self.lock:
             if old:
                 if old['name'] != name:
@@ -1752,8 +1761,10 @@ class Storage(object):
         sql = ' WHERE ' + ' AND '.join(where) if where else ''
         total = self.db.value('SELECT COUNT(*) AS n FROM tokens' + sql, args, 0)
         col = self.TOKEN_SORTS.get(sort, 'name')
-        rows = self.db.rows('SELECT * FROM tokens%s ORDER BY %s %s, name LIMIT %d OFFSET %d'
-                            % (sql, col, 'DESC' if desc else 'ASC', int(limit), int(offset)),
+        # The empty ones last on every engine (1.0.207): PostgreSQL put a column's
+        # NULLs first when newest first - the never used before the last used.
+        rows = self.db.rows('SELECT * FROM tokens%s ORDER BY (%s IS NULL), %s %s, name LIMIT %d OFFSET %d'
+                            % (sql, col, col, 'DESC' if desc else 'ASC', int(limit), int(offset)),
                             args)
         return [self.token_shown(r) for r in rows], int(total or 0)
 

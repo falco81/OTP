@@ -91,7 +91,7 @@ def maintenance_now(store):
         # given back in a cluster too (1.0.150): VACUUM FULL holds each table
         # shut - the other node answers meanwhile.
         return {'on': True, 'why': RESTORE_WHY[0] or 'a backup is being put back'}
-    now = time.time()
+    now = time.monotonic()      # not held by a clock stepped back (1.0.207)
     if now - MAINT_CACHE['at'] > 2:
         MAINT_CACHE['at'] = now
         try:

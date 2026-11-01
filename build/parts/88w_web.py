@@ -1101,12 +1101,38 @@ def cluster_addresses(store, node):
         except ValueError:
             # A host name (ha_peer may be one, 1.0.59): its addresses, not
             # left out of the rules and the lists.
-            try:
-                for info in socket.getaddrinfo(str(a), None, 0, socket.SOCK_STREAM)[:4]:
-                    good.add(str(plain_ip(info[4][0], 'address')))
-            except (OSError, ValueError, UnicodeError):
-                pass
+            for ip in addresses_cached(str(a)):
+                try:
+                    good.add(str(plain_ip(ip, 'address')))
+                except ValueError:
+                    pass
     return sorted(good)
+
+
+ADDR_CACHE = {}                   # name: (when, [addresses], asking)
+
+
+def addresses_cached(name):
+    """A host name's addresses (1.0.207): asked of DNS once, then again every ten
+    minutes in a thread of its own - asked in the main loop on every turn, a DNS
+    that did not answer held it 20 s and more, and the heartbeat with it. The
+    first time it is waited for: the firewall's rules are not made without it."""
+    def ask():
+        got = []
+        try:
+            got = [info[4][0] for info in
+                   socket.getaddrinfo(name, None, 0, socket.SOCK_STREAM)[:4]]
+        except (OSError, ValueError, UnicodeError):
+            got = ADDR_CACHE.get(name, (0, [], False))[1]
+        ADDR_CACHE[name] = (time.monotonic(), got, False)
+        return got
+    was = ADDR_CACHE.get(name)
+    if was is None:
+        return ask()
+    if time.monotonic() - was[0] > 600 and not was[2]:
+        ADDR_CACHE[name] = (was[0], was[1], True)
+        threading.Thread(target=ask, name='otp-resolve', daemon=True).start()
+    return list(was[1])
 
 
 def _fam(addr):

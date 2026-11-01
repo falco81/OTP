@@ -1078,10 +1078,15 @@ class Tokens(object):
             raise ValueError('%s has no token' % name)
         codes = scratch_new(int(CONFIG.get('scratch_count') or 0) or 5,
                             int(CONFIG.get('scratch_digits') or 8))
-        self.store.token_write(name, {'scratch': json.dumps([scratch_hash(name, c)
-                                                             for c in codes]),
-                                      'scratch_sealed': seal_codes(codes, token_bind(name)),
-                                      'scratch_left': len(codes)})
+        row = {'scratch': json.dumps([scratch_hash(name, c) for c in codes]),
+               'scratch_sealed': seal_codes(codes, token_bind(name)),
+               'scratch_left': len(codes)}
+        if (self.store.token(name) or {}).get('pending_secret'):
+            # A new key waiting to be confirmed (1.0.207): its own codes took the
+            # place of these at the confirmation, and the ones just handed out were
+            # wrong from then on - the same ones for it.
+            row['pending_scratch'] = seal_codes(codes, token_bind(name))
+        self.store.token_write(name, row)
         return codes
 
     @staticmethod

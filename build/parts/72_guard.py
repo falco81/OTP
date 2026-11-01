@@ -16,7 +16,12 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      'cannot be sent', 'does not decode', 'too many codes sent',
                      'has no directory', 'nowhere to send', 'too many answers at once',
                      'longer than a RADIUS packet', 'no realm takes', 'may not use the realm',
-                     'carries no', 'already been used', 'could not be asked')
+                     'carries no', 'already been used', 'could not be asked',
+                     # The account's own state in the directory, refused before any
+                     # password or code is looked at (1.0.207): a disabled account's
+                     # VPN reconnecting blocked everybody behind the same address.
+                     'is disabled in the directory', 'has expired in the directory',
+                     'the account may not sign in', 'more than one account in')
 
 
 def guard_on():
@@ -88,6 +93,10 @@ def guard_blocked(daemon, src):
 
 
 def guard_is_guess(d):
+    # A wrong code asked again is a guess too (1.0.207): in challenge, mail and
+    # SMS realms only the last refusal of a round was counted.
+    if d.result == 'challenge' and str(d.reason or '').startswith('the code was not right'):
+        return True
     if d.result != 'reject':
         return False
     reason = str(d.reason or '')

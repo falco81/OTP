@@ -159,7 +159,10 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
         say(3, 'opened and read through')
         res['checks'], m = rb_verify_file(dst, rb_password(), work)
         res['otp'] = m.get('otp')
-    except (RbError, OSError, ValueError, subprocess.SubprocessError) as e:
+    except (RbError, OSError, ValueError, subprocess.SubprocessError,
+            tarfile.TarError, zlib.error, EOFError) as e:
+        # A file damaged at the destination is what this is for (1.0.207): tar's and
+        # zlib's own errors went past it - nothing written, no alert, for ever.
         res['checks'].append({'what': 'fetched from the destination', 'ok': False,
                               'said': rb_said(e) if not isinstance(e, RbError) else str(e)})
     finally:

@@ -691,7 +691,7 @@ def _net_thread(fn, *args):
         try:
             fn(*args)
         except Exception as e:                          # noqa: BLE001
-            log('network: %s' % e, 'warn')
+            log_sparing('net-thread', 'network: %s' % e, 'warn', every=900)    # (1.0.207)
         finally:
             with NET_WORK_LOCK:
                 NET_WORK['busy'] = False

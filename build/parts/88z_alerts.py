@@ -51,8 +51,7 @@ def alerts_lead(store):
     from, in every kind of cluster - ha_lead is every node of a shared one."""
     if not CONFIG.get('ha_mode'):
         return True
-    alive = sorted(n['name'] for n in ha_nodes(store) if n.get('alive') or n.get('me'))
-    return not alive or alive[0] == node_name()
+    return lead_of(store)
 
 
 def health_publish(daemon):
@@ -953,9 +952,9 @@ def alerts_tick(daemon):
     """Every minute: this node's own row; on the node that sends them, the
     alerts and the report when it is due. In a thread of its own - a mail
     server that takes its time holds nothing up."""
-    if time.time() - ALERT_WORK['at'] < ALERTS_EVERY or ALERT_WORK['busy']:
+    if time.monotonic() - ALERT_WORK['at'] < ALERTS_EVERY or ALERT_WORK['busy']:
         return
-    ALERT_WORK['at'] = time.time()
+    ALERT_WORK['at'] = time.monotonic()  # (1.0.207)
     ALERT_WORK['busy'] = True
 
     def go():
@@ -980,11 +979,21 @@ def alerts_tick(daemon):
                     log_sparing('snmp-traps', 'SNMPv3 traps: %s' % e, 'warn', every=900)
             if CONFIG.get('report') and report_due():
                 since, until, pid = report_period()
-                if store.get_meta('report:sent') != pid and claim_once(store, 'report:sent', pid):
+                was_sent = store.get_meta('report:sent')
+                if was_sent != pid and claim_once(store, 'report:sent', pid):
                     try:
                         report_send(store, since, until, reader=daemon.reader())
-                    except (ValueError, MailError) as e:
-                        log('the report did not go: %s' % e, 'warn')
+                    except Exception as e:      # noqa: BLE001
+                        # The period given back (1.0.207): claimed before it was
+                        # made, a report that failed to be made was never tried again.
+                        if not isinstance(e, MailError):
+                            try:
+                                if store.get_meta('report:sent') == pid:
+                                    store.set_meta('report:sent', was_sent or '')
+                            except Exception:   # noqa: BLE001
+                                pass
+                        log_sparing('report-fail', 'the report did not go: %s' % e, 'warn',
+                                    every=3600)
         except Exception as e:                          # noqa: BLE001
             log_sparing('alerts', 'the alerts: %s' % e, 'warn', every=900)
         finally:

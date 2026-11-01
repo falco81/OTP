@@ -26,7 +26,7 @@ def parse_totp_file(text):
             bits = line[1:].split()
             if bits:
                 opts[bits[0].upper()] = bits[1:]
-        elif re.match(r'^[0-9]{6,10}\Z', line):
+        elif re.match(r'^[0-9]{6,12}\Z', line):     # as long as scratch_digits allows (1.0.207)
             codes.append(line)
     if 'HOTP_COUNTER' in opts:
         raise ValueError('a counter (HOTP) token, not a time one: it would not give the '
@@ -67,10 +67,30 @@ def import_totp(store, name, text, by='import', replace=False):
             window = min(TOKEN_WINDOW_MOST, max(0, (int(opts['WINDOW_SIZE'][0]) - 1) // 2))
         except ValueError:
             window = -1
+    # The step, the digits, the hash and the state as the file says (1.0.207): a
+    # google-authenticator -S 60 token, or otp's own export of an 8-digit one, came
+    # in as 6 digits every 30 s and refused every code; one switched off or never
+    # confirmed came back in use.
+    period, digits, algo, state = 30, 6, 'SHA1', 'active'
+    try:
+        if opts.get('STEP_SIZE'):
+            period = int(opts['STEP_SIZE'][0])
+        if opts.get('OTP_DIGITS'):
+            digits = int(opts['OTP_DIGITS'][0])
+    except ValueError:
+        return 'not taken: its STEP_SIZE or OTP_DIGITS is not a number'
+    if not 10 <= period <= 300 or digits not in (6, 7, 8):
+        return 'not taken: a step of %d s or %d digits is not one this server takes' % (period, digits)
+    if opts.get('OTP_ALGORITHM'):
+        algo = str(opts['OTP_ALGORITHM'][0]).upper()
+        if algo not in ('SHA1', 'SHA256', 'SHA512'):
+            return 'not taken: the hash %s is not one this server takes' % algo
+    if opts.get('OTP_STATE') and opts['OTP_STATE'][0] in ('active', 'disabled', 'pending'):
+        state = opts['OTP_STATE'][0]
     store.token_write(name, {
-        'secret': seal_secret(secret, token_bind(name)), 'digits': 6, 'period': 30,
-        'algorithm': 'SHA1',
-        'window_steps': window, 'state': 'active', 'last_step': 0,
+        'secret': seal_secret(secret, token_bind(name)), 'digits': digits, 'period': period,
+        'algorithm': algo,
+        'window_steps': window, 'state': state, 'last_step': 0,
         'scratch': json.dumps([scratch_hash(name, c) for c in codes]),
         'scratch_sealed': seal_codes(codes, token_bind(name)),
         'scratch_left': len(codes), 'created': time.time(), 'created_by': by,
@@ -101,12 +121,18 @@ def import_totp(store, name, text, by='import', replace=False):
 TOKENS_KIND = 'otp-tokens'
 
 
-def token_backup_row(tok):
+def token_backup_row(tok, store=None):
     """One token as the backup keeps it, or None when its key cannot be
     opened here."""
     name = tok['name']
     kind = token_kind(tok)
     out = {'name': name, 'kind': kind, 'state': tok.get('state') or 'active'}
+    # What a token switched off goes back to (1.0.207): one never confirmed came
+    # back in use once switched on again after a restore.
+    was = store.get_meta('disabled_from:' + norm_name(name)) \
+        if store is not None and out['state'] == 'disabled' else None
+    if was:
+        out['was'] = str(was)
     if kind == 'totp':
         secret = unseal_secret(tok.get('secret') or '', token_bind(name))
         if not secret:
@@ -117,7 +143,9 @@ def token_backup_row(tok):
                    algorithm=str(tok.get('algorithm') or 'SHA1').upper())
     else:
         out['dest'] = tok.get('dest') or ''
-    codes = open_codes(tok.get('scratch_sealed'), token_bind(name))
+    # As the rest reads them (1.0.207): the sealed list alone can still say unused a
+    # code the other node has used - it came back to life in the copy.
+    codes = codes_open(tok)
     out['codes'] = [{'c': c['c'], 'used': c.get('used')} for c in (codes or [])]
     if codes is None and int(tok.get('scratch_left') or 0):
         out['codes_lost'] = int(tok.get('scratch_left') or 0)
@@ -140,7 +168,7 @@ def tokens_backup(store, names, by=''):
         tok = store.token(n)
         if not tok:
             continue
-        one = token_backup_row(tok)
+        one = token_backup_row(tok, store)
         if one is None:
             lost.append(n)
         else:
@@ -187,7 +215,7 @@ def token_restore(store, t, by='restore', replace=False):
     codes = []
     for c in t.get('codes') or []:
         code = str((c or {}).get('c') if isinstance(c, dict) else c)
-        if not re.fullmatch(r'[0-9]{6,10}', code):
+        if not re.fullmatch(r'[0-9]{6,12}', code):          # (1.0.207)
             raise ValueError('a recovery code that is not one')
         codes.append({'c': code, 'used': (c or {}).get('used') if isinstance(c, dict) else None})
     left = [c['c'] for c in codes if not c.get('used')]
@@ -226,6 +254,8 @@ def token_restore(store, t, by='restore', replace=False):
         row.update(secret='', dest=dest_checked(kind, t.get('dest')), digits=6, period=30,
                    algorithm='SHA1', window_steps=-1, last_step=0)
     store.token_write(name, row)
+    if state == 'disabled' and str(t.get('was') or '') in ('pending', 'active'):
+        store.set_meta('disabled_from:' + name, str(t['was']))    # (1.0.207)
     try:
         store.db.run('DELETE FROM meta WHERE k = ?', ('staged:' + name,))
     except Exception:                                   # noqa: BLE001
@@ -1098,6 +1128,21 @@ class Daemon(object):
             node = node_name()
         if node not in self.cluster_nodes() + [node_name()]:
             raise BadSetting('there is no node %s' % node)
+        # A secret kept goes to the server it was given for only (1.0.207): saved as
+        # its dots with another server beside it, it was sent there - in clear with
+        # TLS off - while nobody had seen more than its last two letters.
+        for secret_key, where in SECRET_GOES_TO.items():
+            if not CONFIG.get(secret_key):
+                continue
+            given = (changes or {}).get(secret_key)
+            if given is not None and not is_masked(given):
+                continue                    # a new one typed in, or taken away
+            moved = [k for k in where if k in (changes or {}) and
+                     str((changes or {})[k]).strip() != str(CONFIG.get(k) if CONFIG.get(k) is not None
+                                                            else '').strip()]
+            if moved:
+                raise BadSetting('%s changed: type %s again' % (
+                    ', '.join(moved), str(NAMES.get(secret_key, secret_key)).lower()))
         for key, value in (changes or {}).items():
             if key in SECRET_KEYS and is_masked(value):
                 continue
@@ -1799,12 +1844,22 @@ def engine_asked(given):
     for k, v in on_file.items():
         if k != 'db_engine':
             c[k] = v
+    was = dict(c)
+    kept_pw = False
     for k, v in (given or {}).items():
         if k not in DB_KEYS or v is None:
             continue
         if k == 'db_password' and is_masked(v):
+            kept_pw = True
             continue
         c[k] = v
+    if kept_pw and was.get('db_password') and any(
+            str(c.get(k) or '') != str(was.get(k) or '')
+            for k in ('db_engine', 'db_host', 'db_port', 'db_user')):
+        # The password kept goes to the database it was given for only (1.0.207):
+        # another server typed in was sent the one of this - asked for in clear,
+        # libpq gives it.
+        raise ValueError('another database server or account: type its password')
     if c.get('db_engine') not in ('sqlite', 'mariadb', 'postgres'):
         raise ValueError('the engine is sqlite, mariadb or postgres')
     for k in ('db_name', 'db_user'):
@@ -1901,6 +1956,10 @@ def db_make(c, admin_user, admin_password):
                         'COLLATE utf8mb4_unicode_ci' % name)
             done.append('the database %s' % name)
             local = host in ('localhost', '127.0.0.1', '::1')
+            try:
+                cur.execute('SET SESSION sql_log_off = 1')      # its general log (1.0.207)
+            except Exception:                                   # noqa: BLE001
+                pass
             for at in (('localhost', '127.0.0.1') if local else ('%',)):
                 cur.execute("CREATE USER IF NOT EXISTS %s@%s IDENTIFIED BY %s", (user, at, pw))
                 cur.execute("ALTER USER %s@%s IDENTIFIED BY %s", (user, at, pw))
@@ -1917,6 +1976,14 @@ def db_make(c, admin_user, admin_password):
     conn.autocommit = True
     try:
         cur = conn.cursor()
+        # Not into the server's own log (1.0.207): the statement with the password in
+        # it was logged on any error (log_min_error_statement) or with log_statement
+        # ddl. Only a superuser may say so - tried, and on without it.
+        for quiet in ("SET log_statement = 'none'", "SET log_min_error_statement = 'panic'"):
+            try:
+                cur.execute(quiet)
+            except Exception:                           # noqa: BLE001
+                pass
         cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (user,))
         if cur.fetchone():
             cur.execute('ALTER ROLE "%s" WITH LOGIN PASSWORD %%s' % user, (pw,))
@@ -1929,8 +1996,15 @@ def db_make(c, admin_user, admin_password):
             cur.execute('ALTER DATABASE "%s" OWNER TO "%s"' % (name, user))
             done.append('the database %s was there; %s owns it now' % (name, user))
         else:
-            cur.execute("CREATE DATABASE \"%s\" OWNER \"%s\" ENCODING 'UTF8' TEMPLATE template0"
-                        % (name, user))
+            # Compared and lowered as the other engines and a cluster's databases
+            # are (1.0.208): a server set up under C knew no Ž from ž, one under
+            # a language put clients in another order.
+            try:
+                cur.execute("CREATE DATABASE \"%s\" OWNER \"%s\" ENCODING 'UTF8' TEMPLATE "
+                            "template0 LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8'" % (name, user))
+            except psycopg2.Error:
+                cur.execute("CREATE DATABASE \"%s\" OWNER \"%s\" ENCODING 'UTF8' TEMPLATE "
+                            "template0" % (name, user))
             done.append('the database %s, owned by %s' % (name, user))
     finally:
         conn.close()
@@ -2006,6 +2080,7 @@ def db_move(store, c, by):
     """Everything here into the other database, through a copy."""
     def work(progress):
         progress(0, 0, 'making a copy of what is here')
+        began = time.time()
         before = store.counts()
         copy = make_backup(store, 'before moving, by %s' % by)
         whole = sum(before.values())
@@ -2018,12 +2093,23 @@ def db_move(store, c, by):
             load_tables(far, copy, say=along)
             after = {t: int(far.value('SELECT COUNT(*) FROM %s' % t) or 0)
                      for t in TABLES if t != 'meta'}
+            words = 'everything was carried into %s (%s), by %s' % (
+                ENGINE_WORDS.get(c['db_engine']), db_where(c), by)
+            store.add_event('settings', words, who=by)
+            # What was written here while it was carried goes across too, the
+            # move's own words with it (1.0.208): its newest event older than this
+            # one's by more than a minute, "Start using it" refused the copy just
+            # made, for good.
+            try:
+                for r in store.db.rows('SELECT ts, kind, node, level, who, words FROM events '
+                                       'WHERE ts >= ? ORDER BY ts', (began,)):
+                    far.insert('events', dict(r))
+            except Exception as e:                      # noqa: BLE001
+                log('the events of the move could not be carried as well: %s' % e, 'warn')
         finally:
             far.close()
         short = {t: (before.get(t, 0), after.get(t, 0)) for t in after
                  if after.get(t, 0) < before.get(t, 0) and t not in ('sessions',)}
-        store.add_event('settings', 'everything was carried into %s (%s), by %s'
-                        % (ENGINE_WORDS.get(c['db_engine']), db_where(c), by), who=by)
         progress(whole, whole, 'done')
         return {'copy': copy.name, 'rows': sum(after.values()), 'short': short,
                 'where': db_where(c)}
@@ -2633,3 +2719,15 @@ def tune_undo(store, admin_user, admin_password, by):
     store.add_event('settings', 'the database server’s settings were put back by %s: %s'
                     % (by, ', '.join(done)), 'warn', who=by)
     return {'done': done, 'failed': failed}
+
+
+# Where each secret is sent (1.0.207): a change of any of these, the secret kept as
+# its dots, is refused - it would go to the new place unseen.
+SECRET_GOES_TO = {
+    'smtp_password': ('smtp_host', 'smtp_port', 'smtp_security', 'smtp_verify', 'smtp_user'),
+    'proxy_password': ('proxy_url', 'proxy_user'),
+    'sms_tel_password': ('sms_tel_host', 'sms_tel_https', 'sms_tel_verify', 'sms_tel_user'),
+    'sms_token': ('sms_url', 'sms_mode'),
+    'acme_dns_key': ('acme_dns_url', 'acme_dns_user'),
+    'acme_dns_tsig_secret': ('acme_dns_server', 'acme_dns_tsig_name'),
+}

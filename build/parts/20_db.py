@@ -609,6 +609,11 @@ class Db(object):
                                                                           for k in keys)),
                         [row[k] for k in keys] + [ident])
 
+    def name_order(self):
+        """name in byte order on every engine (1.0.208): PostgreSQL under a
+        language put "alpha" before "Zeta" - another client answered."""
+        return 'name COLLATE "C"' if self.engine == 'postgres' else 'name'
+
     @contextlib.contextmanager
     def unlimited(self):
         """No time limit on this connection's statements meanwhile: the
@@ -622,6 +627,12 @@ class Db(object):
             'SET SESSION max_statement_time = 0',
             'SET SESSION max_statement_time = %d' % self.statement_s))
         with self.lock:
+            try:
+                # A connection the server dropped is made again first (1.0.208):
+                # the SET went to the dead one, and the job ran limited after all.
+                self.value('SELECT 1')
+            except Exception:                           # noqa: BLE001
+                pass
             try:
                 self.run(RawSql(off))
             except Exception:                           # noqa: BLE001
@@ -646,6 +657,9 @@ class Db(object):
             if self.engine == 'mariadb':
                 sql += ' DEFAULT CHARSET=utf8mb4'
             self.run(sql)
+        # The columns first (1.0.208): an index on a column a later version adds
+        # stopped every start of an older database ("no such column").
+        self.add_missing_columns()
         for sql in INDEXES:
             if self.engine == 'mariadb':
                 # MariaDB knows IF NOT EXISTS on an index from 10.1.4 on, and
@@ -668,7 +682,7 @@ class Db(object):
                 self.run(sql)
         if self.engine == 'mariadb':
             self._mariadb_bin_names()
-        self.add_missing_columns()
+            self._mariadb_meta_keys()
         if self.engine == 'postgres':
             self._pg_keep_used()
         if self.value('SELECT v FROM meta WHERE k = ?', ('schema',)) is None:
@@ -828,6 +842,30 @@ END $f$""")
                          'FOR EACH ROW EXECUTE FUNCTION otp_keep_used()')
             self.run('ALTER TABLE tokens ENABLE ALWAYS TRIGGER otp_keep_used')
             self.run('ALTER TABLE tokens ENABLE ALWAYS TRIGGER otp_keep_made')
+            # A setting changed on both nodes while the link was down (1.0.207):
+            # each node took the other's change over its own, and the two stayed
+            # swapped for good. The later one is kept on both - the earlier, by
+            # byte order, at the same moment.
+            self.run("""CREATE OR REPLACE FUNCTION otp_newer_setting() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $f$
+BEGIN
+  IF current_setting('session_replication_role') <> 'replica' THEN
+    RETURN NEW;
+  END IF;
+  IF COALESCE(OLD.at, 0) > COALESCE(NEW.at, 0) THEN
+    RETURN NULL;
+  END IF;
+  IF COALESCE(OLD.at, 0) = COALESCE(NEW.at, 0)
+     AND row_to_json(OLD)::text COLLATE "C" > row_to_json(NEW)::text COLLATE "C" THEN
+    RETURN NULL;
+  END IF;
+  RETURN NEW;
+END $f$""")
+            if not self.value("SELECT 1 FROM pg_trigger WHERE tgname = 'otp_newer_setting' AND "
+                              "tgrelid = 'settings'::regclass"):
+                self.run('CREATE TRIGGER otp_newer_setting BEFORE UPDATE ON settings '
+                         'FOR EACH ROW EXECUTE FUNCTION otp_newer_setting()')
+            self.run('ALTER TABLE settings ENABLE ALWAYS TRIGGER otp_newer_setting')
             for table, col in (('tokens', 'name'), ('accounts', 'name'), ('clients', 'name'),
                                ('realms', 'name'), ('directories', 'name'), ('meta', 'k'),
                                ('settings', 'k'), ('sessions', 'token_hash')):
@@ -842,6 +880,20 @@ END $f$""")
         except Exception as e:                          # noqa: BLE001
             log('the guard of used codes between two nodes could not be put in: %s'
                 % str(e).split('\n')[0], 'warn')
+
+    def _mariadb_meta_keys(self):
+        """meta's keys to 255 characters (1.0.208): a token's name may be 180, and
+        disabled_from:NAME or scratchguard:NAME@@NODE went past 190 - switching
+        such a token off or sending it a code failed ("Data too long")."""
+        try:
+            n = self.value("SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "
+                           "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'meta' "
+                           "AND COLUMN_NAME = 'k'")
+            if n is not None and int(n) < 255:
+                self.run('ALTER TABLE meta MODIFY k VARCHAR(255) CHARACTER SET utf8mb4 '
+                         'COLLATE utf8mb4_bin NOT NULL')
+        except Exception as e:                          # noqa: BLE001
+            log('meta\'s keys stay 190 characters long: %s' % str(e).split('\n')[0], 'warn')
 
     def _mariadb_bin_names(self):
         """Tables made before 1.0.44 compared names ignoring case and
@@ -1087,7 +1139,10 @@ def load_tables(db, src, keep_logs=True, say=None):
     DB_RESTORING.set()
     db.restoring = True
     try:
-        return _load_tables_held(db, src, keep_logs, say, gzip)
+        # No time limit (1.0.208): emptying a log of millions of rows took
+        # longer than two minutes, and the copy could never be put back.
+        with db.unlimited():
+            return _load_tables_held(db, src, keep_logs, say, gzip)
     finally:
         db.restoring = False
         DB_RESTORING.clear()

@@ -144,7 +144,7 @@ def ntp_apply(store):
         log('the time: %s' % row['said'])
     except ValueError as e:
         row.update(ok=False, said=str(e)[:300])
-        log('the time servers could not be set: %s' % e, 'warn')
+        log_sparing('ntp-apply', 'the time servers could not be set: %s' % e, 'warn', every=900)
     store.set_meta('ntp:applied:' + node_name(), json.dumps(row))
     try:
         ntp_publish(store)
@@ -157,7 +157,7 @@ def _ntp_thread(fn, *args):
         try:
             fn(*args)
         except Exception as e:                          # noqa: BLE001
-            log('the time: %s' % e, 'warn')
+            log_sparing('ntp-thread', 'the time: %s' % e, 'warn', every=900)   # (1.0.207)
         finally:
             with NTP_WORK_LOCK:
                 NTP_WORK['busy'] = False
@@ -189,7 +189,11 @@ def ntp_tick(daemon):
         want = ntp_desired(store)
         h = hashlib.sha256(json.dumps(want, sort_keys=True).encode()).hexdigest()[:24]
         done = _meta_json(store, 'ntp:applied:' + me) or {}
-        if done.get('hash') != h and time.time() - float(done.get('at') or 0) > 30:
+        # Tried again when it failed (1.0.207), every ten minutes: written down under
+        # the hash wanted, a failure was never tried again once the helper was back.
+        if (done.get('hash') != h and time.time() - float(done.get('at') or 0) > 30) or \
+                (done.get('hash') == h and done.get('ok') is False and
+                 time.time() - float(done.get('at') or 0) > 600):
             _ntp_thread(ntp_apply, store)
             return
     sync_at = float(store.get_meta('ntp:sync:' + me) or 0)

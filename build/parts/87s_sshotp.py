@@ -539,10 +539,17 @@ class SshGate(object):
         try:
             out = self.answer(data, addr)
             with self.lock:
-                self.seen[key] = (time.time(), out)
+                if out:
+                    self.seen[key] = (time.time(), out)
+                else:
+                    self.seen.pop(key, None)    # asked again, answered again (1.0.207)
             if out:
                 s.sendto(out, addr)
         except Exception as e:                          # noqa: BLE001
+            # Not kept as asked (1.0.207): pam_radius's repeats were passed over for a
+            # minute, and the sign-in timed out though the database was back at once.
+            with self.lock:
+                self.seen.pop(key, None)
             log_sparing('sshgate-req', 'the gate for SSH with a code: %s' % e, 'warn',
                         every=300)
 

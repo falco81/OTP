@@ -207,8 +207,9 @@ c, out = cli('--ssh-token-add', 'root', '--no-qr', code=0, want='key:')
 cli('--ssh-tokens', code=0, want='root +the app')
 cli('--ssh-token-add', 'root', '--no-qr', name='--ssh-token-add again without --yes: refused')
 cli('--ssh-token-add', 'ops', '--by', 'sms', '--to', '+420601234567', name='--ssh-token-add by SMS, SMS not set up: refused')
-cli('--ssh-token-del', 'root', code=0)
-cli('--ssh-token-del', 'root', name='--ssh-token-del one not there: refused')
+cli('--ssh-token-del', 'root', code=1, name='--ssh-token-del without --yes: refused')
+cli('--ssh-token-del', 'root', '--yes', code=0)
+cli('--ssh-token-del', 'root', '--yes', name='--ssh-token-del one not there: refused')
 # a lockout: wrong codes until the token is locked, seen and cleared
 cli('--set', 'lockout_after=3', code=0)
 for i in range(4):

@@ -632,7 +632,20 @@ def _tel_hidden(words):
                      json.dumps(text)[1:-1], json.dumps(text, ensure_ascii=False)[1:-1]}:
             if form:
                 words = words.replace(form, '<the text, %d characters>' % len(text))
-    words = re.sub(r'(?i)("(?:password|token)"\s*:\s*")[^"]*', r'\1***', words)
+    # The secrets themselves, in each form they travel in (1.0.207): a password
+    # with a " in it ended the pattern below early, and a gateway that echoed its
+    # key as api_key=... was written down whole.
+    for k in ('sms_tel_password', 'sms_token'):
+        try:
+            sec = unseal_secret(CONFIG.get(k) or '') or ''
+        except Exception:                               # noqa: BLE001
+            sec = ''
+        if len(sec) >= 4:
+            for form in {sec, urllib.parse.quote(sec, safe=''), urllib.parse.quote_plus(sec),
+                         json.dumps(sec)[1:-1], json.dumps(sec, ensure_ascii=False)[1:-1]}:
+                if form:
+                    words = words.replace(form, '***')
+    words = re.sub(r'(?i)("(?:password|token)"\s*:\s*")(?:\\.|[^"\\])*', r'\1***', words)
     words = re.sub(r'(?i)((?:password|token)=)[^&\s]*', r'\1***', words)
     return re.sub(r'(?i)(Bearer )\S+', r'\1***', words)
 

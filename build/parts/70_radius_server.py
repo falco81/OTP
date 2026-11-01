@@ -1175,6 +1175,9 @@ class RadiusServer(object):
             # gives none - the VPN asks the other node, where a refusal would
             # have refused everybody until the database was back.
             self.counts['no_database'] += 1
+            # Told to the alerts too (1.0.207): only a DbError out of handle() was,
+            # and the common case went unanswered with no word to anybody.
+            DB_TROUBLE_SEEN.update(at=time.time(), said=str(e).split('\n')[0][:200])
             log_sparing('radius-db', 'RADIUS requests go unanswered: the database cannot be '
                         'reached (%s)' % str(e).split('\n')[0][:200], 'error')
             return None
@@ -1185,6 +1188,7 @@ class RadiusServer(object):
                 # gone, no answer. A refusal refused everybody with a right
                 # code, and the VPN never asked the other node.
                 self.counts['no_database'] += 1
+                DB_TROUBLE_SEEN.update(at=time.time(), said=str(e).split('\n')[0][:200])
                 log_sparing('radius-db', 'RADIUS requests go unanswered: the database is not '
                             'answering (%s)' % str(e).split('\n')[0][:200], 'error')
                 return None
@@ -1300,7 +1304,7 @@ class RadiusServer(object):
                 # of wrong guesses went round the delay. The NAS asks again.
                 self.counts['late_dropped'] += 1
                 return
-            heapq.heappush(self.late, (time.time() + wait, id(data), sock, data, peer))
+            heapq.heappush(self.late, (time.monotonic() + wait, id(data), sock, data, peer))
             if self.late_thread is None or not self.late_thread.is_alive():
                 self.late_thread = threading.Thread(target=self.send_lates, name='radius-late',
                                                     daemon=True)
@@ -1314,7 +1318,7 @@ class RadiusServer(object):
             self.late_wake.clear()
             with self.late_lock:
                 due = []
-                now = time.time()
+                now = time.monotonic()      # a clock stepped back no longer holds them (1.0.207)
                 while self.late and self.late[0][0] <= now:
                     due.append(heapq.heappop(self.late))
                 wait = (self.late[0][0] - now) if self.late else 1.0

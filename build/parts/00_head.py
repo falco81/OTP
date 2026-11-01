@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.206'
+__version__ = '1.0.207'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1886,6 +1886,11 @@ def check_setting(key, value):
     if key == 'sms_prefix' and str(got).strip() and not re.match(r'^\+[1-9][0-9]{0,3}\Z',
                                                                     str(got).strip()):
         raise BadSetting('sms_prefix: + and the country code, +420')
+    if key == 'totp_issuer' and ':' in str(got):
+        # The otpauth label is "issuer:account" (1.0.207): an issuer with a colon in
+        # it was read by the apps as a part of the account's name.
+        raise BadSetting('totp_issuer: no colon in it - the apps take what follows one as '
+                         'the account\'s name')
     if key == 'totp_label' and '{user}' not in str(got) and '{name}' not in str(got):
         raise BadSetting('totp_label needs {user} or {name} in it, or every token on a '
                          'phone has the same name')

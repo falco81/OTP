@@ -354,7 +354,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             who, how = admin_name_parts(name)
             entry = ad.find_user(who, how)
             role = None
-            if entry and not entry_unusable(entry, locked=False):
+            if entry and not entry.get('many') and not entry_unusable(entry, locked=False):
                 role = admin_role_for(ad.groups_of(entry, True), ad)
         except Exception as e:                          # noqa: BLE001
             # Asked again in a minute, not on every click: a directory that
@@ -857,6 +857,12 @@ def admin_ask_directory(h, name, password):
     if not entry:
         return {'ok': False, 'missing': True, 'said': 'the directory has nobody called %s' % who,
                 'directory': ad.name}
+    if entry.get('many'):
+        # Two accounts answer to the name (1.0.208): the first one's password and
+        # groups were taken - and with them the account of the one signed in
+        # before under that name. Refused, as RADIUS and the enrolment pages do.
+        return {'ok': False, 'said': 'more than one account answers to %s' % who,
+                'directory': ad.name}
     if entry_unusable(entry):
         return {'ok': False, 'said': 'the account may not sign in: %s' % entry_unusable(entry),
                 'dn': entry['dn'], 'directory': ad.name}
@@ -915,6 +921,12 @@ def admin_from_directory(h, name, password):
     if acc:
         if acc.get('source') != 'directory':
             return None
+        if acc.get('dn') and str(acc['dn']).lower() != str(entry['dn']).lower():
+            # Another entry of the directory under the name now (1.0.208): moved
+            # to another OU, or the name given to somebody else - said, so that
+            # it is seen.
+            h.store.add_event('accounts', 'the directory account of %s is another one now: '
+                              '%s (was %s)' % (name, entry['dn'], acc['dn']), 'warn')
         h.store.set_account(name, role=role, display=entry.get('display') or '',
                             dn=entry['dn'], group_list=groups)
     elif CONFIG.get('ha_mode') == 'replicated' and not ha_lead(h.store):
@@ -1546,11 +1558,23 @@ def totp_file_text(tok):
     tries = int(CONFIG.get('rate_limit_tries') or 0)
     if tries:
         lines.append('" RATE_LIMIT %d %d' % (tries, int(CONFIG.get('rate_limit_s') or 30)))
-    w = tok.get('window_steps')
-    w = Tokens.window(tok)     # the same as the check uses: 0 is 0 (1.0.36)
-    lines.append('" WINDOW_SIZE %d' % (w * 2 + 1))
+    # Its own window only (1.0.207): the setting's, written down, came back as the
+    # token's own, and it no longer followed the setting.
+    if tok.get('window_steps') is not None and int(tok.get('window_steps')) >= 0:
+        w = Tokens.window(tok)     # the same as the check uses: 0 is 0 (1.0.36)
+        lines.append('" WINDOW_SIZE %d' % (w * 2 + 1))
     if CONFIG.get('totp_disallow_reuse'):
         lines.append('" DISALLOW_REUSE')
+    # What an import reads back to give the same codes (1.0.207): STEP_SIZE as
+    # google-authenticator writes it, the rest otp's own - other tools pass them by.
+    if int(tok.get('period') or 30) != 30:
+        lines.append('" STEP_SIZE %d' % int(tok.get('period') or 30))
+    if int(tok.get('digits') or 6) != 6:
+        lines.append('" OTP_DIGITS %d' % int(tok.get('digits') or 6))
+    if str(tok.get('algorithm') or 'SHA1').upper() != 'SHA1':
+        lines.append('" OTP_ALGORITHM %s' % str(tok.get('algorithm')).upper())
+    if tok.get('state') in ('disabled', 'pending'):
+        lines.append('" OTP_STATE %s' % tok['state'])
     lines.append('" TOTP_AUTH')
     for c in codes_open(tok) or []:
         if isinstance(c, dict):
@@ -2122,6 +2146,11 @@ def _token_act(h, s, b, act, name, who):
                                 'commas, semicolons or =, 180 characters at most')
         if to == norm_name(name):
             raise ApiError(400, 'that is the name it has')
+        # The letters a name may have, as a new token's (1.0.207): renamed past them,
+        # RADIUS refused the token for good.
+        bad_letters = name_letters_problem(to)
+        if bad_letters:
+            raise ApiError(400, bad_letters)
         if h.store.token(to):
             raise ApiError(409, 'there is a token for %s already' % to)
         tok = h.store.token(name)
@@ -2323,6 +2352,14 @@ def _token_import(h):
             raise ApiError(400, '%s: %s' % (one.get('name') or 'the file', e))
         if got is not None:
             backups.append((one, got))
+    others = [one for one in b.get('files') or [] if isinstance(one, dict) and
+              not any(one is x for x, _g in backups)]
+    if backups and others:
+        # Said, not passed over (1.0.207): the .totp files and ZIPs sent with a
+        # backup were left out without a word.
+        raise ApiError(400, 'a backup and .totp files or ZIPs together: bring them over one '
+                            'kind at a time - %s left out otherwise' % ', '.join(
+                                str(x.get('name') or 'a file') for x in others[:5]))
     if backups:
         if b.get('action') == 'peek':
             seen = []
@@ -4201,6 +4238,15 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 else:
                     want[base] = v
             if want:
+                # A secret of this machine is not sent to a server the file names
+                # (1.0.207): taken away where the file moves its server and does
+                # not bring one of its own - to be typed again.
+                for sk, where in SECRET_GOES_TO.items():
+                    if CONFIG.get(sk) and sk not in want and any(
+                            k in want and str(want[k]).strip() != str(CONFIG.get(k) or '').strip()
+                            for k in where):
+                        want[sk] = ''
+                        said['secrets to type again (another server)'] += 1
                 # The cluster's own value (1.0.206): a node's setting shared in the
                 # file was saved for the node that imported it alone - and with
                 # "replace" then taken away again.
@@ -4863,9 +4909,18 @@ def portal_methods(h, s):
     return [k for k in realm_methods(realm) if k == 'totp' or k in chan]
 
 
+PORTAL_TOKEN_KEYS = ('name', 'kind', 'state', 'dest', 'lang', 'mail_fmt', 'digits', 'period',
+                     'scratch_left', 'scratch_kept', 'pending', 'locked_until', 'created',
+                     'activated', 'last_used', 'key_lost')
+
+
 def portal_state(h, s):
     tok = h.store.token(s['name'])
     shown = h.store.token_shown(tok)
+    if shown:
+        # What its owner needs and nothing else (1.0.208): the administrators'
+        # note and who made it went to the enrolment page as they are.
+        shown = {k: shown.get(k) for k in PORTAL_TOKEN_KEYS}
     data = s.get('data') or {}
     ver = data.get('verify') or {}
     if ver and float(ver.get('exp') or 0) < time.time():
@@ -5576,16 +5631,7 @@ def _ha_do(h):
             if CONFIG.get('ha_mode') == 'replicated':
                 # The second node of two replicating ones - or the same one
                 # again, after it was lost or reinstalled.
-                data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(),
-                        'pg_major': int(h.store.db.value('SHOW server_version_num')) // 10000,
-                        'slot': 3 - int(CONFIG.get('ha_slot') or 1),
-                        'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),
-                               'db_password': CONFIG.get('db_password')},
-                        'peer': {'name': node_name(), 'slot': int(CONFIG.get('ha_slot') or 1),
-                                 'address': CONFIG.get('ha_address') or node_address(),
-                                 'port': int(CONFIG.get('db_port') or 5432)},
-                        'cluster': CONFIG.get('site_name') or 'otp'}
-                data['db']['db_host'] = data['peer']['address']
+                data = ha_replicated_bundle_data(h.store)
             else:
                 data = ha_bundle_data(h.store, str(b.get('db_host') or '').strip())
         except ValueError as e:

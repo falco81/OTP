@@ -68,6 +68,7 @@ def through_vip():
         s = int(time.time()) // 30
         if s != last:
             time.sleep(1)
+            s = int(time.time()) // 30          # the step of the code sent (after the sleep)
             r = rad('vip', 'nightuser', totp_of(T['secret']))[0]
             if r == 'timeout':
                 # Asked again, as a NAS does: here the VIP address is on lo, and the node it
