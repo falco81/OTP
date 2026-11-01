@@ -158,6 +158,25 @@ def fw_trial_min():
     return int(CONFIG.get('fw_confirm_min') or 0)
 
 
+ACCESS_INSTALLED = ('192.168.0.0/16', '172.16.0.0/12', '10.0.0.0/8')
+
+
+def access_in_nginx():
+    """Who may reach the pages as nginx has it now (root reads it): kept for a
+    trial's put-back when otp never set the lists itself (1.0.209)."""
+    try:
+        now = web_status().get('access') or {}
+    except Exception:                                   # noqa: BLE001
+        now = {}
+    out = {}
+    for k in ACCESS_WORDS:
+        one = now.get(k)
+        if not isinstance(one, dict):
+            return {}
+        out[k] = {'any': bool(one.get('any')), 'from': [str(x) for x in one.get('from') or []]}
+    return out
+
+
 def fw_trial_begin(store, by):
     """Before a change of the firewall or of who may reach the pages: what is
     there now kept, for going back to."""
@@ -168,7 +187,7 @@ def fw_trial_begin(store, by):
     trial = _meta_json(store, 'fw:trial') or {}
     if not trial or trial.get('done'):
         trial = {'id': secrets.token_hex(6), 'was': fw_conf(store),
-                 'access': access_conf(store), 'at': t, 'by': by}
+                 'access': access_conf(store) or access_in_nginx(), 'at': t, 'by': by}
     trial.update(until=t + n * 60, last_by=by, min=n)
     store.set_meta('fw:trial', json.dumps(trial))
     # The key the put-back is claimed by made now, by this node alone (1.0.139):
@@ -200,8 +219,12 @@ def fw_put_back(store, trial, why):
     # rules of the trial stayed; so did the lists of who may reach the pages.
     store.set_meta('fw:conf', json.dumps(dict(was, set=True, at=time.time(),
                                               by='otp (%s)' % why)))
+    # Never "everybody" when nothing was known (1.0.209): the lists never saved
+    # here were nginx's own - the private networks of the install - and the
+    # put-back opened the administration to the internet.
     store.set_meta('web:access', json.dumps(trial.get('access') or {
-        k: {'any': True, 'from': []} for k in ACCESS_WORDS}))
+        k: {'any': k not in ('admin', 'portal'), 'from': [] if k not in ('admin', 'portal')
+            else list(ACCESS_INSTALLED)} for k in ACCESS_WORDS}))
     trial.update(done='back', done_by=why, done_at=time.time())
     store.set_meta('fw:trial', json.dumps(trial))
     store.add_event('settings', 'the firewall and access went back to what they were before '

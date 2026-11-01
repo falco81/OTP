@@ -423,6 +423,9 @@ def ssh_gate_old_client(store):
                             % SSH_RADIUS_CLIENT, 'info')
 
 
+SSHGATE_AT_ONCE = threading.BoundedSemaphore(32)
+
+
 class SshGate(object):
     """pam_radius's otp: on 127.0.0.1, in a thread of its own - RADIUS of the
     VPN is not touched by it, nor it by RADIUS."""
@@ -532,10 +535,25 @@ class SshGate(object):
                             pass
                     continue
                 self.seen[key] = (time.time(), None)
+            # As many at once as the codes sent may be (1.0.209): a slow database
+            # or mail server piled a thread up for each request.
+            if not SSHGATE_AT_ONCE.acquire(blocking=False):
+                with self.lock:
+                    self.seen.pop(key, None)
+                log_sparing('sshgate-busy', 'the gate for SSH with a code: too many requests at '
+                            'once - one left unanswered (asked again, it is answered)', 'warn',
+                            every=300)
+                continue
             threading.Thread(target=self.serve, args=(s, data, addr, key), name='otp-sshgate-req',
                              daemon=True).start()
 
     def serve(self, s, data, addr, key):
+        try:
+            self._serve(s, data, addr, key)
+        finally:
+            SSHGATE_AT_ONCE.release()
+
+    def _serve(self, s, data, addr, key):
         try:
             out = self.answer(data, addr)
             with self.lock:

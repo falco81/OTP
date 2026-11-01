@@ -449,7 +449,7 @@ def acme_name_of(store, target):
         info = (tls_profile(store, target) or {}).get('info') or {}
         for n in [info.get('cn')] + list(info.get('san') or []):
             n = str(n or '').strip().lower()
-            if re.match(r'^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z', n):
+            if re.match(r'^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})\Z', n):
                 name = n
                 break
     if not name and target == node_name():
@@ -632,7 +632,7 @@ def acme_order(store, target, name, by, say=None):
         steps.append([round(time.time(), 1), str(t)[:300]])
         tell(t)
     if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
-                    r'[A-Za-z]{2,63}\Z', name):
+                    r'(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9-]{1,59})\Z', name):   # .рф too (1.0.209)
         raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)' % name)
     st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url(), 'steps': steps}
     a = None

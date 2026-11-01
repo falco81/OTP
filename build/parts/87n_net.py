@@ -143,7 +143,9 @@ def net_check(store, node, want, rollback=False):
         raise ValueError('the IPv4 address is an address with its prefix: 192.0.2.10/24')
     if (a4.ip.is_loopback and not os.environ.get('OTP_NET_LOOPBACK_OK')) or \
             a4.ip.is_multicast or a4.ip.is_unspecified or \
-            a4.ip == a4.network.network_address or a4.ip == a4.network.broadcast_address:
+            (a4.network.prefixlen < 31 and a4.ip in (a4.network.network_address,
+                                                     a4.network.broadcast_address)):
+        # /31 and /32 have no network or broadcast address of their own (1.0.209).
         raise ValueError('%s cannot be the address of a machine in %s' % (a4.ip, a4.network))
     gw = str(v4.get('gw') or '').strip()
     if gw:
@@ -156,9 +158,13 @@ def net_check(store, node, want, rollback=False):
     dns = _net_list(v4.get('dns'))
     for x in dns:
         try:
-            ipaddress.ip_address(x)
+            d4 = ipaddress.ip_address(x)
         except ValueError:
             raise ValueError('%r is not the address of a DNS server' % x)
+        if d4.version != 4:
+            # The IPv4 side's servers are IPv4 ones (1.0.209): root refused the
+            # whole change for an IPv6 one put here.
+            raise ValueError('%s is an IPv6 address - put it with the IPv6 DNS servers' % x)
     search = _net_list(v4.get('search'), 6)
     v6 = want.get('ipv6') or {}
     on6 = bool(v6.get('on'))

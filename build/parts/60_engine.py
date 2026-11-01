@@ -311,6 +311,8 @@ class Directory(object):
         rows = self.asked(do)
         out = [(r['dn'], (r['attrs'].get('cn') or [cn_of(r['dn'])])[0]) for r in rows]
         with self.lock:
+            if len(self.cache) > 5000:            # as find_user keeps it (1.0.209)
+                self.cache.clear()
             self.cache[key] = (time.time(), out)
         return out
 

@@ -20,7 +20,9 @@ require_once dirname(__DIR__) . '/otp-art.php';
    full administrator signed in? Nothing else is answered here. */
 if (($_SERVER['OTP_AUTH_ONLY'] ?? '') === '1') {
     $who = otp_whoami();
-    http_response_code(is_array($who) && ($who['role'] ?? '') === 'fulladmin' ? 204 : 403);
+    /* One who must change the password first is not let send 4 GB to be refused (1.0.208). */
+    http_response_code(is_array($who) && ($who['role'] ?? '') === 'fulladmin'
+                       && empty($who['must_change']) ? 204 : 403);
     exit;
 }
 
@@ -122,7 +124,7 @@ if (isset($_GET['api'])) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
         $who = otp_whoami();
-        if (!is_array($who) || ($who['role'] ?? '') !== 'fulladmin') {
+        if (!is_array($who) || ($who['role'] ?? '') !== 'fulladmin' || !empty($who['must_change'])) {
             http_response_code(401);
             echo json_encode(['ok' => false, 'error' => is_array($who)
                 ? 'only a full administrator may send a new version'
@@ -161,7 +163,7 @@ if (isset($_GET['api'])) {
            gigabytes would have been written to disk by then on anybody's
            say-so. Only a full administrator may put a database back. */
         $who = otp_whoami();
-        if (!is_array($who) || ($who['role'] ?? '') !== 'fulladmin') {
+        if (!is_array($who) || ($who['role'] ?? '') !== 'fulladmin' || !empty($who['must_change'])) {
             http_response_code(401);
             echo json_encode(['ok' => false, 'error' => is_array($who)
                 ? 'only a full administrator may put a database back'
@@ -196,7 +198,7 @@ if (isset($_GET['api'])) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
         $who = otp_whoami();
-        if (!is_array($who) || ($who['role'] ?? '') !== 'fulladmin') {
+        if (!is_array($who) || ($who['role'] ?? '') !== 'fulladmin' || !empty($who['must_change'])) {
             http_response_code(401);
             echo json_encode(['ok' => false, 'error' => 'only a full administrator may put a backup back']);
             exit;
@@ -970,7 +972,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   </div>
   <div class="ctl-pane" id="pane-monitor" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Monitoring</h2>
-      <p class="ctl-lede">Prometheus asks each node for its metrics at <span class="mono">https://NODE/metrics</span>:
+      <p class="ctl-lede">Prometheus asks each node for its metrics at <code>https://NODE/metrics</code>:
         RADIUS, the tokens, the database, the cluster and its replication, the certificates, the mail,
         isemon and syslog, the alerts open now. And SNMPv3: each node answers it itself, and sends traps when
         something is wrong.</p></div>

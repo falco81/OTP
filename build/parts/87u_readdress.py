@@ -73,8 +73,13 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
     had_peer = str(CONFIG.get('ha_peer') or '')
     if mine == had_mine:
         mine = ''
+    sub_again = False
     if peer == had_peer:
         peer = ''
+        # The subscription still on another address (a move that failed half
+        # way before 1.0.209): put where ha_peer says.
+        if had_peer and _sub_host(store) not in ('', had_peer):
+            peer, sub_again = had_peer, True
     if not mine and not peer:
         return {'message': 'nothing to change: both addresses are as this node has them',
                 'done': [], 'left': []}
@@ -83,10 +88,8 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
     done, left = [], []
     with READDRESS_LOCK:
         if peer:
-            done.append(_readdress_hba(had_peer, peer, root_now, keep_old=keep_old))
-            write_file_settings({'ha_peer': peer})
-            CONFIG['ha_peer'] = peer
-            done.append('ha_peer = %s (was %s)' % (peer, had_peer))
+            if not sub_again:
+                done.append(_readdress_hba(had_peer, peer, root_now, keep_old=keep_old))
             sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
             if store.db.value(SUB_HERE_SQL, (sub,)):
                 conninfo = ha_conninfo(peer, int(CONFIG.get('ha_peer_port') or 5432),
@@ -98,6 +101,13 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
                     raise ValueError('the subscription %s could not be pointed at %s: %s'
                                      % (sub, peer, str(e).split(': ', 1)[-1]))
                 done.append('this node takes the other\'s rows from %s now' % peer)
+            # Written once the subscription was moved (1.0.209): written first, a
+            # move that failed left config.json on the new address and the
+            # subscription on the old one - and asked again, "nothing to change".
+            if not sub_again:
+                write_file_settings({'ha_peer': peer})
+                CONFIG['ha_peer'] = peer
+                done.append('ha_peer = %s (was %s)' % (peer, had_peer))
             once_peer_forget()
         if mine:
             write_file_settings({'ha_address': mine})
@@ -120,6 +130,17 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
         except Exception:                               # noqa: BLE001
             pass
     return {'message': '; '.join(done + left), 'done': done, 'left': left}
+
+
+def _sub_host(store):
+    """The host this node's subscription reaches the other at ('' unknown)."""
+    try:
+        sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
+        conn = store.db.value('SELECT subconninfo FROM pg_subscription WHERE subname = ?', (sub,))
+        got = re.search(r'(?:^|\s)host=(\S+)', str(conn or ''))
+        return got.group(1).strip("'") if got else ''
+    except Exception:                                   # noqa: BLE001
+        return ''
 
 
 def readdress_tell(peer, mine, by, keep_old=False):

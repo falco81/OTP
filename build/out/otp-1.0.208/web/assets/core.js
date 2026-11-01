@@ -1398,10 +1398,31 @@ function maskBox(value, placeholder, cls) {
     paint(caret);
     i.dispatchEvent(new Event('input', {bubbles: true}));
   };
+  /* A letter put together from more keys (1.0.208): a dead key (ď, ň, ť, Ě),
+     Android's keyboards, an IME. Its typing cannot be stopped - it went into
+     the dots, was taken for the browser filling the box in, and everything
+     typed before was lost: the wrong password saved, under dots. Let through
+     unseen (the text made transparent), and put in where the caret was. */
+  var comp = null;
+  i.addEventListener('compositionstart', function () {
+    if (open) return;
+    if (real.charAt(0) === '\u2022') { real = ''; paint(0); }
+    comp = {a: i.selectionStart || 0, z: i.selectionEnd || 0, base: real};
+    i.style.color = 'transparent';
+  });
+  i.addEventListener('compositionend', function (e) {
+    if (open || !comp) return;
+    var data = String(e.data || '').replace(/[\r\n]+/g, '');
+    var c = comp; comp = null;
+    i.style.color = '';
+    real = c.base.slice(0, c.a) + data + c.base.slice(c.z);
+    changed(c.a + data.length);
+  });
   i.addEventListener('beforeinput', function (e) {
     if (open) return;
     var a = i.selectionStart, z = i.selectionEnd, t = e.inputType || '';
     if (a === null) return;
+    if (comp || e.isComposing || t === 'insertCompositionText') return;
     e.preventDefault();
     /* What was kept is dots: anything typed into it starts it afresh. */
     if (real.charAt(0) === '\u2022') { real = ''; a = z = 0; }
@@ -1425,6 +1446,7 @@ function maskBox(value, placeholder, cls) {
      is taken as it is. */
   i.addEventListener('input', function (e) {
     if (!e.isTrusted || open) { if (open) real = MASK_PROTO.get.call(i); return; }
+    if (comp || e.isComposing) return;
     var shown = MASK_PROTO.get.call(i);
     if (shown !== maskShown(real)) { real = shown.replace(/^\u2022+/, ''); paint(); }
   });

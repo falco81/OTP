@@ -23,6 +23,11 @@ def _node_ask_run(daemon, kind, want):
     key = '%s:%s' % (kind, want.get('id'))
     if key in NODE_ASK['done'] or kind not in NODE_ASK['do']:
         return
+    if len(NODE_ASK['done']) > 2000:
+        # Kept to a size (1.0.209): one per test pressed, for good. Only an ask
+        # fresh within NODE_ASK_FRESH is offered again, and done again it only
+        # writes this node's answer over itself.
+        NODE_ASK['done'].clear()
     only = (want.get('args') or {}).get('only')
     if only and only != node_name():
         NODE_ASK['done'].add(key)

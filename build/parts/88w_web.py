@@ -534,6 +534,36 @@ def tls_resolved(prof):
 
 
 # ---- what this node asks of root, and how it went -------------------------------------
+def vip_plain(addr, like=''):
+    """An address as keepalived takes it: itself, or a host name's first address
+    of the VIP's family (1.0.209); '' when there is none."""
+    addr = str(addr or '').strip()
+    if not addr:
+        return ''
+    try:
+        return str(ipaddress.ip_address(addr))
+    except ValueError:
+        pass
+    want = (_fam(like) if like else 0) or 4
+    for a in addresses_cached(addr):
+        try:
+            if ipaddress.ip_address(a.split('%')[0]).version == want:
+                return a.split('%')[0]
+        except ValueError:
+            continue
+    return ''
+
+
+def vip_peer_seen(store):
+    """The other node's address as its heartbeat says, when ha_peer is not set
+    (a cluster of one shared database)."""
+    me = node_name()
+    for n in ha_nodes(store):
+        if n['name'] != me and n.get('address'):
+            return n['address']
+    return ''
+
+
 def web_desired(store):
     me = node_name()
     v = vip_conf(store)
@@ -543,9 +573,18 @@ def web_desired(store):
         vip = {'on': True, 'address': v.get('address'), 'fqdn': v.get('fqdn') or '',
                'address6': v.get('address6') or '',
                'vrid': int(v.get('vrid') or 51), 'auth': vip_auth(),
-               'own': CONFIG.get('ha_address') or node_address(),
-               'peer': CONFIG.get('ha_peer') or '',
+               'own': vip_plain(CONFIG.get('ha_address') or node_address(), v.get('address')),
+               'peer': vip_plain(CONFIG.get('ha_peer') or vip_peer_seen(store), v.get('address')),
                'iface': (v.get('ifaces') or {}).get(me, '')}
+        if not vip['own'] or not vip['peer']:
+            # Root takes addresses only (1.0.209): a host name - or no other node
+            # named - refused the whole request, and no certificate, firewall rule
+            # or access list reached nginx on this node again. The VIP waits.
+            log_sparing('vip-addr', 'the VIP address waits: %s is not an address this node '
+                        'can tell keepalived (ha_address / ha_peer)' % (
+                            'this node' if not vip['own'] else 'the other node'), 'warn',
+                        every=3600)
+            vip = {'on': False}
     tls = {'node': tls_resolved(tls_profile(store, me)),
            'vip': tls_resolved(tls_profile(store, 'vip')) if vip['on'] else None}
     out = {'node': me, 'vip': vip, 'tls': tls}
@@ -1190,6 +1229,13 @@ def fw_auto(store, node):
     for s in srcs:
         for f in ((4, 6) if not s else (_fam(s),)):
             web.append({'family': f, 'proto': 'tcp', 'port': '80,443', 'source': s})
+    if '' not in srcs and CONFIG.get('acme') and \
+            (CONFIG.get('acme_challenge') or 'http-01') == 'http-01':
+        # The CA asks from the internet (1.0.209): with the pages kept to some
+        # networks, port 80 was too - and no certificate was renewed. Port 80
+        # answers the CA's question and sends everything else to HTTPS.
+        for f in (4, 6):
+            web.append({'family': f, 'proto': 'tcp', 'port': '80', 'source': ''})
     out.append({'key': 'web', 'title': 'HTTP / HTTPS', 'why': 'the enrolment and '
                 'administration pages and the health check; who sees which is under '
                 '"Who may reach the pages"', 'rules': web})
