@@ -4,6 +4,78 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.207 — 1 November 2026
+
+**A bug hunt, third round**: tokens and their files, the secrets kept, how the program
+holds up when things go wrong, the cluster's failover and resync, every option of the
+command line, and RADIUS signing-in end to end - each finding shown to fail before it
+was mended (`tests/round/t_round3.py`, 29 of 29; the earlier rounds still 29 and 23).
+
+The cluster:
+- **A setting changed on both nodes while the link was down stayed swapped** for good:
+  each took the other's change. The later change is kept on both now (by its time, the
+  same moment by byte order). `otp --ha-compare` compares what the settings, accounts,
+  clients, realms and directories hold, not only how many rows there are.
+- **`otp --ha-bundle` on a node already replicating set it up again as the first
+  node**: slot 1, a restart of the only node answering, and the old subscription and
+  slot left behind (the WAL kept growing). It now only makes the bundle for the other
+  node again, its slot the other one's, nothing changed or restarted.
+- **Both nodes did the lead's work** while one direction of the replication was stopped
+  and the network was fine (an error, a paused subscription, the rolling upgrade):
+  reports and alerts went out twice, ACME ordered on both. A node that only looks stale
+  is asked in its own database first.
+
+Secrets:
+- A secret kept as its dots goes to the server it was given for only: the mail server's,
+  the proxy's, the SMS gateway's, a directory's binding account, the database's and the
+  DNS servers' for ACME - with the server changed it is asked for again (it was sent to
+  the new one, in clear with TLS off). An imported configuration that moves the server
+  leaves the secret to be typed again.
+- `otp --export-config --with-secrets` is locked with a passphrase, as on the pages.
+- pg_dump and pg_restore get the database password in a 0600 file, not the
+  environment; the statements that move the database are kept out of its log.
+- The SMS gateway's password and token are out of the debug log in every form they
+  are written in. A secret shown as its last two characters always has eight dots
+  (its length was told).
+
+Tokens:
+- A .totp file's step, digits, algorithm and state are read (and written back out);
+  recovery codes of 6 to 12 digits are taken. A token's backup keeps it switched off
+  with what it was before. New recovery codes made while a new key waits wait with it.
+- An issuer with a colon in it is refused (the apps read it as the account's name). A
+  backup brought in together with .totp files or ZIPs is refused, not half read.
+
+Signing in:
+- **With the guard of places on, a disabled or expired directory account blocked
+  everybody behind its address** (its VPN reconnecting): refused before any password
+  is checked, it is no guess. A wrong code asked again in a challenge, mail or SMS
+  realm is one now.
+- The SSH gate answers a request again when its first answer failed.
+
+Holding up:
+- A system update whose helper stopped answering half way is ended as failed after an
+  hour (it stayed "running" and refused every later one).
+- The machine's own name for ACME and the cluster's addresses are looked up in the
+  background, never by a request waiting on DNS. Timers that waited out a time use the
+  monotonic clock (a clock set back no longer holds them). The periodic report is given
+  back when it could not be sent; NTP retries a failed apply after ten minutes.
+- A remote backup that is not a readable archive is said to be so, not a traceback.
+
+The command line:
+- **`--set node_name=NEW` while the daemon runs** made the command line act as a node
+  that did not exist yet (`--maintenance on` for nobody, `--ha-forget` of the running
+  node): it acts as the name the daemon answers under until it starts again.
+- **`--set SECRET=-` with nothing on stdin** saved an empty secret: refused.
+- `--config FILE` that is not there is refused (the defaults were used: SQLite).
+- `otp` alone, and `otp --json`, give the state again, not the help.
+- `--del-client`, `--del-realm`, `--del-directory`, `--del-user` and `--ssh-token-del`
+  ask, or take `--yes`, as every other step that takes something away.
+- `--json` is kept by `--enroll NAME@ALIAS`, `--backup`, `--rbackup-status` and
+  `--ha-tls`; `--status --json` and `--token NOBODY --json` give the same exit code as
+  without it. `--events` takes `--hours`. A word `--methods` does not know is refused.
+  `--api` no longer takes settings like acme_key for secrets. The hint of
+  `--acme-order` gives a form that works.
+
 ## 1.0.206 — 31 October 2026
 
 **A bug hunt, second round**: read through again across the whole program - the threads
