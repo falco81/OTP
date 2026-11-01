@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.211'
+__version__ = '1.0.212'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -21580,7 +21580,7 @@ def pg_restart_local(port=5432):
     raise ValueError('PostgreSQL did not come back after its restart')
 
 
-def pg_prepare_local(port, peer, name, user, password, say):
+def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
     """PostgreSQL on this machine ready to replicate with `peer`: logical
     WAL, listening on the network, the peer let in, the account able to
     replicate and to subscribe, the database there. True when it has to be
@@ -21621,7 +21621,19 @@ def pg_prepare_local(port, peer, name, user, password, say):
     hba = pg_admin('SHOW hba_file', port)
     text = Path(hba).read_text()
     added = []
-    for who in sorted(set(([peer] if peer else []) + ['127.0.0.1'])):
+    # This node's own address too (1.0.212): before the other node is told to take
+    # this one's rows, that subscription's connection - to this address - is tried
+    # from here, and without a line of its own PostgreSQL turned this machine away
+    # from itself ("no pg_hba.conf entry for host <own address>"); the join stopped
+    # with one direction of the replication only.
+    own = []
+    for a in (own_address, CONFIG.get('ha_address'), node_address()):
+        try:
+            if a:
+                own.append(str(plain_ip(str(a).split('/')[0], 'address')))
+        except ValueError:
+            pass
+    for who in sorted(set(([peer] if peer else []) + ['127.0.0.1'] + own)):
         line = 'host    %s    %s    %s    scram-sha-256' % (name, user, peer_net(who))
         # Taken over TLS only already (1.0.104): no plain line put back in front.
         if line not in text and ('hostssl' + line[4:]) not in text:
@@ -47127,7 +47139,8 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     port = int(CONFIG.get('db_port') or 5432)
     name, user, pw = CONFIG.get('db_name'), CONFIG.get('db_user'), CONFIG.get('db_password')
     try:
-        restart, major = pg_prepare_local(port, peer, name, user, pw, say)
+        restart, major = pg_prepare_local(port, peer, name, user, pw, say,
+                                          own_address=args.ha_address or '')
         if restart:
             if args.yes or ask('PostgreSQL has to start again for this (wal_level = logical, '
                                'listening on the network) - restart it now? (yes/no)',
@@ -47211,7 +47224,8 @@ def cli_ha_join_replicated(args, pal, data, ask):
     try:
         if not pg_local_running(port):
             pg_install_local(int(data.get('pg_major') or 16), say)
-        restart, major = pg_prepare_local(port, peer['address'], name, user, pw, say)
+        restart, major = pg_prepare_local(port, peer['address'], name, user, pw, say,
+                                          own_address=args.ha_address or '')
         if restart:
             pg_restart_local(port)
             say('PostgreSQL started again')
