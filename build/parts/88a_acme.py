@@ -841,7 +841,21 @@ def acme_start(store, which, by):
         with _ACME_LOCK:
             ACME_WORK['each'][t] = {'says': 'starting', 'at': time.time(), 'n': i + 1}
             ACME_WORK.update(target=t, n=max(ACME_WORK['n'], i + 1))
+        lease = 'acme:busy:%s' % t
         try:
+            # One node orders a certificate at a time (1.0.209): ordered from the
+            # other node's pages while this one renewed it, both spent the CA's
+            # limit and the last one saved won. Held half an hour at most.
+            try:
+                held = json.loads(store.get_meta(lease) or '{}')
+            except ValueError:
+                held = {}
+            if held.get('node') and held['node'] != node_name() and \
+                    float(held.get('until') or 0) > time.time():
+                log('ACME: %s is being ordered on %s already - not ordered here too'
+                    % (n, held['node']), 'warn')
+                return
+            store.set_meta(lease, json.dumps({'node': node_name(), 'until': time.time() + 1800}))
             acme_order(store, t, n, by, acme_progress)
         except AcmeError as e:
             log('ACME: %s' % e, 'warn')
@@ -849,6 +863,11 @@ def acme_start(store, which, by):
             # Never the others with it: one order gone wrong is said, the rest go on.
             log('ACME: the order for %s stopped: %s' % (n, e), 'error')
         finally:
+            try:
+                if json.loads(store.get_meta(lease) or '{}').get('node') == node_name():
+                    store.db.run('DELETE FROM meta WHERE k = ?', (lease,))
+            except Exception:                           # noqa: BLE001
+                pass
             with _ACME_LOCK:
                 ACME_WORK['each'].pop(t, None)
                 ACME_WORK['done'] += 1

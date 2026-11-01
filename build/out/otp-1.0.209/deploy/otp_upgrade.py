@@ -187,6 +187,16 @@ def inspect(path, extract_to=None):
             if rel in files:
                 raise Refused('the package holds %s twice' % rel)
             files[rel] = one
+        # A folder no file of the package is in is not taken (1.0.209): the
+        # signature covers the files, and an empty folder came in beside them.
+        needed = {top}
+        for rel in files:
+            bits = rel.split('/')[:-1]
+            for k in range(1, len(bits) + 1):
+                needed.add(top + '/' + '/'.join(bits[:k]))
+        for one in members:
+            if one.isdir() and one.name.rstrip('/') not in needed:
+                raise Refused('the package has a folder no file of it is in: %s' % one.name[:120])
         for need in ('MANIFEST', 'MANIFEST.sig', 'otp.py', 'install.sh'):
             if need not in files:
                 raise Refused('the package has no %s%s' % (need, ' - it is not signed'

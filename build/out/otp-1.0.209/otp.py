@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.208'
+__version__ = '1.0.209'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -8460,6 +8460,8 @@ class Directory(object):
         rows = self.asked(do)
         out = [(r['dn'], (r['attrs'].get('cn') or [cn_of(r['dn'])])[0]) for r in rows]
         with self.lock:
+            if len(self.cache) > 5000:            # as find_user keeps it (1.0.209)
+                self.cache.clear()
             self.cache[key] = (time.time(), out)
         return out
 
@@ -24574,6 +24576,36 @@ def tls_resolved(prof):
 
 
 # ---- what this node asks of root, and how it went -------------------------------------
+def vip_plain(addr, like=''):
+    """An address as keepalived takes it: itself, or a host name's first address
+    of the VIP's family (1.0.209); '' when there is none."""
+    addr = str(addr or '').strip()
+    if not addr:
+        return ''
+    try:
+        return str(ipaddress.ip_address(addr))
+    except ValueError:
+        pass
+    want = (_fam(like) if like else 0) or 4
+    for a in addresses_cached(addr):
+        try:
+            if ipaddress.ip_address(a.split('%')[0]).version == want:
+                return a.split('%')[0]
+        except ValueError:
+            continue
+    return ''
+
+
+def vip_peer_seen(store):
+    """The other node's address as its heartbeat says, when ha_peer is not set
+    (a cluster of one shared database)."""
+    me = node_name()
+    for n in ha_nodes(store):
+        if n['name'] != me and n.get('address'):
+            return n['address']
+    return ''
+
+
 def web_desired(store):
     me = node_name()
     v = vip_conf(store)
@@ -24583,9 +24615,18 @@ def web_desired(store):
         vip = {'on': True, 'address': v.get('address'), 'fqdn': v.get('fqdn') or '',
                'address6': v.get('address6') or '',
                'vrid': int(v.get('vrid') or 51), 'auth': vip_auth(),
-               'own': CONFIG.get('ha_address') or node_address(),
-               'peer': CONFIG.get('ha_peer') or '',
+               'own': vip_plain(CONFIG.get('ha_address') or node_address(), v.get('address')),
+               'peer': vip_plain(CONFIG.get('ha_peer') or vip_peer_seen(store), v.get('address')),
                'iface': (v.get('ifaces') or {}).get(me, '')}
+        if not vip['own'] or not vip['peer']:
+            # Root takes addresses only (1.0.209): a host name - or no other node
+            # named - refused the whole request, and no certificate, firewall rule
+            # or access list reached nginx on this node again. The VIP waits.
+            log_sparing('vip-addr', 'the VIP address waits: %s is not an address this node '
+                        'can tell keepalived (ha_address / ha_peer)' % (
+                            'this node' if not vip['own'] else 'the other node'), 'warn',
+                        every=3600)
+            vip = {'on': False}
     tls = {'node': tls_resolved(tls_profile(store, me)),
            'vip': tls_resolved(tls_profile(store, 'vip')) if vip['on'] else None}
     out = {'node': me, 'vip': vip, 'tls': tls}
@@ -25230,6 +25271,13 @@ def fw_auto(store, node):
     for s in srcs:
         for f in ((4, 6) if not s else (_fam(s),)):
             web.append({'family': f, 'proto': 'tcp', 'port': '80,443', 'source': s})
+    if '' not in srcs and CONFIG.get('acme') and \
+            (CONFIG.get('acme_challenge') or 'http-01') == 'http-01':
+        # The CA asks from the internet (1.0.209): with the pages kept to some
+        # networks, port 80 was too - and no certificate was renewed. Port 80
+        # answers the CA's question and sends everything else to HTTPS.
+        for f in (4, 6):
+            web.append({'family': f, 'proto': 'tcp', 'port': '80', 'source': ''})
     out.append({'key': 'web', 'title': 'HTTP / HTTPS', 'why': 'the enrolment and '
                 'administration pages and the health check; who sees which is under '
                 '"Who may reach the pages"', 'rules': web})
@@ -26027,7 +26075,7 @@ def acme_name_of(store, target):
         info = (tls_profile(store, target) or {}).get('info') or {}
         for n in [info.get('cn')] + list(info.get('san') or []):
             n = str(n or '').strip().lower()
-            if re.match(r'^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z', n):
+            if re.match(r'^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})\Z', n):
                 name = n
                 break
     if not name and target == node_name():
@@ -26210,7 +26258,7 @@ def acme_order(store, target, name, by, say=None):
         steps.append([round(time.time(), 1), str(t)[:300]])
         tell(t)
     if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
-                    r'[A-Za-z]{2,63}\Z', name):
+                    r'(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9-]{1,59})\Z', name):   # .рф too (1.0.209)
         raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)' % name)
     st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url(), 'steps': steps}
     a = None
@@ -26419,7 +26467,21 @@ def acme_start(store, which, by):
         with _ACME_LOCK:
             ACME_WORK['each'][t] = {'says': 'starting', 'at': time.time(), 'n': i + 1}
             ACME_WORK.update(target=t, n=max(ACME_WORK['n'], i + 1))
+        lease = 'acme:busy:%s' % t
         try:
+            # One node orders a certificate at a time (1.0.209): ordered from the
+            # other node's pages while this one renewed it, both spent the CA's
+            # limit and the last one saved won. Held half an hour at most.
+            try:
+                held = json.loads(store.get_meta(lease) or '{}')
+            except ValueError:
+                held = {}
+            if held.get('node') and held['node'] != node_name() and \
+                    float(held.get('until') or 0) > time.time():
+                log('ACME: %s is being ordered on %s already - not ordered here too'
+                    % (n, held['node']), 'warn')
+                return
+            store.set_meta(lease, json.dumps({'node': node_name(), 'until': time.time() + 1800}))
             acme_order(store, t, n, by, acme_progress)
         except AcmeError as e:
             log('ACME: %s' % e, 'warn')
@@ -26427,6 +26489,11 @@ def acme_start(store, which, by):
             # Never the others with it: one order gone wrong is said, the rest go on.
             log('ACME: the order for %s stopped: %s' % (n, e), 'error')
         finally:
+            try:
+                if json.loads(store.get_meta(lease) or '{}').get('node') == node_name():
+                    store.db.run('DELETE FROM meta WHERE k = ?', (lease,))
+            except Exception:                           # noqa: BLE001
+                pass
             with _ACME_LOCK:
                 ACME_WORK['each'].pop(t, None)
                 ACME_WORK['done'] += 1
@@ -28018,8 +28085,13 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
     had_peer = str(CONFIG.get('ha_peer') or '')
     if mine == had_mine:
         mine = ''
+    sub_again = False
     if peer == had_peer:
         peer = ''
+        # The subscription still on another address (a move that failed half
+        # way before 1.0.209): put where ha_peer says.
+        if had_peer and _sub_host(store) not in ('', had_peer):
+            peer, sub_again = had_peer, True
     if not mine and not peer:
         return {'message': 'nothing to change: both addresses are as this node has them',
                 'done': [], 'left': []}
@@ -28028,10 +28100,8 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
     done, left = [], []
     with READDRESS_LOCK:
         if peer:
-            done.append(_readdress_hba(had_peer, peer, root_now, keep_old=keep_old))
-            write_file_settings({'ha_peer': peer})
-            CONFIG['ha_peer'] = peer
-            done.append('ha_peer = %s (was %s)' % (peer, had_peer))
+            if not sub_again:
+                done.append(_readdress_hba(had_peer, peer, root_now, keep_old=keep_old))
             sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
             if store.db.value(SUB_HERE_SQL, (sub,)):
                 conninfo = ha_conninfo(peer, int(CONFIG.get('ha_peer_port') or 5432),
@@ -28043,6 +28113,13 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
                     raise ValueError('the subscription %s could not be pointed at %s: %s'
                                      % (sub, peer, str(e).split(': ', 1)[-1]))
                 done.append('this node takes the other\'s rows from %s now' % peer)
+            # Written once the subscription was moved (1.0.209): written first, a
+            # move that failed left config.json on the new address and the
+            # subscription on the old one - and asked again, "nothing to change".
+            if not sub_again:
+                write_file_settings({'ha_peer': peer})
+                CONFIG['ha_peer'] = peer
+                done.append('ha_peer = %s (was %s)' % (peer, had_peer))
             once_peer_forget()
         if mine:
             write_file_settings({'ha_address': mine})
@@ -28065,6 +28142,17 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
         except Exception:                               # noqa: BLE001
             pass
     return {'message': '; '.join(done + left), 'done': done, 'left': left}
+
+
+def _sub_host(store):
+    """The host this node's subscription reaches the other at ('' unknown)."""
+    try:
+        sub = ha_sub_here(store.db, 3 - int(CONFIG.get('ha_slot') or 1))
+        conn = store.db.value('SELECT subconninfo FROM pg_subscription WHERE subname = ?', (sub,))
+        got = re.search(r'(?:^|\s)host=(\S+)', str(conn or ''))
+        return got.group(1).strip("'") if got else ''
+    except Exception:                                   # noqa: BLE001
+        return ''
 
 
 def readdress_tell(peer, mine, by, keep_old=False):
@@ -28306,7 +28394,9 @@ def net_check(store, node, want, rollback=False):
         raise ValueError('the IPv4 address is an address with its prefix: 192.0.2.10/24')
     if (a4.ip.is_loopback and not os.environ.get('OTP_NET_LOOPBACK_OK')) or \
             a4.ip.is_multicast or a4.ip.is_unspecified or \
-            a4.ip == a4.network.network_address or a4.ip == a4.network.broadcast_address:
+            (a4.network.prefixlen < 31 and a4.ip in (a4.network.network_address,
+                                                     a4.network.broadcast_address)):
+        # /31 and /32 have no network or broadcast address of their own (1.0.209).
         raise ValueError('%s cannot be the address of a machine in %s' % (a4.ip, a4.network))
     gw = str(v4.get('gw') or '').strip()
     if gw:
@@ -28319,9 +28409,13 @@ def net_check(store, node, want, rollback=False):
     dns = _net_list(v4.get('dns'))
     for x in dns:
         try:
-            ipaddress.ip_address(x)
+            d4 = ipaddress.ip_address(x)
         except ValueError:
             raise ValueError('%r is not the address of a DNS server' % x)
+        if d4.version != 4:
+            # The IPv4 side's servers are IPv4 ones (1.0.209): root refused the
+            # whole change for an IPv6 one put here.
+            raise ValueError('%s is an IPv6 address - put it with the IPv6 DNS servers' % x)
     search = _net_list(v4.get('search'), 6)
     v6 = want.get('ipv6') or {}
     on6 = bool(v6.get('on'))
@@ -29335,6 +29429,25 @@ def fw_trial_min():
     return int(CONFIG.get('fw_confirm_min') or 0)
 
 
+ACCESS_INSTALLED = ('192.168.0.0/16', '172.16.0.0/12', '10.0.0.0/8')
+
+
+def access_in_nginx():
+    """Who may reach the pages as nginx has it now (root reads it): kept for a
+    trial's put-back when otp never set the lists itself (1.0.209)."""
+    try:
+        now = web_status().get('access') or {}
+    except Exception:                                   # noqa: BLE001
+        now = {}
+    out = {}
+    for k in ACCESS_WORDS:
+        one = now.get(k)
+        if not isinstance(one, dict):
+            return {}
+        out[k] = {'any': bool(one.get('any')), 'from': [str(x) for x in one.get('from') or []]}
+    return out
+
+
 def fw_trial_begin(store, by):
     """Before a change of the firewall or of who may reach the pages: what is
     there now kept, for going back to."""
@@ -29345,7 +29458,7 @@ def fw_trial_begin(store, by):
     trial = _meta_json(store, 'fw:trial') or {}
     if not trial or trial.get('done'):
         trial = {'id': secrets.token_hex(6), 'was': fw_conf(store),
-                 'access': access_conf(store), 'at': t, 'by': by}
+                 'access': access_conf(store) or access_in_nginx(), 'at': t, 'by': by}
     trial.update(until=t + n * 60, last_by=by, min=n)
     store.set_meta('fw:trial', json.dumps(trial))
     # The key the put-back is claimed by made now, by this node alone (1.0.139):
@@ -29377,8 +29490,12 @@ def fw_put_back(store, trial, why):
     # rules of the trial stayed; so did the lists of who may reach the pages.
     store.set_meta('fw:conf', json.dumps(dict(was, set=True, at=time.time(),
                                               by='otp (%s)' % why)))
+    # Never "everybody" when nothing was known (1.0.209): the lists never saved
+    # here were nginx's own - the private networks of the install - and the
+    # put-back opened the administration to the internet.
     store.set_meta('web:access', json.dumps(trial.get('access') or {
-        k: {'any': True, 'from': []} for k in ACCESS_WORDS}))
+        k: {'any': k not in ('admin', 'portal'), 'from': [] if k not in ('admin', 'portal')
+            else list(ACCESS_INSTALLED)} for k in ACCESS_WORDS}))
     trial.update(done='back', done_by=why, done_at=time.time())
     store.set_meta('fw:trial', json.dumps(trial))
     store.add_event('settings', 'the firewall and access went back to what they were before '
@@ -31179,6 +31296,9 @@ def ssh_gate_old_client(store):
                             % SSH_RADIUS_CLIENT, 'info')
 
 
+SSHGATE_AT_ONCE = threading.BoundedSemaphore(32)
+
+
 class SshGate(object):
     """pam_radius's otp: on 127.0.0.1, in a thread of its own - RADIUS of the
     VPN is not touched by it, nor it by RADIUS."""
@@ -31288,10 +31408,25 @@ class SshGate(object):
                             pass
                     continue
                 self.seen[key] = (time.time(), None)
+            # As many at once as the codes sent may be (1.0.209): a slow database
+            # or mail server piled a thread up for each request.
+            if not SSHGATE_AT_ONCE.acquire(blocking=False):
+                with self.lock:
+                    self.seen.pop(key, None)
+                log_sparing('sshgate-busy', 'the gate for SSH with a code: too many requests at '
+                            'once - one left unanswered (asked again, it is answered)', 'warn',
+                            every=300)
+                continue
             threading.Thread(target=self.serve, args=(s, data, addr, key), name='otp-sshgate-req',
                              daemon=True).start()
 
     def serve(self, s, data, addr, key):
+        try:
+            self._serve(s, data, addr, key)
+        finally:
+            SSHGATE_AT_ONCE.release()
+
+    def _serve(self, s, data, addr, key):
         try:
             out = self.answer(data, addr)
             with self.lock:
@@ -31392,6 +31527,11 @@ def _node_ask_run(daemon, kind, want):
     key = '%s:%s' % (kind, want.get('id'))
     if key in NODE_ASK['done'] or kind not in NODE_ASK['do']:
         return
+    if len(NODE_ASK['done']) > 2000:
+        # Kept to a size (1.0.209): one per test pressed, for good. Only an ask
+        # fresh within NODE_ASK_FRESH is offered again, and done again it only
+        # writes this node's answer over itself.
+        NODE_ASK['done'].clear()
     only = (want.get('args') or {}).get('only')
     if only and only != node_name():
         NODE_ASK['done'].add(key)

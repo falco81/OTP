@@ -4,6 +4,55 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.209 — 1 November 2026
+
+**A bug hunt, fifth round**: the border between otp and root (every request the root
+helper takes, the upgrader's package check), certificates and the network around them
+(ACME, the VIP, the firewall and its trial, moving a node's address), and what grows
+over months of running. Each finding shown to fail first (`tests/round/t_round5.py`,
+26 of 26). The RADIUS path held 120,000 requests at a flat 49 MB.
+
+The firewall and the pages:
+- **A change of the firewall not kept in time opened the administration to everybody**
+  when its lists of who may reach the pages had never been saved in otp: the put-back
+  wrote "everybody" for the administration and the enrolment pages - nginx opened them,
+  and the firewall opened 80 and 443 from anywhere. It goes back to the lists nginx had
+  (or, not known, to the private networks of the install).
+- With ACME by HTTP-01 and the pages kept to some networks, port 80 was kept to them
+  too and no certificate was renewed: it is open to the CA from anywhere (it answers the
+  CA's question and sends everything else to HTTPS).
+
+The cluster:
+- **The VIP with a host name for a node's address** (ha_address or ha_peer), or no
+  other node named, made root refuse the whole request - and no certificate, firewall
+  rule or list of who may reach the pages reached that node again. The name is looked
+  up; with no address the VIP waits, said in the log, and the rest goes.
+- Moving the other node's address wrote it before the subscription was moved: a move
+  that failed half way left config.json on the new address and replication on the old
+  one, and asked again it said "nothing to change". It is written once moved, and a
+  subscription still on another address is moved when asked again.
+- A certificate is ordered by ACME on one node at a time (from either node's pages
+  while the other renewed it, both ordered it).
+
+Root:
+- **A change of sshd that went wrong half way stayed half made**, with no trial to put
+  it back: only sshd refusing it was undone - a package that did not install, a notice
+  that could not be written or a reload that failed left the drop-in and PAM as they
+  were being changed. Every file goes back as it was now.
+- pg_hba lines are not written for PostgreSQL's words (all, sameuser, samerole,
+  samegroup, replication) in place of otp's database or account.
+- /etc/hosts: the lines taken out for the machine's old addresses and name are only
+  those it has now - any line could be taken away before.
+- A certificate PostgreSQL does not take is not left behind: ssl and its files as they
+  were, so its next restart does not fail on them.
+- The upgrader refuses a signed package with a folder no file of it is in.
+
+Smaller:
+- ACME takes names under a punycode TLD (.рф). The network: /31 and /32 addresses are
+  taken; an IPv6 DNS server among the IPv4 ones is refused on the page, not by root.
+- The tests asked of every node are not remembered for good; the SSH gate answers 32
+  requests at once at most; a directory's cache of groups keeps to its size.
+
 ## 1.0.208 — 1 November 2026
 
 **A bug hunt, fourth round**: who may call what on the pages' API and how sign-ins

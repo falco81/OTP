@@ -159,8 +159,10 @@ ok('nginx reloaded when only a certificate file changed', 'TLS_FILES_NEW[0] = Tr
 ok('modes set on the file itself, never by its name in a folder others write in',
    'os.chmod(tmp, mode)' not in H)
 ok('user names for sshd and PAM end at \\Z, not $', '{1,64}$\'' not in H)
+# The files and the reload in sshd_apply_files since 1.0.209: the old timer stopped after it.
 ok('a change on trial keeps its timer until the next one is in', H.index('if old:\n            sshd_disarm(old)')
-   > H.index('        sshd_reload()\n        if old:'))
+   > (H.index('said = sshd_apply_files(') if 'said = sshd_apply_files(' in H
+      else H.index('        sshd_reload()\n        if old:')))
 
 # ---- F6: certificate texts escaped in the confirmations -------------------------------------
 J = open(V + '/web/assets/admin.js').read()
