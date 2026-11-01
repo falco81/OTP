@@ -137,4 +137,25 @@ ok('a new address of a node in a cluster of one shared database: ticked by whoev
 ok('maintenance: the last node in service is said to be the last', 'No other node is answering in service' in J)
 ok('Resume possible after only what goes out was paused', "(r.outgoing || []).some(function (x) { return x.active === false; })"
    in J)
+# ---- replicated HA join: this node's own address in pg_hba.conf (1.0.212) ----------------------
+if 'own_address' in open(V + '/otp.py').read():
+    hba = os.path.join(D, 'pg_hba.conf')
+    open(hba, 'w').write('local all all peer\n')
+    answers = {'SHOW server_version_num': '160004', 'SHOW wal_level': 'logical', 'SHOW listen_addresses': '*',
+               'SHOW max_slot_wal_keep_size': otp.HA_SLOT_KEEP, 'SHOW hba_file': hba}
+    real_admin = otp.pg_admin
+    otp.pg_admin = lambda sql, port=5432, db=None, secret=False: answers.get(sql, '1')
+    try:
+        otp.pg_prepare_local(5432, '192.0.2.71', 'otp', 'otp', 'x' * 20, lambda t: None, own_address='192.0.2.72')
+        text = open(hba).read()
+    finally:
+        otp.pg_admin = real_admin
+    ok('replicated HA: pg_hba.conf lets in the other node, this node itself (its subscription is tried from here) and '
+       '127.0.0.1', all(x in text for x in ('192.0.2.71/32', '192.0.2.72/32', '127.0.0.1/32')), text)
+    otp.pg_admin = lambda sql, port=5432, db=None, secret=False: answers.get(sql, '1')
+    try:
+        otp.pg_prepare_local(5432, '192.0.2.71', 'otp', 'otp', 'x' * 20, lambda t: None, own_address='192.0.2.72')
+    finally:
+        otp.pg_admin = real_admin
+    ok('... run again: no line twice', open(hba).read().count('192.0.2.72/32') == 1)
 print('ALL %d / %d' % (sum(R), len(R)))

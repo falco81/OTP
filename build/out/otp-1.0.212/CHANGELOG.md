@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.212 — 1 November 2026
+
+- **Replicated HA: `otp --ha-join` stopped with one direction of the replication only** -
+  "no pg_hba.conf entry for host <this node's address>". Before the first node is told to
+  take the second one's rows, that subscription's connection - to the second node's own
+  address - is tried on the second node, and PostgreSQL there let in only 127.0.0.1 and
+  the other node, not the machine itself. `pg_prepare_local` (`--ha-setup`, `--ha-join`)
+  puts this node's own address (`--ha-address`, else the one it reaches the network
+  with) into pg_hba.conf as well, once. A node left half joined by it: add the line by
+  hand (`host otp otp <its address>/32 scram-sha-256`, then `SELECT pg_reload_conf()`)
+  and run `--ha-join` again - or upgrade first and run it again.
+
 ## 1.0.211 — 1 November 2026
 
 **Every pane looked through for both nodes**: what each shows of each node, what each

@@ -761,7 +761,7 @@ def pg_restart_local(port=5432):
     raise ValueError('PostgreSQL did not come back after its restart')
 
 
-def pg_prepare_local(port, peer, name, user, password, say):
+def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
     """PostgreSQL on this machine ready to replicate with `peer`: logical
     WAL, listening on the network, the peer let in, the account able to
     replicate and to subscribe, the database there. True when it has to be
@@ -802,7 +802,19 @@ def pg_prepare_local(port, peer, name, user, password, say):
     hba = pg_admin('SHOW hba_file', port)
     text = Path(hba).read_text()
     added = []
-    for who in sorted(set(([peer] if peer else []) + ['127.0.0.1'])):
+    # This node's own address too (1.0.212): before the other node is told to take
+    # this one's rows, that subscription's connection - to this address - is tried
+    # from here, and without a line of its own PostgreSQL turned this machine away
+    # from itself ("no pg_hba.conf entry for host <own address>"); the join stopped
+    # with one direction of the replication only.
+    own = []
+    for a in (own_address, CONFIG.get('ha_address'), node_address()):
+        try:
+            if a:
+                own.append(str(plain_ip(str(a).split('/')[0], 'address')))
+        except ValueError:
+            pass
+    for who in sorted(set(([peer] if peer else []) + ['127.0.0.1'] + own)):
         line = 'host    %s    %s    %s    scram-sha-256' % (name, user, peer_net(who))
         # Taken over TLS only already (1.0.104): no plain line put back in front.
         if line not in text and ('hostssl' + line[4:]) not in text:

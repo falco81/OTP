@@ -1204,7 +1204,8 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     port = int(CONFIG.get('db_port') or 5432)
     name, user, pw = CONFIG.get('db_name'), CONFIG.get('db_user'), CONFIG.get('db_password')
     try:
-        restart, major = pg_prepare_local(port, peer, name, user, pw, say)
+        restart, major = pg_prepare_local(port, peer, name, user, pw, say,
+                                          own_address=args.ha_address or '')
         if restart:
             if args.yes or ask('PostgreSQL has to start again for this (wal_level = logical, '
                                'listening on the network) - restart it now? (yes/no)',
@@ -1288,7 +1289,8 @@ def cli_ha_join_replicated(args, pal, data, ask):
     try:
         if not pg_local_running(port):
             pg_install_local(int(data.get('pg_major') or 16), say)
-        restart, major = pg_prepare_local(port, peer['address'], name, user, pw, say)
+        restart, major = pg_prepare_local(port, peer['address'], name, user, pw, say,
+                                          own_address=args.ha_address or '')
         if restart:
             pg_restart_local(port)
             say('PostgreSQL started again')
