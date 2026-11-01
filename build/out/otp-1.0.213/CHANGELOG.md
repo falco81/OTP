@@ -4,6 +4,35 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.213 — 1 November 2026
+
+**Joining a cluster, without a hand on pg_hba.conf, iptables or firewall-cmd** - what
+building a cluster on machines with iptables and no firewalld showed:
+
+- **The firewall let the other node in only once the cluster was made**, and the join
+  stopped on "No route to host": otp's own firewall (OTP-IN) put "The other node" in
+  only with ha_mode set. The node being joined is let in at once now - on the first node
+  as its address is given (`--ha-setup --ha-peer`, or the bundle made on the pages), on
+  the second as it joins - for a day at most, for good once it has joined. The firewall
+  pane shows it.
+- **"✔ firewalld lets … reach PostgreSQL" was said whether firewalld ran or not**, and
+  nothing else was opened. The command line opens the firewall that really runs - otp's
+  own, firewalld when it runs, or the system's iptables with its REJECT at the end (the
+  rule said not to be saved there) - checks it, and says what it did or could not do.
+- **A bundle made on the pages left the first node unready**: PostgreSQL listening on
+  localhost alone, no pg_hba.conf line, no firewall - the join said "Connection refused".
+  *Make the bundle…* asks for the second node's address and does each, shown step by
+  step; letting PostgreSQL listen on the network restarts it, so it is ticked first.
+- **A cluster of one shared database is written as one**: ha_mode = shared, and the
+  other node's address as ha_peer, on both nodes (the bundle and the join). Both ran as
+  two servers alone - no VIP, nothing asked of the other.
+- **Join a cluster…** is drawn anew: the bundle dropped or chosen and named, *Check it*
+  opens it and tries its database from this node before anything changes, and a failed
+  connection is said as what it means (nothing listening, a firewall, pg_hba.conf, a
+  bundle older than the password) with what to do - on the command line too.
+- A node whose join stopped half way says so - "password authentication failed" was all
+  there was - with the join to run again.
+
 ## 1.0.212 — 1 November 2026
 
 - **Replicated HA: `otp --ha-join` stopped with one direction of the replication only** -

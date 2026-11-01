@@ -1133,6 +1133,10 @@ def cluster_addresses(store, node):
     v = vip_conf(store)
     if v.get('on') and v.get('address'):
         out.add(str(v['address']).split('/')[0])
+    if node == me:
+        # The node a cluster is being made with (1.0.213): let in before the join -
+        # replication goes both ways from its first row.
+        out.update(ha_joining())
     good = set()
     for a in out:
         try:
@@ -1273,11 +1277,16 @@ def fw_auto(store, node):
                                'source': n} for n in nets] or
                     [{'family': f, 'proto': 'udp', 'port': port, 'source': ''} for f in (4, 6)]})
     # Inside the cluster: always, never turned off.
-    if peers and in_cluster(store):             # shared too (1.0.211)
+    if peers and (in_cluster(store) or ha_joining()):   # shared too (1.0.211), joining (1.0.213)
         nodes_only = [p for p in peers if p != str(v.get('address') or '').split('/')[0]]
+        joining = ha_joining_info() if not in_cluster(store) else {}
         out.append({'key': 'cluster', 'title': 'The other node', 'fixed': True,
-                    'why': 'replication (PostgreSQL), its pages and the health check - inside '
-                    'the cluster everything has to work',
+                    'why': ('the node a cluster is being made with (%s): let in for the join, '
+                            'until %s at most' % (', '.join(joining.get('addrs') or []),
+                                                  time.strftime('%d.%m. %H:%M', time.localtime(
+                                                      float(joining.get('until') or 0)))))
+                    if joining else 'replication (PostgreSQL), its pages and the health check - '
+                    'inside the cluster everything has to work',
                     # Everything from it (1.0.59): its answers to this node's
                     # own asking came from other ports and were dropped.
                     'rules': [{'family': _fam(p), 'proto': 'any', 'port': '',

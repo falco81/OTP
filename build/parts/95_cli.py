@@ -1141,6 +1141,7 @@ def cli_ha(args, pal):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for a second node was made on the command line '
                     '(the database at %s)' % db_host, 'warn', who='command line')
+    ha_mark_shared(args.ha_peer or '')
     print('')
     print(pal.ok_line('the bundle for the second node: %s' % target))
     print('  ' + pal.bold('its passphrase, shown only now: ') + pal.info(phrase))
@@ -1158,17 +1159,76 @@ def cli_ha(args, pal):
 
 
 def firewall_peer(peer, pal, port=5432):
-    """firewalld letting the other node - one address - reach PostgreSQL."""
-    if shutil.which('firewall-cmd'):
+    """The other node let in by the firewall that really runs here (1.0.213) -
+    otp's own (OTP-IN), firewalld, or the system's iptables with its REJECT at the
+    end - checked, and said as it is. It said "firewalld lets ..." whether firewalld
+    ran or not, otp's own firewall let the other node in only once the cluster was
+    made, and the join stopped on "No route to host". Kept as a node being joined
+    for a day: otp's firewall keeps it in its rules, the pages show it."""
+    try:
         a = peer_address(peer)
-        rule = ('rule family="%s" source address="%s/%d" port port="%d" protocol="tcp" accept'
-                % ('ipv4' if a.version == 4 else 'ipv6', a, 32 if a.version == 4 else 128,
-                   port))
-        subprocess.run(['firewall-cmd', '--permanent', '--add-rich-rule=' + rule],
-                       capture_output=True)
-        subprocess.run(['firewall-cmd', '--reload'], capture_output=True)
-        print(pal.ok_line('firewalld lets %s reach PostgreSQL (TCP %d)' % (peer, port)))
+    except ValueError as e:
+        print(pal.bad_line('the firewall: %s is not an address (%s)' % (peer, e)))
+        return False
+    ha_joining_set([str(a)], 'command line', 'a cluster made with it')
+    fam = 'ipv4' if a.version == 4 else 'ipv6'
+    ipt = 'iptables' if a.version == 4 else 'ip6tables'
+    net = '%s/%d' % (a, 32 if a.version == 4 else 128)
+    did, ok_all = [], True
 
+    def run(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            return subprocess.CompletedProcess(cmd, 1, '', str(e))
+    # otp's own firewall: its chain, rebuilt by root from the rules - the node
+    # being joined is among them from now on; put in at once meanwhile.
+    if shutil.which(ipt) and run([ipt, '-n', '-L', 'OTP-IN']).returncode == 0:
+        rule = ['-s', net, '-m', 'comment', '--comment', 'otp: The other node', '-j', 'ACCEPT']
+        if run([ipt, '-C', 'OTP-IN'] + rule).returncode != 0:
+            run([ipt, '-I', 'OTP-IN', '1'] + rule)
+        if run([ipt, '-C', 'OTP-IN'] + rule).returncode == 0:
+            did.append('otp\'s firewall (OTP-IN) lets %s in' % a)
+        else:
+            ok_all = False
+            print(pal.bad_line('otp\'s firewall (OTP-IN): %s could not be let in' % a))
+    # firewalld - only when it runs: installed and stopped, its rule changed nothing.
+    fw = run(['firewall-cmd', '--state']) if shutil.which('firewall-cmd') else None
+    if fw is not None and fw.returncode == 0 and 'running' in (fw.stdout or ''):
+        rich = ('rule family="%s" source address="%s" port port="%d" protocol="tcp" accept'
+                % (fam, net, port))
+        r1 = run(['firewall-cmd', '--permanent', '--add-rich-rule=' + rich])
+        r2 = run(['firewall-cmd', '--add-rich-rule=' + rich])
+        q = run(['firewall-cmd', '--query-rich-rule=' + rich])
+        if q.returncode == 0 and r1.returncode == 0:
+            did.append('firewalld lets %s reach PostgreSQL (TCP %d)' % (a, port))
+        else:
+            ok_all = False
+            print(pal.bad_line('firewalld did not take the rule for %s: %s' % (
+                a, ((r1.stderr or '') + (r2.stderr or '')).strip()[:200] or 'no answer')))
+    elif shutil.which(ipt) and run([ipt, '-n', '-L', 'OTP-IN']).returncode != 0:
+        # The system's own iptables (iptables-services: a REJECT at the end of INPUT):
+        # let in at the top, as the cluster's other node.
+        got = run([ipt, '-S', 'INPUT'])
+        shut = got.returncode == 0 and (re.search(r'-j (REJECT|DROP)', got.stdout or '') or
+                                        '-P INPUT DROP' in (got.stdout or ''))
+        if shut:
+            rule = ['-s', net, '-m', 'comment', '--comment', 'otp: The other node', '-j', 'ACCEPT']
+            if run([ipt, '-C', 'INPUT'] + rule).returncode != 0:
+                run([ipt, '-I', 'INPUT', '1'] + rule)
+            if run([ipt, '-C', 'INPUT'] + rule).returncode == 0:
+                did.append('%s lets %s in (INPUT, first)' % (ipt, a))
+                print(pal.warn_line('the system\'s %s rule is not saved: kept over a restart by  '
+                                    'service %s save  - or switch otp\'s firewall on '
+                                    '(Settings → Firewall), which keeps it' % (ipt, ipt)))
+            else:
+                ok_all = False
+                print(pal.bad_line('%s: %s could not be let in' % (ipt, a)))
+    for line in did:
+        print(pal.ok_line(line))
+    if not did and ok_all:
+        print(pal.ok_line('no firewall here stands between this node and %s' % a))
+    return ok_all
 
 def cli_ha_bundle_again(args, pal, store):
     """--ha-bundle on a node already replicating: the bundle for the other
@@ -1300,9 +1360,14 @@ def cli_ha_join_replicated(args, pal, data, ask):
         local.make_tables()
         local.add_missing_columns()
         pg_publication(port, name)
-        remote = db_open({'db_engine': 'postgres', 'db_host': peer['address'],
-                          'db_port': int(peer.get('port') or 5432), 'db_name': name,
-                          'db_user': user, 'db_password': pw})
+        try:
+            remote = db_open({'db_engine': 'postgres', 'db_host': peer['address'],
+                              'db_port': int(peer.get('port') or 5432), 'db_name': name,
+                              'db_user': user, 'db_password': pw})
+        except DbError as e:
+            # Said what it means (1.0.213), not only what psycopg2 said.
+            raise ValueError('the first node\'s PostgreSQL cannot be reached: %s'
+                             % pg_reach_why(str(e), peer['address'], peer.get('port') or 5432))
         me = args.ha_address or node_address()
         # The daemon stopped while the rows come over, as --ha-resync does
         # (1.0.59): its heartbeat written into the tables being copied
@@ -1849,11 +1914,26 @@ def cli_store():
     try:
         db = open_db()
     except DbError as e:
-        raise SystemExit('otp: %s' % e)
+        raise SystemExit('otp: %s%s' % (e, half_joined_words(e)))
     store = Storage(db, quick=True)
     _cli_name_held()
     load_config(saved=store.settings_saved())
     return store
+
+
+def half_joined_words(e):
+    """A join that stopped half way said so (1.0.213): the cluster's key and its
+    password taken, this machine's PostgreSQL not made ready yet - "password
+    authentication failed" was all there was to read."""
+    t = str(e)
+    if not (sealing_key_path().with_name('secrets.key.before-join').exists() or
+            HA_JOINING_FILE.exists()):
+        return ''
+    if not re.search(r'password authentication failed|no pg_hba\.conf entry|does not exist', t):
+        return ''
+    return ('\notp: this node looks half joined to a cluster (its key and password are the '
+            'cluster\'s, its PostgreSQL is not ready for them): run the join again as root - '
+            'otp --ha-join BUNDLE --node-name NAME - it starts over from where it stopped')
 
 
 def _cli_name_held():

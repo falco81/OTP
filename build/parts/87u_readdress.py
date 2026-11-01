@@ -26,6 +26,74 @@ def _readdress_ip(text, what):
         raise ValueError('%s is one plain address (192.0.2.10), not %r' % (what, text[:60]))
 
 
+def pg_root_ask(what, wait=150):
+    """One request to this node's root helper about PostgreSQL (pgtls.ask), and its
+    answer - ValueError with what it said when it refused (1.0.213)."""
+    ask_id = secrets.token_hex(8)
+    data = dict({'port': int(CONFIG.get('db_port') or 5432),
+                 'db': str(CONFIG.get('db_name') or 'otp'), 'user': str(CONFIG.get('db_user') or 'otp'),
+                 'peer': '', 'ca_file': str(HA_CA_FILE)}, **what)
+    data['id'] = ask_id
+    pgtls_send(data)
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            got = json.loads((WEB_DIR / PGTLS_FILE).read_text())
+        except (OSError, ValueError):
+            got = None
+        if isinstance(got, dict) and got.get('id') == ask_id:
+            if not got.get('ok'):
+                raise ValueError(got.get('said') or 'the root helper said no')
+            return got
+        time.sleep(0.5)
+    raise ValueError('the root helper of this node did not answer - is otp-web.path running?  '
+                     'systemctl status otp-web.path')
+
+
+def ha_bundle_prepare(store, peer, listen=False, by=''):
+    """The first node of a cluster of one shared PostgreSQL on this machine made ready
+    for the second (1.0.213), each step said as it went: PostgreSQL listening on the
+    network (only when asked - it restarts it), the second node in pg_hba.conf, let in
+    by this node's firewall, ha_mode 'shared'. The bundle made on the pages did none of
+    it, and the join said "Connection refused"."""
+    steps = []
+    peer = str(peer or '').strip()
+    if peer:
+        peer = _readdress_ip(peer, 'the second node\'s address')
+    host = str(CONFIG.get('db_host') or '').lower()
+    local = store.db.engine == 'postgres' and host in ('', 'localhost', '127.0.0.1', '::1')
+    if local:
+        try:
+            now = str(store.db.value('SHOW listen_addresses') or '')
+        except Exception:                               # noqa: BLE001
+            now = ''
+        if now in ('', 'localhost', '127.0.0.1', '::1'):
+            if not listen:
+                raise ValueError('PostgreSQL here listens on this machine alone (listen_addresses = '
+                                 '%s): the second node could not reach it. Tick that it may listen '
+                                 'on the network - it is restarted for it' % (now or 'localhost'))
+            got = pg_root_ask({'do': 'listen'}, wait=180)
+            steps.append({'ok': not got.get('restart'), 'what': got.get('said') or 'listening'})
+        else:
+            steps.append({'ok': True, 'what': 'PostgreSQL listens on the network '
+                                              '(listen_addresses = %s)' % now})
+        if peer:
+            try:
+                said = _readdress_hba('', peer, False)
+                steps.append({'ok': True, 'what': 'pg_hba.conf lets %s in: %s' % (peer, said)})
+            except ValueError as e:
+                steps.append({'ok': False, 'what': 'pg_hba.conf: %s' % e})
+    if peer:
+        let = ha_joining_set([peer], by, 'the second node')
+        steps.append({'ok': bool(let), 'what': 'this node\'s firewall lets %s in for the join '
+                                               '(a day at most; for good once it has joined)'
+                                               % ', '.join(let or [peer])})
+    ha_mark_shared(peer)
+    steps.append({'ok': True, 'what': 'this node is the first of a cluster of one shared database '
+                                      '(ha_mode = shared)'})
+    return steps
+
+
 def _readdress_hba(old_peer, new_peer, root_now, keep_old=False, drop_old=False):
     """This node's pg_hba.conf: the other node's line moved to its new
     address (host or hostssl kept), by the root helper."""

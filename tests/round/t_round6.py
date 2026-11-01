@@ -131,7 +131,7 @@ ok('the alerts looked at again by the node that sends them only', "if alerts_lea
 ok('SSH: Keep keeps only where it was on trial when pressed', "> float(now.get('applied_at') or 0)" in src)
 ok('replication paused half way said, not a bare error', src.count("its side as it was") == 2)
 ok('the firewall lets the other node in, in a cluster of one shared database too',
-   'if peers and in_cluster(store):' in src)
+   'if peers and (in_cluster(store)' in src)
 ok('a new address of a node in a cluster of one shared database: ticked by whoever changes it',
    "want.get('shared_db_ok')" in src and 'shared_db_ok' in J)
 ok('maintenance: the last node in service is said to be the last', 'No other node is answering in service' in J)

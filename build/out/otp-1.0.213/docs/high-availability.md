@@ -64,7 +64,10 @@ from. In a cluster, the page header shows which node answered it.
    - sets `wal_level = logical`, `listen_addresses = '*'` and
      `max_slot_wal_keep_size = 16GB`, and restarts PostgreSQL after asking,
    - adds a `pg_hba.conf` line for the second node (this database, this
-     account, `scram-sha-256`) and opens TCP 5432 in firewalld for that one
+     account, `scram-sha-256`) - and one for this node's own address, which the
+     join tries its connection from (1.0.212) - and lets the second node through
+     the firewall that really runs here (1.0.213: otp's own, firewalld when it
+     runs, or the system's iptables), checked and said as it is, for
      address,
    - publishes every table (`otp_pub`) and gives the database account the
      right to replicate,
@@ -194,7 +197,8 @@ makes first.
    - makes it listen on the network,
    - adds a `pg_hba.conf` line for the second node (this database, this
      account, `scram-sha-256`),
-   - opens TCP 5432 in firewalld for that one address,
+   - lets that one address through the firewall that really runs here (otp's own,
+     firewalld, or the system's iptables - 1.0.213),
    - and restarts PostgreSQL after asking.
 
    It then writes `/root/otp-join-otp1.json` and prints the passphrase, once.
@@ -205,6 +209,20 @@ makes first.
    last command you can press *Join a cluster…* on the second node's own
    pages. From then on, sign in with the cluster's accounts.
 4. **On both nodes**: `otp --trusted-proxy 192.0.2.10/32`.
+
+### On the pages (1.0.213)
+
+*Make the bundle…* asks for the second node's address and makes this node ready for
+it, each step shown: PostgreSQL let listen on the network when it listens on this
+machine alone (it is restarted for it - ticked first), the second node put into
+pg_hba.conf, let through this node's firewall at once (the firewall's *The other
+node* shows it, for a day at most - for good once it has joined), and `ha_mode =
+shared` written. On the second node *Join a cluster…* takes the bundle dropped or
+chosen; *Check it* opens it and tries its database from there first, and says what
+a failure means - nothing listening, a firewall, pg_hba.conf, an older bundle.
+
+A node whose join stopped half way says so when anything is asked of it: run the join
+again, it starts over.
 
 ## The load balancer
 

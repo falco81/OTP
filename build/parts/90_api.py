@@ -5632,7 +5632,22 @@ def _ha_do(h):
                           'on)' % (s['name'], node_name()), who=s['name'])
         return {'message': 'cleared: the errors are counted from now on', **repl_errors(
             h.store, ask_log=False)}
+    if act == 'bundle_check':
+        # What the dialog says before the bundle is made (1.0.213).
+        host = str(CONFIG.get('db_host') or '').lower()
+        local = h.store.db.engine == 'postgres' and host in ('', 'localhost', '127.0.0.1', '::1')
+        listen = ''
+        if local:
+            try:
+                listen = str(h.store.db.value('SHOW listen_addresses') or '')
+            except Exception:                           # noqa: BLE001
+                listen = ''
+        return {'local': local, 'listen': listen,
+                'listen_local': local and listen in ('', 'localhost', '127.0.0.1', '::1'),
+                'mode': CONFIG.get('ha_mode') or '', 'engine': h.store.db.engine,
+                'joining': ha_joining_info()}
     if act == 'bundle':
+        steps = []
         try:
             if CONFIG.get('ha_mode') == 'replicated':
                 # The second node of two replicating ones - or the same one
@@ -5640,6 +5655,9 @@ def _ha_do(h):
                 data = ha_replicated_bundle_data(h.store)
             else:
                 data = ha_bundle_data(h.store, str(b.get('db_host') or '').strip())
+                # The first node made ready for the second (1.0.213).
+                steps = ha_bundle_prepare(h.store, str(b.get('peer') or ''),
+                                          listen=bool(b.get('listen')), by=s['name'])
         except ValueError as e:
             raise ApiError(400, str(e))
         phrase = ha_passphrase()
@@ -5648,8 +5666,38 @@ def _ha_do(h):
                           '(the database at %s) - it carries the key that opens every token'
                           % (s['name'], data['db']['db_host']), 'warn', who=s['name'])
         return {'bundle': locked, 'passphrase': phrase, 'db_host': data['db'].get('db_host', ''),
-                'mode': data.get('mode') or 'shared',
+                'mode': data.get('mode') or 'shared', 'steps': steps,
                 'name': 'otp-join-%s-%s.json' % (node_name(), datetime.now().strftime('%Y%m%d'))}
+    if act == 'join_check':
+        # Before joining (1.0.213): the bundle opened, the database tried from here, each
+        # said - nothing changed.
+        steps = []
+        try:
+            data = bundle_open(b.get('bundle'), str(b.get('passphrase') or ''))
+        except ValueError as e:
+            return {'ready': False, 'steps': [{'ok': False, 'what': 'the bundle: %s' % e}]}
+        peer = data.get('peer') or {}
+        steps.append({'ok': True, 'what': 'the bundle opens: the cluster %s, made on %s (%s)' % (
+            data.get('cluster') or '?', peer.get('name') or '?', peer.get('address') or '?')})
+        if data.get('mode') == 'replicated':
+            steps.append({'ok': False, 'what': 'it makes this node replicate with its own PostgreSQL, '
+                                               'which takes root: copy it here and run  otp --ha-join '
+                                               'FILE  as root'})
+            return {'ready': False, 'steps': steps}
+        db = data.get('db') or {}
+        got = db_try({k: db.get(k) for k in DB_KEYS if k in db})
+        if got.get('reached'):
+            steps.append({'ok': True, 'what': 'its database answers from here: %s, %s row(s)' % (
+                db.get('db_host'), got.get('rows') or 0)})
+        else:
+            steps.append({'ok': False, 'what': pg_reach_why(got.get('trouble') or 'no answer',
+                                                            db.get('db_host'), db.get('db_port'))})
+        now = sealing_key()
+        if now and now.hex() != str(data.get('key') or ''):
+            steps.append({'ok': None, 'what': 'this node has a key of its own: what it holds now is '
+                                              'left behind (tick that it may be)'})
+        return {'ready': all(x['ok'] is not False for x in steps), 'steps': steps,
+                'peer': peer, 'cluster': data.get('cluster') or ''}
     if act == 'join':
         try:
             data = bundle_open(b.get('bundle'), str(b.get('passphrase') or ''))
