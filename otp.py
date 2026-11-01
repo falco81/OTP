@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.214'
+__version__ = '1.0.215'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -38891,6 +38891,11 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
+                    if '@' in k:
+                        # A node's own value kept (1.0.215): a file seldom has them -
+                        # another RADIUS port on the second node, its own mail server -
+                        # and "Exactly the file" took them away from every node unseen.
+                        continue
                     if k not in have and base in DEFAULTS and base not in FILE_ONLY_KEYS and \
                             not (base in SEALED_KEYS and conf.get('secrets') is not True):
                         store.drop_setting(k)

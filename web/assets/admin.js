@@ -6345,6 +6345,7 @@ $('ex-file').onchange = function () {
       }
       body.appendChild(el('p', 'note', 'Clients, realms, directories and accounts of the same name are replaced; the settings, the certificates, the VIP address, who may reach the pages, the firewall and the mail server\'s authorities in it are saved. Your own account is left as it is.'));
       body.appendChild(el('p', 'note', 'Add to what is here: anything not in the file stays. Exactly the file: clients, realms, directories and accounts not in it are taken away, and settings not in it go back to their defaults - as when a whole configuration is put back.'));
+      body.appendChild(el('p', 'note', 'A node\'s own settings - another port or server for one node of a cluster - stay as they are unless the file has them.'));
     }, [{words: 'Close', close: true},
         {words: 'Exactly the file', cls: 'danger', icon: 'upload', close: true, go: function () {
           api('import', {config: conf, replace: true, passphrase: phrase ? phrase.value : ''}).then(function (d) { toast(d.message, 'good'); loadSettings(); }).catch(oops);
