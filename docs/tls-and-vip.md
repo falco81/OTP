@@ -96,6 +96,28 @@ certificate it sends back.
 *Self-signed…*: for a test, or until the real one comes. Browsers warn until
 it is trusted by hand.
 
+### Certificates from acme (1.0.216)
+
+An acme of yours (the certificate manager) can put its certificates here and renew
+them by itself - each node's and the VIP address's: **Certificates from acme** on
+the same pane. Switch it on, *Pair with an acme* (a code shown once, 15 minutes,
+five tries), put the code into acme's target *An application of ours (acme push)*
+with `https://otp.example.cz/admin/`, and *Try* there; *Discover* in acme then shows
+the slots (`node:otp1`, `node:otp2`, `vip`) and makes the certificates. Instead of
+the code, acme's key can be pasted (*Or paste acme's key*).
+
+- Every request of acme is signed (Ed25519), the private key travels sealed to this
+  server (X25519 + AES-256-GCM); a request older than 5 minutes or sent twice is
+  refused. acme's address must be one that may reach the administration.
+- What acme puts in is kept exactly as an upload is: the same card shows it ("acme
+  push: …"), every node puts its own into nginx within seconds, the other node of a
+  cluster takes it by replication. Automatic certificates leaves that card alone
+  from then on (*Look after it* gives it back).
+- A certificate is taken only for a card whose name it holds, unless *Take
+  certificates of other names* is on. Switching it off, or *Forget it* on an acme,
+  ends it; what was put in stays.
+- The protocol, for acme's side and for other applications: [acme-push-protocol.md](acme-push-protocol.md).
+
 ### Which certificate goes where
 
 - **A node's own**: what is answered on `https://otp1.example.cz/` - the
