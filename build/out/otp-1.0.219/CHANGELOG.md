@@ -4,6 +4,15 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.219 — 2 November 2026
+
+- **The settings of *When the nodes lose each other* were drawn under every pane** of the
+  settings (in the list of those of no pane of their own) - Restart and power off, and the
+  others. They are on their own card on High availability only, as they were meant to be.
+- **The card *When the nodes lose each other* stayed empty** - its title and words only: the
+  pages did not pass its requests on to the daemon (`?api=split`). It is drawn now, on both
+  nodes.
+
 ## 1.0.218 — 2 November 2026
 
 **When the two nodes lose each other (split brain)** - a card of its own on Settings → High

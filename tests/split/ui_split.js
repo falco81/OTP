@@ -24,9 +24,18 @@ const VIEW = {active: true, engaged: false, ha_mode: 'replicated',
     await pg.fill('#in-name', 'admin'); await pg.fill('#in-pass', PW); await pg.keyboard.press('Enter');
     await pg.waitForTimeout(2000);
     await pg.goto('https://127.0.0.1/admin/#settings/ha'); await pg.reload(); await pg.waitForTimeout(3000);
+    const tag = scheme + '-' + width;
+    if (width === 1300 && scheme === 'dark') {
+      /* Through the page's real relay and the daemon (1.0.219: ?api=split was not relayed at all,
+         and the card stayed empty): this node alone - one database, nothing to choose. */
+      await pg.evaluate(() => loadSplit({mode: 1})); await pg.waitForTimeout(1500);
+      const real = await pg.evaluate(() => ({view: SPLITC.view, text: $('ha-split').textContent}));
+      ok('the card fetched through the page\'s relay: the daemon answered (' + (real.view ? 'active ' + real.view.active : 'nothing') + ')',
+         real.view && real.view.active === false && /one database|jedna databáze|Both nodes open one database|Oba uzly otevírají/i.test(real.text), real);
+      await pg.evaluate(() => { SPLITC.view = null; SPLITC.draft = null; });
+    }
     await pg.evaluate((v) => { $('ha-split-card').hidden = false; SPLITC.view = v; SPLITC.draft = splitFresh(v); drawSplit(); }, VIEW);
     await pg.waitForTimeout(400);
-    const tag = scheme + '-' + width;
     if (width === 1300 && scheme === 'dark') {
       const t = await pg.textContent('#ha-split-card');
       ok('drawn: the three choices, the switches, the table', (await pg.$$('.split-choice')).length === 3 &&

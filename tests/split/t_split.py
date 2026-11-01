@@ -246,6 +246,9 @@ try:
 except otp.ApiError as e:
     bad = str(e)
 ok('... a wrong arbiter refused (%s)' % bad, 'five' in bad)
+keys = [x['key'] for x in d.settings_state(True)]
+ok('the card\'s settings not in the pages\' list of settings (drawn under every pane before 1.0.219)',
+   not [k for k in keys if k.startswith('split_')] and 'lockout_after' in keys)
 src = open(V + '/otp.py').read()
 J = open(V + '/web/assets/admin.js').read()
 P = open(V + '/web/admin/index.php').read()
