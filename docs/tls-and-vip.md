@@ -242,7 +242,9 @@ is gone and both take the address. The pages say so in red.
 - Until it is fixed, take one node out: `otp --maintenance on` on it.
 
 With two nodes and no third party this cannot be ruled out entirely; it is
-the same for any keepalived pair.
+the same for any keepalived pair. *When the nodes lose each other* on the High
+availability pane (1.0.218, [split-brain.md](split-brain.md)) can make the node
+cut off from the network step aside - it lets the VIP address go.
 
 ### What it does not do
 
