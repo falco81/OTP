@@ -53,7 +53,10 @@ if (isset($_GET['api'])) {
             }
             $signed = [];
             foreach (['Version', 'Key', 'Time', 'Nonce', 'Signature'] as $h) {
-                $signed[$h] = substr((string) ($_SERVER['HTTP_X_ACME_PUSH_' . strtoupper($h)] ?? ''), 0, 300);
+                /* Printable ASCII only (1.0.217): a byte that is not UTF-8 made the relay's JSON
+                   fail, and the answer was another request's error. The protocol's values are ASCII. */
+                $signed[$h] = substr(preg_replace('/[^\x20-\x7e]/', '',
+                    (string) ($_SERVER['HTTP_X_ACME_PUSH_' . strtoupper($h)] ?? '')), 0, 300);
             }
             $payload = ['body' => base64_encode($raw), 'headers' => $signed];
         }
