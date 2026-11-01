@@ -1377,7 +1377,7 @@ function tokenPeek(name) {
       if (t.state === 'disabled') {
         b = cmdButton('Switch on', 'power', 'primary'); b.onclick = function () { tokenDo(name, 'enable', {}, function () { tokenPeek(name); }); };
       } else {
-        b = cmdButton('Switch off', 'power', 'danger'); b.onclick = function () { modalOver(function () { confirmThen('Switch the token of ' + htmlText(name) + ' off', 'They cannot sign in to the VPN until it is switched on again.', 'Switch off', function () { tokenDo(name, 'disable', {}, function () { tokenPeek(name); }); }); }); };
+        b = cmdButton('Switch off', 'power', 'danger'); b.onclick = function () { modalOver(function () { confirmThen('Switch the token of ' + name + ' off', 'They cannot sign in to the VPN until it is switched on again.', 'Switch off', function () { tokenDo(name, 'disable', {}, function () { tokenPeek(name); }); }); }); };
       }
       ac.add('In use', t.state === 'disabled' ? 'Switched off: every code is refused.' : (t.state === 'pending' ? 'Waiting for its first code.' : 'Codes from it sign in.'), [b]);
       var un = cmdButton(t.locked_until ? 'Unlock it' : 'Forget them', 'undo', t.locked_until ? 'primary' : '');
@@ -4400,7 +4400,15 @@ function askNodes(what, body, onEach, onDone) {
           left.forEach(function (n) { onEach(n, {ok: false, error: 'did not answer in a minute - is it running?'}); });
           if (onDone) onDone();
         }
-      }).catch(function () {});
+      }).catch(function () {
+        /* Every answer failing (1.0.208): asked once a second for good, its
+           button busy - the minute ends it as well. */
+        if (Date.now() - began > 60000) {
+          clearInterval(timer);
+          left.forEach(function (n) { onEach(n, {ok: false, error: 'did not answer in a minute - is it running?'}); });
+          if (onDone) onDone();
+        }
+      });
     }, 1000);
     return x;
   });
@@ -6488,6 +6496,8 @@ if ($('exp-go')) {
     $('exp-lock').hidden = high;
     var lock = $('exp-lock').value === 'lock';
     $('exp-pass').hidden = $('exp-gen').hidden = !lock;
+    /* Not locked: the passphrase is forgotten, not kept to be shown again (1.0.208). */
+    if (!lock) expForget();
     $('exp-kind').disabled = !whole;
   };
   $('exp-format').onchange = expPaint;
@@ -6505,6 +6515,10 @@ if ($('exp-go')) {
     $('exp-said').textContent = 'Write the passphrase down now - it is not kept anywhere, and without it the backup cannot be opened.';
   };
   $('exp-go').onclick = function () {
+    /* Written down by now: dots again, whatever comes of the export (1.0.208) -
+       a "No", a failure or another tab left it on the screen. */
+    $('exp-pass').type = 'password';
+    $('exp-pass').oninput = null;
     var q = $('exp-q').value.trim(), st = $('exp-state').value;
     if ($('exp-format').value === 'backup') {
       var bLock = $('exp-lock').value === 'lock' || hsOn('export:unlocked');
@@ -10833,7 +10847,7 @@ function txPutState(st) {
 function txResetAll() {
   var m = txMsg();
   var lang = {cs: 'Czech', en: 'English'}[TX.lang] || TX.lang;
-  confirmThen('Put “' + htmlText(m.title) + '” back as it comes', 'Every text of this message in <b>' + htmlText(txT(lang))
+  confirmThen('Put “' + m.title + '” back as it comes', 'Every text of this message in <b>' + htmlText(txT(lang))
     + '</b> goes back to how it comes with otp - exactly as it was before it was changed. The other language stays as it is. Both nodes send it at once.',
     'Put back', function () {
       api('texts', {action: 'reset', id: m.id, lang: TX.lang}).then(function (d) {
@@ -11628,7 +11642,7 @@ function drawRbTargets() {
     acts.appendChild(ls2);
     var del = iconButton('trash', 'Take this destination away');
     del.onclick = function () {
-      confirmThen('Take the destination ' + htmlText(t.name) + ' away?', 'Nothing is deleted on the server; backups simply stop going there, and its keys and certificates set here are forgotten.', 'Take it away', function () {
+      confirmThen('Take the destination ' + t.name + ' away?', 'Nothing is deleted on the server; backups simply stop going there, and its keys and certificates set here are forgotten.', 'Take it away', function () {
         api('rbackup', {action: 'delete', id: t.id}).then(function (x) { toast(x.message, 'good'); loadRbackup(); }).catch(oops);
       });
     };
@@ -12168,7 +12182,7 @@ function rbListThere(t) {
         a.appendChild(pb);
         var del = iconButton('trash', 'Delete it there');
         del.onclick = function () {
-          confirmThen('Delete ' + htmlText(fl.name) + '?', 'It is deleted at ' + htmlText(t.name) + ', with its checksum and its RESTORE.md.', 'Delete it', function () {
+          confirmThen('Delete ' + fl.name + '?', 'It is deleted at ' + htmlText(t.name) + ', with its checksum and its RESTORE.md.', 'Delete it', function () {
             api('rbackup', {action: 'delete_file', id: t.id, name: fl.name}).then(function () { toast('deleted', 'good'); rbListThere(t); }).catch(oops);
           });
         };
@@ -14171,7 +14185,15 @@ function drawProxy() {
               if (!cards[n].done) { clear(cards[n].body); cards[n].body.appendChild(el('p', 'note warn', 'This node did not answer in a minute - is it running?')); }
             });
           }
-        }).catch(function () {});
+        }).catch(function () {
+          /* Every answer failing: the minute ends it too (1.0.208). */
+          if (Date.now() - began > 60000) {
+            clearInterval(PX.poll); PX.poll = null; busy(go, false);
+            nodes.forEach(function (n) {
+              if (!cards[n].done) { clear(cards[n].body); cards[n].body.appendChild(el('p', 'note warn', 'This node did not answer in a minute - is it running?')); }
+            });
+          }
+        });
       };
       PX.poll = setInterval(look, 1000);
       setTimeout(look, 300);
@@ -14812,7 +14834,13 @@ function dbtPoll(of, id, nodes, onEach) {
           left.forEach(function (n) { got[n] = {ok: false, error: 'did not answer in two and a half minutes - is it running?'}; });
           resolve(got);
         }
-      }).catch(function () {});
+      }).catch(function () {
+        if (Date.now() - began > 150000) {             /* (1.0.208) */
+          clearInterval(timer);
+          left.forEach(function (n) { got[n] = {ok: false, error: 'did not answer in two and a half minutes - is it running?'}; });
+          resolve(got);
+        }
+      });
     }, 1000);
   });
 }
@@ -15263,7 +15291,9 @@ function isemonTlsWizard(was) {
             return false;
           });
           if (!left.length || Date.now() - began > 60000) { clearInterval(timer); busy(b, false); }
-        }).catch(function () {});
+        }).catch(function () {
+          if (Date.now() - began > 60000) { clearInterval(timer); busy(b, false); }   /* (1.0.208) */
+        });
       }, 1000);
     }).catch(function (e) { busy(b, false); oops(e); });
   }

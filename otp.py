@@ -91,7 +91,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.207'
+__version__ = '1.0.208'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -3642,6 +3642,11 @@ class Db(object):
                                                                           for k in keys)),
                         [row[k] for k in keys] + [ident])
 
+    def name_order(self):
+        """name in byte order on every engine (1.0.208): PostgreSQL under a
+        language put "alpha" before "Zeta" - another client answered."""
+        return 'name COLLATE "C"' if self.engine == 'postgres' else 'name'
+
     @contextlib.contextmanager
     def unlimited(self):
         """No time limit on this connection's statements meanwhile: the
@@ -3655,6 +3660,12 @@ class Db(object):
             'SET SESSION max_statement_time = 0',
             'SET SESSION max_statement_time = %d' % self.statement_s))
         with self.lock:
+            try:
+                # A connection the server dropped is made again first (1.0.208):
+                # the SET went to the dead one, and the job ran limited after all.
+                self.value('SELECT 1')
+            except Exception:                           # noqa: BLE001
+                pass
             try:
                 self.run(RawSql(off))
             except Exception:                           # noqa: BLE001
@@ -3679,6 +3690,9 @@ class Db(object):
             if self.engine == 'mariadb':
                 sql += ' DEFAULT CHARSET=utf8mb4'
             self.run(sql)
+        # The columns first (1.0.208): an index on a column a later version adds
+        # stopped every start of an older database ("no such column").
+        self.add_missing_columns()
         for sql in INDEXES:
             if self.engine == 'mariadb':
                 # MariaDB knows IF NOT EXISTS on an index from 10.1.4 on, and
@@ -3701,7 +3715,7 @@ class Db(object):
                 self.run(sql)
         if self.engine == 'mariadb':
             self._mariadb_bin_names()
-        self.add_missing_columns()
+            self._mariadb_meta_keys()
         if self.engine == 'postgres':
             self._pg_keep_used()
         if self.value('SELECT v FROM meta WHERE k = ?', ('schema',)) is None:
@@ -3899,6 +3913,20 @@ END $f$""")
         except Exception as e:                          # noqa: BLE001
             log('the guard of used codes between two nodes could not be put in: %s'
                 % str(e).split('\n')[0], 'warn')
+
+    def _mariadb_meta_keys(self):
+        """meta's keys to 255 characters (1.0.208): a token's name may be 180, and
+        disabled_from:NAME or scratchguard:NAME@@NODE went past 190 - switching
+        such a token off or sending it a code failed ("Data too long")."""
+        try:
+            n = self.value("SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "
+                           "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'meta' "
+                           "AND COLUMN_NAME = 'k'")
+            if n is not None and int(n) < 255:
+                self.run('ALTER TABLE meta MODIFY k VARCHAR(255) CHARACTER SET utf8mb4 '
+                         'COLLATE utf8mb4_bin NOT NULL')
+        except Exception as e:                          # noqa: BLE001
+            log('meta\'s keys stay 190 characters long: %s' % str(e).split('\n')[0], 'warn')
 
     def _mariadb_bin_names(self):
         """Tables made before 1.0.44 compared names ignoring case and
@@ -4144,7 +4172,10 @@ def load_tables(db, src, keep_logs=True, say=None):
     DB_RESTORING.set()
     db.restoring = True
     try:
-        return _load_tables_held(db, src, keep_logs, say, gzip)
+        # No time limit (1.0.208): emptying a log of millions of rows took
+        # longer than two minutes, and the copy could never be put back.
+        with db.unlimited():
+            return _load_tables_held(db, src, keep_logs, say, gzip)
     finally:
         db.restoring = False
         DB_RESTORING.clear()
@@ -7161,7 +7192,7 @@ class Storage(object):
         rows = self._clients
         if rows is None:
             gen = self.cache_gen
-            rows = self.db.rows('SELECT * FROM clients ORDER BY position, name')
+            rows = self.db.rows('SELECT * FROM clients ORDER BY position, ' + self.db.name_order())
             for r in rows:
                 r['_secret'] = unseal_secret(r.get('secret') or '')
                 try:
@@ -7334,7 +7365,7 @@ class Storage(object):
         rows = self._realms
         if rows is None:
             gen = self.cache_gen
-            rows = self.db.rows('SELECT * FROM realms ORDER BY position, name')
+            rows = self.db.rows('SELECT * FROM realms ORDER BY position, ' + self.db.name_order())
             for r in rows:
                 try:
                     r['groups'] = json.loads(r.get('group_list') or '[]')
@@ -15111,8 +15142,15 @@ def db_make(c, admin_user, admin_password):
             cur.execute('ALTER DATABASE "%s" OWNER TO "%s"' % (name, user))
             done.append('the database %s was there; %s owns it now' % (name, user))
         else:
-            cur.execute("CREATE DATABASE \"%s\" OWNER \"%s\" ENCODING 'UTF8' TEMPLATE template0"
-                        % (name, user))
+            # Compared and lowered as the other engines and a cluster's databases
+            # are (1.0.208): a server set up under C knew no Ž from ž, one under
+            # a language put clients in another order.
+            try:
+                cur.execute("CREATE DATABASE \"%s\" OWNER \"%s\" ENCODING 'UTF8' TEMPLATE "
+                            "template0 LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8'" % (name, user))
+            except psycopg2.Error:
+                cur.execute("CREATE DATABASE \"%s\" OWNER \"%s\" ENCODING 'UTF8' TEMPLATE "
+                            "template0" % (name, user))
             done.append('the database %s, owned by %s' % (name, user))
     finally:
         conn.close()
@@ -15188,6 +15226,7 @@ def db_move(store, c, by):
     """Everything here into the other database, through a copy."""
     def work(progress):
         progress(0, 0, 'making a copy of what is here')
+        began = time.time()
         before = store.counts()
         copy = make_backup(store, 'before moving, by %s' % by)
         whole = sum(before.values())
@@ -15200,12 +15239,23 @@ def db_move(store, c, by):
             load_tables(far, copy, say=along)
             after = {t: int(far.value('SELECT COUNT(*) FROM %s' % t) or 0)
                      for t in TABLES if t != 'meta'}
+            words = 'everything was carried into %s (%s), by %s' % (
+                ENGINE_WORDS.get(c['db_engine']), db_where(c), by)
+            store.add_event('settings', words, who=by)
+            # What was written here while it was carried goes across too, the
+            # move's own words with it (1.0.208): its newest event older than this
+            # one's by more than a minute, "Start using it" refused the copy just
+            # made, for good.
+            try:
+                for r in store.db.rows('SELECT ts, kind, node, level, who, words FROM events '
+                                       'WHERE ts >= ? ORDER BY ts', (began,)):
+                    far.insert('events', dict(r))
+            except Exception as e:                      # noqa: BLE001
+                log('the events of the move could not be carried as well: %s' % e, 'warn')
         finally:
             far.close()
         short = {t: (before.get(t, 0), after.get(t, 0)) for t in after
                  if after.get(t, 0) < before.get(t, 0) and t not in ('sessions',)}
-        store.add_event('settings', 'everything was carried into %s (%s), by %s'
-                        % (ENGINE_WORDS.get(c['db_engine']), db_where(c), by), who=by)
         progress(whole, whole, 'done')
         return {'copy': copy.name, 'rows': sum(after.values()), 'short': short,
                 'where': db_where(c)}
@@ -15914,14 +15964,15 @@ def _my_cnf(c):
     """A defaults file holding the password and nothing else, 0600, gone the
     moment the program has finished with it: `--password=` on a command line
     is readable by everybody on the machine while it runs."""
+    said = str(c.get('db_password') or '')
+    if any(ord(ch) < 32 for ch in said):
+        # Asked before the file is made (1.0.208): an empty one was left behind.
+        raise DbError('the database password has a line break or another control '
+                      'character in it')
     handle, name = tempfile.mkstemp(prefix='otp-my-', suffix='.cnf')
     os.close(handle)
     os.chmod(name, 0o600)
     with open(name, 'w') as f:
-        said = str(c.get('db_password') or '')
-        if any(ord(ch) < 32 for ch in said):
-            raise DbError('the database password has a line break or another control '
-                          'character in it')
         f.write('[client]\npassword="%s"\n' % said.replace('\\', '\\\\').replace('"', '\\"'))
     return name
 
@@ -16201,9 +16252,48 @@ def _peek_sqlite(path):
             'tables': len([t for t in TABLES if t in names])}, ''
 
 
+ACCOUNT_COLS_FIRST = ('id', 'name', 'role', 'pw', 'source', 'disabled')
+
+
+def _my_rows(text):
+    """The rows of a mysqldump VALUES list: (a,'b',NULL),(...) - each a list
+    of its values as text, quotes taken off, NULL as 'NULL'."""
+    rows, row, cur, depth, quote, esc, had_q = [], [], [], 0, False, False, False
+    for ch in text:
+        if quote:
+            if esc:
+                cur.append(ch)
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == "'":
+                quote = False
+            else:
+                cur.append(ch)
+            continue
+        if ch == "'":
+            quote, had_q = True, True
+        elif ch == '(':
+            depth += 1
+            if depth == 1:
+                row, cur, had_q = [], [], False
+        elif ch == ')' and depth:
+            depth -= 1
+            if depth == 0:
+                row.append(''.join(cur) if had_q else ''.join(cur).strip())
+                rows.append(row)
+        elif ch == ',' and depth == 1:
+            row.append(''.join(cur) if had_q else ''.join(cur).strip())
+            cur, had_q = [], False
+        elif depth:
+            cur.append(ch)
+    return rows
+
+
 def _peek_mariadb(path):
     import gzip
     tables, admins, users, in_users = set(), 0, 0, False
+    cols = None
     with gzip.open(str(path), 'rt', encoding='utf-8', errors='replace') as f:
         for line in f:
             if line.startswith('CREATE TABLE'):
@@ -16217,8 +16307,17 @@ def _peek_mariadb(path):
             elif in_users and not line.startswith('('):
                 in_users = False
             if in_users:
-                admins += line.count(",'fulladmin',")
+                head = re.match(r"INSERT INTO `accounts` \(([^)]*)\)", line)
+                if head:
+                    cols = [c.strip(' `') for c in head.group(1).split(',')]
                 rest = line.split('VALUES', 1)[-1] if first else line
+                # A full administrator switched off is nobody who signs in (1.0.208).
+                for row in _my_rows(rest):
+                    names = cols or ACCOUNT_COLS_FIRST
+                    got = dict(zip(names, row))
+                    if got.get('role') == 'fulladmin' and str(got.get('disabled') or '0') in (
+                            '0', 'NULL', ''):
+                        admins += 1
                 users += rest.count('),(') + (1 if '(' in rest else 0)
                 if line.rstrip().endswith(';'):
                     in_users = False
@@ -16241,15 +16340,21 @@ def _peek_postgres(path):
                 'pg_restore', seconds=300).decode('utf-8', 'replace')
     users = admins = 0
     inside = False
+    cols = list(ACCOUNT_COLS_FIRST)
     for line in rows.split('\n'):
         if line.startswith('COPY '):
             inside = True
+            got = re.match(r'COPY \S+ \(([^)]*)\)', line)
+            if got:
+                cols = [c.strip(' "') for c in got.group(1).split(',')]
             continue
         if inside:
             if line == '\\.':
                 break
             users += 1
-            if '\tfulladmin\t' in line:
+            row = dict(zip(cols, line.split('\t')))
+            # A full administrator switched off is nobody who signs in (1.0.208).
+            if row.get('role') == 'fulladmin' and row.get('disabled', '\\N') in ('\\N', '0', ''):
                 admins += 1
     return {'kind': 'postgres', 'counts': {'accounts': users}, 'admins': admins,
             'tables': len(tables)}, ''
@@ -33960,7 +34065,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             who, how = admin_name_parts(name)
             entry = ad.find_user(who, how)
             role = None
-            if entry and not entry_unusable(entry, locked=False):
+            if entry and not entry.get('many') and not entry_unusable(entry, locked=False):
                 role = admin_role_for(ad.groups_of(entry, True), ad)
         except Exception as e:                          # noqa: BLE001
             # Asked again in a minute, not on every click: a directory that
@@ -34463,6 +34568,12 @@ def admin_ask_directory(h, name, password):
     if not entry:
         return {'ok': False, 'missing': True, 'said': 'the directory has nobody called %s' % who,
                 'directory': ad.name}
+    if entry.get('many'):
+        # Two accounts answer to the name (1.0.208): the first one's password and
+        # groups were taken - and with them the account of the one signed in
+        # before under that name. Refused, as RADIUS and the enrolment pages do.
+        return {'ok': False, 'said': 'more than one account answers to %s' % who,
+                'directory': ad.name}
     if entry_unusable(entry):
         return {'ok': False, 'said': 'the account may not sign in: %s' % entry_unusable(entry),
                 'dn': entry['dn'], 'directory': ad.name}
@@ -34521,6 +34632,12 @@ def admin_from_directory(h, name, password):
     if acc:
         if acc.get('source') != 'directory':
             return None
+        if acc.get('dn') and str(acc['dn']).lower() != str(entry['dn']).lower():
+            # Another entry of the directory under the name now (1.0.208): moved
+            # to another OU, or the name given to somebody else - said, so that
+            # it is seen.
+            h.store.add_event('accounts', 'the directory account of %s is another one now: '
+                              '%s (was %s)' % (name, entry['dn'], acc['dn']), 'warn')
         h.store.set_account(name, role=role, display=entry.get('display') or '',
                             dn=entry['dn'], group_list=groups)
     elif CONFIG.get('ha_mode') == 'replicated' and not ha_lead(h.store):
@@ -38503,9 +38620,18 @@ def portal_methods(h, s):
     return [k for k in realm_methods(realm) if k == 'totp' or k in chan]
 
 
+PORTAL_TOKEN_KEYS = ('name', 'kind', 'state', 'dest', 'lang', 'mail_fmt', 'digits', 'period',
+                     'scratch_left', 'scratch_kept', 'pending', 'locked_until', 'created',
+                     'activated', 'last_used', 'key_lost')
+
+
 def portal_state(h, s):
     tok = h.store.token(s['name'])
     shown = h.store.token_shown(tok)
+    if shown:
+        # What its owner needs and nothing else (1.0.208): the administrators'
+        # note and who made it went to the enrolment page as they are.
+        shown = {k: shown.get(k) for k in PORTAL_TOKEN_KEYS}
     data = s.get('data') or {}
     ver = data.get('verify') or {}
     if ver and float(ver.get('exp') or 0) < time.time():

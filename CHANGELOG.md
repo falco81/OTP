@@ -4,6 +4,58 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.208 — 1 November 2026
+
+**A bug hunt, fourth round**: who may call what on the pages' API and how sign-ins
+end, the pages themselves (what they put on the screen, the password boxes, the
+translations), and the three databases side by side - moving between them, putting a
+copy back, upgrading an old one. Each finding shown to fail first
+(`tests/round/t_round4.py`, 18 of 18); no route was found that lets a lower role read a
+secret or change a setting.
+
+The pages:
+- **A password typed with a dead key or composed by the keyboard was saved wrong**
+  under its dots: ď, ť, ň, a háček on a capital, Android's keyboards, an IME - what was
+  typed before the letter was lost (Heslo + ˇc + ka1 was saved as ˇčka1). It affected
+  every password and secret box: a person's own new password, accounts, clients,
+  directories, the mail, proxy and SMS secrets, the passphrases. The letter is put in
+  where the caret was now, and nothing of it shows.
+- One who must change their password first is no longer let send a database, a
+  package or a backup (up to 4 GB) only to have it refused afterwards.
+- The generated passphrase of a token export goes back to dots once the export is
+  pressed, and is forgotten when "not locked" is chosen.
+- A test of every node (the proxy, isemon's TLS, the database's TLS, a node asked) ends
+  after its time even when every answer fails - it asked once a second for good, its
+  button busy. Names in four confirmations are no longer shown escaped twice.
+- The Monitoring pane's introduction, two lines of High security and a copy's note are
+  in Czech now.
+
+Signing in:
+- **A name two accounts of the directory answer to signed into the administration as
+  the first one** - its password, its groups, and the account of whoever signed in under
+  that name before. It is refused now, as RADIUS and the enrolment pages refuse it; an
+  account whose directory entry changed is said so in the events.
+- The enrolment pages no longer send their owner the administrators' note on the token
+  or who made it.
+
+The databases:
+- **"Start using it" refused the database just carried into** whenever the move took
+  more than a minute (any real log of sign-ins): what was written while it was carried
+  goes across too now.
+- **A copy could not be put back over a large database**: emptying a log of millions of
+  rows went past the two minutes a statement may take. Putting a copy back has no limit
+  now, and the limit is lifted on a live connection, not one the server dropped.
+- A PostgreSQL database made from the pages is C.UTF-8, as a cluster's are: under C,
+  "Žofie" and "žofie" were two people again; under a language, clients and realms came
+  in another order and another client's secret answered. Clients and realms are put in
+  the same order on every engine.
+- MariaDB: a token with a long name (up to 180 characters) could not be switched off,
+  unlocked or sent a code - the keys kept for it were longer than 190. They may be 255.
+- A dump's full administrator switched off is no longer counted as one who can sign in
+  when it is put back. An older database missing a column an index is on starts (the
+  columns are added first). No empty option file is left behind when the password
+  cannot be used.
+
 ## 1.0.207 — 1 November 2026
 
 **A bug hunt, third round**: tokens and their files, the secrets kept, how the program
