@@ -57,6 +57,7 @@ PGTLS_ASK = 'pgtls.ask'          # the link between the two databases (1.0.104)
 PGTLS_FILE = 'pgtls.json'
 HA_CA_FILE = os.environ.get('OTP_HA_CA', '/etc/pki/otp/ha-ca.pem')
 PG_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,62}\Z')
+PG_HBA_WORDS = ('all', 'sameuser', 'samerole', 'samegroup', 'replication')
 PGLOG_FILE = 'pglog.json'
 MARK = '# written by otp (otp_web.py) - otp keeps this file; change it on its pages'
 
@@ -1576,6 +1577,10 @@ def pgtls_checked(r):
     for k in ('db', 'user'):
         if not PG_NAME_RE.match(str(r.get(k) or '')):
             raise Refused('the database and its account are plain names')
+        # pg_hba's words for "every one" are not otp's
+        # database or account (1.0.209): "all all" let any role in from the peer.
+        if str(r[k]).lower() in PG_HBA_WORDS:
+            raise Refused('%s is a word of pg_hba.conf, not otp\'s database or account' % r[k])
         out[k] = str(r[k])
     peer = str(r.get('peer') or '').strip()
     try:
@@ -1627,6 +1632,20 @@ def pgtls_server(r):
         gid = pwd.getpwnam('postgres').pw_gid
     except (KeyError, ImportError):
         pass
+    # As it was, for a certificate PostgreSQL does not take (1.0.209): ssl = on
+    # and the new files stayed, and its next restart could fail on them.
+    was_conf = {}
+    for k in ('ssl_cert_file', 'ssl_key_file', 'ssl'):
+        got = pg_sql(r['port'], "SELECT setting || '|' || COALESCE(sourcefile, '') FROM "
+                                "pg_settings WHERE name = %s" % pg_lit(k))
+        was_conf[k] = got.split('|', 1) if '|' in got else [got, '']
+    was_files = {}
+    for name in ('otp-ha.key', 'otp-ha.crt'):
+        try:
+            with open(os.path.join(data, name)) as f:
+                was_files[name] = f.read()
+        except OSError:
+            was_files[name] = None
     for name, text, mode in (('otp-ha.key', r['key'], 0o600), ('otp-ha.crt', r['cert'], 0o644)):
         path = os.path.join(data, name)
         pg_file_put(path, text, mode, uid, gid)
@@ -1651,8 +1670,26 @@ def pgtls_server(r):
         except Exception:                               # noqa: BLE001
             pass
     if not seen:
+        try:
+            for k, (setting, src) in was_conf.items():
+                if src.endswith('postgresql.auto.conf'):
+                    pg_sql(r['port'], 'ALTER SYSTEM SET %s = %s' % (k, pg_lit(setting)))
+                else:
+                    pg_sql(r['port'], 'ALTER SYSTEM RESET %s' % k)
+            for name, old in was_files.items():
+                path = os.path.join(data, name)
+                if old is None:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+                else:
+                    pg_file_put(path, old, 0o600 if name.endswith('.key') else 0o644, uid, gid)
+            pg_sql(r['port'], 'SELECT pg_reload_conf()')
+        except Exception:                               # noqa: BLE001
+            pass
         raise Refused('PostgreSQL did not take the certificate on reload - its log says why '
-                      '(Settings → High availability → The errors)')
+                      '(Settings → High availability → The errors); it is as it was')
     end = openssl(['x509', '-noout', '-enddate'], 'the certificate', r['cert'])
     import ssl as _ssl
     return {'said': 'PostgreSQL answers over TLS with its certificate from the cluster\'s '
@@ -2088,6 +2125,20 @@ def net_apply(n):
     before = nm_fields(n['con'], ['ipv4.method', 'ipv4.addresses', 'ipv4.gateway', 'ipv4.dns',
                                   'ipv4.dns-search', 'ipv6.method', 'ipv6.addresses',
                                   'ipv6.gateway', 'ipv6.dns'])
+    # The old addresses and name taken out of /etc/hosts only as this machine has
+    # them now (1.0.209): taken as the request said, any line of it - the
+    # directory's, the repository's - could be taken away.
+    have = set()
+    for key in ('ipv4.addresses', 'ipv6.addresses'):
+        for a in nm_list(before.get(key)):
+            have.add(a.split('/')[0])
+    n['old'] = [o for o in n['old'] if o in have]
+    try:
+        host_was = run([HOSTNAMECTL, '--static'], 'hostnamectl').strip().lower()
+    except Exception:                                   # noqa: BLE001
+        host_was = ''
+    if n['old_hostname'] and n['old_hostname'] not in (host_was, host_was.split('.')[0]):
+        n['old_hostname'] = ''
     if n.get('snapshot'):
         said.append(net_snapshot(n['con'], n['snapshot']))
     args = [NMCLI, 'connection', 'modify', n['con'],
@@ -3291,6 +3342,59 @@ def sshd_disarm(t):
         subprocess.run(['systemctl', 'stop', unit + '.timer'], capture_output=True)
 
 
+def sshd_apply_files(c, r, drop, now_dropin, paths, before):
+    """The files of one change put in and sshd reloaded - what sshd_do undoes
+    whole when anything of it fails (1.0.209)."""
+    said = []
+    if c['manage']:
+        text = sshd_text(c)
+        if c['notice_ssh']:
+            _put_file(paths['banner'], c['notice'].rstrip() + '\n')
+        _put_file(drop, text, 0o600)
+        got = subprocess.run([SSHD_BIN, '-t', '-f', sshd_conf_path()], capture_output=True,
+                             text=True)
+        if got.returncode != 0:
+            if now_dropin is None:
+                _drop(drop)
+            else:
+                _put_file(drop, now_dropin, 0o600)
+            raise Refused('sshd does not take it, so it is as it was: %s'
+                          % (got.stderr or got.stdout).strip()[-300:])
+        if c.get('radius_with_key'):
+            drift = sshd_match_kept()
+            if drift:
+                if now_dropin is None:
+                    _drop(drop)
+                else:
+                    _put_file(drop, now_dropin, 0o600)
+                raise Refused('this sshd lets a Match of a file it includes reach its own '
+                              'settings (%s) - a key and the code cannot be set here; it is '
+                              'as it was' % drift)
+        s = sshd_selinux_port(c['port'])
+        if s:
+            said.append(s)
+        try:
+            w = pam_set(c, r.get('radius_secret'), r.get('radius_port'))
+        except Refused:
+            if now_dropin is None:
+                _drop(drop)
+            else:
+                _put_file(drop, now_dropin, 0o600)
+            raise
+        if w:
+            said.append(w)
+    else:
+        if before['dropin'] is not None or os.path.exists(drop):
+            _drop(drop)
+        pam_set({'radius': False}, '', 0)
+    notice_set('issue', c['notice'] if c['notice_console'] else None)
+    notice_set('motd', c['notice'] if c['notice_motd'] else None)
+    if not (c['manage'] and c['notice_ssh']):
+        _drop(paths['banner'])
+    sshd_reload()
+    return said
+
+
 def sshd_do(r):
     do = r.get('do')
     if do == 'apply':
@@ -3324,53 +3428,30 @@ def sshd_do(r):
                 whole = os.path.basename(paths[where]) in ('issue', 'motd')
                 if cur is not None and (not whole or cur.startswith(NOTICE_MARK.strip())):
                     before[where] = cur.split('\n', 1)[1] if whole else cur
-        said = []
-        if c['manage']:
-            text = sshd_text(c)
-            if c['notice_ssh']:
-                _put_file(paths['banner'], c['notice'].rstrip() + '\n')
-            _put_file(drop, text, 0o600)
-            got = subprocess.run([SSHD_BIN, '-t', '-f', sshd_conf_path()], capture_output=True,
-                                 text=True)
-            if got.returncode != 0:
-                if now_dropin is None:
-                    _drop(drop)
-                else:
-                    _put_file(drop, now_dropin, 0o600)
-                raise Refused('sshd does not take it, so it is as it was: %s'
-                              % (got.stderr or got.stdout).strip()[-300:])
-            if c.get('radius_with_key'):
-                drift = sshd_match_kept()
-                if drift:
-                    if now_dropin is None:
-                        _drop(drop)
+        # Every file as it is now, put back on any failure (1.0.209): only sshd's
+        # refusal was undone - a package that did not install, a notice that could
+        # not be written or a reload that failed left the drop-in and PAM changed,
+        # with no trial and no timer to put them back.
+        entry = {pth: _read_or(pth) for pth in (drop, paths['banner'], paths['issue'],
+                                                paths['motd'], pam_sshd_path(),
+                                                pam_radius_conf_path())}
+        try:
+            said = sshd_apply_files(c, r, drop, now_dropin, paths, before)
+        except BaseException:
+            for pth, was in entry.items():
+                try:
+                    if was is None:
+                        _drop(pth)
                     else:
-                        _put_file(drop, now_dropin, 0o600)
-                    raise Refused('this sshd lets a Match of a file it includes reach its own '
-                                  'settings (%s) - a key and the code cannot be set here; it is '
-                                  'as it was' % drift)
-            s = sshd_selinux_port(c['port'])
-            if s:
-                said.append(s)
+                        _put_file(pth, was, 0o600 if pth in (drop, pam_radius_conf_path())
+                                  else 0o644)
+                except Exception:                       # noqa: BLE001
+                    pass
             try:
-                w = pam_set(c, r.get('radius_secret'), r.get('radius_port'))
-            except Refused:
-                if now_dropin is None:
-                    _drop(drop)
-                else:
-                    _put_file(drop, now_dropin, 0o600)
-                raise
-            if w:
-                said.append(w)
-        else:
-            if before['dropin'] is not None or os.path.exists(drop):
-                _drop(drop)
-            pam_set({'radius': False}, '', 0)
-        notice_set('issue', c['notice'] if c['notice_console'] else None)
-        notice_set('motd', c['notice'] if c['notice_motd'] else None)
-        if not (c['manage'] and c['notice_ssh']):
-            _drop(paths['banner'])
-        sshd_reload()
+                sshd_reload()
+            except Exception:                           # noqa: BLE001
+                pass
+            raise
         if old:
             sshd_disarm(old)
         ident = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:12] or 'x'
