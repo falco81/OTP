@@ -1217,6 +1217,9 @@ class Tokens(object):
         if not secret and token_kind(tok) == 'totp':
             return False, SAY_LOST, facts
         digits = int(tok.get('digits') or 6)
+        # "123 456" as the phone shows it (1.0.214): taken on the pages, a wrong code
+        # through RADIUS - and counted. The spaces inside go, as there.
+        code = re.sub(r'\s', '', str(code or ''))
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other
         # digits, which then broke the comparison and left the request
         # unanswered and unwritten (1.0.33).
@@ -1270,17 +1273,27 @@ class Tokens(object):
                     # Only if the codes are still the ones read: a recovery
                     # code used on the other node at the same moment is not
                     # used twice. (1.0.13)
-                    won = self.store.db.run(
-                        'UPDATE tokens SET scratch = ?, scratch_sealed = ?, scratch_left = ?, '
-                        "last_used = ?, last_how = 'scratch', failures = 0, fail_times = '[]' "
-                        'WHERE id = ? AND scratch = ?',
-                        (json.dumps(kept), seal_codes(shown, token_bind(name)) if shown is not None else
-                         (tok.get('scratch_sealed') or ''), len(kept), t, tok['id'], was))
-                    if not won:
-                        return False, SAY_REUSED, facts
-                    # And used once anywhere (1.0.101): the row above can be
-                    # written back by the other node's older copy of it.
-                    if not once_take(self.store, 'scratch', name, h):
+                    id_h = scratch_id_hash(tok['id'], code, key)
+                    # In one transaction (1.0.214), as a code from the phone: a database
+                    # dropping half way left the code used here and refused by the other node.
+                    with self.store.db.transaction():
+                        won = self.store.db.run(
+                            'UPDATE tokens SET scratch = ?, scratch_sealed = ?, scratch_left = ?, '
+                            "last_used = ?, last_how = 'scratch', failures = 0, fail_times = '[]' "
+                            'WHERE id = ? AND scratch = ?',
+                            (json.dumps(kept), seal_codes(shown, token_bind(name)) if shown is not None else
+                             (tok.get('scratch_sealed') or ''), len(kept), t, tok['id'], was))
+                        if not won:
+                            return False, SAY_REUSED, facts
+                        # And used once anywhere (1.0.101): the row above can be
+                        # written back by the other node's older copy of it.
+                        if not once_take(self.store, 'scratch', name, h, peer=False):
+                            return False, SAY_REUSED, facts
+                        # By the id too (1.0.214), whatever the token is called by then.
+                        if not once_take(self.store, 'scratch', '#%d' % tok['id'], id_h, peer=False):
+                            return False, SAY_REUSED, facts
+                    if not once_peer_free(self.store, 'scratch', name, h) or \
+                            not once_peer_free(self.store, 'scratch', '#%d' % tok['id'], id_h):
                         return False, SAY_REUSED, facts
                 elif hit != h:
                     # Dry, so the code stays; but an entry in the old shape is
@@ -1290,6 +1303,19 @@ class Tokens(object):
                                       (json.dumps(kept), tok['id'], was))
                 facts['scratch_left'] = len(kept)
                 return True, SAY_SCRATCH, facts
+            # A recovery code used once and sent again (1.0.214): said as used, not
+            # counted as a wrong code - as a code from the phone used again is not. A
+            # NAS asking again, or a person trying it twice, paused or locked the token.
+            if key and re.fullmatch(r'\d{6,12}', code or ''):
+                try:
+                    if self.store.db.value('SELECT 1 FROM token_once WHERE k IN (?, ?)',
+                                           (once_key('scratch', name,
+                                                     scratch_hash(name, code, key)),
+                                            once_key('scratch', '#%d' % tok['id'],
+                                                     scratch_id_hash(tok['id'], code, key)))):
+                        return False, SAY_REUSED, facts
+                except Exception:                       # noqa: BLE001
+                    pass
             return None
         if token_kind(tok) != 'totp':
             # A token that gets its codes sent (1.0.76): what is checked here
@@ -1317,19 +1343,32 @@ class Tokens(object):
             if CONFIG.get('totp_disallow_reuse', 1):
                 # Used up with one conditional UPDATE: of two nodes asked for
                 # the same code at the same moment, only one changes the row.
-                won = self.store.db.run(
-                    'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
-                    "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
-                    'COALESCE(last_step, 0) < ?', (step, t, tok['id'], step))
-                if not won:
-                    return False, SAY_REUSED, facts
                 # The step used once anywhere (1.0.101): on two replicating
-                # nodes the UPDATE above holds only on its own database.
+                # nodes the UPDATE below holds only on its own database.
                 # Tied to this key - the key itself, through an HMAC: the same
                 # on both nodes whatever its sealed form, new with every key.
-                if not once_take(self.store, 'step', name, '%s:%s:%s' % (
-                        tok['id'], hmac.new(sealing_key() or b'', str(secret).encode(),
-                                            hashlib.sha256).hexdigest()[:16], step)):
+                once_v = '%s:%s:%s' % (tok['id'], hmac.new(sealing_key() or b'', str(secret).encode(),
+                                                          hashlib.sha256).hexdigest()[:16], step)
+                # All three in one transaction (1.0.214): the database dropping between
+                # them left the code used here, the request unanswered, and the other
+                # node - asked next by the NAS - refused it as used. The other node's
+                # database asked after, the row not held meanwhile.
+                with self.store.db.transaction():
+                    won = self.store.db.run(
+                        'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
+                        "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
+                        'COALESCE(last_step, 0) < ?', (step, t, tok['id'], step))
+                    if not won:
+                        return False, SAY_REUSED, facts
+                    if not once_take(self.store, 'step', name, once_v, peer=False):
+                        return False, SAY_REUSED, facts
+                    # By the token's id as well (1.0.214): renamed on the other node meanwhile,
+                    # the step used under the old name was not found under the new one. The
+                    # name's key stays for a node of an older version, in a rolling upgrade.
+                    if not once_take(self.store, 'step', '#%d' % tok['id'], once_v, peer=False):
+                        return False, SAY_REUSED, facts
+                if not once_peer_free(self.store, 'step', name, once_v) or \
+                        not once_peer_free(self.store, 'step', '#%d' % tok['id'], once_v):
                     return False, SAY_REUSED, facts
             else:
                 self.store.token_update(tok['id'], {'last_step': step, 'last_used': t,

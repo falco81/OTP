@@ -1,0 +1,67 @@
+# 1.0.214: moving to another database - the wizard; recovery codes in password_otp.
+S229 = {
+ "Move to another database": "Přesun do jiné databáze",
+ "Move to another database…": "Přesunout do jiné databáze…",
+ "Step by step to another database, with Back and Next: nothing is done until the last step.":
+  "Krok za krokem do jiné databáze, s tlačítky Zpět a Další: dokud nedojdete na poslední krok, nic se nestane.",
+ "Which one": "Která", "Its address": "Její adresa", "Reaching it": "Spojení", "What happens": "Co se stane", "Moving": "Přesun",
+ "The file on this machine": "Soubor na tomto stroji",
+ "SQLite: nothing to install or look after. One machine alone.": "SQLite: nic se neinstaluje ani nespravuje. Jen jeden stroj.",
+ "A server of its own, here or elsewhere - and what a cluster of two nodes needs.": "Samostatný server, tady nebo jinde – a to, co potřebuje cluster dvou uzlů.",
+ "A server of its own, here or elsewhere.": "Samostatný server, tady nebo jinde.",
+ "in use now": "používá se teď",
+ "Close - it carries on": "Zavřít – pokračuje dál",
+ "Server": "Server", "Port": "Port", "Database": "Databáze", "Account": "Účet",
+ "Its password": "Jeho heslo",
+ "Wait for it, seconds": "Čekat na ni, sekund",
+ "Its name or address, as this machine reaches it.": "Jeho jméno nebo adresa, jak se k němu dostane tento stroj.",
+ "empty: one is made when it is set up": "prázdné: vytvoří se při nastavení",
+ "Leave it empty when the next step is to make the account - a password is made then and shown once.":
+  "Nechte prázdné, když se v dalším kroku bude účet vytvářet – heslo se vytvoří a jednou ukáže.",
+ "the server, the database and the account, please": "vyplňte prosím server, databázi a účet",
+ "That is the database in use now - choose another one.": "To je databáze, která se právě používá – zvolte jinou.",
+ "it does not answer": "neodpovídá",
+ "It answers, but this account may not make anything in it.": "Odpovídá, ale tento účet v ní nesmí nic vytvářet.",
+ "Empty it first - throw away what is in THAT database (never the one in use)": "Nejdřív ji vyprázdnit – zahodit, co je v TÉ databázi (nikdy ne v používané)",
+ "It answers, this account may write in it, and it holds nothing of otp yet: ready.": "Odpovídá, tento účet do ní smí zapisovat a zatím v ní nic z otp není: připraveno.",
+ "Set it up": "Nastavit",
+ "An administrator on that server": "Správce toho serveru",
+ "set up": "nastaveno",
+ "The password made for the account - written into the config file when the move starts using it, shown only now:":
+  "Heslo vytvořené pro účet – zapíše se do konfigurace, až ji přesun začne používat; ukazuje se jen teď:",
+ "From": "Odkud", "Into": "Kam", "Records to carry": "Záznamů k přenesení", "Tokens": "Tokeny", "Accounts": "Účty",
+ "a copy of everything here is made first, and kept with the others": "nejdřív se udělá kopie všeho, co je tady, a uloží se k ostatním",
+ "every table is carried across, in batches, and counted on both sides": "každá tabulka se přenese po dávkách a spočítá na obou stranách",
+ "nothing starts using it yet: Start using it later, on this pane": "zatím ji nic nezačne používat: Začít ji používat později, na tomto panelu",
+ "Start using it as soon as everything is across": "Začít ji používat, jakmile je všechno přeneseno",
+ "What is here now is not changed by any of it: going back is this same wizard the other way.": "Nic z toho nezmění to, co je tady teď: návrat je tentýž průvodce opačným směrem.",
+ "Move it": "Přesunout",
+ "a copy of what is here, then every table carried across…": "kopie toho, co je tady, pak přenos všech tabulek…",
+ "not started on it: the counts do not match": "nespuštěno nad ní: počty nesouhlasí",
+ "nothing uses it yet: Start using it on this pane when you are ready": "zatím ji nic nepoužívá: až budete chtít, Začít ji používat na tomto panelu",
+ "waiting for the daemon to come back…": "čekám, až se démon vrátí…",
+ "the daemon does not answer - look at systemctl status otp": "démon neodpovídá – podívejte se na systemctl status otp",
+ "Done": "Hotovo",
+ "Step by step by hand, as before": "Krok za krokem ručně, jako dřív",
+ "These take the address from the settings above. The wizard asks for its own.": "Tato tlačítka berou adresu z nastavení výše. Průvodce se ptá sám.",
+ "Nothing has moved yet: carry everything across when you are ready.": "Zatím se nic nepřesunulo: přeneste všechno, až budete chtít.",
+ "It is not written into the config file while another server is in use (that would point the database in use at it): type it into the password box above before carrying everything across - this is the only time it is shown.":
+  "Dokud se používá jiný server, do konfigurace se nezapíše (používaná databáze by pak mířila na tento): před přenosem ho vepište do pole pro heslo výše – ukazuje se jen teď.",
+}
+P229 = {
+ "Everything this installation keeps - tokens, accounts, settings, the logs - is copied into the database chosen here; this one is left as it is, and a copy of it is made first. In use now: {0} · {1}.":
+  "Všechno, co tato instalace drží – tokeny, účty, nastavení, logy – se zkopíruje do zde zvolené databáze; tato zůstane, jak je, a nejdřív se z ní udělá kopie. Teď se používá: {0} · {1}.",
+ "its driver is not on this machine: install.sh --upgrade --with-db {0}": "jeho ovladač na tomto stroji není: install.sh --upgrade --with-db {0}",
+ "Where {0} is, and the database and account this installation will use there. If they are not there yet, the next step makes them - with an administrator of that server, used once and kept nowhere.":
+  "Kde je {0} a jakou databázi a účet tam tato instalace použije. Pokud tam ještě nejsou, další krok je vytvoří – se správcem toho serveru, použitým jednou a nikde neuloženým.",
+ "Reaching {0} exactly as the daemon would…": "Připojuji se k {0} přesně tak, jak by to udělal démon…",
+ "There are {0} record(s) of otp in it already - a move into it would mix two installations.": "Už je v ní {0} záznamů otp – přesun do ní by smíchal dvě instalace.",
+ "Makes the database and the account on that server and gives the account rights on that one database alone. It needs an administrator of the server - {0}, or anyone who may make a database - used for this one connection and kept nowhere.":
+  "Vytvoří na tom serveru databázi a účet a dá účtu práva jen na tuto jednu databázi. Potřebuje správce serveru – {0}, nebo kohokoli, kdo smí vytvořit databázi – použitého jen pro toto spojení a nikde neuloženého.",
+ "what is in {0} is thrown away": "co je v {0}, se zahodí",
+ "the daemon starts again on {0} - a few seconds without sign-ins - and the page with it": "démon se znovu spustí nad {0} – pár sekund bez přihlašování – a stránka s ním",
+ "everything is in {0}: {1} record(s) · a copy made first: {2}": "všechno je v {0}: {1} záznamů · nejdřív vytvořená kopie: {2}",
+ "fewer rows arrived than were sent: {0}": "dorazilo méně řádků, než se poslalo: {0}",
+ "it runs on {0} now: {1} · {2} token(s)": "teď běží nad {0}: {1} · {2} tokenů",
+ "the daemon has not come back on {0} in a minute and a half - look at systemctl status otp": "démon se nad {0} nevrátil ani za minutu a půl – podívejte se na systemctl status otp",
+}

@@ -4,6 +4,45 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.214 — 1 November 2026
+
+**Moving to another database, a wizard** - Settings → The database → *Move to another
+database…* asks, one step at a time with Back and Next: which database (SQLite,
+PostgreSQL, MariaDB - one whose driver is missing said so), its address, reaching it
+(tried, made empty or set up with the admin's password, which is never kept), what will
+happen, and then moves everything and switches over, showing how far it is. Tested in all
+six directions. On a node of a cluster (replicated or shared, or another node heard from)
+it does not start: it says why and what to do instead - the cluster is never broken by it.
+The buttons by hand are still there, folded under *By hand*.
+
+- **"Set it up" wrote the new database's address into config.json while PostgreSQL or
+  MariaDB was in use** - the next start went to the empty one. It is written there only
+  when this node runs on SQLite or on that same database.
+
+**RADIUS, tokens and the two nodes under load** - what sign-ins in their thousands on a
+replicating pair, with the database dropped and replication stopped, showed:
+
+- **A lock set by one node was lost to a wrong code counted by the other at the same
+  moment** - the newer row won, and the right code got in afterwards. Wrong codes on both
+  nodes are merged: both nodes' times, the higher count, the later lock.
+- **A database that dropped in the middle of a check used the code up and left the
+  request unanswered** - the NAS asked the other node, which refused it as used. A code's
+  step and its once-only rows are written in one transaction now; a recovery code too.
+- **A burst of more than about 256 requests was dropped by the kernel** before otp saw it
+  (the socket's default 208 KB buffer). The RADIUS sockets take 8 MB: 1600 at once held.
+- **A recovery code sent again (the NAS asking twice, or the person) was counted as a
+  wrong code**, and paused or locked the token. It is said as used, not counted.
+- A code typed with a space in it, as the phone shows it, is taken.
+- Password + code: a recovery code of another length than set was never found after the
+  password. Every length from 6 to 12 is tried.
+- **Replication**: a token renamed on one node while its code was used on the other could
+  be used again under the new name - codes used once are kept by the token's id too. A
+  rename onto a name the other node had just made stopped replication; it is settled the
+  same way on both. Times compared across the nodes never go backwards (a clock a moment
+  behind lost a change), and settings made on both nodes keep the newer one.
+- A token made on both nodes at the same moment no longer gives the admin a raw
+  "duplicate key" error.
+
 ## 1.0.213 — 1 November 2026
 
 **Joining a cluster, without a hand on pg_hba.conf, iptables or firewall-cmd** - what

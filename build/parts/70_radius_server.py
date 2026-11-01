@@ -291,13 +291,21 @@ class Authenticator(object):
             sd = int(CONFIG.get('scratch_digits') or 8)
             if len(password) > sd and sd != digits:
                 splits.append((password[-sd:], password[:-sd]))
+            # Every length a recovery code may have (1.0.214): 6 to 12 since 1.0.207 (an
+            # import, a .totp file, scratch_digits changed later) - one of another length
+            # than scratch_digits was never found, and the password before it went to the
+            # directory with digits at its end, a wrong password counted there too. Tried
+            # only by the dry check below, after the two above.
+            for ln in range(6, 13):
+                if ln not in (digits, sd) and len(password) > ln:
+                    splits.append((password[-ln:], password[:-ln]))
             if not splits:
                 d.step('the code', False, 'nothing after the password looks like a code')
                 d.otp = SAY_BAD
                 return d.refuse('Denied by the token server: ' + SAY_BAD)
             code, ad_password = splits[0]
             if len(splits) > 1:
-                guessed = splits[1][1]
+                guessed = splits[1][1] if (len(password) > sd and sd != digits) else False
                 # Which one: the code that is right now, found with a dry
                 # check that counts nothing and writes nothing - so one
                 # password costs the directory one try, not two.
@@ -614,6 +622,10 @@ class SentReply(bytes):
     late = False
 
 
+# Each RADIUS socket's receive buffer (1.0.214): a burst of a few thousand requests held.
+RADIUS_RCVBUF = 8 << 20
+
+
 class RadiusServer(object):
     """Two UDP sockets - authentication and accounting - read by a thread
     each and answered by a pool of workers."""
@@ -736,6 +748,17 @@ class RadiusServer(object):
                 troubles.append('%s:%d (%s) could not be listened on: %s' % (bind, port, kind, err))
                 sock.close()
                 continue
+            # A larger receive buffer (1.0.214): the default 208 KB held about 256
+            # requests, and a burst of more (a NAS reconnecting its VPN users) was
+            # dropped by the kernel before the queue of 5000 ever saw it.
+            for opt in (getattr(socket, 'SO_RCVBUFFORCE', None), socket.SO_RCVBUF):
+                if opt is None:
+                    continue
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, opt, RADIUS_RCVBUF)
+                    break
+                except OSError:
+                    continue
             sock.settimeout(1.0)
             self.socks[kind] = (bind, port, sock)
             self.bound.append('%s:%d/%s' % (bind, port, kind))

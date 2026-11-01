@@ -645,6 +645,34 @@ class Db(object):
                 except Exception:                       # noqa: BLE001
                     pass
 
+    @contextlib.contextmanager
+    def transaction(self):
+        """What is under it written all or nothing, on one connection (1.0.214): a code used
+        up and its row in token_once were two writes, and a database that dropped between
+        them left the code used here and the request unanswered - the other node, asked
+        next, then refused it as used. SQLite and a transaction already open: as before."""
+        if self.engine == 'sqlite' or getattr(self, 'in_tx', False):
+            yield
+            return
+        with self._pinned(), self.lock:
+            if self.conn is None:
+                self.connect()
+            self.run(RawSql('START TRANSACTION' if self.engine == 'mariadb' else 'BEGIN'))
+            self.in_tx = True
+            try:
+                yield
+                self.run(RawSql('COMMIT'))
+            except BaseException:
+                self.in_tx = False
+                try:
+                    if self.conn is not None:
+                        self.run(RawSql('ROLLBACK'))
+                except Exception:                       # noqa: BLE001
+                    self.close(lane_only=True)
+                raise
+            finally:
+                self.in_tx = False
+
     # ---- the tables ----------------------------------------------------------
     def make_tables(self):
         with self.unlimited():
@@ -717,6 +745,8 @@ LANGUAGE plpgsql SET search_path FROM CURRENT AS $f$
 DECLARE
   now_ double precision := extract(epoch FROM clock_timestamp());
   same_key boolean;
+  other text;
+  merged jsonb;
 BEGIN
   IF current_setting('session_replication_role') <> 'replica' THEN
     IF TG_OP = 'INSERT' THEN
@@ -729,24 +759,26 @@ BEGIN
     IF NEW.secret IS DISTINCT FROM OLD.secret
        OR NEW.pending_secret IS DISTINCT FROM OLD.pending_secret
        OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.dest IS DISTINCT FROM OLD.dest THEN
-      NEW.key_at := now_;
+      -- Never before the stamp it has (1.0.214): one written by the other node with
+      -- a clock ahead made this node's later change the older, and it was lost there.
+      NEW.key_at := GREATEST(now_, COALESCE(OLD.key_at, 0) + 0.000001);
     END IF;
     IF NEW.state IS DISTINCT FROM OLD.state THEN
-      NEW.state_at := now_;
+      NEW.state_at := GREATEST(now_, COALESCE(OLD.state_at, 0) + 0.000001);
     END IF;
     IF NEW.failures IS DISTINCT FROM OLD.failures
        OR NEW.locked_until IS DISTINCT FROM OLD.locked_until
        OR NEW.fail_times IS DISTINCT FROM OLD.fail_times THEN
-      NEW.lock_at := now_;
+      NEW.lock_at := GREATEST(now_, COALESCE(OLD.lock_at, 0) + 0.000001);
     END IF;
     BEGIN
       -- Issued (a code that was not there before), not merely used.
       IF NEW.scratch IS DISTINCT FROM OLD.scratch
          AND NOT (otp_codes(OLD.scratch) @> otp_codes(NEW.scratch)) THEN
-        NEW.scratch_at := now_;
+        NEW.scratch_at := GREATEST(now_, COALESCE(OLD.scratch_at, 0) + 0.000001);
       END IF;
     EXCEPTION WHEN others THEN
-      NEW.scratch_at := now_;
+      NEW.scratch_at := GREATEST(now_, COALESCE(OLD.scratch_at, 0) + 0.000001);
     END;
     RETURN NEW;
   END IF;
@@ -772,6 +804,9 @@ BEGIN
     NEW.created := OLD.created; NEW.created_by := OLD.created_by;
     NEW.activated := OLD.activated;
     NEW.kind := OLD.kind; NEW.dest := OLD.dest;     -- how codes go, with the key (1.0.76)
+    -- Its name too (1.0.214): a rename re-seals the key bound to the new name; the
+    -- other node's older row put the old name back on it, and the key opened no more.
+    NEW.name := OLD.name; NEW.display := OLD.display;
     NEW.last_step := CASE WHEN same_key
                           THEN GREATEST(COALESCE(NEW.last_step, 0), COALESCE(OLD.last_step, 0))
                           ELSE OLD.last_step END;
@@ -779,10 +814,50 @@ BEGIN
   ELSIF NEW.secret IS NOT DISTINCT FROM OLD.secret THEN
     NEW.last_step := GREATEST(COALESCE(NEW.last_step, 0), COALESCE(OLD.last_step, 0));
   END IF;
+  -- Renamed on the other node to a name a token here already has (1.0.214): the
+  -- update stopped replication for good on the duplicate. The same one of the two is
+  -- kept as when both made one (otp_same_key, by byte order); the other's change is
+  -- not taken here.
+  IF NEW.name IS DISTINCT FROM OLD.name THEN
+    SELECT row_to_json(t)::text INTO other FROM tokens t WHERE t.name = NEW.name AND t.id <> NEW.id;
+    IF other IS NOT NULL THEN
+      IF row_to_json(NEW)::text COLLATE "C" > other COLLATE "C" THEN
+        DELETE FROM tokens WHERE name = NEW.name AND id <> NEW.id;
+      ELSE
+        -- The one renamed loses here as it lost there: gone on both nodes.
+        DELETE FROM tokens WHERE id = OLD.id;
+        RETURN NULL;
+      END IF;
+    END IF;
+  END IF;
   IF COALESCE(NEW.state_at, 0) < COALESCE(OLD.state_at, 0) THEN
     NEW.state := OLD.state; NEW.state_at := OLD.state_at;
   END IF;
-  IF COALESCE(NEW.lock_at, 0) < COALESCE(OLD.lock_at, 0) THEN
+  IF COALESCE(NEW.failures, 0) > 0 AND COALESCE(OLD.failures, 0) > 0
+     AND (NEW.fail_times IS DISTINCT FROM OLD.fail_times
+          OR NEW.locked_until IS DISTINCT FROM OLD.locked_until) THEN
+    -- Wrong codes on both nodes at once (1.0.214): the newer row alone was kept - the
+    -- other node's wrong codes and its lock lost, and the pause a guesser meets came
+    -- after twice the tries. Both nodes' times kept, the higher count, the later lock.
+    BEGIN
+      merged := (SELECT COALESCE(jsonb_agg(DISTINCT e), '[]'::jsonb)
+                   FROM (SELECT jsonb_array_elements(otp_codes(OLD.fail_times)) e
+                         UNION SELECT jsonb_array_elements(otp_codes(NEW.fail_times))) x);
+      NEW.fail_times := merged::text;
+      -- The higher count, not the sum: the lock is set at every lockout_after-th wrong
+      -- code by the node that counts it, and a sum jumped past it - never locked.
+      -- The pause after a few wrong codes counts both nodes' times above.
+      NEW.failures := GREATEST(COALESCE(NEW.failures, 0), COALESCE(OLD.failures, 0));
+      -- GREATEST passes NULLs by: none on either node stays none, alike on both.
+      NEW.locked_until := GREATEST(NEW.locked_until, OLD.locked_until);
+      NEW.lock_at := GREATEST(NEW.lock_at, OLD.lock_at);
+    EXCEPTION WHEN others THEN
+      IF COALESCE(NEW.lock_at, 0) < COALESCE(OLD.lock_at, 0) THEN
+        NEW.failures := OLD.failures; NEW.fail_times := OLD.fail_times;
+        NEW.locked_until := OLD.locked_until; NEW.lock_at := OLD.lock_at;
+      END IF;
+    END;
+  ELSIF COALESCE(NEW.lock_at, 0) < COALESCE(OLD.lock_at, 0) THEN
     NEW.failures := OLD.failures; NEW.fail_times := OLD.fail_times;
     NEW.locked_until := OLD.locked_until; NEW.lock_at := OLD.lock_at;
   END IF;
@@ -823,6 +898,24 @@ BEGIN
     RETURN NEW;
   END IF;
   came := row_to_json(NEW)::text;
+  -- A setting saved first on both nodes (1.0.214): the later one kept, as an update
+  -- of it is (otp_newer_setting) - byte order kept the older on one node for good.
+  IF TG_TABLE_NAME = 'settings' THEN
+    BEGIN
+      IF COALESCE((came::json ->> 'at')::double precision, 0)
+         <> COALESCE((here::json ->> 'at')::double precision, 0) THEN
+        IF COALESCE((came::json ->> 'at')::double precision, 0)
+           > COALESCE((here::json ->> 'at')::double precision, 0) THEN
+          EXECUTE format('DELETE FROM %I.%I WHERE %I = $1', TG_TABLE_SCHEMA, TG_TABLE_NAME, col)
+             USING key;
+          RETURN NEW;
+        END IF;
+        RETURN NULL;
+      END IF;
+    EXCEPTION WHEN others THEN
+      NULL;
+    END;
+  END IF;
   -- Byte order on both nodes (1.0.94): under a language's collation the
   -- two could pick different winners and stay different for good.
   IF came COLLATE "C" > here COLLATE "C" THEN

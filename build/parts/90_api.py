@@ -3549,6 +3549,10 @@ def _db(h):
             'counts': h.store.counts(), 'tables': db_table_sizes(db), 'backups': backups(),
             'key': str(sealing_key_path()), 'key_there': bool(sealing_key()),
             'config_file': str(CONFIG_FILE), 'job': job_read(), 'node': node_name(),
+            # The move to another database is not for a node of a cluster (1.0.214):
+            # the page's wizard says so before it starts.
+            'cluster': in_cluster(h.store), 'ha_mode': CONFIG.get('ha_mode') or '',
+            'drivers': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
             'tuned': bool(json.loads(h.store.get_meta('tune_before:' + node_name()) or '{}')),
             'retain': {k: CONFIG.get(k) for k in ('retain_radius_days', 'retain_otp_days',
                                                     'retain_events_days')}})
@@ -3840,8 +3844,16 @@ def _db_do(h):
                     if not c.get('db_password'):
                         fresh = c['db_password'] = db_password_made()
                     made = db_make(c, who, str(b.get('admin_password') or ''))
-                keep = {k: c[k] for k in DB_KEYS if k != 'db_engine'}
-                write_file_settings(keep)
+                # Written into config.json only where it cannot point the database in use
+                # elsewhere (1.0.214): on PostgreSQL, another server set up wrote its address
+                # and password under the engine in use - the next connection went there, and
+                # the copy before a move failed. The file alone keeps it (SQLite), or it is
+                # the same database; else the page keeps it until it is used.
+                kept_in = ''
+                if h.store.db.engine == 'sqlite' or same_database(c, h.store.db):
+                    keep = {k: c[k] for k in DB_KEYS if k != 'db_engine'}
+                    write_file_settings(keep)
+                    kept_in = str(CONFIG_FILE)
                 far = db_open(c)
                 try:
                     far.make_tables()
@@ -3851,7 +3863,7 @@ def _db_do(h):
                 got = db_try(c)
                 h.store.add_event('settings', '%s set up %s at %s' % (s['name'], words,
                                                                        db_where(c)), who=s['name'])
-                return {'made': made, 'password': fresh, 'kept_in': str(CONFIG_FILE),
+                return {'made': made, 'password': fresh, 'kept_in': kept_in,
                         'try': got, 'message': '%s at %s is ready' % (words, db_where(c))}
             if same_database(c, h.store.db) and act in ('empty', 'move'):
                 raise ApiError(400, 'that is the database in use; this only ever touches the '

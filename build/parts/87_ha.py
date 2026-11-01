@@ -1385,10 +1385,12 @@ def _once_peer_has(k, me, store=None):
     return None
 
 
-def once_take(store, kind, name, value):
+def once_take(store, kind, name, value, peer=True):
     """True if this is the first use of it anywhere; False if it was used
     before, here or on the other node. A database error here raises: the
-    request then goes unanswered, never let in."""
+    request then goes unanswered, never let in. peer=False: this database only,
+    the other node asked after by once_peer_free (1.0.214: inside a transaction,
+    never waited for the other node with the row held)."""
     k = once_key(kind, name, value)
     me = once_node()
     db = store.db
@@ -1402,9 +1404,18 @@ def once_take(store, kind, name, value):
         return False                    # this node took it already
     if db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?', (k, me)):
         return False                    # the other node took it, and it came over
+    if peer and not once_peer_free(store, kind, name, value):
+        return False                    # the other node took it, not over yet
+    return True
+
+
+def once_peer_free(store, kind, name, value):
+    """False when the other node's database has its own row for it - used
+    there, not come over yet."""
+    me = once_node()
     if me and CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer'):
-        if _once_peer_has(k, me, store):
-            return False                # the other node took it, not over yet
+        if _once_peer_has(once_key(kind, name, value), me, store):
+            return False
     return True
 
 

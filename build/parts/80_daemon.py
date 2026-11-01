@@ -1918,6 +1918,14 @@ def same_database(c, db):
             and str(c.get('db_name')) == str(db.name))
 
 
+def db_driver_here(engine):
+    """Whether this machine's Python can speak to that kind of server (1.0.214): the
+    wizard says what to install before it asks anything else."""
+    import importlib.util
+    name = {'postgres': 'psycopg2', 'mariadb': 'pymysql'}.get(engine)
+    return bool(name and importlib.util.find_spec(name))
+
+
 def db_try(c):
     """Reach a database as this program would. Never raises."""
     out = {'reached': False, 'engine': c.get('db_engine'),

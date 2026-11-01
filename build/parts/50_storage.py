@@ -1821,7 +1821,20 @@ class Storage(object):
                    'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
                    'created': time.time(), 'window_steps': -1}
             row.update(fields)
-            return self.db.insert('tokens', row)
+            try:
+                return self.db.insert('tokens', row)
+            except Exception as e:
+                # Made on the other node a moment ago, and come over between the look and
+                # the INSERT (1.0.214): a raw "duplicate key" error for the admin. Changed
+                # instead, as a token there was is.
+                said = str(e).lower()
+                if not ('duplicate' in said or 'unique' in said):
+                    raise
+                old = self.token(name)
+                if not old:
+                    raise
+                self.db.update('tokens', old['id'], fields)
+                return old['id']
 
     def token_update(self, ident, fields):
         """Fields changed on the token that was read, by its id, and never a

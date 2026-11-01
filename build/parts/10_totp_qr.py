@@ -112,6 +112,13 @@ def scratch_hash_old(user, code):
     return 'sha256:' + hashlib.sha256(_scratch_text(user, code)).hexdigest()
 
 
+def scratch_id_hash(token_id, code, key):
+    """A recovery code as token_once keeps it by the token's id (1.0.214): the same
+    whatever the token is called - a rename did not let a used code in again."""
+    return hmac.new(key or b'', ('#%s\n%s' % (token_id, code)).encode('utf-8'),
+                    hashlib.sha256).hexdigest()[:48]
+
+
 def scratch_find(user, code, kept, key=None):
     """The entry of `kept` (the list a token row holds) that is `code`, or
     None - and how that entry should be written now, which differs from the
