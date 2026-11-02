@@ -3542,3 +3542,7 @@ table.split-scen{table-layout:fixed;width:100%;min-width:760px}
 @media (max-width:640px){.samp-row{grid-template-columns:1fr;gap:4px}.samp-tags{justify-content:flex-start}}
 .samp-all-lede{margin:4px 0 0}
 .samp-list .samp-tags .btn{padding:0 9px}
+
+/* Two sections side by side, of the same width, the whole width (1.0.230) */
+.msects.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (max-width:760px){.msects.two{grid-template-columns:minmax(0,1fr)}}

@@ -27,6 +27,16 @@ function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w +
     ok(tag + 'the card says where both are read from', /mail/.test(facts) && /mobile, telephoneNumber/.test(facts), facts);
     await card.click();
     await p.waitForSelector('.samp-ask input', { timeout: 10000 });
+    const lay0 = await p.evaluate(() => {
+      const secs = [...document.querySelectorAll('#modal .msects.two > .msect')].map(x => x.getBoundingClientRect());
+      const box = document.querySelector('#modal .msects.two').getBoundingClientRect();
+      return {n: secs.length, w0: secs[0] && secs[0].width, w1: secs[1] && secs[1].width,
+              top: secs[0] && secs[1] && Math.abs(secs[0].top - secs[1].top), full: secs[2] && secs[2].width, box: box.width,
+              right: secs[1] && (box.right - secs[1].right)};
+    });
+    if (width > 800) ok(tag + 'the two upper cards side by side, the same width, the whole width', lay0.n === 3 && Math.abs(lay0.w0 - lay0.w1) < 2 && lay0.top < 2 && lay0.right < 2 && Math.abs(lay0.full - lay0.box) < 2, JSON.stringify(lay0));
+    else ok(tag + 'one under the other on a phone, the whole width', lay0.n === 3 && Math.abs(lay0.w0 - lay0.box) < 2 && Math.abs(lay0.w1 - lay0.box) < 2, JSON.stringify(lay0));
+    if (width > 800) await p.screenshot({ path: '/tmp/claude-0/r7ui/dir-top-' + lang + '-' + width + '.png' });
     const boxes = await p.$$eval('#modal input.mono', xs => xs.map(x => x.value));
     ok(tag + 'the boxes hold the defaults', boxes.includes('mail') && boxes.includes('mobile, telephoneNumber'), boxes.join(' | '));
     await p.fill('.samp-ask input', 'jcermak');
