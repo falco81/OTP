@@ -84,8 +84,23 @@ def others_in_service(store):
     """The other nodes heard from and not in maintenance - those that answer RADIUS while
     this one is out of service (1.0.217: alive alone was counted, and a node already in
     maintenance by hand was taken for one that answers - both went silent)."""
+    # ...nor one out of service by itself (1.0.226): stepped aside for its clock or the nodes
+    # being apart - as its own state rows say now (its heartbeat's word lags, and a node just
+    # back from maintenance was taken for one still out of it).
     return [n['name'] for n in ha_nodes(store) if n.get('alive') and not n.get('me')
-            and not (maintenance_row(store, n['name']) or {}).get('on')]
+            and not (maintenance_row(store, n['name']) or {}).get('on')
+            and not node_stepped_aside(store, n['name'])]
+
+
+def node_stepped_aside(store, name):
+    """Whether `name` stepped aside by itself - its clock, or the nodes apart - by its own
+    state rows, fresh."""
+    now = time.time()
+    for k in ('clock:state:', 'split:state:'):
+        row = _meta_json(store, k + name) or {}
+        if row.get('role') == 'aside' and now - float(row.get('at') or 0) < 40:
+            return True
+    return False
 
 
 def maintenance_now(store):

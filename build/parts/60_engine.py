@@ -128,6 +128,10 @@ class Directory(object):
                         e = LdapUnreachable('the directories are answering slowly: %d requests wait '
                                             'on them already - this one is not added to them' % total)
                     e.held = True       # this node's own limit - not the directory gone (1.0.224)
+                    if waited:
+                        # Given back (1.0.226): kept, four refused waits stopped every wait after
+                        # them until a restart.
+                        self.BUSY_WAITING[key] = max(0, self.BUSY_WAITING.get(key, 1) - 1)
                     raise e
                 if not waited:
                     waited = True
@@ -982,6 +986,7 @@ class Tokens(object):
         """A code from a token that is waiting - a new one, or a replacement
         staged beside an old one. (ok, words)."""
         name = norm_name(name)
+        code = code_typed(code)     # the Czech row, full-width digits (1.0.226)
         # One at a time per name, as a check is (1.0.33).
         with self.lock_of(name):
             return self._confirm(name, code, how, src)
@@ -1311,6 +1316,8 @@ class Tokens(object):
         # "123 456" as the phone shows it (1.0.214): taken on the pages, a wrong code
         # through RADIUS - and counted. The spaces inside go, as there.
         code = re.sub(r'[\s-]', '', str(code or ''))
+        if not code.isascii() and re.fullmatch(r'[0-9]{4,12}', code_typed(code), re.ASCII):
+            code = code_typed(code)     # the Czech row, full-width digits (1.0.226)
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other
         # digits, which then broke the comparison and left the request
         # unanswered and unwritten (1.0.33).
@@ -1517,9 +1524,19 @@ class Tokens(object):
                     (step, step, t, tok['id'], tok.get('secret')))
                 # MariaDB counts the rows changed, not those found: the same code again
                 # at the same instant changes nothing - asked, not taken for a new key.
-                if not won and self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
-                                                   (tok['id'],)) != tok.get('secret'):
-                    return False, SAY_BAD, facts
+                if not won:
+                    now_sealed = self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
+                                                     (tok['id'],))
+                    if now_sealed != tok.get('secret'):
+                        # Only sealed again, the same key (1.0.226, as with reuse refused).
+                        if not now_sealed or unseal_secret(
+                                now_sealed, token_bind(tok.get('name'))) != secret:
+                            return False, SAY_BAD, facts
+                        self.store.db.run(
+                            'UPDATE tokens SET last_step = CASE WHEN COALESCE(last_step, 0) < ? '
+                            "THEN ? ELSE last_step END, last_used = ?, failures = 0, fail_times = '[]', "
+                            "last_how = 'code' WHERE id = ? AND secret = ?",
+                            (step, step, t, tok['id'], now_sealed))
         return True, (SAY_OK if facts['off'] == 0 else SAY_OK_DRIFT), facts
 
     def mark_from(self, name, src, client=''):

@@ -390,10 +390,12 @@ def split_step(store, now=None, peer=None, arbiter=None):
         log('ha: the other node\'s database answers again - the nodes are together after %s'
             % human_span(took), 'info')
         _split_event(store, 'good', 'the nodes reach each other again, after %s apart' % human_span(took))
-    if p is not True:
+    if apart and p is not True:
         # Known gone (1.0.222): the sign-ins do not wait 1.5 s each to find it out again -
         # one with a NAS's timeout of 1.5 s went to the other node, which had stepped aside.
-        # From the first probe that did not answer (1.0.224), not only once apart.
+        # Only once apart (1.0.226, as 1.0.222 had it): from the first probe that did not answer
+        # (1.0.224), a restart of the other node's PostgreSQL held the question off for 5 s -
+        # and a code used there a moment before was let in here again.
         with ONCE_PEER_LOCK:
             ONCE_PEER['down_until'] = max(ONCE_PEER['down_until'], time.time() + 5)
     preferred = split_me_preferred()
@@ -433,6 +435,23 @@ def split_step(store, now=None, peer=None, arbiter=None):
                 except ValueError:
                     at = 0
                 if at < now - 3600:
+                    # Its key looked for among the other node's codes first (1.0.226): let in
+                    # here unasked in a short outage and used there too, it was never said.
+                    ok_ = r['k'].split(':', 3)
+                    try:
+                        twice = len(ok_) == 4 and store.db.value(
+                            'SELECT 1 FROM token_once WHERE k = ? AND node <> ?', (ok_[3], once_node()))
+                    except Exception:                   # noqa: BLE001
+                        twice = False
+                    if twice:
+                        try:
+                            v = json.loads(r['v'] or '{}')
+                        except ValueError:
+                            v = {}
+                        if not str(v.get('name') or '').startswith('#'):
+                            _split_event(store, 'bad', 'a code of %s (%s) was let in on both nodes while '
+                                         'the other one\'s database could not be asked'
+                                         % (v.get('name') or '?', v.get('kind') or '?'))
                     store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
         except Exception:                               # noqa: BLE001
             pass
@@ -452,8 +471,17 @@ def split_preferred_unable(store):
     name = split_preferred_name(store)
     if not name or name == node_name():
         return ''
+    if peer_db_restarting(SPLIT.get('peer_err') or ''):
+        # Its machine there and its database refusing (1.0.226): not cut off from this one -
+        # its RADIUS has no database either. Both went silent for as long as it was down.
+        return 'the preferred node\'s database is down'
     try:
-        if (clock_state_of(store, name) or {}).get('role') == 'aside':
+        row = clock_state_of(store, name) or {}
+        # Its word from about when the nodes lost each other (1.0.226), not an old one: aside
+        # long ago and serving since, both nodes answered while apart.
+        recent = float(row.get('at') or 0) >= (SPLIT['apart_since'] or time.time()) - \
+            max(5, int(CONFIG.get('split_after_s') or 20)) - 30
+        if row.get('role') == 'aside' and recent:
             return 'the preferred node stepped aside for its clock'
         for n in ha_nodes(store):
             if n['name'] == name and n.get('maintenance'):

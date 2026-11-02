@@ -1352,6 +1352,9 @@ def _once_peer_has(k, me, store=None):
     # for 20 s, then longer each time, up to 5 minutes (down_until below).
     with ONCE_PEER_LOCK:
         if ONCE_PEER['down_until'] > time.time():
+            if debugging('radius'):
+                log('once-peer: not asked - held off %.1f s more' % (ONCE_PEER['down_until'] - time.time()),
+                    'debug')
             return None
         if ONCE_PEER['pool']:
             db = ONCE_PEER['pool'].pop()
@@ -1374,29 +1377,57 @@ def _once_peer_has(k, me, store=None):
     gen = ONCE_PEER['gen']
 
     def ask():
-        sql = 'SELECT 1 FROM token_once WHERE k = ? AND node <> ?'
-        try:
-            if got['db'] is None:
-                got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
-                got['v'] = bool(got['db'].value(sql, (k, me)))
-                return
+        # Its database starting or stopping, the machine there (1.0.226): asked again for 2 s
+        # more rather than let in on this node's rows alone - a code used there a moment
+        # before was let in here again during a routine restart of its PostgreSQL.
+        began = time.monotonic()
+        while True:
             try:
-                got['v'] = bool(got['db'].value(sql, (k, me)))
-            except Exception:                           # noqa: BLE001
-                # One kept from before is dead (1.0.222: the link broke and came back):
-                # asked again on a new one before the other node is taken for gone.
-                try:
-                    got['db'].close()
-                except Exception:                       # noqa: BLE001
-                    pass
-                got['db'] = None
-                got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
-                got['v'] = bool(got['db'].value(sql, (k, me)))
-        except Exception as e:                          # noqa: BLE001
-            got['e'] = e
+                return ask_once()
+            except Exception as e:                      # noqa: BLE001
+                # A restart takes a few seconds: 8 s for one saying so, 3 s for a refusal
+                # (a database stopped for longer is not waited for at every sign-in).
+                restarting = peer_db_restarting(e)
+                limit = 8.0 if restarting == 'restarting' else 3.0
+                if restarting and time.monotonic() - began < limit:
+                    got['retrying'] = True
+                    try:
+                        if got.get('db') is not None:
+                            got['db'].close()
+                    except Exception:                   # noqa: BLE001
+                        pass
+                    got['db'] = None
+                    time.sleep(0.25)
+                    continue
+                got['e'] = e
+                return
+
+    def ask_once():
+        sql = 'SELECT 1 FROM token_once WHERE k = ? AND node <> ?'
+        if got['db'] is None:
+            got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
+            got['v'] = bool(got['db'].value(sql, (k, me)))
+            return
+        try:
+            got['v'] = bool(got['db'].value(sql, (k, me)))
+        except Exception:                           # noqa: BLE001
+            # One kept from before is dead (1.0.222: the link broke and came back):
+            # asked again on a new one before the other node is taken for gone.
+            try:
+                got['db'].close()
+            except Exception:                       # noqa: BLE001
+                pass
+            got['db'] = None
+            got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
+            got['v'] = bool(got['db'].value(sql, (k, me)))
     t = threading.Thread(target=ask, name='once-peer', daemon=True)
     t.start()
     t.join(1.5)
+    if got.get('retrying') and t.is_alive():
+        t.join(7.0)
+    if debugging('radius'):
+        log('once-peer: %s' % ('answered %s' % got['v'] if 'v' in got else 'no answer: %s' % got.get('e')),
+            'debug')
     if 'v' in got:
         with ONCE_PEER_LOCK:
             if gen == ONCE_PEER['gen']:
@@ -1428,6 +1459,19 @@ def _once_peer_has(k, me, store=None):
             '(%s): codes are checked against this node\'s rows alone until it can'
             % str(e).split('\n')[0][:200], 'warn')
     return None
+
+
+def peer_db_restarting(e):
+    """Whether the other node's database refused because it is starting or stopping - its
+    machine there, its PostgreSQL not taking questions this moment."""
+    words = str(e).lower()
+    if any(w in words for w in ('shutting down', 'starting up', '57p01', '57p03', 'not yet accepting',
+                                'terminating connection', 'closed the connection unexpectedly',
+                                'in recovery mode')):
+        return 'restarting'
+    if 'connection refused' in words:
+        return 'refused'
+    return ''
 
 
 def once_take(store, kind, name, value, peer=True):

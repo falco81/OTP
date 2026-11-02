@@ -4,6 +4,54 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.226 — 3 November 2026
+
+**The fourth of five rounds of looking for bugs.** Found by it, and mended:
+
+- **The SSH gate wrote the code typed into the events and the log** - as U+0030 U+0034..., a code
+  still good for two more tries, or the password typed at the code's prompt by mistake. Only the
+  kinds of characters are said now (6 digits, 1 dash).
+- **Two nodes on one new shared database each made a key of their own**, without a word: what one
+  sealed the other could not open - its RADIUS requests dropped, its tokens "cannot be opened". The
+  key's mark is kept in the database now; a node with another key says so loudly, and no new key is
+  made once the database has one.
+- **A node stopped half way through a sign-in held that person's row for hours** on a shared
+  database (a VM paused, a node cut off): its open transaction now ends after 10 s, the server's own
+  keepalives finding it gone.
+- **A code used twice during a routine restart of the other node's PostgreSQL** - it refused the
+  question for a second, or the watch of the nodes held the question off for 5 s after one probe
+  that did not answer (since 1.0.224), and the code was let in here on this node's rows alone. Asked
+  again while it restarts (up to 8 s; 3 s when it refuses outright), held off only while the nodes
+  are apart; a code let in unasked and used on the other node too is said in the events.
+- **"Only the preferred node" silenced both nodes when the preferred node's database stopped** - the
+  other node took it for the link cut and stepped aside, and the preferred node had no database to
+  answer with. A database refusing while its machine answers is not a cut link: the other node goes on.
+- **The wait for a place at the directory stopped for good** after four waits ended in a refusal
+  (since 1.0.222) - its count was never given back.
+- **A question for a code that would not be sent** (too many waiting) - the person waited for a code
+  that never came. Left unanswered now, the VPN asks again.
+- **The limit of codes sent between two nodes**: the first of a window was not counted again, and
+  two at the same moment both gave back. Decided by order now: of two, exactly one.
+- **Going back and forth between versions**: going back is allowed to 1.0.224 at the oldest (an older
+  one finds names sent decomposed no more, and has the hole where one person signed in as another);
+  names of tokens are put in one form at every start and after a copy is put back (not once for
+  good); Czech names with their marks apart are no longer taken for another language.
+- **Codes typed on the Czech row, in full-width digits, with a dash** are read everywhere now: when
+  confirming a token, in a realm of the code alone, in the SSH gate, in the test on the pages.
+- **The SSH gate**: a code sent by mail or SMS stopped working when its token was taken away or
+  moved to another address (it worked 5 min more); a token made again in the step the old one was
+  last used no longer refuses the new one's right code.
+- **Clusters of one shared database**: alerts, Prometheus and SNMP say the other node too (a node
+  dead there was never alerted on); a test sign-in asked of the other node is made there.
+- **The clocks guarded**: a node put in maintenance while the other is aside for its clock is no
+  longer taken for one that answers (nobody answered for 12 s); the preferred node aside for its clock
+  when the nodes lose each other stays aside (both answered); on MariaDB the other side's clock is
+  read in UTC (an hour off in the hour summer time ends).
+- **And**: the administrators' code by mail or SMS is once across the nodes too; a key sealed again
+  between two steps of a sign-in no longer refuses the right code with "a code may be used again"
+  on; Make a token no longer fills the form with a late answer for the name typed before; the
+  messages new on the enrolment pages are in Czech.
+
 ## 1.0.225 — 3 November 2026
 
 **The third of five rounds of looking for bugs.** Found by it, and mended:

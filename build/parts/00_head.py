@@ -93,14 +93,16 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.225'
+__version__ = '1.0.226'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
 # older one would misread, or fixes a hole an older one has. install.sh keeps
 # the highest of these in a file of root's (downgrade-floor); each node keeps
 # its own in the database.
-DOWNGRADE_FLOOR = '1.0.149'
+# 1.0.226: 1.0.224 - names of tokens in one form of their letters (an older version finds a
+# name sent decomposed no more), and one person never signed in as another.
+DOWNGRADE_FLOOR = '1.0.224'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -2254,7 +2256,7 @@ def _sealed_held():
         return False
     try:
         return bool(int(db.value("SELECT COUNT(*) FROM tokens WHERE secret LIKE 'sealed:%'",
-                                 (), 0) or 0))
+                                 (), 0) or 0)) or bool(db.value("SELECT 1 FROM meta WHERE k = 'seal:fp'"))
     except Exception:                                   # noqa: BLE001
         return True
 

@@ -343,7 +343,7 @@ def snmp_mib(daemon, agent):
                          (B + (6, 1, 1, 5, i), 'int', end)]
     except Exception:                                   # noqa: BLE001
         pass
-    if CONFIG.get('ha_mode') and db_ok:
+    if db_ok and in_cluster(store):
         try:
             for i, n in enumerate(ha_nodes(store), 1):
                 rows += [(B + (7, 1, 1, 1, i), 'int', i), (B + (7, 1, 1, 2, i), 'str', n['name']),

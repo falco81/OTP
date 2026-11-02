@@ -402,7 +402,7 @@ def node_key_add(store, prefix, name, keep, most=None, limit=None):
         if raw is None:
             try:
                 store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, new))
-                return True
+                return _node_key_recount(store, prefix, name, k, t, keep, limit)
             except Exception:                           # noqa: BLE001
                 continue
         if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
@@ -416,13 +416,17 @@ def _node_key_recount(store, prefix, name, k, t, keep, limit):
     back, and not let past."""
     if limit is None:
         return True
-    total = 0
+    # By order, not by count (1.0.226): of two written at the same moment both saw one too
+    # many and gave back - fewer let past than the limit allows. The first `limit` of all,
+    # by their time and their row, keep theirs: of two at once exactly one.
+    every = []
     for r in node_key_rows(store, prefix, name):
         try:
-            total += len([x for x in json.loads(r['v'] or '[]') if t - float(x) < keep])
+            every += [(float(x), r['k']) for x in json.loads(r['v'] or '[]') if t - float(x) < keep]
         except (ValueError, TypeError):
             continue
-    if total <= limit:
+    every.sort()
+    if (t, k) in every[:limit]:
         return True
     node_key_give_back(store, prefix, name, t)
     return False
@@ -1433,6 +1437,12 @@ def code_send_later(store, kind, to, code, name, rid=''):
             CODE_WAITING[0] -= 1
         log_sparing('code-send-thread', 'the code for %s could not be sent: %s' % (name, e),
                     'warn', every=60)
+        try:
+            node_key_give_back(store, 'codesent', name)
+        except Exception:                               # noqa: BLE001
+            pass
+        return False
+    return True
 
 
 # ---- the challenges ------------------------------------------------------------------

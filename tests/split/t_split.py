@@ -78,9 +78,9 @@ otp._split_peer_probe = real_probe
 otp.SPLIT.update(peer_ok_at=1000.0, apart_since=0.0, role='serve')
 
 otp.CONFIG['split_mode'] = 'priority'
-step(1005, peer='connection refused')
+step(1005, peer='no answer within 3.5 s')
 ok('priority, the other node gone for 5 s of 20: not apart yet', not otp.split_apart() and not otp.split_aside())
-step(1030, peer='connection refused')
+step(1030, peer='no answer within 3.5 s')
 ok('... 30 s: apart, and this node (not the preferred one) steps aside', otp.split_apart() and otp.split_aside())
 m = otp.maintenance_now(st)
 ok('... as maintenance nobody asked for: RADIUS silent, the VIP address goes (%s)' % m.get('why'),
@@ -183,6 +183,17 @@ st.set_meta('split:report', json.dumps(dict(json.loads(st.get_meta('split:report
 probs = otp.alert_problems(st)
 ok('... and the alerts say it', 'split:twice' in probs, list(probs))
 otp.CONFIG['split_prefer'] = ''
+
+# ---- priority: the preferred node's database down, its machine there (1.0.226) -----------------
+otp.CONFIG.update(split_mode='priority', split_prefer='spb')     # the other node preferred
+otp.SPLIT.update(peer_ok_at=2000.0, apart_since=0.0, role='serve')
+step(2010, peer='could not connect: connection refused'); step(2040, peer='could not connect: connection refused')
+ok('priority, not preferred, the preferred node\'s database refusing (its machine there): this node answers',
+   otp.SPLIT['role'] == 'serve')
+step(2050, peer='no answer within 3.5 s'); step(2080, peer='no answer within 3.5 s')
+ok('... the link cut (no answer at all): steps aside as before', otp.SPLIT['role'] == 'aside')
+step(2090, peer=True)
+otp.CONFIG.update(split_mode='off', split_prefer='')
 
 # ---- the alert while apart ---------------------------------------------------------------------
 step(2100, peer='x'); step(2130, peer='x')

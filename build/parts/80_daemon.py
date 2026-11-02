@@ -269,6 +269,39 @@ def token_restore(store, t, by='restore', replace=False):
         {'totp': 'the app', 'mail': 'codes by mail', 'sms': 'codes by SMS'}[kind], len(left))
 
 
+def seal_fp_check(store):
+    """The mark of the key that seals the secrets, kept in the database (1.0.226): two nodes
+    started on a new shared database each made a key of its own, without a word - what one
+    sealed the other could not open: its RADIUS requests dropped, its tokens "cannot be
+    opened". The first node's mark is kept; a node whose key differs says so loudly."""
+    key = sealing_key()
+    if not key:
+        return
+    fp = hmac.new(key, b'otp-seal-check', hashlib.sha256).hexdigest()[:16]
+    try:
+        # Written by one node only where the two replicate (a row written on both at once
+        # would stop the replication on its key).
+        if not store.get_meta('seal:fp') and (CONFIG.get('ha_mode') != 'replicated' or ha_lead(store)):
+            sql = {'mariadb': 'INSERT IGNORE INTO meta (k, v) VALUES (?, ?)',
+                   'sqlite': 'INSERT OR IGNORE INTO meta (k, v) VALUES (?, ?)'}.get(
+                store.db.engine, 'INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT DO NOTHING')
+            store.db.run(sql, ('seal:fp', fp))
+        there = store.get_meta('seal:fp')
+    except Exception as e:                              # noqa: BLE001
+        log('the mark of the key could not be kept: %s' % e, 'warn')
+        return
+    k = 'seal:bad:' + node_name()
+    if there and there != fp:
+        log('this node seals with another key than the one the database was sealed with (%s): '
+            'what the other node sealed cannot be opened here - copy its key to %s and start '
+            'again' % (there, sealing_key_path()), 'error')
+        store.add_event('starting and stopping', '%s has another key than the database\'s: copy '
+                        'the key of the other node to %s' % (node_name(), sealing_key_path()), 'bad')
+        store.set_meta(k, json.dumps({'at': time.time(), 'here': fp, 'there': there}))
+    elif store.get_meta(k):
+        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+
+
 def names_nfc_kept(store):
     """Once (1.0.224): a token whose name was written with its letters decomposed (Z + ˇ,
     sent so by a client before 1.0.222) is renamed to the composed form every name is looked
@@ -278,19 +311,25 @@ def names_nfc_kept(store):
     composed name taken already: left, and said. One node does it; the other gets it by
     replication."""
     key = 'names:nfc:done'
-    if store.get_meta(key) is not None or not ha_lead(store):
+    # At every start (1.0.226), not once for good: a version before 1.0.222 run on the
+    # database since, or an old copy put back, brought decomposed names again. Only the names
+    # that are not ASCII are looked at - cheap.
+    if not ha_lead(store):
         return
     if not sealing_key():
         # Not without the key that opens the tokens (1.0.225): their keys would stay sealed
         # to the old name, and could not be opened when the key was put back.
         return
     moved, left = [], []
-    for r in store.db.rows('SELECT * FROM tokens'):
-        was = str(r.get('name') or '')
+    for n in store.db.rows('SELECT id, name FROM tokens'):
+        was = str(n.get('name') or '')
         if was.isascii():
             continue
         to = norm_name(was)
         if to == was:
+            continue
+        r = store.db.row('SELECT * FROM tokens WHERE id = ?', (n['id'],))
+        if not r:
             continue
         if store.db.value('SELECT 1 FROM tokens WHERE name = ?', (to,)):
             store.add_event('tokens', 'the token %r has the same name as %s written another way - '
@@ -357,7 +396,8 @@ def names_letters_kept(daemon):
     home = other = 0
     for table in ('tokens', 'accounts'):
         for r in store.db.rows('SELECT name FROM %s' % table):
-            n = str(r['name'] or '')
+            # By the composed form (1.0.226): Z + a caron apart was taken for another language.
+            n = unicodedata.normalize('NFC', str(r['name'] or ''))
             if all(ord(c) < 128 for c in n):
                 continue
             if all(ord(c) < 128 or c in NAME_LETTERS_HOME for c in n):
@@ -1537,6 +1577,12 @@ class Daemon(object):
                     "SELECT COUNT(*) FROM tokens WHERE secret LIKE 'sealed:%'", (), 0) or 0)
             except Exception:                           # noqa: BLE001
                 pass
+            try:
+                # Or the key's mark, kept since 1.0.226 (clients' and directories' secrets are
+                # sealed too, and a second node on a new database sealed with a key of its own).
+                held = held or (1 if self.store.get_meta('seal:fp') else 0)
+            except Exception:                           # noqa: BLE001
+                pass
             if held:
                 log('%s is missing, and the database holds %d token(s) sealed with it: no new '
                     'key is made. Put the key back (it is beside every backup), or the tokens '
@@ -1547,6 +1593,7 @@ class Daemon(object):
                 sealing_key(make=True)
         else:
             bind_tokens(self.store)
+        seal_fp_check(self.store)
         if CONFIG.get('ha_mode') == 'replicated':
             # The other node's tables given the columns this version adds
             # (1.0.76): logical replication sends every column of a row, and
@@ -1571,7 +1618,7 @@ class Daemon(object):
         # every half second, only while this node is one of a cluster.
         def tests_for_me():
             while not self.stop_flag.wait(1.5):
-                if not CONFIG.get('ha_mode') or HA_REBUILDING.is_set():
+                if not in_cluster(self.store) or HA_REBUILDING.is_set():   # shared too (1.0.226)
                     continue
                 try:
                     radtest_serve(self)

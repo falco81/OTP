@@ -86,8 +86,8 @@ def metrics_text(daemon):
               [({'result': x['result'] or '?'}, x['n']) for x in rows])
     except Exception as e:                              # noqa: BLE001
         log_sparing('metrics-db', 'Prometheus: %s' % e, 'warn', every=600)
-    # The cluster.
-    if CONFIG.get('ha_mode'):
+    # The cluster - of one shared database too (1.0.226).
+    if in_cluster(store):
         try:
             nodes = ha_nodes(store)
             m.put('otp_ha_node_up', 'gauge', 'Whether each node was heard from lately.',

@@ -279,8 +279,12 @@ def _mfa_do(h):
                 rec['step'] = step
                 h.store.set_meta(mfa_key(name), json.dumps(rec))
         else:
-            if not _mfa_code_ok(data.get('mfa_code'), code) or \
-                    not h.store.session_take(s['id'], 'mfa_code'):
+            saved = data.get('mfa_code') or {}
+            if not _mfa_code_ok(saved, code) or \
+                    not h.store.session_take(s['id'], 'mfa_code') or \
+                    not once_take(h.store, 'chal', 'adm2fa:' + name.lower(),
+                                  str(saved.get('hash') or '')):
+                # Once across the nodes too (1.0.226), as the app's code is.
                 h.failed(key)
                 raise ApiError(400, 'that code is not right, or no longer good - send another')
         token = _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))

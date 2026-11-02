@@ -140,8 +140,12 @@ def sshotp_check(store, name, code):
         step = totp_match(secret, code, clock_now('codes'), digits=6, window=mfa_window()) if secret else None
         # Good once on either node (1.0.206): the step taken in token_once, as a
         # token's - each node's own row let a code seen on one in on the other.
+        # Tied to the key (1.0.226), as a token's is: a token made again in the step the old
+        # one was last used refused the new one's right code.
+        once_v = '%s:%s' % (hmac.new(sealing_key() or b'', str(secret).encode(),
+                                     hashlib.sha256).hexdigest()[:16], step)
         if step is not None and step > int(rec.get('step') or 0) and \
-                not once_take(store, 'step', 'sshotp:' + name.lower(), step):
+                not once_take(store, 'step', 'sshotp:' + name.lower(), once_v):
             step = int(rec.get('step') or 0)
         if step is None or step <= int(rec.get('step') or 0):
             fails.append(now)
@@ -235,7 +239,7 @@ def sshotp_send(store, name):
     with SSHOTP_LOCK:
         SSHOTP_CHALLENGES[state] = {'name': name, 'hash': code_hash(salt, code), 'salt': salt,
                                     'exp': now + int(CONFIG.get('code_ttl_s') or 300),
-                                    'tries': 0}
+                                    'tries': 0, 'kind': kind, 'dest': rec['dest']}
         # Kept an hour (1.0.188), to say why a code typed was refused: run out, or
         # never sent here.
         SSHOTP_GONE[name.lower()] = [x for x in SSHOTP_GONE[name.lower()] if now - x['at'] < 3600][-20:] + [
@@ -247,7 +251,16 @@ def sshotp_send(store, name):
 def sshotp_answer(store, state, name, code):
     """The code typed after a challenge: (let in, what is said, ask again)."""
     now = time.time()
+    # The token as it is now (1.0.226), as RADIUS has looked since 1.0.94: taken away, or
+    # moved to another address or number, a code sent before was let in for 5 min more.
+    rec = sshotp_get(store, name) or {}
     with SSHOTP_LOCK:
+        stale = [k for k, v in SSHOTP_CHALLENGES.items() if v.get('name') == name and v.get('hash') and (
+            rec.get('kind') not in ('mail', 'sms') or (v.get('dest') and v.get('dest') != rec.get('dest')))]
+        for k in stale:
+            SSHOTP_CHALLENGES.pop(k, None)
+        if stale and state in stale:
+            return False, 'the token changed since the code was sent - sign in again', False
         ch = SSHOTP_CHALLENGES.get(state)
         if not ch or ch['name'] != name or now > ch['exp']:
             SSHOTP_CHALLENGES.pop(state, None)
@@ -261,7 +274,7 @@ def sshotp_answer(store, state, name, code):
             SSHOTP_CHALLENGES.pop(state, None)
             return False, 'too many wrong codes - wait %d min' % (SSHOTP_WINDOW_S // 60), False
         raw = str(code or '').strip()
-        typed = ssh_code_typed(raw)
+        typed = code_typed(raw)         # with a dash or a no-break space too (1.0.226)
         # Any code still good that went to this account (1.0.188), each once: a
         # mail come late was the one typed, while a later sign-in had sent
         # another - and the right code was refused.
@@ -305,12 +318,31 @@ def ssh_code_typed(code):
     return ''.join(out).replace(' ', '')
 
 
+def sshotp_shape(raw):
+    """What kinds of characters were typed - never the characters (1.0.226): the code still
+    good, or the password typed at the code's prompt, stood in the events as U+0030 U+0034..."""
+    kinds = collections.Counter()
+    for c in raw:
+        if c.isascii() and c.isdigit():
+            kinds['digits'] += 1
+        elif c in SSH_CZ_ROW:
+            kinds['the Czech row'] += 1
+        elif c.isdigit():
+            kinds['other digits'] += 1
+        elif c.isspace():
+            kinds['spaces'] += 1
+        elif c.isalpha():
+            kinds['letters'] += 1
+        else:
+            kinds['other'] += 1
+    return ', '.join('%d %s' % (n, k) for k, n in kinds.most_common()) or 'nothing at all'
+
+
 def sshotp_why(name, typed, now, raw=None):
     """Why a code typed was not one still good - for the event, never the code."""
     raw = typed if raw is None else raw
     shape = '%d digits' % len(raw) if raw.isdigit() and raw.isascii() else \
-        '%d characters, not digits only (%s)' % (len(raw), ' '.join(
-            'U+%04X' % ord(c) for c in raw[:12]) or 'nothing at all')
+        '%d characters, not digits only (%s)' % (len(raw), sshotp_shape(raw))
     with SSHOTP_LOCK:
         hist = list(SSHOTP_GONE.get(name.lower()) or [])
     for x in reversed(hist):

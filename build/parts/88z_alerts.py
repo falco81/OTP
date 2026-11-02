@@ -151,7 +151,7 @@ def alert_problems(store, lang='en'):
     def add(key, level, node, title, said, pane):
         out[key] = {'level': level, 'node': node or '', 'title': title, 'said': said,
                     'pane': pane}
-    cluster = bool(CONFIG.get('ha_mode'))
+    cluster = in_cluster(store)     # one shared database too (1.0.226)
     nodes = ha_nodes(store) if cluster else []
     names = [n['name'] for n in nodes] or [node_name()]
     beats = {n['name']: n for n in nodes}
@@ -952,7 +952,7 @@ def report_build(store, since, until, lang='cs'):
         _h(', '.join('%s %d' % (k['kind'], int(k['n'])) for k in kinds) or '–')))
     # The servers.
     srows = []
-    cluster = ha_nodes(store) if CONFIG.get('ha_mode') else []
+    cluster = ha_nodes(store) if in_cluster(store) else []
     for n in [x['name'] for x in cluster] or [node_name()]:
         h = _meta_json(store, 'host:health:' + n) or {}
         ck = _meta_json(store, 'host:osup:check:' + n) or {}

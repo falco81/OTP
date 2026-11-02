@@ -2246,7 +2246,7 @@ def _token_act(h, s, b, act, name, who):
         # Counted per administrator and token (1.0.57): a dry test counts
         # nothing on the token, and so could be asked without end.
         h.throttle('code-test', 10, 5, name='%s>%s' % (who, name), name_tries=10)
-        ok, said, facts = tk.check(name, str(b.get('code') or ''), how='test',
+        ok, said, facts = tk.check(name, code_typed(b.get('code') or ''), how='test',
                                    src=h.client_ip(), dry=not b.get('use'))
         if not ok:
             h.failed('code-test')
@@ -3728,6 +3728,7 @@ def _db_restore(h):
         h.d.reload_all('a database was put back') if hasattr(h.d, 'reload_all') else None
         BIND_STRICT['tokens'] = False
         bind_tokens(h.store)
+        names_nfc_kept(h.store)       # an old copy's names, in one form (1.0.226)
         return got
     finally:
         try:
@@ -3797,6 +3798,7 @@ def _db_do(h):
                     pass
                 BIND_STRICT['tokens'] = False
                 bind_tokens(store)
+                names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
                 return got
             finally:
                 shutil.rmtree(str(work), ignore_errors=True)
@@ -3834,6 +3836,7 @@ def _db_do(h):
             h.d.reload_all('a database was put back')
         BIND_STRICT['tokens'] = False
         bind_tokens(h.store)
+        names_nfc_kept(h.store)       # an old copy's names, in one form (1.0.226)
         return got
     if act == 'erase':
         try:

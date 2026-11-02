@@ -1982,13 +1982,17 @@ function makeToken(name) {
       if (mail && (!byHand || !addr.value)) { addr.value = mail; byHand = false; }
       if (mail && !off && !send._get()) { send._input.checked = true; autoSend = true; paint(); }
     };
-    var asked = '';
+    var asked = '', lookup = null;
     var ask = function () {
       var n = who.value.trim();
       if (!n || n === asked || n.indexOf('@') < 0) return;
       asked = n;
       looked = false;
-      api('mail', {action: 'mail_of', user: n}).then(function (d) { fill(d.mail, d.display, d.mobile); }).catch(function () {});
+      /* Only for the name still in the box (1.0.226): a late answer for the name typed before
+         filled the new one's form - its QR code went to the other person's mail. */
+      lookup = api('mail', {action: 'mail_of', user: n}).then(function (d) {
+        if (who.value.trim() === n) fill(d.mail, d.display, d.mobile);
+      }).catch(function () {});
     };
     if (!name) personSuggest(who, {picked: function (p) { asked = p.name; fill(p.mail, p.display, p.mobile); }});
     else ask();
@@ -2010,7 +2014,9 @@ function makeToken(name) {
       if (!name && who.value.trim() !== asked && who.value.indexOf('@') >= 0) {
         ask();
         busy(button, true);
-        setTimeout(function () { busy(button, false); MODAL_GO(button); }, 700);
+        /* Its answer waited for (1.0.226), not a fixed moment. */
+        var go_ = function () { busy(button, false); MODAL_GO(button); };
+        (lookup || Promise.resolve()).then(go_, go_);
         return;
       }
       if (kindSel.value !== 'totp') {

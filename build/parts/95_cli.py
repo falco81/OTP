@@ -3547,6 +3547,7 @@ def cli_main(argv=None):
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False
         bind_tokens(store)
+        names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
         m = got['manifest']
         print(pal.ok_line('put back: %s, made %s on %s (otp %s); what this machine had is kept '
                           'as %s' % (os.path.basename(path), m.get('made_words'), m.get('node'),
@@ -3571,6 +3572,7 @@ def cli_main(argv=None):
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False
         bind_tokens(store)
+        names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
         print(pal.ok_line('put back (%s); what it replaced is kept as %s; %s'
                           % (DUMP_WORDS.get(got['kind'], got['kind']), got['safety'], got['key'])))
         if not store.db.value("SELECT COUNT(*) FROM accounts WHERE role = 'fulladmin' AND "

@@ -460,6 +460,8 @@ class Authenticator(object):
             ad_password = password
         elif mode == 'otp':
             code = password
+            if re.fullmatch(r'[0-9]{6,12}', code_typed(password), re.ASCII):
+                code = code_typed(password)     # as typed on the Czech row (1.0.226)
         elif mode == 'password_otp':
             tok = self.store.token(d.token_name)
             digits = int((tok or {}).get('digits') or CONFIG.get('totp_digits') or 6)
@@ -692,7 +694,14 @@ class Authenticator(object):
             data['code'] = code_hash(name, code)
             data['dest'] = dest          # the answer checks the token still sends there (1.0.94)
             d.state = chal_new(self.store, data)
-            code_send_later(self.store, kind, dest, code, name, rid)
+            if code_send_later(self.store, kind, dest, code, name, rid) is False:
+                # Not taken to be sent (1.0.226: too many waiting): no question for a code that
+                # will not come - left unanswered, the VPN asks again or asks the other node.
+                chal_drop(self.store, d.state)
+                d.state = None
+                d.step('a code sent', False, 'too many codes are waiting to be sent')
+                d.silent = 'too many codes are waiting to be sent'
+                return d.refuse('the code could not be sent now')
             d.message = code_words('ask_' + kind, lang=token_lang(tok), dest=dest_masked(kind, dest))
             d.step('a code sent by %s to %s' % ('mail' if kind == 'mail' else 'SMS',
                                                  dest_masked(kind, dest)), True,
