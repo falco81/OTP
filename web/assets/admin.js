@@ -13837,7 +13837,7 @@ var CLOCKC_OPTS = [
   {k: 'clock_locks', icon: 'lock', t: 'Pauses and lockouts by the corrected time',
    s: 'The pause after wrong codes and the lockout are timed by the corrected time: on a node whose clock is off they last as long as on the other, not minutes more or nothing at all.'},
   {k: 'health_dir', icon: 'people', t: 'Step aside when the directory cannot be reached',
-   s: 'With Step aside when not well: a node that cannot reach the directory its realms sign in against (checked every 15 s) steps aside while the other node reaches it - rather than refusing every password.'}
+   s: 'With Step aside when not well: a node that cannot reach the directory its realms sign in against (checked every 15 s) steps aside while the other node reaches it - rather than refusing every password. Meanwhile each sign-in that meets the directory unreachable gets no answer, so the VPN asks the other node at once.'}
 ];
 
 function loadClock(quiet) {
