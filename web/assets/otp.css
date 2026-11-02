@@ -3060,7 +3060,7 @@ button.mebtn { cursor: pointer; }
 .net-plan h4{margin:16px 0 4px;font-size:13.5px}
 .net-job.failed{border-color:rgba(248,81,73,.5)}
 .net-job.done{border-color:rgba(63,185,80,.45)}
-.pw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;margin-bottom:16px}
+.pw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr));gap:16px;margin-bottom:16px}
 .pw-head{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin-bottom:10px;font-size:15px;min-width:0}
 /* Its tags go on to the next line, whole, rather than out of the card (1.0.192). */
 .pw-head .tag{white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
@@ -3083,7 +3083,10 @@ button.mebtn { cursor: pointer; }
 #ntp-host .pw-grid{margin-bottom:12px}
 #ntp-host .ntp-node .btnrow{margin-top:12px}
 .ntp-node .net-facts{grid-template-columns:repeat(3,minmax(0,1fr))}
-#ntp-host .pw-grid{grid-template-columns:repeat(auto-fill,minmax(520px,1fr))}
+@media (max-width:560px){.ntp-node .net-facts{grid-template-columns:minmax(0,1fr)}}
+/* A long state in the table of what happens wraps in its cell (1.0.222), not over the next one. */
+table.split-scen td .tag{white-space:normal;max-width:100%;line-height:1.35}
+#ntp-host .pw-grid{grid-template-columns:repeat(auto-fill,minmax(min(520px,100%),1fr))}
 #ntp-form .formgrid > .set-item:only-child{max-width:460px}
 /* 1.0.123: Hide this, and the settings under From the web */
 .hide-row{display:flex;gap:10px;align-items:center;margin-top:10px}
@@ -3257,13 +3260,13 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .px-ms{flex:none}
 @media (max-width:700px){.px-link{min-width:100%;padding:4px 0}.px-stop{min-width:100%}}
 .px-nodes{display:grid;grid-template-columns:1fr;gap:14px}
-.px-nodes.two{grid-template-columns:repeat(auto-fit,minmax(520px,1fr))}
+.px-nodes.two{grid-template-columns:repeat(auto-fit,minmax(min(520px,100%),1fr))}
 .px-node{display:flex;flex-direction:column;gap:10px}
 .px-node-h{display:flex;gap:8px;align-items:center}
 .px-nodes .px-stop{min-width:120px}
 
 /* Every node a card (1.0.169): the standard of Time */
-.node-grid{grid-template-columns:repeat(auto-fill,minmax(520px,1fr))}
+.node-grid{grid-template-columns:repeat(auto-fill,minmax(min(520px,100%),1fr))}
 .node-grid .ntp-node .btnrow{margin-top:12px}
 .node-said{display:flex;gap:10px;align-items:flex-start;margin-top:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
 .node-said .dot{margin-top:6px;flex:none}
@@ -3417,6 +3420,8 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .split-line.bad svg{color:var(--crit)}
 .split-line.bad{color:var(--crit)}
 .split-line.muted svg{color:var(--tx-dim)}
+.split-line.warn svg,.split-line.warn{color:var(--warn)}
+.split-fields .field.bad input{border-color:var(--crit)}
 .split-why{margin-left:20px}
 .split-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
   padding:0 6px;color:var(--ok)}

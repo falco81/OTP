@@ -326,7 +326,7 @@ if (isset($_GET['api'])) {
         'upgrade' => '/api/upgrade', 'web' => '/api/web',
         'firewall' => '/api/firewall', 'ha-history' => '/api/ha/history',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts', 'mailq-one' => '/api/mailq/one', 'software' => '/api/software',
-        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp', 'clock' => '/api/clock',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
@@ -344,7 +344,7 @@ if (isset($_GET['api'])) {
         'columns' => '/api/auth/columns', 'my-settings' => '/api/auth/settings',
         'ha' => '/api/ha', 'mail' => '/api/mail', 'upgrade' => '/api/upgrade', 'web' => '/api/web', 'firewall' => '/api/firewall',
         'art' => '/api/portal/art', 'mailq' => '/api/mailq', 'texts' => '/api/texts',
-        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp',
+        'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp', 'clock' => '/api/clock',
         'console-login' => '/api/console-login',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
@@ -1373,6 +1373,14 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         more than a few seconds refuses codes that are right. Each node keeps its clock with chrony; here
         is how far off each one is, which servers it follows, and the time servers set for the whole cluster.</p></div>
     <div id="ntp-host"></div>
+    <div class="card full" id="clock-card" hidden>
+      <h2>The clocks of the nodes <span class="right" id="clock-state"></span></h2>
+      <p class="note">A node whose clock is off refuses codes that are right - and answers, so the VPN does not
+        ask the other node. Its heartbeat, its pauses and lockouts are off with it; a node that cannot reach the
+        directory refuses every password the same way. Here each node measures itself against the time servers
+        and the other node, and what is done about it is chosen.</p>
+      <div id="clock-guard"></div>
+    </div>
   </div>
   <div class="ctl-pane" id="pane-power" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Restart and power off</h2>

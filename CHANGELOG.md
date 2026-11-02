@@ -4,6 +4,63 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.222 — 2 November 2026
+
+**The clocks and the health of the nodes** - Settings → Time → *The clocks of the nodes*
+(docs/clock-guard.md). A node whose clock is off refuses right codes - and answers, so the VPN
+never asks the other node; its heartbeat, its pauses and lockouts are off with it; a node that
+cannot reach the directory refuses every password the same way. Three ways to choose:
+
+- *As until now: nothing is watched* (the default) - nothing of it runs, exactly as before.
+- *Measure and warn* - each node asks the reference time servers itself (SNTP, not its chrony's
+  word), measures the other node's clock through its database, shows it, alerts.
+- *Step aside when not well* - and a node whose clock is off past a limit steps aside: the other
+  node answers, the VIP address goes to it, only while the other is well, never both; back by itself.
+
+And four switches: codes by the corrected time (right codes keep working on a node whose clock is
+off), heartbeats by the measured difference, pauses and lockouts by the corrected time, and
+stepping aside when the directory cannot be reached. A table on the card says what happens in
+each kind of trouble with the choices made, before saving. A node alone, HA pair, one shared
+database server: all three.
+
+**Bugs found by the first of five rounds of looking for them** (the sign-ins first):
+
+- **Right passwords refused when several came at once** - a directory answering in milliseconds
+  turned sign-ins away ("LDAP server(s) have gone away") whenever 8 were inside it at the same
+  moment: 7 of 30 at once, 73 of 200. A place is waited for a little now; a directory really slow
+  still holds no more than half the workers.
+- **A code let in on both nodes just after the link between them came back** - a connection to
+  the other node's database from before the break was dead, and its first use put the other node
+  down for 20 s more. Asked again on a new one now, and the old ones are closed when the nodes
+  find each other again. A sign-in no longer waits 1.5 s to find out what the watch already knows
+  (the other node is gone); codes let in during a short outage are no longer reported under the
+  next real split.
+- **The database writing a sign-in and the answer lost** (the connection dropped as it said
+  "done") left the code used and the request unanswered - the VPN's retry, here or on the other
+  node, was refused as used. The sign-in's own write is looked for now: there, it is let in.
+- **SQLite: another writer between the two writes of a sign-in** used the code up without an
+  answer. The two are one transaction now on SQLite too.
+- **A key replaced while a sign-in with the old one was being checked** (the command line, or
+  another node on one shared database) got the old key's step, and every code of the new key was
+  refused as used. The step is written only on the key that was checked.
+- **With "a code may be used again" on, an older code set the used step back**, and the codes used
+  since were good again once it was switched off.
+- **The pause after wrong codes counted fewer tries than were made** when many came at once from
+  separate processes; and **lasted 10 min instead of 30 s after the clock was stepped back**.
+- **A name sent with its letters decomposed** (Žofie as Z + ˇ) found no token.
+- **A recovery code typed with a dash** (8765-4321) was a wrong code.
+- **The enrolment pages and RADIUS took a person for two** - signed in on the pages as
+  falco@corp.loc (a realm looking names up by the account), the pages found his token
+  falco@corp.cz (his userPrincipalName) and made no other; RADIUS found nothing under
+  falco@corp.loc and refused him for good. RADIUS finds the same token now. A token administrator
+  could hand that person a second, working token under the other spelling - refused now, as under
+  the same one.
+- **A key typed in by hand never said its hash** (and the administrator's view neither its digits
+  nor its period): with SHA-256, 8 digits or 60 s set, an app made codes that never worked. Said
+  beside the key now, on the pages and in the mail.
+- **A token not yet confirmed and thrown away on the enrolment pages** left the mail of its key and
+  its waiting shape behind.
+
 ## 1.0.221 — 2 November 2026
 
 - **The table *What happens* on *When the nodes lose each other* moved with every switch** - its

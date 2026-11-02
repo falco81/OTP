@@ -593,7 +593,8 @@ function showMade(made, confirm, replacing) {
     + 'phone: add an account, then choose to scan a QR code.'));
   right.appendChild(kvTable([['Issuer', made.issuer], ['Account', made.label],
                              ['Codes', made.digits + ' digits, a new one every ' + made.period
-                              + ' s']]));
+                              + ' s' + (made.algorithm && String(made.algorithm).toUpperCase() !== 'SHA1'
+                                ? ', ' + String(made.algorithm).toUpperCase().replace('SHA', 'SHA-') : '')]]));
   if (made.secret_spaced) {
     right.appendChild(el('p', 'muted small', 'No camera? Type this key into the application '
       + 'instead (time based):'));
