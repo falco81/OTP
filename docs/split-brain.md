@@ -156,8 +156,13 @@ A thread of its own (`otp-split`), started once by the daemon's loop, every **2 
 4. **apart = now - peer_ok_at > split_after_s** (min 5). On start, `peer_ok_at` is the
    start time: a node gets `split_after_s` to find the other.
 5. Transitions: *together → apart*: log + event "the nodes lost each other …"; *apart →
-   together*: event "… again, after X apart", and a report is due 30 s later (time for
-   the rows to come over by replication).
+   together*: event "… again, after X apart", and a report is due 30 s later - made only
+   once the other node's state row written after it found this one again has come over by
+   replication (its earlier rows come before it), at the latest 10 min later (1.0.224: after a
+   long cut the replication took 40 s, and the codes let in on both were not found). Its
+   pooled connections from before are closed. And in any mode, "as until now" included,
+   while the question before a code is let in is held off (the other node's database did not
+   answer) the watch asks every 2 s and lifts the hold the moment it answers (1.0.224).
 6. **Decide** (6) the role; on a change: event + log, and the maintenance cache is
    flushed so that RADIUS and the VIP check see it at once.
 7. Every 10 s (and on every change of apart) write this node's state into meta
@@ -270,8 +275,9 @@ Allowed always: `/api/auth/*` (sign in/out, 2nd step), `/api/split` (to switch i
   be asked (the direct question returned "unknown") → meta
   `split:took:<node>:<once key>` = `{name, kind, at}`. The once key is the same hash for
   the same code on both nodes.
-- **The report** (on the preferred node, 30 s after together, the other node's rows having
-  come over): group `split:took:*` by once key; a key with rows from both nodes = let in
+- **The report** (on the preferred node, after together, the other node's rows having
+  come over; rows from the first code the other node could not be asked about, those of an
+  earlier short outage left out, each code counted once - not again by its token's `#id`): group `split:took:*` by once key; a key with rows from both nodes = let in
   on both. Meta `split:report` = `{at, since, taken: {node: n}, twice: [{name, kind,
   nodes, at}], twice_n}`; the rows deleted; an event (bad if any twice); an alert
   `split:twice` (warn) for 24 h listing the names.

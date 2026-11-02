@@ -1971,7 +1971,7 @@ function makeToken(name) {
     /* The address out of the directory: when somebody is picked, or when
        the name is typed whole and the box is left. Changed by hand, it is
        left as it is. */
-    var byHand = false;
+    var byHand = false, autoSend = false;
     addr.addEventListener('input', function () { byHand = true; });
     var fill = function (mail, shown, mob) {
       if (shown) display = shown;
@@ -1980,7 +1980,7 @@ function makeToken(name) {
       looked = true;
       destFill();
       if (mail && (!byHand || !addr.value)) { addr.value = mail; byHand = false; }
-      if (mail && !off && !send._get()) { send._input.checked = true; paint(); }
+      if (mail && !off && !send._get()) { send._input.checked = true; autoSend = true; paint(); }
     };
     var asked = '';
     var ask = function () {
@@ -1993,10 +1993,26 @@ function makeToken(name) {
     if (!name) personSuggest(who, {picked: function (p) { asked = p.name; fill(p.mail, p.display, p.mobile); }});
     else ask();
     who.addEventListener('blur', function () { setTimeout(ask, 200); });
+    /* Another name typed (1.0.224): what the directory said of the one before goes - its
+       name, its address, its mobile; the QR code of zed went to xavier's mail. */
+    who.addEventListener('input', function () {
+      if (who.value.trim() === asked) return;
+      display = ''; dirMail = ''; mobile = ''; looked = false;
+      if (!byHand) addr.value = '';
+      if (autoSend && !byHand) { send._input.checked = false; autoSend = false; paint(); }
+      destFill();
+    });
     var said = el('div', 'said');
     body.appendChild(said);
     kindPaint();
     MODAL_GO = function (button) {
+      /* The person looked up first when the name was changed and the box not left yet. */
+      if (!name && who.value.trim() !== asked && who.value.indexOf('@') >= 0) {
+        ask();
+        busy(button, true);
+        setTimeout(function () { busy(button, false); MODAL_GO(button); }, 700);
+        return;
+      }
       if (kindSel.value !== 'totp') {
         if (!dest.value.trim()) { said.className = 'said bad'; said.textContent = kindSel.value === 'mail' ? 'a mail address to send the codes to' : 'a phone number to send the codes to'; return; }
         busy(button, true);

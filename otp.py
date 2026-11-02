@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.223'
+__version__ = '1.0.224'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2662,7 +2662,7 @@ def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', wind
     at a time, so that when two would do the nearest one is the answer.
     Compared in constant time, every one of them.
     """
-    code = re.sub(r'\s', '', str(code or ''))
+    code = re.sub(r'[\s-]', '', str(code or ''))     # "123-456" too (1.0.224)
     if not re.fullmatch(r'[0-9]+', code, re.ASCII) or len(code) != int(digits):
         return None
     if isinstance(key, str):
@@ -8407,6 +8407,9 @@ class Directory(object):
     BUSY_LOCK = threading.Lock()
     BUSY_FREED = threading.Condition(BUSY_LOCK)
     BUSY_WAIT_S = 2.0
+    BUSY_TOOK = {}                  # how long a request held it lately, by directory (1.0.224)
+    BUSY_WAITING = {}
+    BUSY_QUICK_S = 0.5
 
     @contextlib.contextmanager
     def held(self):
@@ -8421,7 +8424,13 @@ class Directory(object):
         # came at once. One that is really slow still holds no more than its half - the
         # wait is short and the realms of the code alone keep the rest.
         until = time.monotonic() + min(self.BUSY_WAIT_S, float(getattr(self, 'timeout', 0) or 10))
+        # Waited for only while the directory answers quickly (1.0.224): a worker waiting is a
+        # worker taken from everybody, and with a directory slow the realms of the code alone
+        # waited behind them again - refused at once then, as before 1.0.222. And no more
+        # waiting than a quarter of the workers.
+        quick = self.BUSY_TOOK.get(key, 0.0) < self.BUSY_QUICK_S
         with self.BUSY_FREED:
+            waited = False
             while True:
                 n = self.BUSY.get(key, 0)
                 # Every directory together too (1.0.186): two of them listed (the
@@ -8431,19 +8440,36 @@ class Directory(object):
                 if n < most and total < max(2, workers - 4):
                     break
                 left = until - time.monotonic()
-                if left <= 0:
+                if left <= 0 or not quick or (not waited and sum(self.BUSY_WAITING.values()) >=
+                                              max(1, workers // 4)):
                     if n >= most:
-                        raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
-                                              'this one is not added to them' % (self.name, n))
-                    raise LdapUnreachable('the directories are answering slowly: %d requests wait '
-                                          'on them already - this one is not added to them' % total)
-                self.BUSY_FREED.wait(left)
+                        e = LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
+                                            'this one is not added to them' % (self.name, n))
+                    else:
+                        e = LdapUnreachable('the directories are answering slowly: %d requests wait '
+                                            'on them already - this one is not added to them' % total)
+                    e.held = True       # this node's own limit - not the directory gone (1.0.224)
+                    raise e
+                if not waited:
+                    waited = True
+                    self.BUSY_WAITING[key] = self.BUSY_WAITING.get(key, 0) + 1
+                try:
+                    self.BUSY_FREED.wait(left)
+                except BaseException:
+                    self.BUSY_WAITING[key] = max(0, self.BUSY_WAITING.get(key, 1) - 1)
+                    raise
+            if waited:
+                self.BUSY_WAITING[key] = max(0, self.BUSY_WAITING.get(key, 1) - 1)
             self.BUSY[key] = n + 1
+        began = time.monotonic()
         try:
             yield
         finally:
+            took = time.monotonic() - began
             with self.BUSY_FREED:
                 self.BUSY[key] = max(0, self.BUSY.get(key, 1) - 1)
+                was = self.BUSY_TOOK.get(key)
+                self.BUSY_TOOK[key] = took if was is None else was * 0.7 + took * 0.3
                 self.BUSY_FREED.notify_all()
 
     def _order(self):
@@ -8505,6 +8531,7 @@ class Directory(object):
                         refused = LdapUnreachable('the account this reads the directory with '
                                                   '(%s) was refused by %s: %s'
                                                   % (self.bind_dn, h, e), e.code, e.detail)
+                        refused.refused = True      # the directory's answer, everywhere the same
                         break
                 self.last_good = host
                 self._up(host)
@@ -9327,8 +9354,29 @@ class Tokens(object):
             # (1.0.59) - the phone answering with the old account is the
             # usual wrong code here. They are counted against the waiting key:
             # past the lockout count it is thrown away, to be made again.
-            shape['fail_times'] = fails + [t]
-            shape['fails'] = int(shape.get('fails') or 0) + 1
+            # Counted by a conditional write (1.0.224), as a token's own wrong codes are: two
+            # nodes reading the count and writing it back lost half of them.
+            k = 'staged:' + name
+            for _round in range(20):
+                raw = self.store.get_meta(k, '') or ''
+                now_shape = dict(self.staged_shape(name))
+                was_fails = [float(x) for x in now_shape.get('fail_times') or []
+                             if isinstance(x, (int, float))]
+                now_shape['fail_times'] = [x for x in was_fails if abs(t - x) < int(
+                    CONFIG.get('rate_limit_s') or 30)] + [t]
+                now_shape['fails'] = int(now_shape.get('fails') or 0) + 1
+                if not raw:
+                    shape = now_shape
+                    break
+                if self.store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?',
+                                     (json.dumps(now_shape), k, raw)):
+                    shape = now_shape
+                    break
+                time.sleep(random.random() * 0.01)
+            else:
+                shape['fail_times'] = fails + [t]
+                shape['fails'] = int(shape.get('fails') or 0) + 1
+            written = bool(raw) and shape is now_shape
             after = split_limit('lockout_after')
             if after and shape['fails'] >= after:
                 self.drop_staged(name)
@@ -9336,7 +9384,8 @@ class Tokens(object):
                            'the new key is thrown away)', how, src, '')
                 return False, (SAY_BAD + '. Too many wrong codes: the new key was thrown '
                                'away - the token in use goes on working; make a new one.')
-            self.store.set_meta('staged:' + name, json.dumps(shape))
+            if not written:
+                self.store.set_meta('staged:' + name, json.dumps(shape))
             self._said(name, False, SAY_BAD + ' (confirming a new token)', how, src, '')
             return False, SAY_BAD + '. ' + self.why_wrong(secret, code, shape)
         if step is None:
@@ -9375,7 +9424,18 @@ class Tokens(object):
                            'issuer': shape['issuer'],
                            # The old key's use is not the new one's (1.0.36).
                            'last_used': None, 'last_from': '', 'last_how': ''})
-        self.store.token_update(tok['id'], fields)
+        # Only onto the key that was proven (1.0.224): a new key made meanwhile on the other
+        # node (the pages open on both, "start again" in one) was made the one in use - the
+        # person was told "confirmed", and every code of the phone refused after.
+        cols = sorted(fields)
+        guard, args = ('pending_secret = ?', tok.get('pending_secret')) if staged else \
+            ('secret = ?', tok.get('secret'))
+        won = self.store.db.run('UPDATE tokens SET %s WHERE id = ? AND %s' % (
+            ', '.join('%s = ?' % c for c in cols), guard),
+            tuple(fields[c] for c in cols) + (tok['id'], args))
+        if not won:
+            self._said(name, False, 'The key changed meanwhile (confirming a new token)', how, src, '')
+            return False, 'the key changed meanwhile - start again'
         if staged:
             self._staged_forget(name)
         self._said(name, True, 'Token confirmed', how, src, '')
@@ -9734,10 +9794,21 @@ class Tokens(object):
                             # The key itself replaced meanwhile (1.0.222): the old key's step
                             # written onto the new one let the old code in and refused the new
                             # key's codes as used - for decades, with another period.
-                            if self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
-                                                   (tok['id'],)) != tok.get('secret'):
-                                return False, SAY_BAD, facts
-                            return False, SAY_REUSED, facts
+                            now_sealed = self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
+                                                             (tok['id'],))
+                            if now_sealed != tok.get('secret'):
+                                # ...or only sealed again, the same key (1.0.224: a node binding
+                                # its tokens at start) - a right code was refused.
+                                if not now_sealed or unseal_secret(
+                                        now_sealed, token_bind(tok.get('name'))) != secret:
+                                    return False, SAY_BAD, facts
+                                won = self.store.db.run(
+                                    'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
+                                    "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
+                                    'COALESCE(last_step, 0) < ? AND secret = ?',
+                                    (step, t, tok['id'], step, now_sealed))
+                            if not won:
+                                return False, SAY_REUSED, facts
                         if not once_take(self.store, 'step', name, once_v, peer=False):
                             return False, SAY_REUSED, facts
                         # By the token's id as well (1.0.214): renamed on the other node meanwhile,
@@ -12012,6 +12083,10 @@ class Authenticator(object):
         (corp.cz. is corp.cz) and a name with nothing before its @ is no
         name at all (1.0.33)."""
         said = str(user or '').strip()
+        if not said.isascii():
+            # One form of the letters (1.0.224), as the token's name has been since 1.0.222:
+            # sent decomposed, the directory found nobody.
+            said = unicodedata.normalize('NFC', said)
         if said.count('@') > 1:
             # novak@foo@x.cz (1.0.101): the realm by the last @, the account
             # by the first - and a token under the rest, a second one for the
@@ -12047,18 +12122,40 @@ class Authenticator(object):
         # novak@dpmo.cz where dpmo.local is another suffix of the realm.
         return norm_name(realm_main_name(user, realm))
 
-    def ldap_gone(self, d):
+    def ldap_gone(self, d, e=None):
         """The directory cannot be reached from here. Refused, as before - or, with "Step
         aside when the directory cannot be reached" and the other node well (1.0.223), left
         unanswered: a refusal is the VPN's last word, no answer makes it ask the other node
         (or the VIP address once it has moved) at once, not after the 15 s of the watch.
         Nothing was used up yet: the directory is asked before the code."""
-        why = clock_dir_failover(self.store)
+        # Not for this node's own limit (a directory busy here), nor for the reading account
+        # refused - the directory's own answer, the same on the other node (1.0.224).
+        why = '' if getattr(e, 'held', False) or getattr(e, 'refused', False) else \
+            clock_dir_failover(self.store)
         if why:
             d.silent = why
         return d.refuse('LDAP server(s) have gone away')
 
-    def same_person(self, user, realm):
+    @staticmethod
+    def alias_clash(ad, typed, tname, entry):
+        """Words when the token `tname` - the typed name under the realm's main suffix
+        (1.0.117) - is another account's userPrincipalName than the one signing in, else ''
+        (1.0.224): xavier@corpnet.example (Yvonne's UPN) took the token xavier@corpnet.cz,
+        Xavier's, and Yvonne signed in as Xavier with her own phone."""
+        if not tname or norm_name(tname) == norm_name(typed):
+            return ''
+        try:
+            # Kept under the bare name: that is an account name to a realm of plain names.
+            other = ad.find_user(tname, 'upn' if '@' in str(tname) else 'sam')
+        except LdapError:
+            return ''
+        if other and not other.get('many') and \
+                str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
+            return ('%s is another account in the directory than %s - a suffix of the realm '
+                    'that names two people differently' % (tname, typed))
+        return ''
+
+    def same_person(self, user, realm, gone=None):
         """The name of the token the directory entry of `user` already has under another
         spelling ('' when none, or when the directory cannot be asked now - the sign-in
         then goes on as it would have)."""
@@ -12070,14 +12167,43 @@ class Authenticator(object):
             lookup = 'upn' if '@' in user else 'sam'
         try:
             entry = self.find_person(ad, user, lookup, realm)
-        except LdapError:
+        except LdapError as e:
+            if gone is not None and isinstance(e, LdapUnreachable):
+                gone.append(e)      # the directory not reached: said by the caller (1.0.224)
             return ''
         if not entry or entry.get('many'):
             return ''
+        return self.same_entry(realm, entry)
+
+    def same_entry(self, realm, entry, unproven=False):
+        """The token the directory entry has under another spelling, proven its own (by its
+        DN), or ''. Used by RADIUS and the enrolment pages alike (1.0.224)."""
         try:
-            return portal_same_person(self.store, realm, entry) or ''
+            cand = portal_same_person(self.store, realm, entry) or ''
         except Exception:                               # noqa: BLE001
             return ''
+        if not cand:
+            return ''
+        # And proven the same entry (1.0.224): the token's own name, looked up as its own realm
+        # reads names, must find this very account - by its DN. Nothing taken on the spelling
+        # of a name alone.
+        try:
+            r2 = self.store.realm_for(cand)
+            ad2 = self.directory((r2 or {}).get('directory'))
+            if not r2 or not ad2:
+                return ''
+            how2 = r2.get('lookup') or ''
+            if how2 not in ('upn', 'sam'):
+                how2 = 'upn' if '@' in cand else 'sam'
+            other = self.find_person(ad2, cand, how2, r2)
+        except LdapError:
+            # Not proven either way: RADIUS lets nobody in on it; the enrolment pages
+            # (unproven=True) keep the token as the person's, and make no second one.
+            return cand if unproven else ''
+        if not other or other.get('many') or \
+                str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
+            return ''
+        return cand
 
     @classmethod
     def token_for(cls, store, user, realm):
@@ -12179,7 +12305,14 @@ class Authenticator(object):
             # same account - and would make no other; here the name typed found nothing,
             # and he was refused for good. The same entry, the same rule
             # (portal_same_person). Only for a name with no token of its own.
-            same = self.same_person(d.user, realm)
+            gone = []
+            same = self.same_person(d.user, realm, gone)
+            if gone:
+                # Not found because the directory was not reached (1.0.224): a realm of the
+                # second window refused it as "no token" - an answer, and a wrong sign-in
+                # counted against the VPN's address. As the directory's lookup below would.
+                d.step('look %s up in %s' % (d.user, realm.get('directory')), False, str(gone[0]))
+                return self.ldap_gone(d, gone[0])
             if same:
                 d.token_name, found_how = same, 'the same account in the directory, its token %s' % same
         if d.token_name != norm_name(d.user):
@@ -12242,6 +12375,12 @@ class Authenticator(object):
             for ln in range(6, 13):
                 if ln not in (digits, sd) and len(password) > ln:
                     splits.append((password[-ln:], password[:-ln]))
+            # Digits only (1.0.224): a code is stripped of dashes since 1.0.222, and
+            # "Heslo-" + a 7-digit recovery code split as "Heslo" + "-1234567" - the password
+            # cut short went to the directory, and the code was never found.
+            digits_only = [x for x in splits if x[0].isascii() and x[0].isdigit()]
+            if digits_only:
+                splits = digits_only
             if not splits:
                 d.step('the code', False, 'nothing after the password looks like a code')
                 d.otp = SAY_BAD
@@ -12294,7 +12433,7 @@ class Authenticator(object):
             except LdapError as e:
                 d.step('look %s up in %s' % (d.user, ad.name), False, str(e), t)
                 if isinstance(e, LdapUnreachable):
-                    return self.ldap_gone(d)
+                    return self.ldap_gone(d, e)
                 return d.refuse('the directory could not be asked: %s' % e)
             if not entry:
                 d.step('look %s up in %s' % (d.user, ad.name), False,
@@ -12313,6 +12452,10 @@ class Authenticator(object):
                 return d.refuse('more than one account in %s answers to %s'
                                 % (ad.name, d.user))
             d.step('found %s' % entry['dn'], True, entry.get('display') or '', t)
+            clash = self.alias_clash(ad, d.user, d.token_name, entry)
+            if clash:
+                d.step('the token %s' % d.token_name, False, clash)
+                return d.refuse('the token server: ' + clash)
             if realm.get('check_disabled', 1):
                 why = entry_unusable(entry)
                 if why:
@@ -12351,7 +12494,7 @@ class Authenticator(object):
                         scratch_guard_note(self.store, d.token_name,
                                            getattr(REQUEST_PLACE, 'v', ''))
                     if isinstance(e, LdapUnreachable):
-                        return self.ldap_gone(d)
+                        return self.ldap_gone(d, e)
                     return d.refuse('the directory refused the password: %s' % e)
             wanted = realm.get('groups') or []
             if wanted:
@@ -12360,12 +12503,18 @@ class Authenticator(object):
                     have = ad.groups_of(entry, bool(realm.get('nested', 1)))
                 except LdapError as e:
                     d.step('the groups of %s' % d.user, False, str(e), t)
-                    return self.ldap_gone(d)
+                    # Only the directory not reached (1.0.224): its own answer - no rights to
+                    # read the groups, say - is refused and answered, as before.
+                    if isinstance(e, LdapUnreachable):
+                        return self.ldap_gone(d, e)
+                    return d.refuse('LDAP server(s) have gone away')
                 try:
                     hit = group_matches(wanted, have, ad)
                 except LdapError as e:
                     d.step('the group of %s looked up' % d.user, False, str(e), t)
-                    return self.ldap_gone(d)
+                    if isinstance(e, LdapUnreachable):
+                        return self.ldap_gone(d, e)
+                    return d.refuse('LDAP server(s) have gone away')
                 if not hit:
                     names = ', '.join(cn_of(w.get('group') or '') or w.get('group') or ''
                                       for w in wanted[:6]) + (' …' if len(wanted) > 6 else '')
@@ -12730,6 +12879,17 @@ class RadiusServer(object):
 
     def stop(self):
         self.stop_flag = True
+        # The requests in hand answered first (1.0.224): the sockets closed at once, a worker
+        # half way through used the code up and could not send its answer - the VPN's retry,
+        # to this node restarted or to the other, was refused as used. Up to 3 s; what still
+        # waits in the queue was never looked at, and its retry goes through.
+        until = time.monotonic() + 3.0
+        for t in list(getattr(self, 'workers', []) or []):
+            left = until - time.monotonic()
+            if left <= 0:
+                break
+            if t is not threading.current_thread():
+                t.join(left)
         for _b, _p, sock in self.socks.values():
             try:
                 sock.close()
@@ -13182,6 +13342,17 @@ class RadiusServer(object):
         if getattr(d, 'silent', ''):
             self.counts['no_directory'] += 1
             log_sparing('radius-nodir', 'RADIUS requests left to the other node: %s' % d.silent, 'warn')
+            # Written down as every other (1.0.224): "why was I not let in" answered by its row.
+            try:
+                self.d.store.radius_add({
+                    'ts': arrived, 'client': client['name'], 'nas_ip': ip, 'src': rid,
+                    'packet': 'Access-Request', 'username': (d.user or str(user or ''))[:190],
+                    'realm': d.realm, 'calling': '', 'called': '', 'result': 'drop',
+                    'reason': ('not answered: ' + d.silent)[:1000], 'otp': '', 'rid': rid,
+                    'took_ms': int((time.time() - arrived) * 1000), 'attrs': '[]', 'reply': '[]',
+                    'steps': json.dumps(d.steps), 'device': '', 'tunnel': ''})
+            except Exception:                           # noqa: BLE001
+                pass
             return None
         if src and not blocked and guard_is_guess(d):
             try:
@@ -13637,6 +13808,11 @@ def token_name_problem(name):
     if not name or len(name) > 180 or not TOKEN_NAME_RE.match(name):
         return ('%r is not a name: a name, or a name@realm - no spaces, commas, semicolons '
                 'or =, 180 characters at most' % str(name)[:60])
+    if '\\' in name:
+        # DOMAIN\\name (1.0.224): RADIUS and the pages read it as name - a token made under it
+        # was found by nobody, and the administrator was told it was made.
+        return ('%r: DOMAIN\\name is looked up as the name alone - make the token for %s'
+                % (str(name)[:60], name.split('\\', 1)[1][:60] or 'the name'))
     return ''
 
 
@@ -13852,6 +14028,57 @@ def token_restore(store, t, by='restore', replace=False):
         pass
     return 'restored (%s, %d recovery code(s) left)' % (
         {'totp': 'the app', 'mail': 'codes by mail', 'sms': 'codes by SMS'}[kind], len(left))
+
+
+def names_nfc_kept(store):
+    """Once (1.0.224): a token whose name was written with its letters decomposed (Z + ˇ,
+    sent so by a client before 1.0.222) is renamed to the composed form every name is looked
+    up by since 1.0.222 - it was found by nobody any more: not signed in with, not dropped,
+    not backed up. Renamed as the pages rename one: its key and recovery codes sealed again
+    to the new name, its log and what was kept aside under the old name moved with it. A
+    composed name taken already: left, and said. One node does it; the other gets it by
+    replication."""
+    key = 'names:nfc:done'
+    if store.get_meta(key) is not None or not ha_lead(store):
+        return
+    moved = []
+    for r in store.db.rows('SELECT * FROM tokens'):
+        was = str(r.get('name') or '')
+        if was.isascii():
+            continue
+        to = norm_name(was)
+        if to == was:
+            continue
+        if store.db.value('SELECT 1 FROM tokens WHERE name = ?', (to,)):
+            store.add_event('tokens', 'the token %r has the same name as %s written another way - '
+                            'left as it is: drop one of them' % (was, to), 'warn', who='otp (upgrade)')
+            continue
+        old_b, new_b = token_bind(was), token_bind(to)
+        fields = {'name': to}
+        for col in ('secret', 'pending_secret'):
+            if r.get(col):
+                plain = unseal_secret(r[col], old_b)
+                if plain:
+                    fields[col] = seal_secret(plain, new_b)
+        codes = open_codes(r.get('scratch_sealed'), old_b)
+        if codes is not None:
+            fields['scratch'] = json.dumps([scratch_hash(to, c['c']) for c in codes if not c.get('used')])
+            fields['scratch_sealed'] = seal_codes(codes, new_b)
+            fields['scratch_left'] = len(json.loads(fields['scratch']))
+        elif r.get('scratch_left'):
+            fields.update(scratch='[]', scratch_left=0)
+        pend = open_codes(r.get('pending_scratch'), old_b)
+        if pend is not None:
+            fields['pending_scratch'] = seal_codes(pend, new_b)
+        store.db.update('tokens', r['id'], fields)
+        store.db.run('UPDATE otp_log SET name = ? WHERE name = ?', (to, was))
+        for pre in ('disabled_from:', 'staged:', 'mailed:', 'scratchclear:'):
+            store.db.run('UPDATE meta SET k = ? WHERE k = ?', (pre + to, pre + was))
+        moved.append(to)
+    if moved:
+        store.add_event('tokens', 'the names of %d token(s) put in one form of their letters, as they '
+                        'are looked up: %s' % (len(moved), ', '.join(moved[:20])), 'info', who='otp (upgrade)')
+    store.set_meta(key, '1')
 
 
 def names_letters_kept(daemon):
@@ -15038,6 +15265,10 @@ class Daemon(object):
             names_letters_kept(self)
         except Exception as e:                      # noqa: BLE001
             log('the letters names take could not be looked at: %s' % e, 'warn')
+        try:
+            names_nfc_kept(self.store)
+        except Exception as e:                      # noqa: BLE001
+            log('the names of tokens could not be put in one form of their letters: %s' % e, 'warn')
         if not sealing_key():
             # A database that already holds sealed secrets gets no new key in
             # place of a missing one (1.0.33): the secrets would stay lost, and
@@ -18608,7 +18839,7 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
         if part.strip():
             text += [part, '']
     text += ['1. ' + plain('step1'), '2. ' + plain('step2') + ' (QR)', '3. ' + plain('step3'),
-             '', '   ' + key, '', plain('facts'), '']
+             '', '   ' + key, '', plain('facts') + html.unescape(_algo_said(picture)), '']
     if pending and w['pending'].strip():
         text += [plain('pending') + (' ' + portal_url if portal_url else ''), '']
     if codes:
@@ -22786,7 +23017,24 @@ def once_take(store, kind, name, value, peer=True):
         sql = 'INSERT OR IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)'
     else:
         sql = 'INSERT INTO token_once (k, node, ts) VALUES (?, ?, ?) ON CONFLICT DO NOTHING'
-    if not db.run(sql, (k, me, time.time())):
+    ts = time.time()
+    try:
+        took = db.run(sql, (k, me, ts))
+    except Exception:
+        # The answer to the write lost (1.0.224), as for a code from the app: written all
+        # the same, the request went unanswered and the VPN's retry was refused as used -
+        # a code by mail or SMS, the administrators' second factor, the SSH gate. Its own
+        # row looked for (by its exact time); not inside a transaction, which is put back whole.
+        if getattr(db, 'in_tx', False):
+            raise
+        try:
+            got = db.value('SELECT ts FROM token_once WHERE k = ? AND node = ?', (k, me))
+        except Exception:                               # noqa: BLE001
+            got = None
+        if got is None or abs(float(got) - ts) > 1e-6:
+            raise
+        took = True
+    if not took:
         return False                    # this node took it already
     if db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?', (k, me)):
         return False                    # the other node took it, and it came over
@@ -32691,7 +32939,8 @@ SPLIT_MODES = ('off', 'arbiter', 'priority')
 SPLIT_LOCK = threading.Lock()
 SPLIT = {'thread': None, 'peer_ok_at': 0.0, 'peer_err': '', 'peer_db': None, 'apart_since': 0.0,
          'role': 'serve', 'why': '', 'arb': [], 'arb_state': None, 'arb_at': 0.0,
-         'together_at': 0.0, 'report_due': 0.0, 'written': 0.0, 'started': 0.0, 'gen': 0}
+         'together_at': 0.0, 'report_due': 0.0, 'written': 0.0, 'started': 0.0, 'gen': 0,
+         'last_apart_since': 0.0, 'tidied': 0.0}
 SPLIT_STEP_S = 2.0
 SPLIT_SAY_SCRATCH = ('A recovery code cannot be used while the two servers cannot reach each '
                      'other - use the code of the app')
@@ -33002,6 +33251,16 @@ def split_step(store, now=None, peer=None, arbiter=None):
             SPLIT.update(apart_since=0.0, role='serve', why='')
             MAINT_CACHE['at'] = 0
         SPLIT['peer_ok_at'] = now
+        # Whatever is chosen here (1.0.224): while the question before a code is let in is
+        # held off - the other node's database did not answer, 20 s to 5 min - it is asked
+        # every 2 s whether it answers again, and the hold is lifted at once. As until now, it
+        # waited out its back-off after the link was back: a code used there was let in here
+        # again for up to 40 s, until the replication caught up. Nothing is asked otherwise.
+        if CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer') and \
+                ONCE_PEER['down_until'] > time.time():
+            p = _split_peer_probe() if peer is None else peer
+            if p is True:
+                once_peer_forget()
         return
     p = _split_peer_probe() if peer is None else peer
     if p is True:
@@ -33010,8 +33269,9 @@ def split_step(store, now=None, peer=None, arbiter=None):
         # again at once - not after its back-off of up to five minutes, while recovery codes
         # would be refused and codes written down as let in unasked.
         if ONCE_PEER['down_until'] > time.time():
-            with ONCE_PEER_LOCK:
-                ONCE_PEER['down_until'], ONCE_PEER['fails'] = 0.0, 0
+            # Its connections from before closed too (1.0.224): one dead with the link put
+            # the other node down again at its first use.
+            once_peer_forget() if peer is None else ONCE_PEER.update(down_until=0.0, fails=0)
     else:
         SPLIT['peer_err'] = str(p)
     mode = split_mode()
@@ -33031,7 +33291,8 @@ def split_step(store, now=None, peer=None, arbiter=None):
                      'answered for %d s (%s)' % (now - SPLIT['peer_ok_at'], SPLIT['peer_err']))
     elif not apart and was_apart:
         took = now - SPLIT['apart_since']
-        SPLIT.update(apart_since=0.0, together_at=now, report_due=now + 30)
+        SPLIT.update(apart_since=0.0, together_at=now, report_due=now + 30,
+                     last_apart_since=SPLIT['apart_since'])
         # The connections from before closed (1.0.222): the first question on one dead with
         # the link put the other node down for 20 s more, just after it came back - and codes
         # used there meanwhile were let in here again.
@@ -33040,12 +33301,20 @@ def split_step(store, now=None, peer=None, arbiter=None):
         log('ha: the other node\'s database answers again - the nodes are together after %s'
             % human_span(took), 'info')
         _split_event(store, 'good', 'the nodes reach each other again, after %s apart' % human_span(took))
-    if apart and p is not True:
+    if p is not True:
         # Known gone (1.0.222): the sign-ins do not wait 1.5 s each to find it out again -
         # one with a NAS's timeout of 1.5 s went to the other node, which had stepped aside.
+        # From the first probe that did not answer (1.0.224), not only once apart.
         with ONCE_PEER_LOCK:
             ONCE_PEER['down_until'] = max(ONCE_PEER['down_until'], time.time() + 5)
-    role, why = split_decide(mode, apart, SPLIT['arb_state'], split_me_preferred())
+    preferred = split_me_preferred()
+    if mode == 'priority' and apart and not preferred:
+        # The preferred node not serving when last heard from (1.0.224) - stepped aside for
+        # its clock, or in maintenance: this node goes on, or nobody answers at all.
+        why_not = split_preferred_unable(store)
+        if why_not:
+            preferred = True
+    role, why = split_decide(mode, apart, SPLIT['arb_state'], preferred)
     if role != SPLIT['role']:
         SPLIT['role'], SPLIT['why'] = role, why
         MAINT_CACHE['at'] = 0                           # RADIUS and the VIP told at once
@@ -33064,12 +33333,57 @@ def split_step(store, now=None, peer=None, arbiter=None):
             store.set_meta('split:state:' + node_name(), json.dumps(split_state_here(now)))
         except Exception:                               # noqa: BLE001
             pass
-    if SPLIT['report_due'] and now >= SPLIT['report_due'] and not apart:
+    if not apart and not SPLIT['report_due'] and now - SPLIT['tidied'] > 600:
+        # Codes let in unasked in a short outage, never apart (1.0.224): gone after an hour.
+        SPLIT['tidied'] = now
+        try:
+            for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?",
+                                   ('split:took:%s:%%' % node_name(),)):
+                try:
+                    at = float(json.loads(r['v'] or '{}').get('at') or 0)
+                except ValueError:
+                    at = 0
+                if at < now - 3600:
+                    store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+        except Exception:                               # noqa: BLE001
+            pass
+    if SPLIT['report_due'] and now >= SPLIT['report_due'] and not apart and \
+            (peer is not None or split_peer_caught_up(store) or now > SPLIT['report_due'] + 600):
+        # Only once the other node's rows are here (1.0.224): made 30 s after, the
+        # replication was still catching up and the codes let in on both were not found.
         SPLIT['report_due'] = 0.0
         try:
             split_report(store, now)
         except Exception as e:                          # noqa: BLE001
             log('ha: the report of the time apart could not be made: %s' % e, 'warn')
+
+
+def split_preferred_unable(store):
+    """Why the preferred node is known not to serve, or ''."""
+    name = split_preferred_name(store)
+    if not name or name == node_name():
+        return ''
+    try:
+        if (clock_state_of(store, name) or {}).get('role') == 'aside':
+            return 'the preferred node stepped aside for its clock'
+        for n in ha_nodes(store):
+            if n['name'] == name and n.get('maintenance'):
+                return 'the preferred node is in maintenance'
+    except Exception:                                   # noqa: BLE001
+        pass
+    return ''
+
+
+def split_peer_caught_up(store):
+    """Whether the other node's word written after the nodes found each other again is here
+    - its rows written before it came over before it."""
+    for n in ha_nodes(store):
+        if n.get('me'):
+            continue
+        st = _meta_json(store, 'split:state:' + n['name']) or {}
+        if st and not st.get('apart') and float(st.get('at') or 0) > SPLIT['together_at']:
+            return True
+    return False
 
 
 def split_state_here(now=None):
@@ -33139,9 +33453,10 @@ def split_scratch_refused(store, kind, name, value):
 
 def split_took(store, kind, name, k):
     """A code taken while the other node could not be asked: written down for the report."""
-    if not (split_engaged() and CONFIG.get('split_report')) or not split_apart():
-        # Only while apart (1.0.222): a short outage of the other database wrote rows that
-        # waited for the next real split and were reported under it.
+    if not (split_engaged() and CONFIG.get('split_report')):
+        # Written from the first code the other node could not be asked about (1.0.224: only
+        # once apart, the first 20 s were missing); the report takes only those of its own
+        # time apart, older ones go.
         return
     try:
         store.set_meta('split:took:%s:%s' % (node_name(), k),
@@ -33160,6 +33475,7 @@ def split_report(store, now=None):
     if not split_me_preferred():
         return None
     by_key, per_node = {}, {}
+    since = float(SPLIT.get('last_apart_since') or 0) - max(5, int(CONFIG.get('split_after_s') or 20)) - 10
     for r in rows:
         parts = r['k'].split(':', 3)
         if len(parts) < 4:
@@ -33169,6 +33485,8 @@ def split_report(store, now=None):
             v = json.loads(r['v'] or '{}')
         except ValueError:
             v = {}
+        if float(v.get('at') or 0) < since or str(v.get('name') or '').startswith('#'):
+            continue        # a short outage before, or the same code by its token's id
         by_key.setdefault(k, {})[node] = v
         per_node[node] = per_node.get(node, 0) + 1
     twice = []
@@ -33243,6 +33561,7 @@ def split_view(store):
 CLOCK_MODES = ('off', 'watch', 'guard')
 CLOCK_LOCK = threading.Lock()
 CLOCK = {'thread': None, 'ref': None, 'ref_src': '', 'ref_err': '', 'ref_at': 0.0, 'refs': [],
+         'ref_mono': 0.0, 'ref_wall': 0.0,
          'skew': None, 'skew_err': '', 'skew_at': 0.0, 'skew_of': '', 'dir_ok': None, 'dir_err': '',
          'dir_at': 0.0, 'dirs': [], 'role': 'serve', 'why': '', 'written': 0.0}
 CLOCK_STEP_S = 5.0
@@ -33321,7 +33640,10 @@ def clock_ref_check(servers):
     got = []
     for srv in servers:
         try:
-            off, delay = sntp_offset(srv)
+            try:
+                off, delay = sntp_offset(srv)
+            except socket.timeout:
+                off, delay = sntp_offset(srv)           # one packet lost: asked again (1.0.224)
             got.append((srv, off, 'delay %.0f ms' % (delay * 1000)))
         except (OSError, ValueError, struct.error, UnicodeError) as e:
             got.append((srv, None, str(e)[:160] or 'no answer'))
@@ -33385,7 +33707,10 @@ CLOCK_DB_SERVER = 'the database server'
 # ---- the directory -----------------------------------------------------------------------------
 def clock_dir_check(store):
     """(True | False | None, [(directory, reached, words)]): every directory a realm signs in
-    against, reached on one of its servers. None: no realm uses one."""
+    against, reached on one of its servers - connected, its TLS made, and its reading account
+    let in (1.0.224: a TCP connect alone took a server that takes the connection and never
+    answers, or that refuses the reading account, for well - and the other node was then
+    left the sign-ins it could not answer either). None: no realm uses one."""
     used = set()
     try:
         for r in store.realms():
@@ -33394,31 +33719,29 @@ def clock_dir_check(store):
     except Exception:                                   # noqa: BLE001
         return None, []
     out = []
-    for d in store.directories():
-        if str(d.get('name') or '').lower() not in used or not d.get('enabled', 1):
+    for row in store.directories(with_secret=True):
+        if str(row.get('name') or '').lower() not in used or not row.get('enabled', 1):
             continue
-        port_d = int(d.get('port') or (636 if str(d.get('tls') or '') == 'ldaps' else 389))
-        hosts = [h for h in re.split(r'[\s,;]+', str(d.get('hosts') or '')) if h]
-        reached, words = False, 'no server given'
-        for h in hosts[:6]:
-            host, port = h, port_d
-            if h.count(':') == 1:
-                host, p = h.rsplit(':', 1)
-                port = int(p) if p.isdigit() else port_d
+        try:
+            ad = Directory(row)
+            ad.timeout = min(float(ad.timeout or 10), 3.0)
+            ad.DEAD = {}                                # its own: RADIUS's passed-over list untouched
+            link = ad.link()
             try:
-                with socket.create_connection((host.strip('[]'), port), timeout=2):
-                    reached, words = True, '%s:%d' % (host, port)
-                    break
-            except OSError as e:
-                words = '%s:%d %s' % (host, port, str(e)[:80])
-        out.append((d['name'], reached, words))
+                words = str(getattr(link, 'otp_host', '') or 'reached')
+            finally:
+                link.close()
+            out.append((row['name'], True, words))
+        except (LdapError, OSError, ValueError) as e:
+            out.append((row['name'], False, str(e)[:160]))
     if not out:
         return None, out
     return all(x[1] for x in out), out
 
 
 # ---- the decision ----------------------------------------------------------------------------
-def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer):
+def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer, aside_now=False,
+                 back_s=None, peer_newer=True):
     """('serve' | 'aside', why). `peer`: the other node's state row as known here (None when
     not heard from) - a node steps aside only for one that is well: fresh, serving, its clock
     within aside_s of the reference, and (for the directory) reaching it."""
@@ -33426,10 +33749,15 @@ def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer):
         return 'serve', ''
     peer_well = bool(peer) and peer.get('fresh') and peer.get('role') == 'serve' and \
         not peer.get('maintenance')
-    clock_bad = ref is not None and abs(ref) > aside_s and not codes_fixed
+    # Back only below aside_s less the warning (1.0.224): a clock wobbling about the limit
+    # moved the VIP address eight times in four minutes.
+    limit = (back_s if back_s is not None else aside_s) if aside_now else aside_s
+    clock_bad = ref is not None and abs(ref) > limit and not codes_fixed
     if clock_bad:
         pr = (peer or {}).get('ref')
-        if peer_well and pr is not None and abs(pr) <= aside_s:
+        # The other node's word measured after this node's own (1.0.224), or already aside:
+        # both clocks off alike, the first to measure stepped aside on the other's old word.
+        if peer_well and pr is not None and abs(pr) <= aside_s and (peer_newer or aside_now):
             return 'aside', 'this node\'s clock is %+.1f s off the time servers - the other node answers' % (-ref)
         return 'serve', 'this node\'s clock is off, but the other node cannot take over - it answers'
     if health_dir and dir_ok is False:
@@ -33450,8 +33778,10 @@ def clock_dir_failover(store):
         p = clock_peer_row(store)
     except Exception:                                   # noqa: BLE001
         return ''
+    # The other node known to reach it (1.0.224), not only "not known not to": both nodes
+    # without it, neither should leave the sign-ins to the other.
     if not p or not p.get('fresh') or p.get('role') != 'serve' or p.get('maintenance') or \
-            p.get('dir_ok') is False:
+            p.get('dir_ok') is not True:
         return ''
     return 'the directory cannot be reached from this node - the other node answers'
 
@@ -33464,11 +33794,27 @@ def clock_correction():
     """Seconds to add to this machine's clock, by the reference - 0 when not known, not fresh,
     or within clock_warn_s."""
     ref = CLOCK['ref']
-    if ref is None or time.time() - CLOCK['ref_at'] > CLOCK_FRESH_S * 2:
+    # Aged by the monotonic clock (1.0.224), and dropped when the machine's clock was stepped
+    # since it was measured: put right (chronyc makestep, by hand), the old correction was
+    # added to a clock right again - every code refused for minutes.
+    if ref is None or time.monotonic() - CLOCK['ref_mono'] > CLOCK_FRESH_S * 2 or clock_stepped():
         return 0.0
     if abs(ref) <= float(CONFIG.get('clock_warn_s') or 2):
         return 0.0
     return ref
+
+
+def clock_stepped():
+    """Whether the machine's clock moved by more than a second, against the monotonic one,
+    since the reference was measured."""
+    if not CLOCK['ref_mono']:
+        return False
+    return abs((time.time() - time.monotonic()) - CLOCK['ref_wall']) > 1.0
+
+
+def clock_ref_noted():
+    CLOCK['ref_mono'] = time.monotonic()
+    CLOCK['ref_wall'] = time.time() - CLOCK['ref_mono']
 
 
 def clock_now(kind='codes'):
@@ -33551,8 +33897,12 @@ def clock_peer_row(store, now=None):
             return None
         sk = clock_skew_of(store, n['name'])
         at = float(row.get('at') or 0) - (sk or 0.0)
-        row['fresh'] = now - at < 60
+        # Its row is written every 10 s (1.0.224: 60 s, and a node aside for its clock stayed
+        # silent a minute after the other died), and its heartbeat alive.
+        row['fresh'] = now - at < 25 and bool(n.get('alive'))
         row['maintenance'] = bool(n.get('maintenance'))
+        if row.get('ref_at') != CLOCK.get('peer_ref_at'):
+            CLOCK['peer_ref_at'], CLOCK['peer_ref_seen'] = row.get('ref_at'), time.monotonic()
         return row
     return None
 
@@ -33567,18 +33917,29 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         # Nothing kept from the time it ran (1.0.223): switched off, the card showed the last
         # measurements as if they were now.
         if CLOCK['ref_at'] or CLOCK['skew_at'] or CLOCK['dir_at']:
-            CLOCK.update(ref=None, ref_at=0.0, ref_src='', ref_err='', refs=[], skew=None,
+            CLOCK.update(ref=None, ref_at=0.0, ref_mono=0.0, ref_wall=0.0, ref_src='', ref_err='', refs=[], skew=None,
                          skew_at=0.0, skew_of='', skew_err='', dir_ok=None, dirs=[], dir_at=0.0)
         return
     if ref is not None:
         CLOCK.update(ref=None if ref == 'none' else ref, ref_at=now, ref_src='test', ref_err='')
-    elif now - CLOCK['ref_at'] > CLOCK_REF_EVERY_S:
+        clock_ref_noted()
+    elif time.monotonic() - CLOCK['ref_mono'] > CLOCK_REF_EVERY_S or not CLOCK['ref_mono'] or \
+            clock_stepped() or CLOCK.pop('measure_now', False):
         servers = clock_ref_servers(store=store)
         got, med = clock_ref_check(servers) if servers else ([], None)
-        CLOCK.update(refs=got, ref=med, ref_at=now, ref_src=', '.join(servers),
-                     ref_err='' if med is not None else (
-                         'no time server given (Settings -> Time, or this node\'s own)' if not servers
-                         else 'no time server answered'))
+        if med is None and servers and CLOCK['ref'] is not None and not clock_stepped() and \
+                time.monotonic() - CLOCK['ref_mono'] < CLOCK_FRESH_S * 2:
+            # One answer lost (1.0.224): the last measurement kept until it is too old - not
+            # thrown away at once, the node serving again with a clock it knew was off.
+            CLOCK.update(refs=got, ref_err='no time server answered just now - the last '
+                                           'measurement is used')
+            CLOCK['ref_tried'] = time.monotonic()
+        else:
+            CLOCK.update(refs=got, ref=med, ref_at=now, ref_src=', '.join(servers),
+                         ref_err='' if med is not None else (
+                             'no time server given (Settings -> Time, or this node\'s own)' if not servers
+                             else 'no time server answered'))
+            clock_ref_noted()
     if skew is not None:
         of, val = skew if isinstance(skew, tuple) else ('test-peer', skew)
         CLOCK.update(skew=None if val == 'none' else val, skew_at=now, skew_of=of, skew_err='')
@@ -33595,9 +33956,14 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         ok, dirs = clock_dir_check(store)
         CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now)
     p = clock_peer_row(store, now) if peer is None else (None if peer == 'none' else peer)
-    role, why = clock_decide(clock_mode(), CLOCK['ref'], float(CONFIG.get('clock_aside_s') or 20),
+    aside_s = float(CONFIG.get('clock_aside_s') or 20)
+    role, why = clock_decide(clock_mode(), CLOCK['ref'], aside_s,
                              bool(CONFIG.get('clock_codes')) and CLOCK['ref'] is not None,
-                             CLOCK['dir_ok'], bool(CONFIG.get('health_dir')), p)
+                             CLOCK['dir_ok'], bool(CONFIG.get('health_dir')), p,
+                             aside_now=CLOCK['role'] == 'aside',
+                             back_s=max(1.0, aside_s - float(CONFIG.get('clock_warn_s') or 2)),
+                             peer_newer=peer is not None or
+                             CLOCK.get('peer_ref_seen', 0.0) >= CLOCK['ref_mono'])
     if role != CLOCK['role']:
         CLOCK['role'], CLOCK['why'] = role, why
         MAINT_CACHE['at'] = 0
@@ -37738,8 +38104,20 @@ def _token_do(h):
         # A new token under its realm's own suffix (1.0.117): made for
         # novak@dpmo.local, it is novak@dpmo.cz where dpmo.local is another
         # suffix of that realm - the name RADIUS looks it up by.
-        main = norm_name(realm_main_name(name, h.store.realm_for(name)))
+        r_of = h.store.realm_for(name)
+        main = norm_name(realm_main_name(name, r_of))
         if main != name:
+            # Not when the name under the main suffix is another account's (1.0.224), as the
+            # pages and RADIUS refuse it: the token made would be that other person's.
+            ad = h.d.auth.directory((r_of or {}).get('directory')) if r_of else None
+            if ad is not None:
+                try:
+                    entry = ad.find_user(name, 'upn')
+                except LdapError:
+                    entry = None
+                clash = Authenticator.alias_clash(ad, name, main, entry) if entry else ''
+                if clash:
+                    raise ApiError(409, clash)
             name = main
     # One at a time per name, as a confirm is (1.0.61): switching off a
     # waiting token while its owner confirmed it switched it back on; a
@@ -37777,14 +38155,14 @@ def token_same_person(store, name, daemon=None):
     """Another name of the same person with a token in use - one RADIUS would
     stop using once `name` has one (1.0.139): under another suffix of the
     realm, or the same account in another realm on the same directory."""
-    if '@' not in name:
-        return ''
     realm = store.realm_for(name)
     if not realm:
         return ''
-    cands = realm_names(name, realm)[1:]
+    # A bare name too (1.0.224): "zofie" in a realm of plain names on the directory where
+    # žofie@corp.cz has a token in use was made a second working token by a token admin.
+    cands = realm_names(name, realm)[1:] if '@' in name else []
     if realm.get('lookup') == 'sam' and realm.get('directory'):
-        who = name.rpartition('@')[0]
+        who = name.rpartition('@')[0] or name
         here = str(realm.get('directory') or '').lower()
         for r in store.realms():
             if r['id'] != realm['id'] and r.get('lookup') == 'sam' and \
@@ -37817,6 +38195,11 @@ def _token_act(h, s, b, act, name, who):
         raise ApiError(404, 'there is no token %s' % name)
     if act == 'enroll':
         had = h.store.token(name)
+        bad_name = '' if had else token_name_problem(name)
+        if bad_name:
+            # The rule of an import's and a rename's (1.0.224): DOMAIN\\name was made, and
+            # found by nobody - RADIUS reads it as name.
+            raise ApiError(400, bad_name)
         if had and had.get('state') != 'pending' and s['role'] != 'fulladmin':
             # Replacing a token in use hands out a working key for somebody
             # else (1.0.57): a full administrator's to do. A token
@@ -40819,12 +41202,19 @@ def _portal_login(h):
             raise ApiError(403, 'this account may not have a token here - ask the '
                            'administrator')
     tname, _how = Authenticator.token_for(h.store, full, realm)
+    if Authenticator.alias_clash(ad, full, tname, entry):
+        # Its token would be another person's (1.0.224): signed in under another suffix of
+        # the realm, whose name there is somebody else's userPrincipalName.
+        h.store.add_event('enrolment', '%s signed in, and %s is another account\'s name: no token '
+                          'here' % (full, tname), 'warn', who=full)
+        raise ApiError(403, 'this name is another account\'s under the realm\'s main suffix - '
+                            'ask the administrator')
     # The same person under another spelling (1.0.44): DOMAIN\\name, another
     # realm on the same directory, other letters' case. A token they have
     # already under any of them is the one this session is about, so that
     # the directory password alone never makes a second one.
     if not h.store.token(tname):
-        same = portal_same_person(h.store, realm, entry)
+        same = h.d.auth.same_entry(realm, entry, unproven=True)
         if same:
             h.store.add_event('enrolment', '%s signed in as %s: the token %s is theirs already'
                               % (full, tname, same), 'warn', who=same)
@@ -40849,6 +41239,27 @@ def _portal_login(h):
     h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s'
                       % (tname, h.client_ip()), who=tname)
     return {'token': token, 'name': tname}
+
+
+def portal_token_mark(tok):
+    """What the token proven on the page is (1.0.224): its id and a hash of its sealed key."""
+    if not tok:
+        return None
+    return '%s:%s' % (tok.get('id'), hashlib.sha256(str(tok.get('secret') or tok.get('dest') or '')
+                                                     .encode('utf-8')).hexdigest()[:24])
+
+
+def portal_may_replace(h, s):
+    """Whether this session proved the token there is now - not one an administrator put in
+    its place meanwhile (1.0.224: a phone stolen, the token made again by an administrator,
+    and the old session went on and replaced it with its own key)."""
+    mark = (s.get('data') or {}).get('may_replace')
+    if not mark:
+        return False
+    if mark is True or mark != portal_token_mark(h.store.token(s['name'])):
+        portal_data_set(h, s, may_replace=None)
+        return False
+    return True
 
 
 def portal_same_person(store, realm, entry):
@@ -40888,7 +41299,12 @@ def portal_same_person(store, realm, entry):
         if not r or str(r.get('directory') or '').lower() != here:
             return False
         how = r.get('lookup')
-        return how not in ('upn', 'sam') or how == what
+        if how not in ('upn', 'sam'):
+            # "By the form of the name" (1.0.224): with an @ it is a userPrincipalName there,
+            # as RADIUS reads it - taken for anybody's, xavier@guest.cz (Wanda's UPN) was
+            # Xavier's token, and Wanda signed in as Xavier with her own phone.
+            how = 'upn' if '@' in cand else 'sam'
+        return how == what
     names = [(n, w) for n, w in names if same_directory(n, w)]
     seen = set()
     for n, w in names:
@@ -41044,7 +41460,7 @@ def _portal_enroll(h):
     kind = str(b.get('kind') or 'totp')
     if kind not in portal_methods(h, s):
         raise ApiError(403, 'that way of getting codes is not offered here')
-    may_replace = bool((s.get('data') or {}).get('may_replace'))
+    may_replace = portal_may_replace(h, s)
     if may_replace and h.d.tokens.blocked(s['name']):
         # Switched off or locked meanwhile (1.0.94).
         portal_data_set(h, s, may_replace=None)
@@ -41167,7 +41583,7 @@ def _portal_verify(h):
     # locked or confirmed by its owner while the code was on its way, it is
     # not replaced by one whose codes go where this session said.
     tok = h.store.token(s['name'])
-    may_replace = bool(data.get('may_replace'))
+    may_replace = portal_may_replace(h, s)
     if tok and tok.get('state') != 'pending' and not may_replace:
         portal_data_set(h, s, verify=None)
         raise ApiError(409, 'there is a token already; it can be replaced with a code from it')
@@ -41320,7 +41736,7 @@ def _portal_reissue(h):
     if want != 'totp' or token_kind(h.store.token(s['name'])) != 'totp':
         # Another way, or away from one (1.0.76): the page asks which, and
         # the old token goes on working until the new one is made.
-        portal_data_set(h, s, may_replace=True)
+        portal_data_set(h, s, may_replace=portal_token_mark(h.store.token(s['name'])))
         h.store.add_event('enrolment', '%s proved their token and may set up another way'
                           % s['name'], who=s['name'])
         return {'choose': True, 'me': portal_state(h, s)}
@@ -45937,7 +46353,8 @@ def _clock_post(h):
         h.d.save_settings(want, by=s['name'], node='*' if many else None)
     for n, v in refs.items():
         h.d.save_settings({'clock_ref': v}, by=s['name'], node=n)
-    CLOCK['ref_at'] = 0.0                               # asked again at the next look
+    CLOCK['measure_now'] = True                         # asked again at the next look, the
+    # last measurement kept meanwhile (1.0.224: thrown away, codes went uncorrected for 5 s)
     h.store.add_event('settings', '%s chose what the nodes do about their clocks: %s' % (
         s['name'], ', '.join('%s=%s' % kv for kv in sorted(want.items())) or 'reference servers'),
         'warn', who=s['name'])
