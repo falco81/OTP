@@ -244,8 +244,12 @@ Why it never steps both nodes aside:
   heartbeat alive - 1.0.224; 60 s left a node aside a minute after the other died) and not in
   maintenance (an upgrade, a restart, a restore) - read from its maintenance row as written, not
   only from its last heartbeat (1.0.226: put in maintenance while the other was aside, nobody
-  answered for 12 s). And in priority mode of the split card, a node aside for its clock when the
-  nodes lose each other stays aside: the other goes on taking it for aside (1.0.226);
+  answered for 12 s). In priority mode of the split card, a node aside for its clock when the
+  nodes lose each other is taken for aside by the other node only while its row is fresh there;
+  it answers again once the other node's row is stale (1.0.227 - 1.0.226 kept it aside for as
+  long as the nodes were apart, and with the other node dead nobody answered). A node aside for
+  its clock is silent at once, also on the VIP address while it moves (1.0.227: it answered up to
+  20 s and refused right codes);
 - no reference here, or none there: nothing is known - serve.
 
 | This node | The other node | Result |
@@ -1629,11 +1633,10 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         ok, dirs = clock_dir_check(store)
         CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now)
     p = clock_peer_row(store, now) if peer is None else (None if peer == 'none' else peer)
-    if CLOCK['role'] == 'aside' and p is not None and not p.get('fresh') and split_apart() and \
-            split_mode() == 'priority':
-        # Aside when the nodes lost each other (1.0.226): the other node goes on in priority
-        # mode taking this one for aside - this one answering too, both did.
-        p = dict(p, fresh=True)
+    # No longer kept aside for as long as the nodes are apart (1.0.227): with the other node
+    # dead that was for ever, and nobody answered. Its row goes stale and this node answers -
+    # and the other one, in priority mode, takes this node's "aside" only while that row is
+    # fresh (split_preferred_unable), so one of the two answers, not both.
     aside_s = float(CONFIG.get('clock_aside_s') or 20)
     role, why = clock_decide(clock_mode(), CLOCK['ref'], aside_s,
                              bool(CONFIG.get('clock_codes')) and CLOCK['ref'] is not None,
@@ -1745,7 +1748,7 @@ def clock_view(store):
 # ---- the card of the clocks (1.0.222): Settings -> Time -> The clocks of the nodes
 @route('GET', '/api/clock')
 def _clock_get(h):
-    h.me()
+    h.me('fulladmin')       # the network's map, as /api/ntp and /api/net (1.0.225)
     return clock_view(h.store)
 
 
@@ -1803,7 +1806,8 @@ def _clock_post(h):
         h.d.save_settings(want, by=s['name'], node='*' if many else None)
     for n, v in refs.items():
         h.d.save_settings({'clock_ref': v}, by=s['name'], node=n)
-    CLOCK['ref_at'] = 0.0                               # asked again at the next look
+    CLOCK['measure_now'] = True                         # asked again at the next look, the
+    # last measurement kept meanwhile (1.0.224: thrown away, codes went uncorrected for 5 s)
     h.store.add_event('settings', '%s chose what the nodes do about their clocks: %s' % (
         s['name'], ', '.join('%s=%s' % kv for kv in sorted(want.items())) or 'reference servers'),
         'warn', who=s['name'])
