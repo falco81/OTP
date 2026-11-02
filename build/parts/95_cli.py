@@ -4106,10 +4106,20 @@ def run_daemon():
         raise SystemExit(1)
     load_config(saved=store.settings_saved())
     log_open()
+    made = False
     if not store.accounts():
         pw = secrets.token_urlsafe(12)
-        store.add_account('admin', 'fulladmin', pw, note='made on the first start',
-                          must_change=1)
+        try:
+            store.add_account('admin', 'fulladmin', pw, note='made on the first start',
+                              must_change=1)
+            made = True
+        except Exception as e:                          # noqa: BLE001
+            # Two nodes started together on one new database (1.0.225): the other made it
+            # a moment before - not a reason to stop.
+            if not store.accounts():
+                raise
+            log('the first account was made by another node meanwhile (%s)' % str(e)[:120], 'info')
+    if made:
         try:
             write_replacing(STATE_DIR / 'first-login.txt', 'name: admin\npassword: %s\n' % pw,
                             0o600)

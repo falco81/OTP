@@ -210,7 +210,7 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = re.sub(r'\s', '', str(b.get('code') or ''))
+        code = code_typed(b.get('code') or '')
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
         if new['kind'] == 'app':
             secret = unseal_secret(new.get('secret'), 'adm2fa-new:' + name.lower())
@@ -255,7 +255,7 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = re.sub(r'\s', '', str(b.get('code') or ''))
+        code = code_typed(b.get('code') or '')
         if rec.get('kind') == 'app':
             # Read, checked and written under one lock (1.0.136): two requests
             # with the same code at once both passed the check.

@@ -91,7 +91,10 @@ def running(n):
 
 
 def start(n, reboot=False):
-    subprocess.run(['bash', H + '/start.sh', n, VER] + (['reboot'] if reboot else []))
+    # The node's environment as the test set it (OTP_ALERTS_QUIET_S of t_ha_alerts): the
+    # daemon wrote the quiet time with its own 600 s, now and then after the test's 20 s.
+    subprocess.run(['bash', H + '/start.sh', n, VER] + (['reboot'] if reboot else []),
+                   env=dict(os.environ, **{k: v for k, v in E.get(n, {}).items() if k.startswith('OTP_ALERTS')}))
     return up(n)
 
 

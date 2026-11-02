@@ -406,6 +406,46 @@ def node_key_add(store, prefix, name, keep, most=None, limit=None):
             except Exception:                           # noqa: BLE001
                 continue
         if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
+            return _node_key_recount(store, prefix, name, k, t, keep, limit)
+    return False
+
+
+def _node_key_recount(store, prefix, name, k, t, keep, limit):
+    """Counted again once written (1.0.225): two nodes reading the other's row at the same
+    moment both got under the limit - one more than it allows. Over it now: this one taken
+    back, and not let past."""
+    if limit is None:
+        return True
+    total = 0
+    for r in node_key_rows(store, prefix, name):
+        try:
+            total += len([x for x in json.loads(r['v'] or '[]') if t - float(x) < keep])
+        except (ValueError, TypeError):
+            continue
+    if total <= limit:
+        return True
+    node_key_give_back(store, prefix, name, t)
+    return False
+
+
+def node_key_give_back(store, prefix, name, when=None):
+    """This node's entry at `when` (or its newest) taken out again."""
+    k = node_key(prefix, name)
+    for _ in range(8):
+        raw = store.get_meta(k)
+        try:
+            times = [float(x) for x in json.loads(raw or '[]')]
+        except (ValueError, TypeError):
+            return False
+        if not times:
+            return False
+        if when is not None and when in times:
+            times.remove(when)
+        elif when is None:
+            times.remove(max(times))
+        else:
+            return False
+        if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (json.dumps(times), k, raw)):
             return True
     return False
 
@@ -1329,8 +1369,21 @@ def code_send_later(store, kind, to, code, name, rid=''):
         if CODE_WAITING[0] >= CODE_WAITING_MOST:
             log_sparing('code-send-full', 'codes to send: %d are waiting already - the code '
                         'for %s is not sent' % (CODE_WAITING[0], name), 'warn', every=60)
-            return
-        CODE_WAITING[0] += 1
+            full = True
+        else:
+            full = False
+            CODE_WAITING[0] += 1
+    if full:
+        # Said where it is looked for, and not counted as sent (1.0.225): the person was left
+        # with no trace of why no code came, and shut out by the limit of codes sent.
+        try:
+            node_key_give_back(store, 'codesent', name)
+            store.otp_add({'ts': time.time(), 'name': name, 'ok': 0,
+                           'said': 'The code was not sent: too many codes are waiting to be sent',
+                           'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120], 'step_off': None})
+        except Exception:                               # noqa: BLE001
+            pass
+        return False
 
     def go():
         try:
@@ -1343,8 +1396,11 @@ def code_send_later(store, kind, to, code, name, rid=''):
     def send():
         try:
             said = code_send(store, kind, to, code, name=name)
+            waits = str(said or '').startswith('not taken yet')
             store.otp_add({'ts': time.time(), 'name': name, 'ok': 1,
-                           'said': 'A code was sent by %s to %s' % (
+                           'said': ('A code waits in the outgoing mail for %s: %s' % (
+                               dest_masked(kind, to), str(said)[:300])) if waits else
+                           'A code was sent by %s to %s' % (
                                'mail' if kind == 'mail' else 'SMS', dest_masked(kind, to)),
                            'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120],
                            'step_off': None})
@@ -1353,6 +1409,12 @@ def code_send_later(store, kind, to, code, name, rid=''):
         except Exception as e:                          # noqa: BLE001
             log_sparing('code-send:%s' % kind, 'a code for %s could not be sent by %s: %s'
                         % (name, kind, e), 'warn', every=60)
+            try:
+                # Not sent for good: not counted as sent (1.0.225) - after a short outage of
+                # the mail server a person who tried again was shut out for 15 min.
+                node_key_give_back(store, 'codesent', name)
+            except Exception:                           # noqa: BLE001
+                pass
             try:
                 store.add_event('mail' if kind == 'mail' else 'radius',
                                 'the code for %s could not be sent by %s to %s: %s'
@@ -1381,7 +1443,7 @@ def chal_key(state):
 def chal_new(store, data):
     """A challenge kept; returns the State the VPN sends back."""
     state = CHAL_PREFIX + secrets.token_bytes(24)
-    data = dict(data, exp=time.time() + int(CONFIG.get('code_ttl_s') or 300), tries=0,
+    data = dict(data, exp=clock_now('locks') + int(CONFIG.get('code_ttl_s') or 300), tries=0,
                 made=time.time(), node=node_name())
     store.set_meta(chal_key(state), json.dumps(data))
     return state
@@ -1419,7 +1481,7 @@ def chal_drop(store, state):
 
 def chal_tidy(store):
     """Challenges past their time, and the counts of sent codes."""
-    t = time.time()
+    t = clock_now('locks')
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'chal:%' OR k LIKE 'codesent:%'"):
         try:
             v = json.loads(r['v'] or 'null')
@@ -1429,6 +1491,7 @@ def chal_tidy(store):
             gone = not isinstance(v, dict) or float(v.get('exp') or 0) < t - 60
         else:
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
-            gone = not isinstance(v, list) or not any(t - float(x) < span for x in v)
+            now = time.time()                           # the counts by the machine's clock
+            gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
         if gone:
             store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))

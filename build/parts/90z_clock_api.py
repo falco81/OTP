@@ -1,7 +1,7 @@
 # ---- the card of the clocks (1.0.222): Settings -> Time -> The clocks of the nodes
 @route('GET', '/api/clock')
 def _clock_get(h):
-    h.me()
+    h.me('fulladmin')       # the network's map, as /api/ntp and /api/net (1.0.225)
     return clock_view(h.store)
 
 

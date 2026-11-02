@@ -1154,14 +1154,35 @@ def _ha_rebuild(local, remote, my_slot, peer_slot, my_host, my_port, peer_host, 
     replaced by what the other holds."""
     mine_on_peer = ha_sub_name(my_slot)       # on the peer: brings my rows to it
     theirs_here = ha_sub_name(peer_slot)      # here: brings the peer's rows to me
-    say('the other node stops taking rows from this one')
-    ha_drop_sub(remote, mine_on_peer)
-    ha_drop_slot(local, mine_on_peer)
-    say('this node stops taking rows from the other')
-    ha_drop_sub(local, theirs_here)
-    ha_drop_slot(remote, theirs_here)
-    say('this node\'s tables emptied')
-    local.make_tables()
+    # Out of service first (1.0.225), and the sign-ins in hand let finish: answered between
+    # the other node no longer taking rows and the flag, a code used here was never known
+    # there - let in again on the other node - and a request reading the emptied table was
+    # refused as having no token.
+    HA_REBUILDER[0] = threading.get_ident()
+    HA_REBUILDING.set()
+    MAINT_CACHE['at'] = 0
+    time.sleep(3)
+    # The codes used up here kept (1.0.225): replication paused or broken - the usual reason
+    # for a rebuild - the rows of this node alone were emptied with the rest, and a recovery
+    # code used here was good again on both nodes.
+    try:
+        kept_once = local.rows('SELECT k, node, ts FROM token_once')
+    except Exception:                                   # noqa: BLE001
+        kept_once = []
+    try:
+        say('the other node stops taking rows from this one')
+        ha_drop_sub(remote, mine_on_peer)
+        ha_drop_slot(local, mine_on_peer)
+        say('this node stops taking rows from the other')
+        ha_drop_sub(local, theirs_here)
+        ha_drop_slot(remote, theirs_here)
+        say('this node\'s tables emptied')
+        local.make_tables()
+    except BaseException:
+        HA_REBUILDER[0] = None          # nothing emptied yet: back in service
+        HA_REBUILDING.clear()
+        MAINT_CACHE['at'] = 0
+        raise
     # Nothing written here while the rows come over (1.0.44): the heartbeat
     # and the job's own progress wrote rows the copy then met again, and it
     # stopped on a duplicate key for good.
@@ -1181,6 +1202,15 @@ def _ha_rebuild(local, remote, my_slot, peer_slot, my_host, my_port, peer_host, 
         say('the other node takes this one\'s rows from now on')
         ha_subscribe(remote, mine_on_peer, ha_conninfo(my_host, my_port, name, user, password),
                      copy_data=False)
+        if kept_once:
+            # Written after the other node takes this one's rows again: they reach it too.
+            sql = 'INSERT INTO token_once (k, node, ts) VALUES (?, ?, ?) ON CONFLICT DO NOTHING'
+            for r in kept_once:
+                try:
+                    local.run(sql, (r['k'], r['node'], r['ts']))
+                except Exception:                       # noqa: BLE001
+                    pass
+            say('the codes used up on this node kept')
         done = True
     finally:
         # Odd or even again whatever happened (1.0.57): RESTART IDENTITY

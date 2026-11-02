@@ -1,7 +1,7 @@
 # ---- the card of the split (1.0.218): Settings -> High availability -> When the nodes lose each other
 @route('GET', '/api/split')
 def _split_get(h):
-    h.me()
+    h.me('fulladmin')       # the network's map, as /api/ntp and /api/net (1.0.225)
     return split_view(h.store)
 
 

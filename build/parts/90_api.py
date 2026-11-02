@@ -2177,6 +2177,9 @@ def _token_act(h, s, b, act, name, who):
                                 'commas, semicolons or =, 180 characters at most')
         if to == norm_name(name):
             raise ApiError(400, 'that is the name it has')
+        if token_name_problem(to):
+            # The rule of a new token's (1.0.225): DOMAIN\\name is read as name by RADIUS.
+            raise ApiError(400, token_name_problem(to))
         # The letters a name may have, as a new token's (1.0.207): renamed past them,
         # RADIUS refused the token for good.
         bad_letters = name_letters_problem(to)
@@ -3960,6 +3963,23 @@ def _db_do(h):
                                                     '%d-%m-%Y %H:%M'),
                                                 datetime.fromtimestamp(here).strftime(
                                                     '%d-%m-%Y %H:%M')))
+                # The codes used up here since the carry, used up there too (1.0.224): the
+                # minute allowed above for events let a recovery code used meanwhile be good
+                # again on the new database.
+                try:
+                    far = db_open(c)
+                    try:
+                        sql = {'mariadb': 'INSERT IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)',
+                               'sqlite': 'INSERT OR IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)'}.get(
+                            far.engine, 'INSERT INTO token_once (k, node, ts) VALUES (?, ?, ?) '
+                                        'ON CONFLICT DO NOTHING')
+                        for r in h.store.db.rows('SELECT k, node, ts FROM token_once WHERE ts > ?',
+                                                 (time.time() - 3 * 86400,)):
+                            far.run(sql, (r['k'], r['node'], r['ts']))
+                    finally:
+                        far.close()
+                except Exception as e:                  # noqa: BLE001
+                    log('the codes used lately could not be carried across: %s' % e, 'warn')
                 write_file_settings({k: c[k] for k in DB_KEYS})
                 h.store.add_event('settings', '%s switched the database to %s at %s; the '
                                   'daemon starts again on it' % (s['name'], words, db_where(c)),
@@ -5214,7 +5234,7 @@ def _portal_verify(h):
     key = h.throttle('portal-verify', int(CONFIG.get('code_tries') or 3) + 2,
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=50,
                      name_tries=int(CONFIG.get('code_tries') or 3) * 3, what='wrong codes')
-    code = re.sub(r'\s', '', str(h.body().get('code') or ''))
+    code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     if not hmac.compare_digest(code_hash(s['name'], code), str(ver.get('code') or '')):
         h.failed(key)
         # Counted on the code as it is now (1.0.101): a copy read at the
@@ -5301,7 +5321,7 @@ def _portal_codes(h):
     key = h.throttle('portal-codes', int(CONFIG.get('portal_tries') or 5),
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=30,
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
-    code = re.sub(r'\s', '', str(h.body().get('code') or ''))
+    code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     old = (s.get('data') or {}).get('old') or {}
     if old and float(old.get('exp') or 0) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
@@ -5369,7 +5389,7 @@ def _portal_reissue(h):
     stop = h.d.tokens.blocked(s['name'])
     if stop:
         raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
-    code = re.sub(r'\s', '', str(b.get('code') or ''))
+    code = code_typed(b.get('code') or '')
     old = (s.get('data') or {}).get('old') or {}
     if old and float(old.get('exp') or 0) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):

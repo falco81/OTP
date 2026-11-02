@@ -280,7 +280,11 @@ def names_nfc_kept(store):
     key = 'names:nfc:done'
     if store.get_meta(key) is not None or not ha_lead(store):
         return
-    moved = []
+    if not sealing_key():
+        # Not without the key that opens the tokens (1.0.225): their keys would stay sealed
+        # to the old name, and could not be opened when the key was put back.
+        return
+    moved, left = [], []
     for r in store.db.rows('SELECT * FROM tokens'):
         was = str(r.get('name') or '')
         if was.isascii():
@@ -294,18 +298,28 @@ def names_nfc_kept(store):
             continue
         old_b, new_b = token_bind(was), token_bind(to)
         fields = {'name': to}
+        unopened = False
         for col in ('secret', 'pending_secret'):
             if r.get(col):
                 plain = unseal_secret(r[col], old_b)
                 if plain:
                     fields[col] = seal_secret(plain, new_b)
-        codes = open_codes(r.get('scratch_sealed'), old_b)
+                else:
+                    unopened = True
+        if unopened:
+            # Its key does not open here (another key, a copy from elsewhere): left as it is,
+            # and asked again at the next start (1.0.225).
+            left.append(was)
+            continue
+        # As the pages show them (1.0.225): a code used on the other node, still unused in
+        # this node's sealed copy, stays used.
+        codes = codes_open(r)
         if codes is not None:
             fields['scratch'] = json.dumps([scratch_hash(to, c['c']) for c in codes if not c.get('used')])
             fields['scratch_sealed'] = seal_codes(codes, new_b)
             fields['scratch_left'] = len(json.loads(fields['scratch']))
-        elif r.get('scratch_left'):
-            fields.update(scratch='[]', scratch_left=0)
+        # Codes never sealed to be made again keep their hashes: found under the old form of
+        # the name (scratch_find, 1.0.225) - not thrown away without a word.
         pend = open_codes(r.get('pending_scratch'), old_b)
         if pend is not None:
             fields['pending_scratch'] = seal_codes(pend, new_b)
@@ -317,6 +331,11 @@ def names_nfc_kept(store):
     if moved:
         store.add_event('tokens', 'the names of %d token(s) put in one form of their letters, as they '
                         'are looked up: %s' % (len(moved), ', '.join(moved[:20])), 'info', who='otp (upgrade)')
+    if left:
+        store.add_event('tokens', 'the names of %d token(s) could not be put in one form of their '
+                        'letters - their keys do not open with the key in use: %s'
+                        % (len(left), ', '.join(left[:20])), 'warn', who='otp (upgrade)')
+        return                          # asked again at the next start
     store.set_meta(key, '1')
 
 

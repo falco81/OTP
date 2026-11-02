@@ -4,6 +4,42 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.225 — 3 November 2026
+
+**The third of five rounds of looking for bugs.** Found by it, and mended:
+
+- **A database put back made the codes used since the copy good again** - every recovery code
+  used between the copy and putting it back worked once more, on either node of a cluster (and a
+  code from the app within its minute). The codes used up are kept used up now, whatever comes
+  back; the same when the database is switched to another server.
+- **A node rebuilt from the other lost what only it knew** - replication paused or broken, the
+  usual reason for a rebuild: a recovery code used on it was good again on both. And a sign-in
+  answered in the moment before the rebuild began was not known to the other node, or was refused
+  as having no token. The node goes out of service first now, the sign-ins in hand finish, and its
+  codes used up are kept.
+- **A sent code typed as the mail shows it was refused** - "821 275", with a dash or a no-break
+  space, or on the Czech row of the keyboard without Shift: each a wrong try counted. Read as the
+  digits meant now, in the second window, on the enrolment pages and in the administrators' own
+  second factor (as the SSH gate reads them since 1.0.190).
+- **Codes not sent counted against the limit of codes sent** - after a short outage of the mail
+  server or the SMS gateway a person who tried again was shut out for 15 minutes. A code that could
+  not be sent is not counted; one waiting in the outgoing mail is written as waiting, not as sent; a
+  code not taken because too many were waiting is written down. Two nodes no longer let one more
+  past the limit between them. A code's mail is no longer tried in its code's last half minute, and
+  one left half way by a restart is tried again within two minutes, not ten.
+- **A question for the app's code went on after the token was switched to mail or SMS** - three
+  wrong tries counted on the new token. It ends now: "sign in again".
+- **Regressions of 1.0.224 mended**: putting the names of tokens in one form of their letters, at the
+  first start without the key that opens them, left those tokens unopenable for good. It waits now
+  until the key is there, leaves any token whose key does not open, keeps recovery codes never
+  sealed to be made again (by their old hash), and keeps a code used on the other node used.
+- **And**: a reader of the pages no longer sees the network's map through the cards of the clocks
+  and of the nodes losing each other (full administrators only, as Time and Network); a token is not
+  renamed to DOMAIN\name; a flood of accounting no longer pushes the sign-ins' repeats out of the
+  memory that answers them; a question for a sent code runs out by the corrected time on both nodes
+  alike; two nodes started together on one new database no longer stop on making the first
+  account twice.
+
 ## 1.0.224 — 3 November 2026
 
 **The second of five rounds of looking for bugs** (sign-ins first). Found by it, and mended:

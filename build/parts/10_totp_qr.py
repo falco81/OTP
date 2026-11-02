@@ -44,6 +44,13 @@ def totp(key, when=None, digits=6, period=30, algorithm='SHA1'):
     return hotp(key, totp_step(when, period), digits, algorithm)
 
 
+def code_typed(code):
+    """A code as somebody typed it, read as the digits meant (1.0.225): "821 275" as the mail
+    shows it, with a dash or a no-break space, or on the Czech row of the keyboard without
+    Shift ("žřáčéá" for 495040) - as the SSH gate has read it since 1.0.190."""
+    return re.sub(r'[\s-]', '', ssh_code_typed(code))
+
+
 def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', window=1):
     """Which period the code belongs to - its step number - or None.
 
@@ -133,6 +140,13 @@ def scratch_find(user, code, kept, key=None):
             return k, new
         if hmac.compare_digest(k, old):
             return k, new if new is not None else old
+    nfd = unicodedata.normalize('NFD', str(user or '')) if not str(user or '').isascii() else ''
+    if nfd and nfd != user:
+        # Kept under the name decomposed (1.0.225): a token renamed to the composed form
+        # whose codes were never sealed to be made again keeps its hashes of the old form.
+        got, _was = scratch_find(nfd, code, kept, key)
+        if got is not None:
+            return got, new if new is not None else scratch_hash_old(user, code)
     return None, None
 
 

@@ -721,7 +721,7 @@ class Authenticator(object):
         d.realm = chal.get('realm') or ''
         d.token_name = name = chal.get('name') or ''
         kind = chal.get('kind') or 'totp'
-        if float(chal.get('exp') or 0) < time.time():
+        if float(chal.get('exp') or 0) < clock_now('locks'):     # both nodes alike (1.0.225)
             chal_take(self.store, state, raw)
             d.step('the question this answers', False, 'it ran out %s' % stamp(chal.get('exp')))
             d.otp = 'The code ran out'
@@ -743,6 +743,8 @@ class Authenticator(object):
             d.step('the code', False, 'nothing came, or not as PAP')
             return d.refuse('the request carries no code (PAP)')
         code = str(password).strip()
+        if re.fullmatch(r'[0-9]{4,12}', code_typed(code), re.ASCII):
+            code = code_typed(code)     # "821 275" as the mail shows it (1.0.225)
         t = time.time()
         # A try is taken before the code is looked at (1.0.101): written to
         # the question with a conditional update, so of answers that came
@@ -795,6 +797,16 @@ class Authenticator(object):
                 if ok:
                     chal_drop(self.store, state)
         else:
+            # The token as it is now (1.0.225), as for a code sent: switched to mail or SMS
+            # while this question was open, the app's code counted three wrong tries on the
+            # new token and asked again for a code that could not come.
+            now_tok = self.store.token(name)
+            if now_tok and token_kind(now_tok) in ('mail', 'sms'):
+                chal_take(self.store, state, raw)
+                stop = 'the token changed since the code was asked for - sign in again'
+                d.step('the code for the token %s' % name, False, stop, t)
+                d.otp = stop
+                return d.refuse('Denied by the token server: ' + stop)
             # The code is taken once by the token itself (its step, once_take):
             # the question is done with, even if a second answer to it counted
             # a try meanwhile - that refused the right code and used it up.
@@ -847,6 +859,9 @@ class RadiusServer(object):
         # duplicate key -> (time, reply or None), oldest first, never more
         # than SEEN_MAX: a flood fills it to the brim and no further (1.0.33).
         self.seen = collections.OrderedDict()
+        # Accounting's apart (1.0.225): a flood of it pushed the sign-ins' answers out, and a
+        # sign-in's repeat was then taken as new - a second code sent, a right code "used".
+        self.seen_acct = collections.OrderedDict()
         self.seen_lock = threading.Lock()
         self.unknown_said = {}
         self.unknown_lock = threading.Lock()
@@ -1114,9 +1129,10 @@ class RadiusServer(object):
         # address can no longer stand in for the real one.
         key = (ip, port, pkt.ident, pkt.authenticator, kind, hashlib.sha256(data).digest()[:16])
         window = int(CONFIG.get('radius_dup_window_s') or 0)
+        seen = self.seen_acct if kind == 'acct' else self.seen
         if window:
             with self.seen_lock:
-                got = self.seen.get(key)
+                got = seen.get(key)
                 if got and arrived - got[0] < window:
                     self.counts['repeated'] += 1
                     # A refusal sent late is given to a repeat once it went
@@ -1127,16 +1143,16 @@ class RadiusServer(object):
                     hit = True
                 else:
                     hit = False
-                    self.seen[key] = (arrived, None)
-                    self.seen.move_to_end(key)
+                    seen[key] = (arrived, None)
+                    seen.move_to_end(key)
                     # Old ones go from the front; past the limit the oldest go
                     # whatever their age - never a rebuild of the whole table.
                     cut = arrived - window
-                    while self.seen:
-                        k0, v0 = next(iter(self.seen.items()))
-                        if v0[0] >= cut and len(self.seen) <= self.SEEN_MAX:
+                    while seen:
+                        k0, v0 = next(iter(seen.items()))
+                        if v0[0] >= cut and len(seen) <= self.SEEN_MAX:
                             break
-                        self.seen.popitem(last=False)
+                        seen.popitem(last=False)
             if hit:
                 # Sent outside the lock (1.0.186): a full send buffer held every
                 # packet's look for repeats behind it.
@@ -1159,8 +1175,8 @@ class RadiusServer(object):
                         # (1.0.101), not after it is written down: a repeat
                         # coming meanwhile got nothing.
                         with self.seen_lock:
-                            if key in self.seen:
-                                self.seen[key] = (arrived, b)
+                            if key in seen:
+                                seen[key] = (arrived, b)
                 reply = self.access(pkt, client, ip, port, secret, arrived, sock, peer, remember)
             else:
                 # Not proven to come from the client: written down sparingly
@@ -1174,7 +1190,7 @@ class RadiusServer(object):
             # for the whole window (1.0.57).
             if window:
                 with self.seen_lock:
-                    self.seen.pop(key, None)
+                    seen.pop(key, None)
             raise
         if reply and not getattr(reply, 'sent', False):
             try:
@@ -1189,9 +1205,9 @@ class RadiusServer(object):
                 if reply is None and pkt.code == ACCESS_REQUEST:
                     # Left unanswered (no database, 1.0.59): the NAS's repeat
                     # is tried again, not swallowed as "repeated".
-                    self.seen.pop(key, None)
-                elif key in self.seen:
-                    self.seen[key] = (arrived, bytes(reply) if reply else None,
+                    seen.pop(key, None)
+                elif key in seen:
+                    seen[key] = (arrived, bytes(reply) if reply else None,
                                       getattr(reply, 'late_until', 0))
         try:
             self.d.store.client_seen(client['id'])
