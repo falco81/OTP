@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.227'
+__version__ = '1.0.228'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -178,6 +178,8 @@ DEFAULTS = {
     'portal_hint': '',
     'portal_who': 'realm_groups',
     'portal_groups': '',
+    # A one-time code before the first token (1.0.228): off - as until now.
+    'portal_first_code': 'off',
     'portal_confirm': 1,
     'portal_reissue': 1,
     'portal_show_secret': 1,
@@ -492,6 +494,7 @@ TUNABLE = {
     'names_czsk_letters': (0, 1),
     'names_any_letters': (0, 1),
     'portal': (0, 1), 'portal_who': ('realm_groups', 'groups', 'anyone'),
+    'portal_first_code': ('off', 'mail', 'sms', 'sms_mail', 'mail_sms'),
     'portal_confirm': (0, 1), 'portal_reissue': (0, 1), 'portal_show_secret': (0, 1),
     'portal_scratch': (0, 1), 'portal_codes_view': (0, 1), 'portal_session_min': (1, 240),
     'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
@@ -614,6 +617,11 @@ CHOICE_WORDS = {
     'portal_who': {'realm_groups': 'whoever passes the realm’s group filter',
                    'groups': 'members of the groups named below',
                    'anyone': 'anybody the directory lets sign in'},
+    'portal_first_code': {'off': 'no - the directory password is enough (as until now)',
+                          'mail': 'yes, by e-mail',
+                          'sms': 'yes, by SMS',
+                          'sms_mail': 'yes, by SMS - by e-mail when the directory has no mobile number',
+                          'mail_sms': 'yes, by e-mail - by SMS when the directory has no address'},
     'db_engine': {'sqlite': 'a file on this machine (SQLite)', 'mariadb': 'MariaDB / MySQL',
                   'postgres': 'PostgreSQL'},
     'ui_lang': {'cs': 'Čeština', 'en': 'English'},
@@ -730,6 +738,7 @@ NAMES = {
     'portal_hint': 'What to type as the name (shown on the sign-in)',
     'portal_who': 'Who may enrol a token',
     'portal_groups': 'Groups that may enrol',
+    'portal_first_code': 'A one-time code before the first token',
     'portal_confirm': 'A new token must be confirmed with a code',
     'portal_reissue': 'People may replace their own token',
     'portal_show_secret': 'Show the key as text beside the QR code',
@@ -1188,6 +1197,15 @@ SAYS = {
     'portal_groups': 'With <i>members of the groups named below</i>: the groups, by name '
                      '(<code>VPN_USERS</code>) or by whole DN, separated by semicolons or new '
                      'lines.',
+    'portal_first_code': 'Somebody who has no token yet signs in with their directory name and '
+                         'password, and then gets a one-time code to the e-mail address or the '
+                         'mobile number the directory has for them - read from it at the sign-in, '
+                         'nothing typed. Only with that code typed may they make their token: the '
+                         'directory password alone - guessed, or found out - no longer gives anybody '
+                         'a token of another person. An account the directory has no address or '
+                         'number for cannot enrol here then; an administrator makes its token. '
+                         'Needs the mail (Settings → Mail) or the SMS gateway (Settings → SMS) '
+                         'set up. Somebody who has a token already signs in as before.',
     'portal_confirm': 'A token made on the enrolment page is not in use until the person has '
                       'typed a code from it. Without this a QR code scanned badly - or not '
                       'at all - is a token that locks its owner out on the next sign-in.',
@@ -1528,7 +1546,8 @@ PANES = {
                'scratch_count', 'scratch_digits', 'token_names_case', 'names_czsk_letters',
                'names_any_letters'],
     'portal': ['portal', 'portal_title', 'portal_realm', 'portal_hint', 'portal_who',
-               'portal_groups', 'portal_confirm', 'portal_reissue', 'portal_show_secret',
+               'portal_groups', 'portal_first_code', 'portal_confirm', 'portal_reissue',
+               'portal_show_secret',
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
     'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
@@ -1592,6 +1611,7 @@ ONLY_WHEN = {
     'portal_title': ['portal', '1'], 'portal_realm': ['portal', '1'],
     'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
     'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
+    'portal_first_code': ['portal', '1'],
     'portal_reissue': ['portal', '1'], 'portal_show_secret': ['portal', '1'],
     'portal_scratch': ['portal', '1'], 'portal_session_min': ['portal', '1'],
     'portal_help': ['portal', '1'], 'portal_tries': ['portal', '1'],
@@ -10603,6 +10623,9 @@ CODE_PURPOSES = {
     # Signing in over SSH to the nodes (1.0.181): words of its own.
     'ssh': {'p': 's_', 'subject': 'ssh_subject', 'body': 'ssh_body', 'sms': 'ssh_sms',
             'warn': True, 'note': 'h_s_warn', 'queue': 'code'},
+    # Signing in to the enrolment pages before the first token (1.0.228): words of its own.
+    'portal': {'p': 'p_', 'subject': 'portal_subject', 'body': 'portal_body', 'sms': 'portal_sms',
+               'warn': True, 'note': 'h_p_warn', 'queue': 'code'},
 }
 
 
@@ -10683,6 +10706,22 @@ CODE_TEXTS = {
         'h_s_facts': 'Zadejte ho tam, kde se SSH ptá na kód. Platí {minutes} min a jen jednou.',
         'h_s_warn': 'Pokud se právě nepřihlašujete, kód nikomu nesdělujte – někdo zkouší váš účet.',
         'h_s_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
+        'portal_subject': 'Kód pro nastavení přihlašování: {code}',
+        'portal_body': ('Váš kód pro přihlášení na stránku, kde si nastavíte přihlašování do VPN, '
+                        'je\n\n    {code}\n\nPlatí {minutes} min a jen jednou. Pokud jste se '
+                        'právě nepřihlašovali, kód nikomu nesdělujte a změňte si heslo - někdo ho '
+                        'zná.\n\n-- \n{site}'),
+        'portal_sms': '{code} je váš kód pro nastavení přihlašování ({site}). Platí {minutes} min. '
+                      'Nikomu ho nesdělujte.',
+        'h_p_title': 'VPN · Nastavení přihlašování',
+        'h_p_hello': 'Dobrý den, {name},', 'h_p_hello_anon': 'Dobrý den,',
+        'h_p_lede': 'váš kód pro přihlášení na stránku, kde si k účtu <b>{account}</b> nastavíte '
+                    'přihlašování do VPN:',
+        'h_p_lede_anon': 'váš kód pro přihlášení na stránku, kde si nastavíte přihlašování do VPN:',
+        'h_p_facts': 'Zadejte ho na té stránce. Platí {minutes} min a jen jednou.',
+        'h_p_warn': 'Pokud jste se právě nepřihlašovali, kód nikomu nesdělujte a změňte si heslo '
+                    '– někdo ho zná.',
+        'h_p_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
         'ask_mail': 'Zadejte kód, který přišel e-mailem na {dest}',
         'ask_sms': 'Zadejte kód z SMS poslané na {dest}',
         'ask_totp': 'Zadejte kód z aplikace v telefonu',
@@ -10764,6 +10803,22 @@ CODE_TEXTS = {
         'h_s_facts': 'Type it where SSH asks for the code. It is good for {minutes} min and once.',
         'h_s_warn': 'If you are not signing in just now, tell nobody the code - somebody is '
                     'trying your account.',
+        'portal_subject': 'Your code to set up your sign-in: {code}',
+        'portal_body': ('Your code to sign in to the page where you set up your VPN sign-in is'
+                        '\n\n    {code}\n\nIt is good for {minutes} min and once. If you are not '
+                        'signing in just now, tell nobody the code and change your password - '
+                        'somebody knows it.\n\n-- \n{site}'),
+        'portal_sms': '{code} is your code to set up your sign-in ({site}). Good for {minutes} '
+                      'min. Tell nobody.',
+        'h_p_title': 'VPN · Setting up your sign-in',
+        'h_p_hello': 'Hello {name},', 'h_p_hello_anon': 'Hello,',
+        'h_p_lede': 'your code to sign in to the page where you set up the VPN sign-in of '
+                    '<b>{account}</b>:',
+        'h_p_lede_anon': 'your code to sign in to the page where you set up your VPN sign-in:',
+        'h_p_facts': 'Type it on that page. It is good for {minutes} min and once.',
+        'h_p_warn': 'If you are not signing in just now, tell nobody the code and change your '
+                    'password - somebody knows it.',
+        'h_p_foot': 'Sent automatically by {site}. Do not reply to this mail.',
         'h_s_foot': 'Sent automatically by {site}. Do not reply to this mail.',
         'ask_mail': 'Type the code mailed to {dest}',
         'ask_sms': 'Type the code sent by SMS to {dest}',
@@ -10868,17 +10923,43 @@ def code_hash(salt, code):
                     hashlib.sha256).hexdigest()
 
 
-def code_channels():
-    """Which ways of sending can be used at all - set up, not switched off."""
+def code_channels(conf=None):
+    """Which ways of sending can be used at all - set up, not switched off. `conf`: the
+    settings as they would be (1.0.228), else as they are."""
+    c = CONFIG if conf is None else conf
     out = []
-    if (CONFIG.get('mail_mode') or 'off') != 'off' and CONFIG.get('mail_from'):
+    if (c.get('mail_mode') or 'off') != 'off' and c.get('mail_from'):
         out.append('mail')
-    mode = CONFIG.get('sms_mode') or 'off'
-    if (mode == 'http' and CONFIG.get('sms_url')) or \
-            (mode == 'spool' and CONFIG.get('sms_spool_dir')) or \
-            (mode == 'teltonika' and CONFIG.get('sms_tel_host')):
+    mode = c.get('sms_mode') or 'off'
+    if (mode == 'http' and c.get('sms_url')) or \
+            (mode == 'spool' and c.get('sms_spool_dir')) or \
+            (mode == 'teltonika' and c.get('sms_tel_host')):
         out.append('sms')
     return out
+
+
+# A one-time code before the first token on the enrolment pages (1.0.228): which ways, in order.
+PORTAL_FIRST_WAYS = {'mail': ('mail',), 'sms': ('sms',), 'sms_mail': ('sms', 'mail'),
+                     'mail_sms': ('mail', 'sms')}
+FIRST_CODE_KEYS = ('portal_first_code', 'mail_mode', 'mail_from', 'sms_mode', 'sms_url',
+                   'sms_spool_dir', 'sms_tel_host', 'portal')
+
+
+def portal_first_code_problem(conf=None):
+    """Why "a one-time code before the first token" cannot work with these settings, or ''."""
+    c = CONFIG if conf is None else conf
+    ways = PORTAL_FIRST_WAYS.get(str(c.get('portal_first_code') or 'off'))
+    if not ways:
+        return ''
+    have = code_channels(c)
+    if not any(w in have for w in ways):
+        if len(ways) > 1:
+            return ('a one-time code before the first token needs the mail (Settings → Mail) or '
+                    'the SMS gateway (Settings → SMS) set up first')
+        if ways[0] == 'mail':
+            return 'a one-time code before the first token by e-mail needs the mail (Settings → Mail) set up first'
+        return 'a one-time code before the first token by SMS needs the SMS gateway (Settings → SMS) set up first'
+    return ''
 
 
 def realm_methods(realm):
@@ -15251,6 +15332,14 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        if any(k in checked for k in FIRST_CODE_KEYS):
+            # The code before the first token only with a way to send it (1.0.228): switched
+            # on without one, or the mail or the SMS switched off under it, nobody could enrol.
+            after = dict(CONFIG)
+            after.update(checked)
+            why = portal_first_code_problem(after)
+            if why:
+                raise BadSetting(why)
         if 'radius_auth_port' in checked or 'radius_acct_port' in checked:
             # One port for both refused (1.0.206): the sign-ins (or the accounting)
             # stopped there and then, with "saved" on the page.
@@ -19702,6 +19791,29 @@ TEXT_MESSAGES = [
      'title': 'SSH: a sign-in code by SMS',
      'says': 'Sent when somebody signs in over SSH to the nodes with an SSH token by SMS.',
      'fields': [('ssh_sms', 'text', 'The SMS', ('code', 'minutes', 'site'), 'sms')]},
+    # Before the first token on the enrolment pages (1.0.228).
+    {'id': 'portal_mail', 'short': 'The sign-in code by mail', 'kind': 'mail', 'group': 'code',
+     'purpose': 'portal',
+     'title': 'The enrolment pages: a code before the first token, by mail',
+     'says': 'Sent when somebody with no token yet signs in to the enrolment pages, with '
+             '"A one-time code before the first token" on.',
+     'fields': [
+         ('portal_subject', 'line', 'Subject', ('code', 'minutes', 'site'), 'subject'),
+         ('h_p_title', 'line', 'The band at the top', ('site',), 'layout'),
+         ('h_p_hello', 'rich', 'Greeting', ('name',), 'layout'),
+         ('h_p_lede', 'rich', 'What it is', ('account',), 'layout'),
+         ('h_p_facts', 'rich', 'Under the code', ('minutes',), 'layout'),
+         ('h_p_warn', 'rich', 'The warning', (), 'layout'),
+         ('h_p_foot', 'rich', 'The foot', ('site',), 'layout'),
+         ('h_p_hello_anon', 'rich', 'Greeting when the name is not known', (), 'other'),
+         ('h_p_lede_anon', 'rich', 'What it is when the account is not known', (), 'other'),
+         ('portal_body', 'text', 'The plain text version', ('code', 'minutes', 'site'), 'plain'),
+     ]},
+    {'id': 'portal_sms', 'short': 'The sign-in code by SMS', 'kind': 'sms', 'group': 'code',
+     'title': 'The enrolment pages: a code before the first token, by SMS',
+     'says': 'Sent when somebody with no token yet signs in to the enrolment pages, with '
+             '"A one-time code before the first token" on.',
+     'fields': [('portal_sms', 'text', 'The SMS', ('code', 'minutes', 'site'), 'sms')]},
     {'id': 'prompts', 'kind': 'prompt', 'group': 'code', 'title': 'The VPN’s second window',
      'says': 'What the VPN shows when it asks for the code - each at most 253 bytes, as '
              'RADIUS carries it.',
@@ -41462,7 +41574,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
 
 
 # ---- the enrolment pages -------------------------------------------------------------
-def portal_me(h):
+def portal_me(h, gate_ok=False):
     s = h.session('portal')
     if not s:
         raise ApiError(401, 'not signed in, or the sign-in has run out')
@@ -41470,7 +41582,84 @@ def portal_me(h):
     if not CONFIG.get('portal'):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(403, 'enrolling a token here is switched off')
+    # The one-time code before the first token (1.0.228): until it is typed, the sign-in may
+    # do that and nothing else.
+    if portal_gated(s) and not gate_ok:
+        raise ApiError(401, 'type the code that was sent to you first')
     return s
+
+
+def portal_gated(s):
+    """Whether this enrolment sign-in still waits for its one-time code (1.0.228)."""
+    return bool((s.get('data') or {}).get('gate_wait'))
+
+
+def portal_gate_needed(store, tname):
+    """Whether somebody signing in as `tname` needs the one-time code first: switched on, and
+    no token of theirs in use - none at all, or one never proven (pending)."""
+    if not PORTAL_FIRST_WAYS.get(str(CONFIG.get('portal_first_code') or 'off')):
+        return False
+    tok = store.token(tname)
+    return not tok or tok.get('state') == 'pending'
+
+
+def portal_gate_where(entry):
+    """Where the code goes, as the directory has it: (kind, address, ''), or (None, None, why)
+    with why 'nothing' (no way of sending set up) or what the directory lacks."""
+    ways = PORTAL_FIRST_WAYS.get(str(CONFIG.get('portal_first_code') or 'off')) or ()
+    have = code_channels()
+    tried = []
+    for kind in ways:
+        if kind not in have:
+            continue
+        raw = str(entry.get('mail' if kind == 'mail' else 'mobile') or '').strip()
+        if not raw:
+            tried.append('no %s' % ('e-mail address' if kind == 'mail' else 'mobile number'))
+            continue
+        try:
+            return kind, dest_checked(kind, raw), ''
+        except ValueError as e:
+            tried.append('%s %s: %s' % ('the e-mail address' if kind == 'mail' else 'the mobile number',
+                                         raw, e))
+    if not any(k in have for k in ways):
+        return None, None, 'nothing'
+    return None, None, '; '.join(tried) or 'nothing to send it to'
+
+
+def portal_gate_send(h, name, kind, dest, display='', lang=''):
+    """A one-time code sent for the enrolment sign-in: the gate to keep in the session."""
+    key = h.throttle('portal-send', 10 * int(CONFIG.get('code_send_max') or 5),
+                     int(CONFIG.get('code_send_window_min') or 15), name=name, what='codes sent')
+    if not code_send_allowed(h.store, name) or \
+            not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
+        raise ApiError(429, 'too many codes were sent - wait %d min and try again'
+                       % code_send_wait_min(h.store, 'to:%s:%s' % (kind, dest.lower())))
+    h.failed(key)       # a code that goes holds its place
+    code = code_new()
+    lang = lang if lang in ('cs', 'en') else None
+    try:
+        code_send(h.store, kind, dest, code, 'portal', name=name, lang=lang, display=display or '')
+    except (MailError, SmsError) as e:
+        h.store.add_event('enrolment', 'the one-time code for %s to sign in to the enrolment pages '
+                          'could not be sent to %s: %s' % (name, dest, e), 'warn', who=name)
+        raise ApiError(502, 'the code could not be sent: %s' % e)
+    h.store.add_event('enrolment', '%s signed in to the enrolment pages with no token yet: a one-time '
+                      'code went by %s to %s' % (name, 'mail' if kind == 'mail' else 'SMS', dest),
+                      who=name)
+    return {'kind': kind, 'dest': dest, 'code': code_hash(name, code),
+            'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300), 'tries': 0,
+            'lang': lang or ''}
+
+
+def portal_gate_view(s):
+    data = s.get('data') or {}
+    g = data.get('gate') or {}
+    w = data.get('gate_wait') or {}
+    kind = g.get('kind') or w.get('kind')
+    return {'kind': kind, 'dest': dest_masked(kind, g.get('dest') or w.get('dest')),
+            'live': bool(g) and float(g.get('exp') or 0) > time.time(),
+            'digits': int(CONFIG.get('code_digits') or 6),
+            'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60)}
 
 
 # The pictures of the two sign-ins (1.0.71; each its own since 1.0.72):
@@ -41815,6 +42004,23 @@ def _portal_login(h):
             h.store.add_event('enrolment', '%s signed in as %s: the token %s is theirs already'
                               % (full, tname, same), 'warn', who=same)
             tname = same
+    # A one-time code before the first token (1.0.228): to the address or the number the
+    # directory has - the password alone no longer makes anybody a token.
+    gate = None
+    if portal_gate_needed(h.store, tname):
+        kind, dest, why = portal_gate_where(entry)
+        if not kind:
+            if why == 'nothing':
+                h.store.add_event('enrolment', '%s cannot enrol: a one-time code is needed first, '
+                                  'and neither the mail nor the SMS is set up' % tname, 'bad',
+                                  who=tname)
+                raise ApiError(503, 'the code cannot be sent just now - ask the administrator')
+            h.store.add_event('enrolment', '%s cannot enrol here: a one-time code is needed first, '
+                              'and the directory has %s' % (tname, why), 'warn', who=tname)
+            raise ApiError(403, 'the directory has no e-mail address or mobile number of yours to '
+                                'send the code to - ask the administrator')
+        gate = portal_gate_send(h, tname, kind, dest, display=entry.get('display') or '',
+                                lang=str(b.get('lang') or ''))
     token = h.store.session_new('portal', tname, 'portal', h.client_ip(),
                                 max(1, int(CONFIG.get('portal_session_min') or 15)) / 60.0 * 4,
                                 {'display': entry.get('display') or '', 'dn': entry['dn'],
@@ -41831,7 +42037,15 @@ def _portal_login(h):
                                            'expires': entry.get('expires') or None,
                                            'pw_set': entry.get('pw_set') or None,
                                            'groups': let_in[:20],
-                                           'directory': realm.get('directory') or ''}})
+                                           'directory': realm.get('directory') or ''},
+                                 'gate': gate,
+                                 'gate_wait': {'kind': gate['kind'], 'dest': gate['dest']}
+                                 if gate else None})
+    if gate:
+        return {'token': token, 'name': tname,
+                'gate': {'kind': gate['kind'], 'dest': dest_masked(gate['kind'], gate['dest']),
+                         'live': True, 'digits': int(CONFIG.get('code_digits') or 6),
+                         'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60)}}
     h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s'
                       % (tname, h.client_ip()), who=tname)
     return {'token': token, 'name': tname}
@@ -42020,7 +42234,61 @@ def _portal_whoami(h):
         # Switched off meanwhile: nothing more of it shown (1.0.44).
         h.store.session_end(h.headers.get('X-Otp-Session'))
         return {'me': None}
+    if portal_gated(s):
+        # Waiting for its one-time code (1.0.228): nothing of the person shown yet.
+        return {'me': {'name': s['name'], 'gate': portal_gate_view(s)}}
     return {'me': portal_state(h, s)}
+
+
+@route('POST', '/api/portal/gate')
+def _portal_gate(h):
+    """The one-time code before the first token, typed back (1.0.228)."""
+    s = portal_me(h, gate_ok=True)
+    data = s.get('data') or {}
+    if not portal_gated(s):
+        return {'me': portal_state(h, s)}
+    g = data.get('gate') or {}
+    if not g or float(g.get('exp') or 0) < time.time():
+        portal_data_set(h, s, gate=None)
+        raise ApiError(410, 'the code ran out - ask for a new one')
+    key = h.throttle('portal-gate', int(CONFIG.get('code_tries') or 3) + 2,
+                     int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=50,
+                     name_tries=int(CONFIG.get('code_tries') or 3) * 3, what='wrong codes')
+    code = code_typed(h.body().get('code') or '')
+    if not hmac.compare_digest(code_hash(s['name'], code), str(g.get('code') or '')):
+        h.failed(key)
+        last = h.store.session_count_try(s['id'], 'gate', g.get('code'),
+                                         int(CONFIG.get('code_tries') or 3))
+        h.store.add_event('enrolment', '%s typed a wrong one-time code on the enrolment pages%s'
+                          % (s['name'], ' - the last try' if last else ''), 'warn', who=s['name'])
+        if last:
+            raise ApiError(403, 'that was not the code - and it was the last try: ask for a '
+                                'new one')
+        raise ApiError(403, 'that is not the code that was sent')
+    # Taken once: two requests with the right code at once both read it.
+    if not h.store.session_take(s['id'], 'gate'):
+        raise ApiError(409, 'that code was taken already')
+    portal_data_set(h, s, gate_wait=None, gate_ok=time.time())
+    h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s, with the one-time '
+                      'code by %s' % (s['name'], h.client_ip(),
+                                      'mail' if g.get('kind') == 'mail' else 'SMS'), who=s['name'])
+    return {'me': portal_state(h, s)}
+
+
+@route('POST', '/api/portal/gate/again')
+def _portal_gate_again(h):
+    """The one-time code sent again, to where the first one went (1.0.228)."""
+    s = portal_me(h, gate_ok=True)
+    if not portal_gated(s):
+        return {'me': portal_state(h, s)}
+    w = (s.get('data') or {}).get('gate_wait') or {}
+    if w.get('kind') not in code_channels():
+        raise ApiError(503, 'the code cannot be sent just now - ask the administrator')
+    lang = str(h.body().get('lang') or '') or ((s.get('data') or {}).get('gate') or {}).get('lang') or ''
+    gate = portal_gate_send(h, s['name'], w['kind'], w['dest'],
+                            display=(s.get('data') or {}).get('display') or '', lang=lang)
+    portal_data_set(h, s, gate=gate)
+    return {'gate': portal_gate_view(s)}
 
 
 def _picture_for_page(got):
