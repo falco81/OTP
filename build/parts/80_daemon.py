@@ -47,6 +47,11 @@ def token_name_problem(name):
     if not name or len(name) > 180 or not TOKEN_NAME_RE.match(name):
         return ('%r is not a name: a name, or a name@realm - no spaces, commas, semicolons '
                 'or =, 180 characters at most' % str(name)[:60])
+    if '\\' in name:
+        # DOMAIN\\name (1.0.224): RADIUS and the pages read it as name - a token made under it
+        # was found by nobody, and the administrator was told it was made.
+        return ('%r: DOMAIN\\name is looked up as the name alone - make the token for %s'
+                % (str(name)[:60], name.split('\\', 1)[1][:60] or 'the name'))
     return ''
 
 
@@ -262,6 +267,57 @@ def token_restore(store, t, by='restore', replace=False):
         pass
     return 'restored (%s, %d recovery code(s) left)' % (
         {'totp': 'the app', 'mail': 'codes by mail', 'sms': 'codes by SMS'}[kind], len(left))
+
+
+def names_nfc_kept(store):
+    """Once (1.0.224): a token whose name was written with its letters decomposed (Z + ˇ,
+    sent so by a client before 1.0.222) is renamed to the composed form every name is looked
+    up by since 1.0.222 - it was found by nobody any more: not signed in with, not dropped,
+    not backed up. Renamed as the pages rename one: its key and recovery codes sealed again
+    to the new name, its log and what was kept aside under the old name moved with it. A
+    composed name taken already: left, and said. One node does it; the other gets it by
+    replication."""
+    key = 'names:nfc:done'
+    if store.get_meta(key) is not None or not ha_lead(store):
+        return
+    moved = []
+    for r in store.db.rows('SELECT * FROM tokens'):
+        was = str(r.get('name') or '')
+        if was.isascii():
+            continue
+        to = norm_name(was)
+        if to == was:
+            continue
+        if store.db.value('SELECT 1 FROM tokens WHERE name = ?', (to,)):
+            store.add_event('tokens', 'the token %r has the same name as %s written another way - '
+                            'left as it is: drop one of them' % (was, to), 'warn', who='otp (upgrade)')
+            continue
+        old_b, new_b = token_bind(was), token_bind(to)
+        fields = {'name': to}
+        for col in ('secret', 'pending_secret'):
+            if r.get(col):
+                plain = unseal_secret(r[col], old_b)
+                if plain:
+                    fields[col] = seal_secret(plain, new_b)
+        codes = open_codes(r.get('scratch_sealed'), old_b)
+        if codes is not None:
+            fields['scratch'] = json.dumps([scratch_hash(to, c['c']) for c in codes if not c.get('used')])
+            fields['scratch_sealed'] = seal_codes(codes, new_b)
+            fields['scratch_left'] = len(json.loads(fields['scratch']))
+        elif r.get('scratch_left'):
+            fields.update(scratch='[]', scratch_left=0)
+        pend = open_codes(r.get('pending_scratch'), old_b)
+        if pend is not None:
+            fields['pending_scratch'] = seal_codes(pend, new_b)
+        store.db.update('tokens', r['id'], fields)
+        store.db.run('UPDATE otp_log SET name = ? WHERE name = ?', (to, was))
+        for pre in ('disabled_from:', 'staged:', 'mailed:', 'scratchclear:'):
+            store.db.run('UPDATE meta SET k = ? WHERE k = ?', (pre + to, pre + was))
+        moved.append(to)
+    if moved:
+        store.add_event('tokens', 'the names of %d token(s) put in one form of their letters, as they '
+                        'are looked up: %s' % (len(moved), ', '.join(moved[:20])), 'info', who='otp (upgrade)')
+    store.set_meta(key, '1')
 
 
 def names_letters_kept(daemon):
@@ -1448,6 +1504,10 @@ class Daemon(object):
             names_letters_kept(self)
         except Exception as e:                      # noqa: BLE001
             log('the letters names take could not be looked at: %s' % e, 'warn')
+        try:
+            names_nfc_kept(self.store)
+        except Exception as e:                      # noqa: BLE001
+            log('the names of tokens could not be put in one form of their letters: %s' % e, 'warn')
         if not sealing_key():
             # A database that already holds sealed secrets gets no new key in
             # place of a missing one (1.0.33): the secrets would stay lost, and

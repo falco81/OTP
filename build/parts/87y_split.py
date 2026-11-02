@@ -28,7 +28,8 @@ SPLIT_MODES = ('off', 'arbiter', 'priority')
 SPLIT_LOCK = threading.Lock()
 SPLIT = {'thread': None, 'peer_ok_at': 0.0, 'peer_err': '', 'peer_db': None, 'apart_since': 0.0,
          'role': 'serve', 'why': '', 'arb': [], 'arb_state': None, 'arb_at': 0.0,
-         'together_at': 0.0, 'report_due': 0.0, 'written': 0.0, 'started': 0.0, 'gen': 0}
+         'together_at': 0.0, 'report_due': 0.0, 'written': 0.0, 'started': 0.0, 'gen': 0,
+         'last_apart_since': 0.0, 'tidied': 0.0}
 SPLIT_STEP_S = 2.0
 SPLIT_SAY_SCRATCH = ('A recovery code cannot be used while the two servers cannot reach each '
                      'other - use the code of the app')
@@ -339,6 +340,16 @@ def split_step(store, now=None, peer=None, arbiter=None):
             SPLIT.update(apart_since=0.0, role='serve', why='')
             MAINT_CACHE['at'] = 0
         SPLIT['peer_ok_at'] = now
+        # Whatever is chosen here (1.0.224): while the question before a code is let in is
+        # held off - the other node's database did not answer, 20 s to 5 min - it is asked
+        # every 2 s whether it answers again, and the hold is lifted at once. As until now, it
+        # waited out its back-off after the link was back: a code used there was let in here
+        # again for up to 40 s, until the replication caught up. Nothing is asked otherwise.
+        if CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer') and \
+                ONCE_PEER['down_until'] > time.time():
+            p = _split_peer_probe() if peer is None else peer
+            if p is True:
+                once_peer_forget()
         return
     p = _split_peer_probe() if peer is None else peer
     if p is True:
@@ -347,8 +358,9 @@ def split_step(store, now=None, peer=None, arbiter=None):
         # again at once - not after its back-off of up to five minutes, while recovery codes
         # would be refused and codes written down as let in unasked.
         if ONCE_PEER['down_until'] > time.time():
-            with ONCE_PEER_LOCK:
-                ONCE_PEER['down_until'], ONCE_PEER['fails'] = 0.0, 0
+            # Its connections from before closed too (1.0.224): one dead with the link put
+            # the other node down again at its first use.
+            once_peer_forget() if peer is None else ONCE_PEER.update(down_until=0.0, fails=0)
     else:
         SPLIT['peer_err'] = str(p)
     mode = split_mode()
@@ -368,7 +380,8 @@ def split_step(store, now=None, peer=None, arbiter=None):
                      'answered for %d s (%s)' % (now - SPLIT['peer_ok_at'], SPLIT['peer_err']))
     elif not apart and was_apart:
         took = now - SPLIT['apart_since']
-        SPLIT.update(apart_since=0.0, together_at=now, report_due=now + 30)
+        SPLIT.update(apart_since=0.0, together_at=now, report_due=now + 30,
+                     last_apart_since=SPLIT['apart_since'])
         # The connections from before closed (1.0.222): the first question on one dead with
         # the link put the other node down for 20 s more, just after it came back - and codes
         # used there meanwhile were let in here again.
@@ -377,12 +390,20 @@ def split_step(store, now=None, peer=None, arbiter=None):
         log('ha: the other node\'s database answers again - the nodes are together after %s'
             % human_span(took), 'info')
         _split_event(store, 'good', 'the nodes reach each other again, after %s apart' % human_span(took))
-    if apart and p is not True:
+    if p is not True:
         # Known gone (1.0.222): the sign-ins do not wait 1.5 s each to find it out again -
         # one with a NAS's timeout of 1.5 s went to the other node, which had stepped aside.
+        # From the first probe that did not answer (1.0.224), not only once apart.
         with ONCE_PEER_LOCK:
             ONCE_PEER['down_until'] = max(ONCE_PEER['down_until'], time.time() + 5)
-    role, why = split_decide(mode, apart, SPLIT['arb_state'], split_me_preferred())
+    preferred = split_me_preferred()
+    if mode == 'priority' and apart and not preferred:
+        # The preferred node not serving when last heard from (1.0.224) - stepped aside for
+        # its clock, or in maintenance: this node goes on, or nobody answers at all.
+        why_not = split_preferred_unable(store)
+        if why_not:
+            preferred = True
+    role, why = split_decide(mode, apart, SPLIT['arb_state'], preferred)
     if role != SPLIT['role']:
         SPLIT['role'], SPLIT['why'] = role, why
         MAINT_CACHE['at'] = 0                           # RADIUS and the VIP told at once
@@ -401,12 +422,57 @@ def split_step(store, now=None, peer=None, arbiter=None):
             store.set_meta('split:state:' + node_name(), json.dumps(split_state_here(now)))
         except Exception:                               # noqa: BLE001
             pass
-    if SPLIT['report_due'] and now >= SPLIT['report_due'] and not apart:
+    if not apart and not SPLIT['report_due'] and now - SPLIT['tidied'] > 600:
+        # Codes let in unasked in a short outage, never apart (1.0.224): gone after an hour.
+        SPLIT['tidied'] = now
+        try:
+            for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?",
+                                   ('split:took:%s:%%' % node_name(),)):
+                try:
+                    at = float(json.loads(r['v'] or '{}').get('at') or 0)
+                except ValueError:
+                    at = 0
+                if at < now - 3600:
+                    store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+        except Exception:                               # noqa: BLE001
+            pass
+    if SPLIT['report_due'] and now >= SPLIT['report_due'] and not apart and \
+            (peer is not None or split_peer_caught_up(store) or now > SPLIT['report_due'] + 600):
+        # Only once the other node's rows are here (1.0.224): made 30 s after, the
+        # replication was still catching up and the codes let in on both were not found.
         SPLIT['report_due'] = 0.0
         try:
             split_report(store, now)
         except Exception as e:                          # noqa: BLE001
             log('ha: the report of the time apart could not be made: %s' % e, 'warn')
+
+
+def split_preferred_unable(store):
+    """Why the preferred node is known not to serve, or ''."""
+    name = split_preferred_name(store)
+    if not name or name == node_name():
+        return ''
+    try:
+        if (clock_state_of(store, name) or {}).get('role') == 'aside':
+            return 'the preferred node stepped aside for its clock'
+        for n in ha_nodes(store):
+            if n['name'] == name and n.get('maintenance'):
+                return 'the preferred node is in maintenance'
+    except Exception:                                   # noqa: BLE001
+        pass
+    return ''
+
+
+def split_peer_caught_up(store):
+    """Whether the other node's word written after the nodes found each other again is here
+    - its rows written before it came over before it."""
+    for n in ha_nodes(store):
+        if n.get('me'):
+            continue
+        st = _meta_json(store, 'split:state:' + n['name']) or {}
+        if st and not st.get('apart') and float(st.get('at') or 0) > SPLIT['together_at']:
+            return True
+    return False
 
 
 def split_state_here(now=None):
@@ -476,9 +542,10 @@ def split_scratch_refused(store, kind, name, value):
 
 def split_took(store, kind, name, k):
     """A code taken while the other node could not be asked: written down for the report."""
-    if not (split_engaged() and CONFIG.get('split_report')) or not split_apart():
-        # Only while apart (1.0.222): a short outage of the other database wrote rows that
-        # waited for the next real split and were reported under it.
+    if not (split_engaged() and CONFIG.get('split_report')):
+        # Written from the first code the other node could not be asked about (1.0.224: only
+        # once apart, the first 20 s were missing); the report takes only those of its own
+        # time apart, older ones go.
         return
     try:
         store.set_meta('split:took:%s:%s' % (node_name(), k),
@@ -497,6 +564,7 @@ def split_report(store, now=None):
     if not split_me_preferred():
         return None
     by_key, per_node = {}, {}
+    since = float(SPLIT.get('last_apart_since') or 0) - max(5, int(CONFIG.get('split_after_s') or 20)) - 10
     for r in rows:
         parts = r['k'].split(':', 3)
         if len(parts) < 4:
@@ -506,6 +574,8 @@ def split_report(store, now=None):
             v = json.loads(r['v'] or '{}')
         except ValueError:
             v = {}
+        if float(v.get('at') or 0) < since or str(v.get('name') or '').startswith('#'):
+            continue        # a short outage before, or the same code by its token's id
         by_key.setdefault(k, {})[node] = v
         per_node[node] = per_node.get(node, 0) + 1
     twice = []

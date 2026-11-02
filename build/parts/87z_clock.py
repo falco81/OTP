@@ -21,6 +21,7 @@
 CLOCK_MODES = ('off', 'watch', 'guard')
 CLOCK_LOCK = threading.Lock()
 CLOCK = {'thread': None, 'ref': None, 'ref_src': '', 'ref_err': '', 'ref_at': 0.0, 'refs': [],
+         'ref_mono': 0.0, 'ref_wall': 0.0,
          'skew': None, 'skew_err': '', 'skew_at': 0.0, 'skew_of': '', 'dir_ok': None, 'dir_err': '',
          'dir_at': 0.0, 'dirs': [], 'role': 'serve', 'why': '', 'written': 0.0}
 CLOCK_STEP_S = 5.0
@@ -99,7 +100,10 @@ def clock_ref_check(servers):
     got = []
     for srv in servers:
         try:
-            off, delay = sntp_offset(srv)
+            try:
+                off, delay = sntp_offset(srv)
+            except socket.timeout:
+                off, delay = sntp_offset(srv)           # one packet lost: asked again (1.0.224)
             got.append((srv, off, 'delay %.0f ms' % (delay * 1000)))
         except (OSError, ValueError, struct.error, UnicodeError) as e:
             got.append((srv, None, str(e)[:160] or 'no answer'))
@@ -163,7 +167,10 @@ CLOCK_DB_SERVER = 'the database server'
 # ---- the directory -----------------------------------------------------------------------------
 def clock_dir_check(store):
     """(True | False | None, [(directory, reached, words)]): every directory a realm signs in
-    against, reached on one of its servers. None: no realm uses one."""
+    against, reached on one of its servers - connected, its TLS made, and its reading account
+    let in (1.0.224: a TCP connect alone took a server that takes the connection and never
+    answers, or that refuses the reading account, for well - and the other node was then
+    left the sign-ins it could not answer either). None: no realm uses one."""
     used = set()
     try:
         for r in store.realms():
@@ -172,31 +179,29 @@ def clock_dir_check(store):
     except Exception:                                   # noqa: BLE001
         return None, []
     out = []
-    for d in store.directories():
-        if str(d.get('name') or '').lower() not in used or not d.get('enabled', 1):
+    for row in store.directories(with_secret=True):
+        if str(row.get('name') or '').lower() not in used or not row.get('enabled', 1):
             continue
-        port_d = int(d.get('port') or (636 if str(d.get('tls') or '') == 'ldaps' else 389))
-        hosts = [h for h in re.split(r'[\s,;]+', str(d.get('hosts') or '')) if h]
-        reached, words = False, 'no server given'
-        for h in hosts[:6]:
-            host, port = h, port_d
-            if h.count(':') == 1:
-                host, p = h.rsplit(':', 1)
-                port = int(p) if p.isdigit() else port_d
+        try:
+            ad = Directory(row)
+            ad.timeout = min(float(ad.timeout or 10), 3.0)
+            ad.DEAD = {}                                # its own: RADIUS's passed-over list untouched
+            link = ad.link()
             try:
-                with socket.create_connection((host.strip('[]'), port), timeout=2):
-                    reached, words = True, '%s:%d' % (host, port)
-                    break
-            except OSError as e:
-                words = '%s:%d %s' % (host, port, str(e)[:80])
-        out.append((d['name'], reached, words))
+                words = str(getattr(link, 'otp_host', '') or 'reached')
+            finally:
+                link.close()
+            out.append((row['name'], True, words))
+        except (LdapError, OSError, ValueError) as e:
+            out.append((row['name'], False, str(e)[:160]))
     if not out:
         return None, out
     return all(x[1] for x in out), out
 
 
 # ---- the decision ----------------------------------------------------------------------------
-def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer):
+def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer, aside_now=False,
+                 back_s=None, peer_newer=True):
     """('serve' | 'aside', why). `peer`: the other node's state row as known here (None when
     not heard from) - a node steps aside only for one that is well: fresh, serving, its clock
     within aside_s of the reference, and (for the directory) reaching it."""
@@ -204,10 +209,15 @@ def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer):
         return 'serve', ''
     peer_well = bool(peer) and peer.get('fresh') and peer.get('role') == 'serve' and \
         not peer.get('maintenance')
-    clock_bad = ref is not None and abs(ref) > aside_s and not codes_fixed
+    # Back only below aside_s less the warning (1.0.224): a clock wobbling about the limit
+    # moved the VIP address eight times in four minutes.
+    limit = (back_s if back_s is not None else aside_s) if aside_now else aside_s
+    clock_bad = ref is not None and abs(ref) > limit and not codes_fixed
     if clock_bad:
         pr = (peer or {}).get('ref')
-        if peer_well and pr is not None and abs(pr) <= aside_s:
+        # The other node's word measured after this node's own (1.0.224), or already aside:
+        # both clocks off alike, the first to measure stepped aside on the other's old word.
+        if peer_well and pr is not None and abs(pr) <= aside_s and (peer_newer or aside_now):
             return 'aside', 'this node\'s clock is %+.1f s off the time servers - the other node answers' % (-ref)
         return 'serve', 'this node\'s clock is off, but the other node cannot take over - it answers'
     if health_dir and dir_ok is False:
@@ -228,8 +238,10 @@ def clock_dir_failover(store):
         p = clock_peer_row(store)
     except Exception:                                   # noqa: BLE001
         return ''
+    # The other node known to reach it (1.0.224), not only "not known not to": both nodes
+    # without it, neither should leave the sign-ins to the other.
     if not p or not p.get('fresh') or p.get('role') != 'serve' or p.get('maintenance') or \
-            p.get('dir_ok') is False:
+            p.get('dir_ok') is not True:
         return ''
     return 'the directory cannot be reached from this node - the other node answers'
 
@@ -242,11 +254,27 @@ def clock_correction():
     """Seconds to add to this machine's clock, by the reference - 0 when not known, not fresh,
     or within clock_warn_s."""
     ref = CLOCK['ref']
-    if ref is None or time.time() - CLOCK['ref_at'] > CLOCK_FRESH_S * 2:
+    # Aged by the monotonic clock (1.0.224), and dropped when the machine's clock was stepped
+    # since it was measured: put right (chronyc makestep, by hand), the old correction was
+    # added to a clock right again - every code refused for minutes.
+    if ref is None or time.monotonic() - CLOCK['ref_mono'] > CLOCK_FRESH_S * 2 or clock_stepped():
         return 0.0
     if abs(ref) <= float(CONFIG.get('clock_warn_s') or 2):
         return 0.0
     return ref
+
+
+def clock_stepped():
+    """Whether the machine's clock moved by more than a second, against the monotonic one,
+    since the reference was measured."""
+    if not CLOCK['ref_mono']:
+        return False
+    return abs((time.time() - time.monotonic()) - CLOCK['ref_wall']) > 1.0
+
+
+def clock_ref_noted():
+    CLOCK['ref_mono'] = time.monotonic()
+    CLOCK['ref_wall'] = time.time() - CLOCK['ref_mono']
 
 
 def clock_now(kind='codes'):
@@ -329,8 +357,12 @@ def clock_peer_row(store, now=None):
             return None
         sk = clock_skew_of(store, n['name'])
         at = float(row.get('at') or 0) - (sk or 0.0)
-        row['fresh'] = now - at < 60
+        # Its row is written every 10 s (1.0.224: 60 s, and a node aside for its clock stayed
+        # silent a minute after the other died), and its heartbeat alive.
+        row['fresh'] = now - at < 25 and bool(n.get('alive'))
         row['maintenance'] = bool(n.get('maintenance'))
+        if row.get('ref_at') != CLOCK.get('peer_ref_at'):
+            CLOCK['peer_ref_at'], CLOCK['peer_ref_seen'] = row.get('ref_at'), time.monotonic()
         return row
     return None
 
@@ -345,18 +377,29 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         # Nothing kept from the time it ran (1.0.223): switched off, the card showed the last
         # measurements as if they were now.
         if CLOCK['ref_at'] or CLOCK['skew_at'] or CLOCK['dir_at']:
-            CLOCK.update(ref=None, ref_at=0.0, ref_src='', ref_err='', refs=[], skew=None,
+            CLOCK.update(ref=None, ref_at=0.0, ref_mono=0.0, ref_wall=0.0, ref_src='', ref_err='', refs=[], skew=None,
                          skew_at=0.0, skew_of='', skew_err='', dir_ok=None, dirs=[], dir_at=0.0)
         return
     if ref is not None:
         CLOCK.update(ref=None if ref == 'none' else ref, ref_at=now, ref_src='test', ref_err='')
-    elif now - CLOCK['ref_at'] > CLOCK_REF_EVERY_S:
+        clock_ref_noted()
+    elif time.monotonic() - CLOCK['ref_mono'] > CLOCK_REF_EVERY_S or not CLOCK['ref_mono'] or \
+            clock_stepped() or CLOCK.pop('measure_now', False):
         servers = clock_ref_servers(store=store)
         got, med = clock_ref_check(servers) if servers else ([], None)
-        CLOCK.update(refs=got, ref=med, ref_at=now, ref_src=', '.join(servers),
-                     ref_err='' if med is not None else (
-                         'no time server given (Settings -> Time, or this node\'s own)' if not servers
-                         else 'no time server answered'))
+        if med is None and servers and CLOCK['ref'] is not None and not clock_stepped() and \
+                time.monotonic() - CLOCK['ref_mono'] < CLOCK_FRESH_S * 2:
+            # One answer lost (1.0.224): the last measurement kept until it is too old - not
+            # thrown away at once, the node serving again with a clock it knew was off.
+            CLOCK.update(refs=got, ref_err='no time server answered just now - the last '
+                                           'measurement is used')
+            CLOCK['ref_tried'] = time.monotonic()
+        else:
+            CLOCK.update(refs=got, ref=med, ref_at=now, ref_src=', '.join(servers),
+                         ref_err='' if med is not None else (
+                             'no time server given (Settings -> Time, or this node\'s own)' if not servers
+                             else 'no time server answered'))
+            clock_ref_noted()
     if skew is not None:
         of, val = skew if isinstance(skew, tuple) else ('test-peer', skew)
         CLOCK.update(skew=None if val == 'none' else val, skew_at=now, skew_of=of, skew_err='')
@@ -373,9 +416,14 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         ok, dirs = clock_dir_check(store)
         CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now)
     p = clock_peer_row(store, now) if peer is None else (None if peer == 'none' else peer)
-    role, why = clock_decide(clock_mode(), CLOCK['ref'], float(CONFIG.get('clock_aside_s') or 20),
+    aside_s = float(CONFIG.get('clock_aside_s') or 20)
+    role, why = clock_decide(clock_mode(), CLOCK['ref'], aside_s,
                              bool(CONFIG.get('clock_codes')) and CLOCK['ref'] is not None,
-                             CLOCK['dir_ok'], bool(CONFIG.get('health_dir')), p)
+                             CLOCK['dir_ok'], bool(CONFIG.get('health_dir')), p,
+                             aside_now=CLOCK['role'] == 'aside',
+                             back_s=max(1.0, aside_s - float(CONFIG.get('clock_warn_s') or 2)),
+                             peer_newer=peer is not None or
+                             CLOCK.get('peer_ref_seen', 0.0) >= CLOCK['ref_mono'])
     if role != CLOCK['role']:
         CLOCK['role'], CLOCK['why'] = role, why
         MAINT_CACHE['at'] = 0

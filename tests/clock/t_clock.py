@@ -52,7 +52,7 @@ silent = FakeNtp(0.0).start(); silent.silent = True
 t0 = time.time()
 got, med = otp.clock_ref_check(['127.0.0.1:%d' % silent.port])
 ok('SNTP: a silent server - no answer within the time (%.1f s), no offset' % (time.time() - t0),
-   med is None and time.time() - t0 < 3)
+   med is None and time.time() - t0 < 4)
 three = [FakeNtp(o).start() for o in (0.0, 0.2, 500.0)]
 got, med = otp.clock_ref_check(['127.0.0.1:%d' % x.port for x in three])
 ok('the reference: the median of three servers - one gone wild does not move it (%.2f)' % med,
@@ -86,6 +86,15 @@ ok('directory: unreachable here, reached there - aside (health_dir)', dec('guard
 ok('... without health_dir: answers', dec('guard', 0, 20, False, False, False, well)[0] == 'serve')
 ok('... unreachable on both: answers', dec('guard', 0, 20, False, False, True, dict(well, dir_ok=False))[0] == 'serve')
 ok('... no realm uses a directory (None): answers', dec('guard', 0, 20, False, None, True, well)[0] == 'serve')
+
+# ---- 1.0.224: hysteresis, the other node's word newer, one answer lost, the other node dead -----
+ok('aside at 25 s off (limit 20)', dec('guard', 25, 20, False, None, False, well)[0] == 'aside')
+ok('... once aside: still aside at 19 s (back only below 18 s)',
+   dec('guard', 19, 20, False, None, False, well, aside_now=True, back_s=18)[0] == 'aside')
+ok('... back at 17 s', dec('guard', 17, 20, False, None, False, well, aside_now=True, back_s=18)[0] == 'serve')
+ok('the other node\'s word older than this node\'s measurement: not aside yet (both may be off alike)',
+   dec('guard', 300, 20, False, None, False, well, peer_newer=False)[0] == 'serve')
+ok('... newer: aside', dec('guard', 300, 20, False, None, False, well, peer_newer=True)[0] == 'aside')
 
 # ---- "as until now": nothing of it ------------------------------------------------------------
 ok('the default is off ("as until now")', otp.DEFAULTS['clock_mode'] == 'off' and not otp.clock_engaged())
@@ -147,9 +156,16 @@ st.db.run("UPDATE tokens SET fail_times = '[]', failures = 0, last_step = 0 WHER
 otp.CONFIG['clock_warn_s'] = 400
 ok('within clock_warn_s: no correction (a small offset is not "fixed")', otp.clock_correction() == 0.0)
 otp.CONFIG['clock_warn_s'] = 2
-otp.CLOCK['ref_at'] = time.time() - 1000
+m0 = otp.CLOCK['ref_mono']
+otp.CLOCK['ref_mono'] = time.monotonic() - 1000
 ok('a reference not fresh: no correction', otp.clock_correction() == 0.0)
-otp.CLOCK['ref_at'] = time.time()
+otp.CLOCK['ref_mono'] = m0
+ok('fresh again: corrected', otp.clock_correction() != 0.0)
+otp.CLOCK['ref_wall'] -= 300                              # the machine's clock stepped since
+ok('the machine\'s clock stepped since it was measured (put right by hand): no correction (1.0.224)',
+   otp.clock_correction() == 0.0 and otp.clock_stepped())
+otp.clock_step(st, ref=300.0)
+ok('... measured again: corrected again', otp.clock_correction() != 0.0 and not otp.clock_stepped())
 otp.CONFIG['clock_locks'] = 1
 ok('clock_locks: pauses and lockouts by the corrected time', abs(otp.clock_now('locks') - time.time() - 300) < 1)
 otp.CONFIG.update(clock_codes=0, clock_locks=0)
@@ -201,11 +217,32 @@ otp.clock_step(st, ref=300.0, skew='none', peer=peer_ok)
 ok('with clock_codes: never aside for the clock - its codes are right', not otp.clock_aside())
 otp.CONFIG['clock_codes'] = 0
 # the peer row read from the database (with its freshness by the measured difference)
-st.set_meta('clock:state:ckb', json.dumps({'at': time.time() - 300, 'role': 'serve', 'ref': 0.0, 'dir_ok': True}))
-otp.clock_step(st, ref=300.0, skew=('ckb', -300.0))
+st.set_meta('node:ckb', json.dumps({'at': time.time()}))             # its heartbeat alive
+otp.clock_step(st, ref=300.0, skew=('ckb', -300.0), peer='none')
+st.set_meta('clock:state:ckb', json.dumps({'at': time.time() - 300, 'role': 'serve', 'ref': 0.0, 'dir_ok': True,
+                                           'ref_at': time.time() - 290}))   # measured after this node
+otp.clock_step(st, skew=('ckb', -300.0))
 ok('the other node\'s row 300 s "old" by its clock 300 s behind: fresh - aside', otp.clock_aside())
 otp.clock_step(st, ref=300.0, skew=('ckb', 0.0))
 ok('... the same row with the clocks alike: not fresh - answers', not otp.clock_aside())
+
+# one answer of the reference lost: the last measurement kept
+silent2 = FakeNtp(0.0).start(); silent2.silent = True
+otp.CONFIG['clock_ref'] = '127.0.0.1:%d' % silent2.port
+otp.clock_step(st, ref=300.0, skew='none', peer=peer_ok)
+otp.CLOCK['measure_now'] = True
+otp.clock_step(st, skew='none', peer=peer_ok)
+ok('the reference silent once: the last measurement kept, still aside (%s)' % otp.CLOCK['ref_err'][:40],
+   otp.CLOCK['ref'] == 300.0 and otp.clock_aside())
+otp.CONFIG['clock_ref'] = ''
+silent2.close()
+# the other node dead: its heartbeat gone - this node answers again at once
+st.set_meta('clock:state:ckb', json.dumps({'at': time.time(), 'role': 'serve', 'ref': 0.0, 'dir_ok': True,
+                                           'ref_at': time.time()}))
+st.set_meta('node:ckb', json.dumps({'at': time.time() - 120}))
+otp.clock_step(st, ref=300.0, skew=('ckb', 0.0))
+ok('the other node\'s heartbeat gone (its row still 0 s old): this node answers', not otp.clock_aside())
+st.set_meta('node:ckb', json.dumps({'at': time.time()}))
 
 # ---- the directory -----------------------------------------------------------------------------
 lst = socket.socket(); lst.bind(('127.0.0.1', 0)); lst.listen(5)

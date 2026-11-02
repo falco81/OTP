@@ -51,7 +51,7 @@ def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', wind
     at a time, so that when two would do the nearest one is the answer.
     Compared in constant time, every one of them.
     """
-    code = re.sub(r'\s', '', str(code or ''))
+    code = re.sub(r'[\s-]', '', str(code or ''))     # "123-456" too (1.0.224)
     if not re.fullmatch(r'[0-9]+', code, re.ASCII) or len(code) != int(digits):
         return None
     if isinstance(key, str):

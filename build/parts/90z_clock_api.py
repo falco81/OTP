@@ -59,7 +59,8 @@ def _clock_post(h):
         h.d.save_settings(want, by=s['name'], node='*' if many else None)
     for n, v in refs.items():
         h.d.save_settings({'clock_ref': v}, by=s['name'], node=n)
-    CLOCK['ref_at'] = 0.0                               # asked again at the next look
+    CLOCK['measure_now'] = True                         # asked again at the next look, the
+    # last measurement kept meanwhile (1.0.224: thrown away, codes went uncorrected for 5 s)
     h.store.add_event('settings', '%s chose what the nodes do about their clocks: %s' % (
         s['name'], ', '.join('%s=%s' % kv for kv in sorted(want.items())) or 'reference servers'),
         'warn', who=s['name'])

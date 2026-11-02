@@ -160,8 +160,8 @@ otp.CONFIG.update(split_report=1)
 code2 = g['scratch'][1]
 # Written down only while apart (1.0.222): first a short outage of the other database, together.
 got0 = tk.check('ana', g['scratch'][2], how='t')
-ok('together, the other node not asked this moment: let in, not written down (a short outage)',
-   got0[0] is True and not st.db.rows("SELECT k FROM meta WHERE k LIKE 'split:took:%'"))
+ok('together, the other node not asked this moment: let in, written down (1.0.224: from the first one)',
+   got0[0] is True and st.db.rows("SELECT k FROM meta WHERE k LIKE 'split:took:%'"))
 otp.SPLIT['apart_since'] = 1350.0                         # apart now
 got = tk.check('ana', code2, how='t')
 otp.SPLIT['apart_since'] = 0.0

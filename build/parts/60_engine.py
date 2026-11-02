@@ -86,6 +86,9 @@ class Directory(object):
     BUSY_LOCK = threading.Lock()
     BUSY_FREED = threading.Condition(BUSY_LOCK)
     BUSY_WAIT_S = 2.0
+    BUSY_TOOK = {}                  # how long a request held it lately, by directory (1.0.224)
+    BUSY_WAITING = {}
+    BUSY_QUICK_S = 0.5
 
     @contextlib.contextmanager
     def held(self):
@@ -100,7 +103,13 @@ class Directory(object):
         # came at once. One that is really slow still holds no more than its half - the
         # wait is short and the realms of the code alone keep the rest.
         until = time.monotonic() + min(self.BUSY_WAIT_S, float(getattr(self, 'timeout', 0) or 10))
+        # Waited for only while the directory answers quickly (1.0.224): a worker waiting is a
+        # worker taken from everybody, and with a directory slow the realms of the code alone
+        # waited behind them again - refused at once then, as before 1.0.222. And no more
+        # waiting than a quarter of the workers.
+        quick = self.BUSY_TOOK.get(key, 0.0) < self.BUSY_QUICK_S
         with self.BUSY_FREED:
+            waited = False
             while True:
                 n = self.BUSY.get(key, 0)
                 # Every directory together too (1.0.186): two of them listed (the
@@ -110,19 +119,36 @@ class Directory(object):
                 if n < most and total < max(2, workers - 4):
                     break
                 left = until - time.monotonic()
-                if left <= 0:
+                if left <= 0 or not quick or (not waited and sum(self.BUSY_WAITING.values()) >=
+                                              max(1, workers // 4)):
                     if n >= most:
-                        raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
-                                              'this one is not added to them' % (self.name, n))
-                    raise LdapUnreachable('the directories are answering slowly: %d requests wait '
-                                          'on them already - this one is not added to them' % total)
-                self.BUSY_FREED.wait(left)
+                        e = LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
+                                            'this one is not added to them' % (self.name, n))
+                    else:
+                        e = LdapUnreachable('the directories are answering slowly: %d requests wait '
+                                            'on them already - this one is not added to them' % total)
+                    e.held = True       # this node's own limit - not the directory gone (1.0.224)
+                    raise e
+                if not waited:
+                    waited = True
+                    self.BUSY_WAITING[key] = self.BUSY_WAITING.get(key, 0) + 1
+                try:
+                    self.BUSY_FREED.wait(left)
+                except BaseException:
+                    self.BUSY_WAITING[key] = max(0, self.BUSY_WAITING.get(key, 1) - 1)
+                    raise
+            if waited:
+                self.BUSY_WAITING[key] = max(0, self.BUSY_WAITING.get(key, 1) - 1)
             self.BUSY[key] = n + 1
+        began = time.monotonic()
         try:
             yield
         finally:
+            took = time.monotonic() - began
             with self.BUSY_FREED:
                 self.BUSY[key] = max(0, self.BUSY.get(key, 1) - 1)
+                was = self.BUSY_TOOK.get(key)
+                self.BUSY_TOOK[key] = took if was is None else was * 0.7 + took * 0.3
                 self.BUSY_FREED.notify_all()
 
     def _order(self):
@@ -184,6 +210,7 @@ class Directory(object):
                         refused = LdapUnreachable('the account this reads the directory with '
                                                   '(%s) was refused by %s: %s'
                                                   % (self.bind_dn, h, e), e.code, e.detail)
+                        refused.refused = True      # the directory's answer, everywhere the same
                         break
                 self.last_good = host
                 self._up(host)
@@ -1006,8 +1033,29 @@ class Tokens(object):
             # (1.0.59) - the phone answering with the old account is the
             # usual wrong code here. They are counted against the waiting key:
             # past the lockout count it is thrown away, to be made again.
-            shape['fail_times'] = fails + [t]
-            shape['fails'] = int(shape.get('fails') or 0) + 1
+            # Counted by a conditional write (1.0.224), as a token's own wrong codes are: two
+            # nodes reading the count and writing it back lost half of them.
+            k = 'staged:' + name
+            for _round in range(20):
+                raw = self.store.get_meta(k, '') or ''
+                now_shape = dict(self.staged_shape(name))
+                was_fails = [float(x) for x in now_shape.get('fail_times') or []
+                             if isinstance(x, (int, float))]
+                now_shape['fail_times'] = [x for x in was_fails if abs(t - x) < int(
+                    CONFIG.get('rate_limit_s') or 30)] + [t]
+                now_shape['fails'] = int(now_shape.get('fails') or 0) + 1
+                if not raw:
+                    shape = now_shape
+                    break
+                if self.store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?',
+                                     (json.dumps(now_shape), k, raw)):
+                    shape = now_shape
+                    break
+                time.sleep(random.random() * 0.01)
+            else:
+                shape['fail_times'] = fails + [t]
+                shape['fails'] = int(shape.get('fails') or 0) + 1
+            written = bool(raw) and shape is now_shape
             after = split_limit('lockout_after')
             if after and shape['fails'] >= after:
                 self.drop_staged(name)
@@ -1015,7 +1063,8 @@ class Tokens(object):
                            'the new key is thrown away)', how, src, '')
                 return False, (SAY_BAD + '. Too many wrong codes: the new key was thrown '
                                'away - the token in use goes on working; make a new one.')
-            self.store.set_meta('staged:' + name, json.dumps(shape))
+            if not written:
+                self.store.set_meta('staged:' + name, json.dumps(shape))
             self._said(name, False, SAY_BAD + ' (confirming a new token)', how, src, '')
             return False, SAY_BAD + '. ' + self.why_wrong(secret, code, shape)
         if step is None:
@@ -1054,7 +1103,18 @@ class Tokens(object):
                            'issuer': shape['issuer'],
                            # The old key's use is not the new one's (1.0.36).
                            'last_used': None, 'last_from': '', 'last_how': ''})
-        self.store.token_update(tok['id'], fields)
+        # Only onto the key that was proven (1.0.224): a new key made meanwhile on the other
+        # node (the pages open on both, "start again" in one) was made the one in use - the
+        # person was told "confirmed", and every code of the phone refused after.
+        cols = sorted(fields)
+        guard, args = ('pending_secret = ?', tok.get('pending_secret')) if staged else \
+            ('secret = ?', tok.get('secret'))
+        won = self.store.db.run('UPDATE tokens SET %s WHERE id = ? AND %s' % (
+            ', '.join('%s = ?' % c for c in cols), guard),
+            tuple(fields[c] for c in cols) + (tok['id'], args))
+        if not won:
+            self._said(name, False, 'The key changed meanwhile (confirming a new token)', how, src, '')
+            return False, 'the key changed meanwhile - start again'
         if staged:
             self._staged_forget(name)
         self._said(name, True, 'Token confirmed', how, src, '')
@@ -1413,10 +1473,21 @@ class Tokens(object):
                             # The key itself replaced meanwhile (1.0.222): the old key's step
                             # written onto the new one let the old code in and refused the new
                             # key's codes as used - for decades, with another period.
-                            if self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
-                                                   (tok['id'],)) != tok.get('secret'):
-                                return False, SAY_BAD, facts
-                            return False, SAY_REUSED, facts
+                            now_sealed = self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
+                                                             (tok['id'],))
+                            if now_sealed != tok.get('secret'):
+                                # ...or only sealed again, the same key (1.0.224: a node binding
+                                # its tokens at start) - a right code was refused.
+                                if not now_sealed or unseal_secret(
+                                        now_sealed, token_bind(tok.get('name'))) != secret:
+                                    return False, SAY_BAD, facts
+                                won = self.store.db.run(
+                                    'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
+                                    "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
+                                    'COALESCE(last_step, 0) < ? AND secret = ?',
+                                    (step, t, tok['id'], step, now_sealed))
+                            if not won:
+                                return False, SAY_REUSED, facts
                         if not once_take(self.store, 'step', name, once_v, peer=False):
                             return False, SAY_REUSED, facts
                         # By the token's id as well (1.0.214): renamed on the other node meanwhile,

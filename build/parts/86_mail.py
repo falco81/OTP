@@ -968,7 +968,7 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
         if part.strip():
             text += [part, '']
     text += ['1. ' + plain('step1'), '2. ' + plain('step2') + ' (QR)', '3. ' + plain('step3'),
-             '', '   ' + key, '', plain('facts'), '']
+             '', '   ' + key, '', plain('facts') + html.unescape(_algo_said(picture)), '']
     if pending and w['pending'].strip():
         text += [plain('pending') + (' ' + portal_url if portal_url else ''), '']
     if codes:

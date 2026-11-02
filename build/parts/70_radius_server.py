@@ -185,6 +185,10 @@ class Authenticator(object):
         (corp.cz. is corp.cz) and a name with nothing before its @ is no
         name at all (1.0.33)."""
         said = str(user or '').strip()
+        if not said.isascii():
+            # One form of the letters (1.0.224), as the token's name has been since 1.0.222:
+            # sent decomposed, the directory found nobody.
+            said = unicodedata.normalize('NFC', said)
         if said.count('@') > 1:
             # novak@foo@x.cz (1.0.101): the realm by the last @, the account
             # by the first - and a token under the rest, a second one for the
@@ -220,18 +224,40 @@ class Authenticator(object):
         # novak@dpmo.cz where dpmo.local is another suffix of the realm.
         return norm_name(realm_main_name(user, realm))
 
-    def ldap_gone(self, d):
+    def ldap_gone(self, d, e=None):
         """The directory cannot be reached from here. Refused, as before - or, with "Step
         aside when the directory cannot be reached" and the other node well (1.0.223), left
         unanswered: a refusal is the VPN's last word, no answer makes it ask the other node
         (or the VIP address once it has moved) at once, not after the 15 s of the watch.
         Nothing was used up yet: the directory is asked before the code."""
-        why = clock_dir_failover(self.store)
+        # Not for this node's own limit (a directory busy here), nor for the reading account
+        # refused - the directory's own answer, the same on the other node (1.0.224).
+        why = '' if getattr(e, 'held', False) or getattr(e, 'refused', False) else \
+            clock_dir_failover(self.store)
         if why:
             d.silent = why
         return d.refuse('LDAP server(s) have gone away')
 
-    def same_person(self, user, realm):
+    @staticmethod
+    def alias_clash(ad, typed, tname, entry):
+        """Words when the token `tname` - the typed name under the realm's main suffix
+        (1.0.117) - is another account's userPrincipalName than the one signing in, else ''
+        (1.0.224): xavier@corpnet.example (Yvonne's UPN) took the token xavier@corpnet.cz,
+        Xavier's, and Yvonne signed in as Xavier with her own phone."""
+        if not tname or norm_name(tname) == norm_name(typed):
+            return ''
+        try:
+            # Kept under the bare name: that is an account name to a realm of plain names.
+            other = ad.find_user(tname, 'upn' if '@' in str(tname) else 'sam')
+        except LdapError:
+            return ''
+        if other and not other.get('many') and \
+                str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
+            return ('%s is another account in the directory than %s - a suffix of the realm '
+                    'that names two people differently' % (tname, typed))
+        return ''
+
+    def same_person(self, user, realm, gone=None):
         """The name of the token the directory entry of `user` already has under another
         spelling ('' when none, or when the directory cannot be asked now - the sign-in
         then goes on as it would have)."""
@@ -243,14 +269,43 @@ class Authenticator(object):
             lookup = 'upn' if '@' in user else 'sam'
         try:
             entry = self.find_person(ad, user, lookup, realm)
-        except LdapError:
+        except LdapError as e:
+            if gone is not None and isinstance(e, LdapUnreachable):
+                gone.append(e)      # the directory not reached: said by the caller (1.0.224)
             return ''
         if not entry or entry.get('many'):
             return ''
+        return self.same_entry(realm, entry)
+
+    def same_entry(self, realm, entry, unproven=False):
+        """The token the directory entry has under another spelling, proven its own (by its
+        DN), or ''. Used by RADIUS and the enrolment pages alike (1.0.224)."""
         try:
-            return portal_same_person(self.store, realm, entry) or ''
+            cand = portal_same_person(self.store, realm, entry) or ''
         except Exception:                               # noqa: BLE001
             return ''
+        if not cand:
+            return ''
+        # And proven the same entry (1.0.224): the token's own name, looked up as its own realm
+        # reads names, must find this very account - by its DN. Nothing taken on the spelling
+        # of a name alone.
+        try:
+            r2 = self.store.realm_for(cand)
+            ad2 = self.directory((r2 or {}).get('directory'))
+            if not r2 or not ad2:
+                return ''
+            how2 = r2.get('lookup') or ''
+            if how2 not in ('upn', 'sam'):
+                how2 = 'upn' if '@' in cand else 'sam'
+            other = self.find_person(ad2, cand, how2, r2)
+        except LdapError:
+            # Not proven either way: RADIUS lets nobody in on it; the enrolment pages
+            # (unproven=True) keep the token as the person's, and make no second one.
+            return cand if unproven else ''
+        if not other or other.get('many') or \
+                str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
+            return ''
+        return cand
 
     @classmethod
     def token_for(cls, store, user, realm):
@@ -352,7 +407,14 @@ class Authenticator(object):
             # same account - and would make no other; here the name typed found nothing,
             # and he was refused for good. The same entry, the same rule
             # (portal_same_person). Only for a name with no token of its own.
-            same = self.same_person(d.user, realm)
+            gone = []
+            same = self.same_person(d.user, realm, gone)
+            if gone:
+                # Not found because the directory was not reached (1.0.224): a realm of the
+                # second window refused it as "no token" - an answer, and a wrong sign-in
+                # counted against the VPN's address. As the directory's lookup below would.
+                d.step('look %s up in %s' % (d.user, realm.get('directory')), False, str(gone[0]))
+                return self.ldap_gone(d, gone[0])
             if same:
                 d.token_name, found_how = same, 'the same account in the directory, its token %s' % same
         if d.token_name != norm_name(d.user):
@@ -415,6 +477,12 @@ class Authenticator(object):
             for ln in range(6, 13):
                 if ln not in (digits, sd) and len(password) > ln:
                     splits.append((password[-ln:], password[:-ln]))
+            # Digits only (1.0.224): a code is stripped of dashes since 1.0.222, and
+            # "Heslo-" + a 7-digit recovery code split as "Heslo" + "-1234567" - the password
+            # cut short went to the directory, and the code was never found.
+            digits_only = [x for x in splits if x[0].isascii() and x[0].isdigit()]
+            if digits_only:
+                splits = digits_only
             if not splits:
                 d.step('the code', False, 'nothing after the password looks like a code')
                 d.otp = SAY_BAD
@@ -467,7 +535,7 @@ class Authenticator(object):
             except LdapError as e:
                 d.step('look %s up in %s' % (d.user, ad.name), False, str(e), t)
                 if isinstance(e, LdapUnreachable):
-                    return self.ldap_gone(d)
+                    return self.ldap_gone(d, e)
                 return d.refuse('the directory could not be asked: %s' % e)
             if not entry:
                 d.step('look %s up in %s' % (d.user, ad.name), False,
@@ -486,6 +554,10 @@ class Authenticator(object):
                 return d.refuse('more than one account in %s answers to %s'
                                 % (ad.name, d.user))
             d.step('found %s' % entry['dn'], True, entry.get('display') or '', t)
+            clash = self.alias_clash(ad, d.user, d.token_name, entry)
+            if clash:
+                d.step('the token %s' % d.token_name, False, clash)
+                return d.refuse('the token server: ' + clash)
             if realm.get('check_disabled', 1):
                 why = entry_unusable(entry)
                 if why:
@@ -524,7 +596,7 @@ class Authenticator(object):
                         scratch_guard_note(self.store, d.token_name,
                                            getattr(REQUEST_PLACE, 'v', ''))
                     if isinstance(e, LdapUnreachable):
-                        return self.ldap_gone(d)
+                        return self.ldap_gone(d, e)
                     return d.refuse('the directory refused the password: %s' % e)
             wanted = realm.get('groups') or []
             if wanted:
@@ -533,12 +605,18 @@ class Authenticator(object):
                     have = ad.groups_of(entry, bool(realm.get('nested', 1)))
                 except LdapError as e:
                     d.step('the groups of %s' % d.user, False, str(e), t)
-                    return self.ldap_gone(d)
+                    # Only the directory not reached (1.0.224): its own answer - no rights to
+                    # read the groups, say - is refused and answered, as before.
+                    if isinstance(e, LdapUnreachable):
+                        return self.ldap_gone(d, e)
+                    return d.refuse('LDAP server(s) have gone away')
                 try:
                     hit = group_matches(wanted, have, ad)
                 except LdapError as e:
                     d.step('the group of %s looked up' % d.user, False, str(e), t)
-                    return self.ldap_gone(d)
+                    if isinstance(e, LdapUnreachable):
+                        return self.ldap_gone(d, e)
+                    return d.refuse('LDAP server(s) have gone away')
                 if not hit:
                     names = ', '.join(cn_of(w.get('group') or '') or w.get('group') or ''
                                       for w in wanted[:6]) + (' …' if len(wanted) > 6 else '')
@@ -903,6 +981,17 @@ class RadiusServer(object):
 
     def stop(self):
         self.stop_flag = True
+        # The requests in hand answered first (1.0.224): the sockets closed at once, a worker
+        # half way through used the code up and could not send its answer - the VPN's retry,
+        # to this node restarted or to the other, was refused as used. Up to 3 s; what still
+        # waits in the queue was never looked at, and its retry goes through.
+        until = time.monotonic() + 3.0
+        for t in list(getattr(self, 'workers', []) or []):
+            left = until - time.monotonic()
+            if left <= 0:
+                break
+            if t is not threading.current_thread():
+                t.join(left)
         for _b, _p, sock in self.socks.values():
             try:
                 sock.close()
@@ -1355,6 +1444,17 @@ class RadiusServer(object):
         if getattr(d, 'silent', ''):
             self.counts['no_directory'] += 1
             log_sparing('radius-nodir', 'RADIUS requests left to the other node: %s' % d.silent, 'warn')
+            # Written down as every other (1.0.224): "why was I not let in" answered by its row.
+            try:
+                self.d.store.radius_add({
+                    'ts': arrived, 'client': client['name'], 'nas_ip': ip, 'src': rid,
+                    'packet': 'Access-Request', 'username': (d.user or str(user or ''))[:190],
+                    'realm': d.realm, 'calling': '', 'called': '', 'result': 'drop',
+                    'reason': ('not answered: ' + d.silent)[:1000], 'otp': '', 'rid': rid,
+                    'took_ms': int((time.time() - arrived) * 1000), 'attrs': '[]', 'reply': '[]',
+                    'steps': json.dumps(d.steps), 'device': '', 'tunnel': ''})
+            except Exception:                           # noqa: BLE001
+                pass
             return None
         if src and not blocked and guard_is_guess(d):
             try:

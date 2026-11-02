@@ -1755,8 +1755,20 @@ def _token_do(h):
         # A new token under its realm's own suffix (1.0.117): made for
         # novak@dpmo.local, it is novak@dpmo.cz where dpmo.local is another
         # suffix of that realm - the name RADIUS looks it up by.
-        main = norm_name(realm_main_name(name, h.store.realm_for(name)))
+        r_of = h.store.realm_for(name)
+        main = norm_name(realm_main_name(name, r_of))
         if main != name:
+            # Not when the name under the main suffix is another account's (1.0.224), as the
+            # pages and RADIUS refuse it: the token made would be that other person's.
+            ad = h.d.auth.directory((r_of or {}).get('directory')) if r_of else None
+            if ad is not None:
+                try:
+                    entry = ad.find_user(name, 'upn')
+                except LdapError:
+                    entry = None
+                clash = Authenticator.alias_clash(ad, name, main, entry) if entry else ''
+                if clash:
+                    raise ApiError(409, clash)
             name = main
     # One at a time per name, as a confirm is (1.0.61): switching off a
     # waiting token while its owner confirmed it switched it back on; a
@@ -1794,14 +1806,14 @@ def token_same_person(store, name, daemon=None):
     """Another name of the same person with a token in use - one RADIUS would
     stop using once `name` has one (1.0.139): under another suffix of the
     realm, or the same account in another realm on the same directory."""
-    if '@' not in name:
-        return ''
     realm = store.realm_for(name)
     if not realm:
         return ''
-    cands = realm_names(name, realm)[1:]
+    # A bare name too (1.0.224): "zofie" in a realm of plain names on the directory where
+    # žofie@corp.cz has a token in use was made a second working token by a token admin.
+    cands = realm_names(name, realm)[1:] if '@' in name else []
     if realm.get('lookup') == 'sam' and realm.get('directory'):
-        who = name.rpartition('@')[0]
+        who = name.rpartition('@')[0] or name
         here = str(realm.get('directory') or '').lower()
         for r in store.realms():
             if r['id'] != realm['id'] and r.get('lookup') == 'sam' and \
@@ -1834,6 +1846,11 @@ def _token_act(h, s, b, act, name, who):
         raise ApiError(404, 'there is no token %s' % name)
     if act == 'enroll':
         had = h.store.token(name)
+        bad_name = '' if had else token_name_problem(name)
+        if bad_name:
+            # The rule of an import's and a rename's (1.0.224): DOMAIN\\name was made, and
+            # found by nobody - RADIUS reads it as name.
+            raise ApiError(400, bad_name)
         if had and had.get('state') != 'pending' and s['role'] != 'fulladmin':
             # Replacing a token in use hands out a working key for somebody
             # else (1.0.57): a full administrator's to do. A token
@@ -4836,12 +4853,19 @@ def _portal_login(h):
             raise ApiError(403, 'this account may not have a token here - ask the '
                            'administrator')
     tname, _how = Authenticator.token_for(h.store, full, realm)
+    if Authenticator.alias_clash(ad, full, tname, entry):
+        # Its token would be another person's (1.0.224): signed in under another suffix of
+        # the realm, whose name there is somebody else's userPrincipalName.
+        h.store.add_event('enrolment', '%s signed in, and %s is another account\'s name: no token '
+                          'here' % (full, tname), 'warn', who=full)
+        raise ApiError(403, 'this name is another account\'s under the realm\'s main suffix - '
+                            'ask the administrator')
     # The same person under another spelling (1.0.44): DOMAIN\\name, another
     # realm on the same directory, other letters' case. A token they have
     # already under any of them is the one this session is about, so that
     # the directory password alone never makes a second one.
     if not h.store.token(tname):
-        same = portal_same_person(h.store, realm, entry)
+        same = h.d.auth.same_entry(realm, entry, unproven=True)
         if same:
             h.store.add_event('enrolment', '%s signed in as %s: the token %s is theirs already'
                               % (full, tname, same), 'warn', who=same)
@@ -4866,6 +4890,27 @@ def _portal_login(h):
     h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s'
                       % (tname, h.client_ip()), who=tname)
     return {'token': token, 'name': tname}
+
+
+def portal_token_mark(tok):
+    """What the token proven on the page is (1.0.224): its id and a hash of its sealed key."""
+    if not tok:
+        return None
+    return '%s:%s' % (tok.get('id'), hashlib.sha256(str(tok.get('secret') or tok.get('dest') or '')
+                                                     .encode('utf-8')).hexdigest()[:24])
+
+
+def portal_may_replace(h, s):
+    """Whether this session proved the token there is now - not one an administrator put in
+    its place meanwhile (1.0.224: a phone stolen, the token made again by an administrator,
+    and the old session went on and replaced it with its own key)."""
+    mark = (s.get('data') or {}).get('may_replace')
+    if not mark:
+        return False
+    if mark is True or mark != portal_token_mark(h.store.token(s['name'])):
+        portal_data_set(h, s, may_replace=None)
+        return False
+    return True
 
 
 def portal_same_person(store, realm, entry):
@@ -4905,7 +4950,12 @@ def portal_same_person(store, realm, entry):
         if not r or str(r.get('directory') or '').lower() != here:
             return False
         how = r.get('lookup')
-        return how not in ('upn', 'sam') or how == what
+        if how not in ('upn', 'sam'):
+            # "By the form of the name" (1.0.224): with an @ it is a userPrincipalName there,
+            # as RADIUS reads it - taken for anybody's, xavier@guest.cz (Wanda's UPN) was
+            # Xavier's token, and Wanda signed in as Xavier with her own phone.
+            how = 'upn' if '@' in cand else 'sam'
+        return how == what
     names = [(n, w) for n, w in names if same_directory(n, w)]
     seen = set()
     for n, w in names:
@@ -5061,7 +5111,7 @@ def _portal_enroll(h):
     kind = str(b.get('kind') or 'totp')
     if kind not in portal_methods(h, s):
         raise ApiError(403, 'that way of getting codes is not offered here')
-    may_replace = bool((s.get('data') or {}).get('may_replace'))
+    may_replace = portal_may_replace(h, s)
     if may_replace and h.d.tokens.blocked(s['name']):
         # Switched off or locked meanwhile (1.0.94).
         portal_data_set(h, s, may_replace=None)
@@ -5184,7 +5234,7 @@ def _portal_verify(h):
     # locked or confirmed by its owner while the code was on its way, it is
     # not replaced by one whose codes go where this session said.
     tok = h.store.token(s['name'])
-    may_replace = bool(data.get('may_replace'))
+    may_replace = portal_may_replace(h, s)
     if tok and tok.get('state') != 'pending' and not may_replace:
         portal_data_set(h, s, verify=None)
         raise ApiError(409, 'there is a token already; it can be replaced with a code from it')
@@ -5337,7 +5387,7 @@ def _portal_reissue(h):
     if want != 'totp' or token_kind(h.store.token(s['name'])) != 'totp':
         # Another way, or away from one (1.0.76): the page asks which, and
         # the old token goes on working until the new one is made.
-        portal_data_set(h, s, may_replace=True)
+        portal_data_set(h, s, may_replace=portal_token_mark(h.store.token(s['name'])))
         h.store.add_event('enrolment', '%s proved their token and may set up another way'
                           % s['name'], who=s['name'])
         return {'choose': True, 'me': portal_state(h, s)}

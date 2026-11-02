@@ -4,6 +4,61 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.224 — 3 November 2026
+
+**The second of five rounds of looking for bugs** (sign-ins first). Found by it, and mended:
+
+- **One person signed in as another** (since 1.0.222). RADIUS took the token the enrolment pages
+  tie to a directory account under another spelling, and a realm reading names "by the form of
+  the name" (or one of every suffix) took a userPrincipalName for an account name: Wanda, whose
+  UPN is xavier@guest.cz, signed in as xavier@corpnet.cz with her own phone. A token is taken for
+  another spelling now only when its own name, looked up as its own realm reads names, finds the
+  very same directory account (the same DN). And a name under another suffix of a realm
+  (corpnet.example for corpnet.cz) that is another account's userPrincipalName under the main one
+  is refused - on the pages, in RADIUS, and for an administrator making a token under it.
+- **A token administrator could make a second working token** for someone with one in use under
+  a bare name (zofie beside žofie@corpnet.cz). Refused, as under any other spelling.
+- **An administrator's new token was replaced from an old page** - a session that had proven the
+  old token went on and put its own key in place of the one the administrator made (a phone
+  stolen). The proof holds for the token it was made on only.
+- **Make a token sent the previous person's name and mail** - typed over in the form, the QR code
+  of the second went to the first one's address. What the directory said of a name goes when the
+  name is changed.
+- **A slow directory held up the realms of the code alone again** (since 1.0.222) - every RADIUS
+  worker waited for a place at it. A place is waited for only while the directory answers quickly,
+  and by a quarter of the workers at most.
+- **"No answer" for things that are not the directory gone** (since 1.0.223) - the directory's own
+  answer to a group search, the reading account refused, this node's own limit: refused and
+  answered again. And the other node counts as reaching the directory only when it really does -
+  connected, its TLS made, its reading account let in (a TCP connect took a hung server for well).
+  A realm of the second window with the directory down is left to the other node too (it said
+  "no token" and counted a wrong sign-in). A request left unanswered is written in the log.
+- **A code accepted on both nodes for up to 40 s after the link between them came back, with the
+  default settings** - the question to the other node's database stayed held off by its back-off.
+  It is asked again every 2 s while held off, and the hold lifted the moment it answers.
+- **The report of the time apart said "none twice"** - made before the other node's rows had come
+  over, and without the codes of the first 20 s. Made once they are here, from the first code the
+  other node could not be asked about; each code counted once.
+- **Two nodes silent together** with the clocks guarded: a node aside for its clock stayed aside a
+  minute after the other node died (its word is fresh for 25 s now, and its heartbeat alive); and
+  with "only the preferred node" the other stepped aside while the preferred one was aside for its
+  clock. A time server's answer lost once no longer throws the measurement away; a clock about
+  the limit no longer moves the VIP address to and fro (back below the limit less the warning);
+  both clocks off alike no longer step the first to measure aside; saving the card keeps the
+  correction; the correction is dropped when the machine's clock is put right.
+- **A restart under load used codes up without answering** - the sockets were closed under the
+  workers. The requests in hand are answered first (3 s at most).
+- **A code by mail or SMS, the administrators' second factor and the SSH gate** used up without an
+  answer when the database's reply was lost (as a code from the app was before 1.0.222).
+- **Regressions of 1.0.222 mended**: a token stored with its name decomposed (Z + ˇ) is renamed to
+  the composed form once, its key and recovery codes with it (it was found by nobody); a password
+  ending in "-" followed by a recovery code is split right again.
+- **And**: a confirm on one node no longer makes a key made meanwhile on the other the one in use;
+  wrong codes for a waiting key from two nodes at once are all counted; a key sealed again between
+  two steps of a sign-in no longer refuses the right code; "123-456" is taken when confirming too;
+  a name sent decomposed is looked up in the directory composed; DOMAIN\name is refused for a new
+  token (RADIUS reads it as name); the token mail's plain text says the hash too.
+
 ## 1.0.223 — 2 November 2026
 
 - **RADIUS on the VIP address did not work** - each node listens on every address, and so

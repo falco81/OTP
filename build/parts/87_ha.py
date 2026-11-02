@@ -1415,7 +1415,24 @@ def once_take(store, kind, name, value, peer=True):
         sql = 'INSERT OR IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)'
     else:
         sql = 'INSERT INTO token_once (k, node, ts) VALUES (?, ?, ?) ON CONFLICT DO NOTHING'
-    if not db.run(sql, (k, me, time.time())):
+    ts = time.time()
+    try:
+        took = db.run(sql, (k, me, ts))
+    except Exception:
+        # The answer to the write lost (1.0.224), as for a code from the app: written all
+        # the same, the request went unanswered and the VPN's retry was refused as used -
+        # a code by mail or SMS, the administrators' second factor, the SSH gate. Its own
+        # row looked for (by its exact time); not inside a transaction, which is put back whole.
+        if getattr(db, 'in_tx', False):
+            raise
+        try:
+            got = db.value('SELECT ts FROM token_once WHERE k = ? AND node = ?', (k, me))
+        except Exception:                               # noqa: BLE001
+            got = None
+        if got is None or abs(float(got) - ts) > 1e-6:
+            raise
+        took = True
+    if not took:
         return False                    # this node took it already
     if db.value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?', (k, me)):
         return False                    # the other node took it, and it came over
