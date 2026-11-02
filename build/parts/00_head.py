@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.226'
+__version__ = '1.0.227'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2259,6 +2259,21 @@ def _sealed_held():
                                  (), 0) or 0)) or bool(db.value("SELECT 1 FROM meta WHERE k = 'seal:fp'"))
     except Exception:                                   # noqa: BLE001
         return True
+
+
+def sealing_key_for_write():
+    """The key to seal or keep a recovery code with - made only where no token was sealed
+    with another one (1.0.205 for secrets; 1.0.227 for recovery codes too: `otp --scratch` on
+    a node without its key file made a new one silently, and the codes it gave opened nowhere
+    else, those before them gone)."""
+    key = sealing_key()
+    if key:
+        return key
+    if _sealed_held():
+        raise OSError('%s is missing, and the database holds tokens sealed with it: no '
+                      'new key is made - put the key back (it is beside every backup)'
+                      % sealing_key_path())
+    return sealing_key(make=True)
 
 
 def seal_secret(text, bind=None):

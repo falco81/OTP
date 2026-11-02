@@ -279,6 +279,9 @@ def ha_joining_done():
         pass
 
 
+CLUSTER_WITH = set()
+
+
 def in_cluster(store=None):
     """One of two nodes, whatever kind (1.0.211): a cluster of one shared database
     leaves ha_mode empty on both nodes - another node heard from in the last day
@@ -290,7 +293,24 @@ def in_cluster(store=None):
     if store is None:
         return False
     try:
-        return any(not n.get('me') and float(n.get('age') or 1e9) < 86400 for n in ha_nodes(store))
+        # Or one that once answered while this one did, until forgotten (1.0.227): heard
+        # from in the last day only, a node dead for 25 h was no longer one - its alert
+        # went, "back to normal" was mailed, its metrics vanished. Not a name this machine
+        # had before, nor the machine a backup came from: never alive beside this one.
+        out = False
+        for n in ha_nodes(store):
+            if n.get('me'):
+                continue
+            mark = 'cluster:with:' + n['name']
+            if n.get('alive'):
+                if mark not in CLUSTER_WITH:
+                    if not store.get_meta(mark):
+                        store.set_meta(mark, str(int(time.time())))
+                    CLUSTER_WITH.add(mark)
+                out = True
+            elif float(n.get('age') or 1e9) < 86400 or mark in CLUSTER_WITH or store.get_meta(mark):
+                out = True
+        return out
     except Exception:                                   # noqa: BLE001
         return False
 
@@ -299,6 +319,8 @@ def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
     store.db.run('DELETE FROM meta WHERE k = ?', ('node:' + name,))
+    store.db.run('DELETE FROM meta WHERE k = ?', ('cluster:with:' + name,))
+    CLUSTER_WITH.discard('cluster:with:' + name)
 
 
 def ha_lead(store):
@@ -557,7 +579,13 @@ def ha_replicated_bundle_data(store):
     nothing on this node changed (1.0.207: the command line made this node
     the first one again, slot 1, and restarted it)."""
     me = int(CONFIG.get('ha_slot') or 1)
-    data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(),
+    key = sealing_key()
+    if not key:
+        # Not made here (1.0.227): a node that lost its key handed the other one a new
+        # random key with the bundle - and after the join neither opened any token.
+        raise ValueError('the key that seals the tokens is missing on this node - put it back '
+                         'first (it is beside every backup)')
+    data = {'mode': 'replicated', 'key': key.hex(),
             'pg_major': int(store.db.value('SHOW server_version_num')) // 10000,
             'slot': 3 - me,
             'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),
@@ -1336,6 +1364,9 @@ def once_peer_forget():
             pass
 
 
+ONCE_PEER_RETRY_S = 2.5
+
+
 def _once_peer_has(k, me, store=None):
     """Whether the other node's database has the other node's row for `k`:
     True, False, or None when it cannot be asked just now. Asked on a
@@ -1377,18 +1408,22 @@ def _once_peer_has(k, me, store=None):
     gen = ONCE_PEER['gen']
 
     def ask():
-        # Its database starting or stopping, the machine there (1.0.226): asked again for 2 s
-        # more rather than let in on this node's rows alone - a code used there a moment
+        # Its database starting or stopping, the machine there (1.0.226): asked again for a
+        # moment rather than let in on this node's rows alone - a code used there a moment
         # before was let in here again during a routine restart of its PostgreSQL.
         began = time.monotonic()
         while True:
             try:
                 return ask_once()
             except Exception as e:                      # noqa: BLE001
-                # A restart takes a few seconds: 8 s for one saying so, 3 s for a refusal
-                # (a database stopped for longer is not waited for at every sign-in).
+                # 2.5 s at most from the start of the question (1.0.227: 8 s, longer than a
+                # NAS waits - it gave up, the code was used by then, and its next try was
+                # refused as used); a database stopped for longer is not waited for at every
+                # sign-in.
                 restarting = peer_db_restarting(e)
-                limit = 8.0 if restarting == 'restarting' else 3.0
+                # A bare refusal is the gap between its stop and its start, under a second -
+                # or a database stopped for good: 1.2 s for it.
+                limit = ONCE_PEER_RETRY_S if restarting == 'restarting' else 1.2
                 if restarting and time.monotonic() - began < limit:
                     got['retrying'] = True
                     try:
@@ -1422,9 +1457,10 @@ def _once_peer_has(k, me, store=None):
             got['v'] = bool(got['db'].value(sql, (k, me)))
     t = threading.Thread(target=ask, name='once-peer', daemon=True)
     t.start()
+    t0 = time.monotonic()
     t.join(1.5)
     if got.get('retrying') and t.is_alive():
-        t.join(7.0)
+        t.join(max(0.0, ONCE_PEER_RETRY_S + 0.3 - (time.monotonic() - t0)))
     if debugging('radius'):
         log('once-peer: %s' % ('answered %s' % got['v'] if 'v' in got else 'no answer: %s' % got.get('e')),
             'debug')

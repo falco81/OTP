@@ -1315,9 +1315,11 @@ class Tokens(object):
         digits = int(tok.get('digits') or 6)
         # "123 456" as the phone shows it (1.0.214): taken on the pages, a wrong code
         # through RADIUS - and counted. The spaces inside go, as there.
-        code = re.sub(r'[\s-]', '', str(code or ''))
-        if not code.isascii() and re.fullmatch(r'[0-9]{4,12}', code_typed(code), re.ASCII):
-            code = code_typed(code)     # the Czech row, full-width digits (1.0.226)
+        code = code_sep_gone(code)
+        # The Czech row, full-width digits (1.0.226) - and "++++++" for 111111 too (1.0.227):
+        # "+" is ASCII, so it was never read as the Czech row and a right code was counted.
+        if re.fullmatch(r'[0-9]{4,12}', code_typed(code), re.ASCII):
+            code = code_typed(code)
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other
         # digits, which then broke the comparison and left the request
         # unanswered and unwritten (1.0.33).

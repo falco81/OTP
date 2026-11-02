@@ -466,14 +466,43 @@ def split_step(store, now=None, peer=None, arbiter=None):
             log('ha: the report of the time apart could not be made: %s' % e, 'warn')
 
 
+def split_peer_host_up():
+    """Whether the other node's machine takes a connection on another port than its
+    database's - its web pages or SSH (1.0.227): up, with only its database refusing."""
+    host = str(CONFIG.get('ha_peer') or '').strip()
+    if not host:
+        return False
+    seen = SPLIT_HOST_SEEN
+    if seen.get('host') == host and time.monotonic() - seen.get('at', -99) < 10:
+        return seen['up']
+    up = False
+    for port in (443, 22, 80):
+        if port == int(CONFIG.get('ha_peer_port') or 5432):
+            continue
+        try:
+            socket.create_connection((host, port), timeout=1.0).close()
+            up = True
+            break
+        except OSError:
+            continue
+    seen.update(host=host, at=time.monotonic(), up=up)
+    return up
+
+
+SPLIT_HOST_SEEN = {}
+
+
 def split_preferred_unable(store):
     """Why the preferred node is known not to serve, or ''."""
     name = split_preferred_name(store)
     if not name or name == node_name():
         return ''
-    if peer_db_restarting(SPLIT.get('peer_err') or ''):
+    said = peer_db_restarting(SPLIT.get('peer_err') or '')
+    if said == 'restarting' or (said == 'refused' and split_peer_host_up()):
         # Its machine there and its database refusing (1.0.226): not cut off from this one -
         # its RADIUS has no database either. Both went silent for as long as it was down.
+        # A bare refusal only with its machine seen up (1.0.227): a firewall between the
+        # nodes that rejects says "connection refused" too, and both nodes answered.
         return 'the preferred node\'s database is down'
     try:
         row = clock_state_of(store, name) or {}
@@ -481,7 +510,12 @@ def split_preferred_unable(store):
         # long ago and serving since, both nodes answered while apart.
         recent = float(row.get('at') or 0) >= (SPLIT['apart_since'] or time.time()) - \
             max(5, int(CONFIG.get('split_after_s') or 20)) - 30
-        if row.get('role') == 'aside' and recent:
+        # And still fresh, by the measured difference of the clocks (1.0.227): the preferred
+        # node, aside for its clock, answers again once this one's row reads stale to it
+        # (25 s) - this node gives way a little after, so the two do not both go on.
+        sk = clock_skew_of(store, name) or 0.0
+        fresh = time.time() - (float(row.get('at') or 0) - sk) < 32
+        if row.get('role') == 'aside' and recent and fresh:
             return 'the preferred node stepped aside for its clock'
         for n in ha_nodes(store):
             if n['name'] == name and n.get('maintenance'):

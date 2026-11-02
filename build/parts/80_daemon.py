@@ -1584,9 +1584,12 @@ class Daemon(object):
             except Exception:                           # noqa: BLE001
                 pass
             if held:
-                log('%s is missing, and the database holds %d token(s) sealed with it: no new '
+                # Said as it is (1.0.227): "1 token(s)" was said with none, for the mark alone.
+                log('%s is missing, and the database holds %s sealed with it: no new '
                     'key is made. Put the key back (it is beside every backup), or the tokens '
-                    'cannot be opened.' % (sealing_key_path(), held), 'error')
+                    'cannot be opened.' % (sealing_key_path(), '%d token(s)' % held if held > 1 or
+                                           not self.store.get_meta('seal:fp') else
+                                           'secrets (its mark seal:fp says so)'), 'error')
                 self.store.add_event('starting and stopping', 'the key that opens the tokens '
                                      'is missing: %s' % sealing_key_path(), 'bad')
             else:

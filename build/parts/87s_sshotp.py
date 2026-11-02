@@ -307,7 +307,9 @@ def ssh_code_typed(code):
     "ýíčáěý" and was refused; digits of other scripts and full-width ones too."""
     import unicodedata
     out = []
-    for ch in str(code or '').strip():
+    # Composed first (1.0.227): "e" and a combining caron, as some keyboards send "ě", was
+    # left as two characters and the code refused.
+    for ch in unicodedata.normalize('NFC', str(code or '')).strip():
         if ch in SSH_CZ_ROW:
             out.append(SSH_CZ_ROW[ch])
             continue

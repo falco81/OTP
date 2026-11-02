@@ -421,11 +421,10 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         ok, dirs = clock_dir_check(store)
         CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now)
     p = clock_peer_row(store, now) if peer is None else (None if peer == 'none' else peer)
-    if CLOCK['role'] == 'aside' and p is not None and not p.get('fresh') and split_apart() and \
-            split_mode() == 'priority':
-        # Aside when the nodes lost each other (1.0.226): the other node goes on in priority
-        # mode taking this one for aside - this one answering too, both did.
-        p = dict(p, fresh=True)
+    # No longer kept aside for as long as the nodes are apart (1.0.227): with the other node
+    # dead that was for ever, and nobody answered. Its row goes stale and this node answers -
+    # and the other one, in priority mode, takes this node's "aside" only while that row is
+    # fresh (split_preferred_unable), so one of the two answers, not both.
     aside_s = float(CONFIG.get('clock_aside_s') or 20)
     role, why = clock_decide(clock_mode(), CLOCK['ref'], aside_s,
                              bool(CONFIG.get('clock_codes')) and CLOCK['ref'] is not None,

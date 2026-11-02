@@ -1305,7 +1305,7 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     load_config(saved=store.settings_saved())
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.
-    data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(), 'pg_major': major,
+    data = {'mode': 'replicated', 'key': sealing_key_for_write().hex(), 'pg_major': major,
             'slot': 2,
             'db': {'db_name': name, 'db_user': user, 'db_password': pw},
             'peer': {'name': node_name(), 'address': me, 'port': port, 'slot': 1},

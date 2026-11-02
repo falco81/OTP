@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.226'
+__version__ = '1.0.227'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2261,6 +2261,21 @@ def _sealed_held():
         return True
 
 
+def sealing_key_for_write():
+    """The key to seal or keep a recovery code with - made only where no token was sealed
+    with another one (1.0.205 for secrets; 1.0.227 for recovery codes too: `otp --scratch` on
+    a node without its key file made a new one silently, and the codes it gave opened nowhere
+    else, those before them gone)."""
+    key = sealing_key()
+    if key:
+        return key
+    if _sealed_held():
+        raise OSError('%s is missing, and the database holds tokens sealed with it: no '
+                      'new key is made - put the key back (it is beside every backup)'
+                      % sealing_key_path())
+    return sealing_key(make=True)
+
+
 def seal_secret(text, bind=None):
     """Sealed with the key of this installation: a keystream from HMAC-SHA256,
     then a tag over it. With `bind`, the tag covers that too (sealed:2:), so
@@ -2661,7 +2676,17 @@ def code_typed(code):
     """A code as somebody typed it, read as the digits meant (1.0.225): "821 275" as the mail
     shows it, with a dash or a no-break space, or on the Czech row of the keyboard without
     Shift ("žřáčéá" for 495040) - as the SSH gate has read it since 1.0.190."""
-    return re.sub(r'[\s-]', '', ssh_code_typed(code))
+    return code_sep_gone(ssh_code_typed(code))
+
+
+def code_sep_gone(code):
+    """A code without what was typed between its digits (1.0.227): a space of any kind, a tab,
+    and every dash - "123–456" with an en dash, the no-break hyphen, the full-width one an IME
+    gives, the minus sign. Only "-" and spaces went before, and these were counted wrong."""
+    import unicodedata
+    return ''.join(c for c in str(code or '')
+                   if not (c.isspace() or c in '\u2212\u00ad\u200b'
+                           or unicodedata.category(c) == 'Pd'))
 
 
 def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', window=1):
@@ -2671,7 +2696,7 @@ def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', wind
     at a time, so that when two would do the nearest one is the answer.
     Compared in constant time, every one of them.
     """
-    code = re.sub(r'[\s-]', '', str(code or ''))     # "123-456" too (1.0.224)
+    code = code_sep_gone(code)     # "123-456" too (1.0.224), any dash (1.0.227)
     if not re.fullmatch(r'[0-9]+', code, re.ASCII) or len(code) != int(digits):
         return None
     if isinstance(key, str):
@@ -2722,7 +2747,7 @@ def scratch_hash(user, code, key=None):
     database holds nothing that could be typed - and nothing that a copy of
     the database alone lets anybody try codes against."""
     if key is None:
-        key = sealing_key(make=True)
+        key = sealing_key_for_write()
     return 'hmac:' + hmac.new(key, _scratch_text(user, code), hashlib.sha256).hexdigest()
 
 
@@ -3769,22 +3794,40 @@ class Db(object):
             # SQLite too (1.0.222): its writes went in one by one, and another writer taking
             # the file between them left the code used and the request unanswered. IMMEDIATE:
             # the file's write lock taken at once - waited for before anything is written.
-            self.run(RawSql({'mariadb': 'START TRANSACTION', 'sqlite': 'BEGIN IMMEDIATE'}.get(
-                self.engine, 'BEGIN')))
-            self.in_tx = True
-            try:
-                yield
-                self.run(RawSql('COMMIT'))
-            except BaseException:
-                self.in_tx = False
+            # 10 s idle at most inside it, on every lane (1.0.227): a sign-in on the portal or
+            # the pages runs on the main lane, 120 s there - a node frozen in the middle of
+            # one held that person's row on the shared database two minutes.
+            main = self._lane() is self._lanes['main']
+            if self.engine == 'mariadb' and main:
                 try:
-                    if self.conn is not None:
-                        self.run(RawSql('ROLLBACK'))
+                    self.run(RawSql('SET SESSION idle_transaction_timeout = 10'))
                 except Exception:                       # noqa: BLE001
-                    self.close(lane_only=True)
-                raise
+                    pass
+            try:
+                self.run(RawSql({'mariadb': 'START TRANSACTION', 'sqlite': 'BEGIN IMMEDIATE'}.get(
+                    self.engine, 'BEGIN')))
+                self.in_tx = True
+                if self.engine == 'postgres' and main:
+                    self.run(RawSql('SET LOCAL idle_in_transaction_session_timeout = 10000'))
+                try:
+                    yield
+                    self.run(RawSql('COMMIT'))
+                except BaseException:
+                    self.in_tx = False
+                    try:
+                        if self.conn is not None:
+                            self.run(RawSql('ROLLBACK'))
+                    except Exception:                   # noqa: BLE001
+                        self.close(lane_only=True)
+                    raise
+                finally:
+                    self.in_tx = False
             finally:
-                self.in_tx = False
+                if self.engine == 'mariadb' and main and self.conn is not None:
+                    try:
+                        self.run(RawSql('SET SESSION idle_transaction_timeout = 120'))
+                    except Exception:                   # noqa: BLE001
+                        pass
 
     # ---- the tables ----------------------------------------------------------
     def make_tables(self):
@@ -6827,6 +6870,21 @@ class Storage(object):
             return
         self.db.make_tables()
         try:
+            was = self.db.value('SELECT v FROM meta WHERE k = ?', (mark,))
+        except Exception:                               # noqa: BLE001
+            was = None
+        try:
+            # The SMS gateway through the proxy as it went before 1.0.202 (1.0.227): off by
+            # default since, and kept on only for the updates - the codes by SMS of a gateway
+            # reached through the proxy alone stopped at the upgrade.
+            if was and _ver_tuple(was) < (1, 0, 202):
+                saved = self.settings_saved()
+                if saved.get('proxy') and 'proxy_sms' not in saved:
+                    self.save_setting('proxy_sms', 1, 'upgrade from %s' % was)
+                    CONFIG['proxy_sms'] = 1
+        except Exception:                               # noqa: BLE001
+            pass
+        try:
             self.db.upsert('meta', 'k', {'k': mark, 'v': __version__})
         except Exception:                               # noqa: BLE001
             pass
@@ -9661,9 +9719,11 @@ class Tokens(object):
         digits = int(tok.get('digits') or 6)
         # "123 456" as the phone shows it (1.0.214): taken on the pages, a wrong code
         # through RADIUS - and counted. The spaces inside go, as there.
-        code = re.sub(r'[\s-]', '', str(code or ''))
-        if not code.isascii() and re.fullmatch(r'[0-9]{4,12}', code_typed(code), re.ASCII):
-            code = code_typed(code)     # the Czech row, full-width digits (1.0.226)
+        code = code_sep_gone(code)
+        # The Czech row, full-width digits (1.0.226) - and "++++++" for 111111 too (1.0.227):
+        # "+" is ASCII, so it was never read as the Czech row and a right code was counted.
+        if re.fullmatch(r'[0-9]{4,12}', code_typed(code), re.ASCII):
+            code = code_typed(code)
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other
         # digits, which then broke the comparison and left the request
         # unanswered and unwritten (1.0.33).
@@ -12404,7 +12464,9 @@ class Authenticator(object):
             d.step('a password', False, 'CHAP or no User-Password: a one-time code can only '
                    'travel as PAP')
             return d.refuse('the request carries no User-Password (PAP)')
-        if password and any(ord(c) < 32 or c == '\ufffd' for c in password):
+        # A tab or a line end is what somebody typed (1.0.227): "123<Tab>456" was said to be
+        # a shared secret not the same as on the client.
+        if password and any((ord(c) < 32 and c not in '\t\r\n') or c == '\ufffd' for c in password):
             d.step('the password reads as text', False, 'what came is not text - is the shared '
                    'secret the same on both sides?')
             return d.refuse('the password does not decode: the shared secret is probably '
@@ -12496,8 +12558,25 @@ class Authenticator(object):
             # "Heslo-" + a 7-digit recovery code split as "Heslo" + "-1234567" - the password
             # cut short went to the directory, and the code was never found.
             digits_only = [x for x in splits if x[0].isascii() and x[0].isdigit()]
-            if digits_only:
-                splits = digits_only
+            # A code typed with something between its digits (1.0.227): "1234 5678",
+            # "467164-244388", the Czech row - the raw length is longer than the code, and an
+            # 11-12 digit recovery code typed so was never tried; the password with digits on
+            # it went to the directory. Tried after the plain digits, so nothing that worked
+            # before changes; the tail starts and ends with a digit as typed, so "Heslo-" +
+            # code still leaves "Heslo-" as the password.
+            typed = []
+            for ln in range(6, min(len(password), 31)):
+                tail = password[-ln:]
+                if tail.isascii() and tail.isdigit():
+                    continue
+                if code_sep_gone(tail[0]) == '' or code_sep_gone(tail[-1]) == '':
+                    continue
+                t = code_typed(tail)
+                if re.fullmatch(r'[0-9]{6,12}', t, re.ASCII) and all(x[0] != t or x[1] != password[:-ln]
+                                                                    for x in digits_only + typed):
+                    typed.append((t, password[:-ln]))
+            if digits_only or typed:
+                splits = digits_only + typed
             if not splits:
                 d.step('the code', False, 'nothing after the password looks like a code')
                 d.otp = SAY_BAD
@@ -13119,7 +13198,11 @@ class RadiusServer(object):
         self.sum_up()
         # In maintenance nothing is answered (1.0.37): the VPN takes this
         # node for down and asks the other, as it would any node that is.
-        if maintenance_now(self.d.store).get('on') and not self.draining():
+        m = maintenance_now(self.d.store)
+        # Stepped aside for the nodes apart or its clock (1.0.227): silent at once, never
+        # answered on while the VIP address moves - a code was let in here and again on the
+        # other node, and a right code refused by a clock that is off.
+        if m.get('on') and (m.get('split') or m.get('clock') or not self.draining()):
             self.counts['maintenance'] += 1
             return
         client = self.d.store.client_for(ip)
@@ -15485,9 +15568,12 @@ class Daemon(object):
             except Exception:                           # noqa: BLE001
                 pass
             if held:
-                log('%s is missing, and the database holds %d token(s) sealed with it: no new '
+                # Said as it is (1.0.227): "1 token(s)" was said with none, for the mark alone.
+                log('%s is missing, and the database holds %s sealed with it: no new '
                     'key is made. Put the key back (it is beside every backup), or the tokens '
-                    'cannot be opened.' % (sealing_key_path(), held), 'error')
+                    'cannot be opened.' % (sealing_key_path(), '%d token(s)' % held if held > 1 or
+                                           not self.store.get_meta('seal:fp') else
+                                           'secrets (its mark seal:fp says so)'), 'error')
                 self.store.add_event('starting and stopping', 'the key that opens the tokens '
                                      'is missing: %s' % sealing_key_path(), 'bad')
             else:
@@ -22115,6 +22201,9 @@ def ha_joining_done():
         pass
 
 
+CLUSTER_WITH = set()
+
+
 def in_cluster(store=None):
     """One of two nodes, whatever kind (1.0.211): a cluster of one shared database
     leaves ha_mode empty on both nodes - another node heard from in the last day
@@ -22126,7 +22215,24 @@ def in_cluster(store=None):
     if store is None:
         return False
     try:
-        return any(not n.get('me') and float(n.get('age') or 1e9) < 86400 for n in ha_nodes(store))
+        # Or one that once answered while this one did, until forgotten (1.0.227): heard
+        # from in the last day only, a node dead for 25 h was no longer one - its alert
+        # went, "back to normal" was mailed, its metrics vanished. Not a name this machine
+        # had before, nor the machine a backup came from: never alive beside this one.
+        out = False
+        for n in ha_nodes(store):
+            if n.get('me'):
+                continue
+            mark = 'cluster:with:' + n['name']
+            if n.get('alive'):
+                if mark not in CLUSTER_WITH:
+                    if not store.get_meta(mark):
+                        store.set_meta(mark, str(int(time.time())))
+                    CLUSTER_WITH.add(mark)
+                out = True
+            elif float(n.get('age') or 1e9) < 86400 or mark in CLUSTER_WITH or store.get_meta(mark):
+                out = True
+        return out
     except Exception:                                   # noqa: BLE001
         return False
 
@@ -22135,6 +22241,8 @@ def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
     store.db.run('DELETE FROM meta WHERE k = ?', ('node:' + name,))
+    store.db.run('DELETE FROM meta WHERE k = ?', ('cluster:with:' + name,))
+    CLUSTER_WITH.discard('cluster:with:' + name)
 
 
 def ha_lead(store):
@@ -22393,7 +22501,13 @@ def ha_replicated_bundle_data(store):
     nothing on this node changed (1.0.207: the command line made this node
     the first one again, slot 1, and restarted it)."""
     me = int(CONFIG.get('ha_slot') or 1)
-    data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(),
+    key = sealing_key()
+    if not key:
+        # Not made here (1.0.227): a node that lost its key handed the other one a new
+        # random key with the bundle - and after the join neither opened any token.
+        raise ValueError('the key that seals the tokens is missing on this node - put it back '
+                         'first (it is beside every backup)')
+    data = {'mode': 'replicated', 'key': key.hex(),
             'pg_major': int(store.db.value('SHOW server_version_num')) // 10000,
             'slot': 3 - me,
             'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),
@@ -23172,6 +23286,9 @@ def once_peer_forget():
             pass
 
 
+ONCE_PEER_RETRY_S = 2.5
+
+
 def _once_peer_has(k, me, store=None):
     """Whether the other node's database has the other node's row for `k`:
     True, False, or None when it cannot be asked just now. Asked on a
@@ -23213,18 +23330,22 @@ def _once_peer_has(k, me, store=None):
     gen = ONCE_PEER['gen']
 
     def ask():
-        # Its database starting or stopping, the machine there (1.0.226): asked again for 2 s
-        # more rather than let in on this node's rows alone - a code used there a moment
+        # Its database starting or stopping, the machine there (1.0.226): asked again for a
+        # moment rather than let in on this node's rows alone - a code used there a moment
         # before was let in here again during a routine restart of its PostgreSQL.
         began = time.monotonic()
         while True:
             try:
                 return ask_once()
             except Exception as e:                      # noqa: BLE001
-                # A restart takes a few seconds: 8 s for one saying so, 3 s for a refusal
-                # (a database stopped for longer is not waited for at every sign-in).
+                # 2.5 s at most from the start of the question (1.0.227: 8 s, longer than a
+                # NAS waits - it gave up, the code was used by then, and its next try was
+                # refused as used); a database stopped for longer is not waited for at every
+                # sign-in.
                 restarting = peer_db_restarting(e)
-                limit = 8.0 if restarting == 'restarting' else 3.0
+                # A bare refusal is the gap between its stop and its start, under a second -
+                # or a database stopped for good: 1.2 s for it.
+                limit = ONCE_PEER_RETRY_S if restarting == 'restarting' else 1.2
                 if restarting and time.monotonic() - began < limit:
                     got['retrying'] = True
                     try:
@@ -23258,9 +23379,10 @@ def _once_peer_has(k, me, store=None):
             got['v'] = bool(got['db'].value(sql, (k, me)))
     t = threading.Thread(target=ask, name='once-peer', daemon=True)
     t.start()
+    t0 = time.monotonic()
     t.join(1.5)
     if got.get('retrying') and t.is_alive():
-        t.join(7.0)
+        t.join(max(0.0, ONCE_PEER_RETRY_S + 0.3 - (time.monotonic() - t0)))
     if debugging('radius'):
         log('once-peer: %s' % ('answered %s' % got['v'] if 'v' in got else 'no answer: %s' % got.get('e')),
             'debug')
@@ -23616,9 +23738,15 @@ def node_stepped_aside(store, name):
     """Whether `name` stepped aside by itself - its clock, or the nodes apart - by its own
     state rows, fresh."""
     now = time.time()
+    try:
+        # Written by its own clock (1.0.227): a node aside for its clock has it off - a minute
+        # behind, its fresh row read as old, and it was counted as answering.
+        sk = clock_skew_of(store, name) or 0.0
+    except Exception:                                   # noqa: BLE001
+        sk = 0.0
     for k in ('clock:state:', 'split:state:'):
         row = _meta_json(store, k + name) or {}
-        if row.get('role') == 'aside' and now - float(row.get('at') or 0) < 40:
+        if row.get('role') == 'aside' and now - (float(row.get('at') or 0) - sk) < 40:
             return True
     return False
 
@@ -26444,10 +26572,14 @@ def vip_watch(daemon):
             # RADIUS of this node stops answering, and the VIP address went
             # silent for seconds before keepalived moved it. Meanwhile, while the
             # address is still here, RADIUS goes on answering (handle()).
-            planned = maintenance_now(store).get('on')
+            m = maintenance_now(store)
+            planned = m.get('on')
             if planned:
                 VIP_HEALTH['fails'] = max(VIP_HEALTH['fails'], VIP_FAILS_BEFORE)
-                VIP_HEALTH.setdefault('drain_since', time.time())
+                if m.get('split') or m.get('clock'):
+                    VIP_HEALTH.pop('drain_since', None)     # silent at once (1.0.227)
+                else:
+                    VIP_HEALTH.setdefault('drain_since', time.time())
                 why = why or 'in maintenance'
             else:
                 VIP_HEALTH.pop('drain_since', None)
@@ -26464,6 +26596,19 @@ def vip_watch(daemon):
             os.replace(str(tmp), str(VIP_STATE))
         except Exception as e:                          # noqa: BLE001
             log_sparing('vip-watch:' + str(e)[:80], 'the VIP address: %s' % e, 'warn', 600)
+            if isinstance(e, DbError) and CONFIG.get('ha_mode') and VIP_STATE.exists():
+                # Its database gone (1.0.227): RADIUS here is silent, and the file was left to
+                # go stale - the VIP address went unanswered 14 s before it moved. Said at once.
+                try:
+                    VIP_HEALTH.update(ok=False, why='the database cannot be reached', at=time.time())
+                    tmp = RUN_DIR / '.vip-state'
+                    tmp.write_text('fail the database cannot be reached\n')
+                    os.chmod(str(tmp), 0o640)
+                    os.replace(str(tmp), str(VIP_STATE))
+                except OSError:
+                    pass
+                daemon.stop_flag.wait(2)
+                continue
             daemon.stop_flag.wait(10)
 
 
@@ -32784,7 +32929,9 @@ def ssh_code_typed(code):
     "ýíčáěý" and was refused; digits of other scripts and full-width ones too."""
     import unicodedata
     out = []
-    for ch in str(code or '').strip():
+    # Composed first (1.0.227): "e" and a combining caron, as some keyboards send "ě", was
+    # left as two characters and the code refused.
+    for ch in unicodedata.normalize('NFC', str(code or '')).strip():
         if ch in SSH_CZ_ROW:
             out.append(SSH_CZ_ROW[ch])
             continue
@@ -33732,14 +33879,43 @@ def split_step(store, now=None, peer=None, arbiter=None):
             log('ha: the report of the time apart could not be made: %s' % e, 'warn')
 
 
+def split_peer_host_up():
+    """Whether the other node's machine takes a connection on another port than its
+    database's - its web pages or SSH (1.0.227): up, with only its database refusing."""
+    host = str(CONFIG.get('ha_peer') or '').strip()
+    if not host:
+        return False
+    seen = SPLIT_HOST_SEEN
+    if seen.get('host') == host and time.monotonic() - seen.get('at', -99) < 10:
+        return seen['up']
+    up = False
+    for port in (443, 22, 80):
+        if port == int(CONFIG.get('ha_peer_port') or 5432):
+            continue
+        try:
+            socket.create_connection((host, port), timeout=1.0).close()
+            up = True
+            break
+        except OSError:
+            continue
+    seen.update(host=host, at=time.monotonic(), up=up)
+    return up
+
+
+SPLIT_HOST_SEEN = {}
+
+
 def split_preferred_unable(store):
     """Why the preferred node is known not to serve, or ''."""
     name = split_preferred_name(store)
     if not name or name == node_name():
         return ''
-    if peer_db_restarting(SPLIT.get('peer_err') or ''):
+    said = peer_db_restarting(SPLIT.get('peer_err') or '')
+    if said == 'restarting' or (said == 'refused' and split_peer_host_up()):
         # Its machine there and its database refusing (1.0.226): not cut off from this one -
         # its RADIUS has no database either. Both went silent for as long as it was down.
+        # A bare refusal only with its machine seen up (1.0.227): a firewall between the
+        # nodes that rejects says "connection refused" too, and both nodes answered.
         return 'the preferred node\'s database is down'
     try:
         row = clock_state_of(store, name) or {}
@@ -33747,7 +33923,12 @@ def split_preferred_unable(store):
         # long ago and serving since, both nodes answered while apart.
         recent = float(row.get('at') or 0) >= (SPLIT['apart_since'] or time.time()) - \
             max(5, int(CONFIG.get('split_after_s') or 20)) - 30
-        if row.get('role') == 'aside' and recent:
+        # And still fresh, by the measured difference of the clocks (1.0.227): the preferred
+        # node, aside for its clock, answers again once this one's row reads stale to it
+        # (25 s) - this node gives way a little after, so the two do not both go on.
+        sk = clock_skew_of(store, name) or 0.0
+        fresh = time.time() - (float(row.get('at') or 0) - sk) < 32
+        if row.get('role') == 'aside' and recent and fresh:
             return 'the preferred node stepped aside for its clock'
         for n in ha_nodes(store):
             if n['name'] == name and n.get('maintenance'):
@@ -34344,11 +34525,10 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         ok, dirs = clock_dir_check(store)
         CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now)
     p = clock_peer_row(store, now) if peer is None else (None if peer == 'none' else peer)
-    if CLOCK['role'] == 'aside' and p is not None and not p.get('fresh') and split_apart() and \
-            split_mode() == 'priority':
-        # Aside when the nodes lost each other (1.0.226): the other node goes on in priority
-        # mode taking this one for aside - this one answering too, both did.
-        p = dict(p, fresh=True)
+    # No longer kept aside for as long as the nodes are apart (1.0.227): with the other node
+    # dead that was for ever, and nobody answered. Its row goes stale and this node answers -
+    # and the other one, in priority mode, takes this node's "aside" only while that row is
+    # fresh (split_preferred_unable), so one of the two answers, not both.
     aside_s = float(CONFIG.get('clock_aside_s') or 20)
     role, why = clock_decide(clock_mode(), CLOCK['ref'], aside_s,
                              bool(CONFIG.get('clock_codes')) and CLOCK['ref'] is not None,
@@ -51250,7 +51430,7 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     load_config(saved=store.settings_saved())
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.
-    data = {'mode': 'replicated', 'key': sealing_key(make=True).hex(), 'pg_major': major,
+    data = {'mode': 'replicated', 'key': sealing_key_for_write().hex(), 'pg_major': major,
             'slot': 2,
             'db': {'db_name': name, 'db_user': user, 'db_password': pw},
             'peer': {'name': node_name(), 'address': me, 'port': port, 'slot': 1},

@@ -96,9 +96,15 @@ def node_stepped_aside(store, name):
     """Whether `name` stepped aside by itself - its clock, or the nodes apart - by its own
     state rows, fresh."""
     now = time.time()
+    try:
+        # Written by its own clock (1.0.227): a node aside for its clock has it off - a minute
+        # behind, its fresh row read as old, and it was counted as answering.
+        sk = clock_skew_of(store, name) or 0.0
+    except Exception:                                   # noqa: BLE001
+        sk = 0.0
     for k in ('clock:state:', 'split:state:'):
         row = _meta_json(store, k + name) or {}
-        if row.get('role') == 'aside' and now - float(row.get('at') or 0) < 40:
+        if row.get('role') == 'aside' and now - (float(row.get('at') or 0) - sk) < 40:
             return True
     return False
 

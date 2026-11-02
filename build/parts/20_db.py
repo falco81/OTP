@@ -672,22 +672,40 @@ class Db(object):
             # SQLite too (1.0.222): its writes went in one by one, and another writer taking
             # the file between them left the code used and the request unanswered. IMMEDIATE:
             # the file's write lock taken at once - waited for before anything is written.
-            self.run(RawSql({'mariadb': 'START TRANSACTION', 'sqlite': 'BEGIN IMMEDIATE'}.get(
-                self.engine, 'BEGIN')))
-            self.in_tx = True
-            try:
-                yield
-                self.run(RawSql('COMMIT'))
-            except BaseException:
-                self.in_tx = False
+            # 10 s idle at most inside it, on every lane (1.0.227): a sign-in on the portal or
+            # the pages runs on the main lane, 120 s there - a node frozen in the middle of
+            # one held that person's row on the shared database two minutes.
+            main = self._lane() is self._lanes['main']
+            if self.engine == 'mariadb' and main:
                 try:
-                    if self.conn is not None:
-                        self.run(RawSql('ROLLBACK'))
+                    self.run(RawSql('SET SESSION idle_transaction_timeout = 10'))
                 except Exception:                       # noqa: BLE001
-                    self.close(lane_only=True)
-                raise
+                    pass
+            try:
+                self.run(RawSql({'mariadb': 'START TRANSACTION', 'sqlite': 'BEGIN IMMEDIATE'}.get(
+                    self.engine, 'BEGIN')))
+                self.in_tx = True
+                if self.engine == 'postgres' and main:
+                    self.run(RawSql('SET LOCAL idle_in_transaction_session_timeout = 10000'))
+                try:
+                    yield
+                    self.run(RawSql('COMMIT'))
+                except BaseException:
+                    self.in_tx = False
+                    try:
+                        if self.conn is not None:
+                            self.run(RawSql('ROLLBACK'))
+                    except Exception:                   # noqa: BLE001
+                        self.close(lane_only=True)
+                    raise
+                finally:
+                    self.in_tx = False
             finally:
-                self.in_tx = False
+                if self.engine == 'mariadb' and main and self.conn is not None:
+                    try:
+                        self.run(RawSql('SET SESSION idle_transaction_timeout = 120'))
+                    except Exception:                   # noqa: BLE001
+                        pass
 
     # ---- the tables ----------------------------------------------------------
     def make_tables(self):

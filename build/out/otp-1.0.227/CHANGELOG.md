@@ -4,6 +4,54 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.227 — 3 November 2026
+
+**The last of five rounds of looking for bugs.** Found by it, and mended:
+
+- **A node that steps aside for the split or its clock went on answering for seconds** while the VIP
+  address was still on it - "draining", meant for maintenance asked for by hand, up to 20 s: a code
+  was let in there and again on the other node, and a node whose clock was off refused right codes.
+  It is silent at once now, on its own address and on the VIP; maintenance by hand still drains.
+- **A node aside for its clock stayed silent for good when the other node died** (1.0.226, priority
+  mode of the split card): it was kept aside for as long as the nodes were apart. It answers again
+  once the other node's row is stale; the other node takes its "aside" only while that row is fresh.
+- **"Connection refused" was taken for the preferred node's database down** (1.0.226): a firewall
+  between the nodes that rejects says the same, and both nodes answered. A bare refusal counts only
+  when the preferred node's machine takes a connection on 443, 22 or 80.
+- **A sign-in waited up to 8 s while the other node's PostgreSQL restarted** (1.0.226) - longer than
+  a VPN waits: it gave up, the code was used by then, and its next try was refused as used. 2.5 s now
+  (1.2 s for a database that refuses outright).
+- **A node whose database went away left the VIP address unanswered 14 s**: keepalived is told at once.
+- **A node aside for its clock was counted as answering** by an upgrade or a restart of the other
+  node when its clock was behind: its rows are read by the measured difference of the clocks.
+- **A code typed with another dash or space was counted as wrong** - "123–456" (en dash), the
+  no-break hyphen, the full-width "－" of an input method, the minus sign, a tab, or "ě" sent as "e"
+  and a caron. Read as the digits meant everywhere now: RADIUS, the portal, the pages, the admin's
+  second step, the SSH gate, the command line.
+- **The code boxes of the portal and the admin's second step cut "1234 5678" to 7 digits** - an
+  8-digit code as the app shows it, counted as wrong; 10-digit mail and SMS codes the same. And
+  "123-456" or the Czech row was refused there as "digits only" while the server took it.
+- **Password and code in one (password_otp): a recovery code of 11-12 digits typed with a dash or
+  spaces was never found** - the password with digits on it went to the directory. And "++++++"
+  (111111 on the Czech row) was refused.
+- **A tab inside a code was said to be a wrong shared secret.**
+- **`otp --scratch` on a node without its key file made a new key** silently: the codes it gave
+  opened nowhere else, those before them were gone. The same guard as for every other secret now.
+- **The bundle for the second node made a new key on a node that had lost its own** - after the join
+  neither node opened any token. It is refused now.
+- **A frozen node held a person's row 2 minutes when the sign-in came through the portal or the
+  pages** on a shared database (RADIUS: 10 s since 1.0.226). 10 s for every sign-in now.
+- **One shared database, no HA mode: a node dead longer than a day was forgotten** - its alert went,
+  "back to normal" was mailed, its metrics vanished. Kept until it is forgotten (`otp --ha-forget`).
+- **An upgrade from 1.0.201 or older sent the SMS gateway past the proxy** - the codes by SMS
+  stopped where the gateway is reached through the proxy only. Kept on as it was.
+
+Looked at and found as it should be: RADIUS on the VIP address and on each node's own, the VIP
+moving for every cause (maintenance, split, arbiter, clock, directory, database, a killed daemon) and
+coming back by itself, never both nodes silent; codes typed in every form on every path; no code or
+password in any log; upgrades from 1.0.200, 1.0.214 and 1.0.221 on SQLite, PostgreSQL and MariaDB;
+a downgrade below 1.0.224 refused. The latency under full load is the same as 1.0.221's.
+
 ## 1.0.226 — 3 November 2026
 
 **The fourth of five rounds of looking for bugs.** Found by it, and mended:

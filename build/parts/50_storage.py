@@ -586,6 +586,21 @@ class Storage(object):
             return
         self.db.make_tables()
         try:
+            was = self.db.value('SELECT v FROM meta WHERE k = ?', (mark,))
+        except Exception:                               # noqa: BLE001
+            was = None
+        try:
+            # The SMS gateway through the proxy as it went before 1.0.202 (1.0.227): off by
+            # default since, and kept on only for the updates - the codes by SMS of a gateway
+            # reached through the proxy alone stopped at the upgrade.
+            if was and _ver_tuple(was) < (1, 0, 202):
+                saved = self.settings_saved()
+                if saved.get('proxy') and 'proxy_sms' not in saved:
+                    self.save_setting('proxy_sms', 1, 'upgrade from %s' % was)
+                    CONFIG['proxy_sms'] = 1
+        except Exception:                               # noqa: BLE001
+            pass
+        try:
             self.db.upsert('meta', 'k', {'k': mark, 'v': __version__})
         except Exception:                               # noqa: BLE001
             pass

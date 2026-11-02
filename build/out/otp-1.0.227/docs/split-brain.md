@@ -232,6 +232,22 @@ starting up) is not a cut link - a cut link gives no answer at all: the other no
 preferred node for unable and goes on. The same when the preferred node's last word, from about
 when the nodes lost each other, was that it stepped aside for its clock or is in maintenance.
 
+1.0.227 narrows this:
+
+- **"Connection refused" alone is not enough.** A firewall between the nodes that rejects (nftables
+  `reject`, iptables `REJECT`) gives the same words while the preferred node is up and answering -
+  both nodes answered. A bare refusal counts only when the preferred node's machine takes a TCP
+  connection on another port (443, 22 or 80): the machine there, only its database refusing.
+  "Shutting down" / "starting up" (an answer from PostgreSQL itself) counts as before.
+- **Its clock "aside" counts only while its row is fresh** (younger than 32 s, by the measured
+  difference of the clocks). The preferred node, aside for its clock, no longer stays aside for as
+  long as the nodes are apart (1.0.226 did: with the other node dead that was for ever, and nobody
+  answered): it answers again once the other node's row reads stale to it (25 s), and the other
+  node gives way a few seconds after.
+- **A node that steps aside for the split or its clock is silent at once**, also on the VIP
+  address while keepalived moves it. Before, it went on answering up to 20 s ("draining", meant for
+  maintenance asked for by hand): a code was let in there and again on the other node.
+
 ## 7. What changes while apart
 
 ### 7.1 Stepping aside

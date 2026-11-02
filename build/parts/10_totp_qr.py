@@ -48,7 +48,17 @@ def code_typed(code):
     """A code as somebody typed it, read as the digits meant (1.0.225): "821 275" as the mail
     shows it, with a dash or a no-break space, or on the Czech row of the keyboard without
     Shift ("žřáčéá" for 495040) - as the SSH gate has read it since 1.0.190."""
-    return re.sub(r'[\s-]', '', ssh_code_typed(code))
+    return code_sep_gone(ssh_code_typed(code))
+
+
+def code_sep_gone(code):
+    """A code without what was typed between its digits (1.0.227): a space of any kind, a tab,
+    and every dash - "123–456" with an en dash, the no-break hyphen, the full-width one an IME
+    gives, the minus sign. Only "-" and spaces went before, and these were counted wrong."""
+    import unicodedata
+    return ''.join(c for c in str(code or '')
+                   if not (c.isspace() or c in '\u2212\u00ad\u200b'
+                           or unicodedata.category(c) == 'Pd'))
 
 
 def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', window=1):
@@ -58,7 +68,7 @@ def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', wind
     at a time, so that when two would do the nearest one is the answer.
     Compared in constant time, every one of them.
     """
-    code = re.sub(r'[\s-]', '', str(code or ''))     # "123-456" too (1.0.224)
+    code = code_sep_gone(code)     # "123-456" too (1.0.224), any dash (1.0.227)
     if not re.fullmatch(r'[0-9]+', code, re.ASCII) or len(code) != int(digits):
         return None
     if isinstance(key, str):
@@ -109,7 +119,7 @@ def scratch_hash(user, code, key=None):
     database holds nothing that could be typed - and nothing that a copy of
     the database alone lets anybody try codes against."""
     if key is None:
-        key = sealing_key(make=True)
+        key = sealing_key_for_write()
     return 'hmac:' + hmac.new(key, _scratch_text(user, code), hashlib.sha256).hexdigest()
 
 

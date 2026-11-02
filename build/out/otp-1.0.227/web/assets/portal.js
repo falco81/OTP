@@ -459,7 +459,7 @@ function verifyCard() {
   var f = el('form', 'btnrow');
   var box = textBox('', '000000', 'codein');
   box.inputMode = 'numeric';
-  box.maxLength = 10;
+  box.maxLength = 32;      /* "12345 67890" fits (1.0.227) */
   box.autocomplete = 'one-time-code';
   noI18n(box);
   var go = cmdButton('Confirm', 'check', 'primary');
@@ -488,7 +488,7 @@ function verifyCard() {
   wrap.appendChild(row);
   f.addEventListener('submit', function (e) {
     e.preventDefault();
-    var typed = box.value.replace(/\s/g, '');
+    var typed = codeTyped(box.value);
     if (!/^[0-9]{4,10}$/.test(typed)) {
       said.className = 'said bad';
       said.textContent = 'Type the code from the message: its digits only.';
@@ -662,7 +662,7 @@ function confirmForm(replacing) {
   var f = el('form', 'btnrow');
   var box = textBox('', '000000', 'codein');
   box.inputMode = 'numeric';
-  box.maxLength = 8;
+  box.maxLength = 32;      /* "1234 5678" fits (1.0.227): 8 cut it to 7 digits, counted wrong */
   box.autocomplete = 'one-time-code';
   noI18n(box);
   var go = cmdButton(replacing ? 'Use the new token' : 'Confirm', 'check', 'primary');
@@ -678,7 +678,7 @@ function confirmForm(replacing) {
     busy(go, true);
     said.className = 'said';
     said.textContent = '';
-    var typed = box.value.replace(/\s/g, '');
+    var typed = codeTyped(box.value);
     /* Not digits, or too few: said here, not counted as a wrong code there
        (1.0.36). */
     if (!/^[0-9]{6,8}$/.test(typed)) {

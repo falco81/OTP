@@ -391,7 +391,9 @@ class Authenticator(object):
             d.step('a password', False, 'CHAP or no User-Password: a one-time code can only '
                    'travel as PAP')
             return d.refuse('the request carries no User-Password (PAP)')
-        if password and any(ord(c) < 32 or c == '\ufffd' for c in password):
+        # A tab or a line end is what somebody typed (1.0.227): "123<Tab>456" was said to be
+        # a shared secret not the same as on the client.
+        if password and any((ord(c) < 32 and c not in '\t\r\n') or c == '\ufffd' for c in password):
             d.step('the password reads as text', False, 'what came is not text - is the shared '
                    'secret the same on both sides?')
             return d.refuse('the password does not decode: the shared secret is probably '
@@ -483,8 +485,25 @@ class Authenticator(object):
             # "Heslo-" + a 7-digit recovery code split as "Heslo" + "-1234567" - the password
             # cut short went to the directory, and the code was never found.
             digits_only = [x for x in splits if x[0].isascii() and x[0].isdigit()]
-            if digits_only:
-                splits = digits_only
+            # A code typed with something between its digits (1.0.227): "1234 5678",
+            # "467164-244388", the Czech row - the raw length is longer than the code, and an
+            # 11-12 digit recovery code typed so was never tried; the password with digits on
+            # it went to the directory. Tried after the plain digits, so nothing that worked
+            # before changes; the tail starts and ends with a digit as typed, so "Heslo-" +
+            # code still leaves "Heslo-" as the password.
+            typed = []
+            for ln in range(6, min(len(password), 31)):
+                tail = password[-ln:]
+                if tail.isascii() and tail.isdigit():
+                    continue
+                if code_sep_gone(tail[0]) == '' or code_sep_gone(tail[-1]) == '':
+                    continue
+                t = code_typed(tail)
+                if re.fullmatch(r'[0-9]{6,12}', t, re.ASCII) and all(x[0] != t or x[1] != password[:-ln]
+                                                                    for x in digits_only + typed):
+                    typed.append((t, password[:-ln]))
+            if digits_only or typed:
+                splits = digits_only + typed
             if not splits:
                 d.step('the code', False, 'nothing after the password looks like a code')
                 d.otp = SAY_BAD
@@ -1106,7 +1125,11 @@ class RadiusServer(object):
         self.sum_up()
         # In maintenance nothing is answered (1.0.37): the VPN takes this
         # node for down and asks the other, as it would any node that is.
-        if maintenance_now(self.d.store).get('on') and not self.draining():
+        m = maintenance_now(self.d.store)
+        # Stepped aside for the nodes apart or its clock (1.0.227): silent at once, never
+        # answered on while the VIP address moves - a code was let in here and again on the
+        # other node, and a right code refused by a clock that is off.
+        if m.get('on') and (m.get('split') or m.get('clock') or not self.draining()):
             self.counts['maintenance'] += 1
             return
         client = self.d.store.client_for(ip)
