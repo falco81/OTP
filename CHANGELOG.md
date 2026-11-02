@@ -4,6 +4,24 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.230 — 3 November 2026
+
+**Wrong directory passwords per person capped** (*Settings → Sign-in protection → Wrong directory
+passwords per person*, `dir_pw_tries`; 0 by default - as until now). A directory password is tried
+against Active Directory at each sign-in to the enrolment pages, at each new token there and at each
+sign-in of an administrator from the directory - each with a count of its own, on each node alone:
+from many addresses, enough wrong ones for a name reached the directory to lock the account there.
+
+- Set below the directory's lockout threshold (3 for 5 to 10): after so many wrong passwords for one
+  name within `dir_pw_window_min` (30 min), from anywhere, on any node, the directory is no longer
+  asked for that name - only the pages wait, the account in Active Directory stays unlocked.
+- A right password does not count. One count for the whole cluster, in the database; one name
+  whatever its spelling (DOMAIN\\novak, novak@corp.cz, Novak).
+- Shown and cleared under *Locked out* (Accounts and Sign-in protection). RADIUS is not affected.
+
+The card of a directory: its two upper sections side by side, of the same width, across the whole
+width - a third, empty column left them narrow. On a phone one under the other.
+
 ## 1.0.229 — 3 November 2026
 
 **Where a person's e-mail address and mobile number are read from the directory - on each

@@ -7,6 +7,8 @@ there (or with `otp --set`):
 2. **Changes that could cut the server off taken back** unless somebody keeps
    them - a node's new network, and the firewall and who may reach the pages;
    on by default.
+3. **Wrong directory passwords per person capped** (1.0.230) - so guesses made
+   here never lock the account in Active Directory; off by default.
 
 ## 1. Guessing from one place (RADIUS)
 
@@ -51,6 +53,37 @@ otp --set radius_guard=1
 otp --set radius_guard_tries=20
 otp --set radius_guard_names=5
 otp --set radius_guard_trusted='198.51.100.7 203.0.113.0/24'
+```
+
+## 1.1 Wrong directory passwords per person (1.0.230)
+
+A directory password is tried against Active Directory at each sign-in to the
+enrolment pages, at each new token there (*Replace it*), and at each sign-in of
+an administrator from the directory. Until 1.0.230 each of these had a count of
+its own, per address and per name, held in each node's memory: from many
+addresses, and on two nodes, a name could get dozens of wrong passwords through
+to the directory in a quarter of an hour - more than its lockout threshold
+(typically 5 to 10), and the account was locked there: mail, the VPN, the PC.
+
+| Setting | Default | |
+|---------|---------|--|
+| `dir_pw_tries` | `0` | Wrong directory passwords for one name, from anywhere and on any node, before the directory is no longer asked for it. **0 = no cap of its own, as until now.** |
+| `dir_pw_window_min` | `30` | How long one counts. As long as the directory's *Reset account lockout counter after*, or longer. |
+
+Set `dir_pw_tries` **below** the directory's lockout threshold - 3 for a
+threshold of 5 to 10. Over the cap, the name gets *too many wrong passwords for
+this name: try again in N min* and the directory is not asked at all - the
+account in Active Directory stays unlocked; only these pages wait. A right
+password does not count. The count is kept in the database: both nodes of an HA
+pair and every node on one database count together; `DOMAIN\novak`,
+`novak@corp.cz` and `Novak` are one name. *Locked out* (Accounts, and Sign-in
+protection) shows the names counted and clears them one by one. RADIUS is not
+affected - it has its own *Guessing from one place* above and the lockout of
+tokens.
+
+```
+otp --set dir_pw_tries=3
+otp --set dir_pw_window_min=30
 ```
 
 ## 2. Changes taken back unless kept

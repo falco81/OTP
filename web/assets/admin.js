@@ -4035,7 +4035,9 @@ function editDir(a) {
     var to = textBox(a.timeout_s || 10, '', 'mono');
     var on = switchBox(a.enabled);
     var ca = el('textarea'); ca.rows = 4; ca.placeholder = '-----BEGIN CERTIFICATE-----'; ca.value = a.ca || '';
-    var secs = el('div', 'msects');
+    /* Two columns of the same width, the whole width (1.0.230): auto-fit with a section
+       across the whole width made a third, empty column - the two cards stood narrow. */
+    var secs = el('div', 'msects two');
     var s1 = msect('How it is reached', 'The domain controllers, in the order they are asked, and how.');
     var g1 = el('div', 'formgrid');
     g1.appendChild(formField('Name', name, 'What the realms call it.'));
@@ -4913,7 +4915,7 @@ var LO = {data: null, skew: 0, fetched: 0, timer: null};
    protection - the VPN's places and the locked tokens, with a filter. */
 var LO_VIEWS = [
   {table: 'lo-table', tools: 'lo-tools', card: 'lo-card', kinds: null},
-  {table: 'gd-table', tools: 'gd-tools', card: 'gd-card', kinds: ['radius-src', 'token-locked', 'codes-sent'], find: 'gd-find'}
+  {table: 'gd-table', tools: 'gd-tools', card: 'gd-card', kinds: ['radius-src', 'token-locked', 'codes-sent', 'dir-passwords'], find: 'gd-find'}
 ];
 function loadLockouts() {
   if (!ADMIN || !LO_VIEWS.some(function (v) { return $(v.table); })) return;

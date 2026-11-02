@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.229'
+__version__ = '1.0.230'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -140,6 +140,10 @@ DEFAULTS = {
     'radius_ma_sticky': 1,
     # --- sign-in protection (1.0.137) ----------------------------------------
     'radius_guard': 0,
+    # Wrong directory passwords per person on the pages, for the whole cluster (1.0.230): 0 -
+    # no cap of its own, as until now (the counts of each sign-in, on each node).
+    'dir_pw_tries': 0,
+    'dir_pw_window_min': 30,
     'radius_guard_tries': 20,
     'radius_guard_names': 5,
     'radius_guard_window_min': 15,
@@ -487,6 +491,7 @@ TUNABLE = {
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
     'radius_reject_reason': (0, 1), 'radius_ma_sticky': (0, 1),
     'radius_guard': (0, 1), 'radius_guard_tries': (2, 10000), 'radius_guard_names': (0, 1000),
+    'dir_pw_tries': (0, 100), 'dir_pw_window_min': (1, 1440),
     'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
@@ -692,6 +697,8 @@ NAMES = {
     'sms_tel_modem': 'Its modem',
     'sms_plain': 'Without accents (one SMS, not two)',
     'radius_bind': 'Listen on the address',
+    'dir_pw_tries': 'Wrong directory passwords per person, on these pages and the enrolment pages',
+    'dir_pw_window_min': '...counted over (min)',
     'radius_auth_port': 'Authentication port',
     'radius_acct_port': 'Accounting port',
     'radius_status_server': 'Answer Status-Server',
@@ -1197,6 +1204,18 @@ SAYS = {
     'portal_groups': 'With <i>members of the groups named below</i>: the groups, by name '
                      '(<code>VPN_USERS</code>) or by whole DN, separated by semicolons or new '
                      'lines.',
+    'dir_pw_tries': 'A directory password is tried against Active Directory at each sign-in to the '
+                    'enrolment pages, at each new token there, and at each sign-in to these pages '
+                    'of an administrator from the directory. Each of them counts on its own and on '
+                    'each node alone - together, with many addresses, enough wrong ones for a name '
+                    'reach the directory to lock the account there: e-mail, the VPN and the PC with '
+                    'it. Set below the directory\'s own lockout threshold (3 for a threshold of 5 '
+                    'to 10): after so many wrong passwords for one name within the time below, from '
+                    'anywhere, on any node, the directory is no longer asked for that name - only '
+                    'these pages wait, the account in the directory stays unlocked. Cleared under '
+                    'Locked out. 0: no cap of its own (as until now). RADIUS is not affected.',
+    'dir_pw_window_min': 'How long a wrong directory password counts towards the cap above. As '
+                         'long as the directory\'s "Reset account lockout counter after", or longer.',
     'portal_first_code': 'Somebody who has no token yet signs in with their directory name and '
                          'password, and then gets a one-time code to the e-mail address or the '
                          'mobile number the directory has for them - read from it at the sign-in, '
@@ -1532,7 +1551,8 @@ SAYS_SHORT = {
 PANES = {
     'realms': ['default_realm'],
     'guard': ['radius_guard', 'radius_guard_tries', 'radius_guard_names',
-              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted'],
+              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted',
+              'dir_pw_tries', 'dir_pw_window_min'],
     # Where the change they take back is made (1.0.150), not under sign-ins.
     'network': ['net_confirm_min'],
     'fw': ['fw_confirm_min'],
@@ -12209,7 +12229,8 @@ def chal_drop(store, state):
 def chal_tidy(store):
     """Challenges past their time, and the counts of sent codes."""
     t = clock_now('locks')
-    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'chal:%' OR k LIKE 'codesent:%'"):
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'chal:%' OR k LIKE 'codesent:%' "
+                           "OR k LIKE 'adpw:%'"):
         try:
             v = json.loads(r['v'] or 'null')
         except ValueError:
@@ -12218,6 +12239,8 @@ def chal_tidy(store):
             gone = not isinstance(v, dict) or float(v.get('exp') or 0) < t - 60
         else:
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
+            if r['k'].startswith('adpw:'):              # wrong directory passwords (1.0.230)
+                span = 60 * int(CONFIG.get('dir_pw_window_min') or 30)
             now = time.time()                           # the counts by the machine's clock
             gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
         if gone:
@@ -37618,6 +37641,7 @@ LOCKOUT_KINDS = {
     # Kept in the database for the whole cluster (1.0.116), not in a node's
     # memory: codes sent to a person, and a token locked by wrong codes.
     'codes-sent': 'codes sent by e-mail or SMS',
+    'dir-passwords': 'directory passwords tried on the pages',
     'token-locked': 'the token, after wrong codes',
     'password': 'changing a password',
     'code-test': 'trying a code (Tokens)',
@@ -37753,6 +37777,39 @@ def lockouts_said(store, a, n):
     store.add_event('sign-ins', words, 'warn', who=by)
 
 
+# ---- the cap of wrong directory passwords per person (1.0.230) -------------------------------
+def dir_pw_who(name):
+    """A person as the cap counts them: DOMAIN\\novak, novak@anything and Novak are one."""
+    return str(name or '').strip().lower().split('\\', 1)[-1].rsplit('@', 1)[0].strip()[:190]
+
+
+def dir_pw_take(h, name):
+    """A place for one directory password of `name`, held before the directory is asked; ''
+    when there is no cap. Over it: 429 - the directory is not asked."""
+    most = int(CONFIG.get('dir_pw_tries') or 0)
+    who = dir_pw_who(name)
+    if most <= 0 or not who:
+        return ''
+    span = 60 * int(CONFIG.get('dir_pw_window_min') or 30)
+    if not node_key_add(h.store, 'adpw', who, span, limit=most):
+        times = sorted(x for x in node_key_times(h.store, 'adpw', who) if time.time() - x < span)
+        wait = max(1, int(((times[-most] + span) - time.time()) // 60) + 1) if len(times) >= most else 1
+        log_sparing('adpw:' + who, 'wrong directory passwords for %s: the cap of %d in %d min is '
+                    'reached - the directory is not asked for that name meanwhile'
+                    % (who, most, span // 60), 'warn', every=300)
+        raise ApiError(429, 'too many wrong passwords for this name: try again in %d min' % wait)
+    return who
+
+
+def dir_pw_done(h, held, wrong):
+    """The place given back when the password was right (or the directory not reached)."""
+    if held and not wrong:
+        try:
+            node_key_give_back(h.store, 'adpw', held)
+        except Exception:                               # noqa: BLE001
+            pass
+
+
 def lockouts_shared(store):
     """What the database holds for every node (1.0.116): the codes sent to a
     person within the window, and tokens locked after wrong codes."""
@@ -37779,6 +37836,28 @@ def lockouts_shared(store):
                      'until': (times[len(times) - limit] + span) if locked else None,
                      'forgets': times[-1] + span, 'first': times[0], 'last': times[-1],
                      'others': []})
+    # Wrong directory passwords per person (1.0.230), when there is a cap.
+    most = int(CONFIG.get('dir_pw_tries') or 0)
+    pspan = 60 * int(CONFIG.get('dir_pw_window_min') or 30)
+    per = {}
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'adpw:%'"):
+        try:
+            per.setdefault(node_key_name('adpw', r['k']), []).extend(
+                float(x) for x in json.loads(r['v'] or '[]'))
+        except (ValueError, TypeError):
+            continue
+    for who, times in per.items():
+        times = sorted(x for x in times if t - x < pspan)
+        if not times or most <= 0:
+            continue
+        locked = len(times) >= most
+        rows.append({'kind': 'dir-passwords', 'who': who, 'by': 'name',
+                     'what': LOCKOUT_KINDS['dir-passwords'], 'base': 'dir-passwords',
+                     'words': 'wrong directory passwords', 'fails': len(times), 'limit': most,
+                     'locked': locked,
+                     'until': (times[len(times) - most] + pspan) if locked else None,
+                     'forgets': times[-1] + pspan, 'first': times[0], 'last': times[-1],
+                     'others': []})
     after = int(CONFIG.get('lockout_after') or 0)
     for r in store.db.rows('SELECT name, locked_until, failures, fail_times, last_from FROM '
                            'tokens WHERE locked_until > ?', (t,)):
@@ -37798,6 +37877,11 @@ def lockouts_shared(store):
 
 
 def lockouts_shared_clear(store, kind, who, by):
+    if kind == 'dir-passwords':
+        n = node_key_drop(store, 'adpw', dir_pw_who(who))
+        store.add_event('sign-ins', '%s cleared the count of wrong directory passwords for %s'
+                        % (by, who), 'warn', who=by)
+        return n
     if kind == 'codes-sent':
         n = node_key_drop(store, 'codesent', who)
         store.add_event('sign-ins', '%s cleared the count of codes sent to %s' % (by, who),
@@ -37846,7 +37930,7 @@ def _lockouts_do(h):
     b = h.body()
     act = b.get('action')
     nodes = [node_name()] + [n for n in h.d.cluster_nodes() if n != node_name()]
-    if act == 'clear' and str(b.get('kind') or '') in ('codes-sent', 'token-locked'):
+    if act == 'clear' and str(b.get('kind') or '') in ('codes-sent', 'token-locked', 'dir-passwords'):
         n = lockouts_shared_clear(h.store, str(b.get('kind')), norm_name(b.get('who') or ''),
                                   s['name'])
         if not n:
@@ -37975,13 +38059,17 @@ def admin_ask_directory(h, name, password):
     if entry_unusable(entry):
         return {'ok': False, 'said': 'the account may not sign in: %s' % entry_unusable(entry),
                 'dn': entry['dn'], 'directory': ad.name}
+    held = dir_pw_take(h, who)          # the cap per person (1.0.230)
     try:
         ad.password_ok(entry, password)
     except LdapUnreachable as e:
+        dir_pw_done(h, held, False)
         raise ApiError(503, 'the directory cannot be reached', str(e))
     except LdapError as e:
+        dir_pw_done(h, held, True)
         return {'ok': False, 'said': str(e) or 'the password is not right', 'dn': entry['dn'],
                 'directory': ad.name}
+    dir_pw_done(h, held, False)
     have = ad.groups_of(entry, True)
     return {'ok': True, 'name': who, 'role': admin_role_for(have, ad), 'dn': entry['dn'],
             'display': entry.get('display') or '', 'directory': ad.name, 'entry': entry,
@@ -42124,7 +42212,18 @@ def _portal_login(h):
             raise LdapError('more than one account answers to that name')
         if entry_unusable(entry):
             raise LdapError('the account may not sign in: %s' % entry_unusable(entry))
-        ad.password_ok(entry, password)
+        # The cap of wrong directory passwords per person (1.0.230), before the directory is
+        # asked: over it, the account there is not locked by guesses made here.
+        held = dir_pw_take(h, full)
+        try:
+            ad.password_ok(entry, password)
+        except LdapUnreachable:
+            dir_pw_done(h, held, False)
+            raise
+        except LdapError:
+            dir_pw_done(h, held, True)
+            raise
+        dir_pw_done(h, held, False)
     except LdapUnreachable as e:
         log('the enrolment pages could not reach the directory: %s' % e, 'warn')
         raise ApiError(503, 'the directory cannot be reached just now')
@@ -42750,16 +42849,20 @@ def _portal_reissue(h):
     ad = h.d.auth.directory(realm['directory']) if realm else None
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
+    held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'])     # 1.0.230
     try:
         ad.password_ok({'dn': (s.get('data') or {}).get('dn')}, str(b.get('password') or ''))
     except LdapUnreachable as e:
+        dir_pw_done(h, held, False)
         log('the enrolment pages could not reach the directory: %s' % e, 'warn')
         raise ApiError(503, 'the directory cannot be reached just now')
     except LdapError:
+        dir_pw_done(h, held, True)
         h.failed(key)
         # 403, not 401 (1.0.33): a 401 signs the page out, and the person
         # lost the words saying what was wrong.
         raise ApiError(403, 'the password is not right')
+    dir_pw_done(h, held, False)
     stop = h.d.tokens.blocked(s['name'])
     if stop:
         raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
