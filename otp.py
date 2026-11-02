@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.224'
+__version__ = '1.0.225'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2655,6 +2655,13 @@ def totp(key, when=None, digits=6, period=30, algorithm='SHA1'):
     return hotp(key, totp_step(when, period), digits, algorithm)
 
 
+def code_typed(code):
+    """A code as somebody typed it, read as the digits meant (1.0.225): "821 275" as the mail
+    shows it, with a dash or a no-break space, or on the Czech row of the keyboard without
+    Shift ("žřáčéá" for 495040) - as the SSH gate has read it since 1.0.190."""
+    return re.sub(r'[\s-]', '', ssh_code_typed(code))
+
+
 def totp_match(key, code, when=None, digits=6, period=30, algorithm='SHA1', window=1):
     """Which period the code belongs to - its step number - or None.
 
@@ -2744,6 +2751,13 @@ def scratch_find(user, code, kept, key=None):
             return k, new
         if hmac.compare_digest(k, old):
             return k, new if new is not None else old
+    nfd = unicodedata.normalize('NFD', str(user or '')) if not str(user or '').isascii() else ''
+    if nfd and nfd != user:
+        # Kept under the name decomposed (1.0.225): a token renamed to the composed form
+        # whose codes were never sealed to be made again keeps its hashes of the old form.
+        got, _was = scratch_find(nfd, code, kept, key)
+        if got is not None:
+            return got, new if new is not None else scratch_hash_old(user, code)
     return None, None
 
 
@@ -10870,6 +10884,46 @@ def node_key_add(store, prefix, name, keep, most=None, limit=None):
             except Exception:                           # noqa: BLE001
                 continue
         if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
+            return _node_key_recount(store, prefix, name, k, t, keep, limit)
+    return False
+
+
+def _node_key_recount(store, prefix, name, k, t, keep, limit):
+    """Counted again once written (1.0.225): two nodes reading the other's row at the same
+    moment both got under the limit - one more than it allows. Over it now: this one taken
+    back, and not let past."""
+    if limit is None:
+        return True
+    total = 0
+    for r in node_key_rows(store, prefix, name):
+        try:
+            total += len([x for x in json.loads(r['v'] or '[]') if t - float(x) < keep])
+        except (ValueError, TypeError):
+            continue
+    if total <= limit:
+        return True
+    node_key_give_back(store, prefix, name, t)
+    return False
+
+
+def node_key_give_back(store, prefix, name, when=None):
+    """This node's entry at `when` (or its newest) taken out again."""
+    k = node_key(prefix, name)
+    for _ in range(8):
+        raw = store.get_meta(k)
+        try:
+            times = [float(x) for x in json.loads(raw or '[]')]
+        except (ValueError, TypeError):
+            return False
+        if not times:
+            return False
+        if when is not None and when in times:
+            times.remove(when)
+        elif when is None:
+            times.remove(max(times))
+        else:
+            return False
+        if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (json.dumps(times), k, raw)):
             return True
     return False
 
@@ -11793,8 +11847,21 @@ def code_send_later(store, kind, to, code, name, rid=''):
         if CODE_WAITING[0] >= CODE_WAITING_MOST:
             log_sparing('code-send-full', 'codes to send: %d are waiting already - the code '
                         'for %s is not sent' % (CODE_WAITING[0], name), 'warn', every=60)
-            return
-        CODE_WAITING[0] += 1
+            full = True
+        else:
+            full = False
+            CODE_WAITING[0] += 1
+    if full:
+        # Said where it is looked for, and not counted as sent (1.0.225): the person was left
+        # with no trace of why no code came, and shut out by the limit of codes sent.
+        try:
+            node_key_give_back(store, 'codesent', name)
+            store.otp_add({'ts': time.time(), 'name': name, 'ok': 0,
+                           'said': 'The code was not sent: too many codes are waiting to be sent',
+                           'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120], 'step_off': None})
+        except Exception:                               # noqa: BLE001
+            pass
+        return False
 
     def go():
         try:
@@ -11807,8 +11874,11 @@ def code_send_later(store, kind, to, code, name, rid=''):
     def send():
         try:
             said = code_send(store, kind, to, code, name=name)
+            waits = str(said or '').startswith('not taken yet')
             store.otp_add({'ts': time.time(), 'name': name, 'ok': 1,
-                           'said': 'A code was sent by %s to %s' % (
+                           'said': ('A code waits in the outgoing mail for %s: %s' % (
+                               dest_masked(kind, to), str(said)[:300])) if waits else
+                           'A code was sent by %s to %s' % (
                                'mail' if kind == 'mail' else 'SMS', dest_masked(kind, to)),
                            'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120],
                            'step_off': None})
@@ -11817,6 +11887,12 @@ def code_send_later(store, kind, to, code, name, rid=''):
         except Exception as e:                          # noqa: BLE001
             log_sparing('code-send:%s' % kind, 'a code for %s could not be sent by %s: %s'
                         % (name, kind, e), 'warn', every=60)
+            try:
+                # Not sent for good: not counted as sent (1.0.225) - after a short outage of
+                # the mail server a person who tried again was shut out for 15 min.
+                node_key_give_back(store, 'codesent', name)
+            except Exception:                           # noqa: BLE001
+                pass
             try:
                 store.add_event('mail' if kind == 'mail' else 'radius',
                                 'the code for %s could not be sent by %s to %s: %s'
@@ -11845,7 +11921,7 @@ def chal_key(state):
 def chal_new(store, data):
     """A challenge kept; returns the State the VPN sends back."""
     state = CHAL_PREFIX + secrets.token_bytes(24)
-    data = dict(data, exp=time.time() + int(CONFIG.get('code_ttl_s') or 300), tries=0,
+    data = dict(data, exp=clock_now('locks') + int(CONFIG.get('code_ttl_s') or 300), tries=0,
                 made=time.time(), node=node_name())
     store.set_meta(chal_key(state), json.dumps(data))
     return state
@@ -11883,7 +11959,7 @@ def chal_drop(store, state):
 
 def chal_tidy(store):
     """Challenges past their time, and the counts of sent codes."""
-    t = time.time()
+    t = clock_now('locks')
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'chal:%' OR k LIKE 'codesent:%'"):
         try:
             v = json.loads(r['v'] or 'null')
@@ -11893,7 +11969,8 @@ def chal_tidy(store):
             gone = not isinstance(v, dict) or float(v.get('exp') or 0) < t - 60
         else:
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
-            gone = not isinstance(v, list) or not any(t - float(x) < span for x in v)
+            now = time.time()                           # the counts by the machine's clock
+            gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
         if gone:
             store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
 
@@ -12619,7 +12696,7 @@ class Authenticator(object):
         d.realm = chal.get('realm') or ''
         d.token_name = name = chal.get('name') or ''
         kind = chal.get('kind') or 'totp'
-        if float(chal.get('exp') or 0) < time.time():
+        if float(chal.get('exp') or 0) < clock_now('locks'):     # both nodes alike (1.0.225)
             chal_take(self.store, state, raw)
             d.step('the question this answers', False, 'it ran out %s' % stamp(chal.get('exp')))
             d.otp = 'The code ran out'
@@ -12641,6 +12718,8 @@ class Authenticator(object):
             d.step('the code', False, 'nothing came, or not as PAP')
             return d.refuse('the request carries no code (PAP)')
         code = str(password).strip()
+        if re.fullmatch(r'[0-9]{4,12}', code_typed(code), re.ASCII):
+            code = code_typed(code)     # "821 275" as the mail shows it (1.0.225)
         t = time.time()
         # A try is taken before the code is looked at (1.0.101): written to
         # the question with a conditional update, so of answers that came
@@ -12693,6 +12772,16 @@ class Authenticator(object):
                 if ok:
                     chal_drop(self.store, state)
         else:
+            # The token as it is now (1.0.225), as for a code sent: switched to mail or SMS
+            # while this question was open, the app's code counted three wrong tries on the
+            # new token and asked again for a code that could not come.
+            now_tok = self.store.token(name)
+            if now_tok and token_kind(now_tok) in ('mail', 'sms'):
+                chal_take(self.store, state, raw)
+                stop = 'the token changed since the code was asked for - sign in again'
+                d.step('the code for the token %s' % name, False, stop, t)
+                d.otp = stop
+                return d.refuse('Denied by the token server: ' + stop)
             # The code is taken once by the token itself (its step, once_take):
             # the question is done with, even if a second answer to it counted
             # a try meanwhile - that refused the right code and used it up.
@@ -12745,6 +12834,9 @@ class RadiusServer(object):
         # duplicate key -> (time, reply or None), oldest first, never more
         # than SEEN_MAX: a flood fills it to the brim and no further (1.0.33).
         self.seen = collections.OrderedDict()
+        # Accounting's apart (1.0.225): a flood of it pushed the sign-ins' answers out, and a
+        # sign-in's repeat was then taken as new - a second code sent, a right code "used".
+        self.seen_acct = collections.OrderedDict()
         self.seen_lock = threading.Lock()
         self.unknown_said = {}
         self.unknown_lock = threading.Lock()
@@ -13012,9 +13104,10 @@ class RadiusServer(object):
         # address can no longer stand in for the real one.
         key = (ip, port, pkt.ident, pkt.authenticator, kind, hashlib.sha256(data).digest()[:16])
         window = int(CONFIG.get('radius_dup_window_s') or 0)
+        seen = self.seen_acct if kind == 'acct' else self.seen
         if window:
             with self.seen_lock:
-                got = self.seen.get(key)
+                got = seen.get(key)
                 if got and arrived - got[0] < window:
                     self.counts['repeated'] += 1
                     # A refusal sent late is given to a repeat once it went
@@ -13025,16 +13118,16 @@ class RadiusServer(object):
                     hit = True
                 else:
                     hit = False
-                    self.seen[key] = (arrived, None)
-                    self.seen.move_to_end(key)
+                    seen[key] = (arrived, None)
+                    seen.move_to_end(key)
                     # Old ones go from the front; past the limit the oldest go
                     # whatever their age - never a rebuild of the whole table.
                     cut = arrived - window
-                    while self.seen:
-                        k0, v0 = next(iter(self.seen.items()))
-                        if v0[0] >= cut and len(self.seen) <= self.SEEN_MAX:
+                    while seen:
+                        k0, v0 = next(iter(seen.items()))
+                        if v0[0] >= cut and len(seen) <= self.SEEN_MAX:
                             break
-                        self.seen.popitem(last=False)
+                        seen.popitem(last=False)
             if hit:
                 # Sent outside the lock (1.0.186): a full send buffer held every
                 # packet's look for repeats behind it.
@@ -13057,8 +13150,8 @@ class RadiusServer(object):
                         # (1.0.101), not after it is written down: a repeat
                         # coming meanwhile got nothing.
                         with self.seen_lock:
-                            if key in self.seen:
-                                self.seen[key] = (arrived, b)
+                            if key in seen:
+                                seen[key] = (arrived, b)
                 reply = self.access(pkt, client, ip, port, secret, arrived, sock, peer, remember)
             else:
                 # Not proven to come from the client: written down sparingly
@@ -13072,7 +13165,7 @@ class RadiusServer(object):
             # for the whole window (1.0.57).
             if window:
                 with self.seen_lock:
-                    self.seen.pop(key, None)
+                    seen.pop(key, None)
             raise
         if reply and not getattr(reply, 'sent', False):
             try:
@@ -13087,9 +13180,9 @@ class RadiusServer(object):
                 if reply is None and pkt.code == ACCESS_REQUEST:
                     # Left unanswered (no database, 1.0.59): the NAS's repeat
                     # is tried again, not swallowed as "repeated".
-                    self.seen.pop(key, None)
-                elif key in self.seen:
-                    self.seen[key] = (arrived, bytes(reply) if reply else None,
+                    seen.pop(key, None)
+                elif key in seen:
+                    seen[key] = (arrived, bytes(reply) if reply else None,
                                       getattr(reply, 'late_until', 0))
         try:
             self.d.store.client_seen(client['id'])
@@ -14041,7 +14134,11 @@ def names_nfc_kept(store):
     key = 'names:nfc:done'
     if store.get_meta(key) is not None or not ha_lead(store):
         return
-    moved = []
+    if not sealing_key():
+        # Not without the key that opens the tokens (1.0.225): their keys would stay sealed
+        # to the old name, and could not be opened when the key was put back.
+        return
+    moved, left = [], []
     for r in store.db.rows('SELECT * FROM tokens'):
         was = str(r.get('name') or '')
         if was.isascii():
@@ -14055,18 +14152,28 @@ def names_nfc_kept(store):
             continue
         old_b, new_b = token_bind(was), token_bind(to)
         fields = {'name': to}
+        unopened = False
         for col in ('secret', 'pending_secret'):
             if r.get(col):
                 plain = unseal_secret(r[col], old_b)
                 if plain:
                     fields[col] = seal_secret(plain, new_b)
-        codes = open_codes(r.get('scratch_sealed'), old_b)
+                else:
+                    unopened = True
+        if unopened:
+            # Its key does not open here (another key, a copy from elsewhere): left as it is,
+            # and asked again at the next start (1.0.225).
+            left.append(was)
+            continue
+        # As the pages show them (1.0.225): a code used on the other node, still unused in
+        # this node's sealed copy, stays used.
+        codes = codes_open(r)
         if codes is not None:
             fields['scratch'] = json.dumps([scratch_hash(to, c['c']) for c in codes if not c.get('used')])
             fields['scratch_sealed'] = seal_codes(codes, new_b)
             fields['scratch_left'] = len(json.loads(fields['scratch']))
-        elif r.get('scratch_left'):
-            fields.update(scratch='[]', scratch_left=0)
+        # Codes never sealed to be made again keep their hashes: found under the old form of
+        # the name (scratch_find, 1.0.225) - not thrown away without a word.
         pend = open_codes(r.get('pending_scratch'), old_b)
         if pend is not None:
             fields['pending_scratch'] = seal_codes(pend, new_b)
@@ -14078,6 +14185,11 @@ def names_nfc_kept(store):
     if moved:
         store.add_event('tokens', 'the names of %d token(s) put in one form of their letters, as they '
                         'are looked up: %s' % (len(moved), ', '.join(moved[:20])), 'info', who='otp (upgrade)')
+    if left:
+        store.add_event('tokens', 'the names of %d token(s) could not be put in one form of their '
+                        'letters - their keys do not open with the key in use: %s'
+                        % (len(left), ', '.join(left[:20])), 'warn', who='otp (upgrade)')
+        return                          # asked again at the next start
     store.set_meta(key, '1')
 
 
@@ -17392,6 +17504,13 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
                           if str(r.get('k') or '').startswith(META_TRANSIENT)]
     except Exception:                                   # noqa: BLE001
         live_transient = None
+    # The codes used up stay used up (1.0.224): put back, the copy's token_once replaced
+    # the one of now - every recovery code and code used since the copy was good again,
+    # the very thing it keeps them 800 days for.
+    try:
+        live_once = store.db.rows('SELECT k, node, ts FROM token_once')
+    except Exception:                                   # noqa: BLE001
+        live_once = None
     c = _db_conf()
     if kind == 'copy':
         load_tables(store.db, path)
@@ -17464,6 +17583,19 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
                 store.db.insert_many('sessions', keys, [[row[k] for k in keys]])
         except Exception as e:                          # noqa: BLE001
             log('the sign-ins could not be kept as they were: %s' % e, 'warn')
+    if live_once:
+        eng = store.db.engine
+        sql = ('INSERT IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)' if eng == 'mariadb' else
+               'INSERT OR IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)' if eng == 'sqlite' else
+               'INSERT INTO token_once (k, node, ts) VALUES (?, ?, ?) ON CONFLICT DO NOTHING')
+        kept = 0
+        for r in live_once:
+            try:
+                kept += 1 if store.db.run(sql, (r['k'], r['node'], r['ts'])) else 0
+            except Exception:                           # noqa: BLE001
+                pass
+        if kept:
+            log('put back: %d code(s) used since the copy kept used up' % kept, 'info')
     for r in live_tls:
         try:
             store.set_meta(r['k'], r['v'])
@@ -19045,14 +19177,18 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
         rec['state'] = 'failed'
         store.add_event('mail', 'the mail to %s (%s) was refused for good: %s' % (
             who, MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'), str(err)[:300]), 'bad')
-    elif now >= float(rec.get('expires') or 0):
+    elif now >= float(rec.get('expires') or 0) or (
+            rec.get('kind') in ('code', 'verify') and now >= float(rec.get('expires') or 0) - 30):
+        # A code's mail no longer tried in its last half minute (1.0.225): delivered then, it
+        # brought a code that had run out.
         rec['state'] = 'expired'
         store.add_event('mail', 'the mail to %s (%s) was given up after %d tries: %s' % (
             who, MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'), rec['tries'],
             str(err)[:300]), 'bad')
     else:
         rec['state'] = 'waiting'
-        rec['next_at'] = min(now + mailq_delay(rec), float(rec.get('expires') or now))
+        rec['next_at'] = min(now + mailq_delay(rec), float(rec.get('expires') or now) -
+                             (30 if rec.get('kind') in ('code', 'verify') else 0))
         if rec['tries'] == 1:
             store.add_event('mail', 'the mail to %s (%s) did not go yet - tried again from '
                             'the outgoing mail: %s' % (
@@ -19153,7 +19289,11 @@ def mailq_tick(store):
                 # the page says - and nothing but a code past its time given
                 # up for it either.
                 continue
-            if state == 'sending' and now - float(rec.get('last_try') or 0) > 600 and \
+            # Left half way: 10 min - or, a code's (1.0.225), once its sending has had its time:
+            # 10 min was past the code's own five, and it was never sent.
+            stuck = 600 if rec.get('kind') not in ('code', 'verify') else \
+                3 * int(CONFIG.get('smtp_timeout_s') or 20) + 30
+            if state == 'sending' and now - float(rec.get('last_try') or 0) > stuck and \
                     (mine or rec.get('node') not in alive):
                 # Left half way by a node that stopped: tried again.
                 _, raw = mailq_read(store, qid)
@@ -22756,14 +22896,35 @@ def _ha_rebuild(local, remote, my_slot, peer_slot, my_host, my_port, peer_host, 
     replaced by what the other holds."""
     mine_on_peer = ha_sub_name(my_slot)       # on the peer: brings my rows to it
     theirs_here = ha_sub_name(peer_slot)      # here: brings the peer's rows to me
-    say('the other node stops taking rows from this one')
-    ha_drop_sub(remote, mine_on_peer)
-    ha_drop_slot(local, mine_on_peer)
-    say('this node stops taking rows from the other')
-    ha_drop_sub(local, theirs_here)
-    ha_drop_slot(remote, theirs_here)
-    say('this node\'s tables emptied')
-    local.make_tables()
+    # Out of service first (1.0.225), and the sign-ins in hand let finish: answered between
+    # the other node no longer taking rows and the flag, a code used here was never known
+    # there - let in again on the other node - and a request reading the emptied table was
+    # refused as having no token.
+    HA_REBUILDER[0] = threading.get_ident()
+    HA_REBUILDING.set()
+    MAINT_CACHE['at'] = 0
+    time.sleep(3)
+    # The codes used up here kept (1.0.225): replication paused or broken - the usual reason
+    # for a rebuild - the rows of this node alone were emptied with the rest, and a recovery
+    # code used here was good again on both nodes.
+    try:
+        kept_once = local.rows('SELECT k, node, ts FROM token_once')
+    except Exception:                                   # noqa: BLE001
+        kept_once = []
+    try:
+        say('the other node stops taking rows from this one')
+        ha_drop_sub(remote, mine_on_peer)
+        ha_drop_slot(local, mine_on_peer)
+        say('this node stops taking rows from the other')
+        ha_drop_sub(local, theirs_here)
+        ha_drop_slot(remote, theirs_here)
+        say('this node\'s tables emptied')
+        local.make_tables()
+    except BaseException:
+        HA_REBUILDER[0] = None          # nothing emptied yet: back in service
+        HA_REBUILDING.clear()
+        MAINT_CACHE['at'] = 0
+        raise
     # Nothing written here while the rows come over (1.0.44): the heartbeat
     # and the job's own progress wrote rows the copy then met again, and it
     # stopped on a duplicate key for good.
@@ -22783,6 +22944,15 @@ def _ha_rebuild(local, remote, my_slot, peer_slot, my_host, my_port, peer_host, 
         say('the other node takes this one\'s rows from now on')
         ha_subscribe(remote, mine_on_peer, ha_conninfo(my_host, my_port, name, user, password),
                      copy_data=False)
+        if kept_once:
+            # Written after the other node takes this one's rows again: they reach it too.
+            sql = 'INSERT INTO token_once (k, node, ts) VALUES (?, ?, ?) ON CONFLICT DO NOTHING'
+            for r in kept_once:
+                try:
+                    local.run(sql, (r['k'], r['node'], r['ts']))
+                except Exception:                       # noqa: BLE001
+                    pass
+            say('the codes used up on this node kept')
         done = True
     finally:
         # Odd or even again whatever happened (1.0.57): RESTART IDENTITY
@@ -38526,6 +38696,9 @@ def _token_act(h, s, b, act, name, who):
                                 'commas, semicolons or =, 180 characters at most')
         if to == norm_name(name):
             raise ApiError(400, 'that is the name it has')
+        if token_name_problem(to):
+            # The rule of a new token's (1.0.225): DOMAIN\\name is read as name by RADIUS.
+            raise ApiError(400, token_name_problem(to))
         # The letters a name may have, as a new token's (1.0.207): renamed past them,
         # RADIUS refused the token for good.
         bad_letters = name_letters_problem(to)
@@ -40309,6 +40482,23 @@ def _db_do(h):
                                                     '%d-%m-%Y %H:%M'),
                                                 datetime.fromtimestamp(here).strftime(
                                                     '%d-%m-%Y %H:%M')))
+                # The codes used up here since the carry, used up there too (1.0.224): the
+                # minute allowed above for events let a recovery code used meanwhile be good
+                # again on the new database.
+                try:
+                    far = db_open(c)
+                    try:
+                        sql = {'mariadb': 'INSERT IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)',
+                               'sqlite': 'INSERT OR IGNORE INTO token_once (k, node, ts) VALUES (?, ?, ?)'}.get(
+                            far.engine, 'INSERT INTO token_once (k, node, ts) VALUES (?, ?, ?) '
+                                        'ON CONFLICT DO NOTHING')
+                        for r in h.store.db.rows('SELECT k, node, ts FROM token_once WHERE ts > ?',
+                                                 (time.time() - 3 * 86400,)):
+                            far.run(sql, (r['k'], r['node'], r['ts']))
+                    finally:
+                        far.close()
+                except Exception as e:                  # noqa: BLE001
+                    log('the codes used lately could not be carried across: %s' % e, 'warn')
                 write_file_settings({k: c[k] for k in DB_KEYS})
                 h.store.add_event('settings', '%s switched the database to %s at %s; the '
                                   'daemon starts again on it' % (s['name'], words, db_where(c)),
@@ -41563,7 +41753,7 @@ def _portal_verify(h):
     key = h.throttle('portal-verify', int(CONFIG.get('code_tries') or 3) + 2,
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=50,
                      name_tries=int(CONFIG.get('code_tries') or 3) * 3, what='wrong codes')
-    code = re.sub(r'\s', '', str(h.body().get('code') or ''))
+    code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     if not hmac.compare_digest(code_hash(s['name'], code), str(ver.get('code') or '')):
         h.failed(key)
         # Counted on the code as it is now (1.0.101): a copy read at the
@@ -41650,7 +41840,7 @@ def _portal_codes(h):
     key = h.throttle('portal-codes', int(CONFIG.get('portal_tries') or 5),
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=30,
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
-    code = re.sub(r'\s', '', str(h.body().get('code') or ''))
+    code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     old = (s.get('data') or {}).get('old') or {}
     if old and float(old.get('exp') or 0) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
@@ -41718,7 +41908,7 @@ def _portal_reissue(h):
     stop = h.d.tokens.blocked(s['name'])
     if stop:
         raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
-    code = re.sub(r'\s', '', str(b.get('code') or ''))
+    code = code_typed(b.get('code') or '')
     old = (s.get('data') or {}).get('old') or {}
     if old and float(old.get('exp') or 0) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
@@ -43000,7 +43190,7 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = re.sub(r'\s', '', str(b.get('code') or ''))
+        code = code_typed(b.get('code') or '')
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
         if new['kind'] == 'app':
             secret = unseal_secret(new.get('secret'), 'adm2fa-new:' + name.lower())
@@ -43045,7 +43235,7 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = re.sub(r'\s', '', str(b.get('code') or ''))
+        code = code_typed(b.get('code') or '')
         if rec.get('kind') == 'app':
             # Read, checked and written under one lock (1.0.136): two requests
             # with the same code at once both passed the check.
@@ -46243,7 +46433,7 @@ def push_card_do(store, b, who):
 # ---- the card of the split (1.0.218): Settings -> High availability -> When the nodes lose each other
 @route('GET', '/api/split')
 def _split_get(h):
-    h.me()
+    h.me('fulladmin')       # the network's map, as /api/ntp and /api/net (1.0.225)
     return split_view(h.store)
 
 
@@ -46295,7 +46485,7 @@ def _split_post(h):
 # ---- the card of the clocks (1.0.222): Settings -> Time -> The clocks of the nodes
 @route('GET', '/api/clock')
 def _clock_get(h):
-    h.me()
+    h.me('fulladmin')       # the network's map, as /api/ntp and /api/net (1.0.225)
     return clock_view(h.store)
 
 
@@ -53631,10 +53821,20 @@ def run_daemon():
         raise SystemExit(1)
     load_config(saved=store.settings_saved())
     log_open()
+    made = False
     if not store.accounts():
         pw = secrets.token_urlsafe(12)
-        store.add_account('admin', 'fulladmin', pw, note='made on the first start',
-                          must_change=1)
+        try:
+            store.add_account('admin', 'fulladmin', pw, note='made on the first start',
+                              must_change=1)
+            made = True
+        except Exception as e:                          # noqa: BLE001
+            # Two nodes started together on one new database (1.0.225): the other made it
+            # a moment before - not a reason to stop.
+            if not store.accounts():
+                raise
+            log('the first account was made by another node meanwhile (%s)' % str(e)[:120], 'info')
+    if made:
         try:
             write_replacing(STATE_DIR / 'first-login.txt', 'name: admin\npassword: %s\n' % pw,
                             0o600)
