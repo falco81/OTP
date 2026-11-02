@@ -14,6 +14,79 @@
 # took - and kept with the request, so that "why was I refused" is answered
 # by opening one row rather than by reading a debug log.
 
+# ---- the answer from the address the request came to (1.0.223) ---------------------------
+# Listening on every address (0.0.0.0 / ::), the answer went out from the address the
+# kernel chose for the way back - the node's own, not the VIP address the VPN had asked.
+# Most VPNs throw such an answer away (it is not from the server they asked), so RADIUS on
+# the VIP address did not work. The address each request came to is read with it
+# (IP_PKTINFO / IPV6_PKTINFO) and the answer sent from it.
+IP_PKTINFO = getattr(socket, 'IP_PKTINFO', 8)
+IPV6_RECVPKTINFO = getattr(socket, 'IPV6_RECVPKTINFO', 49)
+IPV6_PKTINFO = getattr(socket, 'IPV6_PKTINFO', 50)
+RADIUS_PKTINFO = {}
+
+
+def radius_pktinfo_on(sock, fam, bind):
+    """Asked for on a socket listening on every address: the address each request came to."""
+    if bind not in ('0.0.0.0', '::', ''):
+        return
+    got = []
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, IP_PKTINFO, 1)
+        got.append(4)
+    except OSError:
+        pass
+    if fam == socket.AF_INET6:
+        try:
+            sock.setsockopt(socket.IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)
+            got.append(6)
+        except OSError:
+            pass
+    if got:
+        RADIUS_PKTINFO[sock.fileno()] = got
+
+
+class RadiusReplyVia(object):
+    """The socket, answering from the address the request came to."""
+    __slots__ = ('sock', 'anc')
+
+    def __init__(self, sock, anc):
+        self.sock, self.anc = sock, anc
+
+    def sendto(self, data, peer):
+        if self.anc:
+            try:
+                return self.sock.sendmsg([data], self.anc, 0, peer)
+            except OSError:
+                pass                    # as before: the kernel's choice
+        return self.sock.sendto(data, peer)
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
+def radius_recv(sock):
+    """(data, the socket to answer on, peer)."""
+    if sock.fileno() not in RADIUS_PKTINFO:
+        data, peer = sock.recvfrom(4096)
+        return data, sock, peer
+    data, ancdata, _flags, peer = sock.recvmsg(4096, 256)
+    anc = []
+    for level, kind, cdata in ancdata:
+        try:
+            if level == socket.IPPROTO_IP and kind == IP_PKTINFO and len(cdata) >= 12:
+                # struct in_pktinfo {int ifindex; in_addr spec_dst; in_addr addr}: sent
+                # back with the address it came to as the one to send from.
+                anc = [(socket.IPPROTO_IP, IP_PKTINFO, struct.pack('=i4s4s', 0, cdata[8:12], b'\0' * 4))]
+            elif level == socket.IPPROTO_IPV6 and kind == IPV6_PKTINFO and len(cdata) >= 20:
+                # struct in6_pktinfo {in6_addr addr; unsigned ifindex}
+                if not cdata[:12] == b'\0' * 10 + b'\xff\xff':
+                    anc = [(socket.IPPROTO_IPV6, IPV6_PKTINFO, cdata[:16] + struct.pack('=I', 0))]
+        except (struct.error, TypeError):
+            anc = []
+    return data, (RadiusReplyVia(sock, anc) if anc else sock), peer
+
+
 class Decision(object):
     def __init__(self):
         self.steps = []
@@ -28,6 +101,7 @@ class Decision(object):
         self.display = ''
         self.state = None               # an Access-Challenge's State (1.0.76)
         self.message = ''               # and the words of its second window
+        self.silent = ''                # left unanswered, and why (1.0.223)
 
     def step(self, what, ok, said='', since=None):
         one = {'what': what, 'ok': ok, 'said': str(said or '')[:600]}
@@ -146,6 +220,38 @@ class Authenticator(object):
         # novak@dpmo.cz where dpmo.local is another suffix of the realm.
         return norm_name(realm_main_name(user, realm))
 
+    def ldap_gone(self, d):
+        """The directory cannot be reached from here. Refused, as before - or, with "Step
+        aside when the directory cannot be reached" and the other node well (1.0.223), left
+        unanswered: a refusal is the VPN's last word, no answer makes it ask the other node
+        (or the VIP address once it has moved) at once, not after the 15 s of the watch.
+        Nothing was used up yet: the directory is asked before the code."""
+        why = clock_dir_failover(self.store)
+        if why:
+            d.silent = why
+        return d.refuse('LDAP server(s) have gone away')
+
+    def same_person(self, user, realm):
+        """The name of the token the directory entry of `user` already has under another
+        spelling ('' when none, or when the directory cannot be asked now - the sign-in
+        then goes on as it would have)."""
+        ad = self.directory(realm.get('directory'))
+        if not ad:
+            return ''
+        lookup = realm.get('lookup') or ''
+        if lookup not in ('upn', 'sam'):
+            lookup = 'upn' if '@' in user else 'sam'
+        try:
+            entry = self.find_person(ad, user, lookup, realm)
+        except LdapError:
+            return ''
+        if not entry or entry.get('many'):
+            return ''
+        try:
+            return portal_same_person(self.store, realm, entry) or ''
+        except Exception:                               # noqa: BLE001
+            return ''
+
     @classmethod
     def token_for(cls, store, user, realm):
         """(the token's name, how it was found). Its own name first; then
@@ -239,6 +345,16 @@ class Authenticator(object):
             d.step('a password', False, 'it is empty')
             return d.refuse('the password is empty')
         d.token_name, found_how = self.token_for(self.store, d.user, realm)
+        if realm.get('directory') and realm.get('auth_mode') != 'password' and \
+                not self.store.token(d.token_name):
+            # The token the enrolment pages tied this person to (1.0.222): signed in there
+            # as falco@corp.loc, the page found falco@corp.cz - his userPrincipalName, the
+            # same account - and would make no other; here the name typed found nothing,
+            # and he was refused for good. The same entry, the same rule
+            # (portal_same_person). Only for a name with no token of its own.
+            same = self.same_person(d.user, realm)
+            if same:
+                d.token_name, found_how = same, 'the same account in the directory, its token %s' % same
         if d.token_name != norm_name(d.user):
             d.step('the token is %s' % d.token_name, True, found_how or (
                 'the realm keeps its tokens under @%s' % realm.get('suffix')
@@ -350,8 +466,9 @@ class Authenticator(object):
                 entry = self.find_person(ad, d.user, lookup, realm)
             except LdapError as e:
                 d.step('look %s up in %s' % (d.user, ad.name), False, str(e), t)
-                return d.refuse('LDAP server(s) have gone away' if isinstance(
-                    e, LdapUnreachable) else 'the directory could not be asked: %s' % e)
+                if isinstance(e, LdapUnreachable):
+                    return self.ldap_gone(d)
+                return d.refuse('the directory could not be asked: %s' % e)
             if not entry:
                 d.step('look %s up in %s' % (d.user, ad.name), False,
                        'by %s: there is no such account' % {'upn': 'userPrincipalName',
@@ -406,9 +523,9 @@ class Authenticator(object):
                         # not taken for a while. Codes from the app go on.
                         scratch_guard_note(self.store, d.token_name,
                                            getattr(REQUEST_PLACE, 'v', ''))
-                    return d.refuse('the directory refused the password: %s' % e
-                                    if not isinstance(e, LdapUnreachable)
-                                    else 'LDAP server(s) have gone away')
+                    if isinstance(e, LdapUnreachable):
+                        return self.ldap_gone(d)
+                    return d.refuse('the directory refused the password: %s' % e)
             wanted = realm.get('groups') or []
             if wanted:
                 t = time.time()
@@ -416,12 +533,12 @@ class Authenticator(object):
                     have = ad.groups_of(entry, bool(realm.get('nested', 1)))
                 except LdapError as e:
                     d.step('the groups of %s' % d.user, False, str(e), t)
-                    return d.refuse('LDAP server(s) have gone away')
+                    return self.ldap_gone(d)
                 try:
                     hit = group_matches(wanted, have, ad)
                 except LdapError as e:
                     d.step('the group of %s looked up' % d.user, False, str(e), t)
-                    return d.refuse('LDAP server(s) have gone away')
+                    return self.ldap_gone(d)
                 if not hit:
                     names = ', '.join(cn_of(w.get('group') or '') or w.get('group') or ''
                                       for w in wanted[:6]) + (' …' if len(wanted) > 6 else '')
@@ -770,6 +887,7 @@ class RadiusServer(object):
                     break
                 except OSError:
                     continue
+            radius_pktinfo_on(sock, fam, bind)
             sock.settimeout(1.0)
             self.socks[kind] = (bind, port, sock)
             self.bound.append('%s:%d/%s' % (bind, port, kind))
@@ -794,7 +912,7 @@ class RadiusServer(object):
     def read(self, kind, sock):
         while not self.stop_flag:
             try:
-                data, peer = sock.recvfrom(4096)
+                data, via, peer = radius_recv(sock)
             except socket.timeout:
                 continue
             except OSError:
@@ -806,7 +924,7 @@ class RadiusServer(object):
                 return
             try:
                 (self.acct_jobs if kind == 'acct' else self.jobs).put_nowait(
-                    (kind, sock, data, peer, time.time()))
+                    (kind, via, data, peer, time.time()))
             except queue.Full:
                 self.counts['overflow'] += 1
 
@@ -1234,6 +1352,10 @@ class RadiusServer(object):
             d.user = str(user or '')
             d.step('the decision', False, 'it could not be made: %s' % e)
             d.refuse('the token server could not decide: %s' % str(e)[:120])
+        if getattr(d, 'silent', ''):
+            self.counts['no_directory'] += 1
+            log_sparing('radius-nodir', 'RADIUS requests left to the other node: %s' % d.silent, 'warn')
+            return None
         if src and not blocked and guard_is_guess(d):
             try:
                 guard_count(self.d, src, d.user or user)

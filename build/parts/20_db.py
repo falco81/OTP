@@ -651,9 +651,6 @@ class Db(object):
         up and its row in token_once were two writes, and a database that dropped between
         them left the code used here and the request unanswered - the other node, asked
         next, then refused it as used. SQLite and a transaction already open: as before."""
-        if self.engine == 'sqlite':
-            yield
-            return
         with self._pinned(), self.lock:
             # Asked with the lane's lock held (1.0.217): a lane is shared by several RADIUS
             # workers, and one seeing another's transaction open took itself for inside
@@ -663,7 +660,11 @@ class Db(object):
                 return
             if self.conn is None:
                 self.connect()
-            self.run(RawSql('START TRANSACTION' if self.engine == 'mariadb' else 'BEGIN'))
+            # SQLite too (1.0.222): its writes went in one by one, and another writer taking
+            # the file between them left the code used and the request unanswered. IMMEDIATE:
+            # the file's write lock taken at once - waited for before anything is written.
+            self.run(RawSql({'mariadb': 'START TRANSACTION', 'sqlite': 'BEGIN IMMEDIATE'}.get(
+                self.engine, 'BEGIN')))
             self.in_tx = True
             try:
                 yield

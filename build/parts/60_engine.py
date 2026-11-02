@@ -84,6 +84,8 @@ class Directory(object):
     # realms of the code alone - which never ask it - went unanswered too.
     BUSY = {}
     BUSY_LOCK = threading.Lock()
+    BUSY_FREED = threading.Condition(BUSY_LOCK)
+    BUSY_WAIT_S = 2.0
 
     @contextlib.contextmanager
     def held(self):
@@ -92,24 +94,36 @@ class Directory(object):
             return
         workers = int(CONFIG.get('radius_workers') or 16)
         most = max(2, workers // 2)
-        with self.BUSY_LOCK:
-            n = self.BUSY.get(self.name.lower(), 0)
-            if n >= most:
-                raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
-                                      'this one is not added to them' % (self.name, n))
-            # Every directory together too (1.0.186): two of them listed (the
-            # same domain controllers twice, say) held every worker between
-            # them, and the realms of the code alone waited.
-            if sum(self.BUSY.values()) >= max(2, workers - 4):
-                raise LdapUnreachable('the directories are answering slowly: %d requests wait '
-                                      'on them already - this one is not added to them'
-                                      % sum(self.BUSY.values()))
-            self.BUSY[self.name.lower()] = n + 1
+        key = self.name.lower()
+        # A place waited for (1.0.222), a little: refused the moment 8 were inside, a
+        # directory answering in milliseconds turned right passwords away whenever some
+        # came at once. One that is really slow still holds no more than its half - the
+        # wait is short and the realms of the code alone keep the rest.
+        until = time.monotonic() + min(self.BUSY_WAIT_S, float(getattr(self, 'timeout', 0) or 10))
+        with self.BUSY_FREED:
+            while True:
+                n = self.BUSY.get(key, 0)
+                # Every directory together too (1.0.186): two of them listed (the
+                # same domain controllers twice, say) held every worker between
+                # them, and the realms of the code alone waited.
+                total = sum(self.BUSY.values())
+                if n < most and total < max(2, workers - 4):
+                    break
+                left = until - time.monotonic()
+                if left <= 0:
+                    if n >= most:
+                        raise LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
+                                              'this one is not added to them' % (self.name, n))
+                    raise LdapUnreachable('the directories are answering slowly: %d requests wait '
+                                          'on them already - this one is not added to them' % total)
+                self.BUSY_FREED.wait(left)
+            self.BUSY[key] = n + 1
         try:
             yield
         finally:
-            with self.BUSY_LOCK:
-                self.BUSY[self.name.lower()] = max(0, self.BUSY.get(self.name.lower(), 1) - 1)
+            with self.BUSY_FREED:
+                self.BUSY[key] = max(0, self.BUSY.get(key, 1) - 1)
+                self.BUSY_FREED.notify_all()
 
     def _order(self):
         """The servers in the order to ask them: the one that answered last
@@ -968,7 +982,7 @@ class Tokens(object):
             'algorithm': tok['algorithm'] or 'SHA1', 'issuer': tok.get('issuer') or ''}
         # Throttled like a sign-in (1.0.33): the same pause after wrong codes,
         # so the page cannot be used to guess a waiting key's codes quickly.
-        t = time.time()
+        t = clock_now('locks')          # clock_locks (1.0.222)
         try:
             # A waiting replacement counts its wrong codes beside its own
             # shape (1.0.61): in the token's own they paused the token still
@@ -978,14 +992,14 @@ class Tokens(object):
         except (ValueError, TypeError):
             fails = []
         tries = split_limit('rate_limit_tries')
-        fails = [x for x in fails if t - x < int(CONFIG.get('rate_limit_s') or 30)]
+        fails = [x for x in fails if abs(t - x) < int(CONFIG.get('rate_limit_s') or 30)]
         if float(tok.get('locked_until') or 0) > t:
             self._said(name, False, SAY_LOCKED + ' (confirming a new token)', how, src, '')
             return False, SAY_LOCKED
         if tries and len(fails) >= tries:
             self._said(name, False, SAY_RATE + ' (confirming a new token)', how, src, '')
             return False, SAY_RATE
-        step = totp_match(secret, code, None, shape['digits'], shape['period'],
+        step = totp_match(secret, code, clock_now('codes'), shape['digits'], shape['period'],
                           shape['algorithm'], self.window(tok))
         if step is None and staged:
             # A replacement's wrong codes do not lock the token still in use
@@ -1050,10 +1064,10 @@ class Tokens(object):
     def why_wrong(secret, code, tok):
         """What a wrong code most likely means, for the person typing it."""
         period = int(tok.get('period') or 30)
-        far = totp_match(secret, code, None, tok.get('digits') or 6, period,
+        far = totp_match(secret, code, clock_now('codes'), tok.get('digits') or 6, period,
                          tok.get('algorithm') or 'SHA1', 40)
         if far is not None:
-            off = (far - totp_step(None, period)) * period
+            off = (far - totp_step(clock_now('codes'), period)) * period
             return ('It is this token\'s code, but from %d s %s: the clock of the phone is '
                     'wrong - set it to the network\'s time.' % (abs(off), 'ago' if off < 0
                                                                  else 'ahead'))
@@ -1130,19 +1144,34 @@ class Tokens(object):
         return int(self.store.db.value('SELECT failures FROM tokens WHERE id = ?',
                                        (tok_id,)) or 0)
 
+    def _own_step_landed(self, tok_id, step, t):
+        """Whether this request's own use of a code is in the database: its step with its
+        exact time (no other request writes the same float)."""
+        try:
+            row = self.store.db.row('SELECT last_step, last_used FROM tokens WHERE id = ?', (tok_id,))
+        except Exception:                               # noqa: BLE001
+            return False
+        return bool(row) and int(row.get('last_step') or 0) == int(step) and \
+            abs(float(row.get('last_used') or 0) - float(t)) < 1e-6
+
     def _fail_noted(self, tok_id, t, span, mins):
         """The time of a wrong code added to the token's recent ones, and the
         lock set - by a conditional update (1.0.101): two nodes each reading
         the list and writing it back with their own time added lost one of
         them, and a guesser sending to both nodes at once got twice the
         tries the pause allows."""
-        for _round in range(8):
+        fails = []
+        for _round in range(40):
+            if _round > 2:
+                # Many at once (1.0.222): after 8 lost rounds the list was written as
+                # this one time alone, and the pause counted fewer tries than were made.
+                time.sleep(random.random() * 0.004 * min(_round, 10))
             was = self.store.db.value('SELECT fail_times FROM tokens WHERE id = ?', (tok_id,))
             try:
                 fails = [float(x) for x in json.loads(was or '[]')]
             except (ValueError, TypeError):
                 fails = []
-            fails = [x for x in fails if t - x < span] + [t]
+            fails = [x for x in fails if abs(t - x) < span] + [t]
             # As many as the pause counts (1.0.139): rate_limit_tries goes to
             # 100, and with more than 50 the pause never came.
             keep = max(50, int(CONFIG.get('rate_limit_tries') or 0))
@@ -1159,7 +1188,8 @@ class Tokens(object):
             if hit:
                 break
         else:
-            fields = {'fail_times': json.dumps([t])}
+            fields = {'fail_times': json.dumps(fails[-max(50, int(CONFIG.get('rate_limit_tries') or 0)):]
+                                               or [t])}
             if mins:
                 fields['locked_until'] = t + 60 * mins
             self.store.token_update(tok_id, fields)
@@ -1171,7 +1201,7 @@ class Tokens(object):
         tok = self.store.token(norm_name(name))
         if not tok:
             return None
-        t = time.time()
+        t = clock_now('locks')
         if tok.get('state') == 'disabled':
             return SAY_OFF
         if float(tok.get('locked_until') or 0) > t:
@@ -1182,7 +1212,7 @@ class Tokens(object):
             fails = [float(x) for x in json.loads(tok.get('fail_times') or '[]')]
         except (ValueError, TypeError):
             fails = []
-        if tries and len([x for x in fails if t - x < span]) >= tries:
+        if tries and len([x for x in fails if abs(t - x) < span]) >= tries:
             return SAY_RATE
         return None
 
@@ -1195,14 +1225,15 @@ class Tokens(object):
             return False, SAY_OFF, facts
         if tok.get('state') == 'pending':
             return False, SAY_PENDING, facts
-        t = time.time()
+        t = clock_now('locks')          # pauses, lockouts (clock_locks, 1.0.222)
+        tc = clock_now('codes')         # the code's step (clock_codes, 1.0.222)
         try:
             fails = [float(x) for x in json.loads(tok.get('fail_times') or '[]')]
         except (ValueError, TypeError):
             fails = []
         tries = split_limit('rate_limit_tries')
         span = int(CONFIG.get('rate_limit_s') or 30)
-        fails = [x for x in fails if t - x < span]
+        fails = [x for x in fails if abs(t - x) < span]
         # A lockout after many wrong codes in a row, however slowly they
         # came (1.0.33): the short pause alone let a patient guesser try
         # thousands of codes a day.
@@ -1219,7 +1250,7 @@ class Tokens(object):
         digits = int(tok.get('digits') or 6)
         # "123 456" as the phone shows it (1.0.214): taken on the pages, a wrong code
         # through RADIUS - and counted. The spaces inside go, as there.
-        code = re.sub(r'\s', '', str(code or ''))
+        code = re.sub(r'[\s-]', '', str(code or ''))
         # Digits 0-9 and nothing else: \d also takes Arabic-Indic and other
         # digits, which then broke the comparison and left the request
         # unanswered and unwritten (1.0.33).
@@ -1281,22 +1312,35 @@ class Tokens(object):
                     id_h = scratch_id_hash(tok['id'], code, key)
                     # In one transaction (1.0.214), as a code from the phone: a database
                     # dropping half way left the code used here and refused by the other node.
-                    with self.store.db.transaction():
-                        won = self.store.db.run(
-                            'UPDATE tokens SET scratch = ?, scratch_sealed = ?, scratch_left = ?, '
-                            "last_used = ?, last_how = 'scratch', failures = 0, fail_times = '[]' "
-                            'WHERE id = ? AND scratch = ?',
-                            (json.dumps(kept), seal_codes(shown, token_bind(name)) if shown is not None else
-                             (tok.get('scratch_sealed') or ''), len(kept), t, tok['id'], was))
-                        if not won:
-                            return False, SAY_REUSED, facts
-                        # And used once anywhere (1.0.101): the row above can be
-                        # written back by the other node's older copy of it.
-                        if not once_take(self.store, 'scratch', name, h, peer=False):
-                            return False, SAY_REUSED, facts
-                        # By the id too (1.0.214), whatever the token is called by then.
-                        if not once_take(self.store, 'scratch', '#%d' % tok['id'], id_h, peer=False):
-                            return False, SAY_REUSED, facts
+                    try:
+                        with self.store.db.transaction():
+                            won = self.store.db.run(
+                                'UPDATE tokens SET scratch = ?, scratch_sealed = ?, scratch_left = ?, '
+                                "last_used = ?, last_how = 'scratch', failures = 0, fail_times = '[]' "
+                                'WHERE id = ? AND scratch = ?',
+                                (json.dumps(kept), seal_codes(shown, token_bind(name)) if shown is not None else
+                                 (tok.get('scratch_sealed') or ''), len(kept), t, tok['id'], was))
+                            if not won:
+                                return False, SAY_REUSED, facts
+                            # And used once anywhere (1.0.101): the row above can be
+                            # written back by the other node's older copy of it.
+                            if not once_take(self.store, 'scratch', name, h, peer=False):
+                                return False, SAY_REUSED, facts
+                            # By the id too (1.0.214), whatever the token is called by then.
+                            if not once_take(self.store, 'scratch', '#%d' % tok['id'], id_h, peer=False):
+                                return False, SAY_REUSED, facts
+                    except Exception:
+                        # The COMMIT's answer lost (1.0.222), as for a code from the phone.
+                        try:
+                            row = self.store.db.row('SELECT scratch, last_used FROM tokens WHERE id = ?',
+                                                    (tok['id'],))
+                        except Exception:               # noqa: BLE001
+                            row = None
+                        if not row or row.get('scratch') != json.dumps(kept) or \
+                                abs(float(row.get('last_used') or 0) - float(t)) > 1e-6:
+                            raise
+                        log('the database answered the end of a sign-in late: %s\'s recovery code '
+                            'was written and is let in' % name, 'warn')
                     if not once_peer_free(self.store, 'scratch', name, h) or \
                             not once_peer_free(self.store, 'scratch', '#%d' % tok['id'], id_h):
                         return False, SAY_REUSED, facts
@@ -1331,14 +1375,14 @@ class Tokens(object):
         if len(code) != digits:
             got = scratch_try()
             return got if got is not None else failed(SAY_BAD)
-        step = totp_match(secret, code, t, digits, tok.get('period') or 30,
+        step = totp_match(secret, code, tc, digits, tok.get('period') or 30,
                           tok.get('algorithm') or 'SHA1', self.window(tok))
         if step is None:
             # A recovery code as long as a code from the phone (1.0.33): with
             # the two lengths set alike, recovery codes were never tried.
             got = scratch_try()
             return got if got is not None else failed(SAY_BAD)
-        facts['off'] = step - totp_step(t, tok.get('period') or 30)
+        facts['off'] = step - totp_step(tc, tok.get('period') or 30)
         if CONFIG.get('totp_disallow_reuse', 1) and step <= int(tok.get('last_step') or 0):
             # Refused, but not counted as a wrong code (1.0.57): it is the
             # right code a second time - a NAS that sent the request again,
@@ -1358,27 +1402,53 @@ class Tokens(object):
                 # them left the code used here, the request unanswered, and the other
                 # node - asked next by the NAS - refused it as used. The other node's
                 # database asked after, the row not held meanwhile.
-                with self.store.db.transaction():
-                    won = self.store.db.run(
-                        'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
-                        "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
-                        'COALESCE(last_step, 0) < ?', (step, t, tok['id'], step))
-                    if not won:
-                        return False, SAY_REUSED, facts
-                    if not once_take(self.store, 'step', name, once_v, peer=False):
-                        return False, SAY_REUSED, facts
-                    # By the token's id as well (1.0.214): renamed on the other node meanwhile,
-                    # the step used under the old name was not found under the new one. The
-                    # name's key stays for a node of an older version, in a rolling upgrade.
-                    if not once_take(self.store, 'step', '#%d' % tok['id'], once_v, peer=False):
-                        return False, SAY_REUSED, facts
+                try:
+                    with self.store.db.transaction():
+                        won = self.store.db.run(
+                            'UPDATE tokens SET last_step = ?, last_used = ?, failures = 0, '
+                            "fail_times = '[]', last_how = 'code' WHERE id = ? AND "
+                            'COALESCE(last_step, 0) < ? AND secret = ?',
+                            (step, t, tok['id'], step, tok.get('secret')))
+                        if not won:
+                            # The key itself replaced meanwhile (1.0.222): the old key's step
+                            # written onto the new one let the old code in and refused the new
+                            # key's codes as used - for decades, with another period.
+                            if self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
+                                                   (tok['id'],)) != tok.get('secret'):
+                                return False, SAY_BAD, facts
+                            return False, SAY_REUSED, facts
+                        if not once_take(self.store, 'step', name, once_v, peer=False):
+                            return False, SAY_REUSED, facts
+                        # By the token's id as well (1.0.214): renamed on the other node meanwhile,
+                        # the step used under the old name was not found under the new one. The
+                        # name's key stays for a node of an older version, in a rolling upgrade.
+                        if not once_take(self.store, 'step', '#%d' % tok['id'], once_v, peer=False):
+                            return False, SAY_REUSED, facts
+                except Exception:
+                    # The COMMIT's answer lost (1.0.222): the database wrote it all, the
+                    # connection dropped before it said so, the request went unanswered and
+                    # the NAS's retry - here or on the other node - was refused as used. This
+                    # request's own write looked for: there, it was let in; not there, no answer.
+                    if not self._own_step_landed(tok['id'], step, t):
+                        raise
+                    log('the database answered the end of a sign-in late: %s\'s code was written '
+                        'and is let in' % name, 'warn')
                 if not once_peer_free(self.store, 'step', name, once_v) or \
                         not once_peer_free(self.store, 'step', '#%d' % tok['id'], once_v):
                     return False, SAY_REUSED, facts
             else:
-                self.store.token_update(tok['id'], {'last_step': step, 'last_used': t,
-                                                    'failures': 0, 'fail_times': '[]',
-                                                    'last_how': 'code'})
+                # Never back (1.0.222): an older code used with reuse let in set last_step
+                # back, and the codes used since were good again once it was refused again.
+                won = self.store.db.run(
+                    'UPDATE tokens SET last_step = CASE WHEN COALESCE(last_step, 0) < ? THEN ? '
+                    "ELSE last_step END, last_used = ?, failures = 0, fail_times = '[]', "
+                    "last_how = 'code' WHERE id = ? AND secret = ?",
+                    (step, step, t, tok['id'], tok.get('secret')))
+                # MariaDB counts the rows changed, not those found: the same code again
+                # at the same instant changes nothing - asked, not taken for a new key.
+                if not won and self.store.db.value('SELECT secret FROM tokens WHERE id = ?',
+                                                   (tok['id'],)) != tok.get('secret'):
+                    return False, SAY_BAD, facts
         return True, (SAY_OK if facts['off'] == 0 else SAY_OK_DRIFT), facts
 
     def mark_from(self, name, src, client=''):

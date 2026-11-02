@@ -209,7 +209,8 @@ def ha_nodes(store):
         except ValueError:
             continue
         name = r['k'][5:]
-        age = now - float(beat.get('at') or 0)
+        # With clock_beat (1.0.222) judged by the measured difference of the clocks.
+        age = clock_beat_age(store, name, float(beat.get('at') or 0), now)
         beat.update(name=name, age=age, me=name == node_name(),
                     alive=age < HEARTBEAT_S * 3)
         out.append(beat)
@@ -1343,11 +1344,24 @@ def _once_peer_has(k, me, store=None):
     gen = ONCE_PEER['gen']
 
     def ask():
+        sql = 'SELECT 1 FROM token_once WHERE k = ? AND node <> ?'
         try:
             if got['db'] is None:
                 got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
-            got['v'] = bool(got['db'].value('SELECT 1 FROM token_once WHERE k = ? AND node <> ?',
-                                            (k, me)))
+                got['v'] = bool(got['db'].value(sql, (k, me)))
+                return
+            try:
+                got['v'] = bool(got['db'].value(sql, (k, me)))
+            except Exception:                           # noqa: BLE001
+                # One kept from before is dead (1.0.222: the link broke and came back):
+                # asked again on a new one before the other node is taken for gone.
+                try:
+                    got['db'].close()
+                except Exception:                       # noqa: BLE001
+                    pass
+                got['db'] = None
+                got['db'] = db_open(ha_peer_conf(timeout=2), statement_s=2)
+                got['v'] = bool(got['db'].value(sql, (k, me)))
         except Exception as e:                          # noqa: BLE001
             got['e'] = e
     t = threading.Thread(target=ask, name='once-peer', daemon=True)

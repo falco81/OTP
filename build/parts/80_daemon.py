@@ -1271,7 +1271,7 @@ class Daemon(object):
             if key in ('ha_mode', 'ha_slot', 'ha_peer', 'ha_peer_port', 'ha_address', 'ha_tls',
                        'ha_tls_ca'):
                 continue                    # the cluster's own wiring, set by its wizard
-            if key.startswith('split_'):
+            if key.startswith('split_') or key.startswith('clock_') or key == 'health_dir':
                 # Its own card on High availability (1.0.219): in the list of the rest they
                 # were drawn under every pane, the card's rules (try the arbiter first) aside.
                 continue
@@ -1629,6 +1629,13 @@ class Daemon(object):
                     split_tick(self)            # the nodes losing each other (1.0.218)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('split-tick', 'watching the other node: %s' % e, 'warn', every=600)
+                try:
+                    if clock_engaged():
+                        clock_tick(self)        # the clocks and the health of the nodes (1.0.222)
+                    elif CLOCK['role'] != 'serve':
+                        clock_step(self.store)  # switched off: serves again at once
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('clock-tick', 'watching the clocks: %s' % e, 'warn', every=600)
                 try:
                     node_ask_tick(self)         # tests asked of every node (1.0.169)
                 except Exception as e:          # noqa: BLE001

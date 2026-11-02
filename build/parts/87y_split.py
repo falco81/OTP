@@ -369,9 +369,19 @@ def split_step(store, now=None, peer=None, arbiter=None):
     elif not apart and was_apart:
         took = now - SPLIT['apart_since']
         SPLIT.update(apart_since=0.0, together_at=now, report_due=now + 30)
+        # The connections from before closed (1.0.222): the first question on one dead with
+        # the link put the other node down for 20 s more, just after it came back - and codes
+        # used there meanwhile were let in here again.
+        if peer is None:
+            once_peer_forget()
         log('ha: the other node\'s database answers again - the nodes are together after %s'
             % human_span(took), 'info')
         _split_event(store, 'good', 'the nodes reach each other again, after %s apart' % human_span(took))
+    if apart and p is not True:
+        # Known gone (1.0.222): the sign-ins do not wait 1.5 s each to find it out again -
+        # one with a NAS's timeout of 1.5 s went to the other node, which had stepped aside.
+        with ONCE_PEER_LOCK:
+            ONCE_PEER['down_until'] = max(ONCE_PEER['down_until'], time.time() + 5)
     role, why = split_decide(mode, apart, SPLIT['arb_state'], split_me_preferred())
     if role != SPLIT['role']:
         SPLIT['role'], SPLIT['why'] = role, why
@@ -466,7 +476,9 @@ def split_scratch_refused(store, kind, name, value):
 
 def split_took(store, kind, name, k):
     """A code taken while the other node could not be asked: written down for the report."""
-    if not (split_engaged() and CONFIG.get('split_report')):
+    if not (split_engaged() and CONFIG.get('split_report')) or not split_apart():
+        # Only while apart (1.0.222): a short outage of the other database wrote rows that
+        # waited for the next real split and were reported under it.
         return
     try:
         store.set_meta('split:took:%s:%s' % (node_name(), k),

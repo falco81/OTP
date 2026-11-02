@@ -804,6 +804,13 @@ def _h(text):
     return html.escape(str(text or ''), quote=True)
 
 
+def _algo_said(picture):
+    """The hash beside the key typed in by hand, when it is not the usual one (1.0.222):
+    with SHA-256 set, the key typed into an app made SHA-1 codes that never worked."""
+    a = str(picture.get('algorithm') or 'SHA1').upper()
+    return '' if a == 'SHA1' else ' · ' + _h(a.replace('SHA', 'SHA-'))
+
+
 def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pending=False,
                portal_url='', w=None):
     """The mail a token's owner gets: the QR code inline, the key, and the
@@ -875,7 +882,7 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
                 'monospace;font-size:15px;font-weight:700;letter-spacing:1px;color:#111827;white-space:nowrap">%s'
                 '</td></tr></table>'
                 '<div style="margin:6px 0 0;font-size:12.5px;color:#6b7280;text-align:center;%s">'
-                '%s</div></td></tr></table>' % (_h(key), font, w['facts'].format(**fmt)))
+                '%s</div></td></tr></table>' % (_h(key), font, w['facts'].format(**fmt) + _algo_said(picture)))
     rows.append('<div style="height:18px;line-height:18px;font-size:1px">&nbsp;</div>')
     if pending and w['pending'].strip():
         rows.append('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '

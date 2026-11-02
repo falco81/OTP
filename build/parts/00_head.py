@@ -49,6 +49,7 @@ import ipaddress
 import json
 import os
 import queue
+import random
 import re
 import secrets
 import select
@@ -65,6 +66,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import unicodedata
 
 import threading
 import time
@@ -91,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.221'
+__version__ = '1.0.222'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -405,6 +407,15 @@ DEFAULTS = {
     'split_halve': 0,
     'split_freeze': 0,
     'split_report': 0,
+    # The clocks and the health of the nodes (1.0.222, docs/clock-guard.md).
+    'clock_mode': 'off',
+    'clock_warn_s': 2,
+    'clock_aside_s': 20,
+    'clock_ref': '',
+    'clock_codes': 0,
+    'clock_beat': 0,
+    'clock_locks': 0,
+    'health_dir': 0,
     'ha_address': '',
     # The link to the other node's PostgreSQL, its own (1.0.104): set by the
     # High availability page's button, apart from Database → TLS.
@@ -437,7 +448,7 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
              'isemon_hostname', 'siem_hostname', 'acme_node_name', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
              'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes', 'snmp_bind',
-             'split_arbiter')
+             'split_arbiter', 'clock_ref')
 # 1.0.67: the RADIUS ports (a node behind its own NAT, or a second instance),
 # and its copies of the database - each node keeps its own on its own disk:
 # when, whether, how many.
@@ -518,6 +529,8 @@ TUNABLE = {
     'acme': (0, 1), 'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
     'split_mode': ('off', 'arbiter', 'priority'), 'split_after_s': (5, 300),
     'split_scratch': (0, 1), 'split_halve': (0, 1), 'split_freeze': (0, 1), 'split_report': (0, 1),
+    'clock_mode': ('off', 'watch', 'guard'), 'clock_warn_s': (1, 60), 'clock_aside_s': (5, 600),
+    'clock_codes': (0, 1), 'clock_beat': (0, 1), 'clock_locks': (0, 1), 'health_dir': (0, 1),
     'acme_for': ('vip', 'node', 'both'), 'acme_days': (7, 60), 'acme_key': ('dual', 'dual-strong', 'ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
     'acme_account_key': ('ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
     'acme_profile': ('', 'classic', 'tlsserver', 'shortlived'),
@@ -845,6 +858,14 @@ NAMES = {
     'split_halve': 'Half the tries while apart',
     'split_freeze': 'Changes only on the preferred node while apart',
     'split_report': 'Warn while apart, report afterwards',
+    'clock_mode': 'The clocks of the nodes',
+    'clock_warn_s': 'Warn when off by more than',
+    'clock_aside_s': 'Step aside when off by more than',
+    'clock_ref': 'Reference time servers',
+    'clock_codes': 'Codes by the corrected time',
+    'clock_beat': 'Heartbeats by the measured difference',
+    'clock_locks': 'Pauses and lockouts by the corrected time',
+    'health_dir': 'Step aside when the directory cannot be reached',
     'acme_node_name': 'The node\u2019s DNS name',
     'acme_days': 'Renewed when fewer days are left than',
     'acme_key': 'The key of the certificate',

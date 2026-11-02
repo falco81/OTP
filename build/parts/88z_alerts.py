@@ -237,6 +237,47 @@ def alert_problems(store, lang='en'):
                 _al(lang, '%d kód(ů): %s', '%d code(s): %s') % (
                     rep['twice_n'], ', '.join('%s (%s)' % (x.get('name'), x.get('kind'))
                                               for x in (rep.get('twice') or [])[:10])), 'ha')
+    # The clocks and the health of the nodes (1.0.222): each node's own word.
+    if clock_engaged():
+        warn_s = float(CONFIG.get('clock_warn_s') or 2)
+        aside_s = float(CONFIG.get('clock_aside_s') or 20)
+        for n in names:
+            st = clock_state_of(store, n)
+            if not st or now - float(st.get('at') or 0) > 90:
+                continue
+            ref = st.get('ref')
+            if st.get('role') == 'aside':
+                add('clock:aside:' + n, 'bad', n,
+                    _al(lang, '%s ustoupil stranou' % n, '%s stepped aside' % n),
+                    _al(lang, 'RADIUS tohoto uzlu obsluhuje druhý uzel: %s',
+                        'The other node answers RADIUS for it: %s') % str(st.get('why') or '')[:200], 'time')
+            if ref is None and st.get('ref_err'):
+                add('clock:ref:' + n, 'warn', n,
+                    _al(lang, '%s se nemůže zeptat na přesný čas' % n,
+                        '%s cannot ask for the right time' % n),
+                    _al(lang, 'Žádný referenční časový server neodpověděl: %s',
+                        'No reference time server answered: %s') % str(st.get('ref_err'))[:200], 'time')
+            elif ref is not None and abs(float(ref)) > warn_s:
+                add('clock:skew:' + n, 'bad' if abs(float(ref)) > aside_s else 'warn', n,
+                    _al(lang, 'Hodiny %s jdou o %+.1f s' % (n, -float(ref)),
+                        'The clock of %s is %+.1f s off' % (n, -float(ref))),
+                    _al(lang, 'Kódy z aplikací tam %s.', 'Codes from the apps %s there.') % (
+                        _al(lang, 'počítá opravený čas', 'are worked out with the corrected time')
+                        if st.get('codes_fixed') else
+                        _al(lang, 'mohou být odmítány', 'may be refused')), 'time')
+            sk = st.get('skew')
+            if sk is not None and abs(float(sk)) > warn_s and st.get('skew_of') not in ('', 'test-peer'):
+                add('clock:peer:' + n, 'warn', n,
+                    _al(lang, 'Hodiny %s a %s se liší o %.1f s' % (n, st.get('skew_of'), abs(float(sk))),
+                        'The clocks of %s and %s differ by %.1f s' % (n, st.get('skew_of'), abs(float(sk)))),
+                    _al(lang, 'Nastavte na obou čas ze stejných serverů (Nastavení → Čas).',
+                        'Set both to the same time servers (Settings → Time).'), 'time')
+            if CONFIG.get('health_dir') and st.get('dir_ok') is False:
+                bad = ', '.join('%s (%s)' % (d.get('name'), d.get('words')) for d in st.get('dirs') or []
+                                if not d.get('ok'))
+                add('clock:dir:' + n, 'bad', n,
+                    _al(lang, '%s nedosáhne na adresář' % n, '%s cannot reach the directory' % n),
+                    str(bad)[:300], 'time')
     # The VIP address (1.0.194): where keepalived put it, from each node's heartbeat.
     if CONFIG.get('alerts_vrrp', 1) and cluster and not quiet:
         try:

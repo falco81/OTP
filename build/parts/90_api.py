@@ -1790,7 +1790,7 @@ def token_locks_let_go(h):
             lk._acquire_restore(st)
 
 
-def token_same_person(store, name):
+def token_same_person(store, name, daemon=None):
     """Another name of the same person with a token in use - one RADIUS would
     stop using once `name` has one (1.0.139): under another suffix of the
     realm, or the same account in another realm on the same directory."""
@@ -1813,6 +1813,15 @@ def token_same_person(store, name):
         t = store.token(c) if c != name else None
         if t and t.get('state') != 'pending':
             return c
+    # And the token RADIUS takes for the same directory entry (1.0.222): its
+    # userPrincipalName in a realm that reads names so - falco@corp.loc was made a working
+    # token beside falco@corp.cz in use by a token administrator.
+    if daemon is not None and realm.get('directory') and getattr(daemon, 'auth', None):
+        same = daemon.auth.same_person(name, realm)
+        if same and norm_name(same) != norm_name(name):
+            t = store.token(same)
+            if t and t.get('state') != 'pending':
+                return norm_name(same)
     return ''
 
 
@@ -1831,7 +1840,7 @@ def _token_act(h, s, b, act, name, who):
             # administrator makes new ones.
             raise ApiError(403, '%s already has a token in use: only a full administrator '
                                 'replaces it (or the person, on the enrolment pages)' % name)
-        other = token_same_person(h.store, name) if s['role'] != 'fulladmin' else ''
+        other = token_same_person(h.store, name, h.d) if s['role'] != 'fulladmin' else ''
         if other:
             # The same person under another name (1.0.139): the new token
             # would be the one RADIUS takes - a working key for somebody else.
@@ -1986,7 +1995,7 @@ def _token_act(h, s, b, act, name, who):
         digits = int(tok.get('digits') or 6)
         period = int(tok.get('period') or 30)
         algo = tok.get('algorithm') or 'SHA1'
-        now = time.time()
+        now = clock_now('codes')
         step = totp_step(now, period)
         # Written down whatever the page says (1.0.44): once per person and
         # token in five minutes, so the page asking for the next code every
@@ -5357,6 +5366,10 @@ def _portal_cancel(h):
         elif tok and tok.get('state') == 'pending':
             h.store.token_drop(s['name'])
             token_meta_forget(h.store, s['name'])
+            # And what an administrator's drop clears (1.0.222): the mail of its key, the
+            # waiting replacement's shape.
+            mailed_drop(h.store, s['name'])
+            h.d.tokens._staged_forget(s['name'])
             h.store.add_event('enrolment', '%s threw away the token they had not confirmed'
                               % s['name'], who=s['name'])
     return {'me': portal_state(h, s)}

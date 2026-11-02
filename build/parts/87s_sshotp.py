@@ -137,7 +137,7 @@ def sshotp_check(store, name, code):
             return False, 'this token gets its codes sent'
         secret = unseal_secret(rec.get('secret'), sshotp_key(name))
         code = ssh_code_typed(code)
-        step = totp_match(secret, code, digits=6, window=mfa_window()) if secret else None
+        step = totp_match(secret, code, clock_now('codes'), digits=6, window=mfa_window()) if secret else None
         # Good once on either node (1.0.206): the step taken in token_once, as a
         # token's - each node's own row let a code seen on one in on the other.
         if step is not None and step > int(rec.get('step') or 0) and \

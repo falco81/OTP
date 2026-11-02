@@ -24,6 +24,10 @@ def is_masked(value):
 
 def norm_name(name):
     said = str(name or '').strip()
+    if not said.isascii():
+        # One form of the letters (1.0.222): a client sending "Žofie" decomposed found no
+        # token made with it composed.
+        said = unicodedata.normalize('NFC', said)
     if CONFIG.get('token_names_case', 'lower') == 'lower':
         said = said.lower()
     return said[:190]

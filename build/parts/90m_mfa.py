@@ -214,7 +214,7 @@ def _mfa_do(h):
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
         if new['kind'] == 'app':
             secret = unseal_secret(new.get('secret'), 'adm2fa-new:' + name.lower())
-            step = totp_match(secret, code, digits=6, window=mfa_window()) \
+            step = totp_match(secret, code, clock_now('codes'), digits=6, window=mfa_window()) \
                 if secret else None
             if step is None:
                 h.failed(key)
@@ -262,7 +262,7 @@ def _mfa_do(h):
             with MFA_LOCK:
                 rec = mfa_get(h.store, name) or {}
                 secret = unseal_secret(rec.get('secret'), mfa_key(name))
-                step = totp_match(secret, code, digits=6,
+                step = totp_match(secret, code, clock_now('codes'), digits=6,
                                   window=mfa_window()) if secret else None
                 # A code is good once (as a token's is).
                 # And on either node (1.0.205): the step taken as a token's is, in
