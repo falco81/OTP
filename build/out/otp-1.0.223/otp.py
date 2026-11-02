@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.222'
+__version__ = '1.0.223'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -11841,6 +11841,79 @@ def chal_tidy(store):
 # took - and kept with the request, so that "why was I refused" is answered
 # by opening one row rather than by reading a debug log.
 
+# ---- the answer from the address the request came to (1.0.223) ---------------------------
+# Listening on every address (0.0.0.0 / ::), the answer went out from the address the
+# kernel chose for the way back - the node's own, not the VIP address the VPN had asked.
+# Most VPNs throw such an answer away (it is not from the server they asked), so RADIUS on
+# the VIP address did not work. The address each request came to is read with it
+# (IP_PKTINFO / IPV6_PKTINFO) and the answer sent from it.
+IP_PKTINFO = getattr(socket, 'IP_PKTINFO', 8)
+IPV6_RECVPKTINFO = getattr(socket, 'IPV6_RECVPKTINFO', 49)
+IPV6_PKTINFO = getattr(socket, 'IPV6_PKTINFO', 50)
+RADIUS_PKTINFO = {}
+
+
+def radius_pktinfo_on(sock, fam, bind):
+    """Asked for on a socket listening on every address: the address each request came to."""
+    if bind not in ('0.0.0.0', '::', ''):
+        return
+    got = []
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, IP_PKTINFO, 1)
+        got.append(4)
+    except OSError:
+        pass
+    if fam == socket.AF_INET6:
+        try:
+            sock.setsockopt(socket.IPPROTO_IPV6, IPV6_RECVPKTINFO, 1)
+            got.append(6)
+        except OSError:
+            pass
+    if got:
+        RADIUS_PKTINFO[sock.fileno()] = got
+
+
+class RadiusReplyVia(object):
+    """The socket, answering from the address the request came to."""
+    __slots__ = ('sock', 'anc')
+
+    def __init__(self, sock, anc):
+        self.sock, self.anc = sock, anc
+
+    def sendto(self, data, peer):
+        if self.anc:
+            try:
+                return self.sock.sendmsg([data], self.anc, 0, peer)
+            except OSError:
+                pass                    # as before: the kernel's choice
+        return self.sock.sendto(data, peer)
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+
+def radius_recv(sock):
+    """(data, the socket to answer on, peer)."""
+    if sock.fileno() not in RADIUS_PKTINFO:
+        data, peer = sock.recvfrom(4096)
+        return data, sock, peer
+    data, ancdata, _flags, peer = sock.recvmsg(4096, 256)
+    anc = []
+    for level, kind, cdata in ancdata:
+        try:
+            if level == socket.IPPROTO_IP and kind == IP_PKTINFO and len(cdata) >= 12:
+                # struct in_pktinfo {int ifindex; in_addr spec_dst; in_addr addr}: sent
+                # back with the address it came to as the one to send from.
+                anc = [(socket.IPPROTO_IP, IP_PKTINFO, struct.pack('=i4s4s', 0, cdata[8:12], b'\0' * 4))]
+            elif level == socket.IPPROTO_IPV6 and kind == IPV6_PKTINFO and len(cdata) >= 20:
+                # struct in6_pktinfo {in6_addr addr; unsigned ifindex}
+                if not cdata[:12] == b'\0' * 10 + b'\xff\xff':
+                    anc = [(socket.IPPROTO_IPV6, IPV6_PKTINFO, cdata[:16] + struct.pack('=I', 0))]
+        except (struct.error, TypeError):
+            anc = []
+    return data, (RadiusReplyVia(sock, anc) if anc else sock), peer
+
+
 class Decision(object):
     def __init__(self):
         self.steps = []
@@ -11855,6 +11928,7 @@ class Decision(object):
         self.display = ''
         self.state = None               # an Access-Challenge's State (1.0.76)
         self.message = ''               # and the words of its second window
+        self.silent = ''                # left unanswered, and why (1.0.223)
 
     def step(self, what, ok, said='', since=None):
         one = {'what': what, 'ok': ok, 'said': str(said or '')[:600]}
@@ -11972,6 +12046,17 @@ class Authenticator(object):
         # Under the realm's own suffix (1.0.117): novak@dpmo.local is
         # novak@dpmo.cz where dpmo.local is another suffix of the realm.
         return norm_name(realm_main_name(user, realm))
+
+    def ldap_gone(self, d):
+        """The directory cannot be reached from here. Refused, as before - or, with "Step
+        aside when the directory cannot be reached" and the other node well (1.0.223), left
+        unanswered: a refusal is the VPN's last word, no answer makes it ask the other node
+        (or the VIP address once it has moved) at once, not after the 15 s of the watch.
+        Nothing was used up yet: the directory is asked before the code."""
+        why = clock_dir_failover(self.store)
+        if why:
+            d.silent = why
+        return d.refuse('LDAP server(s) have gone away')
 
     def same_person(self, user, realm):
         """The name of the token the directory entry of `user` already has under another
@@ -12208,8 +12293,9 @@ class Authenticator(object):
                 entry = self.find_person(ad, d.user, lookup, realm)
             except LdapError as e:
                 d.step('look %s up in %s' % (d.user, ad.name), False, str(e), t)
-                return d.refuse('LDAP server(s) have gone away' if isinstance(
-                    e, LdapUnreachable) else 'the directory could not be asked: %s' % e)
+                if isinstance(e, LdapUnreachable):
+                    return self.ldap_gone(d)
+                return d.refuse('the directory could not be asked: %s' % e)
             if not entry:
                 d.step('look %s up in %s' % (d.user, ad.name), False,
                        'by %s: there is no such account' % {'upn': 'userPrincipalName',
@@ -12264,9 +12350,9 @@ class Authenticator(object):
                         # not taken for a while. Codes from the app go on.
                         scratch_guard_note(self.store, d.token_name,
                                            getattr(REQUEST_PLACE, 'v', ''))
-                    return d.refuse('the directory refused the password: %s' % e
-                                    if not isinstance(e, LdapUnreachable)
-                                    else 'LDAP server(s) have gone away')
+                    if isinstance(e, LdapUnreachable):
+                        return self.ldap_gone(d)
+                    return d.refuse('the directory refused the password: %s' % e)
             wanted = realm.get('groups') or []
             if wanted:
                 t = time.time()
@@ -12274,12 +12360,12 @@ class Authenticator(object):
                     have = ad.groups_of(entry, bool(realm.get('nested', 1)))
                 except LdapError as e:
                     d.step('the groups of %s' % d.user, False, str(e), t)
-                    return d.refuse('LDAP server(s) have gone away')
+                    return self.ldap_gone(d)
                 try:
                     hit = group_matches(wanted, have, ad)
                 except LdapError as e:
                     d.step('the group of %s looked up' % d.user, False, str(e), t)
-                    return d.refuse('LDAP server(s) have gone away')
+                    return self.ldap_gone(d)
                 if not hit:
                     names = ', '.join(cn_of(w.get('group') or '') or w.get('group') or ''
                                       for w in wanted[:6]) + (' …' if len(wanted) > 6 else '')
@@ -12628,6 +12714,7 @@ class RadiusServer(object):
                     break
                 except OSError:
                     continue
+            radius_pktinfo_on(sock, fam, bind)
             sock.settimeout(1.0)
             self.socks[kind] = (bind, port, sock)
             self.bound.append('%s:%d/%s' % (bind, port, kind))
@@ -12652,7 +12739,7 @@ class RadiusServer(object):
     def read(self, kind, sock):
         while not self.stop_flag:
             try:
-                data, peer = sock.recvfrom(4096)
+                data, via, peer = radius_recv(sock)
             except socket.timeout:
                 continue
             except OSError:
@@ -12664,7 +12751,7 @@ class RadiusServer(object):
                 return
             try:
                 (self.acct_jobs if kind == 'acct' else self.jobs).put_nowait(
-                    (kind, sock, data, peer, time.time()))
+                    (kind, via, data, peer, time.time()))
             except queue.Full:
                 self.counts['overflow'] += 1
 
@@ -13092,6 +13179,10 @@ class RadiusServer(object):
             d.user = str(user or '')
             d.step('the decision', False, 'it could not be made: %s' % e)
             d.refuse('the token server could not decide: %s' % str(e)[:120])
+        if getattr(d, 'silent', ''):
+            self.counts['no_directory'] += 1
+            log_sparing('radius-nodir', 'RADIUS requests left to the other node: %s' % d.silent, 'warn')
+            return None
         if src and not blocked and guard_is_guess(d):
             try:
                 guard_count(self.d, src, d.user or user)
@@ -15131,8 +15222,8 @@ class Daemon(object):
                 try:
                     if clock_engaged():
                         clock_tick(self)        # the clocks and the health of the nodes (1.0.222)
-                    elif CLOCK['role'] != 'serve':
-                        clock_step(self.store)  # switched off: serves again at once
+                    elif CLOCK['role'] != 'serve' or CLOCK['ref_at']:
+                        clock_step(self.store)  # switched off: serves again at once, forgets
                 except Exception as e:          # noqa: BLE001
                     log_sparing('clock-tick', 'watching the clocks: %s' % e, 'warn', every=600)
                 try:
@@ -33348,6 +33439,23 @@ def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer):
     return 'serve', ''
 
 
+def clock_dir_failover(store):
+    """Why a request that met the directory unreachable is left to the other node, or ''
+    (1.0.223): only with "Step aside when the directory cannot be reached" (mode guard), and
+    only while the other node is well - fresh, serving, not in maintenance, not known to be
+    without the directory itself. Else it is refused, as before."""
+    if clock_mode() != 'guard' or not CONFIG.get('health_dir'):
+        return ''
+    try:
+        p = clock_peer_row(store)
+    except Exception:                                   # noqa: BLE001
+        return ''
+    if not p or not p.get('fresh') or p.get('role') != 'serve' or p.get('maintenance') or \
+            p.get('dir_ok') is False:
+        return ''
+    return 'the directory cannot be reached from this node - the other node answers'
+
+
 def clock_aside():
     return clock_engaged() and CLOCK['role'] == 'aside'
 
@@ -33456,6 +33564,11 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         if CLOCK['role'] != 'serve':
             CLOCK.update(role='serve', why='')
             MAINT_CACHE['at'] = 0
+        # Nothing kept from the time it ran (1.0.223): switched off, the card showed the last
+        # measurements as if they were now.
+        if CLOCK['ref_at'] or CLOCK['skew_at'] or CLOCK['dir_at']:
+            CLOCK.update(ref=None, ref_at=0.0, ref_src='', ref_err='', refs=[], skew=None,
+                         skew_at=0.0, skew_of='', skew_err='', dir_ok=None, dirs=[], dir_at=0.0)
         return
     if ref is not None:
         CLOCK.update(ref=None if ref == 'none' else ref, ref_at=now, ref_src='test', ref_err='')
@@ -33559,8 +33672,10 @@ CLOCK_KEYS = ('clock_mode', 'clock_warn_s', 'clock_aside_s', 'clock_codes', 'clo
 def clock_view(store):
     nodes = []
     saved = store.settings_saved()
+    on = clock_engaged()
     for n in ha_nodes(store):
-        st = clock_state_of(store, n['name'])
+        # Switched off (1.0.223): nothing measured is shown - a row of the time it ran is old.
+        st = clock_state_of(store, n['name']) if on else {}
         if n.get('me') and not st:
             st = clock_state_here()
         nodes.append({'name': n['name'], 'me': bool(n.get('me')), 'alive': bool(n.get('alive')),

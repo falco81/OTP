@@ -4,6 +4,23 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.223 — 2 November 2026
+
+- **RADIUS on the VIP address did not work** - each node listens on every address, and so
+  received the requests sent to the VIP address, but answered from its own address: most VPNs
+  (Cisco ASA, FortiGate, MikroTik, pfSense) throw away an answer that does not come from the
+  server they asked. Each answer goes out from the address its request came to now. The VIP
+  address can be the VPN's one RADIUS server; or both nodes as two servers of a group, as before;
+  or both. The firewall already lets RADIUS in from every client to every address of the node,
+  the VIP address included (docs/high-availability.md).
+- **A node that cannot reach the directory hands its sign-ins over at once** - with *Step aside
+  when the directory cannot be reached* (Settings → Time → The clocks of the nodes), a sign-in that
+  meets the directory unreachable gets no answer while the other node is well, so the VPN asks the
+  other node at once - not an Access-Reject, which the VPN takes as final, for the up to 15 s
+  until the node steps aside and the VIP address moves. Nothing is used up meanwhile: the
+  directory is asked before the code. Without the switch, refused as before.
+- **The clocks of the nodes, switched off, still showed the last measurements** - nothing measured
+  is kept or shown once it is off.
 ## 1.0.222 — 2 November 2026
 
 **The clocks and the health of the nodes** - Settings → Time → *The clocks of the nodes*

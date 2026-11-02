@@ -1632,8 +1632,8 @@ class Daemon(object):
                 try:
                     if clock_engaged():
                         clock_tick(self)        # the clocks and the health of the nodes (1.0.222)
-                    elif CLOCK['role'] != 'serve':
-                        clock_step(self.store)  # switched off: serves again at once
+                    elif CLOCK['role'] != 'serve' or CLOCK['ref_at']:
+                        clock_step(self.store)  # switched off: serves again at once, forgets
                 except Exception as e:          # noqa: BLE001
                     log_sparing('clock-tick', 'watching the clocks: %s' % e, 'warn', every=600)
                 try:

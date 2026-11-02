@@ -285,11 +285,21 @@ leaving the cluster): [operations.md](operations.md).
   192.0.2.10;` and `real_ip_header proxy_protocol;`. With send-proxy the
   health check needs `check-send-proxy` as well, or it is refused by nginx.
 
-- **RADIUS**: give the VPN both nodes as servers of one group. On a Cisco ASA
-  that is two `aaa-server` hosts with the same key. You can also balance UDP
-  1812 and 1813 to both nodes. In both cases each client's address and secret
-  must be configured once, under *Settings → Clients*. Both nodes read them
-  from the database.
+- **RADIUS**: two ways, both work, and can be combined.
+  - **Both nodes as servers of one group** on the VPN (Cisco ASA: two `aaa-server` hosts with the
+    same key; FortiGate: primary and secondary server). A node that does not answer - down, in
+    maintenance, stepped aside - is passed over by the VPN, which asks the other.
+  - **The VIP address** as the one RADIUS server (for a VPN that takes one only). Each node
+    listens on every address, so on the VIP address too while it holds it, and answers from the
+    address it was asked on (1.0.223: before, the answer went out from the node's own address and
+    most VPNs threw it away). A node that steps aside or goes into maintenance lets the VIP
+    address go to the other node within seconds; the VPN's next try reaches it.
+  - The firewall: otp's own (Settings → Firewall) lets UDP 1812 and 1813 in from every RADIUS
+    client set up under *Settings → Clients*, to any address of the node - the VIP address
+    included - and VRRP between the two nodes; nothing to add by hand.
+  - Each client's address and secret are set up once, under *Settings → Clients*; both nodes read
+    them from the database. A load balancer of UDP 1812/1813 in front of both nodes works too
+    (docs/load-balancers.md).
 
 ## What it does not do
 

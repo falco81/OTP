@@ -84,8 +84,8 @@ try:
     st, got = save(dict(OFF, clock_mode='guard', clock_codes=1))
     T = json.loads(in_node('a', "tk = otp.Tokens(st)\nprint(json.dumps(tk.enroll('clku', 'test'), default=str))")
                    .strip().split('\n')[-1])
-    ok('codes by the corrected time: b (300 s behind) answers', wait(lambda: state('b').get('codes_fixed') is True, 60)
-       and state('b').get('role') == 'serve')
+    ok('codes by the corrected time: b (300 s behind) answers', wait(lambda: state('b').get('codes_fixed') is True and state('b').get('role') == 'serve', 90)
+       and state('b').get('role') == 'serve', state('b'))
     while int(time.time()) % 30 > 22:
         time.sleep(1)
     c = in_node('a', "print(otp.totp(%r, otp.time.time() + 300))" % T['secret']).strip().split('\n')[-1]

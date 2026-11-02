@@ -85,7 +85,7 @@ They act only with the mode `watch` or `guard` (in `off` nothing runs, whatever 
 | `clock_codes` | Codes by the corrected time | The code from the app is checked against the reference's time: `time.time() + offset`, where `offset` is the median offset of the reference servers measured in the last minutes, used only when larger than `clock_warn_s`. Right codes keep working on a node whose clock is off. With it, `guard` does not step a node aside for its clock (its codes are right). |
 | `clock_beat` | Heartbeats by the measured difference | The other node's heartbeat age is `now - (at - skew)`, where `skew` is the other node's clock minus this one's as measured here. |
 | `clock_locks` | Pauses and lockouts by the corrected time | `t` in the pause / lockout code is the corrected time. Lockouts written on a node whose clock is off last as long as on the other. |
-| `health_dir` | Step aside when the directory cannot be reached | With `guard`: a node that cannot reach (TCP connect) any server of a directory used by a realm steps aside while the other node reaches all of them. |
+| `health_dir` | Step aside when the directory cannot be reached | With `guard`: a node that cannot reach (TCP connect) any server of a directory used by a realm steps aside while the other node reaches all of them. And at once, before that check comes round (1.0.223): a sign-in that meets the directory unreachable is left **unanswered** while the other node is well - an Access-Reject is the VPN's last word, no answer makes it ask the other node (or the VIP address) at once. Nothing is used up: the directory is asked before the code. |
 
 ### 2.3 The numbers
 
@@ -278,6 +278,18 @@ The split-brain feature (1.0.218) steps aside through the same gate; this one do
 
 "Not answering" is deliberate: an Access-Reject is taken by the NAS as final; no answer makes it
 try the other server. The administration pages keep working on the node that stepped aside.
+
+### 6.1 A single sign-in that meets the directory unreachable (1.0.223)
+
+The watch checks the directory every 15 s. Between two checks a sign-in that finds the directory
+unreachable (the lookup, the password, the groups - `LdapUnreachable`) was refused: "LDAP
+server(s) have gone away", an Access-Reject, final for the VPN. With `guard` and `health_dir`,
+and the other node well (its state row fresh, serving, not in maintenance, not itself without the
+directory), it is left **unanswered** instead (`Authenticator.ldap_gone`, `clock_dir_failover`):
+the VPN times out and asks its other server - the other node, or the VIP address once it has
+moved. The directory is always asked before the code, so nothing is used up. Counted as
+`no_directory` in the RADIUS counters and logged sparingly. In every other case - the mode not
+`guard`, the switch off, the other node not well - it is refused and answered, as before.
 
 Switched off (mode `off`) while a node is aside: the daemon's loop sees the role still `aside`
 and calls `clock_step` once, which sets it back to `serve` at once.
@@ -570,7 +582,7 @@ var CLOCKC_OPTS = [
   {k: 'clock_locks', icon: 'lock', t: 'Pauses and lockouts by the corrected time',
    s: 'The pause after wrong codes and the lockout are timed by the corrected time: on a node whose clock is off they last as long as on the other, not minutes more or nothing at all.'},
   {k: 'health_dir', icon: 'people', t: 'Step aside when the directory cannot be reached',
-   s: 'With Step aside when not well: a node that cannot reach the directory its realms sign in against (checked every 15 s) steps aside while the other node reaches it - rather than refusing every password.'}
+   s: 'With Step aside when not well: a node that cannot reach the directory its realms sign in against (checked every 15 s) steps aside while the other node reaches it - rather than refusing every password. Meanwhile each sign-in that meets the directory unreachable gets no answer, so the VPN asks the other node at once.'}
 ];
 
 function loadClock(quiet) {
@@ -972,7 +984,7 @@ function drawClockIn() {
 | Pauses and lockouts by the corrected time | Pauzy a zámky podle opraveného času |
 | The pause after wrong codes and the lockout are timed by the corrected time: on a node whose clock is off they last as long as on the other, not minutes more or nothing at all. | Pauza po špatných kódech a zámek se měří opraveným časem: na uzlu se špatnými hodinami trvají stejně dlouho jako na druhém, ne o minuty déle nebo vůbec. |
 | Step aside when the directory cannot be reached | Ustoupit stranou, když není dosažitelný adresář |
-| With Step aside when not well: a node that cannot reach the directory its realms sign in against (checked every 15 s) steps aside while the other node reaches it - rather than refusing every password. | S volbou Ustoupit stranou: uzel, který nedosáhne na adresář, proti kterému se jeho realmy přihlašují (kontrola každých 15 s), ustoupí stranou, dokud na něj druhý uzel dosáhne – místo aby odmítal každé heslo. |
+| With Step aside when not well: a node that cannot reach the directory its realms sign in against (checked every 15 s) steps aside while the other node reaches it - rather than refusing every password. Meanwhile each sign-in that meets the directory unreachable gets no answer, so the VPN asks the other node at once. | S volbou Ustoupit stranou: uzel, který nedosáhne na adresář, proti kterému se jeho realmy přihlašují (kontrola každých 15 s), ustoupí stranou, dokud na něj druhý uzel dosáhne – místo aby odmítal každé heslo. Mezitím každé přihlášení, které na nedostupný adresář narazí, nedostane odpověď, takže se VPN hned zeptá druhého uzlu. |
 | Stepping aside comes after the warning: more seconds than it | Ustoupení přichází až po varování: víc sekund než ono |
 | Try the reference from every node first: a node that cannot ask it is never stepped aside, and you would not know it is unguarded | Nejdřív vyzkoušejte referenci ze všech uzlů: uzel, který se jí nemůže zeptat, nikdy neustoupí – a nevěděli byste, že není hlídaný |
 | behind by | pozadu o |
@@ -1404,6 +1416,23 @@ def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer):
     return 'serve', ''
 
 
+def clock_dir_failover(store):
+    """Why a request that met the directory unreachable is left to the other node, or ''
+    (1.0.223): only with "Step aside when the directory cannot be reached" (mode guard), and
+    only while the other node is well - fresh, serving, not in maintenance, not known to be
+    without the directory itself. Else it is refused, as before."""
+    if clock_mode() != 'guard' or not CONFIG.get('health_dir'):
+        return ''
+    try:
+        p = clock_peer_row(store)
+    except Exception:                                   # noqa: BLE001
+        return ''
+    if not p or not p.get('fresh') or p.get('role') != 'serve' or p.get('maintenance') or \
+            p.get('dir_ok') is False:
+        return ''
+    return 'the directory cannot be reached from this node - the other node answers'
+
+
 def clock_aside():
     return clock_engaged() and CLOCK['role'] == 'aside'
 
@@ -1512,6 +1541,11 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         if CLOCK['role'] != 'serve':
             CLOCK.update(role='serve', why='')
             MAINT_CACHE['at'] = 0
+        # Nothing kept from the time it ran (1.0.223): switched off, the card showed the last
+        # measurements as if they were now.
+        if CLOCK['ref_at'] or CLOCK['skew_at'] or CLOCK['dir_at']:
+            CLOCK.update(ref=None, ref_at=0.0, ref_src='', ref_err='', refs=[], skew=None,
+                         skew_at=0.0, skew_of='', skew_err='', dir_ok=None, dirs=[], dir_at=0.0)
         return
     if ref is not None:
         CLOCK.update(ref=None if ref == 'none' else ref, ref_at=now, ref_src='test', ref_err='')
@@ -1615,8 +1649,10 @@ CLOCK_KEYS = ('clock_mode', 'clock_warn_s', 'clock_aside_s', 'clock_codes', 'clo
 def clock_view(store):
     nodes = []
     saved = store.settings_saved()
+    on = clock_engaged()
     for n in ha_nodes(store):
-        st = clock_state_of(store, n['name'])
+        # Switched off (1.0.223): nothing measured is shown - a row of the time it ran is old.
+        st = clock_state_of(store, n['name']) if on else {}
         if n.get('me') and not st:
             st = clock_state_here()
         nodes.append({'name': n['name'], 'me': bool(n.get('me')), 'alive': bool(n.get('alive')),

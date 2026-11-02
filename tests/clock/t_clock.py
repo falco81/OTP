@@ -234,11 +234,53 @@ if dirs:
     otp.CONFIG['health_dir'] = 0
 lst.close()
 
+# ---- a request meeting the directory unreachable (1.0.223) ------------------------------------
+dead = socket.socket(); dead.bind(('127.0.0.1', 0)); dport2 = dead.getsockname()[1]; dead.close()
+st.directory_save({'name': 'addead', 'hosts': '127.0.0.1:%d' % dport2, 'base': 'DC=x', 'tls': 'none'})
+st.realm_save({'name': 'rdead', 'suffix': 'dead.cz', 'directory': 'addead', 'auth_mode': 'password_otp',
+               'lookup': 'upn'})
+d.reload_all() if hasattr(d, 'reload_all') else None
+auth = d.auth
+
+
+def ask_dead():
+    return auth.decide('jan@dead.cz', 'heslo123456', '', src='127.0.0.1', rid='t')
+
+
+otp.CONFIG.update(clock_mode='off', health_dir=0)
+r = ask_dead()
+ok('as until now: the directory unreachable - refused, answered (%s)' % r.reason,
+   r.result == 'reject' and 'gone away' in r.reason and not r.silent)
+otp.CONFIG.update(clock_mode='guard', health_dir=1)
+otp.clock_step(st, ref=0.0, skew='none', dir_ok=True, peer=peer_ok)
+st.set_meta('clock:state:ckb', json.dumps({'at': time.time(), 'role': 'serve', 'ref': 0.0, 'dir_ok': True}))
+otp.CLOCK['skew'] = None
+r = ask_dead()
+ok('guard + the directory switch, the other node well: left unanswered for it (%s)' % r.silent,
+   r.silent and 'other node answers' in r.silent)
+st.set_meta('clock:state:ckb', json.dumps({'at': time.time(), 'role': 'serve', 'ref': 0.0, 'dir_ok': False}))
+r = ask_dead()
+ok('... the other node without the directory too: refused, answered', not r.silent and r.result == 'reject')
+st.set_meta('clock:state:ckb', json.dumps({'at': time.time() - 300, 'role': 'serve', 'ref': 0.0, 'dir_ok': True}))
+r = ask_dead()
+ok('... the other node not heard from: refused, answered', not r.silent)
+st.set_meta('clock:state:ckb', json.dumps({'at': time.time(), 'role': 'aside', 'ref': 0.0, 'dir_ok': True}))
+r = ask_dead()
+ok('... the other node stepped aside: refused, answered', not r.silent)
+otp.CONFIG.update(clock_mode='watch')
+st.set_meta('clock:state:ckb', json.dumps({'at': time.time(), 'role': 'serve', 'ref': 0.0, 'dir_ok': True}))
+r = ask_dead()
+ok('... watch (not guard): refused, answered', not r.silent)
+otp.CONFIG.update(clock_mode='guard', health_dir=0)
+
 # ---- off again: serves at once ---------------------------------------------------------------
 otp.clock_step(st, ref=300.0, skew='none', peer=peer_ok)
 otp.CONFIG['clock_mode'] = 'off'
 otp.clock_step(st)
 ok('switched off while aside: answers at once', not otp.clock_aside() and not otp.maintenance_now(st).get('on'))
+ok('... and nothing measured is kept (the card shows nothing of the time it ran)',
+   otp.CLOCK['ref'] is None and otp.CLOCK['ref_at'] == 0 and otp.clock_state_here()['ref'] is None
+   and all(not n['state'].get('ref') for n in otp.clock_view(st)['nodes']))
 
 # ---- the API -----------------------------------------------------------------------------------
 otp.CONFIG.update(ha_mode='', ha_peer='')

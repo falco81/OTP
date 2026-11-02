@@ -342,6 +342,11 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
         if CLOCK['role'] != 'serve':
             CLOCK.update(role='serve', why='')
             MAINT_CACHE['at'] = 0
+        # Nothing kept from the time it ran (1.0.223): switched off, the card showed the last
+        # measurements as if they were now.
+        if CLOCK['ref_at'] or CLOCK['skew_at'] or CLOCK['dir_at']:
+            CLOCK.update(ref=None, ref_at=0.0, ref_src='', ref_err='', refs=[], skew=None,
+                         skew_at=0.0, skew_of='', skew_err='', dir_ok=None, dirs=[], dir_at=0.0)
         return
     if ref is not None:
         CLOCK.update(ref=None if ref == 'none' else ref, ref_at=now, ref_src='test', ref_err='')
@@ -445,8 +450,10 @@ CLOCK_KEYS = ('clock_mode', 'clock_warn_s', 'clock_aside_s', 'clock_codes', 'clo
 def clock_view(store):
     nodes = []
     saved = store.settings_saved()
+    on = clock_engaged()
     for n in ha_nodes(store):
-        st = clock_state_of(store, n['name'])
+        # Switched off (1.0.223): nothing measured is shown - a row of the time it ran is old.
+        st = clock_state_of(store, n['name']) if on else {}
         if n.get('me') and not st:
             st = clock_state_here()
         nodes.append({'name': n['name'], 'me': bool(n.get('me')), 'alive': bool(n.get('alive')),
