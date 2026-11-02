@@ -77,7 +77,8 @@ SCHEMA = [
     ('directories', '''CREATE TABLE IF NOT EXISTS directories (
         id {ID}, name {K} NOT NULL UNIQUE, hosts {T}, port {I}, tls {K}, verify {I},
         ca {B}, base {T}, bind_dn {T}, bind_pw {T}, user_attr {K}, nested {I},
-        timeout_s {I}, enabled {I}, note {T}, created {N}, weak {I})'''),
+        timeout_s {I}, enabled {I}, note {T}, created {N}, weak {I}, mail_attr {K},
+        mobile_attr {K})'''),
     ('radius_log', '''CREATE TABLE IF NOT EXISTS radius_log (
         id {ID}, ts {N}, client {K}, nas_ip {K}, src {K}, packet {K}, username {K},
         realm {K}, calling {K}, called {K}, result {K}, reason {T}, otp {K}, rid {K},

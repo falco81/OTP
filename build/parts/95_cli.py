@@ -1553,7 +1553,8 @@ HA_CONTENT = {
                        "check_disabled, reply, enabled, position, token_name, nested, methods, "
                        "aliases)"),
     'directories': ('name', "concat_ws('/', name, hosts, port, tls, verify, ca, base, bind_dn, "
-                            "bind_pw, user_attr, nested, timeout_s, enabled, weak)"),
+                            "bind_pw, user_attr, nested, timeout_s, enabled, weak, mail_attr, "
+                            "mobile_attr)"),
 }
 
 

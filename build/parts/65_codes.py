@@ -1553,7 +1553,8 @@ def chal_drop(store, state):
 def chal_tidy(store):
     """Challenges past their time, and the counts of sent codes."""
     t = clock_now('locks')
-    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'chal:%' OR k LIKE 'codesent:%'"):
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'chal:%' OR k LIKE 'codesent:%' "
+                           "OR k LIKE 'adpw:%'"):
         try:
             v = json.loads(r['v'] or 'null')
         except ValueError:
@@ -1562,6 +1563,8 @@ def chal_tidy(store):
             gone = not isinstance(v, dict) or float(v.get('exp') or 0) < t - 60
         else:
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
+            if r['k'].startswith('adpw:'):              # wrong directory passwords (1.0.230)
+                span = 60 * int(CONFIG.get('dir_pw_window_min') or 30)
             now = time.time()                           # the counts by the machine's clock
             gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
         if gone:

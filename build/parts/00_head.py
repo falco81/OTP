@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.228'
+__version__ = '1.0.229'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -140,6 +140,10 @@ DEFAULTS = {
     'radius_ma_sticky': 1,
     # --- sign-in protection (1.0.137) ----------------------------------------
     'radius_guard': 0,
+    # Wrong directory passwords per person on the pages, for the whole cluster (1.0.230): 0 -
+    # no cap of its own, as until now (the counts of each sign-in, on each node).
+    'dir_pw_tries': 0,
+    'dir_pw_window_min': 30,
     'radius_guard_tries': 20,
     'radius_guard_names': 5,
     'radius_guard_window_min': 15,
@@ -487,6 +491,7 @@ TUNABLE = {
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
     'radius_reject_reason': (0, 1), 'radius_ma_sticky': (0, 1),
     'radius_guard': (0, 1), 'radius_guard_tries': (2, 10000), 'radius_guard_names': (0, 1000),
+    'dir_pw_tries': (0, 100), 'dir_pw_window_min': (1, 1440),
     'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
@@ -692,6 +697,8 @@ NAMES = {
     'sms_tel_modem': 'Its modem',
     'sms_plain': 'Without accents (one SMS, not two)',
     'radius_bind': 'Listen on the address',
+    'dir_pw_tries': 'Wrong directory passwords per person, on these pages and the enrolment pages',
+    'dir_pw_window_min': '...counted over (min)',
     'radius_auth_port': 'Authentication port',
     'radius_acct_port': 'Accounting port',
     'radius_status_server': 'Answer Status-Server',
@@ -1197,6 +1204,18 @@ SAYS = {
     'portal_groups': 'With <i>members of the groups named below</i>: the groups, by name '
                      '(<code>VPN_USERS</code>) or by whole DN, separated by semicolons or new '
                      'lines.',
+    'dir_pw_tries': 'A directory password is tried against Active Directory at each sign-in to the '
+                    'enrolment pages, at each new token there, and at each sign-in to these pages '
+                    'of an administrator from the directory. Each of them counts on its own and on '
+                    'each node alone - together, with many addresses, enough wrong ones for a name '
+                    'reach the directory to lock the account there: e-mail, the VPN and the PC with '
+                    'it. Set below the directory\'s own lockout threshold (3 for a threshold of 5 '
+                    'to 10): after so many wrong passwords for one name within the time below, from '
+                    'anywhere, on any node, the directory is no longer asked for that name - only '
+                    'these pages wait, the account in the directory stays unlocked. Cleared under '
+                    'Locked out. 0: no cap of its own (as until now). RADIUS is not affected.',
+    'dir_pw_window_min': 'How long a wrong directory password counts towards the cap above. As '
+                         'long as the directory\'s "Reset account lockout counter after", or longer.',
     'portal_first_code': 'Somebody who has no token yet signs in with their directory name and '
                          'password, and then gets a one-time code to the e-mail address or the '
                          'mobile number the directory has for them - read from it at the sign-in, '
@@ -1532,7 +1551,8 @@ SAYS_SHORT = {
 PANES = {
     'realms': ['default_realm'],
     'guard': ['radius_guard', 'radius_guard_tries', 'radius_guard_names',
-              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted'],
+              'radius_guard_window_min', 'radius_guard_block_min', 'radius_guard_trusted',
+              'dir_pw_tries', 'dir_pw_window_min'],
     # Where the change they take back is made (1.0.150), not under sign-ins.
     'network': ['net_confirm_min'],
     'fw': ['fw_confirm_min'],

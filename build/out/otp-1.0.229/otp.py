@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.228'
+__version__ = '1.0.229'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -3219,7 +3219,8 @@ SCHEMA = [
     ('directories', '''CREATE TABLE IF NOT EXISTS directories (
         id {ID}, name {K} NOT NULL UNIQUE, hosts {T}, port {I}, tls {K}, verify {I},
         ca {B}, base {T}, bind_dn {T}, bind_pw {T}, user_attr {K}, nested {I},
-        timeout_s {I}, enabled {I}, note {T}, created {N}, weak {I})'''),
+        timeout_s {I}, enabled {I}, note {T}, created {N}, weak {I}, mail_attr {K},
+        mobile_attr {K})'''),
     ('radius_log', '''CREATE TABLE IF NOT EXISTS radius_log (
         id {ID}, ts {N}, client {K}, nas_ip {K}, src {K}, packet {K}, username {K},
         realm {K}, calling {K}, called {K}, result {K}, reason {T}, otp {K}, rid {K},
@@ -7955,7 +7956,8 @@ class Storage(object):
             self._dirs = None
 
     def directory_save(self, data, by=''):
-        for k in ('name', 'hosts', 'base', 'bind_dn', 'bind_pw', 'note', 'ca', 'user_attr', 'tls'):
+        for k in ('name', 'hosts', 'base', 'bind_dn', 'bind_pw', 'note', 'ca', 'user_attr', 'tls',
+                  'mail_attr', 'mobile_attr'):
             if data.get(k) is not None and not isinstance(data.get(k), str):
                 raise ValueError('%s is a piece of text' % k)
         name = str(data.get('name') or '').strip()
@@ -8004,6 +8006,15 @@ class Storage(object):
                'timeout_s': max(2, min(60, int(data.get('timeout_s') or 10))),
                'enabled': _yes(data, 'enabled', 1),
                'note': str(data.get('note') or '')[:400]}
+        # Where the e-mail address and the mobile number are read (1.0.229): kept as given when
+        # sent, as before when not - empty is the default (mail; mobile, telephoneNumber).
+        for k, what, default in (('mail_attr', 'the e-mail address', DIR_MAIL_DEFAULT),
+                                 ('mobile_attr', 'the mobile number', DIR_MOBILE_DEFAULT)):
+            if k in data and data.get(k) is not None:
+                v = dir_attr_checked(data.get(k), what)
+                row[k] = '' if dir_attr_list(v, default) == tuple(default) else v
+            elif not old:
+                row[k] = ''
         if 'ca' in data:
             row['ca'] = ca
         hisec_directory(row)                # 1.0.168
@@ -8444,6 +8455,56 @@ USER_ATTRS = ('distinguishedName', 'sAMAccountName', 'userPrincipalName', 'displ
 # stays set after the lockout is over.
 AD_UACC_LOCKED = 0x10
 AD_UACC_PW_EXPIRED = 0x800000
+# Where a person's e-mail address and mobile number are read (1.0.229), in the order tried -
+# the first with a value is taken. As until now unless changed on the directory's card.
+DIR_MAIL_DEFAULT = ('mail',)
+# The name of an attribute (RFC 4512): a word of letters, digits and dashes - any of a schema of
+# one's own (extensionAttribute5, companyMobile) - or its OID, 1.2.840.113556.1.4.1234.
+DIR_ATTR_NAME = re.compile(r'^(?:[A-Za-z][A-Za-z0-9-]{0,99}|[0-9]+(?:\.[0-9]+){1,40})\Z')
+DIR_MOBILE_DEFAULT = ('mobile', 'telephoneNumber')
+
+
+def dir_attr_list(value, default):
+    """The attributes of a mapping as saved - "mobile, telephoneNumber" - or the default."""
+    out = []
+    for one in re.split(r'[,;\s]+', str(value or '')):
+        one = one.strip()
+        if one and DIR_ATTR_NAME.match(one) and one.lower() not in [x.lower() for x in out]:
+            out.append(one)
+    return tuple(out[:4]) or tuple(default)
+
+
+def dir_attr_checked(value, what):
+    """The mapping typed on the card, checked: '' for the default."""
+    words = [w for w in re.split(r'[,;\s]+', str(value or '').strip()) if w]
+    if len(words) > 4:
+        raise ValueError('%s: four attributes at most' % what)
+    for w in words:
+        if not DIR_ATTR_NAME.match(w):
+            raise ValueError('%s: %r is not the name of an attribute' % (what, w))
+    return ', '.join(words)
+
+
+def entry_mail(a, attrs):
+    """The e-mail address of an entry (its attributes, names in small letters) by the mapping:
+    proxyAddresses read as Exchange keeps it - the primary SMTP: one first, no prefix."""
+    for attr in attrs:
+        vals = [str(v).strip() for v in (a.get(attr.lower()) or []) if str(v).strip()]
+        if attr.lower() == 'proxyaddresses':
+            smtp = [v for v in vals if v.lower().startswith('smtp:')]
+            smtp.sort(key=lambda v: not v.startswith('SMTP:'))
+            vals = [v.split(':', 1)[1] for v in smtp]
+        if vals:
+            return vals[0]
+    return ''
+
+
+def entry_first(a, attrs):
+    for attr in attrs:
+        for v in a.get(attr.lower()) or []:
+            if str(v).strip():
+                return str(v).strip()
+    return ''
 
 
 def ad_time(value):
@@ -8478,6 +8539,11 @@ class Directory(object):
         self.bind_dn = row.get('bind_dn') or ''
         self.bind_pw = row.get('bind_pw') or ''
         self.timeout = float(row.get('timeout_s') or 10)
+        self.mail_attrs = dir_attr_list(row.get('mail_attr'), DIR_MAIL_DEFAULT)
+        self.mobile_attrs = dir_attr_list(row.get('mobile_attr'), DIR_MOBILE_DEFAULT)
+        have = {x.lower() for x in USER_ATTRS}
+        self.user_attrs = USER_ATTRS + tuple(x for x in self.mail_attrs + self.mobile_attrs
+                                             if x.lower() not in have)
         self.cache = {}
         self.lock = threading.Lock()
         self.last_good = None
@@ -8704,13 +8770,16 @@ class Directory(object):
             said = said.split('@', 1)[0].split('\\')[-1]
             want = ldap_equal(self.row.get('user_attr') or 'sAMAccountName', said)
         elif how == 'mail':
-            want = ldap_equal('mail', said)
+            # By the attributes the address is read from (1.0.229): "mail" unless changed.
+            ors = [ldap_equal(x, ('smtp:' + said) if x.lower() == 'proxyaddresses' else said)
+                   for x in self.mail_attrs]
+            want = ors[0] if len(ors) == 1 else ldap_or(*ors)
         else:
             want = ldap_equal('userPrincipalName', said)
         flt = ldap_and(ldap_equal('objectClass', 'user'), want)
         # Three, not two (1.0.101): a computer's account among them is
         # dropped below, and must not hide a second person of the name.
-        rows = self.asked(lambda link: link.search(self.base, flt, USER_ATTRS, scope=2,
+        rows = self.asked(lambda link: link.search(self.base, flt, self.user_attrs, scope=2,
                                                    limit=3))
         entry = None
         # A computer's account is not a person's (1.0.101): objectClass=user
@@ -8732,7 +8801,7 @@ class Directory(object):
                 uacc = 0
             entry = {'dn': r['dn'], 'sam': first('sAMAccountName'),
                      'upn': first('userPrincipalName'), 'display': first('displayName'),
-                     'mail': first('mail'), 'uac': uac,
+                     'mail': entry_mail(a, self.mail_attrs), 'uac': uac,
                      'disabled': bool(uac & AD_UAC_DISABLED),
                      'expires': ad_time(first('accountExpires')),
                      'locked': bool(uacc & AD_UACC_LOCKED),
@@ -8745,8 +8814,9 @@ class Directory(object):
                                    if k == 'memberof' or k.startswith('memberof;range=')
                                    for g in (v or [])],
                      'department': first('department'), 'title': first('title'),
-                     # For a code by SMS (1.0.76): what the enrolment page offers.
-                     'mobile': first('mobile') or first('telephoneNumber'),
+                     # For a code by SMS (1.0.76): what the enrolment page offers - read
+                     # where the directory's card says (1.0.229).
+                     'mobile': entry_first(a, self.mobile_attrs),
                      'phone': first('telephoneNumber'),
                      'pw_set': ad_time(first('pwdLastSet')),
                      'many': len(rows) > 1}
@@ -8898,10 +8968,9 @@ class Directory(object):
                                 ldap_contains('displayName', like), ldap_contains('mail', like)))
         link = self.link()
         try:
-            rows = link.search(self.base, want, ('sAMAccountName', 'userPrincipalName',
-                                                 'displayName', 'mail', 'userAccountControl',
-                                                 'mobile', 'telephoneNumber', attr), scope=2,
-                                limit=limit + 10)
+            rows = link.search(self.base, want, tuple(dict.fromkeys(
+                ('sAMAccountName', 'userPrincipalName', 'displayName', 'userAccountControl', attr)
+                + self.mail_attrs + self.mobile_attrs)), scope=2, limit=limit + 10)
         finally:
             link.close()
         out = []
@@ -8916,8 +8985,9 @@ class Directory(object):
                 uac = 0
             out.append({'dn': r['dn'], 'sam': first(attr) or first('sAMAccountName'),
                         'upn': first('userPrincipalName'), 'display': first('displayName'),
-                        'mail': first('mail'), 'disabled': bool(uac & AD_UAC_DISABLED),
-                        'mobile': first('mobile') or first('telephoneNumber')})
+                        'mail': entry_mail(a, self.mail_attrs),
+                        'disabled': bool(uac & AD_UAC_DISABLED),
+                        'mobile': entry_first(a, self.mobile_attrs)})
         low = like.lower()
         out.sort(key=lambda u: (not (u['sam'] or '').lower().startswith(low),
                                 not (u['display'] or '').lower().startswith(low),
@@ -39849,6 +39919,8 @@ def _dirs_do(h):
     h.me('tokenadmin')
     # The connection to a directory tried from every node (1.0.169): each node
     # reaches the domain controllers on its own.
+    if act == 'sample':
+        return dir_sample(h, b)
     if act == 'check_all':
         if str(b.get('name') or '').lower() not in h.d.dirs:
             raise ApiError(404, 'there is no directory called %s (switched on)' % b.get('name'))
@@ -39874,6 +39946,115 @@ def _dirs_do(h):
         return {'entry': entry, 'groups': [cn for _, cn in groups],
                 'took_ms': int((time.time() - t) * 1000)}
     raise ApiError(400, 'no such thing to do with a directory')
+
+
+DIR_REACH_KEYS = ('hosts', 'port', 'tls', 'verify', 'weak', 'bind_dn')
+
+
+def dir_sample_directory(h, form):
+    """The directory as the card has it now, saved or not (1.0.229) - its password the one
+    typed, or the one kept, which goes only to the servers it was given for."""
+    ident = form.get('id')
+    saved = None
+    if ident:
+        saved = next((d for d in h.store.directories(with_secret=True)
+                      if str(d.get('id')) == str(ident)), None)
+        if not saved:
+            raise ApiError(404, 'that directory was taken away meanwhile - open it again')
+    row = dict(saved or {})
+    for k in DIR_REACH_KEYS + ('base', 'user_attr', 'timeout_s', 'name'):
+        if form.get(k) is not None:
+            row[k] = form.get(k)
+    if not ident and form.get('ca') is not None:
+        row['ca'] = form.get('ca')
+    hosts = [x.strip() for x in re.split(r'[,;\s]+', str(row.get('hosts') or '')) if x.strip()]
+    if not hosts:
+        raise ApiError(400, 'say which servers to ask first')
+    if not re.match(r'(?i)^(dc|ou|o|cn)=', str(row.get('base') or '').strip()):
+        raise ApiError(400, 'say where to look (the base) first: DC=example,DC=local')
+    row['hosts'] = ', '.join(re.sub(r'^ldaps?://', '', x, flags=re.I).rstrip('/') for x in hosts)
+    pw = form.get('bind_pw')
+    if pw is not None and not is_masked(pw):
+        row['bind_pw'] = str(pw)
+    elif saved:
+        def same(k):
+            a, z = form.get(k), saved.get(k)
+            if a is None:
+                return True
+            if k in ('port', 'verify', 'weak'):
+                try:
+                    return int(a) == int(z or 0)
+                except (TypeError, ValueError):
+                    return False
+            if k == 'hosts':
+                return ', '.join(re.split(r'[,;\s]+', str(a).strip())) == str(z or '')
+            return str(a).strip() == str(z or '').strip()
+        moved = [k for k in DIR_REACH_KEYS if not same(k)]
+        if moved and saved.get('bind_pw'):
+            raise ApiError(400, 'the servers or the account changed - type the password again: '
+                                'the one kept goes only to the servers it was given for')
+    else:
+        row['bind_pw'] = ''
+    row['name'] = str(row.get('name') or 'new')
+    return Directory(row)
+
+
+def dir_attr_fits(name, values):
+    """Whether an attribute could hold an e-mail address or a phone number."""
+    mail = phone = False
+    for v in values:
+        t = str(v).strip()
+        if name.lower() == 'proxyaddresses' and t.lower().startswith('smtp:'):
+            t = t.split(':', 1)[1]
+        if re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+\Z', t):
+            mail = True
+        if re.match(r'^\+?[0-9]{6,15}\Z', re.sub(r'[\s().\-/]', '', t)):
+            phone = True
+    return mail, phone
+
+
+def dir_sample(h, b):
+    """Every attribute of one person's entry, for choosing where the e-mail address and the
+    mobile number are read (1.0.229)."""
+    s = h.me('fulladmin')
+    who = str(b.get('user') or '').strip()
+    if not who:
+        raise ApiError(400, 'type the name of somebody in the directory')
+    if len(who) > 256 or any(ord(c) < 32 for c in who):
+        raise ApiError(400, 'that is not a name')
+    ad = dir_sample_directory(h, b.get('directory') or {})
+    bare = who.split('\\')[-1]
+    short = bare.split('@', 1)[0]
+    attr = str(ad.row.get('user_attr') or 'sAMAccountName')
+    flt = ldap_and(ldap_equal('objectClass', 'user'),
+                   ldap_or(ldap_equal(attr, short), ldap_equal('userPrincipalName', bare),
+                           ldap_equal('mail', bare)))
+    t = time.time()
+    try:
+        rows = ad.asked(lambda link: link.search(ad.base, flt, ('*',), scope=2, limit=4))
+    except LdapUnreachable as e:
+        raise ApiError(503, 'the directory cannot be reached: %s' % e)
+    except LdapError as e:
+        raise ApiError(400, 'the directory said: %s' % e)
+    rows = [r for r in rows if not computer_account(r)]
+    if not rows:
+        raise ApiError(404, 'nobody called %s is in the directory under %s' % (who, ad.base))
+    r = rows[0]
+    out = []
+    for name, vals in sorted(r['attrs'].items(), key=lambda kv: kv[0].lower()):
+        vals = [str(v) for v in (vals or [])]
+        binary = any('\ufffd' in v or any(ord(c) < 32 and c not in '\t\r\n' for c in v) for v in vals)
+        mail, phone = (False, False) if binary else dir_attr_fits(name, vals)
+        out.append({'name': name, 'count': len(vals), 'binary': binary,
+                    'values': [] if binary else [v[:200] for v in vals[:4]],
+                    'mail': mail, 'phone': phone})
+    a = {k.lower(): v for k, v in r['attrs'].items()}
+    h.store.add_event('directories', '%s looked at every attribute of %s in %s, to choose where '
+                      'the e-mail address and the mobile number are read'
+                      % (s['name'], r['dn'], ad.name), who=s['name'])
+    return {'dn': r['dn'], 'display': ((a.get('displayname') or [''])[0]),
+            'many': len(rows) > 1, 'attrs': out, 'took_ms': int((time.time() - t) * 1000),
+            'defaults': {'mail': ', '.join(DIR_MAIL_DEFAULT), 'mobile': ', '.join(DIR_MOBILE_DEFAULT)}}
 
 
 # ---- trying it --------------------------------------------------------------------------
@@ -51946,7 +52127,8 @@ HA_CONTENT = {
                        "check_disabled, reply, enabled, position, token_name, nested, methods, "
                        "aliases)"),
     'directories': ('name', "concat_ws('/', name, hosts, port, tls, verify, ca, base, bind_dn, "
-                            "bind_pw, user_attr, nested, timeout_s, enabled, weak)"),
+                            "bind_pw, user_attr, nested, timeout_s, enabled, weak, mail_attr, "
+                            "mobile_attr)"),
 }
 
 

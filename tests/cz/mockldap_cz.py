@@ -12,7 +12,9 @@ G = 'OU=Skupiny – VPN,' + B
 CZ_PEOPLE = {
     'CN=Jiří Čermák,' + U: {'sAMAccountName': ['jcermak'], 'userPrincipalName': ['jcermak@corpnet.cz'],
                             'displayName': ['Jiří Čermák'], 'mail': ['jiri.cermak@corpnet.cz'],
-                            'mobile': ['+420 603 111 222'], '_password': 'Heslo-Žluťoučký-1'},
+                            'mobile': ['+420 603 111 222'], '_password': 'Heslo-Žluťoučký-1',
+                            # an attribute of a schema of one's own (1.0.229)
+                            'company-MobileNo': ['777 555 444']},
     'CN=Žofie Řeháková,' + U: {'sAMAccountName': ['žofie'], 'userPrincipalName': ['žofie@corpnet.cz'],
                                'displayName': ['Žofie Řeháková'], 'mail': ['zofie@corpnet.cz'],
                                '_password': 'Heslo-Ďábel-2'},
