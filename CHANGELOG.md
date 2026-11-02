@@ -4,6 +4,24 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.229 — 3 November 2026
+
+**Where a person's e-mail address and mobile number are read from the directory - on each
+directory's card** (*Settings → Active Directory → Edit*, *A person's e-mail and mobile number*).
+As until now by default: `mail`, and `mobile` with `telephoneNumber` when that is empty - left as
+it is, nothing changes.
+
+- Any attribute, or several in order (the first with a value is taken); `proxyAddresses` read as
+  Exchange keeps it (the primary SMTP: address). Used for the codes by e-mail and SMS, for what the
+  enrolment pages fill in, and for the one-time code before the first token.
+- *Show a person's attributes*: the whole entry of one person, from the card as it is now (saved or
+  not), with what the boxes would read, the attributes that can hold an e-mail address and those
+  that can hold a phone number each with *Use*, and every attribute of the entry - those of a schema
+  of one's own too - listed with *For e-mail* and *For mobile*, to be found and chosen whatever its
+  value looks like; or typed by hand, by name or by OID. A full administrator only; written into Events; the kept password goes only to the
+  servers it was given for.
+- The card of each directory shows where both are read from. Both nodes of an HA pair read alike.
+
 ## 1.0.228 — 3 November 2026
 
 **A one-time code before the first token on the enrolment pages** (*Settings → The enrolment

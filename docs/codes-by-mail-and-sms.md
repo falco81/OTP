@@ -119,6 +119,37 @@ echo 'User-Name = "novak@example.cz", User-Password = "123456", State = 0x6f7470
   request waited. A send that timed out is not sent again: the SMS has most
   likely gone, and a second one would arrive twice.
 
+## Where the address and the number come from (1.0.229)
+
+A person's e-mail address and mobile number are read from their entry in the
+directory - for the codes by e-mail and SMS, for what the enrolment pages fill
+in, and for *A one-time code before the first token*. Which attributes, is on
+each directory's card (*Settings → Active Directory → Edit*, the section *A
+person's e-mail and mobile number*):
+
+| Box | As until now (the default) |
+|-----|----------------------------|
+| *The e-mail address is read from* | `mail` |
+| *The mobile number is read from* | `mobile`, and `telephoneNumber` when that is empty |
+
+Several attributes separated by commas are tried in that order; the first with
+a value is taken. `proxyAddresses` is read as Exchange keeps it: the primary
+`SMTP:` address, without the prefix. Left as it is, everything works exactly as
+before.
+
+*Show a person's attributes* asks the directory - as the card has it now, saved
+or not - for the whole entry of one person: their name, DN, and what the boxes
+would read with the attributes typed in them, updated as the boxes change. Two
+lists offer what can hold an e-mail address and what can hold a phone number,
+each with *Use*, which puts that attribute into the box; every other attribute
+of the entry is listed below (binary ones not shown) - those of a schema of your
+own too (`extensionAttribute5`, `companyMobile`) - each with *For e-mail* and *For
+mobile*, whatever its value looks like; any attribute can also be typed by hand, by
+its name or its OID (`1.2.840.113556.1.4.…`).
+Only a full administrator may look, each look is written into Events, and a
+password kept for the directory goes only to the servers it was given for - with
+other servers or another account typed, it has to be typed again.
+
 ## Enrolling (the enrolment pages)
 
 1. The person signs in with their directory name and password. Only who
