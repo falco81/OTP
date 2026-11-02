@@ -37,6 +37,9 @@ CODE_PURPOSES = {
     # Signing in over SSH to the nodes (1.0.181): words of its own.
     'ssh': {'p': 's_', 'subject': 'ssh_subject', 'body': 'ssh_body', 'sms': 'ssh_sms',
             'warn': True, 'note': 'h_s_warn', 'queue': 'code'},
+    # Signing in to the enrolment pages before the first token (1.0.228): words of its own.
+    'portal': {'p': 'p_', 'subject': 'portal_subject', 'body': 'portal_body', 'sms': 'portal_sms',
+               'warn': True, 'note': 'h_p_warn', 'queue': 'code'},
 }
 
 
@@ -117,6 +120,22 @@ CODE_TEXTS = {
         'h_s_facts': 'Zadejte ho tam, kde se SSH ptá na kód. Platí {minutes} min a jen jednou.',
         'h_s_warn': 'Pokud se právě nepřihlašujete, kód nikomu nesdělujte – někdo zkouší váš účet.',
         'h_s_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
+        'portal_subject': 'Kód pro nastavení přihlašování: {code}',
+        'portal_body': ('Váš kód pro přihlášení na stránku, kde si nastavíte přihlašování do VPN, '
+                        'je\n\n    {code}\n\nPlatí {minutes} min a jen jednou. Pokud jste se '
+                        'právě nepřihlašovali, kód nikomu nesdělujte a změňte si heslo - někdo ho '
+                        'zná.\n\n-- \n{site}'),
+        'portal_sms': '{code} je váš kód pro nastavení přihlašování ({site}). Platí {minutes} min. '
+                      'Nikomu ho nesdělujte.',
+        'h_p_title': 'VPN · Nastavení přihlašování',
+        'h_p_hello': 'Dobrý den, {name},', 'h_p_hello_anon': 'Dobrý den,',
+        'h_p_lede': 'váš kód pro přihlášení na stránku, kde si k účtu <b>{account}</b> nastavíte '
+                    'přihlašování do VPN:',
+        'h_p_lede_anon': 'váš kód pro přihlášení na stránku, kde si nastavíte přihlašování do VPN:',
+        'h_p_facts': 'Zadejte ho na té stránce. Platí {minutes} min a jen jednou.',
+        'h_p_warn': 'Pokud jste se právě nepřihlašovali, kód nikomu nesdělujte a změňte si heslo '
+                    '– někdo ho zná.',
+        'h_p_foot': 'Posláno automaticky z {site}. Na tento e-mail neodpovídejte.',
         'ask_mail': 'Zadejte kód, který přišel e-mailem na {dest}',
         'ask_sms': 'Zadejte kód z SMS poslané na {dest}',
         'ask_totp': 'Zadejte kód z aplikace v telefonu',
@@ -198,6 +217,22 @@ CODE_TEXTS = {
         'h_s_facts': 'Type it where SSH asks for the code. It is good for {minutes} min and once.',
         'h_s_warn': 'If you are not signing in just now, tell nobody the code - somebody is '
                     'trying your account.',
+        'portal_subject': 'Your code to set up your sign-in: {code}',
+        'portal_body': ('Your code to sign in to the page where you set up your VPN sign-in is'
+                        '\n\n    {code}\n\nIt is good for {minutes} min and once. If you are not '
+                        'signing in just now, tell nobody the code and change your password - '
+                        'somebody knows it.\n\n-- \n{site}'),
+        'portal_sms': '{code} is your code to set up your sign-in ({site}). Good for {minutes} '
+                      'min. Tell nobody.',
+        'h_p_title': 'VPN · Setting up your sign-in',
+        'h_p_hello': 'Hello {name},', 'h_p_hello_anon': 'Hello,',
+        'h_p_lede': 'your code to sign in to the page where you set up the VPN sign-in of '
+                    '<b>{account}</b>:',
+        'h_p_lede_anon': 'your code to sign in to the page where you set up your VPN sign-in:',
+        'h_p_facts': 'Type it on that page. It is good for {minutes} min and once.',
+        'h_p_warn': 'If you are not signing in just now, tell nobody the code and change your '
+                    'password - somebody knows it.',
+        'h_p_foot': 'Sent automatically by {site}. Do not reply to this mail.',
         'h_s_foot': 'Sent automatically by {site}. Do not reply to this mail.',
         'ask_mail': 'Type the code mailed to {dest}',
         'ask_sms': 'Type the code sent by SMS to {dest}',
@@ -302,17 +337,43 @@ def code_hash(salt, code):
                     hashlib.sha256).hexdigest()
 
 
-def code_channels():
-    """Which ways of sending can be used at all - set up, not switched off."""
+def code_channels(conf=None):
+    """Which ways of sending can be used at all - set up, not switched off. `conf`: the
+    settings as they would be (1.0.228), else as they are."""
+    c = CONFIG if conf is None else conf
     out = []
-    if (CONFIG.get('mail_mode') or 'off') != 'off' and CONFIG.get('mail_from'):
+    if (c.get('mail_mode') or 'off') != 'off' and c.get('mail_from'):
         out.append('mail')
-    mode = CONFIG.get('sms_mode') or 'off'
-    if (mode == 'http' and CONFIG.get('sms_url')) or \
-            (mode == 'spool' and CONFIG.get('sms_spool_dir')) or \
-            (mode == 'teltonika' and CONFIG.get('sms_tel_host')):
+    mode = c.get('sms_mode') or 'off'
+    if (mode == 'http' and c.get('sms_url')) or \
+            (mode == 'spool' and c.get('sms_spool_dir')) or \
+            (mode == 'teltonika' and c.get('sms_tel_host')):
         out.append('sms')
     return out
+
+
+# A one-time code before the first token on the enrolment pages (1.0.228): which ways, in order.
+PORTAL_FIRST_WAYS = {'mail': ('mail',), 'sms': ('sms',), 'sms_mail': ('sms', 'mail'),
+                     'mail_sms': ('mail', 'sms')}
+FIRST_CODE_KEYS = ('portal_first_code', 'mail_mode', 'mail_from', 'sms_mode', 'sms_url',
+                   'sms_spool_dir', 'sms_tel_host', 'portal')
+
+
+def portal_first_code_problem(conf=None):
+    """Why "a one-time code before the first token" cannot work with these settings, or ''."""
+    c = CONFIG if conf is None else conf
+    ways = PORTAL_FIRST_WAYS.get(str(c.get('portal_first_code') or 'off'))
+    if not ways:
+        return ''
+    have = code_channels(c)
+    if not any(w in have for w in ways):
+        if len(ways) > 1:
+            return ('a one-time code before the first token needs the mail (Settings → Mail) or '
+                    'the SMS gateway (Settings → SMS) set up first')
+        if ways[0] == 'mail':
+            return 'a one-time code before the first token by e-mail needs the mail (Settings → Mail) set up first'
+        return 'a one-time code before the first token by SMS needs the SMS gateway (Settings → SMS) set up first'
+    return ''
 
 
 def realm_methods(realm):

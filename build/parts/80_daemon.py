@@ -1267,6 +1267,14 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        if any(k in checked for k in FIRST_CODE_KEYS):
+            # The code before the first token only with a way to send it (1.0.228): switched
+            # on without one, or the mail or the SMS switched off under it, nobody could enrol.
+            after = dict(CONFIG)
+            after.update(checked)
+            why = portal_first_code_problem(after)
+            if why:
+                raise BadSetting(why)
         if 'radius_auth_port' in checked or 'radius_acct_port' in checked:
             # One port for both refused (1.0.206): the sign-ins (or the accounting)
             # stopped there and then, with "saved" on the page.

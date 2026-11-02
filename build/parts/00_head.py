@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.227'
+__version__ = '1.0.228'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -178,6 +178,8 @@ DEFAULTS = {
     'portal_hint': '',
     'portal_who': 'realm_groups',
     'portal_groups': '',
+    # A one-time code before the first token (1.0.228): off - as until now.
+    'portal_first_code': 'off',
     'portal_confirm': 1,
     'portal_reissue': 1,
     'portal_show_secret': 1,
@@ -492,6 +494,7 @@ TUNABLE = {
     'names_czsk_letters': (0, 1),
     'names_any_letters': (0, 1),
     'portal': (0, 1), 'portal_who': ('realm_groups', 'groups', 'anyone'),
+    'portal_first_code': ('off', 'mail', 'sms', 'sms_mail', 'mail_sms'),
     'portal_confirm': (0, 1), 'portal_reissue': (0, 1), 'portal_show_secret': (0, 1),
     'portal_scratch': (0, 1), 'portal_codes_view': (0, 1), 'portal_session_min': (1, 240),
     'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
@@ -614,6 +617,11 @@ CHOICE_WORDS = {
     'portal_who': {'realm_groups': 'whoever passes the realm’s group filter',
                    'groups': 'members of the groups named below',
                    'anyone': 'anybody the directory lets sign in'},
+    'portal_first_code': {'off': 'no - the directory password is enough (as until now)',
+                          'mail': 'yes, by e-mail',
+                          'sms': 'yes, by SMS',
+                          'sms_mail': 'yes, by SMS - by e-mail when the directory has no mobile number',
+                          'mail_sms': 'yes, by e-mail - by SMS when the directory has no address'},
     'db_engine': {'sqlite': 'a file on this machine (SQLite)', 'mariadb': 'MariaDB / MySQL',
                   'postgres': 'PostgreSQL'},
     'ui_lang': {'cs': 'Čeština', 'en': 'English'},
@@ -730,6 +738,7 @@ NAMES = {
     'portal_hint': 'What to type as the name (shown on the sign-in)',
     'portal_who': 'Who may enrol a token',
     'portal_groups': 'Groups that may enrol',
+    'portal_first_code': 'A one-time code before the first token',
     'portal_confirm': 'A new token must be confirmed with a code',
     'portal_reissue': 'People may replace their own token',
     'portal_show_secret': 'Show the key as text beside the QR code',
@@ -1188,6 +1197,15 @@ SAYS = {
     'portal_groups': 'With <i>members of the groups named below</i>: the groups, by name '
                      '(<code>VPN_USERS</code>) or by whole DN, separated by semicolons or new '
                      'lines.',
+    'portal_first_code': 'Somebody who has no token yet signs in with their directory name and '
+                         'password, and then gets a one-time code to the e-mail address or the '
+                         'mobile number the directory has for them - read from it at the sign-in, '
+                         'nothing typed. Only with that code typed may they make their token: the '
+                         'directory password alone - guessed, or found out - no longer gives anybody '
+                         'a token of another person. An account the directory has no address or '
+                         'number for cannot enrol here then; an administrator makes its token. '
+                         'Needs the mail (Settings → Mail) or the SMS gateway (Settings → SMS) '
+                         'set up. Somebody who has a token already signs in as before.',
     'portal_confirm': 'A token made on the enrolment page is not in use until the person has '
                       'typed a code from it. Without this a QR code scanned badly - or not '
                       'at all - is a token that locks its owner out on the next sign-in.',
@@ -1528,7 +1546,8 @@ PANES = {
                'scratch_count', 'scratch_digits', 'token_names_case', 'names_czsk_letters',
                'names_any_letters'],
     'portal': ['portal', 'portal_title', 'portal_realm', 'portal_hint', 'portal_who',
-               'portal_groups', 'portal_confirm', 'portal_reissue', 'portal_show_secret',
+               'portal_groups', 'portal_first_code', 'portal_confirm', 'portal_reissue',
+               'portal_show_secret',
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
     'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
@@ -1592,6 +1611,7 @@ ONLY_WHEN = {
     'portal_title': ['portal', '1'], 'portal_realm': ['portal', '1'],
     'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
     'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
+    'portal_first_code': ['portal', '1'],
     'portal_reissue': ['portal', '1'], 'portal_show_secret': ['portal', '1'],
     'portal_scratch': ['portal', '1'], 'portal_session_min': ['portal', '1'],
     'portal_help': ['portal', '1'], 'portal_tries': ['portal', '1'],

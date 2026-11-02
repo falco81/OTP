@@ -140,6 +140,53 @@ An administrator can make such a token directly (Tokens → Make a token →
 *The codes come from*), change where the codes go, send a test message, or
 turn it into an app token (*The app instead*).
 
+### A one-time code before the first token (1.0.228)
+
+*A one-time code before the first token* (*Settings → The enrolment pages*,
+`portal_first_code`) closes the door the directory password alone leaves open:
+whoever knows (or guesses) somebody's password could make the first token of
+that person - their own phone then becomes that person's second factor.
+
+| Value | What happens |
+|-------|--------------|
+| `off` (the default) | As until now: the directory password is enough to make the first token. |
+| `mail` | A code to the e-mail address the directory has (`mail`). |
+| `sms` | A code by SMS to the mobile number the directory has (`mobile`). |
+| `sms_mail` | By SMS; by e-mail when the directory has no mobile number. |
+| `mail_sms` | By e-mail; by SMS when the directory has no address. |
+
+How it goes:
+
+1. Somebody with **no token** - or one made but never confirmed (*waiting for
+   its first code*) - signs in with their directory name and password. The
+   groups, *Who may enrol* and everything else are checked first, as before.
+2. The address or the number is **read from the directory at that moment** -
+   nothing is typed, so nobody can send the code to themselves. A code goes
+   there (*Settings → Message texts → The enrolment pages: a code before the
+   first token*), good for *A sent code is good for* (`code_ttl_s`, Settings → Codes by mail and SMS) and once.
+3. The sign-in page asks for it, saying where it went (masked:
+   `j*****@firma.cz`, `+420******222`). Until it is typed the sign-in can do
+   nothing else - no token, no recovery codes, not even the person's details
+   from the directory. *Send it again* sends a new one to the same place;
+   *Sign in as somebody else* leaves.
+4. Typed right, the enrolment pages open as before.
+
+The limits are those of every code: *Wrong codes before it has to be sent again*
+(`code_tries`, then *Send it again*), *Codes sent to one person at most* within the
+window (`code_send_max`), and the pause of the enrolment pages for many wrong
+codes from one address. Every code sent, every wrong one and the sign-in with
+it are written in Events - never the code.
+
+Somebody **who has a token already** signs in as before: replacing it still
+needs a code from it (or a recovery code). An account the directory has **no
+address or number** for (for the chosen way) cannot enrol on the pages then -
+it is told to ask the administrator, and an administrator makes its token
+(*Tokens → Make a token*). The setting is saved only with the mail (*Settings
+→ Mail*) or the SMS gateway (*Settings → SMS*) set up, and neither can be
+switched off under it. It is one setting for the whole cluster - both nodes
+of an HA pair, or every node on one database, ask the same way; on one machine
+alone it works the same.
+
 ### Recovery codes after sign-in
 
 *People may look at their recovery codes again* (*Settings → The enrolment

@@ -4,6 +4,30 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.228 — 3 November 2026
+
+**A one-time code before the first token on the enrolment pages** (*Settings → The enrolment
+pages → A one-time code before the first token*, `portal_first_code`; off by default - as until
+now). Somebody with no token yet signs in with their directory name and password, and a code goes
+to the e-mail address or the mobile number the directory has for them - read from it at the
+sign-in, nothing typed. The sign-in page asks for it; until it is typed nothing else can be done -
+no token made, nothing of the person shown. The directory password alone - guessed or found out -
+no longer makes anybody a token of another person.
+
+- The page in the middle of the sign-in card: where the code went on a line of its own (masked),
+  the box for the code, *Confirm*, and *Send it again* and *Back* side by side. The code can be
+  pasted as the mail or the SMS has it - "482 913", even with words around it - and goes at once.
+- By e-mail, by SMS, by SMS with e-mail when the directory has no mobile number, or the other way
+  round. Saved only with the mail or the SMS gateway set up; neither can be switched off under it.
+- Its own words in *Settings → Message texts* (a mail and an SMS), Czech and English.
+- The limits of every code: tries, codes sent per person and per address, the time a code is good
+  for; *Send it again* and *Sign in as somebody else* on the page. Each code sent, each wrong one,
+  the sign-in with it in Events - never the code.
+- Somebody with a token signs in as before. An account the directory has no address or number for
+  is told to ask the administrator, who makes its token.
+- One setting for the cluster: both nodes of an HA pair and every node on one database alike; one
+  machine alone the same. docs/codes-by-mail-and-sms.md says all of it.
+
 ## 1.0.227 — 3 November 2026
 
 **The last of five rounds of looking for bugs.** Found by it, and mended:

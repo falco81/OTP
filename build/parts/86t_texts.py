@@ -128,6 +128,29 @@ TEXT_MESSAGES = [
      'title': 'SSH: a sign-in code by SMS',
      'says': 'Sent when somebody signs in over SSH to the nodes with an SSH token by SMS.',
      'fields': [('ssh_sms', 'text', 'The SMS', ('code', 'minutes', 'site'), 'sms')]},
+    # Before the first token on the enrolment pages (1.0.228).
+    {'id': 'portal_mail', 'short': 'The sign-in code by mail', 'kind': 'mail', 'group': 'code',
+     'purpose': 'portal',
+     'title': 'The enrolment pages: a code before the first token, by mail',
+     'says': 'Sent when somebody with no token yet signs in to the enrolment pages, with '
+             '"A one-time code before the first token" on.',
+     'fields': [
+         ('portal_subject', 'line', 'Subject', ('code', 'minutes', 'site'), 'subject'),
+         ('h_p_title', 'line', 'The band at the top', ('site',), 'layout'),
+         ('h_p_hello', 'rich', 'Greeting', ('name',), 'layout'),
+         ('h_p_lede', 'rich', 'What it is', ('account',), 'layout'),
+         ('h_p_facts', 'rich', 'Under the code', ('minutes',), 'layout'),
+         ('h_p_warn', 'rich', 'The warning', (), 'layout'),
+         ('h_p_foot', 'rich', 'The foot', ('site',), 'layout'),
+         ('h_p_hello_anon', 'rich', 'Greeting when the name is not known', (), 'other'),
+         ('h_p_lede_anon', 'rich', 'What it is when the account is not known', (), 'other'),
+         ('portal_body', 'text', 'The plain text version', ('code', 'minutes', 'site'), 'plain'),
+     ]},
+    {'id': 'portal_sms', 'short': 'The sign-in code by SMS', 'kind': 'sms', 'group': 'code',
+     'title': 'The enrolment pages: a code before the first token, by SMS',
+     'says': 'Sent when somebody with no token yet signs in to the enrolment pages, with '
+             '"A one-time code before the first token" on.',
+     'fields': [('portal_sms', 'text', 'The SMS', ('code', 'minutes', 'site'), 'sms')]},
     {'id': 'prompts', 'kind': 'prompt', 'group': 'code', 'title': 'The VPN’s second window',
      'says': 'What the VPN shows when it asks for the code - each at most 253 bytes, as '
              'RADIUS carries it.',

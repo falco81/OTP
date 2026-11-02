@@ -36,7 +36,8 @@ if (isset($_GET['api'])) {
         [$status, $body] = otp_call('/api/portal/login', 'POST', [
             'name'     => (string) ($sent['name'] ?? ''),
             'password' => (string) ($sent['password'] ?? ''),
-        ], 30.0);
+            'lang'     => (string) ($sent['lang'] ?? ''),
+        ], 60.0);
         if ($status === 0) {
             http_response_code(503);
             echo json_encode(['ok' => false, 'error' => 'the server is not answering - try again in a while']);
@@ -64,7 +65,9 @@ if (isset($_GET['api'])) {
     $writes = ['enroll' => '/api/portal/enroll', 'confirm' => '/api/portal/confirm',
                'reissue' => '/api/portal/reissue', 'cancel' => '/api/portal/cancel',
                'verify' => '/api/portal/verify', 'sendold' => '/api/portal/sendold',
-               'codes' => '/api/portal/codes'];
+               'codes' => '/api/portal/codes',
+               // The one-time code before the first token (1.0.228).
+               'gate' => '/api/portal/gate', 'gate_again' => '/api/portal/gate/again'];
     if ($post && isset($writes[$what])) {
         otp_relay($writes[$what], 'POST', sent_json(), 60.0);
         exit;
@@ -86,6 +89,11 @@ $me    = null;
 if ($alive && otp_session() !== '') {
     $got = otp_get('/api/portal/me', 8.0);
     $me = is_array($got) ? ($got['me'] ?? null) : null;
+}
+// Signed in, the one-time code not typed yet (1.0.228): the sign-in page, asking for it.
+$gate = (is_array($me) && !empty($me['gate'])) ? $me['gate'] : null;
+if ($gate !== null) {
+    $me = null;
 }
 $lang = otp_lang_pick(null, (string) ($info['lang'] ?? 'cs'));
 $load = $lang !== 'en' && otp_lang_pack($lang) !== null;
@@ -144,6 +152,7 @@ if ($title_ours) {
 </div>
 <script nonce="<?= h($nonce) ?>" src="/assets/core.js?v=<?= h(OTP_VERSION) ?>"></script>
 <script nonce="<?= h($nonce) ?>" src="/assets/portal.js?v=<?= h(OTP_VERSION) ?>"></script>
+<script nonce="<?= h($nonce) ?>">var PORTAL_GATE = <?= json_encode($gate, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;</script>
 <script nonce="<?= h($nonce) ?>">portalDoor();</script>
 <?php else: ?>
 <header>
