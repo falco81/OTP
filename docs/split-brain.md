@@ -222,6 +222,16 @@ from inside, "the link between us broke" and "the other node died" are the same 
 a tie rule that silences one node would silence it when the other really dies. The
 switches of 7 limit what two serving halves can do.
 
+### 6.1 The preferred node's database down, its machine there (1.0.226)
+
+"Apart" is "the other node's database does not answer". In priority mode that used to step the
+other node aside even when the preferred node's machine and link were fine and only its database
+was down (stopped, restarting) - and the preferred node, with no database, answered nobody either:
+both silent for as long as it lasted. A refusal of the database (connection refused, shutting down,
+starting up) is not a cut link - a cut link gives no answer at all: the other node then takes the
+preferred node for unable and goes on. The same when the preferred node's last word, from about
+when the nodes lost each other, was that it stepped aside for its clock or is in maintenance.
+
 ## 7. What changes while apart
 
 ### 7.1 Stepping aside
