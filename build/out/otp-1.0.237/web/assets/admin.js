@@ -2652,6 +2652,11 @@ var TALL = {portal_help: 1, portal_groups: 1, sms_body: 1, sms_headers: 1, isemo
    and what only one choice uses in a panel of its own that is there only
    while that choice is made - not a page of greyed-out boxes. */
 var PANE_LAYOUT = {
+  fw: [
+    {title: 'Taken back unless kept', icon: 'undo', keys: ['fw_confirm_min']},
+    {title: 'Behind a load balancer or WAF', icon: 'net', cols: 4,
+     keys: ['web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive'], wide: {web_proxy_from: 2}}
+  ],
   codes: [
     {title: 'The codes', icon: 'token', cols: 5, keys: ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max', 'code_send_window_min']},
     {title: 'What they say', icon: 'globe', keys: ['code_lang', 'code_mail_fmt'], wide: {code_lang: 2, code_mail_fmt: 2}},
@@ -8706,8 +8711,8 @@ function drawHaLb(d) {
     if (v.tls === 'end') {
       trust.appendChild(el('div', 'note ' + (ok ? 'good' : 'warn'), ok
         ? 'The nodes already take the client\'s own address from X-Forwarded-For sent by ' + v.lb + '.'
-        : 'Tell both nodes the balancer\'s address, so that the allow lists, the sign-in pause and every log see the client and not the balancer - as root on each node:'));
-      if (!ok) trust.appendChild(lbBlock('otp --trusted-proxy {lb}/' + (v.lb.indexOf(':') >= 0 ? '128' : '32'), v, ''));
+        : 'Tell the nodes the balancer\'s address, so that the allow lists, the sign-in pause and every log see the client and not the balancer: Settings → Firewall and access → Behind a load balancer or WAF (once, for every node) - or as root on each node:'));
+      if (!ok) trust.appendChild(lbBlock('otp --set web_proxy_from={lb}/' + (v.lb.indexOf(':') >= 0 ? '128' : '32') + ' --set web_proxy=1', v, ''));
     } else {
       trust.appendChild(el('div', 'note', 'Passed through: in /etc/nginx/conf.d/otp.conf on both nodes, the PROXY protocol from the balancer only:'));
       trust.appendChild(lbBlock('listen 443 ssl proxy_protocol;        # in place of: listen 443 ssl;\nset_real_ip_from {lb};\nreal_ip_header proxy_protocol;\n\nnginx -t && systemctl reload nginx', v, ''));
@@ -17538,6 +17543,17 @@ function seNode(n) {
       box.appendChild(det);
     }
     var probs = s.problems || [];
+    /* Refused, and nothing otp knows to put in (1.0.237): "Put in what otp needs" changes
+       nothing then - the report is what tells how. */
+    var known = s.module !== false && !(s.labels || []).some(function (x) { return x.ok === false; }) &&
+      !(s.booleans || []).some(function (x) { return x.on === false; }) &&
+      !(s.ports || []).some(function (x) { return x.labelled === false; });
+    if (d.total && known) {
+      var hint = el('div', 'se-verdict bad');
+      hint.appendChild(el('b', '', 'otp does not know this one yet'));
+      hint.appendChild(el('span', 'small', 'Everything otp knows it needs is in place - what was refused is something its module does not cover yet. "Put in what otp needs" changes nothing for it: download the report (top right) and send it, so that the module learns it.'));
+      box.appendChild(hint);
+    }
     var verdict = el('div', 'se-verdict ' + (m === 'Enforcing' && !probs.length ? 'good' : s.ready ? 'ready' : probs.length ? 'bad' : ''));
     verdict.appendChild(el('b', '', m === 'Enforcing' ? (probs.length ? 'Enforcing - but something is not as otp needs it' : 'Enforcing - and everything otp needs is there')
       : s.ready ? 'Ready for enforcing' : 'Not ready for enforcing yet'));

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.236'
+__version__ = '1.0.237'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -152,6 +152,10 @@ DEFAULTS = {
     'radius_guard_trusted': '',
     'net_confirm_min': 10,
     'fw_confirm_min': 5,
+    'web_proxy': 0,
+    'web_proxy_from': '',
+    'web_proxy_header': 'X-Forwarded-For',
+    'web_proxy_recursive': 1,
     # --- the tokens ---------------------------------------------------------
     'totp_issuer': 'OTP',
     'totp_label': '{user}',
@@ -498,6 +502,7 @@ TUNABLE = {
     'dir_pw_tries': (0, 100), 'dir_pw_window_min': (1, 1440),
     'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
+    'web_proxy': (0, 1), 'web_proxy_recursive': (0, 1),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
     'names_czsk_letters': (0, 1),
@@ -737,6 +742,10 @@ NAMES = {
     'radius_guard_trusted': 'Never blocked',
     'net_confirm_min': 'A new network goes back unless kept within (min)',
     'fw_confirm_min': 'A firewall change goes back unless kept within (min)',
+    'web_proxy': 'Behind a load balancer or WAF',
+    'web_proxy_from': 'The load balancers and WAFs',
+    'web_proxy_header': 'The header with the client\'s address',
+    'web_proxy_recursive': 'Through more than one of them',
     'rate_limit_s': '...counted over (s)',
     'scratch_count': 'Recovery codes per token',
     'scratch_digits': 'Digits in a recovery code',
@@ -1171,6 +1180,21 @@ SAYS = {
                        'somebody presses Keep it within these minutes: a typo in the gateway '
                        'or the prefix does not leave the node unreachable. 0: kept at once, as '
                        'before.',
+    'web_proxy': 'The pages published through a load balancer or a WAF (NetScaler, F5, HAProxy...): '
+                 'nginx takes the client\'s own address from the header below - only when the '
+                 'request comes from one of the addresses below, never from anybody else - so '
+                 'that the sign-in pause, the caps, who may reach which page and every log see '
+                 'the client and not the balancer. For this node\'s address and the VIP '
+                 'address\'s alike, on every node. RADIUS is not concerned. Off: nginx as until '
+                 'now (what otp --trusted-proxy put in stays as it is).',
+    'web_proxy_from': 'Their addresses or networks, as nginx sees them come in - one or more, '
+                      'separated by spaces. Needed to switch it on: the header of anybody else '
+                      'is never believed.',
+    'web_proxy_header': 'Where the balancer puts the client\'s address: X-Forwarded-For (the '
+                        'usual), X-Real-IP, True-Client-IP, X-Client-IP, CF-Connecting-IP...',
+    'web_proxy_recursive': 'On: in a chain (a WAF in front of a balancer), the last address in the '
+                           'header that is not one of them is taken. Off: the last one, whoever '
+                           'put it there.',
     'fw_confirm_min': 'A change of the firewall or of who may reach the pages is put in - and '
                       'what was there before comes back by itself unless somebody presses Keep '
                       'it within these minutes: a rule that shuts SSH, the pages or RADIUS out '
@@ -1567,7 +1591,7 @@ PANES = {
               'dir_pw_tries', 'dir_pw_window_min'],
     # Where the change they take back is made (1.0.150), not under sign-ins.
     'network': ['net_confirm_min'],
-    'fw': ['fw_confirm_min'],
+    'fw': ['fw_confirm_min', 'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive'],
     'radius': ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'radius_status_server',
                'radius_reply_ma', 'radius_dup_window_s', 'radius_workers',
                'radius_unknown_log', 'radius_reject_delay_ms', 'radius_reject_reason',
@@ -1640,6 +1664,8 @@ ONLY_WHEN = {
     'radius_guard_window_min': ['radius_guard', '1'],
     'radius_guard_block_min': ['radius_guard', '1'],
     'radius_guard_trusted': ['radius_guard', '1'],
+    'web_proxy_from': ['web_proxy', '1'], 'web_proxy_header': ['web_proxy', '1'],
+    'web_proxy_recursive': ['web_proxy', '1'],
     'portal_title': ['portal', '1'], 'portal_realm': ['portal', '1'],
     'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
     'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
@@ -1847,6 +1873,18 @@ def check_setting(key, value):
             ipaddress.ip_address(str(got).strip())
         except ValueError:
             raise BadSetting('radius_bind: %r is not an address' % got)
+    if key == 'web_proxy_from':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('web_proxy_from: %r is not an address or a network' % one)
+    if key == 'web_proxy_header':
+        # A header's name only (1.0.237) - it goes into nginx's configuration as it is.
+        if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
+                str(got).lower() in ('host', 'cookie', 'authorization', 'content-length',
+                                     'content-type', 'transfer-encoding', 'connection'):
+            raise BadSetting('web_proxy_header: the name of a header, as X-Forwarded-For or X-Real-IP')
     if key == 'radius_guard_trusted':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
@@ -8608,6 +8646,7 @@ DBGUARD_META_PREFIXES = (
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
     'radius_acct_port', 'snmp', 'snmp_from', 'snmp_port', 'net_confirm_min', 'fw_confirm_min',
+    'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive',
     'proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_os', 'proxy_no', 'proxy_update',
     'osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_every', 'osup_auto_day',
     'osup_auto_at', 'osup_auto_reboot', 'osup_auto_what', 'power_auto', 'power_auto_every',
@@ -16165,6 +16204,14 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        if any(k in checked for k in ('web_proxy', 'web_proxy_from')):
+            # Never on without the balancers named (1.0.237): the header of anybody would be the
+            # client's address - the sign-in pause and the allow lists fooled by one line.
+            after = dict(CONFIG)
+            after.update(checked)
+            if after.get('web_proxy') and not str(after.get('web_proxy_from') or '').split():
+                raise BadSetting('behind a load balancer or WAF: say which addresses are the '
+                                 'balancers first (The load balancers and WAFs)')
         if any(k in checked for k in FIRST_CODE_KEYS):
             # The code before the first token only with a way to send it (1.0.228): switched
             # on without one, or the mail or the SMS switched off under it, nobody could enrol.
@@ -27319,6 +27366,28 @@ def vip_last_keep(address, own, peer):
         pass
 
 
+def realip_desired(store):
+    """{'from': [...], 'header', 'recursive'} for nginx - empty 'from' takes otp's own out again;
+    None where it was never switched on (nginx left as it is)."""
+    if CONFIG.get('web_proxy'):
+        nets = []
+        for w in re.split(r'[\s,;]+', str(CONFIG.get('web_proxy_from') or '')):
+            if w:
+                try:
+                    nets.append(str(ipaddress.ip_network(w, strict=False)))
+                except ValueError:
+                    continue
+        if nets:
+            return {'from': nets, 'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+                    'recursive': bool(CONFIG.get('web_proxy_recursive', 1))}
+    try:
+        if 'web_proxy' in store.settings_saved():
+            return {'from': [], 'header': '', 'recursive': False}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
 def web_desired(store):
     me = node_name()
     v = vip_conf(store)
@@ -27359,6 +27428,11 @@ def web_desired(store):
     # Asked only once set on the pages (1.0.52): a request from before had
     # neither, and its hash stays what it was.
     fw, access = fw_desired(store), access_desired(store)
+    # Behind a balancer (1.0.237): asked only once switched on, or switched off again after - a
+    # request from before had none, and its hash stays what it was.
+    rp = realip_desired(store)
+    if rp is not None:
+        out['realip'] = rp
     if fw is not None:
         out['fw'] = fw
     if access is not None:
@@ -44639,7 +44713,8 @@ def lb_facts(store):
         m = re.search(r'(?m)^\s*listen[^;]*443[^;]*;[\s\S]*?^\s*server_name\s+([^;\s]+)', text)
         if m:
             server_name = m.group(1)
-        b = re.search(r'# REALIP-BEGIN(.*?)# REALIP-END', text, re.S)
+        b = re.search(r'# OTP-REALIP-BEGIN(.*?)# OTP-REALIP-END', text, re.S) or \
+            re.search(r'# REALIP-BEGIN(.*?)# REALIP-END', text, re.S)
         if b:
             proxies = re.findall(r'set_real_ip_from\s+([^;\s]+);', b.group(1))
         break
@@ -53241,6 +53316,12 @@ def nginx_trusted_proxies(cidrs, pal):
     for c in cidrs:
         address_net(c)
     text = Path(conf).read_text()
+    if '# OTP-REALIP-BEGIN' in text:
+        # Set on the pages since 1.0.237: one place for it, not two that undo each other.
+        print(pal.bad_line('it is set on the pages (Settings - Firewall and access - Behind a load '
+                           'balancer or WAF): change it there, or otp --set web_proxy_from=\'%s\''
+                           % ' '.join(cidrs)))
+        return False
     block = ('    # REALIP-BEGIN - the load balancer(s), written by otp --trusted-proxy\n'
              + ''.join('    set_real_ip_from %s;\n' % c for c in cidrs)
              + ('    real_ip_header X-Forwarded-For;\n    real_ip_recursive on;\n' if cidrs else '')

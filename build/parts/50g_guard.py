@@ -35,6 +35,7 @@ DBGUARD_META_PREFIXES = (
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
     'radius_acct_port', 'snmp', 'snmp_from', 'snmp_port', 'net_confirm_min', 'fw_confirm_min',
+    'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive',
     'proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_os', 'proxy_no', 'proxy_update',
     'osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_every', 'osup_auto_day',
     'osup_auto_at', 'osup_auto_reboot', 'osup_auto_what', 'power_auto', 'power_auto_every',

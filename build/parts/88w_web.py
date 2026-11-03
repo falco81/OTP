@@ -591,6 +591,28 @@ def vip_last_keep(address, own, peer):
         pass
 
 
+def realip_desired(store):
+    """{'from': [...], 'header', 'recursive'} for nginx - empty 'from' takes otp's own out again;
+    None where it was never switched on (nginx left as it is)."""
+    if CONFIG.get('web_proxy'):
+        nets = []
+        for w in re.split(r'[\s,;]+', str(CONFIG.get('web_proxy_from') or '')):
+            if w:
+                try:
+                    nets.append(str(ipaddress.ip_network(w, strict=False)))
+                except ValueError:
+                    continue
+        if nets:
+            return {'from': nets, 'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+                    'recursive': bool(CONFIG.get('web_proxy_recursive', 1))}
+    try:
+        if 'web_proxy' in store.settings_saved():
+            return {'from': [], 'header': '', 'recursive': False}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
 def web_desired(store):
     me = node_name()
     v = vip_conf(store)
@@ -631,6 +653,11 @@ def web_desired(store):
     # Asked only once set on the pages (1.0.52): a request from before had
     # neither, and its hash stays what it was.
     fw, access = fw_desired(store), access_desired(store)
+    # Behind a balancer (1.0.237): asked only once switched on, or switched off again after - a
+    # request from before had none, and its hash stays what it was.
+    rp = realip_desired(store)
+    if rp is not None:
+        out['realip'] = rp
     if fw is not None:
         out['fw'] = fw
     if access is not None:

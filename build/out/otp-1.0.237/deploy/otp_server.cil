@@ -14,3 +14,12 @@
 (filecon "/run/otp/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
 (filecon "/var/run/otp" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
 (filecon "/var/run/otp/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
+
+; systemd hands /run/otp back to the service's account before every command of the unit -
+; ExecReload too (`systemctl reload otp`): it may change the owner and the mode of what is in it
+; (1.0.237). Under enforcing the reload failed - seen on a node in permissive as
+; "init_t -> httpd_var_run_t file { setattr } (kill)". Only that: no read, no write. In a block
+; of its own, so that a policy without one of the types still takes the rest of the module.
+(optional otp_server_systemd_runtime
+    (allow init_t httpd_var_run_t (dir (getattr setattr search open read)))
+    (allow init_t httpd_var_run_t (file (getattr setattr))))

@@ -1309,6 +1309,14 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        if any(k in checked for k in ('web_proxy', 'web_proxy_from')):
+            # Never on without the balancers named (1.0.237): the header of anybody would be the
+            # client's address - the sign-in pause and the allow lists fooled by one line.
+            after = dict(CONFIG)
+            after.update(checked)
+            if after.get('web_proxy') and not str(after.get('web_proxy_from') or '').split():
+                raise BadSetting('behind a load balancer or WAF: say which addresses are the '
+                                 'balancers first (The load balancers and WAFs)')
         if any(k in checked for k in FIRST_CODE_KEYS):
             # The code before the first token only with a way to send it (1.0.228): switched
             # on without one, or the mail or the SMS switched off under it, nobody could enrol.

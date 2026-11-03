@@ -1011,6 +1011,12 @@ def nginx_trusted_proxies(cidrs, pal):
     for c in cidrs:
         address_net(c)
     text = Path(conf).read_text()
+    if '# OTP-REALIP-BEGIN' in text:
+        # Set on the pages since 1.0.237: one place for it, not two that undo each other.
+        print(pal.bad_line('it is set on the pages (Settings - Firewall and access - Behind a load '
+                           'balancer or WAF): change it there, or otp --set web_proxy_from=\'%s\''
+                           % ' '.join(cidrs)))
+        return False
     block = ('    # REALIP-BEGIN - the load balancer(s), written by otp --trusted-proxy\n'
              + ''.join('    set_real_ip_from %s;\n' % c for c in cidrs)
              + ('    real_ip_header X-Forwarded-For;\n    real_ip_recursive on;\n' if cidrs else '')

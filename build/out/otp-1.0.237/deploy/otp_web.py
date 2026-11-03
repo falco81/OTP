@@ -293,6 +293,12 @@ def checked(r):
     else:
         out['fw'] = None
     out['access'] = access_checked(r.get('access'))
+    rp = r.get('realip')
+    if rp is None:
+        out['realip'] = None                # never asked: nginx's real_ip left alone (1.0.237)
+    else:
+        nets, head, rec = realip_checked(rp)
+        out['realip'] = {'from': nets, 'header': head, 'recursive': rec}
     names = r.get('acme')
     if names is None:
         out['acme'] = None
@@ -502,6 +508,50 @@ def firewall(peer, family, on):
         return 'firewalld did NOT let VRRP from %s in: %s' % (
             peer, ((got.stderr or rl.stderr or '').strip().splitlines() or ['?'])[-1][:200])
     return 'firewalld: VRRP from %s %s' % (peer, 'let in' if on else 'no longer let in')
+
+
+REALIP_BEGIN = '    # OTP-REALIP-BEGIN - behind a load balancer or WAF, as set on the pages\n'
+REALIP_END = '    # OTP-REALIP-END\n'
+HEADER_RE = re.compile(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z')
+
+
+def realip_checked(rp):
+    """The balancers and the header as the daemon asked - checked again here: they go into
+    nginx's configuration as they are."""
+    if not isinstance(rp, dict):
+        raise Refused('realip: not an object')
+    nets = []
+    for w in (rp.get('from') or [])[:64]:
+        try:
+            nets.append(str(ipaddress.ip_network(str(w), strict=False)))
+        except ValueError:
+            raise Refused('realip: %r is not an address or a network' % str(w)[:60])
+    head = str(rp.get('header') or 'X-Forwarded-For')
+    if nets and (not HEADER_RE.match(head) or head.lower() in ('host', 'cookie', 'authorization')):
+        raise Refused('realip: %r is not the name of a header' % head[:60])
+    return nets, head, bool(rp.get('recursive'))
+
+
+def realip_into(main, rp):
+    """otp's own real_ip lines in the HTTPS server of this node (the VIP address's server is made
+    from it): put in, changed or taken out. On, they take the place of what otp --trusted-proxy
+    wrote; off, only otp's own go - nothing else of nginx is touched (1.0.237)."""
+    nets, head, rec = realip_checked(rp)
+    where = server_block(main)
+    if not where:
+        raise Refused('no HTTPS server { } was found in %s' % NGINX_MAIN)
+    block = main[where[0]:where[1]]
+    new = re.sub(r'    # OTP-REALIP-BEGIN.*?# OTP-REALIP-END\n', '', block, flags=re.S)
+    if nets:
+        new = re.sub(r'    # REALIP-BEGIN.*?# REALIP-END\n', '', new, flags=re.S)
+        lines = (REALIP_BEGIN + ''.join('    set_real_ip_from %s;\n' % n for n in nets) +
+                 '    real_ip_header %s;\n' % head +
+                 '    real_ip_recursive %s;\n' % ('on' if rec else 'off') + REALIP_END)
+        head_end = new.index('{') + 1
+        nl = new.find('\n', head_end)
+        cut = nl + 1 if nl >= 0 else head_end
+        new = new[:cut] + lines + new[cut:]
+    return main[:where[0]] + new + main[where[1]:]
 
 
 def server_block(text):
@@ -903,6 +953,15 @@ def nginx_part(r, last):
                 main, changed = new_main, True
                 said.append('nginx: who may reach the enrolment, administration and health '
                             'pages set')
+        if r.get('realip') is not None:
+            new_main = realip_into(main, r['realip'])
+            if new_main != main:
+                write_root(NGINX_MAIN, new_main, 0o644)
+                main, changed = new_main, True
+                rp = r['realip']
+                said.append('nginx: the client\'s address from %s when it comes from %s'
+                            % (rp.get('header'), ', '.join(rp.get('from')))
+                            if rp.get('from') else 'nginx: no balancer believed any more')
         where = server_block(main)
         if not where:
             raise Refused('no HTTPS server { } was found in %s' % NGINX_MAIN)

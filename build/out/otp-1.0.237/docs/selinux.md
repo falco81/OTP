@@ -19,6 +19,7 @@ things the system's policy does not say by itself:
 | the SSH gate's port as `radius_port_t` | pam_radius sends to it (18129 and up by default) | `semanage port` |
 | sshd's port as `ssh_port_t` | sshd on a port other than 22 | `semanage port` |
 | PostgreSQL's port as `postgresql_port_t` | a local PostgreSQL on a port other than 5432 | `semanage port` |
+| systemd may change the owner of what is in `/run/otp` | before every command of the unit (`systemctl reload otp` too) systemd hands `/run/otp` back to the service's account - seen on a node as `init_t → httpd_var_run_t file { setattr }` | a rule of `otp_server` (1.0.237): owner and mode only, nothing read or written |
 | `/var/www/otp`, `/usr/libexec/keepalived/otp-vip-check` | the pages; keepalived's check, which may run unconfined from there | the system's own labels (`restorecon`) |
 
 `install.sh` and every upgrade copy the module beside the program, and put it into the
