@@ -4,7 +4,7 @@
 # write it would) is not acted on; an older signed row put back neither; RADIUS goes on; a copy put back and
 # switching it off work. Its own daemon (SQLite), the database written straight as an attacker would.
 import os, sys, json, time, subprocess, urllib.request, tempfile, atexit, hashlib, secrets, sqlite3, base64
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.231'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.232'
 V = os.environ.get('OTP_DIR') or '/home/claude/build/out/otp-%s' % VER
 D = tempfile.mkdtemp(prefix='otp-dg-'); run = D + '/run'; os.makedirs(run)
 RPORT, APORT = 31962, 29921
@@ -135,6 +135,21 @@ ok('...written again by otp: read', json.loads(st.get_meta('web:vip'))['address'
 for k_, v_ in v1:
     raw("UPDATE meta SET v = ? WHERE k = ?", (v_, k_))
 ok('an older signed row put back with its signature: reads as not there', st.get_meta('web:vip') is None)
+# the other node's heartbeat (1.0.232): its row and its signature come over apart from a node before
+# 1.0.232 - read between them, the address it had when last signed is still taken, a new one is not
+st.set_meta('node:peer', json.dumps({'address': '10.0.0.9', 'at': 1}))
+ok('another node\'s heartbeat written by otp: its address taken', otp.dbguard_node_ok(st, 'peer'))
+raw("UPDATE meta SET v = ? WHERE k = 'node:peer'", (json.dumps({'address': '10.0.0.9', 'at': 2}),))
+ok('...a newer one not signed yet, the same address: still taken (replication between two rows)',
+   otp.dbguard_node_ok(st, 'peer'))
+raw("UPDATE meta SET v = ? WHERE k = 'node:peer'", (json.dumps({'address': '6.6.6.6', 'at': 3}),))
+ok('...a heartbeat written straight with another address: not taken', not otp.dbguard_node_ok(st, 'peer'))
+otp.DBGUARD['nodes'].clear()
+raw("UPDATE meta SET v = ? WHERE k = 'node:peer'", (json.dumps({'address': '10.0.0.9', 'at': 4}),))
+ok('...nothing signed seen of it yet (a fresh start): not taken', not otp.dbguard_node_ok(st, 'peer'))
+st.set_meta('node:peer', json.dumps({'address': '10.0.0.9', 'at': 5}))
+ok('...written by otp again: taken', otp.dbguard_node_ok(st, 'peer'))
+raw("DELETE FROM meta WHERE k = 'node:peer'")
 raw("INSERT INTO meta (k, v) VALUES (?, ?)", ('host:sshkeys:want:dg', json.dumps([{'id': 'x1', 'do': 'add', 'line': 'ssh-ed25519 AAAA attacker', 'at': time.time()}])))
 ok('a request to add a key to root\'s authorized_keys, written straight: not seen', otp.node_key_rows(st, 'host:sshkeys:want', 'dg') == [])
 raw("INSERT INTO meta (k, v) VALUES (?, ?)", ('web:tls:dg', json.dumps({'cert': '-----BEGIN CERTIFICATE-----x', 'key': 'plain-key'})))
@@ -166,6 +181,16 @@ if c != 200:
 ok('switched off: %s' % c, c == 200, x)
 c, x = call('/api/status', None, forged_session())
 ok('off again: everything as before 1.0.231 (a session written straight is taken) (%s)' % c, c == 200, x)
+# from the command line, as root would: the running service takes it at once (1.0.232)
+r = subprocess.run([sys.executable, V + '/otp.py', '--set', 'db_guard=1'], env=env, capture_output=True, text=True, timeout=60)
+ok('switched on from the command line (%s)' % r.returncode, r.returncode == 0, (r.stdout + r.stderr)[-300:])
+time.sleep(12)
+c, x = call('/api/status', None, forged_session())
+ok('...the running service takes it without a restart: a session written straight refused (%s)' % c, c == 401, x)
+r = subprocess.run([sys.executable, V + '/otp.py', '--set', 'db_guard=0'], env=env, capture_output=True, text=True, timeout=60)
+time.sleep(12)
+c, x = call('/api/status', None, forged_session())
+ok('...and off from the command line: as before (%s)' % c, c == 200, x)
 ev = st.db.rows("SELECT words, level FROM events WHERE kind = 'security'")
 ok('switching it on and off written in Events', any('switched off the guard' in e['words'] for e in ev) and any('switched on' in e['words'] for e in ev))
 print('ALL %d / %d' % (sum(R), len(R)))

@@ -828,6 +828,12 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       <p class="ctl-lede">Guessing from one place held back - wrong passwords, wrong codes,
         names nobody has.</p></div>
     <div class="card full"><div id="sect-guard"></div></div>
+    <div class="card full fulladmin-only" id="dp-card"><h2>Wrong directory passwords - each directory</h2>
+      <p class="note">Each directory with a cap of its own, or as the setting above. <b>Read the
+        domain's policy</b> asks the domain itself - through the directory's own connection - how it
+        locks accounts and what it asks of passwords, and recommends a cap below its lockout. Nothing
+        changes until <b>Save the changes</b> below.</p>
+      <div id="dp-list"></div></div>
     <div class="card full fulladmin-only" id="gd-card"><h2>Counted and blocked now <span class="right" id="gd-tools"></span></h2>
       <p class="note">The places the VPN's requests come from with refusals still counted, and the
         tokens locked by wrong codes - how close each is to its limit, and how long a block still

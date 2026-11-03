@@ -628,8 +628,14 @@ class Storage(object):
         # One statement, no lock of Python's (1.0.139): a RADIUS thread noting a
         # client seen waited here behind a page holding the lock for a slow
         # query on the main connection - the VPN timed out.
-        self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
-        if dbguard_meta_signed(k):
+        if not dbguard_meta_signed(k):
+            self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
+            return
+        # The row and its signature in one transaction (1.0.232): replication brought them
+        # over as two, and the other node, reading between them, took a heartbeat for one
+        # not written by otp.
+        with self.db.transaction():
+            self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
             dbguard_sign(self.db, 'm', k, str(v))     # 1.0.231
 
     def settings_saved(self):

@@ -47,6 +47,7 @@ import html
 import io
 import ipaddress
 import json
+import math
 import os
 import queue
 import random
@@ -93,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.231'
+__version__ = '1.0.232'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -488,7 +489,7 @@ TUNABLE = {
     'radius_unknown_log': (0, 1), 'radius_reject_delay_ms': (0, 10000),
     'totp_digits': (6, 8), 'totp_period': (15, 120),
     'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
-    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'high_security': (0, 1), 'totp_disallow_reuse': (0, 1),
+    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'high_security': (0, 1), 'db_guard': (0, 1), 'totp_disallow_reuse': (0, 1),
     'upgrade_check': (0, 1), 'upgrade_downgrade': (0, 1),
     'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
@@ -718,7 +719,7 @@ NAMES = {
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
     'high_security': 'High security',
-    'db_guard': 'Root\u2019s actions only from rows otp signed',
+    'db_guard': 'Guard against writes to the database',
     'upgrade_check': 'Look for a new version every day',
     'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
@@ -1061,19 +1062,13 @@ SAYS = {
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
                    'service\'s environment.',
-    'db_guard': 'What this node does as root - the firewall, sshd and root\u2019s SSH keys, the '
-                'network, a restart, the system\u2019s updates and their proxy, the time servers, '
-                'nginx\u2019s certificates, the VIP, the TLS of the database link - follows rows of '
-                'the database, and so do the accounts and the sign-ins of these pages. Anybody who '
-                'can write the database (its server, a db_password found out, a copy of it put '
-                'back) could write those rows. Every one is signed when otp writes it, with a key '
-                'from secrets.key that is in no database. On: this node acts on such a row only '
-                'when its signature is right and it is not an older one put back; anything else is '
-                'left as it was, and said under the security check and in Events. RADIUS, the codes '
-                'and the tokens are never held up by it. Kept in this node\'s config.json (not in '
-                'the database), switched off only on this node itself. In a cluster, switch it on '
-                'on every node, once all of them run 1.0.231 or later. Not against the other node '
-                'of a cluster: it holds the same key.',
+    'db_guard': 'Protects this node against anybody who can write its database but not log in to it - '
+                'the database server, a db_password found out, a copy put back. On: rows of the '
+                'database that would make this node act as root (the firewall, SSH keys, sshd, '
+                'updates, restarts, certificates, the VIP), or let somebody into these pages, are '
+                'taken only when otp itself signed them. RADIUS and the tokens are never affected. '
+                'Worth it with a cluster or a database on another machine - switch it on on every '
+                'node; with SQLite on this machine it adds little. Off: as until now.',
     'high_security': 'Every way of doing something less safely switched off - plain LDAP, unencrypted '
                      'mail, syslog and backups, certificates not checked, weak TLS, SSH with '
                      'passwords, exports not locked and the rest listed above. Switched on only '
@@ -2436,6 +2431,36 @@ _LOG_WANTED = [False]           # this process writes otp.log (the daemon)
 # while it was still starting (a slow migration after an upgrade at night,
 # logrotate's) ended the process - Python's default for it.
 HUP_ASKED = threading.Event()
+
+
+def run_dir_keep():
+    """/run/otp and the API token readable by the pages' group again (1.0.232). systemd
+    gives a unit's RuntimeDirectory back to User:Group (otp:otp) before every command of the
+    unit - ExecReload too: after `systemctl reload otp` the pages could not read the token,
+    /healthz said 503 and the VIP address left the node until otp was restarted."""
+    try:
+        import grp
+        import stat as _st
+        gid = grp.getgrnam(WEB_GROUP).gr_gid
+    except (KeyError, ImportError):
+        return False
+    fixed = False
+    for path, mode in ((RUN_DIR, 0o750), (TOKEN_FILE, 0o640)):
+        try:
+            st = os.lstat(str(path))
+            if not _st.S_ISDIR(st.st_mode) and not _st.S_ISREG(st.st_mode):
+                continue
+            if st.st_uid != os.geteuid() and os.geteuid() != 0:
+                continue
+            if st.st_gid != gid:
+                os.chown(str(path), -1, gid)
+                fixed = True
+            if _st.S_IMODE(st.st_mode) != mode:
+                os.chmod(str(path), mode)
+                fixed = True
+        except OSError:
+            pass
+    return fixed
 
 
 _LOG_SPARING = {}

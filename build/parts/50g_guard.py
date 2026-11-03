@@ -47,7 +47,7 @@ DBGUARD_SETTINGS = frozenset((
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify'))
 DBGUARD_FILE = STATE_DIR / 'guard.json'
-DBGUARD = {'seen': None, 'good': None, 'dirty': 0.0, 'refused': {}, 'lock': threading.Lock()}
+DBGUARD = {'seen': None, 'good': None, 'dirty': 0.0, 'refused': {}, 'nodes': {}, 'lock': threading.Lock()}
 
 
 def dbguard_on():
@@ -313,7 +313,25 @@ def dbguard_node_ok(store, name):
         raw = store.db.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,))
     except Exception:                                   # noqa: BLE001
         return False
-    return raw is not None and dbguard_ok(store.db, 'm', 'node:' + name, raw)
+    if raw is None:
+        return False
+    try:
+        addr = str((json.loads(raw) or {}).get('address') or '')
+    except (TypeError, ValueError, AttributeError):
+        addr = ''
+    if dbguard_ok(store.db, 'm', 'node:' + name, raw, quiet=True):
+        with DBGUARD['lock']:
+            DBGUARD['nodes'][name] = addr
+        return True
+    # The heartbeat and its signature come over in two pieces from a node before 1.0.232
+    # (two statements): read between them, the new one is not signed yet. The address it
+    # had when it was last signed is still taken (1.0.232) - a row written by somebody else
+    # cannot point the cluster anywhere new by it.
+    with DBGUARD['lock']:
+        known = DBGUARD['nodes'].get(name)
+    if addr and known == addr:
+        return True
+    return dbguard_ok(store.db, 'm', 'node:' + name, raw)
 
 
 class SimpleStore(object):

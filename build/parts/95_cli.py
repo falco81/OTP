@@ -4094,8 +4094,16 @@ def cli_dump_copy():
     return 0
 
 
+def _early_hup(*_):
+    try:
+        run_dir_keep()          # systemctl reload while it starts (1.0.232)
+    except Exception:           # noqa: BLE001
+        pass
+    HUP_ASKED.set()
+
+
 def run_daemon():
-    signal.signal(signal.SIGHUP, lambda *_: HUP_ASKED.set())
+    signal.signal(signal.SIGHUP, _early_hup)
     become_service_user()
     load_config()
     daemon_lock()

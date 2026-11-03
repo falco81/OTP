@@ -3,7 +3,7 @@
 # the administrators' sign-in from the directory - the directory is not asked for that name; a right
 # password does not count; cleared under Locked out. Its own mock AD and daemon (SQLite).
 import os, sys, json, time, subprocess, urllib.request, tempfile, atexit
-VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.230'
+VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.232'
 V = os.environ.get('OTP_DIR') or '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 D = tempfile.mkdtemp(prefix='otp-pw-'); run = D + '/run'; os.makedirs(run)
@@ -93,8 +93,8 @@ c, x = pl('Heslo-Žluťoučký-1')
 ok('right passwords do not count (six in a row, all in) (%s)' % c, c == 200, x)
 c, lo = adm('/api/lockouts')
 rows = [r for r in ([r for n in lo.get('nodes') or [] if n.get('shared') for r in n.get('rows') or []]) if r.get('kind') == 'dir-passwords']
-ok('Locked out lists žofie: 3 of 3, locked', any(r['who'] == 'žofie' and r['locked'] and r['fails'] == 3 for r in rows), rows)
-c, x = adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': 'žofie'})
+ok('Locked out lists žofie: 3 of 3, locked', any(r['who'] == 'žofie|domena' and r['locked'] and r['fails'] == 3 for r in rows), rows)
+c, x = adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': 'žofie|domena'})
 ok('cleared: %s' % c, c == 200, x)
 c, x = pl('Heslo-Ďábel-2', 'žofie')
 ok('then the right password lets in (%s)' % c, c == 200, x)
@@ -108,7 +108,7 @@ c, x = call('/api/auth/login', {'name': 'žofie@corpnet.cz', 'password': 'Heslo-
 ok('...the fourth there: not asked - 429 (%s)' % c, c == 429, x)
 c, x = pl('Heslo-Ďábel-2', 'žofie')
 ok('...nor on the enrolment pages (%s)' % c, c == 429, x)
-adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': 'žofie'})
+adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': 'žofie|domena'})
 c, x = call('/api/auth/login', {'name': 'žofie@corpnet.cz', 'password': 'Heslo-Ďábel-2'})
 ok('cleared: the administrator from the directory signs in (%s)' % c, c == 200, x)
 
@@ -123,6 +123,35 @@ ok('...and then the sign-in is not asked either (%s)' % c, c == 429, x)
 c, x = adm('/api/settings', {'settings': {'dir_pw_tries': 0}})
 c, x = pl('Heslo-Žluťoučký-1')
 ok('back to 0: as until now at once (%s)' % c, c == 200, x)
+# ---- each directory's own cap, the domain's policy (1.0.232) ------------------------------------
+c, x = adm('/api/directories', {'action': 'pw_caps'})
+dd = {d_['name']: d_ for d_ in x.get('directories') or []}
+ok('each directory listed with its cap, as the setting by default: %s' % list(dd), 'Domena' in dd and dd['Domena']['tries'] is None, x)
+c, x = adm('/api/directories', {'action': 'policy', 'name': 'Domena'})
+pol = x.get('policy') or {}
+ok('the domain\'s policy read: lockout after %s in %s s' % ((pol.get('lockout') or {}).get('threshold'), (pol.get('lockout') or {}).get('window_s')),
+   (pol.get('lockout') or {}).get('threshold') == 5 and (pol.get('lockout') or {}).get('window_s') == 1800, x)
+ok('...the password policy: 8 characters, complex, 24 remembered', (pol.get('password') or {}).get('min_length') == 8 and pol['password'].get('complex') and pol['password'].get('history') == 24)
+ok('...the fine-grained policy Admins PSO, locking after 3', any(p_['name'] == 'Admins PSO' and p_['threshold'] == 3 for p_ in pol.get('psos') or []))
+rec = pol.get('recommend') or {}
+ok('...recommended below the lowest lockout: %s in %s min' % (rec.get('tries'), rec.get('window_min')), rec.get('tries') == 2 and rec.get('window_min') == 30 and rec.get('why', '').startswith('The policy Admins PSO locks'), rec)
+c, x = adm('/api/directories', {'action': 'pw_caps'})
+ok('the policy read is kept beside the directory, not as a setting', (({d_['name']: d_ for d_ in x['directories']}['Domena']).get('policy') or {}).get('lockout'))
+c, x = adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'tries': 1, 'window_min': 30}}})
+ok('its own cap saved: %s' % x.get('saved'), c == 200 and x.get('saved'), x)
+c, x = pl('wrong-d1', 'cizi')
+c, x = pl('Heslo-Cizí-5', 'cizi')
+ok('one wrong password with a cap of 1 for this directory: the next is not asked (%s)' % c, c == 429, x)
+c, x = adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'tries': 0}}})
+c, x = pl('Heslo-Cizí-5', 'cizi')
+ok('no cap for this directory: asked at once, the password right (%s)' % c, c in (200, 403) and 'not have a token' in str(x.get('error', 'not have a token')), x)
+c, x = adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'tries': 999}}})
+ok('a cap over 100: refused (%s)' % c, c == 400, x)
+c, x = adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Nowhere': {'tries': 3}}})
+ok('a directory that is not there: refused (%s)' % c, c == 400, x)
+adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'tries': None, 'window_min': None}}})
+c, x = adm('/api/directories', {'action': 'pw_caps'})
+ok('back to as the setting', ({d_['name']: d_ for d_ in x['directories']}['Domena']).get('tries') is None)
 ev = st.db.rows("SELECT words FROM events WHERE words LIKE '%cleared the count of wrong directory passwords%'")
 ok('a clearing written in the events', len(ev) >= 2)
 print('ALL %d / %d' % (sum(R), len(R)))

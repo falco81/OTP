@@ -1565,6 +1565,12 @@ def chal_tidy(store):
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
             if r['k'].startswith('adpw:'):              # wrong directory passwords (1.0.230)
                 span = 60 * int(CONFIG.get('dir_pw_window_min') or 30)
+                try:                                    # a directory's own window, the longest
+                    caps = json.loads(store.get_meta('dirpw:conf') or '{}') or {}
+                    span = max([span] + [60 * int(c.get('window_min') or 0) for c in caps.values()
+                                         if isinstance(c, dict)])
+                except (ValueError, TypeError, AttributeError):
+                    pass
             now = time.time()                           # the counts by the machine's clock
             gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
         if gone:

@@ -1186,10 +1186,14 @@ class Daemon(object):
                                          'taken as otp\'s word' % by)
             write_file_settings({'db_guard': 1})
             CONFIG['db_guard'] = 1
+            # Read again by the running service too (1.0.232): from the command line it went on
+            # only at its next reload.
+            self.store.set_meta('conf_serial', '%.6f:%s' % (time.time(), node_name()))
             log('root\'s actions only from rows otp signed: on (%d rows signed)' % n)
             return ['this node acts as root only on rows otp signed (%d signed now)' % n]
         write_file_settings({'db_guard': 0})
         CONFIG['db_guard'] = 0
+        self.store.set_meta('conf_serial', '%.6f:%s' % (time.time(), node_name()))
         self.store.add_event('security', '%s switched off the guard of root\'s actions on %s: '
                              'rows of the database are acted on whoever wrote them'
                              % (by, node_name()), 'bad', who=by)
@@ -1698,11 +1702,14 @@ class Daemon(object):
             self.conf_sig = hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
         except OSError:
             self.conf_sig = None
-        signal.signal(signal.SIGHUP, lambda *_: self.hup_asked.set())
+        signal.signal(signal.SIGHUP, self._hup_signal)
         last_tidy = time.monotonic() - 3601
         last_backup_day = self.store.get_meta('backup_day', '')
         while not self.stop_flag.wait(5):
             dbguard_flush()                             # the counters seen (1.0.231)
+            if run_dir_keep():                          # 1.0.232
+                log('/run/otp was given back to otp:otp (systemctl reload?) - readable by the pages again',
+                    'warn')
             if self.hup_asked.is_set():
                 self.hup_asked.clear()
                 self._hup()
@@ -1997,6 +2004,16 @@ class Daemon(object):
             note_size(self.store)
         except Exception:                               # noqa: BLE001
             pass
+
+    def _hup_signal(self, *_):
+        # The token readable by the pages again at once (1.0.232): systemd gave /run/otp to
+        # otp:otp just before it sent this (systemctl reload), and the loop below sees the
+        # signal only up to 5 s later - the VIP address had already gone.
+        try:
+            run_dir_keep()
+        except Exception:                               # noqa: BLE001
+            pass
+        self.hup_asked.set()
 
     def _hup(self):
         log_open()
