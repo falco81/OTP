@@ -4428,6 +4428,13 @@ function dpDirCard(x, set) {
       if (w >= 1) draft.window_min = Math.min(1440, w);
       effText(); dpChanged();
     });
+    /* What is saved shown in the box once it is left (1.0.234): 0, an empty box or 999 typed
+       stayed there while the last good number was the one saved. */
+    b.addEventListener('change', function () {
+      if (mode !== 'own') return;
+      tries.value = draft.tries || set.tries || 3;
+      win.value = draft.window_min || set.window_min || 30;
+    });
   });
   cap.appendChild(nums);
   cap.appendChild(eff);
