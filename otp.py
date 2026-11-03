@@ -47,6 +47,7 @@ import html
 import io
 import ipaddress
 import json
+import math
 import os
 import queue
 import random
@@ -93,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.231'
+__version__ = '1.0.232'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -488,7 +489,7 @@ TUNABLE = {
     'radius_unknown_log': (0, 1), 'radius_reject_delay_ms': (0, 10000),
     'totp_digits': (6, 8), 'totp_period': (15, 120),
     'totp_algorithm': ('SHA1', 'SHA256', 'SHA512'),
-    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'high_security': (0, 1), 'totp_disallow_reuse': (0, 1),
+    'totp_window': (0, 10), 'admin_show_key': (0, 1), 'high_security': (0, 1), 'db_guard': (0, 1), 'totp_disallow_reuse': (0, 1),
     'upgrade_check': (0, 1), 'upgrade_downgrade': (0, 1),
     'rate_limit_tries': (0, 100), 'rate_limit_s': (1, 86400),
     'lockout_after': (0, 1000), 'lockout_min': (1, 10080),
@@ -718,7 +719,7 @@ NAMES = {
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
     'high_security': 'High security',
-    'db_guard': 'Root\u2019s actions only from rows otp signed',
+    'db_guard': 'Guard against writes to the database',
     'upgrade_check': 'Look for a new version every day',
     'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
@@ -1061,19 +1062,13 @@ SAYS = {
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
                    'service\'s environment.',
-    'db_guard': 'What this node does as root - the firewall, sshd and root\u2019s SSH keys, the '
-                'network, a restart, the system\u2019s updates and their proxy, the time servers, '
-                'nginx\u2019s certificates, the VIP, the TLS of the database link - follows rows of '
-                'the database, and so do the accounts and the sign-ins of these pages. Anybody who '
-                'can write the database (its server, a db_password found out, a copy of it put '
-                'back) could write those rows. Every one is signed when otp writes it, with a key '
-                'from secrets.key that is in no database. On: this node acts on such a row only '
-                'when its signature is right and it is not an older one put back; anything else is '
-                'left as it was, and said under the security check and in Events. RADIUS, the codes '
-                'and the tokens are never held up by it. Kept in this node\'s config.json (not in '
-                'the database), switched off only on this node itself. In a cluster, switch it on '
-                'on every node, once all of them run 1.0.231 or later. Not against the other node '
-                'of a cluster: it holds the same key.',
+    'db_guard': 'Protects this node against anybody who can write its database but not log in to it - '
+                'the database server, a db_password found out, a copy put back. On: rows of the '
+                'database that would make this node act as root (the firewall, SSH keys, sshd, '
+                'updates, restarts, certificates, the VIP), or let somebody into these pages, are '
+                'taken only when otp itself signed them. RADIUS and the tokens are never affected. '
+                'Worth it with a cluster or a database on another machine - switch it on on every '
+                'node; with SQLite on this machine it adds little. Off: as until now.',
     'high_security': 'Every way of doing something less safely switched off - plain LDAP, unencrypted '
                      'mail, syslog and backups, certificates not checked, weak TLS, SSH with '
                      'passwords, exports not locked and the rest listed above. Switched on only '
@@ -2436,6 +2431,36 @@ _LOG_WANTED = [False]           # this process writes otp.log (the daemon)
 # while it was still starting (a slow migration after an upgrade at night,
 # logrotate's) ended the process - Python's default for it.
 HUP_ASKED = threading.Event()
+
+
+def run_dir_keep():
+    """/run/otp and the API token readable by the pages' group again (1.0.232). systemd
+    gives a unit's RuntimeDirectory back to User:Group (otp:otp) before every command of the
+    unit - ExecReload too: after `systemctl reload otp` the pages could not read the token,
+    /healthz said 503 and the VIP address left the node until otp was restarted."""
+    try:
+        import grp
+        import stat as _st
+        gid = grp.getgrnam(WEB_GROUP).gr_gid
+    except (KeyError, ImportError):
+        return False
+    fixed = False
+    for path, mode in ((RUN_DIR, 0o750), (TOKEN_FILE, 0o640)):
+        try:
+            st = os.lstat(str(path))
+            if not _st.S_ISDIR(st.st_mode) and not _st.S_ISREG(st.st_mode):
+                continue
+            if st.st_uid != os.geteuid() and os.geteuid() != 0:
+                continue
+            if st.st_gid != gid:
+                os.chown(str(path), -1, gid)
+                fixed = True
+            if _st.S_IMODE(st.st_mode) != mode:
+                os.chmod(str(path), mode)
+                fixed = True
+        except OSError:
+            pass
+    return fixed
 
 
 _LOG_SPARING = {}
@@ -6970,8 +6995,14 @@ class Storage(object):
         # One statement, no lock of Python's (1.0.139): a RADIUS thread noting a
         # client seen waited here behind a page holding the lock for a slow
         # query on the main connection - the VPN timed out.
-        self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
-        if dbguard_meta_signed(k):
+        if not dbguard_meta_signed(k):
+            self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
+            return
+        # The row and its signature in one transaction (1.0.232): replication brought them
+        # over as two, and the other node, reading between them, took a heartbeat for one
+        # not written by otp.
+        with self.db.transaction():
+            self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
             dbguard_sign(self.db, 'm', k, str(v))     # 1.0.231
 
     def settings_saved(self):
@@ -8544,7 +8575,7 @@ DBGUARD_SETTINGS = frozenset((
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify'))
 DBGUARD_FILE = STATE_DIR / 'guard.json'
-DBGUARD = {'seen': None, 'good': None, 'dirty': 0.0, 'refused': {}, 'lock': threading.Lock()}
+DBGUARD = {'seen': None, 'good': None, 'dirty': 0.0, 'refused': {}, 'nodes': {}, 'lock': threading.Lock()}
 
 
 def dbguard_on():
@@ -8810,7 +8841,25 @@ def dbguard_node_ok(store, name):
         raw = store.db.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,))
     except Exception:                                   # noqa: BLE001
         return False
-    return raw is not None and dbguard_ok(store.db, 'm', 'node:' + name, raw)
+    if raw is None:
+        return False
+    try:
+        addr = str((json.loads(raw) or {}).get('address') or '')
+    except (TypeError, ValueError, AttributeError):
+        addr = ''
+    if dbguard_ok(store.db, 'm', 'node:' + name, raw, quiet=True):
+        with DBGUARD['lock']:
+            DBGUARD['nodes'][name] = addr
+        return True
+    # The heartbeat and its signature come over in two pieces from a node before 1.0.232
+    # (two statements): read between them, the new one is not signed yet. The address it
+    # had when it was last signed is still taken (1.0.232) - a row written by somebody else
+    # cannot point the cluster anywhere new by it.
+    with DBGUARD['lock']:
+        known = DBGUARD['nodes'].get(name)
+    if addr and known == addr:
+        return True
+    return dbguard_ok(store.db, 'm', 'node:' + name, raw)
 
 
 class SimpleStore(object):
@@ -8953,6 +9002,54 @@ def entry_first(a, attrs):
             if str(v).strip():
                 return str(v).strip()
     return ''
+
+
+def _ad_int(v):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _ad_span(v, zero_is=None):
+    """An interval of Active Directory (negative hundreds of nanoseconds) as seconds; the
+    largest negative number is "never". `zero_is`: what 0 means for this one."""
+    n = _ad_int(v)
+    if n is None:
+        return None
+    if n == 0:
+        return zero_is
+    if n <= -0x7FFFFFFFFFFFFFFF or n >= 0x7FFFFFFFFFFFFFFF:
+        return 'never'
+    return abs(n) / 1e7
+
+
+def policy_recommend(pol):
+    """The cap of wrong directory passwords for these pages that keeps the account from being
+    locked by guesses made here: below the lowest lockout threshold that may apply."""
+    lock = pol.get('lockout') or {}
+    found = []
+    if (lock.get('threshold') or 0) > 0:
+        found.append((lock['threshold'], 'the domain', lock.get('window_s')))
+    for p in pol.get('psos') or []:
+        if (p.get('threshold') or 0) > 0:
+            found.append((p['threshold'], 'the policy %s' % p['name'], p.get('window_s')))
+    if not found:
+        return {'tries': 10, 'window_min': 30, 'threshold': 0, 'from': '',
+                'why': 'The directory never locks an account after wrong passwords - a cap here '
+                       'still slows down guessing.'}
+    t, src, _w = min(found, key=lambda x: x[0])
+    windows = [w for _t, _s, w in found if isinstance(w, (int, float))]
+    window = int(math.ceil(max(windows) / 60.0)) if windows else 30
+    tries = max(1, t - 2) if t > 3 else max(1, t - 1)
+    if src == 'the domain':
+        why = ('The domain locks an account after %d wrong passwords: %d here leave the person %d '
+               'of their own before it locks.' % (t, tries, t - tries))
+    else:
+        why = ('The policy %s locks an account after %d wrong passwords: %d here leave the person %d '
+               'of their own before it locks.' % (src[len('the policy '):], t, tries, t - tries))
+    return {'tries': tries, 'window_min': max(1, min(1440, window)), 'threshold': t, 'from': src,
+            'why': why}
 
 
 def ad_time(value):
@@ -9403,6 +9500,83 @@ class Directory(object):
                 one.close()
         raise LdapUnreachable('no server of %s could be reached (%s)'
                               % (self.name, '; '.join(tried)))
+
+    # ---- the domain's policy of passwords and lockouts (1.0.232) ----------------------------
+    POLICY_ATTRS = ('name', 'lockoutThreshold', 'lockoutDuration', 'lockOutObservationWindow',
+                    'minPwdLength', 'pwdHistoryLength', 'maxPwdAge', 'minPwdAge', 'pwdProperties')
+    PSO_ATTRS = ('name', 'cn', 'msDS-PasswordSettingsPrecedence', 'msDS-LockoutThreshold',
+                 'msDS-LockoutObservationWindow', 'msDS-LockoutDuration', 'msDS-MinimumPasswordLength',
+                 'msDS-PasswordComplexityEnabled', 'msDS-PasswordHistoryLength',
+                 'msDS-MaximumPasswordAge', 'msDS-MinimumPasswordAge',
+                 'msDS-PasswordReversibleEncryptionEnabled', 'msDS-PSOAppliesTo')
+
+    def domain_dn(self):
+        dcs = [p.strip() for p in re.split(r'(?<!\\),', self.base or '') if p.strip().lower().startswith('dc=')]
+        return ','.join(dcs)
+
+    def policy(self):
+        """How the domain locks accounts and what it asks of passwords, as its root object and
+        the fine-grained policies (where this account may read them) say, with a cap of wrong
+        passwords to recommend for these pages."""
+        t = time.time()
+        dom = self.domain_dn()
+        if not dom:
+            def root(link):
+                return link.search('', ldap_present('objectClass'), ('defaultNamingContext',), scope=0, limit=1)
+            got = self.asked(root)
+            a = {k.lower(): v for k, v in (got[0]['attrs'] if got else {}).items()}
+            dom = (a.get('defaultnamingcontext') or [''])[0]
+        if not dom:
+            raise LdapError('the domain is not known: the base names no DC=')
+        rows = self.asked(lambda link: link.search(dom, ldap_present('objectClass'), self.POLICY_ATTRS,
+                                                   scope=0, limit=1))
+        if not rows:
+            raise LdapError('the domain %s did not answer for its own object' % dom)
+        a = {k.lower(): v for k, v in rows[0]['attrs'].items()}
+        one = lambda k: (a.get(k.lower()) or [None])[0]
+        props = _ad_int(one('pwdProperties')) or 0
+        out = {'domain': dom, 'name': one('name') or dom, 'directory': self.name,
+               'lockout': {'threshold': _ad_int(one('lockoutThreshold')) or 0,
+                           'window_s': _ad_span(one('lockOutObservationWindow')),
+                           'duration_s': _ad_span(one('lockoutDuration'), zero_is='manual')},
+               'password': {'min_length': _ad_int(one('minPwdLength')) or 0,
+                            'history': _ad_int(one('pwdHistoryLength')) or 0,
+                            'max_age_s': _ad_span(one('maxPwdAge'), zero_is='never'),
+                            'min_age_s': _ad_span(one('minPwdAge'), zero_is=0),
+                            'complex': bool(props & 1), 'reversible': bool(props & 16),
+                            'admin_lockout': bool(props & 8)},
+               'psos': [], 'psos_said': ''}
+        try:
+            box = 'CN=Password Settings Container,CN=System,' + dom
+            got = self.asked(lambda link: link.search(box, ldap_equal('objectClass', 'msDS-PasswordSettings'),
+                                                      self.PSO_ATTRS, scope=1, limit=200))
+            for r in got:
+                p = {k.lower(): v for k, v in r['attrs'].items()}
+                pv = lambda k: (p.get(k.lower()) or [None])[0]
+                out['psos'].append({
+                    'name': pv('name') or pv('cn') or r['dn'].split(',')[0][3:],
+                    'precedence': _ad_int(pv('msDS-PasswordSettingsPrecedence')),
+                    'threshold': _ad_int(pv('msDS-LockoutThreshold')),
+                    'window_s': _ad_span(pv('msDS-LockoutObservationWindow')),
+                    'duration_s': _ad_span(pv('msDS-LockoutDuration'), zero_is='manual'),
+                    'min_length': _ad_int(pv('msDS-MinimumPasswordLength')),
+                    'complex': str(pv('msDS-PasswordComplexityEnabled') or '').upper() == 'TRUE',
+                    'history': _ad_int(pv('msDS-PasswordHistoryLength')),
+                    'max_age_s': _ad_span(pv('msDS-MaximumPasswordAge'), zero_is='never'),
+                    'reversible': str(pv('msDS-PasswordReversibleEncryptionEnabled') or '').upper() == 'TRUE',
+                    'applies': [cn_of(x) or x for x in (p.get('msds-psoappliesto') or [])][:20]})
+            out['psos'].sort(key=lambda x: (x['precedence'] is None, x['precedence'] or 0))
+            if not got:
+                out['psos_said'] = 'none that this account may read - the account otp reads with ' \
+                                   'usually may not see them; the domain\'s own policy is used'
+        except LdapUnreachable:
+            raise
+        except LdapError as e:
+            out['psos_said'] = 'not readable with the account otp reads with (%s)' % str(e)[:120]
+        out['recommend'] = policy_recommend(out)
+        out['took_ms'] = int((time.time() - t) * 1000)
+        out['at'] = time.time()
+        return out
 
     def find_users(self, like, limit=25):
         """People whose name, account, principal name or mail holds what is
@@ -12669,6 +12843,12 @@ def chal_tidy(store):
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
             if r['k'].startswith('adpw:'):              # wrong directory passwords (1.0.230)
                 span = 60 * int(CONFIG.get('dir_pw_window_min') or 30)
+                try:                                    # a directory's own window, the longest
+                    caps = json.loads(store.get_meta('dirpw:conf') or '{}') or {}
+                    span = max([span] + [60 * int(c.get('window_min') or 0) for c in caps.values()
+                                         if isinstance(c, dict)])
+                except (ValueError, TypeError, AttributeError):
+                    pass
             now = time.time()                           # the counts by the machine's clock
             gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
         if gone:
@@ -15772,10 +15952,14 @@ class Daemon(object):
                                          'taken as otp\'s word' % by)
             write_file_settings({'db_guard': 1})
             CONFIG['db_guard'] = 1
+            # Read again by the running service too (1.0.232): from the command line it went on
+            # only at its next reload.
+            self.store.set_meta('conf_serial', '%.6f:%s' % (time.time(), node_name()))
             log('root\'s actions only from rows otp signed: on (%d rows signed)' % n)
             return ['this node acts as root only on rows otp signed (%d signed now)' % n]
         write_file_settings({'db_guard': 0})
         CONFIG['db_guard'] = 0
+        self.store.set_meta('conf_serial', '%.6f:%s' % (time.time(), node_name()))
         self.store.add_event('security', '%s switched off the guard of root\'s actions on %s: '
                              'rows of the database are acted on whoever wrote them'
                              % (by, node_name()), 'bad', who=by)
@@ -16284,11 +16468,14 @@ class Daemon(object):
             self.conf_sig = hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
         except OSError:
             self.conf_sig = None
-        signal.signal(signal.SIGHUP, lambda *_: self.hup_asked.set())
+        signal.signal(signal.SIGHUP, self._hup_signal)
         last_tidy = time.monotonic() - 3601
         last_backup_day = self.store.get_meta('backup_day', '')
         while not self.stop_flag.wait(5):
             dbguard_flush()                             # the counters seen (1.0.231)
+            if run_dir_keep():                          # 1.0.232
+                log('/run/otp was given back to otp:otp (systemctl reload?) - readable by the pages again',
+                    'warn')
             if self.hup_asked.is_set():
                 self.hup_asked.clear()
                 self._hup()
@@ -16583,6 +16770,16 @@ class Daemon(object):
             note_size(self.store)
         except Exception:                               # noqa: BLE001
             pass
+
+    def _hup_signal(self, *_):
+        # The token readable by the pages again at once (1.0.232): systemd gave /run/otp to
+        # otp:otp just before it sent this (systemctl reload), and the loop below sees the
+        # signal only up to 5 s later - the VIP address had already gone.
+        try:
+            run_dir_keep()
+        except Exception:                               # noqa: BLE001
+            pass
+        self.hup_asked.set()
 
     def _hup(self):
         log_open()
@@ -38276,14 +38473,34 @@ def dir_pw_who(name):
     return str(name or '').strip().lower().split('\\', 1)[-1].rsplit('@', 1)[0].strip()[:190]
 
 
-def dir_pw_take(h, name):
+def dir_pw_caps(store):
+    """Each directory's own cap (1.0.232): {name in small letters: {'tries': n, 'window_min': m}}
+    - a directory not in it, or with tries None, follows the setting."""
+    try:
+        got = json.loads(store.get_meta('dirpw:conf') or '{}')
+    except (ValueError, TypeError):
+        got = {}
+    return got if isinstance(got, dict) else {}
+
+
+def dir_pw_cap_of(store, directory):
+    """(tries, window in seconds) for a directory: its own, else the setting's."""
+    own = dir_pw_caps(store).get(str(directory or '').lower()) or {}
+    tries = own.get('tries') if own.get('tries') is not None else CONFIG.get('dir_pw_tries')
+    window = own.get('window_min') if own.get('window_min') else CONFIG.get('dir_pw_window_min')
+    return int(tries or 0), 60 * int(window or 30)
+
+
+def dir_pw_take(h, name, directory=''):
     """A place for one directory password of `name`, held before the directory is asked; ''
-    when there is no cap. Over it: 429 - the directory is not asked."""
-    most = int(CONFIG.get('dir_pw_tries') or 0)
+    when there is no cap. Over it: 429 - the directory is not asked. Counted per directory
+    (1.0.232): novak of one domain is not novak of another, and each has its own lockout."""
+    most, span = dir_pw_cap_of(h.store, directory)
     who = dir_pw_who(name)
     if most <= 0 or not who:
         return ''
-    span = 60 * int(CONFIG.get('dir_pw_window_min') or 30)
+    if directory:
+        who = '%s|%s' % (who, str(directory).lower())
     if not node_key_add(h.store, 'adpw', who, span, limit=most):
         times = sorted(x for x in node_key_times(h.store, 'adpw', who) if time.time() - x < span)
         wait = max(1, int(((times[-most] + span) - time.time()) // 60) + 1) if len(times) >= most else 1
@@ -38340,12 +38557,16 @@ def lockouts_shared(store):
         except (ValueError, TypeError):
             continue
     for who, times in per.items():
+        # Each directory's own cap (1.0.232): the name counted is "novak|directory".
+        name_, _s, dname = who.partition('|')
+        most, pspan = dir_pw_cap_of(store, dname)
         times = sorted(x for x in times if t - x < pspan)
         if not times or most <= 0:
             continue
         locked = len(times) >= most
         rows.append({'kind': 'dir-passwords', 'who': who, 'by': 'name',
-                     'what': LOCKOUT_KINDS['dir-passwords'], 'base': 'dir-passwords',
+                     'what': LOCKOUT_KINDS['dir-passwords'] + (' (%s)' % dname if dname else ''),
+                     'base': 'dir-passwords',
                      'words': 'wrong directory passwords', 'fails': len(times), 'limit': most,
                      'locked': locked,
                      'until': (times[len(times) - most] + pspan) if locked else None,
@@ -38371,7 +38592,7 @@ def lockouts_shared(store):
 
 def lockouts_shared_clear(store, kind, who, by):
     if kind == 'dir-passwords':
-        n = node_key_drop(store, 'adpw', dir_pw_who(who))
+        n = node_key_drop(store, 'adpw', str(who or '').strip().lower()[:190])
         store.add_event('sign-ins', '%s cleared the count of wrong directory passwords for %s'
                         % (by, who), 'warn', who=by)
         return n
@@ -38557,7 +38778,7 @@ def admin_ask_directory(h, name, password):
         # there, anybody would be an administrator here.
         return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
                 'directory': ad.name}
-    held = dir_pw_take(h, who)          # the cap per person (1.0.230)
+    held = dir_pw_take(h, who, ad.name)          # the cap per person (1.0.230), per directory (1.0.232)
     try:
         ad.password_ok(entry, password)
     except LdapUnreachable as e:
@@ -40508,6 +40729,74 @@ def _dirs_do(h):
     # reaches the domain controllers on its own.
     if act == 'sample':
         return dir_sample(h, b)
+    if act == 'pw_caps':
+        # Each directory with its own cap of wrong passwords, and the setting's (1.0.232).
+        h.me('fulladmin')
+        caps = dir_pw_caps(h.store)
+        out = []
+        for d in h.store.directories():
+            own = caps.get(d['name'].lower()) or {}
+            out.append({'name': d['name'], 'hosts': d.get('hosts') or '', 'tls': d.get('tls') or '',
+                        'enabled': bool(d.get('enabled', 1)), 'base': d.get('base') or '',
+                        'tries': own.get('tries'), 'window_min': own.get('window_min'),
+                        'policy': own.get('policy')})
+        return {'directories': out, 'setting': {'tries': int(CONFIG.get('dir_pw_tries') or 0),
+                                                'window_min': int(CONFIG.get('dir_pw_window_min') or 30)}}
+    if act == 'pw_caps_save':
+        s = h.me('fulladmin')
+        want = b.get('caps') or {}
+        if not isinstance(want, dict):
+            raise ApiError(400, 'the caps are an object of directories')
+        names = {d['name'].lower(): d['name'] for d in h.store.directories()}
+        caps = dir_pw_caps(h.store)
+        said = []
+        for name, c in want.items():
+            key = str(name).lower()
+            if key not in names:
+                raise ApiError(400, 'there is no directory called %s' % name)
+            c = c if isinstance(c, dict) else {}
+            tries, window = c.get('tries'), c.get('window_min')
+            try:
+                tries = None if tries in (None, '') else int(tries)
+                window = None if window in (None, '') else int(window)
+            except (TypeError, ValueError):
+                raise ApiError(400, '%s: the cap and its time are whole numbers' % names[key])
+            if tries is not None and not 0 <= tries <= 100:
+                raise ApiError(400, '%s: the cap is 0 to 100 wrong passwords' % names[key])
+            if window is not None and not 1 <= window <= 1440:
+                raise ApiError(400, '%s: the time is 1 to 1440 min' % names[key])
+            was = caps.get(key) or {}
+            now = dict(was, tries=tries, window_min=window)
+            if now != was:
+                caps[key] = now
+                said.append('%s: %s' % (names[key], 'as the setting' if tries is None else
+                                        ('no cap' if tries == 0 else '%d in %s min' % (
+                                            tries, window or CONFIG.get('dir_pw_window_min') or 30))))
+        for key in list(caps):
+            if key not in names:
+                caps.pop(key, None)
+        h.store.set_meta('dirpw:conf', json.dumps(caps))
+        if said:
+            h.store.add_event('settings', '%s set the cap of wrong directory passwords: %s'
+                              % (s['name'], '; '.join(said)), who=s['name'])
+        return {'message': 'saved' if said else 'nothing changed', 'saved': said}
+    if act == 'policy':
+        s = h.me('fulladmin')
+        ad = h.d.dirs.get(str(b.get('name') or '').lower())
+        if not ad:
+            raise ApiError(404, 'there is no directory called %s (switched on)' % b.get('name'))
+        try:
+            pol = ad.policy()
+        except LdapUnreachable as e:
+            raise ApiError(503, 'the directory cannot be reached: %s' % e)
+        except LdapError as e:
+            raise ApiError(400, 'the directory said: %s' % e)
+        # Kept beside its cap, for the card to show what was read last (not a setting).
+        caps = dir_pw_caps(h.store)
+        key = ad.name.lower()
+        caps[key] = dict(caps.get(key) or {}, policy={k: pol[k] for k in ('lockout', 'password', 'at', 'name')})
+        h.store.set_meta('dirpw:conf', json.dumps(caps))
+        return {'policy': pol}
     if act == 'check_all':
         if str(b.get('name') or '').lower() not in h.d.dirs:
             raise ApiError(404, 'there is no directory called %s (switched on)' % b.get('name'))
@@ -42715,7 +43004,7 @@ def _portal_login(h):
             raise LdapError('the account may not sign in: %s' % entry_unusable(entry))
         # The cap of wrong directory passwords per person (1.0.230), before the directory is
         # asked: over it, the account there is not locked by guesses made here.
-        held = dir_pw_take(h, full)
+        held = dir_pw_take(h, full, realm.get('directory') or '')
         try:
             ad.password_ok(entry, password)
         except LdapUnreachable:
@@ -43350,7 +43639,8 @@ def _portal_reissue(h):
     ad = h.d.auth.directory(realm['directory']) if realm else None
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
-    held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'])     # 1.0.230
+    held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'],
+                       (realm or {}).get('directory') or '')     # 1.0.230, 1.0.232
     try:
         ad.password_ok({'dn': (s.get('data') or {}).get('dn')}, str(b.get('password') or ''))
     except LdapUnreachable as e:
@@ -55272,8 +55562,16 @@ def cli_dump_copy():
     return 0
 
 
+def _early_hup(*_):
+    try:
+        run_dir_keep()          # systemctl reload while it starts (1.0.232)
+    except Exception:           # noqa: BLE001
+        pass
+    HUP_ASKED.set()
+
+
 def run_daemon():
-    signal.signal(signal.SIGHUP, lambda *_: HUP_ASKED.set())
+    signal.signal(signal.SIGHUP, _early_hup)
     become_service_user()
     load_config()
     daemon_lock()

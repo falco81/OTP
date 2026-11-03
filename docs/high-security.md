@@ -60,8 +60,13 @@ Switching it off is always possible, and written down as every setting is.
 
 ## Root's actions only from rows otp signed (1.0.231)
 
-*Settings → High security → Root's actions only from rows otp signed* (`db_guard`;
-off by default - as until now).
+*Settings → High security → Guard against writes to the database* (`db_guard`;
+a switch, off by default - as until now; until 1.0.232 it was called *Root's actions
+only from rows otp signed* and shown as a box for 0 or 1).
+
+Worth it with a cluster or a database on another machine; with SQLite on this
+machine (only root and otp can write it) it adds little. Nothing else is to be
+set: switch it on, on every node.
 
 What a node does as root follows rows of the database: the firewall, sshd and
 root's `authorized_keys`, the network and the host name, a restart or a power-off,
@@ -103,6 +108,27 @@ the node itself (its pages, or `otp --set db_guard=0` as root). In a cluster swi
 it on on every node, once all of them run 1.0.231 or later (it refuses while one
 does not). A copy put back on purpose, a configuration imported, the database moved
 and a node renamed are signed again by otp afterwards - they work as before.
+
+**From the command line**: `otp --set db_guard=1` on each node, as root. Since
+1.0.232 the running service takes it at once - nothing to reload or restart (in
+1.0.231 it waited for `systemctl reload otp`, and that reload took the API token
+away from the pages - see below).
+
+**Another node's heartbeat** is a row and its signature, written in one
+transaction since 1.0.232. From a node still on 1.0.231 they came over by
+replication one after the other, and a node reading between them refused the
+heartbeat (*meta node:otp2 - its signature is not right* in the log). Since
+1.0.232 the address a node had in its last signed heartbeat is still taken while
+a newer one waits for its signature; a heartbeat with another address is not.
+
+**`systemctl reload otp`** (1.0.232): systemd gives the service's `/run/otp` back
+to `otp:otp` before it sends the reload. The pages (the `otp-web` group) could then
+not read the API token: `/healthz` said *503 - the pages cannot read the daemon's
+API token* and the VIP address left the node until otp was restarted. This had
+nothing to do with the guard - any reload did it. The daemon now gives `/run/otp`
+and the token back to `otp-web` the moment the reload arrives, and checks it every
+5 seconds. On 1.0.231 and older, use `systemctl restart otp`, or after a reload:
+`chgrp otp-web /run/otp /run/otp/api-token`.
 
 Not against the other node of a cluster: it holds the same key, and root on it is
 root of the cluster's database anyway.

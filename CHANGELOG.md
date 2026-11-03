@@ -4,6 +4,41 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.232 — 3 November 2026
+
+**`systemctl reload otp` took the pages off the node.** systemd gives the service's `/run/otp` back
+to `otp:otp` before it sends a reload; the pages (the `otp-web` group) could then not read the API
+token - `/healthz` said *503: the pages cannot read the daemon's API token*, keepalived took the VIP
+address away from the node, and it stayed so until otp was restarted. Any reload did it, the guard of
+1.0.231 had nothing to do with it (logrotate signals the daemon itself and was never affected).
+
+- The daemon gives `/run/otp` and the token back to `otp-web` the moment the reload arrives, and
+  checks it every 5 seconds (said in the log when it had to).
+- On 1.0.231 and older: `systemctl restart otp` instead of reload, or after one
+  `chgrp otp-web /run/otp /run/otp/api-token`.
+
+**The guard against writes to the database (`db_guard`, 1.0.231) in a cluster.**
+
+- Another node's heartbeat and its signature are written in one transaction: replication brought
+  them over as two, and a node reading between them refused the other's heartbeat (*meta node:otp2 -
+  its signature is not right*). The address a node had in its last signed heartbeat is still taken
+  while a newer one waits for its signature (a node still on 1.0.231 writes them apart); a heartbeat
+  with another address is not.
+- `otp --set db_guard=1` is taken by the running service at once - no reload, no restart.
+- Shown as a switch - it was a box for 0 or 1 - and called *Guard against writes to the database*,
+  with a help that says what it is for and that nothing else is to be set: switched on on every node.
+
+**Wrong directory passwords per person, per directory** (*Settings → Sign-in protection*; as in
+1.0.230 until changed).
+
+- Every configured directory has a card: its servers, the link's encryption, and *As the setting
+  above*, *Its own* (a cap and a window for it alone) or *No cap*. Each directory counts on its own.
+- *Read the domain's policy* (full administrators) connects with the directory's bind account and
+  shows the domain's *Account lockout*, *Password policy* and every *Fine-grained password policy*
+  it may read, and recommends a cap below the lowest threshold over the longest window.
+  *Use it* only fills it in - nothing changes until *Save the changes*.
+- docs/sign-in-protection.md (1.2) and docs/high-security.md say all of it.
+
 ## 1.0.231 — 3 November 2026
 
 **Root's actions only from rows otp signed** (*Settings → High security*, `db_guard`; off by default -

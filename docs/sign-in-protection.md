@@ -8,7 +8,9 @@ there (or with `otp --set`):
    them - a node's new network, and the firewall and who may reach the pages;
    on by default.
 3. **Wrong directory passwords per person capped** (1.0.230) - so guesses made
-   here never lock the account in Active Directory; off by default.
+   here never lock the account in Active Directory; off by default. Per
+   directory, with the domain's own lockout and password policy read and a cap
+   recommended, since 1.0.232.
 
 ## 1. Guessing from one place (RADIUS)
 
@@ -84,6 +86,40 @@ tokens.
 ```
 otp --set dir_pw_tries=3
 otp --set dir_pw_window_min=30
+```
+
+## 1.2 Per directory, and the domain's own policy (1.0.232)
+
+Under *Wrong directory passwords per person* every configured directory has a
+card of its own: its servers, whether the link is encrypted, and how it is capped.
+
+- **As the setting above** - `dir_pw_tries` and `dir_pw_window_min` (the default:
+  as in 1.0.230).
+- **Its own** - a cap and a window for this directory alone.
+- **No cap** - this directory is never held back here, whatever the setting above
+  says.
+
+Each directory is counted on its own: `novak` of one domain and `novak` of
+another are two names.
+
+**Read the domain's policy** (full administrators) connects to the directory with
+its own bind account and reads what the domain itself says: the *Account lockout*
+(threshold, how long one counts, how long it locks), the *Password policy*
+(length, complexity, history, the longest and shortest age) and every
+*Fine-grained password policy* (PSO) in `CN=Password Settings Container,CN=System`
+that the bind account may read. It recommends a cap: two under the lowest
+threshold when that is over 3, else one under (at least 1), over the longest
+window of them - so the person always has some tries left before the domain
+locks them. *Use it* only fills it in on the card; nothing changes until **Save
+the changes** at the bottom of the page (*Put them back* forgets it). A domain
+that does not lock accounts at all (threshold 0) is said so; 10 in 30 minutes is
+recommended then all the same - it still slows down guessing.
+
+What was read is kept beside the caps and shown again the next time the page is
+opened, with when it was read.
+
+```
+otp --settings | grep dir_pw     # the setting above; the per-directory caps are on the pages
 ```
 
 ## 2. Changes taken back unless kept
