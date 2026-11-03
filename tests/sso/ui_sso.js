@@ -75,7 +75,7 @@ function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w +
       const guides = await p.$$eval('#sso-host details.lb-guide summary b', x => x.map(e => e.textContent));
       ok(tag + '...the guides: NetScaler, F5, nginx, check', guides.length === 4 && /NetScaler/.test(guides[0]) && /F5/.test(guides[1]), guides);
       await p.click('#sso-host details.lb-guide summary');
-      const code = await p.textContent('#sso-host details.lb-guide pre');
+      const code = await p.$eval('#sso-host details.lb-guide', d => [...d.querySelectorAll('pre')].map(x => x.textContent).join('\n'));
       ok(tag + '...NetScaler opened: the header and the commands filled in', /insert_http_header X-Otp-User AAA\.USER\.NAME/.test(code) && /delete_http_header X-Otp-User/.test(code), code.slice(0, 300));
       ok(tag + '...the key not in it (made elsewhere, never shown again)', !code.includes(KEY));
       if (lang === 'cs') {

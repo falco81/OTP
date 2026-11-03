@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.238'
+__version__ = '1.0.239'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -199,6 +199,12 @@ DEFAULTS = {
     'portal_codes_view': 0,
     'portal_session_min': 15,
     'portal_help': '',
+    # Signed in by a load balancer or WAF in front (1.0.239): NetScaler, F5 - off by default.
+    'portal_sso': 0,
+    'portal_sso_from': '',
+    'portal_sso_header': 'X-Otp-User',
+    'portal_sso_key': '',
+    'portal_sso_logout': '',
     'portal_tries': 5,
     'portal_wait_min': 15,
     # --- the administration pages -------------------------------------------
@@ -479,11 +485,12 @@ METRICS_TOKEN_RE_HEAD = re.compile(r'^[A-Za-z0-9_.~+/=-]{24,200}\Z')
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
                'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
                'acme_dns_key', 'acme_desec_token', 'metrics_token', 'snmp_auth_pass',
-               'snmp_priv_pass')
+               'snmp_priv_pass', 'portal_sso_key')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
                'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
-               'acme_desec_token', 'metrics_token', 'snmp_auth_pass', 'snmp_priv_pass')
+               'acme_desec_token', 'metrics_token', 'snmp_auth_pass', 'snmp_priv_pass',
+               'portal_sso_key')
 
 # Saved as a row even when equal to the default (1.0.238): what they were before tells "switched
 # off" from "never switched on".
@@ -506,7 +513,7 @@ TUNABLE = {
     'dir_pw_tries': (0, 100), 'dir_pw_window_min': (1, 1440),
     'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
-    'web_proxy': (0, 1), 'web_proxy_recursive': (0, 1),
+    'web_proxy': (0, 1), 'web_proxy_recursive': (0, 1), 'portal_sso': (0, 1),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
     'names_czsk_letters': (0, 1),
@@ -771,6 +778,11 @@ NAMES = {
     'portal_codes_view': 'People may look at their recovery codes again',
     'portal_session_min': 'An enrolment sign-in lasts (min)',
     'portal_help': 'Help text on the enrolment pages',
+    'portal_sso': 'Signed in by the load balancer or WAF (SSO)',
+    'portal_sso_from': 'The balancers that sign people in',
+    'portal_sso_header': 'The header with who signed in',
+    'portal_sso_key': 'The key the balancer sends',
+    'portal_sso_logout': 'Where signing out goes',
     'portal_tries': 'Wrong passwords on the enrolment pages before a pause',
     'portal_wait_min': '...and the pause (min)',
     'session_hours': 'A sign-in lasts (h)',
@@ -1278,6 +1290,27 @@ SAYS = {
                       'still made, and only an administrator can see new ones.',
     'portal_session_min': 'How long somebody stays signed in on the enrolment pages. Short, '
                           'because the page holds a key that is somebody’s second factor.',
+    'portal_sso': 'The enrolment pages published through a NetScaler, an F5 or another balancer '
+                  'or WAF that signs people in against the directory first: who it signed in '
+                  'comes in a header, and the pages ask no password again. Only from the '
+                  'balancers\' own addresses below, and only with the key below - nobody else\'s '
+                  'header is believed. The directory is still asked who it is, the realm\'s groups '
+                  'and who may enrol still decide, and the one-time code by mail or SMS before '
+                  'the first token is still sent. The administration pages are not concerned. '
+                  'Off: the pages as until now.',
+    'portal_sso_from': 'The balancers\' own addresses or networks, as this node sees the '
+                       'connection come in (not the client\'s) - one or more, separated by '
+                       'spaces. Needed to switch it on.',
+    'portal_sso_header': 'Where the balancer puts the name it signed in: X-Otp-User, or the '
+                         'one it already sends. The name as people type it - novak, '
+                         'novak@example.cz or EXAMPLE\\novak - as on the sign-in of these pages.',
+    'portal_sso_key': 'Sent by the balancer in X-Otp-Sso-Key with every request, so that a '
+                      'header put in by anybody else is never taken. Made below (Make a key), '
+                      'shown once; kept sealed.',
+    'portal_sso_logout': 'Where Sign out sends the browser afterwards - the balancer\'s own '
+                         'sign-out (NetScaler: /cgi/tmlogout, F5: /vdesk/hangup.php3), so that it '
+                         'does not sign the person in again at once. Empty: the sign-in of these '
+                         'pages, with a button to sign in through the balancer again.',
     'portal_help': 'Words shown on the enrolment pages under the title: where to get the '
                    'application, whom to ring. Plain text; an empty line starts a new '
                    'paragraph.',
@@ -1610,6 +1643,9 @@ PANES = {
                'portal_show_secret',
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
+    # Signed in by the balancer (1.0.239): a card of its own on the enrolment pages' pane.
+    'portalsso': ['portal_sso', 'portal_sso_from', 'portal_sso_header', 'portal_sso_key',
+                  'portal_sso_logout'],
     'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
                'isemon_events', 'isemon_max_bytes', 'isemon_verify', 'isemon_mtls',
                'isemon_ca', 'ship_files'],
@@ -1677,6 +1713,8 @@ ONLY_WHEN = {
     'portal_reissue': ['portal', '1'], 'portal_show_secret': ['portal', '1'],
     'portal_scratch': ['portal', '1'], 'portal_session_min': ['portal', '1'],
     'portal_help': ['portal', '1'], 'portal_tries': ['portal', '1'],
+    'portal_sso_from': ['portal_sso', '1'], 'portal_sso_header': ['portal_sso', '1'],
+    'portal_sso_key': ['portal_sso', '1'], 'portal_sso_logout': ['portal_sso', '1'],
     'portal_wait_min': ['portal', '1'],
     'isemon_targets': ['isemon', '1'], 'isemon_hostname': ['isemon', '1'],
     'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
@@ -1883,6 +1921,29 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('web_proxy_from: %r is not an address or a network' % one)
+    if key == 'portal_sso_from':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('portal_sso_from: %r is not an address or a network' % one)
+    if key == 'portal_sso_header':
+        # A header's name only (1.0.239); never one a browser or nginx sets itself.
+        if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
+                str(got).lower() in ('host', 'cookie', 'authorization', 'content-length',
+                                     'content-type', 'transfer-encoding', 'connection',
+                                     'x-forwarded-for', 'x-real-ip', 'x-otp-sso-key',
+                                     'user-agent', 'referer', 'origin', 'accept'):
+            raise BadSetting('portal_sso_header: the name of a header of its own, as X-Otp-User')
+    if key == 'portal_sso_key' and str(got).strip() and not is_masked(got) and \
+            not METRICS_TOKEN_RE_HEAD.match(str(got).strip()):
+        raise BadSetting('portal_sso_key: 24 to 200 letters, digits and -_.~+/=')
+    if key == 'portal_sso_logout' and str(got).strip():
+        u = str(got).strip()
+        if len(u) > 400 or re.search(r'[\x00-\x20\x7f"<>\\]', u) or \
+                not (re.match(r'^https://[A-Za-z0-9.-]+(:\d{1,5})?(/|\Z)', u) or
+                     re.match(r'^/(?!/)', u)):
+            raise BadSetting('portal_sso_logout: an https:// address or a path starting with /')
     if key == 'web_proxy_header':
         # A header's name only (1.0.237) - it goes into nginx's configuration as it is.
         if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \

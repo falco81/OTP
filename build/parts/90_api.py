@@ -4948,6 +4948,10 @@ def portal_me(h, gate_ok=False):
     if not CONFIG.get('portal'):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(403, 'enrolling a token here is switched off')
+    # Signed in by the balancer, and that switched off meanwhile (1.0.239): it ends.
+    if (s.get('data') or {}).get('sso') and not CONFIG.get('portal_sso'):
+        h.store.session_end(h.headers.get('X-Otp-Session'))
+        raise ApiError(401, 'sign in again')
     # The one-time code before the first token (1.0.228): until it is typed, the sign-in may
     # do that and nothing else.
     if portal_gated(s) and not gate_ok:
@@ -5033,7 +5037,8 @@ def portal_gate_view(s):
     return {'kind': kind, 'dest': dest_masked(kind, g.get('dest') or w.get('dest')),
             'live': bool(g) and float(g.get('exp') or 0) > time.time(),
             'digits': int(CONFIG.get('code_digits') or 6),
-            'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60)}
+            'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60),
+            'sso': bool(data.get('sso'))}           # signed in by the balancer (1.0.239)
 
 
 # The pictures of the two sign-ins (1.0.71; each its own since 1.0.72):
@@ -5273,7 +5278,11 @@ def _portal_info(h):
             'art': art_read(h.store, 'portal'), 'admin_art': art_read(h.store, 'admin'),
             'hint': CONFIG.get('portal_hint') or '', 'help': CONFIG.get('portal_help') or '',
             'lang': CONFIG.get('ui_lang') or 'cs', 'issuer': CONFIG.get('totp_issuer') or '',
-            'site': CONFIG.get('site_name') or short_host()}
+            'site': CONFIG.get('site_name') or short_host(),
+            # Signed in by the balancer (1.0.239): which header the page passes on - only when on.
+            'sso': {'header': CONFIG.get('portal_sso_header') or 'X-Otp-User',
+                    'logout': CONFIG.get('portal_sso_logout') or ''}
+            if CONFIG.get('portal_sso') and CONFIG.get('portal') else None}
 
 
 @route('POST', '/api/portal/login')
@@ -5345,6 +5354,13 @@ def _portal_login(h):
         h.store.add_event('enrolment', '%s could not sign in to the enrolment pages from %s: %s'
                           % (full, h.client_ip(), e), 'warn', who=full)
         raise ApiError(401, 'the name or the password is not right')
+    return portal_open(h, full, realm, ad, entry, key, str(b.get('lang') or ''))
+
+
+def portal_open(h, full, realm, ad, entry, key, lang, sso=False):
+    """After the directory said who it is - by the password, or by the balancer that signed them
+    in (1.0.239): the realm's groups, who may enrol, the same person under another name, the
+    one-time code before the first token, the session. One way for both."""
     # The realm's groups always: nobody enrols a token the VPN would refuse.
     # "Who may enrol" can only narrow that further, never widen it.
     who = CONFIG.get('portal_who') or 'realm_groups'
@@ -5413,7 +5429,7 @@ def _portal_login(h):
             raise ApiError(403, 'the directory has no e-mail address or mobile number of yours to '
                                 'send the code to - ask the administrator')
         gate = portal_gate_send(h, tname, kind, dest, display=entry.get('display') or '',
-                                lang=str(b.get('lang') or ''))
+                                lang=lang)
     token = h.store.session_new('portal', tname, 'portal', h.client_ip(),
                                 max(1, int(CONFIG.get('portal_session_min') or 15)) / 60.0 * 4,
                                 {'display': entry.get('display') or '', 'dn': entry['dn'],
@@ -5433,14 +5449,18 @@ def _portal_login(h):
                                            'directory': realm.get('directory') or ''},
                                  'gate': gate,
                                  'gate_wait': {'kind': gate['kind'], 'dest': gate['dest']}
-                                 if gate else None})
+                                 if gate else None,
+                                 # Signed in by the balancer (1.0.239): no password asked
+                                 # again - replacing a token still takes the old one's code.
+                                 'sso': bool(sso)})
     if gate:
         return {'token': token, 'name': tname,
                 'gate': {'kind': gate['kind'], 'dest': dest_masked(gate['kind'], gate['dest']),
                          'live': True, 'digits': int(CONFIG.get('code_digits') or 6),
                          'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60)}}
-    h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s'
-                      % (tname, h.client_ip()), who=tname)
+    h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s%s'
+                      % (tname, h.client_ip(), ' - signed in by the load balancer' if sso else ''),
+                      who=tname)
     return {'token': token, 'name': tname}
 
 
@@ -5615,7 +5635,10 @@ def portal_state(h, s):
             'show_scratch': bool(CONFIG.get('portal_scratch')),
             'codes_view': bool(CONFIG.get('portal_codes_view')) and bool(shown) and
             bool((shown or {}).get('scratch_kept')),
-            'title': CONFIG.get('portal_title') or '', 'help': CONFIG.get('portal_help') or ''}
+            'title': CONFIG.get('portal_title') or '', 'help': CONFIG.get('portal_help') or '',
+            # Signed in by the balancer (1.0.239): no password on the page; where signing out goes.
+            'sso': bool(data.get('sso')),
+            'sso_logout': (CONFIG.get('portal_sso_logout') or '') if data.get('sso') else ''}
 
 
 @route('GET', '/api/portal/me')
@@ -5966,6 +5989,20 @@ def _portal_reissue(h):
     ad = h.d.auth.directory(realm['directory']) if realm else None
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
+    if (s.get('data') or {}).get('sso') and CONFIG.get('portal_sso'):
+        # Signed in by the balancer (1.0.239): it asked the password - the code of the old
+        # token below is still asked.
+        pass
+    else:
+        portal_reissue_password(h, s, realm, b, key)
+    stop = h.d.tokens.blocked(s['name'])
+    if stop:
+        raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
+    return portal_reissue_rest(h, s, b, key)
+
+
+def portal_reissue_password(h, s, realm, b, key):
+    ad = h.d.auth.directory(realm['directory'])
     held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'],
                        (realm or {}).get('directory') or '',
                        {'dn': (s.get('data') or {}).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
@@ -5982,9 +6019,9 @@ def _portal_reissue(h):
         # lost the words saying what was wrong.
         raise ApiError(403, 'the password is not right')
     dir_pw_done(h, held, False)
-    stop = h.d.tokens.blocked(s['name'])
-    if stop:
-        raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
+
+
+def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
     old = (s.get('data') or {}).get('old') or {}
     if old and float(old.get('exp') or 0) >= time.time() and \

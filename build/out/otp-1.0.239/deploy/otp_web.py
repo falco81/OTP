@@ -299,6 +299,10 @@ def checked(r):
     else:
         nets, head, rec = realip_checked(rp)
         out['realip'] = {'from': nets, 'header': head, 'recursive': rec}
+    # The balancer's own address for the enrolment pages (1.0.239): asked only once the sign-in
+    # by the balancer was switched on - None leaves nginx as it is.
+    sp = r.get('sso_peer')
+    out['sso_peer'] = None if sp is None else bool(sp)
     names = r.get('acme')
     if names is None:
         out['acme'] = None
@@ -551,6 +555,32 @@ def realip_into(main, rp):
         nl = new.find('\n', head_end)
         cut = nl + 1 if nl >= 0 else head_end
         new = new[:cut] + lines + new[cut:]
+    return main[:where[0]] + new + main[where[1]:]
+
+
+SSO_PEER_MARK = '# OTP-SSO-PEER'
+
+
+def sso_peer_into(main, on):
+    """The address of the machine the request really came from - the balancer's, not the client's
+    from X-Forwarded-For - passed to the enrolment page as OTP_PEER, so that only the balancers
+    named can sign people in (1.0.239). In `location = /` of this node's HTTPS server (the VIP
+    address's server is made from it); off, only that line goes."""
+    where = server_block(main)
+    if not where:
+        raise Refused('no HTTPS server { } was found in %s' % NGINX_MAIN)
+    block = main[where[0]:where[1]]
+    new = re.sub(r'(?m)^[ \t]*fastcgi_param[ \t]+OTP_PEER[^\n]*%s[^\n]*\n' % re.escape(SSO_PEER_MARK),
+                 '', block)
+    if on:
+        m = re.search(r'(?m)^([ \t]*)location[ \t]*=[ \t]*/[ \t]*\{[^\n]*\n', new)
+        if not m:
+            raise Refused('no location = / { } (the enrolment pages) in the HTTPS server of %s'
+                          % NGINX_MAIN)
+        pad = m.group(1) + '    '
+        new = new[:m.end()] + ('%sfastcgi_param  OTP_PEER $realip_remote_addr;   %s - the '
+                               'balancer that signs people in\n' % (pad, SSO_PEER_MARK)) + \
+            new[m.end():]
     return main[:where[0]] + new + main[where[1]:]
 
 
@@ -962,6 +992,15 @@ def nginx_part(r, last):
                 said.append('nginx: the client\'s address from %s when it comes from %s'
                             % (rp.get('header'), ', '.join(rp.get('from')))
                             if rp.get('from') else 'nginx: no balancer believed any more')
+        if r.get('sso_peer') is not None:
+            new_main = sso_peer_into(main, r['sso_peer'])
+            if new_main != main:
+                write_root(NGINX_MAIN, new_main, 0o644)
+                main, changed = new_main, True
+                said.append('nginx: the enrolment pages told which machine a request came from '
+                            '(signed in by the load balancer)' if r['sso_peer'] else
+                            'nginx: the enrolment pages no longer told which machine a request '
+                            'came from')
         where = server_block(main)
         if not where:
             raise Refused('no HTTPS server { } was found in %s' % NGINX_MAIN)

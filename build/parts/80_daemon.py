@@ -1317,6 +1317,17 @@ class Daemon(object):
             if after.get('web_proxy') and not str(after.get('web_proxy_from') or '').split():
                 raise BadSetting('behind a load balancer or WAF: say which addresses are the '
                                  'balancers first (The load balancers and WAFs)')
+        if any(k in checked for k in ('portal_sso', 'portal_sso_from', 'portal_sso_key')):
+            # Signed in by the balancer only from the balancers, with the key (1.0.239): on
+            # without either, a header of anybody's would have been a sign-in.
+            after = dict(CONFIG)
+            after.update(checked)
+            if after.get('portal_sso'):
+                if not str(after.get('portal_sso_from') or '').split():
+                    raise BadSetting('signed in by the load balancer: say which addresses are the '
+                                     'balancers first (The balancers that sign people in)')
+                if not unseal_secret(str(after.get('portal_sso_key') or '')):
+                    raise BadSetting('signed in by the load balancer: make the key first (Make a key)')
         if any(k in checked for k in FIRST_CODE_KEYS):
             # The code before the first token only with a way to send it (1.0.228): switched
             # on without one, or the mail or the SMS switched off under it, nobody could enrol.
@@ -1386,6 +1397,7 @@ class Daemon(object):
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)
+        SAVED_KEYS['at'] = 0.0          # read again by the web state (1.0.239)
         said = []
         if 'db_guard' in file_side:
             said += self.dbguard_switch(bool(file_side.pop('db_guard')), by)

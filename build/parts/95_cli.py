@@ -677,6 +677,12 @@ def build_parser():
     g.add_argument('--guard-status', action='store_true',
                    help='the guard against writes to the database on this node: on or off, and '
                         'every row that reaches root not as otp wrote it')
+    g.add_argument('--sso-status', action='store_true',
+                   help='the sign-in by a load balancer or WAF on the enrolment pages: on or off, '
+                        'which balancers, which header, and the last sign-in each node saw')
+    g.add_argument('--sso-key', action='store_true',
+                   help='make a new key for the balancer to send in X-Otp-Sso-Key, shown once '
+                        '(the one before is no longer taken)')
     g.add_argument('--console-at-login', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='open the console when root signs in at the console or over SSH')
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
@@ -2182,6 +2188,8 @@ def cli_main(argv=None):
         return cli_selinux(args, pal)
     if args.dir_caps or args.dir_cap or args.dir_policy or args.dir_sample or args.guard_status:
         return cli_dir_guard(args, pal)
+    if args.sso_status or args.sso_key:
+        return cli_sso(args, pal)
     if args.console_at_login:
         if args.console_at_login != 'status':
             print(pal.ok_line(console_at_login_set(args.console_at_login == 'on')))
@@ -4192,6 +4200,53 @@ def cli_selinux(args, pal):
     sys.stdout.write(got.stdout)
     sys.stderr.write(got.stderr)
     return got.returncode
+
+
+def cli_sso(args, pal):
+    """otp --sso-status, --sso-key (1.0.239): the sign-in by a load balancer or WAF."""
+    store = cli_store()
+    if args.sso_key:
+        if not args.yes and sys.stdin.isatty():
+            got = input('a new key: the one the balancer sends now is no longer taken. Go on? [y/N] ')
+            if got.strip().lower() not in ('y', 'yes'):
+                print('nothing changed')
+                return 1
+        tok = secrets.token_urlsafe(32)
+        d = Daemon(store, serve=False)
+        try:
+            d.save_settings({'portal_sso_key': tok}, by='root on %s' % node_name())
+        except (BadSetting, OSError) as e:
+            raise SystemExit('otp: %s' % e)
+        store.add_event('settings', 'root on %s made a new key for the sign-in by the load '
+                        'balancer - the one before is no longer taken' % node_name(), 'warn')
+        if args.json:
+            print(json.dumps({'key': tok}))
+        else:
+            print(pal.ok_line('the new key - shown only now; the balancer sends it in %s:'
+                              % SSO_KEY_HEADER))
+            print(tok)
+        return 0
+    v = sso_view(store)
+    if args.json:
+        print(json.dumps(v))
+        return 0
+    print(pal.ok_line('signed in by the load balancer on the enrolment pages: %s'
+                      % ('ON' if v['on'] else 'off')))
+    print('  the balancers:   %s' % (', '.join(v['from']) or '(none named)'))
+    print('  the header:      %s   (with the key in %s: %s)'
+          % (v['header'], v['key_header'], 'set' if v['key_set'] else 'NOT SET - otp --sso-key'))
+    print('  signing out:     %s' % (v['logout'] or '(the sign-in of these pages)'))
+    if v['on'] and not v['web_proxy']:
+        print('  note: "Behind a load balancer or WAF" is off - every client is the balancer\'s '
+              'address (otp --set web_proxy_from=ADDR --set web_proxy=1)')
+    for x in v['last']:
+        print('  last on %-10s %s  %-9s %s <- %s%s' % (
+            x.get('node') or '?', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(x.get('at') or 0))),
+            'signed in' if x.get('ok') else 'REFUSED', x.get('name') or '?', x.get('peer') or '?',
+            ('  (%s)' % x['why']) if x.get('why') else ''))
+    if not v['last']:
+        print('  no sign-in by the balancer seen yet')
+    return 0
 
 
 def cli_dir_guard(args, pal):

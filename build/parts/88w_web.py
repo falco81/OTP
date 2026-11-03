@@ -591,6 +591,20 @@ def vip_last_keep(address, own, peer):
         pass
 
 
+SAVED_KEYS = {'at': 0.0, 'keys': frozenset()}
+
+
+def saved_keys(store):
+    """The names of the settings saved in the database - read at most every 30 s (1.0.239): the
+    web state is worked out every few seconds, and "was it ever switched on" (behind a balancer,
+    signed in by it) asked the database each time, twice."""
+    t = time.time()
+    if t - SAVED_KEYS['at'] > 30 or t < SAVED_KEYS['at']:
+        SAVED_KEYS['keys'] = frozenset(store.settings_saved())
+        SAVED_KEYS['at'] = t
+    return SAVED_KEYS['keys']
+
+
 def realip_desired(store):
     """{'from': [...], 'header', 'recursive'} for nginx - empty 'from' takes otp's own out again;
     None where it was never switched on (nginx left as it is)."""
@@ -608,8 +622,21 @@ def realip_desired(store):
     try:
         # Switched off: the row kept off (1.0.238) - or, switched off before that, the balancers
         # named are still there.
-        if any(k.split('@', 1)[0].startswith('web_proxy') for k in store.settings_saved()):
+        if any(k.split('@', 1)[0].startswith('web_proxy') for k in saved_keys(store)):
             return {'from': [], 'header': '', 'recursive': False}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
+def sso_peer_desired(store):
+    """True: nginx tells the enrolment page which machine a request came from (OTP_PEER); False:
+    no longer; None where the sign-in by the balancer was never switched on (nginx as it is)."""
+    if CONFIG.get('portal_sso'):
+        return True
+    try:
+        if any(k.split('@', 1)[0].startswith('portal_sso') for k in saved_keys(store)):
+            return False
     except Exception:                                   # noqa: BLE001
         pass
     return None
@@ -660,6 +687,10 @@ def web_desired(store):
     rp = realip_desired(store)
     if rp is not None:
         out['realip'] = rp
+    # Signed in by the balancer (1.0.239): the same - asked once switched on, or off after.
+    sp = sso_peer_desired(store)
+    if sp is not None:
+        out['sso_peer'] = sp
     if fw is not None:
         out['fw'] = fw
     if access is not None:

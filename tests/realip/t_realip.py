@@ -108,6 +108,7 @@ rp = otp.realip_desired(st)
 ok('on: asked with the networks, the header and the chain', rp == {'from': ['10.20.0.0/24', '192.0.2.5/32'], 'header': 'X-Forwarded-For', 'recursive': True}, rp)
 otp.CONFIG['web_proxy'] = 0
 st.save_setting('web_proxy', 0)
+otp.SAVED_KEYS['at'] = 0.0      # as a save on the daemon does (1.0.239's 30 s cache)
 ok('switched off again: asked to take otp\'s lines out', otp.realip_desired(st) == {'from': [], 'header': '', 'recursive': False})
 # switched off through the daemon, as the pages do (1.0.238): the 0 was dropped as the default, and
 # nginx's lines stayed
@@ -119,8 +120,10 @@ except Exception as x:
     e = repr(x)
 ok('switched off as the pages do: the row kept, off (%s)' % e, st.settings_saved().get('web_proxy') == 0, st.settings_saved().get('web_proxy'))
 otp.CONFIG['web_proxy'] = 0
+otp.SAVED_KEYS['at'] = 0.0      # as a save on the daemon does (1.0.239's 30 s cache)
 ok('...asked to take otp\'s lines out', otp.realip_desired(st) == {'from': [], 'header': '', 'recursive': False})
 st.drop_setting('web_proxy'); st.save_setting('web_proxy_from', '10.20.0.0/24')
+otp.SAVED_KEYS['at'] = 0.0      # as a save on the daemon does (1.0.239's 30 s cache)
 ok('switched off on 1.0.237 (the row dropped, the balancers still named): taken out as well',
    otp.realip_desired(st) == {'from': [], 'header': '', 'recursive': False})
 st.drop_setting('web_proxy_from')

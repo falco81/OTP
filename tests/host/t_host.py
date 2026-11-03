@@ -6,7 +6,7 @@
 import os, sys, json, time, subprocess, urllib.request, tempfile, threading, atexit, shutil
 
 VER = sys.argv[1] if len(sys.argv) > 1 else '1.0.164'
-V = '/home/claude/build/out/otp-%s' % VER
+V = os.environ.get('OTP_DIR') or '/home/claude/build/out/otp-%s' % VER
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = tempfile.mkdtemp(prefix='otp-host-')
 N = {}

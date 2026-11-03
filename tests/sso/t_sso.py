@@ -97,6 +97,7 @@ ok('off: a sign-in by the balancer refused (%s)' % c, c == 404, x)
 c, x = call('/api/portal/login', {'name': 'jcermak', 'password': 'Heslo-Žluťoučký-1'})
 ok('off: the password sign-in as until now', c == 200 and x.get('token') and not x.get('gate'), x)
 call('/api/portal/logout', {}, x.get('token'))
+otp.SAVED_KEYS['at'] = 0.0      # as a save on the daemon does (1.0.239's 30 s cache)
 ok('off: nothing of it in nginx asked (web state carries no sso_peer)', 'sso_peer' not in otp.web_desired(st), otp.web_desired(st).keys())
 
 # ---- switched on only with the balancers and a key -------------------------------------------------------
@@ -127,6 +128,7 @@ c, x = call('/api/portal/info')
 ok('the page is told the header and where signing out goes', (x.get('sso') or {}).get('header') == 'X-Otp-User'
    and x['sso']['logout'] == '/cgi/tmlogout' and KEY not in json.dumps(x), x)
 otp.CONFIG['portal_sso'] = 1        # as the daemon has it now
+otp.SAVED_KEYS['at'] = 0.0      # as a save on the daemon does (1.0.239's 30 s cache)
 ok('nginx asked for OTP_PEER now', otp.web_desired(st).get('sso_peer') is True)
 
 # ---- refused: spoofed -------------------------------------------------------------------------------------
@@ -200,9 +202,11 @@ ok('...then a token is made (%s)' % c, c == 200 and (y.get('made') or {}).get('u
 
 # ---- the card's view, switched off -----------------------------------------------------------------------
 c, v = call('/api/portal-sso', None, SR)
-last = (v.get('last') or [{}])[0]
-ok('the last sign-in noted for the node, readable by a read-only administrator', c == 200 and last.get('node') == 'sso1' and last.get('peer') == LB
-   and last.get('ok') and 'jcermak' in str(last.get('name')), v)
+good = [x for x in v.get('last') or [] if x.get('ok')]
+bad = [x for x in v.get('last') or [] if not x.get('ok')]
+ok('the last sign-in noted for the node, readable by a read-only administrator', c == 200 and good and good[0].get('node') == 'sso1'
+   and good[0].get('peer') == LB and 'jcermak' in str(good[0].get('name')), v)
+ok('...and the last refusal beside it, with its reason', bad and bad[0].get('why'), v)
 ok('...no key in the view', KEY not in json.dumps(v))
 c, x = call('/api/settings', {'settings': {'portal_sso': 0}}, S)
 ok('switched off: %s' % c, c == 200, x)
@@ -212,6 +216,7 @@ ok('...a session signed in by the balancer ends (%s)' % c2, c2 == 401, y)
 c, x = call('/api/portal/sso', {'name': 'jcermak', 'key': KEY}, peer=LB)
 ok('...and nobody is signed in by it (%s)' % c, c == 404, x)
 otp.CONFIG['portal_sso'] = 0
+otp.SAVED_KEYS['at'] = 0.0      # as a save on the daemon does (1.0.239's 30 s cache)
 ok('...nginx asked to take OTP_PEER out again', otp.web_desired(st).get('sso_peer') is False, [r['k'] for r in st.db.rows("SELECT k FROM settings WHERE k LIKE 'portal_sso%'")])
 c, x = call('/api/portal/info')
 ok('...the page is told nothing of it', x.get('sso') is None, x)
