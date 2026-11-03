@@ -5,7 +5,9 @@
 # (check, prepare, enforce, permissive); that node's daemon has its root helper do it and
 # says how SELinux is there in 'host:selinux:now:NODE' - looked at again every half hour.
 # Nothing changes unless somebody asks: a machine with SELinux disabled stays so.
-SE_WORK = {'busy': False, 'seen': 0.0}
+# The first look two minutes after the start (1.0.234), not at once: the helper's semanage and
+# ausearch take a core for seconds, beside a daemon that has just begun to answer.
+SE_WORK = {'busy': False, 'seen': time.time() - 1800 + 120, 'tried': ''}
 SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive')
 SE_EVERY = 1800
 
@@ -78,11 +80,15 @@ def selinux_tick(daemon):
     me = node_name()
     want = _meta_json(store, 'host:selinux:want:' + me) or {}
     now = _meta_json(store, 'host:selinux:now:' + me) or {}
-    asked = bool(want) and want.get('id') != now.get('done')
+    # A step tried is not tried again (1.0.234): with its answer not written (the database
+    # away), it ran again every 5 s - "enforce" and "prepare" over and over.
+    asked = bool(want) and want.get('id') != now.get('done') and want.get('id') != SE_WORK['tried']
     if SE_WORK['busy'] or not (asked or time.time() - SE_WORK['seen'] > SE_EVERY):
         return
     SE_WORK['busy'] = True
     SE_WORK['seen'] = time.time()
+    if asked:
+        SE_WORK['tried'] = want.get('id') or ''
     do = want.get('do') if asked and want.get('do') in SE_ACTIONS else 'check'
 
     def go():

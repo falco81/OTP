@@ -4,6 +4,52 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.234 — 3 November 2026
+
+**Bug hunt, round A** - six areas read again: systemd and the files' owners, replication between
+the nodes, the new features, RADIUS, installing and upgrading, the pages and the API.
+
+- **The enrolment pages with the code before the first token** (1.0.228): every *right* first
+  sign-in held a place as a wrong password - five people behind one address enrolled, the sixth got
+  *too many wrong passwords*. Each count of a request now gives back its own place.
+- **Wrong directory passwords - counted by the account**, not by the name typed: `novakj` and
+  `jan.novak@corp.cz` were two counts, and both together got twice the cap through to the directory -
+  the lockout there that the cap is for. A name the directory does not have is held back the same
+  way, so the answer no longer tells which names exist; a capped name keeps the address's count
+  too; an empty password, never asked of the directory, does not count. A directory renamed keeps
+  its own cap, one taken away takes it with it.
+- **SELinux** (1.0.233):
+  - otp's module labels `/run/otp` and `/var/run/otp` both - the policy reads one as the other, so
+    on RHEL the label could have never applied, and with it the token stayed unreadable to the pages
+    under enforcing. install.sh says when the policy still does not label it.
+  - What was refused before otp's needs were last put in no longer counts: after the first
+    permissive start, *Put in what otp needs* was not enough - enforcing waited for a second
+    restart. *Switch to enforcing* never starts the count again.
+  - auditd not running is said, and enforcing refused: nothing would have been written down.
+  - The first look two minutes after the start, the heavy commands at the lowest priority; a step
+    whose answer could not be written is not run again every 5 s.
+- **The guard against writes to the database** (1.0.231), in a cluster:
+  - A setting, an account, a sign-in and its signature are written in one transaction, as the
+    heartbeat is since 1.0.232; a signature that fails inside one is said, not lost without a word
+    (PostgreSQL turned the COMMIT into a ROLLBACK).
+  - A row read with the signature of another moment is read again once before it is refused - the
+    VIP address's row read as not there for a moment, and the address could move.
+  - An older signature of the same value is no older row: a row signed here and straight in the
+    other node's database was refused there for good.
+  - The address of the other node's last signed heartbeat is taken for three minutes at most.
+  - A node rebuilt from the other signs its rows again; going back below 1.0.231 is refused while
+    the guard is on on any node (switch it off first).
+- A change of settings made on the other node while this one was reading its own was missed until
+  the next change: the mark of the change is read before the settings now.
+- The first sign-in of a directory administrator through the other node waits for the account's
+  signature too.
+- The enrolment pages no longer show the mail or SMS server's own words when a code cannot be sent
+  (its name, its certificate, the account it refused) - those are in Events.
+- Smaller: *Read the domain's policy* greyed out for a directory switched off; its own cap no longer
+  saved as "no cap" when the box was emptied while typing; a threshold of 1 said plainly; a word in
+  the port of *Show what the directory has* answered 400, not 500; install.sh's module test safe
+  under pipefail.
+
 ## 1.0.233 — 3 November 2026
 
 **SELinux** (*Settings → High security → SELinux*, a card for each node; `otp --selinux-check`).

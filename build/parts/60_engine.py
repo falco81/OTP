@@ -110,6 +110,11 @@ def policy_recommend(pol):
     windows = [w for _t, _s, w in found if isinstance(w, (int, float))]
     window = int(math.ceil(max(windows) / 60.0)) if windows else 30
     tries = max(1, t - 2) if t > 3 else max(1, t - 1)
+    if t <= 1:
+        # Locked at the first wrong password (1.0.234): no cap here keeps it from that.
+        return {'tries': 1, 'window_min': max(1, min(1440, window)), 'threshold': t, 'from': src,
+                'why': 'The account is locked at its first wrong password - no cap here can keep '
+                       'that from happening; 1 at least keeps it to one wrong password from here.'}
     if src == 'the domain':
         why = ('The domain locks an account after %d wrong passwords: %d here leave the person %d '
                'of their own before it locks.' % (t, tries, t - tries))
@@ -521,15 +526,15 @@ class Directory(object):
     def password_ok(self, entry, password):
         """True, or LdapError with the directory's reason in words."""
         if not str(password or ''):
-            raise LdapError('a password is needed')
+            raise LdapNotAsked('a password is needed')
         if not str((entry or {}).get('dn') or '').strip():
             # A bind with no name and a password is an anonymous one on many
             # servers (1.0.101): never asked.
-            raise LdapError('no account to check the password of')
+            raise LdapNotAsked('no account to check the password of')
         if any(ord(c) < 32 or ord(c) == 127 for c in str(password)):
             # Cut at a NUL somewhere on the way, a password is empty - and an
             # empty one binds anonymously (1.0.101).
-            raise LdapError('the password holds a control character')
+            raise LdapNotAsked('the password holds a control character')
         with self.held():
             return self._password_ok(entry, password)
 

@@ -47,7 +47,8 @@ DBGUARD_SETTINGS = frozenset((
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify'))
 DBGUARD_FILE = STATE_DIR / 'guard.json'
-DBGUARD = {'seen': None, 'good': None, 'dirty': 0.0, 'refused': {}, 'nodes': {}, 'lock': threading.Lock()}
+DBGUARD = {'seen': None, 'good': None, 'seen_h': None, 'dirty': 0.0, 'refused': {}, 'nodes': {},
+           'lock': threading.Lock()}
 
 
 def dbguard_on():
@@ -126,6 +127,7 @@ def _dbguard_load():
                 got = {}
             DBGUARD['seen'] = dict(got.get('seen') or {}) if isinstance(got, dict) else {}
             DBGUARD['good'] = dict(got.get('good') or {}) if isinstance(got, dict) else {}
+            DBGUARD['seen_h'] = dict(got.get('seen_h') or {}) if isinstance(got, dict) else {}
 
 
 def dbguard_flush(force=False):
@@ -135,7 +137,8 @@ def dbguard_flush(force=False):
     if not force and time.time() - DBGUARD['dirty'] < 3:
         return
     with DBGUARD['lock']:
-        data = json.dumps({'seen': DBGUARD['seen'], 'good': DBGUARD['good']})
+        data = json.dumps({'seen': DBGUARD['seen'], 'good': DBGUARD['good'],
+                           'seen_h': DBGUARD['seen_h'] or {}})
         DBGUARD['dirty'] = 0.0
     try:
         write_replacing(DBGUARD_FILE, data, 0o600)
@@ -156,6 +159,8 @@ def dbguard_sign(db, kind, ident, value, far=False):
         try:
             sigs = _dbguard_sigs(db, kind, ident)
         except Exception:                               # noqa: BLE001
+            if getattr(db, 'in_tx', False):
+                raise
             return False
         raw = db.value('SELECT v FROM meta WHERE k = ?', (sid,))
         # Newer than every node's (1.0.231): read in this order by every node, whatever the
@@ -171,6 +176,11 @@ def dbguard_sign(db, kind, ident, value, far=False):
             if db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, sid, raw)):
                 return True
         except Exception:                               # noqa: BLE001
+            # Inside a transaction (1.0.234): PostgreSQL has given it up already, so every
+            # try after this failed too and the COMMIT became a ROLLBACK, saying nothing -
+            # the row and its signature were lost without a word. Said to the caller.
+            if getattr(db, 'in_tx', False):
+                raise
             continue
     return False
 
@@ -196,13 +206,22 @@ def dbguard_ok(db, kind, ident, value, quiet=False):
             why = 'its signature is not right'
         else:
             n = max(good)
+            vh = hashlib.sha256(json.dumps(value).encode('utf-8')).hexdigest()[:16]
             _dbguard_load()
             with DBGUARD['lock']:
                 seen = int(DBGUARD['seen'].get(sid) or 0)
-                if n < seen:
+                hs = DBGUARD['seen_h']
+                if hs is None:
+                    hs = DBGUARD['seen_h'] = {}
+                # An older signature of the same value is no older row (1.0.234): a row signed
+                # here and again straight in the other node's database came over by
+                # replication with the first signature after the second was seen - refused
+                # there for good, though nothing had changed.
+                if n < seen and hs.get(sid) != vh:
                     why = 'it is an older one put back'
                 elif n > seen:
                     DBGUARD['seen'][sid] = n
+                    hs[sid] = vh
                     DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
     if not why:
         return True
@@ -321,7 +340,7 @@ def dbguard_node_ok(store, name):
         addr = ''
     if dbguard_ok(store.db, 'm', 'node:' + name, raw, quiet=True):
         with DBGUARD['lock']:
-            DBGUARD['nodes'][name] = addr
+            DBGUARD['nodes'][name] = (addr, time.time())
         return True
     # The heartbeat and its signature come over in two pieces from a node before 1.0.232
     # (two statements): read between them, the new one is not signed yet. The address it
@@ -329,7 +348,9 @@ def dbguard_node_ok(store, name):
     # cannot point the cluster anywhere new by it.
     with DBGUARD['lock']:
         known = DBGUARD['nodes'].get(name)
-    if addr and known == addr:
+    # For a few minutes only (1.0.234): long enough for a signature behind its row, not a
+    # row written by somebody else kept for ever.
+    if addr and known and known[0] == addr and time.time() - known[1] < 180:
         return True
     return dbguard_ok(store.db, 'm', 'node:' + name, raw)
 
@@ -367,6 +388,7 @@ def dbguard_resign(store, why=''):
     # What is seen from now on starts here: older ones put back are older than these.
     with DBGUARD['lock']:
         DBGUARD['seen'] = {}
+        DBGUARD['seen_h'] = {}
         DBGUARD['good'] = {}
         DBGUARD['refused'] = {}
         DBGUARD['dirty'] = time.time()

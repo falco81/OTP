@@ -620,8 +620,13 @@ class Storage(object):
     def get_meta(self, k, default=None):
         got = self.db.value('SELECT v FROM meta WHERE k = ?', (k,))
         if got is not None and dbguard_on() and dbguard_meta_kept(k) and \
-                not dbguard_ok(self.db, 'm', k, got):
-            return default          # not otp's word (1.0.231): as if it were not there
+                not dbguard_ok(self.db, 'm', k, got, quiet=True):
+            # Read again once (1.0.234): the row and its signature are two reads, and a write
+            # between them paired the old row with the new signature - web:vip read as not
+            # there for a moment, and the VIP address could move.
+            got = self.db.value('SELECT v FROM meta WHERE k = ?', (k,))
+            if got is not None and not dbguard_ok(self.db, 'm', k, got):
+                return default      # not otp's word (1.0.231): as if it were not there
         return default if got is None else got
 
     def set_meta(self, k, v):
@@ -652,14 +657,20 @@ class Storage(object):
                 for r in self.db.rows('SELECT k, at, by_who FROM settings')}
 
     def save_setting(self, k, v, by=''):
-        self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
-                                         'by_who': str(by or '')[:190]})
-        if dbguard_setting_kept(k):
+        row = {'k': k, 'v': json.dumps(v), 'at': time.time(), 'by_who': str(by or '')[:190]}
+        if not dbguard_setting_kept(k):
+            self.db.upsert('settings', 'k', row)
+            return
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.upsert('settings', 'k', row)
             dbguard_sign(self.db, 's', k, json.dumps(v))     # 1.0.231
 
     def drop_setting(self, k):
-        self.db.run('DELETE FROM settings WHERE k = ?', (k,))
-        if dbguard_setting_kept(k):
+        if not dbguard_setting_kept(k):
+            self.db.run('DELETE FROM settings WHERE k = ?', (k,))
+            return
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.run('DELETE FROM settings WHERE k = ?', (k,))
             dbguard_sign(self.db, 's', k, None)
 
     def add_event(self, kind, words, level='info', who=''):
@@ -883,13 +894,15 @@ class Storage(object):
         # A second step left by an account of this name taken away before
         # (1.0.146) is not this one's: somebody else's phone would answer it.
         self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
-        got = self.db.insert('accounts', {
-            'name': name, 'role': role, 'pw': password_hash(password) if password else '',
-            'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
-            'note': str(note or '')[:400], 'created': time.time(), 'last_in': None,
-            'last_from': '', 'prefs': '{}', 'display': display, 'dn': dn,
-            'group_list': groups})
-        dbguard_account_sign(self.db, name)
+        pw = password_hash(password) if password else ''
+        with self.db.transaction():                 # with its signature (1.0.234)
+            got = self.db.insert('accounts', {
+                'name': name, 'role': role, 'pw': pw,
+                'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
+                'note': str(note or '')[:400], 'created': time.time(), 'last_in': None,
+                'last_from': '', 'prefs': '{}', 'display': display, 'dn': dn,
+                'group_list': groups})
+            dbguard_account_sign(self.db, name)
         return got
 
     def set_account(self, name, **fields):
@@ -903,16 +916,20 @@ class Storage(object):
             fields['pw'] = password_hash(fields.pop('password'))
         if 'role' in fields and fields['role'] not in ROLES_ALL:
             raise ValueError('the role is one of %s' % ', '.join(ROLES_ALL))
-        self.db.update('accounts', one['id'], fields)
-        if set(fields) & set(ACCOUNT_SIGNED):
+        if not set(fields) & set(ACCOUNT_SIGNED):
+            self.db.update('accounts', one['id'], fields)
+            return
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.update('accounts', one['id'], fields)
             dbguard_account_sign(self.db, fields.get('name') or one['name'])
 
     def drop_account(self, name):
         one = self.account(name)
         if not one:
             raise ValueError('there is no account called %s' % name)
-        self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
-        dbguard_account_sign(self.db, one['name'])
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
+            dbguard_account_sign(self.db, one['name'])
         self.db.run('DELETE FROM sessions WHERE kind = ? AND LOWER(name) = ?',
                     ('admin', one['name'].lower()))
         # Its second step with it (1.0.146): a new account of the same name
@@ -1041,8 +1058,11 @@ class Storage(object):
                'name': name, 'role': role, 'created': t, 'last': t,
                'expires': t + float(hours) * 3600, 'ip': str(ip or '')[:60],
                'data': json.dumps(data or {})}
-        self.db.insert('sessions', row)
-        if kind == 'admin':
+        if kind != 'admin':
+            self.db.insert('sessions', row)
+            return token
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.insert('sessions', row)
             dbguard_sign(self.db, 'x', row['token_hash'], dbguard_session_text(row))     # 1.0.231
         return token
 
@@ -1764,6 +1784,9 @@ class Storage(object):
                     if str(CONFIG.get('admin_directory') or '').lower() == old['name'].lower():
                         self.save_setting('admin_directory', name, by)
                         CONFIG['admin_directory'] = name
+                    # Its own cap of wrong passwords too (1.0.234): left on the old name, the
+                    # directory fell back to the setting - or to no cap at all.
+                    self._dirpw_move(old['name'], name)
                 self.db.update('directories', old['id'], row)
                 ident = old['id']
             else:
@@ -1788,6 +1811,22 @@ class Storage(object):
                                  'choose another directory for them first')
         self.db.run('DELETE FROM directories WHERE id = ?', (int(ident),))
         self._dirs = None
+        if one:
+            self._dirpw_move(one['name'], None)         # its own cap gone with it (1.0.234)
+
+    def _dirpw_move(self, old, new):
+        """A directory's own cap of wrong passwords (meta 'dirpw:conf') under its new name,
+        or taken away with it."""
+        try:
+            caps = json.loads(self.get_meta('dirpw:conf') or '{}')
+        except (TypeError, ValueError):
+            return
+        if not isinstance(caps, dict) or str(old).lower() not in caps:
+            return
+        mine = caps.pop(str(old).lower())
+        if new:
+            caps[str(new).lower()] = mine
+        self.set_meta('dirpw:conf', json.dumps(caps))
 
     # ---- tokens --------------------------------------------------------------
     TOKEN_SORTS = {'name': 'name', 'created': 'created', 'last_used': 'last_used',

@@ -38,7 +38,8 @@ open(CONF, 'w').write('# This file controls the state of SELinux on the system.\
 ENV = {'SEFAKE': FAKE, 'PATH': FAKEBIN + ':' + os.environ['PATH'], 'OTP_SELINUX_CONFIG': CONF,
        'OTP_SELINUX_RELABEL': TOP + '/.autorelabel', 'OTP_SELINUX_CMDLINE': CMDLINE,
        'OTP_SELINUX_CIL': V + '/deploy/otp_server.cil', 'OTP_SELINUX_LABELS': LABELS,
-       'OTP_VIP_NO_SERVICES': '1'}
+       'OTP_VIP_NO_SERVICES': '1', 'OTP_SELINUX_AUDITD': 'active', 'OTP_STATE': TOP + '/hstate'}
+os.makedirs(TOP + '/hstate/web', exist_ok=True)
 os.environ.update(ENV)
 spec = importlib.util.spec_from_file_location('otp_web', V + '/deploy/otp_web.py')
 W = importlib.util.module_from_spec(spec); spec.loader.exec_module(W)
@@ -120,6 +121,32 @@ ok('labels right; what SELinux refused read: 3 for the pages, cupsd\'s not count
 ok('...it says what: php-fpm api-token', 'php-fpm api-token' in c['denials']['groups'][0]['what'], c['denials'])
 _, e = do('enforce')
 ok('enforcing refused while anything was refused since the start', 'refused 3' in e, e)
+# raw ausearch lines (1.0.234): what was refused before otp's needs were last put in no longer counts
+now = int(time.time())
+RAW = lambda t: ('type=AVC msg=audit(%d.123:456): avc:  denied  { name_connect } for  pid=1 comm="php-fpm" dest=9861 '
+                 'scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:unreserved_port_t:s0 tclass=tcp_socket permissive=1\n' % t)
+open(FAKE + '/bool_httpd_can_network_connect', 'w').write('off\n')
+fake('Permissive', labels=GOOD, avc=RAW(now - 600) * 4)
+c, _ = do('check')
+ok('refused before anything was put in: counted (4)', c['denials']['total'] == 4, c['denials'])
+c, e = do('prepare')
+ok('"Put in what otp needs" changed something (the boolean): what was refused before no longer counts',
+   c and c['denials']['total'] == 0 and c['denials'].get('since'), (e, c and c['denials']))
+fake('Permissive', labels=GOOD, avc=RAW(now - 600) * 4 + RAW(now + 5))
+c, _ = do('check')
+ok('...but one refused after it counts', c['denials']['total'] == 1, c['denials'])
+since = c['denials'].get('since')
+_, e = do('enforce')
+ok('enforcing refused for it - and the step itself does not wipe what was refused', 'refused 1' in e and W.se_applied_at() == since, (e, W.se_applied_at(), since))
+c, e = do('prepare')
+ok('"Put in" with nothing to change: the count stays (no way round the gate)', c and c['denials']['total'] == 1, c and c['denials'])
+os.environ['OTP_SELINUX_AUDITD'] = 'inactive'
+fake('Permissive', labels=GOOD, avc='')
+c, _ = do('check')
+ok('auditd not running: said - nothing would be written down', any('auditd does not run' in p for p in c['problems']) and not c['ready'], c['problems'])
+_, e = do('enforce')
+ok('...and enforcing refused for it', 'auditd' in e, e)
+os.environ['OTP_SELINUX_AUDITD'] = 'active'
 fake('Permissive', labels=GOOD, avc='')
 c, _ = do('check')
 ok('nothing refused, nothing missing: ready for enforcing', c['ready'] is True and c['problems'] == [], c['problems'])
@@ -223,8 +250,11 @@ def node():
     return (v.get('nodes') or [{}])[0] if c == 200 else {}
 
 
+n = node()
+ok('not looked at the moment it starts (1.0.234: two minutes after) - nothing said yet', not (n.get('state') or {}).get('mode'), n)
+call('/api/selinux', {'action': 'check', 'node': 'se1'}, S)
 n = until(lambda: node() if node().get('state', {}).get('mode') else None)
-ok('the daemon looked by itself at start: disabled, nothing missing', n and n['state']['mode'] == 'Disabled' and n['state']['problems'] == [], n)
+ok('"Look again": disabled, nothing missing', n and n['state']['mode'] == 'Disabled' and n['state']['problems'] == [], n)
 c, _ = call('/api/selinux', None, SR)
 ok('a read-only administrator may not see it (%s)' % c, c == 403)
 c, _ = call('/api/selinux', {'action': 'enforce', 'node': 'se1'}, SR)

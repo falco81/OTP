@@ -384,7 +384,7 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     fi
     # otp's SELinux module (1.0.233): only labels, gone with it. The mode SELinux is in, its
     # booleans and the ports labelled are the machine's, left as they are.
-    if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '{print $1}' | grep -qx otp_server; then
+    if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="otp_server"{f=1} END{exit !f}'; then
         run semodule -r otp_server 2>/dev/null || warn "SELinux: semodule -r otp_server did not go"
     fi
     [[ -d "$LIB_DIR" ]] && run rm -rf "$LIB_DIR"
@@ -886,7 +886,7 @@ selinux_module() {
     command -v getenforce >/dev/null 2>&1 || return 0
     command -v semodule >/dev/null 2>&1 || return 0
     [[ "$(getenforce)" == "Disabled" ]] && return 0
-    if [[ -z "$had" ]] || ! semodule -l 2>/dev/null | awk '{print $1}' | grep -qx otp_server; then
+    if [[ -z "$had" ]] || ! semodule -l 2>/dev/null | awk '$1=="otp_server"{f=1} END{exit !f}'; then
         if run semodule -i "$LIB_DIR/otp_server.cil" 2>/dev/null; then
             good "SELinux: otp's module (otp_server) is in the policy"
         else
@@ -894,6 +894,16 @@ selinux_module() {
         fi
     fi
     [[ -d /run/otp ]] && command -v restorecon >/dev/null 2>&1 && run restorecon -R /run/otp 2>/dev/null || true
+    # Said when the policy does not label it (1.0.234): the pages could not read the API token
+    # under enforcing - Settings - High security - SELinux says what else is missing.
+    if command -v matchpathcon >/dev/null 2>&1 && [[ -z "$DRY_RUN" ]]; then
+        local want=""
+        want="$(matchpathcon /run/otp 2>/dev/null || true)"
+        case "$want" in
+            *httpd_var_run_t*|*httpd_runtime_t*) ;;
+            *) warn "SELinux: the policy does not label /run/otp for the pages (${want:-nothing}) - otp --selinux-check";;
+        esac
+    fi
 }
 
 # ---------------------------------------------------------------------------

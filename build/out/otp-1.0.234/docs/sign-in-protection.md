@@ -100,7 +100,13 @@ card of its own: its servers, whether the link is encrypted, and how it is cappe
   says.
 
 Each directory is counted on its own: `novak` of one domain and `novak` of
-another are two names.
+another are two names. **Counted by the account** (1.0.234): the person's entry in the
+directory, whatever name was typed - `novakj` (sAMAccountName), `jan.novak@corp.cz` (UPN)
+and the e-mail address are one count. *Locked out* shows it as the first part of the
+account's DN and a short hash of it (`jan novak#3f2a9c1e|corp`). A name the directory does
+not have is counted as typed, the same way - so the answer never tells which names exist.
+A password refused before the directory is asked (empty, or with a control character) does
+not count.
 
 **Read the domain's policy** (full administrators) connects to the directory with
 its own bind account and reads what the domain itself says: the *Account lockout*

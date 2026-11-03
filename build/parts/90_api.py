@@ -462,23 +462,38 @@ class ApiHandler(BaseHTTPRequestHandler):
                         if k not in keys:
                             fl.pop(k, None)
                             self.d.login_info.pop(k, None)
-        self._held = (keys, t)
+        # Each place held on its own (1.0.234): a second count in the same request (the code
+        # sent before the first token) took the place of the sign-in's, which was then never
+        # given back - every right first sign-in counted as a wrong password.
+        held = getattr(self, '_held', None)
+        if not isinstance(held, list):
+            held = self._held = []
+        held.append([keys, t, False])
         return keys
 
     def failed(self, key):
-        """The attempt went wrong: the place it holds stays taken."""
-        self._failed = True
+        """The attempt went wrong: the place it holds stays taken - that one only, when it is
+        said which; every place of the request otherwise."""
+        held = getattr(self, '_held', None) or []
+        mine = [x for x in held if x[0] is key or x[0] == key]
+        for x in (mine or held):
+            x[2] = True
+        if not mine:
+            self._failed = True
 
     def _release(self):
         held = getattr(self, '_held', None)
         if not held or getattr(self, '_failed', False):
+            self._held = None
             return
-        keys, t = held
         with self.THROTTLE_LOCK:
-            for key in keys:
-                got = self.d.login_fails.get(key)
-                if got and t in got:
-                    got.remove(t)
+            for keys, t, bad in held:
+                if bad:
+                    continue
+                for key in keys:
+                    got = self.d.login_fails.get(key)
+                    if got and t in got:
+                        got.remove(t)
         self._held = None
 
 
@@ -651,8 +666,16 @@ def lockouts_said(store, a, n):
 
 
 # ---- the cap of wrong directory passwords per person (1.0.230) -------------------------------
-def dir_pw_who(name):
-    """A person as the cap counts them: DOMAIN\\novak, novak@anything and Novak are one."""
+def dir_pw_who(name, entry=None):
+    """A person as the cap counts them: their account in the directory (1.0.234) - the name
+    typed counted novakj (sAMAccountName) and jan.novak@corp.cz (UPN) apart, and both forms
+    together got twice the cap through to the directory. Its first part and a short hash of
+    the whole DN: readable among the counts, one per account. A name the directory does not
+    have: as typed - DOMAIN\\novak, novak@anything and Novak are one."""
+    dn = str((entry or {}).get('dn') or '').strip().lower()
+    if dn:
+        first = re.split(r'(?<!\\),', dn, 1)[0].split('=', 1)[-1].strip()
+        return '%s#%s' % (first[:60], hashlib.sha256(dn.encode('utf-8')).hexdigest()[:8])
     return str(name or '').strip().lower().split('\\', 1)[-1].rsplit('@', 1)[0].strip()[:190]
 
 
@@ -674,12 +697,12 @@ def dir_pw_cap_of(store, directory):
     return int(tries or 0), 60 * int(window or 30)
 
 
-def dir_pw_take(h, name, directory=''):
+def dir_pw_take(h, name, directory='', entry=None):
     """A place for one directory password of `name`, held before the directory is asked; ''
     when there is no cap. Over it: 429 - the directory is not asked. Counted per directory
     (1.0.232): novak of one domain is not novak of another, and each has its own lockout."""
     most, span = dir_pw_cap_of(h.store, directory)
-    who = dir_pw_who(name)
+    who = dir_pw_who(name, entry)
     if most <= 0 or not who:
         return ''
     if directory:
@@ -690,6 +713,9 @@ def dir_pw_take(h, name, directory=''):
         log_sparing('adpw:' + who, 'wrong directory passwords for %s: the cap of %d in %d min is '
                     'reached - the directory is not asked for that name meanwhile'
                     % (who, most, span // 60), 'warn', every=300)
+        # The address's own count keeps its place too (1.0.234): the tries spent on a capped
+        # name no longer came back to it.
+        h.failed(None)
         raise ApiError(429, 'too many wrong passwords for this name: try again in %d min' % wait)
     return who
 
@@ -961,14 +987,14 @@ def admin_ask_directory(h, name, password):
         # there, anybody would be an administrator here.
         return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
                 'directory': ad.name}
-    held = dir_pw_take(h, who, ad.name)          # the cap per person (1.0.230), per directory (1.0.232)
+    held = dir_pw_take(h, who, ad.name, entry)   # the cap per account (1.0.230, 1.0.232, 1.0.234)
     try:
         ad.password_ok(entry, password)
     except LdapUnreachable as e:
         dir_pw_done(h, held, False)
         raise ApiError(503, 'the directory cannot be reached', str(e))
     except LdapError as e:
-        dir_pw_done(h, held, True)
+        dir_pw_done(h, held, not isinstance(e, LdapNotAsked))   # never asked: not counted (1.0.234)
         return {'ok': False, 'said': str(e) or 'the password is not right', 'dn': entry['dn'],
                 'directory': ad.name}
     dir_pw_done(h, held, False)
@@ -1067,7 +1093,9 @@ def dir_account_far(store, name, role, said, entry, groups):
             far.close()
     if done:
         for _ in range(40):
-            if store.account(name):
+            # With its signature (1.0.234): the account came over before it, and the first
+            # sign-in through the other node was refused with the guard on.
+            if store.account(name, checked=True):
                 return
             time.sleep(0.25)
     raise ApiError(503, 'the first sign-in of %s is made on the other node of the cluster, '
@@ -3055,6 +3083,17 @@ def dir_sample_directory(h, form):
     else:
         row['bind_pw'] = ''
     row['name'] = str(row.get('name') or 'new')
+    # Numbers checked as a save checks them (1.0.234): a word typed into the port broke the
+    # request with a 500.
+    try:
+        if row.get('port') not in (None, ''):
+            row['port'] = int(row['port'])
+            if not 1 <= row['port'] <= 65535:
+                raise ValueError
+        if row.get('timeout_s') not in (None, ''):
+            row['timeout_s'] = max(2, min(60, int(row['timeout_s'])))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'the port is 1 to 65535 and the time a number of seconds')
     return Directory(row)
 
 
@@ -4884,7 +4923,8 @@ def portal_gate_send(h, name, kind, dest, display='', lang=''):
     except (MailError, SmsError) as e:
         h.store.add_event('enrolment', 'the one-time code for %s to sign in to the enrolment pages '
                           'could not be sent to %s: %s' % (name, dest, e), 'warn', who=name)
-        raise ApiError(502, 'the code could not be sent: %s' % e)
+        # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
+        raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
     h.store.add_event('enrolment', '%s signed in to the enrolment pages with no token yet: a one-time '
                       'code went by %s to %s' % (name, 'mail' if kind == 'mail' else 'SMS', dest),
                       who=name)
@@ -5178,6 +5218,9 @@ def _portal_login(h):
     try:
         entry = Authenticator.find_person(ad, full, how, realm)
         if not entry:
+            # Counted as a name that exists is (1.0.234): only names the directory has were
+            # held back, so "too many wrong passwords for this name" said which ones do.
+            dir_pw_done(h, dir_pw_take(h, full, realm.get('directory') or ''), True)
             raise LdapError('there is no such account')
         if entry.get('many'):
             # More than one account answers to the name (1.0.205): as RADIUS
@@ -5187,14 +5230,14 @@ def _portal_login(h):
             raise LdapError('the account may not sign in: %s' % entry_unusable(entry))
         # The cap of wrong directory passwords per person (1.0.230), before the directory is
         # asked: over it, the account there is not locked by guesses made here.
-        held = dir_pw_take(h, full, realm.get('directory') or '')
+        held = dir_pw_take(h, full, realm.get('directory') or '', entry)
         try:
             ad.password_ok(entry, password)
         except LdapUnreachable:
             dir_pw_done(h, held, False)
             raise
-        except LdapError:
-            dir_pw_done(h, held, True)
+        except LdapError as e:
+            dir_pw_done(h, held, not isinstance(e, LdapNotAsked))   # never asked: not counted (1.0.234)
             raise
         dir_pw_done(h, held, False)
     except LdapUnreachable as e:
@@ -5629,7 +5672,8 @@ def _portal_enroll(h):
         except (MailError, SmsError) as e:
             h.store.add_event('enrolment', 'the code to check %s for %s could not be sent: %s'
                               % (dest, s['name'], e), 'warn', who=s['name'])
-            raise ApiError(502, 'the code could not be sent: %s' % e)
+            # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
+            raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
         portal_data_set(h, s, verify={'kind': kind, 'dest': dest, 'code': code_hash(s['name'], code),
                                       'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300),
                                       'tries': 0, 'lang': page_lang, 'mail_fmt': fmt})
@@ -5744,7 +5788,10 @@ def _portal_sendold(h):
         code_send(h.store, kind, tok.get('dest') or '', code, 'signin', name=s['name'],
                   lang=page_lang if page_lang in ('cs', 'en') else None)
     except (MailError, SmsError) as e:
-        raise ApiError(502, 'the code could not be sent: %s' % e)
+        h.store.add_event('enrolment', 'the code for %s to replace the token could not be sent: %s'
+                          % (s['name'], e), 'warn', who=s['name'])
+        # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
+        raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
     portal_data_set(h, s, old={'code': code_hash(s['name'], code),
                                'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300)})
     return {'sent_to': dest_masked(kind, tok.get('dest'))}
@@ -5823,15 +5870,16 @@ def _portal_reissue(h):
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
     held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'],
-                       (realm or {}).get('directory') or '')     # 1.0.230, 1.0.232
+                       (realm or {}).get('directory') or '',
+                       {'dn': (s.get('data') or {}).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
     try:
         ad.password_ok({'dn': (s.get('data') or {}).get('dn')}, str(b.get('password') or ''))
     except LdapUnreachable as e:
         dir_pw_done(h, held, False)
         log('the enrolment pages could not reach the directory: %s' % e, 'warn')
         raise ApiError(503, 'the directory cannot be reached just now')
-    except LdapError:
-        dir_pw_done(h, held, True)
+    except LdapError as e:
+        dir_pw_done(h, held, not isinstance(e, LdapNotAsked))       # never asked: not counted (1.0.234)
         h.failed(key)
         # 403, not 401 (1.0.33): a 401 signs the page out, and the person
         # lost the words saying what was wrong.

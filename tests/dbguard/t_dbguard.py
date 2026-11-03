@@ -150,6 +150,45 @@ ok('...nothing signed seen of it yet (a fresh start): not taken', not otp.dbguar
 st.set_meta('node:peer', json.dumps({'address': '10.0.0.9', 'at': 5}))
 ok('...written by otp again: taken', otp.dbguard_node_ok(st, 'peer'))
 raw("DELETE FROM meta WHERE k = 'node:peer'")
+# 1.0.234: the grace is for a few minutes only; an older signature of the same value is no older row
+st.set_meta('node:peer2', json.dumps({'address': '10.0.0.7', 'at': 1}))
+ok('a heartbeat signed: taken', otp.dbguard_node_ok(st, 'peer2'))
+raw("UPDATE meta SET v = ? WHERE k = 'node:peer2'", (json.dumps({'address': '10.0.0.7', 'at': 2}),))
+otp.DBGUARD['nodes']['peer2'] = ('10.0.0.7', time.time() - 400)
+ok('...unsigned with the same address, the last signed one 400 s ago: no longer taken', not otp.dbguard_node_ok(st, 'peer2'))
+raw("DELETE FROM meta WHERE k = 'node:peer2'")
+st.set_meta('web:vip', json.dumps({'on': False, 'address': '10.0.0.8'}))
+old_sig = raw("SELECT k, v FROM meta WHERE k LIKE 'sig:m:%:dg' AND k IN (SELECT k FROM meta WHERE k LIKE 'sig:m:%')")
+st.get_meta('web:vip')
+sig_rows = {k_: v_ for k_, v_ in raw("SELECT k, v FROM meta WHERE k LIKE 'sig:m:%:dg'")}
+st.set_meta('web:vip', json.dumps({'on': False, 'address': '10.0.0.8'}))   # the same again: a newer signature
+ok('the same value signed again: read', st.get_meta('web:vip') is not None)
+for k_, v_ in sig_rows.items():
+    raw("UPDATE meta SET v = ? WHERE k = ?", (v_, k_))
+ok('...its older signature put back (as replication brings a row signed on both nodes): still read - nothing changed',
+   json.loads(st.get_meta('web:vip') or '{}').get('address') == '10.0.0.8')
+raw("UPDATE meta SET v = ? WHERE k = 'web:vip'", (json.dumps({'on': True, 'address': '192.168.6.6'}),))
+ok('...another value under it: not read', st.get_meta('web:vip') is None)
+# a failed signature inside a transaction is said, not swallowed (PostgreSQL gives the transaction up)
+class Boom(Exception):
+    pass
+real = otp._dbguard_sigs
+otp._dbguard_sigs = lambda *a, **k: (_ for _ in ()).throw(Boom('statement timeout'))
+try:
+    with st.db.transaction():
+        otp.dbguard_sign(st.db, 'm', 'web:vip', 'x')
+    raised = False
+except Boom:
+    raised = True
+finally:
+    otp._dbguard_sigs = real
+ok('a signature failing inside a transaction raises - the row is not left unsigned without a word', raised)
+ok('...outside one it is only False, as before', (lambda: (setattr(otp, '_dbguard_sigs', lambda *a, **k: (_ for _ in ()).throw(Boom('x'))), otp.dbguard_sign(st.db, 'm', 'k', 'v'))[1])() is False)
+otp._dbguard_sigs = real
+# going back below 1.0.231 with the guard on: refused
+why = otp.downgrade_why_not(st, '1.0.228')
+ok('going back to 1.0.228 with the guard on: refused, saying why', any('guard against writes' in w for w in why), why)
+ok('...to 1.0.231: not for the guard', not any('guard against writes' in w for w in otp.downgrade_why_not(st, '1.0.231')))
 raw("INSERT INTO meta (k, v) VALUES (?, ?)", ('host:sshkeys:want:dg', json.dumps([{'id': 'x1', 'do': 'add', 'line': 'ssh-ed25519 AAAA attacker', 'at': time.time()}])))
 ok('a request to add a key to root\'s authorized_keys, written straight: not seen', otp.node_key_rows(st, 'host:sshkeys:want', 'dg') == [])
 raw("INSERT INTO meta (k, v) VALUES (?, ?)", ('web:tls:dg', json.dumps({'cert': '-----BEGIN CERTIFICATE-----x', 'key': 'plain-key'})))

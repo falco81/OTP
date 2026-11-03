@@ -207,6 +207,19 @@ ok('jcermak has a token now (made above, waiting for its first code): gated agai
    c == 200 and (x.get('gate') or {}).get('kind') == 'mail', x)
 call('/api/portal/logout', {}, x.get('token'))
 
+# ---- right first sign-ins are not wrong passwords (1.0.234) ---------------------------------------------
+call('/api/settings', {'settings': {'portal_tries': 3}}, S)
+codes = []
+for i in range(5):
+    c, x = call('/api/portal/login', {'name': 'jcermak', 'password': 'Heslo-Žluťoučký-1'})
+    codes.append(c)
+    call('/api/portal/logout', {}, x.get('token'))
+ok('five right sign-ins through the gate from one address, 3 wrong passwords allowed: none refused (%s)' % codes, codes == [200] * 5, codes)
+c, lo = call('/api/lockouts', None, S)
+rows = [r for n in lo.get('nodes') or [] for r in n.get('rows') or [] if '127.0.0.1' in str(r.get('who')) and r.get('kind') == 'portal']
+ok('...and the address is not among Locked out with wrong passwords', not any((r.get('fails') or 0) >= 3 for r in rows), rows)
+call('/api/settings', {'settings': {'portal_tries': 100}}, S)
+
 # ---- nothing of a code in the events ------------------------------------------------------------------------
 ev = st.db.rows('SELECT words FROM events')
 ok('no code in the events', not any(code and code in r['words'] or code2 and code2 in r['words'] for r in ev))

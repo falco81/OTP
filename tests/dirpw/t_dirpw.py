@@ -93,8 +93,9 @@ c, x = pl('Heslo-Žluťoučký-1')
 ok('right passwords do not count (six in a row, all in) (%s)' % c, c == 200, x)
 c, lo = adm('/api/lockouts')
 rows = [r for r in ([r for n in lo.get('nodes') or [] if n.get('shared') for r in n.get('rows') or []]) if r.get('kind') == 'dir-passwords']
-ok('Locked out lists žofie: 3 of 3, locked', any(r['who'] == 'žofie|domena' and r['locked'] and r['fails'] == 3 for r in rows), rows)
-c, x = adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': 'žofie|domena'})
+ZW = next((r['who'] for r in rows if r['who'].startswith('žofie řeháková#') and r['who'].endswith('|domena')), '')
+ok('Locked out lists žofie (by her account: name and DN hash, 1.0.234): 3 of 3, locked', any(r['who'] == ZW and r['locked'] and r['fails'] == 3 for r in rows), rows)
+c, x = adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': ZW})
 ok('cleared: %s' % c, c == 200, x)
 c, x = pl('Heslo-Ďábel-2', 'žofie')
 ok('then the right password lets in (%s)' % c, c == 200, x)
@@ -108,7 +109,7 @@ c, x = call('/api/auth/login', {'name': 'žofie@corpnet.cz', 'password': 'Heslo-
 ok('...the fourth there: not asked - 429 (%s)' % c, c == 429, x)
 c, x = pl('Heslo-Ďábel-2', 'žofie')
 ok('...nor on the enrolment pages (%s)' % c, c == 429, x)
-adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': 'žofie|domena'})
+adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': ZW})
 c, x = call('/api/auth/login', {'name': 'žofie@corpnet.cz', 'password': 'Heslo-Ďábel-2'})
 ok('cleared: the administrator from the directory signs in (%s)' % c, c == 200, x)
 
@@ -120,6 +121,20 @@ codes = [call('/api/portal/reissue', {'password': 'wrong-c%d' % i, 'code': '0000
 ok('three wrong passwords for a new token: refused (%s)' % codes, all(c in (403,) for c in codes), codes)
 c, x = pl('Heslo-Žluťoučký-1')
 ok('...and then the sign-in is not asked either (%s)' % c, c == 429, x)
+# ---- 1.0.234: counted by the account, a name not there as any other, nothing never asked ----------
+dn = 'CN=Jan Novák,OU=Lidé,DC=corp,DC=cz'
+ok('one account under its two names (novakj, jan.novak@corp.cz): one count',
+   otp.dir_pw_who('novakj', {'dn': dn}) == otp.dir_pw_who('jan.novak@corp.cz', {'dn': dn.upper()}) and
+   otp.dir_pw_who('novakj', {'dn': dn}) != otp.dir_pw_who('novakj', {'dn': 'CN=Jan Novák 2,OU=Lidé,DC=corp,DC=cz'}),
+   (otp.dir_pw_who('novakj', {'dn': dn}), otp.dir_pw_who('jan.novak@corp.cz', {'dn': dn.upper()})))
+adm('/api/lockouts', {'action': 'clear', 'kind': 'dir-passwords', 'who': next((r['who'] for r in ([r for n in adm('/api/lockouts')[1].get('nodes') or [] if n.get('shared') for r in n.get('rows') or []]) if r.get('kind') == 'dir-passwords' and r['who'].startswith('jiří')), '')})
+codes = [pl('wrong-n%d' % i, 'nikdo')[0] for i in range(3)]
+c, x = pl('wrong-n4', 'nikdo')
+ok('a name the directory does not have: held back as any other (401 x3, then 429) - the answer says nothing of who exists: %s %s' % (codes, c),
+   codes == [401] * 3 and c == 429 and 'this name' in str(x.get('error')), x)
+codes = [pl('', 'jcermak')[0] for i in range(5)]
+c, x = pl('Heslo-Žluťoučký-1')
+ok('empty passwords (never asked of the directory) do not count: five, then the right one lets in (%s %s)' % (codes, c), c == 200, x)
 c, x = adm('/api/settings', {'settings': {'dir_pw_tries': 0}})
 c, x = pl('Heslo-Žluťoučký-1')
 ok('back to 0: as until now at once (%s)' % c, c == 200, x)
@@ -149,6 +164,20 @@ c, x = adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'t
 ok('a cap over 100: refused (%s)' % c, c == 400, x)
 c, x = adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Nowhere': {'tries': 3}}})
 ok('a directory that is not there: refused (%s)' % c, c == 400, x)
+# a directory renamed takes its own cap with it (1.0.234)
+adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'tries': 2, 'window_min': 20}}})
+did = st.db.value("SELECT id FROM directories WHERE name = 'Domena'")
+st2 = otp.Storage(otp.open_db())
+row = dict(st2.directories(with_secret=True)[0]); row.update(id=did, name='Domena2', bind_pw='•' * 8)
+try:
+    st2.directory_save({k: row[k] for k in ('id', 'name', 'hosts', 'port', 'tls', 'base', 'bind_dn', 'bind_pw', 'timeout_s', 'user_attr')}, by='test')
+    renamed = True
+except Exception as e:
+    renamed = str(e)
+caps = json.loads(st2.get_meta('dirpw:conf') or '{}')
+ok('renamed: its own cap under the new name, not the old one (%s)' % renamed, renamed is True and (caps.get('domena2') or {}).get('tries') == 2 and 'domena' not in caps, caps)
+row.update(name='Domena')
+st2.directory_save({k: row[k] for k in ('id', 'name', 'hosts', 'port', 'tls', 'base', 'bind_dn', 'bind_pw', 'timeout_s', 'user_attr')}, by='test')
 adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'tries': None, 'window_min': None}}})
 c, x = adm('/api/directories', {'action': 'pw_caps'})
 ok('back to as the setting', ({d_['name']: d_ for d_ in x['directories']}['Domena']).get('tries') is None)

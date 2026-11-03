@@ -1207,6 +1207,9 @@ class Daemon(object):
             return self._reload_all(why)
 
     def _reload_all(self, why=''):
+        # The mark of the change read before the settings (1.0.234): read after them, a change
+        # made on the other node meanwhile was taken as read - and never loaded.
+        serial = self.store.get_meta('conf_serial', '0')
         # The settings that reach root as signed only, with the guard on (1.0.231).
         load_config(saved=dbguard_settings(self.store.settings_saved(), self.store))
         if not BIND_STRICT.get('tokens'):
@@ -1220,7 +1223,7 @@ class Daemon(object):
             self.siem.configure()
         if self.radius:
             self.radius.open_sockets()
-        self.conf_serial = self.store.get_meta('conf_serial', '0')
+        self.conf_serial = serial
         if why:
             log('read the configuration again (%s)' % why)
 

@@ -3990,13 +3990,40 @@ SE_DOMAINS = ('httpd_t', 'keepalived_t', 'keepalived_unconfined_script_t', 'sshd
               'init_t')
 
 
-def _se_run(cmd, timeout=120):
+SE_APPLIED = 'selinux-applied'      # when otp's needs were last put in (1.0.234)
+
+
+def _se_run(cmd, timeout=120, light=False):
     if not shutil.which(cmd[0]):
         return None
+    if light:
+        # The heavy ones (semanage loads the whole policy, ausearch reads the audit log since
+        # the start) at the lowest priority (1.0.234): run on every node every half hour, they
+        # took a core for seconds beside RADIUS.
+        if shutil.which('ionice'):
+            cmd = ['ionice', '-c', '3'] + cmd
+        if shutil.which('nice'):
+            cmd = ['nice', '-n', '19'] + cmd
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def se_applied_at():
+    try:
+        return float(json.loads(_read_or(os.path.join(WEB_DIR, SE_APPLIED)) or '{}').get('at') or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def se_auditd():
+    """Whether what SELinux refuses is written down at all: auditd running."""
+    fake = os.environ.get('OTP_SELINUX_AUDITD')            # tests
+    if fake:
+        return fake == 'active'
+    got = _se_run(['systemctl', 'is-active', 'auditd'], 20)
+    return got is None or (got.stdout or '').strip() == 'active'
 
 
 def se_mode():
@@ -4055,7 +4082,7 @@ def se_label(path):
 
 
 def se_module_in():
-    got = _se_run(['semodule', '-l'], 120)
+    got = _se_run(['semodule', '-l'], 120, light=True)
     if got is None or got.returncode != 0:
         return None
     return any(line.split()[:1] == [SE_MODULE] for line in got.stdout.splitlines())
@@ -4070,7 +4097,7 @@ def se_bool(name):
 
 def se_ports():
     """semanage port -l: {(type, proto): [(lo, hi), ...]}; None without semanage."""
-    got = _se_run(['semanage', 'port', '-l'], 120)
+    got = _se_run(['semanage', 'port', '-l'], 120, light=True)
     if got is None or got.returncode != 0:
         return None
     out = {}
@@ -4094,15 +4121,20 @@ def se_port_has(ports, kind, proto, port):
     return any(lo <= port <= hi for lo, hi in (ports or {}).get((kind, proto), []))
 
 
-def se_denials():
-    """What SELinux refused since the machine started, for the programs otp works with."""
-    got = _se_run(['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'boot', '-i'], 120)
+def se_denials(since=0.0):
+    """What SELinux refused since the machine started - or since otp's needs were last put
+    in (1.0.234: what was refused before that is what they put right) - for the programs otp
+    works with."""
+    got = _se_run(['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'boot'], 120, light=True)
     if got is None:
-        return {'tool': False, 'total': 0, 'groups': []}
+        return {'tool': False, 'total': 0, 'groups': [], 'since': since}
     groups = {}
     total = 0
     for line in (got.stdout or '').splitlines():
         if 'avc:' not in line or 'denied' not in line:
+            continue
+        when = re.search(r'msg=audit\((\d+)(?:\.\d+)?:', line)
+        if since and when and int(when.group(1)) < since:
             continue
         perms = re.search(r'denied\s+\{([^}]*)\}', line)
         sc = re.search(r'scontext=(\S+)', line)
@@ -4126,7 +4158,7 @@ def se_denials():
         g['what'] = what.replace('"', '')[:120] or g['what']
         g['permissive'] = 'permissive=1' in line
     out = sorted(groups.values(), key=lambda g: -g['count'])[:30]
-    return {'tool': True, 'total': total, 'groups': out}
+    return {'tool': True, 'total': total, 'groups': out, 'since': since}
 
 
 def se_want_checked(r):
@@ -4182,7 +4214,8 @@ def se_check(r):
         out['ports'].append(dict(p, labelled=(se_port_has(known, p['type'], p['proto'], p['port'])
                                              if known is not None else None)))
     if on:
-        out['denials'] = se_denials()
+        out['denials'] = se_denials(se_applied_at())
+        out['auditd'] = se_auditd()
     probs = out['problems']
     if on:
         if out['module'] is False:
@@ -4199,8 +4232,14 @@ def se_check(r):
             probs.append('semanage is not on this machine - the ports cannot be checked '
                          '(dnf install policycoreutils-python-utils)')
         if out['denials']['total']:
-            probs.append('SELinux refused %d thing(s) since the machine started'
+            probs.append(('SELinux refused %d thing(s) since otp\'s needs were put in'
+                          if out['denials'].get('since') else
+                          'SELinux refused %d thing(s) since the machine started')
                          % out['denials']['total'])
+        if not out.get('auditd', True):
+            # Nothing written down, nothing counted (1.0.234): enforcing let through on no word.
+            probs.append('auditd does not run - what SELinux refuses is not written down '
+                         '(systemctl enable --now auditd)')
         if not out['denials']['tool']:
             probs.append('ausearch is not on this machine - what SELinux refused cannot be '
                          'read (dnf install audit)')
@@ -4208,14 +4247,17 @@ def se_check(r):
     return out
 
 
-def se_apply(bools, ports, said):
-    """otp's module, labels, booleans and ports - on a machine where SELinux is on."""
-    if os.path.exists(SE_CIL) and shutil.which('semodule'):
+def se_apply(bools, ports, said, mark=True):
+    """otp's module, labels, booleans and ports - on a machine where SELinux is on. `mark`:
+    when anything was changed, what SELinux refused before no longer counts."""
+    changed = False
+    if os.path.exists(SE_CIL) and shutil.which('semodule') and se_module_in() is not True:
         got = _se_run(['semodule', '-i', SE_CIL], 300)
         if got is None or got.returncode != 0:
             raise Refused('semodule -i %s: %s' % (SE_CIL, ((got.stderr or got.stdout)
                                                            if got else '').strip()[-200:]))
         said.append('otp\'s module installed')
+        changed = True
     for b in bools:
         if se_bool(b['name']) is False:
             got = _se_run(['setsebool', '-P', b['name'], 'on'], 300)
@@ -4223,6 +4265,7 @@ def se_apply(bools, ports, said):
                 raise Refused('setsebool -P %s on: %s' % (b['name'], ((got.stderr or '') if got
                                                                       else '').strip()[-200:]))
             said.append('%s on' % b['name'])
+            changed = True
     known = se_ports()
     for p in ports:
         if known is None:
@@ -4239,11 +4282,20 @@ def se_apply(bools, ports, said):
             raise Refused('semanage port %d/%s: %s' % (p['port'], p['proto'], ((got.stderr or '')
                                                        if got else '').strip()[-200:]))
         said.append('port %d/%s labelled %s' % (p['port'], p['proto'], p['type']))
+        changed = True
     if shutil.which('restorecon'):
-        _se_run(['restorecon', '-R'] + [x for x in ('/run/otp', '/var/www/otp',
-                                                    '/usr/libexec/keepalived')
-                                        if os.path.exists(x)], 300)
-        said.append('otp\'s files labelled again')
+        got = _se_run(['restorecon', '-R', '-v'] + [x for x in ('/run/otp', '/var/www/otp',
+                                                              '/usr/libexec/keepalived')
+                                                  if os.path.exists(x)], 300)
+        if got is not None and 'elabel' in (got.stdout or '') + (got.stderr or ''):
+            said.append('otp\'s files labelled again')
+            changed = True
+    # From now on what is refused counts again (1.0.234): what was refused before is what
+    # this put right - a second restart was needed before enforcing could be switched on.
+    # Only when something was changed, and never on the way to enforcing: what was refused
+    # before that still counts there.
+    if mark and changed:
+        write_here(SE_APPLIED, json.dumps({'at': time.time()}))
 
 
 def se_do(r):
@@ -4262,7 +4314,8 @@ def se_do(r):
         said.append('%s: SELINUX=permissive' % SE_CONFIG)
         if mode == 'Disabled':
             # Every file labelled at the next start, before anything runs (minutes); the
-            # module, booleans and ports are put in by the next "check" or this step again.
+            # booleans and ports are put in by this step again once it is permissive
+            # ("Put in what otp needs").
             open(SE_RELABEL, 'a').close()
             said.append('the files are labelled at the next start of the machine')
             if se_cmdline_off() and shutil.which('grubby'):
@@ -4286,7 +4339,7 @@ def se_do(r):
         if mode != 'Permissive':
             raise Refused('SELinux is %s - it goes to enforcing from permissive only'
                           % mode.lower())
-        se_apply(bools, ports, said)
+        se_apply(bools, ports, said, mark=False)
         c = se_check(r)
         if c['problems']:
             raise Refused('not yet: ' + '; '.join(c['problems'][:4]))

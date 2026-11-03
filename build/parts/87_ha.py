@@ -103,7 +103,10 @@ def heartbeat(store, daemon=None):
             # among them, for the other node's pages to show as they are.
             'own': {k: (CONFIG.get(k) if not isinstance(CONFIG.get(k), bytes) else '')
                     for k in NODE_KEYS},
-            'own_file': sorted(k for k in NODE_KEYS if k in (FILE_KEYS or ()))}
+            'own_file': sorted(k for k in NODE_KEYS if k in (FILE_KEYS or ())),
+            # The guard against writes to the database (1.0.234): a going back below it
+            # refused while it is on on any node.
+            'db_guard': bool(CONFIG.get('db_guard'))}
     try:
         beat['software'] = software_info(store)  # for the other node's About (1.0.99)
     except Exception:                                   # noqa: BLE001
@@ -1704,6 +1707,12 @@ def ha_resync_job(store, by):
         finally:
             remote.close()
         store._clients = store._realms = None
+        # Signed again as they are now (1.0.234): the rows taken from the other node were older
+        # than the ones this node had seen, and the guard refused them as put back.
+        try:
+            dbguard_resign(store, '%s rebuilt this node from the other' % by)
+        except Exception as e:                          # noqa: BLE001
+            log('the rows that reach root could not be signed again: %s' % e, 'warn')
         store.set_meta('conf_serial', '%.6f:%s' % (time.time(), node_name()))
         store.add_event('settings', '%s rebuilt this node from the other: %d row(s); what it '
                         'held is in %s' % (by, got['rows'], copy.name), 'warn', who=by)
