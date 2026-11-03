@@ -666,6 +666,37 @@ def lockouts_said(store, a, n):
 
 
 # ---- the cap of wrong directory passwords per person (1.0.230) -------------------------------
+def db_fingerprint(db):
+    """What a database holds that a move must not leave behind (1.0.234): the number of rows and
+    the newest change of each table people change - not what RADIUS changes as it is used."""
+    def one(sql):
+        try:
+            v = db.value(sql)
+            return round(float(v)) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+    out = {}
+    out['tokens'] = (one('SELECT COUNT(*) FROM tokens'), one('SELECT MAX(created) FROM tokens'),
+                     one('SELECT MAX(key_at) FROM tokens'), one('SELECT MAX(state_at) FROM tokens'),
+                     one('SELECT MAX(scratch_at) FROM tokens'))
+    out['settings'] = (one('SELECT COUNT(*) FROM settings'), one('SELECT MAX(at) FROM settings'))
+    for t in ('clients', 'realms', 'directories'):
+        out[t] = (one('SELECT COUNT(*) FROM %s' % t), one('SELECT MAX(created) FROM %s' % t))
+    acc = sorted('%s|%s|%s|%s' % (str(r['name']).lower(), r['role'] or '', r['pw'] or '',
+                                  int(r['disabled'] or 0))
+                 for r in db.rows('SELECT name, role, pw, disabled FROM accounts'))
+    out['accounts'] = (len(acc), hashlib.sha256('\n'.join(acc).encode('utf-8')).hexdigest())
+    return out
+
+
+def db_fingerprint_diff(here, far):
+    """The tables that differ between this database and the one carried into."""
+    a, b = db_fingerprint(here), db_fingerprint(far)
+    words = {'tokens': 'the tokens', 'settings': 'the settings', 'clients': 'the clients',
+             'realms': 'the realms', 'directories': 'the directories', 'accounts': 'the accounts'}
+    return [words[k] for k in a if a[k] != b.get(k)]
+
+
 def dir_pw_who(name, entry=None):
     """A person as the cap counts them: their account in the directory (1.0.234) - the name
     typed counted novakj (sAMAccountName) and jan.novak@corp.cz (UPN) apart, and both forms
@@ -970,6 +1001,11 @@ def admin_ask_directory(h, name, password):
         entry = ad.find_user(who, how)
     except LdapUnreachable as e:
         raise ApiError(503, 'the directory cannot be reached', str(e))
+    if not entry or entry.get('many') or entry_unusable(entry):
+        # Counted as a wrong password of a name that exists is (1.0.234): only those were held
+        # back, so a name the directory lacks answered 401 for ever - which said who exists.
+        dir_pw_done(h, dir_pw_take(h, who, ad.name, entry if entry and not entry.get('many')
+                                   else None), True)
     if not entry:
         return {'ok': False, 'missing': True, 'said': 'the directory has nobody called %s' % who,
                 'directory': ad.name}
@@ -1703,6 +1739,12 @@ def totp_file_text(tok):
         lines.append('" OTP_ALGORITHM %s' % str(tok.get('algorithm')).upper())
     if tok.get('state') in ('disabled', 'pending'):
         lines.append('" OTP_STATE %s' % tok['state'])
+    # The last step used, so a code just used here is not good again there (1.0.234).
+    try:
+        if int(tok.get('last_step') or 0) > 0:
+            lines.append('" OTP_LAST_STEP %d' % int(tok['last_step']))
+    except (TypeError, ValueError):
+        pass
     lines.append('" TOTP_AUTH')
     for c in codes_open(tok) or []:
         if isinstance(c, dict):
@@ -4270,6 +4312,21 @@ def _db_do(h):
                         here = newest(h.store.db)
                     except Exception:                   # noqa: BLE001
                         there = here = 0
+                    # What the rows hold, not only the events (1.0.234): the events written
+                    # while it was carried were carried too, so a token enrolled or a password
+                    # changed meanwhile was left behind - and the check above passed.
+                    try:
+                        far = db_open(c)
+                        try:
+                            moved = db_fingerprint_diff(h.store.db, far)
+                        finally:
+                            far.close()
+                    except Exception:                   # noqa: BLE001
+                        moved = []
+                    if moved:
+                        raise ApiError(409, 'it holds an older copy: %s changed here since it was '
+                                            'carried. Carry everything across again, so nothing '
+                                            'written since is left behind.' % ', '.join(moved))
                     if there and here and there < here - 60:
                         raise ApiError(409, 'it holds an older copy: its newest event is from '
                                             '%s, this one\'s from %s. Empty it and carry '
@@ -4867,6 +4924,13 @@ def portal_me(h, gate_ok=False):
     # do that and nothing else.
     if portal_gated(s) and not gate_ok:
         raise ApiError(401, 'type the code that was sent to you first')
+    # Asked again on every step, not only at the sign-in (1.0.234): signed in while a token was in
+    # use, a sign-in kept open went on to enrol a new one - the code never asked - once that
+    # token was taken away or made again.
+    if not gate_ok and not (s.get('data') or {}).get('gate_ok') and \
+            portal_gate_needed(h.store, s['name']):
+        h.store.session_end(h.headers.get('X-Otp-Session'))
+        raise ApiError(401, 'sign in again: a code is sent to you first')
     return s
 
 
@@ -5222,6 +5286,11 @@ def _portal_login(h):
             # held back, so "too many wrong passwords for this name" said which ones do.
             dir_pw_done(h, dir_pw_take(h, full, realm.get('directory') or ''), True)
             raise LdapError('there is no such account')
+        if entry.get('many') or entry_unusable(entry):
+            # Counted as any wrong password is (1.0.234): not counted, a disabled or locked
+            # account answered 401 where one that works answered 429 - which said which it was.
+            dir_pw_done(h, dir_pw_take(h, full, realm.get('directory') or '',
+                                       None if entry.get('many') else entry), True)
         if entry.get('many'):
             # More than one account answers to the name (1.0.205): as RADIUS
             # refuses it - the token could be made for the wrong one.

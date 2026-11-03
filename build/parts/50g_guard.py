@@ -224,7 +224,11 @@ def dbguard_ok(db, kind, ident, value, quiet=False):
                     hs[sid] = vh
                     DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
     if not why:
+        with DBGUARD['lock']:
+            DBGUARD['refused'].pop(sid, None)       # good again: no longer listed (1.0.234)
         return True
+    if quiet:
+        return False                                # asked again by the caller (1.0.234)
     with DBGUARD['lock']:
         was = DBGUARD['refused'].get(sid)
         DBGUARD['refused'][sid] = {'kind': kind, 'what': str(ident)[:120], 'why': why,
@@ -363,6 +367,20 @@ class SimpleStore(object):
 
     def add_event(self, *a, **k):
         return None
+
+
+def dbguard_forget_seen(why=''):
+    """The newest signatures seen of each row forgotten, nothing signed (1.0.234): after this
+    node's database was taken from the other node, its rows are as old as they are there."""
+    _dbguard_load()
+    with DBGUARD['lock']:
+        DBGUARD['seen'] = {}
+        DBGUARD['seen_h'] = {}
+        DBGUARD['refused'] = {}
+        DBGUARD['dirty'] = time.time()
+    dbguard_flush(force=True)
+    if why:
+        log('the guard against writes to the database starts its counts again: %s' % why)
 
 
 def dbguard_resign(store, why=''):

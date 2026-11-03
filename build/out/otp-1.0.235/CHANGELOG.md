@@ -4,6 +4,49 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.235 — 3 November 2026
+
+**Bug hunt, round B** - the tokens and the enrolment pages, the root helper, the backups, TLS, ACME and
+the VIP address, mail, SMS and alerts - and the fixes of 1.0.234 read again by somebody else.
+
+- **A fix of 1.0.234 taken back**: a node rebuilt from the other signed every row it was given - rows
+  written into the other node's database by somebody else included. It now only forgets what it had
+  seen, and signs nothing.
+- **Moving into another database**: what was written while it was carried, or after - a token enrolled,
+  a password changed - was left behind, and *Start using it* did not see it (it compared the events,
+  which were carried on purpose). It compares the tokens, accounts, settings, clients, realms and
+  directories now, and refuses an older copy.
+- **The VIP address switched off by a name not answered**: with `ha_peer` (or `ha_address`) a host name
+  and DNS away for a moment, the node stopped keepalived and took its configuration away. It goes on
+  with the addresses last known now; a name not answered is asked again in half a minute.
+- **A change of sshd on trial** whose time ran out while the machine restarted was kept for good: its
+  timer does not outlive a restart. The helper puts it back at its next run. The timer is armed before
+  the change goes in - a timer that could not be made left the change with nothing to undo it.
+- **SSH on another service's port** (443, 1812, 5432…) refused - sshd could not bind it and stopped; and
+  SELinux never takes a port from the service its policy gives it.
+- **"Quiet" while a node is worked on**: both nodes wrote one row (the metrics, SNMP and the pages ask on
+  every node), and two first rows at once stop replication. Each node writes its own now. A test alert
+  or *Forget* on the node that does not send no longer writes back an older copy of what was sent.
+- **The enrolment pages**: a sign-in kept open from before a token was taken away or made again went on to
+  enrol a new one without the code before the first token. Every step asks again now. A name the
+  directory lacks, or an account that is switched off or locked, counts as any wrong password does - at
+  the administrators' sign-in too - so the answer does not tell them apart.
+- **Backups to other machines**: room for them checked first (twice the database - the copy and the
+  locked one), as for the copies on this machine; an unlocked archive refused even where no password is
+  in play; the weekly check reads the newest *nightly* copy (it read the hand-made ones, and passed with
+  nothing read); locking or opening a large one is not cut off after two minutes.
+- **ACME**: two nodes ordering with the manual DNS step take turns instead of cancelling each other; any
+  failure of an order is written down (an odd answer of the CA was only logged, and the order was due
+  again every hour).
+- **Mail and SMS**: a code being sent is not taken back for another try before one try can have ended
+  (it went out twice); a redirect to another host does not carry the gateway's credentials; the weekly or
+  monthly report missed on its day goes on a later day of the period.
+- Smaller: the SNMPv3 count of starts written whole (cut short, it went back); a time zone or interface
+  name that reads as an option refused; a changed SELinux module put in again where an earlier try
+  failed; a row good on the second read no longer listed as refused; the export of a token carries the
+  last step used (a code just used was good again after an import); the box of a directory's own cap
+  shows the number that is saved.
+
 ## 1.0.234 — 3 November 2026
 
 **Bug hunt, round A** - six areas read again: systemd and the files' owners, replication between

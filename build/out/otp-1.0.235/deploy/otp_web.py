@@ -187,7 +187,7 @@ def pg_file_copy(src, dst):
 # ---- what a request may hold ---------------------------------------------------------
 NAME_RE = re.compile(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
                      r'(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z')
-IFACE_RE = re.compile(r'^[A-Za-z0-9_.:-]{1,15}\Z')
+IFACE_RE = re.compile(r'^(?!\.+\Z)[A-Za-z0-9_][A-Za-z0-9_.:-]{0,14}\Z')   # not . or .., not -x (1.0.234)
 NODE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}\Z')
 CERT_RE = re.compile(r'^(\s*-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----)+\s*\Z')
 KEY_RE = re.compile(r'^\s*-----BEGIN (RSA |EC )?PRIVATE KEY-----[A-Za-z0-9+/=\s:,-]+'
@@ -2398,7 +2398,7 @@ CHRONY_CONF = os.environ.get('OTP_CHRONY_CONF') or next(
 NTP_BEGIN = '# ---- otp: the time servers, set on its pages (Settings - Time) ----'
 NTP_END = '# ---- otp: end ----'
 NTP_KEYS = ('server', 'pool', 'peer', 'makestep', 'allow', 'minsources', 'maxdistance', 'sourcedir')
-TZ_RE = re.compile(r'^[A-Za-z0-9_+-]{1,40}(/[A-Za-z0-9_+-]{1,40}){0,3}\Z')
+TZ_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_+-]{0,39}(/[A-Za-z0-9_+-]{1,40}){0,3}\Z')   # no -option (1.0.234)
 
 
 def ntp_read():
@@ -3025,6 +3025,14 @@ def sshd_checked(c):
         raise Refused('the port is a number')
     if not 1 <= port <= 65535:
         raise Refused('the port is 1 to 65535')
+    # Not a port another service of this machine listens on (1.0.234): sshd could not bind it and
+    # stopped - and under SELinux the port was labelled for ssh, away from its own service.
+    taken = {80: 'the web server', 443: 'the web server', 1812: 'RADIUS', 1813: 'RADIUS',
+             1645: 'RADIUS', 1646: 'RADIUS', 5432: 'PostgreSQL', 3306: 'MariaDB',
+             25: 'mail', 53: 'DNS', 123: 'the time', 161: 'SNMP', 162: 'SNMP', 514: 'syslog',
+             6514: 'syslog', 9861: 'otp\'s API', 112: 'keepalived'}
+    if port in taken:
+        raise Refused('port %d is %s\'s - choose another for SSH' % (port, taken[port]))
     out['port'] = port
     raw = c.get('allow_users') or ''
     # A list from the daemon (1.0.164: read as the text "['root']" before).
@@ -3471,7 +3479,17 @@ def sshd_do(r):
         entry = {pth: _read_or(pth) for pth in (drop, paths['banner'], paths['issue'],
                                                 paths['motd'], pam_sshd_path(),
                                                 pam_radius_conf_path())}
+        ident = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:12] or 'x'
+        new_unit = ''
         try:
+            # The timer that puts it back armed first (1.0.234): armed after the change, a
+            # timer that could not be made left the change in with nothing to undo it - and
+            # the one before already stopped.
+            if trial and c['manage']:
+                new_unit = sshd_arm(trial, ident)
+                _put_file(SSHD_STATE, json.dumps(dict(
+                    before, hash=str(r.get('hash') or '')[:64], until=time.time() + trial * 60,
+                    unit=new_unit)), 0o600)
             said = sshd_apply_files(c, r, drop, now_dropin, paths, before)
         except BaseException:
             for pth, was in entry.items():
@@ -3487,15 +3505,19 @@ def sshd_do(r):
                 sshd_reload()
             except Exception:                           # noqa: BLE001
                 pass
+            if new_unit:
+                sshd_disarm({'unit': new_unit})
+            try:
+                if old:
+                    _put_file(SSHD_STATE, json.dumps(old), 0o600)
+                else:
+                    _drop(SSHD_STATE)
+            except Exception:                           # noqa: BLE001
+                pass
             raise
-        if old:
+        if old and old.get('unit') != new_unit:
             sshd_disarm(old)
-        ident = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:12] or 'x'
-        if trial and c['manage']:
-            before.update(hash=str(r.get('hash') or '')[:64], until=time.time() + trial * 60,
-                          unit=sshd_arm(trial, ident))
-            _put_file(SSHD_STATE, json.dumps(before), 0o600)
-        else:
+        if not (trial and c['manage']):
             _drop(SSHD_STATE)
         said.append('sshd reloaded')
     elif do == 'keep':
@@ -4251,13 +4273,21 @@ def se_apply(bools, ports, said, mark=True):
     """otp's module, labels, booleans and ports - on a machine where SELinux is on. `mark`:
     when anything was changed, what SELinux refused before no longer counts."""
     changed = False
-    if os.path.exists(SE_CIL) and shutil.which('semodule') and se_module_in() is not True:
+    # Put in when it is not there, or when it is not the one last put in (1.0.234): a newer
+    # module beside the program, which install.sh could not put in, went in here.
+    inpol = _read_or(SE_CIL + '.in-policy')
+    if os.path.exists(SE_CIL) and shutil.which('semodule') and (
+            se_module_in() is not True or inpol != _read_or(SE_CIL)):
         got = _se_run(['semodule', '-i', SE_CIL], 300)
         if got is None or got.returncode != 0:
             raise Refused('semodule -i %s: %s' % (SE_CIL, ((got.stderr or got.stdout)
                                                            if got else '').strip()[-200:]))
         said.append('otp\'s module installed')
         changed = True
+        try:
+            shutil.copyfile(SE_CIL, SE_CIL + '.in-policy')
+        except OSError:
+            pass
     for b in bools:
         if se_bool(b['name']) is False:
             got = _se_run(['setsebool', '-P', b['name'], 'on'], 300)
@@ -4276,8 +4306,10 @@ def se_apply(bools, ports, said, mark=True):
         got = _se_run(['semanage', 'port', '-a', '-t', p['type'], '-p', p['proto'],
                        str(p['port'])], 300)
         if got is not None and got.returncode != 0 and 'already defined' in (got.stderr or ''):
-            got = _se_run(['semanage', 'port', '-m', '-t', p['type'], '-p', p['proto'],
-                           str(p['port'])], 300)
+            # Never taken from the service it belongs to (1.0.234): -m labelled it for otp's
+            # need, and that service could not bind it at its next start.
+            raise Refused('port %d/%s is another service\'s in the SELinux policy - choose '
+                          'another port for it (%s)' % (p['port'], p['proto'], p['why']))
         if got is None or got.returncode != 0:
             raise Refused('semanage port %d/%s: %s' % (p['port'], p['proto'], ((got.stderr or '')
                                                        if got else '').strip()[-200:]))
@@ -4427,8 +4459,25 @@ def se_report(c):
     return '\n'.join(x for x in lines if x)
 
 
+def sshd_overdue():
+    """A change of sshd on trial whose time is up and that nobody kept, put back (1.0.234):
+    its timer, systemd's own, does not outlive a restart of the machine - and an admin locked
+    out by the change restarts it. The trial was kept for good."""
+    t = sshd_trial_read()
+    try:
+        until = float((t or {}).get('until') or 0)
+    except (TypeError, ValueError):
+        until = 0
+    if until and time.time() > until + 30:
+        sshd_put_back('not kept in time (its timer did not outlive a restart)')
+
+
 def serve():
     d = web_fd()
+    try:
+        sshd_overdue()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: a change of sshd on trial: %s' % e, file=sys.stderr)
     try:
         pglog_part()
     except Exception as e:                              # noqa: BLE001

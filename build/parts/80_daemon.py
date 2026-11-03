@@ -90,12 +90,19 @@ def import_totp(store, name, text, by='import', replace=False):
         algo = str(opts['OTP_ALGORITHM'][0]).upper()
         if algo not in ('SHA1', 'SHA256', 'SHA512'):
             return 'not taken: the hash %s is not one this server takes' % algo
+    last_step = 0
+    try:
+        if opts.get('OTP_LAST_STEP'):
+            # Not later than now (1.0.234): a step from the future would refuse every code.
+            last_step = max(0, min(int(opts['OTP_LAST_STEP'][0]), int(time.time()) // 30 + 2))
+    except (TypeError, ValueError):
+        last_step = 0
     if opts.get('OTP_STATE') and opts['OTP_STATE'][0] in ('active', 'disabled', 'pending'):
         state = opts['OTP_STATE'][0]
     store.token_write(name, {
         'secret': seal_secret(secret, token_bind(name)), 'digits': digits, 'period': period,
         'algorithm': algo,
-        'window_steps': window, 'state': state, 'last_step': 0,
+        'window_steps': window, 'state': state, 'last_step': last_step,
         'scratch': json.dumps([scratch_hash(name, c) for c in codes]),
         'scratch_sealed': seal_codes(codes, token_bind(name)),
         'scratch_left': len(codes), 'created': time.time(), 'created_by': by,

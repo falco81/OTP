@@ -111,6 +111,27 @@ def _al_when(t):
 ALERTS_QUIET_AFTER_S = float(os.environ.get('OTP_ALERTS_QUIET_S') or 600)
 
 
+def alerts_quiet_row(store):
+    """The latest of every node's 'quiet' rows (1.0.234)."""
+    best = {}
+    try:
+        rows = store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'alerts:quiet%'")
+    except Exception:                                   # noqa: BLE001
+        rows = []
+    for r in rows:
+        try:
+            was = json.loads(r['v'] or '{}')
+        except (TypeError, ValueError):
+            continue
+        if isinstance(was, dict) and float(was.get('until') or 0) > float(best.get('until') or 0):
+            best = was
+    return best
+
+
+def alerts_quiet_until(store):
+    return float(alerts_quiet_row(store).get('until') or 0)
+
+
 def alerts_quiet(store, names):
     """Why the cluster is being worked on now, or '' (1.0.194): a node in
     maintenance, an upgrade, the system's updates or a restart under way - and
@@ -134,12 +155,15 @@ def alerts_quiet(store, names):
     except Exception:                                   # noqa: BLE001
         why = ''
     now = time.time()
+    # Each node under its own name (1.0.234): both wrote the one row - the metrics, SNMP and the
+    # pages ask this on every node - and two first rows at once stopped replication for good.
     if why:
-        store.set_meta('alerts:quiet', json.dumps({'why': why, 'until': now + ALERTS_QUIET_AFTER_S}))
+        store.set_meta('alerts:quiet:' + node_name(),
+                       json.dumps({'why': why, 'until': now + ALERTS_QUIET_AFTER_S}))
         return why
-    was = _meta_json(store, 'alerts:quiet') or {}
-    if float(was.get('until') or 0) > now:
-        return '%s (ended - quiet %d s more)' % (was.get('why'), int(float(was['until']) - now))
+    best = alerts_quiet_row(store)
+    if float(best.get('until') or 0) > now:
+        return '%s (ended - quiet %d s more)' % (best.get('why'), int(float(best['until']) - now))
     return ''
 
 
@@ -627,6 +651,10 @@ def alert_send(store, msg, to, kind, keys):
         # Waiting for another try in the outgoing mail is sent as far as the
         # alerts go: it is not made again every minute.
         entry.update(ok=False, said=str(e)[:200], queued=getattr(e, 'queued', '') or '')
+    # The row of what was sent is the sending node's (1.0.234): a test from another node's pages
+    # wrote its older copy back over it, and the same alerts went out again.
+    if kind == 'test' and not alerts_lead(store):
+        return entry
     st = _alert_state(store)
     if not entry['ok'] and entry.get('queued') != 'waiting':
         st['fail_at'] = entry['at']
@@ -673,8 +701,7 @@ def alerts_evaluate(store, force=False):
     # address's, not looked at then, are not "over" - kept as they were, the
     # time they were said too, until they are looked at again.
     held = ('repl', 'db:', 'vip:')
-    quiet = bool(_meta_json(store, 'alerts:quiet') or {}) and \
-        float((_meta_json(store, 'alerts:quiet') or {}).get('until') or 0) > now
+    quiet = alerts_quiet_until(store) > now
     for k in list(known):
         if k not in cur:
             if quiet and k.startswith(held):
@@ -757,11 +784,16 @@ def report_due(now=None):
     except ValueError:
         hh, mm = 7, 30
     every = CONFIG.get('report_every') or 'weekly'
-    if every == 'weekly' and n.isoweekday() != int(CONFIG.get('report_day') or 1):
-        return False
-    if every == 'monthly' and n.day != 1:
-        return False
-    return (n.hour, n.minute) >= (hh, mm)
+    # Its day or any later one of the same week or month (1.0.234): with the sending node down
+    # for the rest of that day, the period was never sent. Sent once a period all the same - the
+    # period's own mark (report:sent) says whether it was.
+    late = (n.hour, n.minute) >= (hh, mm)
+    if every == 'weekly':
+        day = int(CONFIG.get('report_day') or 1)
+        return n.isoweekday() > day or (n.isoweekday() == day and late)
+    if every == 'monthly':
+        return n.day > 1 or late
+    return late
 
 
 def _rep_table(head, rows, widths=None):

@@ -1288,8 +1288,10 @@ def mailq_tick(store):
                 continue
             # Left half way: 10 min - or, a code's (1.0.225), once its sending has had its time:
             # 10 min was past the code's own five, and it was never sent.
+            # Longer than one try can take (1.0.234): four times the timeout and the names looked
+            # up - taken back sooner, a code went out a second time while the first still did.
             stuck = 600 if rec.get('kind') not in ('code', 'verify') else \
-                3 * int(CONFIG.get('smtp_timeout_s') or 20) + 30
+                4 * int(CONFIG.get('smtp_timeout_s') or 20) + 90
             if state == 'sending' and now - float(rec.get('last_try') or 0) > stuck and \
                     (mine or rec.get('node') not in alive):
                 # Left half way by a node that stopped: tried again.

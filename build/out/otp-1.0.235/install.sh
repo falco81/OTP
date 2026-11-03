@@ -881,13 +881,16 @@ PY
 selinux_module() {
     [[ -f "$SOURCE_DIR/deploy/otp_server.cil" ]] || return 0
     local had=""
-    cmp -s "$SOURCE_DIR/deploy/otp_server.cil" "$LIB_DIR/otp_server.cil" 2>/dev/null && had=1
+    # Compared with the one last put into the policy (1.0.234), not with the copy beside the
+    # program: a semodule that failed once left the copy new and the policy old for good.
+    cmp -s "$SOURCE_DIR/deploy/otp_server.cil" "$LIB_DIR/otp_server.cil.in-policy" 2>/dev/null && had=1
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp_server.cil" "$LIB_DIR/otp_server.cil"
     command -v getenforce >/dev/null 2>&1 || return 0
     command -v semodule >/dev/null 2>&1 || return 0
     [[ "$(getenforce)" == "Disabled" ]] && return 0
     if [[ -z "$had" ]] || ! semodule -l 2>/dev/null | awk '$1=="otp_server"{f=1} END{exit !f}'; then
         if run semodule -i "$LIB_DIR/otp_server.cil" 2>/dev/null; then
+            run install -m 0644 "$LIB_DIR/otp_server.cil" "$LIB_DIR/otp_server.cil.in-policy"
             good "SELinux: otp's module (otp_server) is in the policy"
         else
             warn "SELinux: otp's module could not be put in: semodule -i $LIB_DIR/otp_server.cil"

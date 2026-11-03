@@ -160,7 +160,10 @@ ok('modes set on the file itself, never by its name in a folder others write in'
    'os.chmod(tmp, mode)' not in H)
 ok('user names for sshd and PAM end at \\Z, not $', '{1,64}$\'' not in H)
 # The files and the reload in sshd_apply_files since 1.0.209: the old timer stopped after it.
-ok('a change on trial keeps its timer until the next one is in', H.index('if old:\n            sshd_disarm(old)')
+# Since 1.0.235 the new timer armed before the change, the old one stopped once it is in.
+_old_stop = ("if old and old.get('unit') != new_unit:\n            sshd_disarm(old)"
+             if "if old and old.get('unit') != new_unit:" in H else 'if old:\n            sshd_disarm(old)')
+ok('a change on trial keeps its timer until the next one is in', H.index(_old_stop)
    > (H.index('said = sshd_apply_files(') if 'said = sshd_apply_files(' in H
       else H.index('        sshd_reload()\n        if old:')))
 

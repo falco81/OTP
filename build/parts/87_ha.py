@@ -1707,12 +1707,11 @@ def ha_resync_job(store, by):
         finally:
             remote.close()
         store._clients = store._realms = None
-        # Signed again as they are now (1.0.234): the rows taken from the other node were older
-        # than the ones this node had seen, and the guard refused them as put back.
-        try:
-            dbguard_resign(store, '%s rebuilt this node from the other' % by)
-        except Exception as e:                          # noqa: BLE001
-            log('the rows that reach root could not be signed again: %s' % e, 'warn')
+        # What this node had seen forgotten (1.0.234): the rows taken from the other node carry
+        # its signatures, older than the ones seen here, and were refused as put back. Never
+        # signed again here: that would make otp's word of whatever the other node's database
+        # holds - rows somebody wrote there included.
+        dbguard_forget_seen('%s rebuilt this node from the other' % by)
         store.set_meta('conf_serial', '%.6f:%s' % (time.time(), node_name()))
         store.add_event('settings', '%s rebuilt this node from the other: %d row(s); what it '
                         'held is in %s' % (by, got['rows'], copy.name), 'warn', who=by)

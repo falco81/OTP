@@ -142,8 +142,10 @@ def _openssl(args, data=None, env=None, what='openssl', secret=None):
         os.write(wr, (str(secret) + '\n').encode('utf-8'))
         os.close(wr)
     try:
+        # A backup locked or opened (enc) takes as long as the database is large (1.0.234): cut off
+        # at two minutes, a large one could not be locked - nor opened to be put back.
         got = subprocess.run(['openssl'] + args, input=data, capture_output=True, env=e,
-                             timeout=120, pass_fds=fds)
+                             timeout=3600 if args[:1] == ['enc'] else 120, pass_fds=fds)
     finally:
         if rd is not None:
             os.close(rd)
@@ -564,6 +566,31 @@ def vip_peer_seen(store):
     return ''
 
 
+VIP_LAST_FILE = STATE_DIR / 'vip-last.json'
+
+
+def vip_last(address):
+    """This node's and the other node's address as last told keepalived for this VIP address."""
+    try:
+        got = json.loads(VIP_LAST_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    if isinstance(got, dict) and got.get('address') == address and got.get('own') and got.get('peer'):
+        return got
+    return None
+
+
+def vip_last_keep(address, own, peer):
+    was = vip_last(address)
+    if was and was.get('own') == own and was.get('peer') == peer:
+        return
+    try:
+        write_replacing(VIP_LAST_FILE, json.dumps({'address': address, 'own': own, 'peer': peer,
+                                                   'at': time.time()}), 0o640)
+    except OSError:
+        pass
+
+
 def web_desired(store):
     me = node_name()
     v = vip_conf(store)
@@ -576,6 +603,19 @@ def web_desired(store):
                'own': vip_plain(CONFIG.get('ha_address') or node_address(), v.get('address')),
                'peer': vip_plain(CONFIG.get('ha_peer') or vip_peer_seen(store), v.get('address')),
                'iface': (v.get('ifaces') or {}).get(me, '')}
+        last = vip_last(v.get('address'))
+        if vip['own'] and vip['peer']:
+            vip_last_keep(v.get('address'), vip['own'], vip['peer'])
+        elif last:
+            # The addresses last known kept (1.0.234): a name not answered for a moment (DNS
+            # away, or the other node's) switched the VIP address off on this node - keepalived
+            # stopped, its file and nginx's server for it taken away.
+            log_sparing('vip-addr', 'the VIP address goes on with the addresses last known: %s '
+                        'cannot be told now (ha_address / ha_peer)' % (
+                            'this node\'s' if not vip['own'] else 'the other node\'s'), 'warn',
+                        every=3600)
+            vip['own'] = vip['own'] or last['own']
+            vip['peer'] = vip['peer'] or last['peer']
         if not vip['own'] or not vip['peer']:
             # Root takes addresses only (1.0.209): a host name - or no other node
             # named - refused the whole request, and no certificate, firewall rule
@@ -1185,7 +1225,8 @@ def addresses_cached(name):
                    socket.getaddrinfo(name, None, 0, socket.SOCK_STREAM)[:4]]
         except (OSError, ValueError, UnicodeError):
             got = ADDR_CACHE.get(name, (0, [], False))[1]
-        ADDR_CACHE[name] = (time.monotonic(), got, False)
+        # Nothing known yet: asked again in half a minute, not in ten (1.0.234).
+        ADDR_CACHE[name] = (time.monotonic() - (570 if not got else 0), got, False)
         return got
     was = ADDR_CACHE.get(name)
     if was is None:
