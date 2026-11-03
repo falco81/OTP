@@ -3652,3 +3652,5 @@ table.split-scen{table-layout:fixed;width:100%;min-width:760px}
 #sso-host > p.note.warn { padding: 10px 12px; }
 #sso-host .peek-h { margin: 18px 0 8px; }
 .cchip-v { margin-left: 6px; }
+/* Each directory's cap while "Block a place that keeps guessing" is off (1.0.241). */
+#dp-list.asleep .dp-dir { opacity: .5; }

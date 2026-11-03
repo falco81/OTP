@@ -3415,6 +3415,21 @@ function applyOnlyWhen() {
            : 'Not in use while ' + other.name + ' is “' + ((other.choice_words || {})[now] || now) + '”.')));
     }
   });
+  /* Each directory's cap goes with "Block a place that keeps guessing" too (1.0.241). */
+  var dp = $('dp-list'), g = $('set-radius_guard');
+  if (dp && g) {
+    var on = String(g._get ? g._get() : g.value);
+    var off = !(on === 'true' || on === '1');
+    dp.classList.toggle('asleep', off);
+    var why = $('dp-asleep');
+    if (off && !why) {
+      why = el('p', 'note warn', 'Not in use while ' + ((settingByKey('radius_guard') || {}).name || 'Block a place that keeps guessing') + ' is off - no cap is applied to any directory. What is set here is kept for when it is on.');
+      why.id = 'dp-asleep';
+      dp.parentNode.insertBefore(why, dp);
+    } else if (!off && why) {
+      why.remove();
+    }
+  }
 }
 $('set-save').onclick = function () {
   var want = {};
@@ -16153,6 +16168,39 @@ function sdTokenAsk(was) {
     who = noI18n(textBox(was ? was.name : '', 'jan', 'mono'));
     if (was) who.disabled = true;
     g.appendChild(formField('The account', who, 'Its name on the nodes - the name typed at ssh.'));
+    /* The names offered from the nodes themselves (1.0.241): root and every user who may sign
+       in there - as SSH keys lists them; one with a token already said so. Typed, any name. */
+    if (!was) {
+      var dl = el('datalist');
+      dl.id = 'sd-who-list';
+      who.setAttribute('list', dl.id);
+      who.autocomplete = 'off';
+      g.appendChild(dl);
+      var has = {};
+      ((SD.d && SD.d.sshotp) || []).forEach(function (x) { has[x.name] = true; });
+      var fill = function (d) {
+        clear(dl);
+        var seen = {}, names = ['root'];
+        ((d && d.nodes) || []).forEach(function (n) {
+          (n.users || []).forEach(function (u) { if (!seen[u.name]) { seen[u.name] = true; names.push(u.name); } });
+        });
+        names.sort(function (a, b) { return (has[a] ? 1 : 0) - (has[b] ? 1 : 0) || (a === 'root' ? -1 : b === 'root' ? 1 : a < b ? -1 : 1); });
+        names.forEach(function (nm) {
+          var o = el('option');
+          o.value = nm;
+          if (has[nm]) o.label = nm + ' - ' + ((typeof i18nText === 'function' && i18nText('has a token')) || 'has a token');
+          dl.appendChild(o);
+        });
+        return names.length > 1;
+      };
+      api('sshkeys').then(function (d) {
+        if (!fill(d)) {
+          /* Not read from the nodes yet: asked, and offered as soon as they say. */
+          api('sshkeys', {action: 'refresh', nodes: ((d && d.nodes) || []).filter(function (n) { return n.alive; }).map(function (n) { return n.name; })})
+            .then(function () { setTimeout(function () { api('sshkeys').then(fill).catch(function () {}); }, 4000); }).catch(function () {});
+        }
+      }).catch(function () {});
+    }
     note = textBox(was ? was.note || '' : '', 'Jan Novák, admin', '');
     g.appendChild(formField('Note', note, 'Whose it is - for you, nothing else.'));
     /* Where the codes come from (1.0.181): the app, or mail and SMS when set up. */
