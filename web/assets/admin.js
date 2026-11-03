@@ -17372,6 +17372,43 @@ function loadSelinux() {
     if (host) { clear(host); host.appendChild(el('p', 'note bad', String((e && e.message) || e))); }
   });
 }
+function seReport(btn) {
+  var asked = Date.now() / 1000 - 5, end = Date.now() + 180000;
+  busy(btn, true);
+  SE.rep = {words: 'asking every node for its report…'};
+  drawSelinux();
+  api('selinux', {action: 'report', node: '*'}).then(function () {
+    return new Promise(function (done) {
+      (function tick() {
+        api('selinux').then(function (d) {
+          SE.d = d;
+          var nodes = (d.nodes || []).map(function (n) { return n.name; });
+          var reps = d.reports || {};
+          var ready = nodes.filter(function (n) { return reps[n] && reps[n].at >= asked; });
+          SE.rep = {words: 'reports made: ' + ready.length + ' of ' + nodes.length + (ready.length < nodes.length ? ' - waiting for ' + nodes.filter(function (n) { return ready.indexOf(n) < 0; }).join(', ') : '')};
+          drawSelinux();
+          if (ready.length >= nodes.length || Date.now() > end) return done();
+          setTimeout(tick, 3000);
+        }).catch(function () { setTimeout(tick, 3000); });
+      })();
+    });
+  }).then(function () {
+    return api('selinux', {action: 'download'});
+  }).then(function (x) {
+    var bin = atob(x.file), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var a = el('a');
+    a.href = URL.createObjectURL(new Blob([bytes], {type: x.mime || 'application/gzip'}));
+    a.download = x.name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    SE.rep = (x.missing || []).length ? {words: 'Downloaded - without: ' + x.missing.join('; '), bad: true}
+                                      : {words: 'Downloaded: every node\'s report is in it.'};
+    drawSelinux();
+  }).catch(function (e) { SE.rep = {words: String((e && e.message) || e), bad: true}; drawSelinux(); oops(e); })
+    .then(function () { busy(btn, false); });
+}
 function seBusy(d) {
   return ((d && d.nodes) || []).some(function (n) { return !!n.pending || !(n.state && n.state.mode); });
 }
@@ -17414,8 +17451,14 @@ function drawSelinux() {
       .then(function () { setTimeout(loadSelinux, 800); }).catch(oops).then(function () { busy(look, false); });
   };
   tl.appendChild(look);
+  /* The report of every node, made by each and taken as one file (1.0.236): what whoever writes
+     otp's module needs - nothing is changed to make it. */
+  var rep = cmdButton('Download the report (all nodes)', 'download', 'small');
+  rep.onclick = function () { seReport(rep); };
+  tl.appendChild(rep);
   h.appendChild(tl);
   c.appendChild(h);
+  if (SE.rep) c.appendChild(el('p', 'note small se-rep' + (SE.rep.bad ? ' bad' : ''), SE.rep.words));
   c.appendChild(el('p', 'note', 'What SELinux refuses to the web server, keepalived, sshd and the rest when it is enforcing - and what otp needs of it on each node. Nothing changes here unless asked: disabled stays disabled. In a cluster, one node at a time - the other answers meanwhile. On the server: otp --selinux-check.'));
   var grid = el('div', 'se-grid');
   (SE.d.nodes || []).forEach(function (n) { grid.appendChild(seNode(n)); });
@@ -17440,7 +17483,7 @@ function seNode(n) {
   if (n.pending) {
     var w = el('div', 'se-wait');
     w.appendChild(el('span', 'spin'));
-    w.appendChild(el('span', '', {check: 'looking…', prepare: 'making it ready…', enforce: 'switching to enforcing…', permissive: 'switching to permissive…'}[n.pending] || 'asked…'));
+    w.appendChild(el('span', '', {check: 'looking…', prepare: 'making it ready…', enforce: 'switching to enforcing…', permissive: 'switching to permissive…', report: 'making its report…'}[n.pending] || 'asked…'));
     box.appendChild(w);
   }
   if (!m) {

@@ -124,9 +124,17 @@ recommended then all the same - it still slows down guessing.
 What was read is kept beside the caps and shown again the next time the page is
 opened, with when it was read.
 
+```bash
+otp --dir-caps                   # the setting and each directory's own cap, and its policy as read
 ```
-otp --settings | grep dir_pw     # the setting above; the per-directory caps are on the pages
+```bash
+otp --dir-cap corp=3/30          # its own: 3 wrong passwords in 30 min; corp=setting, corp=none
 ```
+```bash
+otp --dir-policy corp            # read the domain's policy now, and the cap recommended
+```
+The console has them under *RADIUS clients, realms and directories*. `otp --dir-sample corp novak`
+shows every attribute of one person (where the e-mail address and the mobile number are read).
 
 ## 2. Changes taken back unless kept
 

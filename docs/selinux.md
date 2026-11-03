@@ -63,14 +63,46 @@ node where SELinux is on from being protected as it should (on a disabled node i
 nothing, as before). With the guard against writes to the database on, a step written
 straight into the database is not done.
 
+## The report, for otp's module (1.0.236)
+
+*Download the report (all nodes)* on the card asks every node to gather what SELinux says there,
+and gives one file with a folder of each node in it; on the server `otp --selinux-report` makes
+the same for that node (`/root/otp-selinux-report-NODE-DATE.tar.gz`). Nothing is changed to
+make it. In it: what SELinux refused since the start (raw and readable, `audit2why`, and
+`audit2allow`'s suggestion - a hint, never loaded), the card's state, the labels of otp's files
+and what the policy says they should be, the domains the programs run in, the ports and the
+booleans, the system's and the policy's versions, and what otp uses on the node (switches and
+ports - no password, key or token). The audit log holds the command lines of the programs
+something was refused to: otp never puts a secret on one, other programs may - look through
+`avc*.txt` before sending it on. From the pages a node's report is kept sealed in the database
+an hour, so that whichever node answers gives every node's.
+
+Sent to whoever writes otp, it becomes rules of `otp_server` - labels, booleans and ports first,
+a narrow `allow` only where nothing else does - so that a new installation needs less of it.
+
+## The tools
+
+On RHEL, Rocky and AlmaLinux every install and upgrade puts in what is missing of
+`policycoreutils`, `libselinux-utils`, `policycoreutils-python-utils`, `audit` and
+`selinux-policy-targeted` (1.0.236) - with SELinux disabled too, the mode is not touched - and
+starts auditd where SELinux is on. Without a repository it says what is missing and goes on.
+
 ## On the server
 
 ```bash
-otp --selinux-check            # a report; exit 1 when something is missing
+otp --selinux-check            # how it stands; exit 1 when something is missing
 ```
 ```bash
 otp --selinux-check --json
 ```
+```bash
+otp --selinux prepare          # check | prepare | apply | enforce | permissive - asked first
+```
+```bash
+otp --selinux-report           # the report of this node, as a file
+```
+The console (`otp --console`) has the same in *Encryption, sending out, time, network, high
+security*.
 
 Something refused that otp did not foresee: `ausearch -m AVC -ts boot | audit2why`
 says why, and `audit2allow -M otp-local` makes a local module of it - send the
