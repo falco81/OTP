@@ -39,7 +39,10 @@ Looked at two minutes after otp starts and every half hour after that, and at on
 priority (1.0.234). **What was refused before otp's needs were last put in no longer
 counts** (1.0.234): *Put in what otp needs*, when it changes anything, starts the count
 again - no second restart is needed after the first permissive start. *Switch to
-enforcing* never starts it again. **auditd** must run: without it nothing is written down,
+enforcing* never starts it again. **What the policy loaded now allows no longer counts either**
+(1.0.238): every kind refused is put to `audit2why`; one it says *would be allowed by active
+policy* - a newer `otp_server` from an upgrade, a boolean switched on since - is shown as allowed
+now and not counted, without the button pressed again. **auditd** must run: without it nothing is written down,
 and enforcing is refused.
 
 The steps, each asked of that node only and done by its root helper:

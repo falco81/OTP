@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.237'
+__version__ = '1.0.238'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -484,6 +484,10 @@ SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
                'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
                'acme_desec_token', 'metrics_token', 'snmp_auth_pass', 'snmp_priv_pass')
+
+# Saved as a row even when equal to the default (1.0.238): what they were before tells "switched
+# off" from "never switched on".
+KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -16274,7 +16278,10 @@ class Daemon(object):
                 else:
                     self.store.save_setting(k + '@' + node, v, by)
                 continue
-            if v == FILE_CONFIG.get(k, DEFAULTS[k]) and k not in ('proxy_update', 'proxy_os'):
+            # Kept as rows off too (1.0.238): "switched off" is what takes otp's lines out of
+            # nginx again - a 0 equal to the default was dropped, and read as "never switched
+            # on", the balancer's lines stayed.
+            if v == FILE_CONFIG.get(k, DEFAULTS[k]) and k not in KEPT_OFF_KEYS:
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)
@@ -27381,7 +27388,9 @@ def realip_desired(store):
             return {'from': nets, 'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
                     'recursive': bool(CONFIG.get('web_proxy_recursive', 1))}
     try:
-        if 'web_proxy' in store.settings_saved():
+        # Switched off: the row kept off (1.0.238) - or, switched off before that, the balancers
+        # named are still there.
+        if any(k.split('@', 1)[0].startswith('web_proxy') for k in store.settings_saved()):
             return {'from': [], 'header': '', 'recursive': False}
     except Exception:                                   # noqa: BLE001
         pass

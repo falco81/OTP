@@ -4076,7 +4076,7 @@ SE_DOMAINS = ('httpd_t', 'keepalived_t', 'keepalived_unconfined_script_t', 'sshd
 SE_APPLIED = 'selinux-applied'      # when otp's needs were last put in (1.0.234)
 
 
-def _se_run(cmd, timeout=120, light=False):
+def _se_run(cmd, timeout=120, light=False, data=None):
     if not shutil.which(cmd[0]):
         return None
     if light:
@@ -4088,7 +4088,7 @@ def _se_run(cmd, timeout=120, light=False):
         if shutil.which('nice'):
             cmd = ['nice', '-n', '19'] + cmd
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, input=data, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -4212,6 +4212,7 @@ def se_denials(since=0.0):
     if got is None:
         return {'tool': False, 'total': 0, 'groups': [], 'since': since}
     groups = {}
+    lines = {}
     total = 0
     for line in (got.stdout or '').splitlines():
         if 'avc:' not in line or 'denied' not in line:
@@ -4235,13 +4236,49 @@ def se_denials(since=0.0):
             continue
         total += 1
         key = (st, tt, cl.group(1), perms.group(1).strip())
+        lines[key] = line
         g = groups.setdefault(key, {'source': st, 'target': tt, 'class': cl.group(1),
                                     'perms': perms.group(1).strip(), 'count': 0, 'what': ''})
         g['count'] += 1
         g['what'] = what.replace('"', '')[:120] or g['what']
         g['permissive'] = 'permissive=1' in line
+    # Refused once, allowed now (1.0.238): a module or a boolean that came after it - an upgrade
+    # with a newer otp_server - settles it without "Put in what otp needs" pressed again.
+    settled = 0
+    for key in se_allowed_now(lines):
+        settled += groups[key]['count']
+        total -= groups.pop(key)['count']
     out = sorted(groups.values(), key=lambda g: -g['count'])[:30]
-    return {'tool': True, 'total': total, 'groups': out, 'since': since}
+    return {'tool': True, 'total': total, 'groups': out, 'since': since, 'settled': settled}
+
+
+def se_allowed_now(lines):
+    """Which of the refusals (one line for each kind) the policy loaded now allows, as audit2why
+    tells: "would be allowed by active policy". Nothing when audit2why is not there, or says
+    nothing plain - then they count, as until now."""
+    if not lines:
+        return []
+    by_id = {}
+    for key, line in lines.items():
+        m = re.search(r'msg=audit\(([0-9.]+:\d+)\)', line)
+        if m:
+            by_id[m.group(1)] = key
+    if not by_id:
+        return []
+    got = _se_run(['audit2why'], 300, light=True,
+                  data=''.join(lines[k] + '\n' for k in by_id.values()))
+    if got is None or got.returncode != 0:
+        return []
+    now = set()
+    cur = None
+    for line in (got.stdout or '').splitlines():
+        m = re.search(r'msg=audit\(([0-9.]+:\d+)\)', line)
+        if m and 'avc:' in line:
+            cur = by_id.get(m.group(1))
+            continue
+        if cur is not None and 'would be allowed by active policy' in line:
+            now.add(cur)
+    return sorted(now)
 
 
 def se_want_checked(r):
@@ -4665,6 +4702,8 @@ def se_report(c):
     d = c['denials']
     lines.append('  refused since the start: %s' % (d['total'] if d['tool'] else
                                                     '? (ausearch is not there)'))
+    if d.get('settled'):
+        lines.append('  refused before, allowed now (not counted): %d' % d['settled'])
     for g in d['groups'][:15]:
         lines.append('    %4dx %s -> %s %s { %s } %s' % (g['count'], g['source'], g['target'],
                                                          g['class'], g['perms'], g['what']))

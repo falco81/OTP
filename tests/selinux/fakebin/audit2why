@@ -1,0 +1,14 @@
+#!/bin/bash
+# echoes each refusal and its verdict, as audit2why does: "allowed by active policy" for the lines
+# matching a pattern in $S/allowed (one per line), "Missing type enforcement" for the rest
+. "$(dirname "$0")/_common"
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  echo "$line"; echo; echo "	Was caused by:"
+  if [ -s "$S/allowed" ] && printf '%s\n' "$line" | grep -qFf "$S/allowed"; then
+    echo "		Unknown - would be allowed by active policy"
+  else
+    echo "		Missing type enforcement (TE) allow rule."
+  fi
+  echo
+done

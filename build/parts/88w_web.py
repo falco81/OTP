@@ -606,7 +606,9 @@ def realip_desired(store):
             return {'from': nets, 'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
                     'recursive': bool(CONFIG.get('web_proxy_recursive', 1))}
     try:
-        if 'web_proxy' in store.settings_saved():
+        # Switched off: the row kept off (1.0.238) - or, switched off before that, the balancers
+        # named are still there.
+        if any(k.split('@', 1)[0].startswith('web_proxy') for k in store.settings_saved()):
             return {'from': [], 'header': '', 'recursive': False}
     except Exception:                                   # noqa: BLE001
         pass

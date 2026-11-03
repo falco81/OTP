@@ -1379,7 +1379,10 @@ class Daemon(object):
                 else:
                     self.store.save_setting(k + '@' + node, v, by)
                 continue
-            if v == FILE_CONFIG.get(k, DEFAULTS[k]) and k not in ('proxy_update', 'proxy_os'):
+            # Kept as rows off too (1.0.238): "switched off" is what takes otp's lines out of
+            # nginx again - a 0 equal to the default was dropped, and read as "never switched
+            # on", the balancer's lines stayed.
+            if v == FILE_CONFIG.get(k, DEFAULTS[k]) and k not in KEPT_OFF_KEYS:
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)

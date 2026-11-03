@@ -109,6 +109,21 @@ ok('on: asked with the networks, the header and the chain', rp == {'from': ['10.
 otp.CONFIG['web_proxy'] = 0
 st.save_setting('web_proxy', 0)
 ok('switched off again: asked to take otp\'s lines out', otp.realip_desired(st) == {'from': [], 'header': '', 'recursive': False})
+# switched off through the daemon, as the pages do (1.0.238): the 0 was dropped as the default, and
+# nginx's lines stayed
+dmn2 = otp.Daemon.__new__(otp.Daemon); dmn2.store = st
+otp.CONFIG.update(web_proxy=1)
+try:
+    dmn2.save_settings({'web_proxy': 0}, by='t'); e = ''
+except Exception as x:
+    e = repr(x)
+ok('switched off as the pages do: the row kept, off (%s)' % e, st.settings_saved().get('web_proxy') == 0, st.settings_saved().get('web_proxy'))
+otp.CONFIG['web_proxy'] = 0
+ok('...asked to take otp\'s lines out', otp.realip_desired(st) == {'from': [], 'header': '', 'recursive': False})
+st.drop_setting('web_proxy'); st.save_setting('web_proxy_from', '10.20.0.0/24')
+ok('switched off on 1.0.237 (the row dropped, the balancers still named): taken out as well',
+   otp.realip_desired(st) == {'from': [], 'header': '', 'recursive': False})
+st.drop_setting('web_proxy_from')
 for bad in ('Host', 'X-A B', '-x'):
     try:
         otp.check_setting('web_proxy_header', bad); e = ''

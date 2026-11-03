@@ -138,6 +138,22 @@ ok('...but one refused after it counts', c['denials']['total'] == 1, c['denials'
 since = c['denials'].get('since')
 _, e = do('enforce')
 ok('enforcing refused for it - and the step itself does not wipe what was refused', 'refused 1' in e and W.se_applied_at() == since, (e, W.se_applied_at(), since))
+# allowed by the policy loaded now (1.0.238): a newer module took it in - not counted, said
+open(FAKE + '/allowed', 'w').write('unreserved_port_t\n')
+c, _ = do('check')
+ok('refused before, allowed by the policy now (audit2why): not counted, said as settled',
+   c['denials']['total'] == 0 and c['denials'].get('settled') == 1 and not c['denials']['groups']
+   and not any('refused' in p for p in c['problems']), c['denials'])
+ok('...audit2why asked', 'audit2why' in open(FAKE + '/calls').read())
+open(FAKE + '/allowed', 'w').write('{ name_connect }\n')
+fake('Permissive', labels=GOOD, avc=RAW(now + 5) + RAW(now + 6).replace('name_connect', 'name_bind').replace(':456)', ':457)'))
+c, _ = do('check')
+ok('...one kind allowed now, the other not: only the other counted',
+   c['denials']['total'] == 1 and c['denials']['settled'] == 1 and c['denials']['groups'][0]['perms'] == 'name_bind', c['denials'])
+os.remove(FAKE + '/allowed')
+fake('Permissive', labels=GOOD, avc=RAW(now - 600) * 4 + RAW(now + 5))
+c, _ = do('check')
+ok('...audit2why says "missing": counted, as until now', c['denials']['total'] == 1 and not c['denials'].get('settled'), c['denials'])
 c, e = do('prepare')
 ok('"Put in" with nothing to change: the count stays (no way round the gate)', c and c['denials']['total'] == 1, c and c['denials'])
 os.environ['OTP_SELINUX_AUDITD'] = 'inactive'
