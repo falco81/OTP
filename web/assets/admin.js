@@ -4372,6 +4372,8 @@ function dpDirCard(x, set) {
   head.appendChild(who);
   var read = cmdButton('Read the domain’s policy', 'shield', '');
   read.type = 'button';
+  /* Only a directory switched on can be asked (1.0.234). */
+  if (!x.enabled) { read.disabled = true; read.title = 'Switch the directory on to read its policy'; }
   head.appendChild(read);
   card.appendChild(head);
   var body = el('div', 'dp-body');
@@ -4418,8 +4420,12 @@ function dpDirCard(x, set) {
   tries.disabled = win.disabled = mode !== 'own';
   [tries, win].forEach(function (b) {
     b.addEventListener('input', function () {
-      draft.tries = Number(tries.value) || 0;
-      draft.window_min = Number(win.value) || null;
+      /* Its own cap is one or more (1.0.234): a box emptied while typing was saved as 0 -
+         no cap at all, with "Its own" still shown. */
+      var t = Math.floor(Number(tries.value));
+      if (t >= 1) draft.tries = Math.min(100, t);
+      var w = Math.floor(Number(win.value));
+      if (w >= 1) draft.window_min = Math.min(1440, w);
       effText(); dpChanged();
     });
   });
@@ -17463,7 +17469,9 @@ function seNode(n) {
     });
     var d = s.denials || {};
     seRow(list, d.tool ? !d.total : null, !d.tool ? 'What SELinux refused cannot be read: ausearch is not on this machine (dnf install audit)'
+      : d.since ? (d.total ? 'SELinux refused ' + num(d.total) + ' thing(s) since otp\'s needs were put in' : 'Nothing refused since otp\'s needs were put in')
       : d.total ? 'SELinux refused ' + num(d.total) + ' thing(s) since the machine started' : 'Nothing refused since the machine started');
+    if (s.auditd === false) seRow(list, false, 'auditd does not run - what SELinux refuses is not written down (systemctl enable --now auditd)');
     box.appendChild(list);
     if ((d.groups || []).length) {
       var det = el('details', 'se-avc');

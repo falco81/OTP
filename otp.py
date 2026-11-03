@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.233'
+__version__ = '1.0.234'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -5029,6 +5029,12 @@ class LdapError(RuntimeError):
         return self.detail or str(self)
 
 
+class LdapNotAsked(LdapError):
+    """A password refused before the directory was asked - empty, holding a control
+    character, no account to bind as (1.0.234): not one of the directory's wrong passwords,
+    so not counted against the person's cap."""
+
+
 class LdapUnreachable(LdapError):
     """The directory could not be asked at all.
 
@@ -6987,8 +6993,13 @@ class Storage(object):
     def get_meta(self, k, default=None):
         got = self.db.value('SELECT v FROM meta WHERE k = ?', (k,))
         if got is not None and dbguard_on() and dbguard_meta_kept(k) and \
-                not dbguard_ok(self.db, 'm', k, got):
-            return default          # not otp's word (1.0.231): as if it were not there
+                not dbguard_ok(self.db, 'm', k, got, quiet=True):
+            # Read again once (1.0.234): the row and its signature are two reads, and a write
+            # between them paired the old row with the new signature - web:vip read as not
+            # there for a moment, and the VIP address could move.
+            got = self.db.value('SELECT v FROM meta WHERE k = ?', (k,))
+            if got is not None and not dbguard_ok(self.db, 'm', k, got):
+                return default      # not otp's word (1.0.231): as if it were not there
         return default if got is None else got
 
     def set_meta(self, k, v):
@@ -7019,14 +7030,20 @@ class Storage(object):
                 for r in self.db.rows('SELECT k, at, by_who FROM settings')}
 
     def save_setting(self, k, v, by=''):
-        self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
-                                         'by_who': str(by or '')[:190]})
-        if dbguard_setting_kept(k):
+        row = {'k': k, 'v': json.dumps(v), 'at': time.time(), 'by_who': str(by or '')[:190]}
+        if not dbguard_setting_kept(k):
+            self.db.upsert('settings', 'k', row)
+            return
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.upsert('settings', 'k', row)
             dbguard_sign(self.db, 's', k, json.dumps(v))     # 1.0.231
 
     def drop_setting(self, k):
-        self.db.run('DELETE FROM settings WHERE k = ?', (k,))
-        if dbguard_setting_kept(k):
+        if not dbguard_setting_kept(k):
+            self.db.run('DELETE FROM settings WHERE k = ?', (k,))
+            return
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.run('DELETE FROM settings WHERE k = ?', (k,))
             dbguard_sign(self.db, 's', k, None)
 
     def add_event(self, kind, words, level='info', who=''):
@@ -7250,13 +7267,15 @@ class Storage(object):
         # A second step left by an account of this name taken away before
         # (1.0.146) is not this one's: somebody else's phone would answer it.
         self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
-        got = self.db.insert('accounts', {
-            'name': name, 'role': role, 'pw': password_hash(password) if password else '',
-            'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
-            'note': str(note or '')[:400], 'created': time.time(), 'last_in': None,
-            'last_from': '', 'prefs': '{}', 'display': display, 'dn': dn,
-            'group_list': groups})
-        dbguard_account_sign(self.db, name)
+        pw = password_hash(password) if password else ''
+        with self.db.transaction():                 # with its signature (1.0.234)
+            got = self.db.insert('accounts', {
+                'name': name, 'role': role, 'pw': pw,
+                'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
+                'note': str(note or '')[:400], 'created': time.time(), 'last_in': None,
+                'last_from': '', 'prefs': '{}', 'display': display, 'dn': dn,
+                'group_list': groups})
+            dbguard_account_sign(self.db, name)
         return got
 
     def set_account(self, name, **fields):
@@ -7270,16 +7289,20 @@ class Storage(object):
             fields['pw'] = password_hash(fields.pop('password'))
         if 'role' in fields and fields['role'] not in ROLES_ALL:
             raise ValueError('the role is one of %s' % ', '.join(ROLES_ALL))
-        self.db.update('accounts', one['id'], fields)
-        if set(fields) & set(ACCOUNT_SIGNED):
+        if not set(fields) & set(ACCOUNT_SIGNED):
+            self.db.update('accounts', one['id'], fields)
+            return
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.update('accounts', one['id'], fields)
             dbguard_account_sign(self.db, fields.get('name') or one['name'])
 
     def drop_account(self, name):
         one = self.account(name)
         if not one:
             raise ValueError('there is no account called %s' % name)
-        self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
-        dbguard_account_sign(self.db, one['name'])
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
+            dbguard_account_sign(self.db, one['name'])
         self.db.run('DELETE FROM sessions WHERE kind = ? AND LOWER(name) = ?',
                     ('admin', one['name'].lower()))
         # Its second step with it (1.0.146): a new account of the same name
@@ -7408,8 +7431,11 @@ class Storage(object):
                'name': name, 'role': role, 'created': t, 'last': t,
                'expires': t + float(hours) * 3600, 'ip': str(ip or '')[:60],
                'data': json.dumps(data or {})}
-        self.db.insert('sessions', row)
-        if kind == 'admin':
+        if kind != 'admin':
+            self.db.insert('sessions', row)
+            return token
+        with self.db.transaction():                 # with its signature (1.0.234)
+            self.db.insert('sessions', row)
             dbguard_sign(self.db, 'x', row['token_hash'], dbguard_session_text(row))     # 1.0.231
         return token
 
@@ -8131,6 +8157,9 @@ class Storage(object):
                     if str(CONFIG.get('admin_directory') or '').lower() == old['name'].lower():
                         self.save_setting('admin_directory', name, by)
                         CONFIG['admin_directory'] = name
+                    # Its own cap of wrong passwords too (1.0.234): left on the old name, the
+                    # directory fell back to the setting - or to no cap at all.
+                    self._dirpw_move(old['name'], name)
                 self.db.update('directories', old['id'], row)
                 ident = old['id']
             else:
@@ -8155,6 +8184,22 @@ class Storage(object):
                                  'choose another directory for them first')
         self.db.run('DELETE FROM directories WHERE id = ?', (int(ident),))
         self._dirs = None
+        if one:
+            self._dirpw_move(one['name'], None)         # its own cap gone with it (1.0.234)
+
+    def _dirpw_move(self, old, new):
+        """A directory's own cap of wrong passwords (meta 'dirpw:conf') under its new name,
+        or taken away with it."""
+        try:
+            caps = json.loads(self.get_meta('dirpw:conf') or '{}')
+        except (TypeError, ValueError):
+            return
+        if not isinstance(caps, dict) or str(old).lower() not in caps:
+            return
+        mine = caps.pop(str(old).lower())
+        if new:
+            caps[str(new).lower()] = mine
+        self.set_meta('dirpw:conf', json.dumps(caps))
 
     # ---- tokens --------------------------------------------------------------
     TOKEN_SORTS = {'name': 'name', 'created': 'created', 'last_used': 'last_used',
@@ -8575,7 +8620,8 @@ DBGUARD_SETTINGS = frozenset((
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify'))
 DBGUARD_FILE = STATE_DIR / 'guard.json'
-DBGUARD = {'seen': None, 'good': None, 'dirty': 0.0, 'refused': {}, 'nodes': {}, 'lock': threading.Lock()}
+DBGUARD = {'seen': None, 'good': None, 'seen_h': None, 'dirty': 0.0, 'refused': {}, 'nodes': {},
+           'lock': threading.Lock()}
 
 
 def dbguard_on():
@@ -8654,6 +8700,7 @@ def _dbguard_load():
                 got = {}
             DBGUARD['seen'] = dict(got.get('seen') or {}) if isinstance(got, dict) else {}
             DBGUARD['good'] = dict(got.get('good') or {}) if isinstance(got, dict) else {}
+            DBGUARD['seen_h'] = dict(got.get('seen_h') or {}) if isinstance(got, dict) else {}
 
 
 def dbguard_flush(force=False):
@@ -8663,7 +8710,8 @@ def dbguard_flush(force=False):
     if not force and time.time() - DBGUARD['dirty'] < 3:
         return
     with DBGUARD['lock']:
-        data = json.dumps({'seen': DBGUARD['seen'], 'good': DBGUARD['good']})
+        data = json.dumps({'seen': DBGUARD['seen'], 'good': DBGUARD['good'],
+                           'seen_h': DBGUARD['seen_h'] or {}})
         DBGUARD['dirty'] = 0.0
     try:
         write_replacing(DBGUARD_FILE, data, 0o600)
@@ -8684,6 +8732,8 @@ def dbguard_sign(db, kind, ident, value, far=False):
         try:
             sigs = _dbguard_sigs(db, kind, ident)
         except Exception:                               # noqa: BLE001
+            if getattr(db, 'in_tx', False):
+                raise
             return False
         raw = db.value('SELECT v FROM meta WHERE k = ?', (sid,))
         # Newer than every node's (1.0.231): read in this order by every node, whatever the
@@ -8699,6 +8749,11 @@ def dbguard_sign(db, kind, ident, value, far=False):
             if db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, sid, raw)):
                 return True
         except Exception:                               # noqa: BLE001
+            # Inside a transaction (1.0.234): PostgreSQL has given it up already, so every
+            # try after this failed too and the COMMIT became a ROLLBACK, saying nothing -
+            # the row and its signature were lost without a word. Said to the caller.
+            if getattr(db, 'in_tx', False):
+                raise
             continue
     return False
 
@@ -8724,13 +8779,22 @@ def dbguard_ok(db, kind, ident, value, quiet=False):
             why = 'its signature is not right'
         else:
             n = max(good)
+            vh = hashlib.sha256(json.dumps(value).encode('utf-8')).hexdigest()[:16]
             _dbguard_load()
             with DBGUARD['lock']:
                 seen = int(DBGUARD['seen'].get(sid) or 0)
-                if n < seen:
+                hs = DBGUARD['seen_h']
+                if hs is None:
+                    hs = DBGUARD['seen_h'] = {}
+                # An older signature of the same value is no older row (1.0.234): a row signed
+                # here and again straight in the other node's database came over by
+                # replication with the first signature after the second was seen - refused
+                # there for good, though nothing had changed.
+                if n < seen and hs.get(sid) != vh:
                     why = 'it is an older one put back'
                 elif n > seen:
                     DBGUARD['seen'][sid] = n
+                    hs[sid] = vh
                     DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
     if not why:
         return True
@@ -8849,7 +8913,7 @@ def dbguard_node_ok(store, name):
         addr = ''
     if dbguard_ok(store.db, 'm', 'node:' + name, raw, quiet=True):
         with DBGUARD['lock']:
-            DBGUARD['nodes'][name] = addr
+            DBGUARD['nodes'][name] = (addr, time.time())
         return True
     # The heartbeat and its signature come over in two pieces from a node before 1.0.232
     # (two statements): read between them, the new one is not signed yet. The address it
@@ -8857,7 +8921,9 @@ def dbguard_node_ok(store, name):
     # cannot point the cluster anywhere new by it.
     with DBGUARD['lock']:
         known = DBGUARD['nodes'].get(name)
-    if addr and known == addr:
+    # For a few minutes only (1.0.234): long enough for a signature behind its row, not a
+    # row written by somebody else kept for ever.
+    if addr and known and known[0] == addr and time.time() - known[1] < 180:
         return True
     return dbguard_ok(store.db, 'm', 'node:' + name, raw)
 
@@ -8895,6 +8961,7 @@ def dbguard_resign(store, why=''):
     # What is seen from now on starts here: older ones put back are older than these.
     with DBGUARD['lock']:
         DBGUARD['seen'] = {}
+        DBGUARD['seen_h'] = {}
         DBGUARD['good'] = {}
         DBGUARD['refused'] = {}
         DBGUARD['dirty'] = time.time()
@@ -9042,6 +9109,11 @@ def policy_recommend(pol):
     windows = [w for _t, _s, w in found if isinstance(w, (int, float))]
     window = int(math.ceil(max(windows) / 60.0)) if windows else 30
     tries = max(1, t - 2) if t > 3 else max(1, t - 1)
+    if t <= 1:
+        # Locked at the first wrong password (1.0.234): no cap here keeps it from that.
+        return {'tries': 1, 'window_min': max(1, min(1440, window)), 'threshold': t, 'from': src,
+                'why': 'The account is locked at its first wrong password - no cap here can keep '
+                       'that from happening; 1 at least keeps it to one wrong password from here.'}
     if src == 'the domain':
         why = ('The domain locks an account after %d wrong passwords: %d here leave the person %d '
                'of their own before it locks.' % (t, tries, t - tries))
@@ -9453,15 +9525,15 @@ class Directory(object):
     def password_ok(self, entry, password):
         """True, or LdapError with the directory's reason in words."""
         if not str(password or ''):
-            raise LdapError('a password is needed')
+            raise LdapNotAsked('a password is needed')
         if not str((entry or {}).get('dn') or '').strip():
             # A bind with no name and a password is an anonymous one on many
             # servers (1.0.101): never asked.
-            raise LdapError('no account to check the password of')
+            raise LdapNotAsked('no account to check the password of')
         if any(ord(c) < 32 or ord(c) == 127 for c in str(password)):
             # Cut at a NUL somewhere on the way, a password is empty - and an
             # empty one binds anonymously (1.0.101).
-            raise LdapError('the password holds a control character')
+            raise LdapNotAsked('the password holds a control character')
         with self.held():
             return self._password_ok(entry, password)
 
@@ -15973,6 +16045,9 @@ class Daemon(object):
             return self._reload_all(why)
 
     def _reload_all(self, why=''):
+        # The mark of the change read before the settings (1.0.234): read after them, a change
+        # made on the other node meanwhile was taken as read - and never loaded.
+        serial = self.store.get_meta('conf_serial', '0')
         # The settings that reach root as signed only, with the guard on (1.0.231).
         load_config(saved=dbguard_settings(self.store.settings_saved(), self.store))
         if not BIND_STRICT.get('tokens'):
@@ -15986,7 +16061,7 @@ class Daemon(object):
             self.siem.configure()
         if self.radius:
             self.radius.open_sockets()
-        self.conf_serial = self.store.get_meta('conf_serial', '0')
+        self.conf_serial = serial
         if why:
             log('read the configuration again (%s)' % why)
 
@@ -22902,7 +22977,10 @@ def heartbeat(store, daemon=None):
             # among them, for the other node's pages to show as they are.
             'own': {k: (CONFIG.get(k) if not isinstance(CONFIG.get(k), bytes) else '')
                     for k in NODE_KEYS},
-            'own_file': sorted(k for k in NODE_KEYS if k in (FILE_KEYS or ()))}
+            'own_file': sorted(k for k in NODE_KEYS if k in (FILE_KEYS or ())),
+            # The guard against writes to the database (1.0.234): a going back below it
+            # refused while it is on on any node.
+            'db_guard': bool(CONFIG.get('db_guard'))}
     try:
         beat['software'] = software_info(store)  # for the other node's About (1.0.99)
     except Exception:                                   # noqa: BLE001
@@ -24503,6 +24581,12 @@ def ha_resync_job(store, by):
         finally:
             remote.close()
         store._clients = store._realms = None
+        # Signed again as they are now (1.0.234): the rows taken from the other node were older
+        # than the ones this node had seen, and the guard refused them as put back.
+        try:
+            dbguard_resign(store, '%s rebuilt this node from the other' % by)
+        except Exception as e:                          # noqa: BLE001
+            log('the rows that reach root could not be signed again: %s' % e, 'warn')
         store.set_meta('conf_serial', '%.6f:%s' % (time.time(), node_name()))
         store.add_event('settings', '%s rebuilt this node from the other: %d row(s); what it '
                         'held is in %s' % (by, got['rows'], copy.name), 'warn', who=by)
@@ -26332,6 +26416,17 @@ def downgrade_why_not(store, version):
         why.append('%s is not older than %s, which runs here - that is an upgrade'
                    % (version, __version__))
         return why
+    # Not below the guard while it is on (1.0.234): what an older version writes there is not
+    # signed, and back on this one the accounts and settings changed meanwhile were refused.
+    if v < (1, 0, 231):
+        on = [node_name()] if CONFIG.get('db_guard') else []
+        try:
+            on += [n['name'] for n in ha_nodes(store) if n['name'] != node_name() and n.get('db_guard')]
+        except Exception:                               # noqa: BLE001
+            pass
+        if on:
+            why.append('older than 1.0.231 while the guard against writes to the database is on '
+                       '(%s): switch it off on every node first' % ', '.join(on))
     floor, by = downgrade_db_floor(store)
     if v < _ver_tuple(floor):
         why.append('older than %s: otp %s, which ran on this database, wrote what older '
@@ -36440,7 +36535,9 @@ def _ask_isemon_tls(daemon, args):
 # (check, prepare, enforce, permissive); that node's daemon has its root helper do it and
 # says how SELinux is there in 'host:selinux:now:NODE' - looked at again every half hour.
 # Nothing changes unless somebody asks: a machine with SELinux disabled stays so.
-SE_WORK = {'busy': False, 'seen': 0.0}
+# The first look two minutes after the start (1.0.234), not at once: the helper's semanage and
+# ausearch take a core for seconds, beside a daemon that has just begun to answer.
+SE_WORK = {'busy': False, 'seen': time.time() - 1800 + 120, 'tried': ''}
 SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive')
 SE_EVERY = 1800
 
@@ -36513,11 +36610,15 @@ def selinux_tick(daemon):
     me = node_name()
     want = _meta_json(store, 'host:selinux:want:' + me) or {}
     now = _meta_json(store, 'host:selinux:now:' + me) or {}
-    asked = bool(want) and want.get('id') != now.get('done')
+    # A step tried is not tried again (1.0.234): with its answer not written (the database
+    # away), it ran again every 5 s - "enforce" and "prepare" over and over.
+    asked = bool(want) and want.get('id') != now.get('done') and want.get('id') != SE_WORK['tried']
     if SE_WORK['busy'] or not (asked or time.time() - SE_WORK['seen'] > SE_EVERY):
         return
     SE_WORK['busy'] = True
     SE_WORK['seen'] = time.time()
+    if asked:
+        SE_WORK['tried'] = want.get('id') or ''
     do = want.get('do') if asked and want.get('do') in SE_ACTIONS else 'check'
 
     def go():
@@ -38415,23 +38516,38 @@ class ApiHandler(BaseHTTPRequestHandler):
                         if k not in keys:
                             fl.pop(k, None)
                             self.d.login_info.pop(k, None)
-        self._held = (keys, t)
+        # Each place held on its own (1.0.234): a second count in the same request (the code
+        # sent before the first token) took the place of the sign-in's, which was then never
+        # given back - every right first sign-in counted as a wrong password.
+        held = getattr(self, '_held', None)
+        if not isinstance(held, list):
+            held = self._held = []
+        held.append([keys, t, False])
         return keys
 
     def failed(self, key):
-        """The attempt went wrong: the place it holds stays taken."""
-        self._failed = True
+        """The attempt went wrong: the place it holds stays taken - that one only, when it is
+        said which; every place of the request otherwise."""
+        held = getattr(self, '_held', None) or []
+        mine = [x for x in held if x[0] is key or x[0] == key]
+        for x in (mine or held):
+            x[2] = True
+        if not mine:
+            self._failed = True
 
     def _release(self):
         held = getattr(self, '_held', None)
         if not held or getattr(self, '_failed', False):
+            self._held = None
             return
-        keys, t = held
         with self.THROTTLE_LOCK:
-            for key in keys:
-                got = self.d.login_fails.get(key)
-                if got and t in got:
-                    got.remove(t)
+            for keys, t, bad in held:
+                if bad:
+                    continue
+                for key in keys:
+                    got = self.d.login_fails.get(key)
+                    if got and t in got:
+                        got.remove(t)
         self._held = None
 
 
@@ -38604,8 +38720,16 @@ def lockouts_said(store, a, n):
 
 
 # ---- the cap of wrong directory passwords per person (1.0.230) -------------------------------
-def dir_pw_who(name):
-    """A person as the cap counts them: DOMAIN\\novak, novak@anything and Novak are one."""
+def dir_pw_who(name, entry=None):
+    """A person as the cap counts them: their account in the directory (1.0.234) - the name
+    typed counted novakj (sAMAccountName) and jan.novak@corp.cz (UPN) apart, and both forms
+    together got twice the cap through to the directory. Its first part and a short hash of
+    the whole DN: readable among the counts, one per account. A name the directory does not
+    have: as typed - DOMAIN\\novak, novak@anything and Novak are one."""
+    dn = str((entry or {}).get('dn') or '').strip().lower()
+    if dn:
+        first = re.split(r'(?<!\\),', dn, 1)[0].split('=', 1)[-1].strip()
+        return '%s#%s' % (first[:60], hashlib.sha256(dn.encode('utf-8')).hexdigest()[:8])
     return str(name or '').strip().lower().split('\\', 1)[-1].rsplit('@', 1)[0].strip()[:190]
 
 
@@ -38627,12 +38751,12 @@ def dir_pw_cap_of(store, directory):
     return int(tries or 0), 60 * int(window or 30)
 
 
-def dir_pw_take(h, name, directory=''):
+def dir_pw_take(h, name, directory='', entry=None):
     """A place for one directory password of `name`, held before the directory is asked; ''
     when there is no cap. Over it: 429 - the directory is not asked. Counted per directory
     (1.0.232): novak of one domain is not novak of another, and each has its own lockout."""
     most, span = dir_pw_cap_of(h.store, directory)
-    who = dir_pw_who(name)
+    who = dir_pw_who(name, entry)
     if most <= 0 or not who:
         return ''
     if directory:
@@ -38643,6 +38767,9 @@ def dir_pw_take(h, name, directory=''):
         log_sparing('adpw:' + who, 'wrong directory passwords for %s: the cap of %d in %d min is '
                     'reached - the directory is not asked for that name meanwhile'
                     % (who, most, span // 60), 'warn', every=300)
+        # The address's own count keeps its place too (1.0.234): the tries spent on a capped
+        # name no longer came back to it.
+        h.failed(None)
         raise ApiError(429, 'too many wrong passwords for this name: try again in %d min' % wait)
     return who
 
@@ -38914,14 +39041,14 @@ def admin_ask_directory(h, name, password):
         # there, anybody would be an administrator here.
         return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
                 'directory': ad.name}
-    held = dir_pw_take(h, who, ad.name)          # the cap per person (1.0.230), per directory (1.0.232)
+    held = dir_pw_take(h, who, ad.name, entry)   # the cap per account (1.0.230, 1.0.232, 1.0.234)
     try:
         ad.password_ok(entry, password)
     except LdapUnreachable as e:
         dir_pw_done(h, held, False)
         raise ApiError(503, 'the directory cannot be reached', str(e))
     except LdapError as e:
-        dir_pw_done(h, held, True)
+        dir_pw_done(h, held, not isinstance(e, LdapNotAsked))   # never asked: not counted (1.0.234)
         return {'ok': False, 'said': str(e) or 'the password is not right', 'dn': entry['dn'],
                 'directory': ad.name}
     dir_pw_done(h, held, False)
@@ -39020,7 +39147,9 @@ def dir_account_far(store, name, role, said, entry, groups):
             far.close()
     if done:
         for _ in range(40):
-            if store.account(name):
+            # With its signature (1.0.234): the account came over before it, and the first
+            # sign-in through the other node was refused with the guard on.
+            if store.account(name, checked=True):
                 return
             time.sleep(0.25)
     raise ApiError(503, 'the first sign-in of %s is made on the other node of the cluster, '
@@ -41008,6 +41137,17 @@ def dir_sample_directory(h, form):
     else:
         row['bind_pw'] = ''
     row['name'] = str(row.get('name') or 'new')
+    # Numbers checked as a save checks them (1.0.234): a word typed into the port broke the
+    # request with a 500.
+    try:
+        if row.get('port') not in (None, ''):
+            row['port'] = int(row['port'])
+            if not 1 <= row['port'] <= 65535:
+                raise ValueError
+        if row.get('timeout_s') not in (None, ''):
+            row['timeout_s'] = max(2, min(60, int(row['timeout_s'])))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'the port is 1 to 65535 and the time a number of seconds')
     return Directory(row)
 
 
@@ -42837,7 +42977,8 @@ def portal_gate_send(h, name, kind, dest, display='', lang=''):
     except (MailError, SmsError) as e:
         h.store.add_event('enrolment', 'the one-time code for %s to sign in to the enrolment pages '
                           'could not be sent to %s: %s' % (name, dest, e), 'warn', who=name)
-        raise ApiError(502, 'the code could not be sent: %s' % e)
+        # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
+        raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
     h.store.add_event('enrolment', '%s signed in to the enrolment pages with no token yet: a one-time '
                       'code went by %s to %s' % (name, 'mail' if kind == 'mail' else 'SMS', dest),
                       who=name)
@@ -43131,6 +43272,9 @@ def _portal_login(h):
     try:
         entry = Authenticator.find_person(ad, full, how, realm)
         if not entry:
+            # Counted as a name that exists is (1.0.234): only names the directory has were
+            # held back, so "too many wrong passwords for this name" said which ones do.
+            dir_pw_done(h, dir_pw_take(h, full, realm.get('directory') or ''), True)
             raise LdapError('there is no such account')
         if entry.get('many'):
             # More than one account answers to the name (1.0.205): as RADIUS
@@ -43140,14 +43284,14 @@ def _portal_login(h):
             raise LdapError('the account may not sign in: %s' % entry_unusable(entry))
         # The cap of wrong directory passwords per person (1.0.230), before the directory is
         # asked: over it, the account there is not locked by guesses made here.
-        held = dir_pw_take(h, full, realm.get('directory') or '')
+        held = dir_pw_take(h, full, realm.get('directory') or '', entry)
         try:
             ad.password_ok(entry, password)
         except LdapUnreachable:
             dir_pw_done(h, held, False)
             raise
-        except LdapError:
-            dir_pw_done(h, held, True)
+        except LdapError as e:
+            dir_pw_done(h, held, not isinstance(e, LdapNotAsked))   # never asked: not counted (1.0.234)
             raise
         dir_pw_done(h, held, False)
     except LdapUnreachable as e:
@@ -43582,7 +43726,8 @@ def _portal_enroll(h):
         except (MailError, SmsError) as e:
             h.store.add_event('enrolment', 'the code to check %s for %s could not be sent: %s'
                               % (dest, s['name'], e), 'warn', who=s['name'])
-            raise ApiError(502, 'the code could not be sent: %s' % e)
+            # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
+            raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
         portal_data_set(h, s, verify={'kind': kind, 'dest': dest, 'code': code_hash(s['name'], code),
                                       'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300),
                                       'tries': 0, 'lang': page_lang, 'mail_fmt': fmt})
@@ -43697,7 +43842,10 @@ def _portal_sendold(h):
         code_send(h.store, kind, tok.get('dest') or '', code, 'signin', name=s['name'],
                   lang=page_lang if page_lang in ('cs', 'en') else None)
     except (MailError, SmsError) as e:
-        raise ApiError(502, 'the code could not be sent: %s' % e)
+        h.store.add_event('enrolment', 'the code for %s to replace the token could not be sent: %s'
+                          % (s['name'], e), 'warn', who=s['name'])
+        # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
+        raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
     portal_data_set(h, s, old={'code': code_hash(s['name'], code),
                                'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300)})
     return {'sent_to': dest_masked(kind, tok.get('dest'))}
@@ -43776,15 +43924,16 @@ def _portal_reissue(h):
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
     held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'],
-                       (realm or {}).get('directory') or '')     # 1.0.230, 1.0.232
+                       (realm or {}).get('directory') or '',
+                       {'dn': (s.get('data') or {}).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
     try:
         ad.password_ok({'dn': (s.get('data') or {}).get('dn')}, str(b.get('password') or ''))
     except LdapUnreachable as e:
         dir_pw_done(h, held, False)
         log('the enrolment pages could not reach the directory: %s' % e, 'warn')
         raise ApiError(503, 'the directory cannot be reached just now')
-    except LdapError:
-        dir_pw_done(h, held, True)
+    except LdapError as e:
+        dir_pw_done(h, held, not isinstance(e, LdapNotAsked))       # never asked: not counted (1.0.234)
         h.failed(key)
         # 403, not 401 (1.0.33): a 401 signs the page out, and the person
         # lost the words saying what was wrong.

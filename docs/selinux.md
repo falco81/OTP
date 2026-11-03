@@ -13,7 +13,7 @@ things the system's policy does not say by itself:
 
 | What | Why | How |
 |---|---|---|
-| `/run/otp` and the API token labelled `httpd_var_run_t` | the pages (php-fpm, `httpd_t`) read the token; systemd makes `/run/otp` as `var_run_t`, which `httpd_t` may not read | otp's module **`otp_server`** (`/usr/local/lib/otp/otp_server.cil`): two file labels, no rule of its own |
+| `/run/otp` and the API token labelled `httpd_var_run_t` | the pages (php-fpm, `httpd_t`) read the token; systemd makes `/run/otp` as `var_run_t`, which `httpd_t` may not read | otp's module **`otp_server`** (`/usr/local/lib/otp/otp_server.cil`): file labels only, no rule of its own - for `/run/otp` and `/var/run/otp` both (1.0.234), as the policy reads one as the other (`file_contexts.subs_dist`: `/run` ↔ `/var/run`) |
 | `httpd_can_network_connect` on | the pages ask the daemon on `127.0.0.1:9861` (`api_port`) | a boolean |
 | `authlogin_radius` on | SSH asks otp for the code (pam_radius in `sshd_t`) - only with *SSH with a code* | a boolean |
 | the SSH gate's port as `radius_port_t` | pam_radius sends to it (18129 and up by default) | `semanage port` |
@@ -22,8 +22,9 @@ things the system's policy does not say by itself:
 | `/var/www/otp`, `/usr/libexec/keepalived/otp-vip-check` | the pages; keepalived's check, which may run unconfined from there | the system's own labels (`restorecon`) |
 
 `install.sh` and every upgrade copy the module beside the program, and put it into the
-policy where SELinux is on (only when it changed - `semodule` takes its time). Where
-SELinux is disabled they do nothing more. `--uninstall` takes the module out; the mode,
+policy where SELinux is on (only when it changed - `semodule` takes its time), and say so
+when the policy still does not label `/run/otp` for the pages (`matchpathcon /run/otp`).
+Where SELinux is disabled they do nothing more. `--uninstall` takes the module out; the mode,
 the booleans and the ports are the machine's and stay as they are.
 
 ## The card
@@ -32,7 +33,13 @@ Per node: the mode now and after the next restart, otp's module, the labels of i
 the booleans and ports above, and **what SELinux refused since the machine started**
 (`ausearch -m AVC,USER_AVC -ts boot`, for the web server, keepalived, sshd, chronyd,
 PostgreSQL, rsyslog, logrotate and anything with otp in it), grouped and counted.
-Looked at again every half hour, and at once with *Look again*.
+Looked at two minutes after otp starts and every half hour after that, and at once with
+*Look again*; `semanage`, `semodule -l` and `ausearch` run at the lowest CPU and disk
+priority (1.0.234). **What was refused before otp's needs were last put in no longer
+counts** (1.0.234): *Put in what otp needs*, when it changes anything, starts the count
+again - no second restart is needed after the first permissive start. *Switch to
+enforcing* never starts it again. **auditd** must run: without it nothing is written down,
+and enforcing is refused.
 
 The steps, each asked of that node only and done by its root helper:
 
