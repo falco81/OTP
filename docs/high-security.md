@@ -56,3 +56,53 @@ a directory; sign-ins to the administration lasting over 8 hours or idle over
 30 minutes; a proxy without a password.
 
 Switching it off is always possible, and written down as every setting is.
+
+
+## Root's actions only from rows otp signed (1.0.231)
+
+*Settings → High security → Root's actions only from rows otp signed* (`db_guard`;
+off by default - as until now).
+
+What a node does as root follows rows of the database: the firewall, sshd and
+root's `authorized_keys`, the network and the host name, a restart or a power-off,
+the system's updates and the proxy they go through, chrony's servers, nginx's
+certificates, keepalived's VIP, the TLS of the link between the databases - and so
+do the accounts and the sign-ins of these pages, through which all of it is asked
+for. Anybody who can write the database - its server, a `db_password` found out, a
+copy of the database put back - could write those rows, and the node did as they
+said.
+
+Since 1.0.231 every such row is signed when otp writes it: an HMAC under a key
+worked out from `secrets.key`, which is in no database (both nodes of a cluster have
+it). The signature is a row of its own beside it (`sig:<kind>:<hash>:<node>` in `meta`; each
+node writes only its own, so replication never meets the same row from both sides);
+versions before 1.0.231 leave those rows alone. With `db_guard` **on**, a node:
+
+| Row | Not signed, or an older one put back |
+|-----|--------------------------------------|
+| a sign-in to these pages (`sessions`) | not taken - "not signed in" |
+| an account (`accounts`: name, role, password, source, switched off, DN) | cannot sign in |
+| the directory administrators sign in against | not asked |
+| a setting that reaches root, or who may sign in (firewall ports, proxy, updates, restarts, logs, ACME, SNMP, the SSH gate, mail and SMS, the administrators' groups and second step, high security) | its last good value stays (else config.json and the default) |
+| a row of `meta` that root acts on (`web:vip`, `web:tls:*`, `web:access`, `fw:conf`, `ntp:conf`, `net:*`, `power:plan`, `host:sshkeys:want:*`, `host:sshd:conf`, `host:osup:plan`, `hatls:*`, `readdress:*`, `sshotp:*`, `console:want:*`, `upgrade:plan`, `ask:want:*`, `adm2fa:*` ...) | read as not there - nothing is done |
+| another node's heartbeat | its address not let through the firewall, not into nginx's lists, not taken for the VIP's or chrony's peer |
+
+Each node remembers, in its own file (`/var/lib/otp/guard.json`, not in the
+database), the newest signature it has seen of each row: a row taken from an
+older copy - signature and all - is older, and refused. What is refused is written
+in the log and in Events, and listed in the security check.
+
+RADIUS, the codes and the tokens are **never** held up by it: a setting RADIUS
+uses keeps its last good value, and nothing of the guard is asked on the RADIUS
+path.
+
+**Switching it on** writes `db_guard` into this node's `config.json` - never into
+the database, so nobody who can write the database can switch it off - and signs
+what the database holds at that moment as otp's word. It is switched off only on
+the node itself (its pages, or `otp --set db_guard=0` as root). In a cluster switch
+it on on every node, once all of them run 1.0.231 or later (it refuses while one
+does not). A copy put back on purpose, a configuration imported, the database moved
+and a node renamed are signed again by otp afterwards - they work as before.
+
+Not against the other node of a cluster: it holds the same key, and root on it is
+root of the cluster's database anyway.
