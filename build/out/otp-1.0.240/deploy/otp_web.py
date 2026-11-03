@@ -28,6 +28,7 @@ descriptor, never a path the otp account could swap for a link.
   otp_web.py --os-job ID check|upgrade   the system's updates (started by itself)
   otp_web.py --sshd-back                 a change of sshd on trial put back (its timer)
 """
+import errno
 import hashlib
 import io
 import ipaddress
@@ -2756,13 +2757,57 @@ CONSOLE_FILE = 'console.json'
 CONSOLE_FLAG = os.environ.get('OTP_CONSOLE_FLAG', '/etc/otp-console-login')
 
 
-def console_flag_set(on):
+USER_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}\Z')
+
+
+def console_flag_read():
+    """(root on, the normal users it opens for: '*', a list, or []) - from the file itself, never
+    through a link. The second line (1.0.240): 'users: *' or 'users: alice bob'."""
+    try:
+        fd = os.open(CONSOLE_FLAG, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return False, []
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return False, []
+        text = os.read(fd, 8192).decode('utf-8', 'replace')
+    finally:
+        os.close(fd)
+    lines = text.split('\n')
+    users = []
+    for ln in lines[1:]:
+        if ln.startswith('users:'):
+            words = ln[6:].split()
+            users = '*' if words == ['*'] else [w for w in words if USER_NAME_RE.match(w)][:200]
+    return lines[0].strip() == 'on', users
+
+
+def console_users_checked(users):
+    if users is None or users == '*':
+        return users
+    if not isinstance(users, list) or len(users) > 200:
+        raise Refused('the users: "*" or a list of names, 200 at most')
+    out = []
+    for u in users:
+        if not isinstance(u, str) or not USER_NAME_RE.match(u) or u == 'root':
+            raise Refused('%r is not the name of a normal user' % str(u)[:40])
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def console_flag_set(on, users=None):
     """Written beside it and put in its place: a link or a pipe found there is
-    replaced, never followed."""
+    replaced, never followed. `users` None: as they were (1.0.240)."""
+    if users is None:
+        users = console_flag_read()[1]
+    text = ('on\n' if on else 'off\n')
+    if users:
+        text += 'users: %s\n' % ('*' if users == '*' else ' '.join(users))
     tmp = '%s.%d.tmp' % (CONSOLE_FLAG, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     try:
-        os.write(fd, b'on\n' if on else b'off\n')
+        os.write(fd, text.encode())
         os.fchmod(fd, 0o644)
     finally:
         os.close(fd)
@@ -2787,8 +2832,9 @@ def console_part():
         out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
         if r.get('do') != 'set' or not isinstance(r.get('on'), bool):
             raise Refused('set, on or off')
-        console_flag_set(r['on'])
-        out['data'] = {'on': r['on']}
+        console_flag_set(r['on'], console_users_checked(r.get('users')))
+        on, users = console_flag_read()
+        out['data'] = {'on': on, 'users': users}
         out['ok'] = True
     except Refused as e:
         out['said'] = str(e)[:400]
@@ -2902,7 +2948,215 @@ def sshd_says():
             'password': said.get('passwordauthentication', ''), 'port': said.get('port', '')}
 
 
+# ---- the SSH keys of the normal users (1.0.240) -----------------------------------------
+# Every user of the machine who may sign in - UID_MIN..UID_MAX of /etc/login.defs, a shell
+# that is not nologin or false - and their ~/.ssh/authorized_keys, read and written by a child
+# that is that user (its own UID, groups and GID): a link or anything else they put in their own
+# home can only ever touch what is theirs already.
+LOGIN_DEFS = os.environ.get('OTP_LOGIN_DEFS', '/etc/login.defs')
+NO_SHELLS = ('nologin', 'false', 'sync', 'shutdown', 'halt')
+
+
+def uid_range():
+    lo, hi = 1000, 60000
+    try:
+        for ln in open(LOGIN_DEFS, encoding='utf-8', errors='replace'):
+            w = ln.split()
+            if len(w) >= 2 and w[0] in ('UID_MIN', 'UID_MAX') and w[1].isdigit():
+                if w[0] == 'UID_MIN':
+                    lo = int(w[1])
+                else:
+                    hi = int(w[1])
+    except OSError:
+        pass
+    return lo, hi
+
+
+def normal_users():
+    """[{name, uid, home, shell}] of the users who may sign in here, by name - 500 at most."""
+    import pwd
+    lo, hi = uid_range()
+    out = []
+    for p in pwd.getpwall():
+        if not lo <= p.pw_uid <= hi or p.pw_uid == 65534 or not USER_NAME_RE.match(p.pw_name):
+            continue
+        if not p.pw_shell or os.path.basename(p.pw_shell) in NO_SHELLS:
+            continue
+        if not p.pw_dir.startswith('/') or p.pw_dir == '/':
+            continue
+        out.append({'name': p.pw_name, 'uid': p.pw_uid, 'home': p.pw_dir, 'shell': p.pw_shell})
+    out.sort(key=lambda x: x['name'])
+    return out[:500]
+
+
+def ssh_user(name):
+    """The pwd entry of a normal user of normal_users() - refused for anybody else."""
+    import pwd
+    name = str(name or '')
+    if not USER_NAME_RE.match(name) or not any(u['name'] == name for u in normal_users()):
+        raise Refused('%s is not a user who may sign in on this machine' % name[:40])
+    return pwd.getpwnam(name)
+
+
+def as_user(pw, fn):
+    """fn() run by a child that is the user - its answer (JSON) back through a pipe."""
+    rd, wr = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        code = 0
+        try:
+            os.close(rd)
+            os.setgroups(os.getgrouplist(pw.pw_name, pw.pw_gid))
+            os.setgid(pw.pw_gid)
+            os.setuid(pw.pw_uid)
+            if os.getuid() != pw.pw_uid or os.geteuid() != pw.pw_uid:
+                raise OSError('could not become %s' % pw.pw_name)
+            os.umask(0o077)
+            try:
+                got = {'ok': True, 'data': fn()}
+            except Refused as e:
+                got = {'ok': False, 'said': str(e)}
+            except OSError as e:
+                got = {'ok': False, 'said': '%s: %s' % (e.filename or pw.pw_name, e.strerror or e)}
+            data = json.dumps(got).encode()[:4 << 20]
+            while data:
+                data = data[os.write(wr, data):]
+        except BaseException as e:                      # noqa: BLE001
+            try:
+                os.write(wr, json.dumps({'ok': False, 'said': str(e)[:300]}).encode())
+            except BaseException:                       # noqa: BLE001
+                pass
+            code = 1
+        finally:
+            os._exit(code)
+    os.close(wr)
+    chunks = []
+    with os.fdopen(rd, 'rb') as f:
+        while True:
+            b = f.read(65536)
+            if not b:
+                break
+            chunks.append(b)
+    os.waitpid(pid, 0)
+    try:
+        got = json.loads(b''.join(chunks).decode('utf-8', 'replace') or '{}')
+    except ValueError:
+        got = {}
+    if not got.get('ok'):
+        raise Refused(got.get('said') or 'it went wrong as %s' % pw.pw_name)
+    return got.get('data')
+
+
+def user_auth_paths(pw):
+    return os.path.join(pw.pw_dir, '.ssh'), os.path.join(pw.pw_dir, '.ssh', 'authorized_keys')
+
+
+def user_auth_read(pw):
+    folder, path = user_auth_paths(pw)
+
+    def go():
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return ''
+        except OSError as e:
+            if e.errno == errno.ELOOP:
+                raise Refused('%s is a link - put the file itself there' % path)
+            raise
+        with os.fdopen(fd, 'r', encoding='utf-8', errors='replace') as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise Refused('%s is not a plain file' % path)
+            return f.read(1 << 20)
+    return (as_user(pw, go) or '').split('\n')
+
+
+def user_auth_write(pw, lines):
+    """~/.ssh/authorized_keys of the user, written by the user: ~/.ssh made 0700 when it is not
+    there, refused when it or the file is a link; a new file, 0600, renamed in."""
+    folder, path = user_auth_paths(pw)
+    text = '\n'.join(lines).rstrip('\n') + '\n'
+
+    def go():
+        hs = os.lstat(pw.pw_dir)
+        if stat.S_ISLNK(hs.st_mode) or not stat.S_ISDIR(hs.st_mode) or hs.st_uid != pw.pw_uid:
+            raise Refused('%s is not a home folder of %s\'s own' % (pw.pw_dir, pw.pw_name))
+        try:
+            st = os.lstat(folder)
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+                raise Refused('%s is not a plain folder' % folder)
+        except FileNotFoundError:
+            os.mkdir(folder, 0o700)
+        try:
+            if stat.S_ISLNK(os.lstat(path).st_mode):
+                raise Refused('%s is a link - put the file itself there' % path)
+        except FileNotFoundError:
+            pass
+        fd, tmp = tempfile.mkstemp(prefix='.authorized_keys.', dir=folder)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, 'w') as f:
+                fd = None
+                f.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            if fd is not None:
+                os.close(fd)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return True
+    as_user(pw, go)
+    if shutil.which('restorecon') and not NO_SERVICES:
+        subprocess.run(['restorecon', '-R', folder], capture_output=True)
+
+
+def key_line_checked(line):
+    m = KEY_LINE_RE.match(line)
+    if not m or m.group('type') not in KEY_TYPES:
+        raise Refused('that is not one public key line (ssh-ed25519 AAAA... comment) - '
+                      'options before the key are not taken here')
+    facts = key_facts(line)
+    if not facts:
+        raise Refused('ssh-keygen does not read that key')
+    bits, fp, kind = facts
+    if kind == 'RSA' and bits < 3072:
+        raise Refused('an RSA key of %d bits is too weak: 3072 at least, or ed25519' % bits)
+    if kind == 'DSA':
+        raise Refused('DSA keys are not taken')
+    return fp
+
+
+def sshkeys_user_do(r, name):
+    """The same as for root, for a normal user - no "last key" guard: a user's password stays."""
+    pw = ssh_user(name)
+    do = r.get('do')
+    lines = user_auth_read(pw)
+    if do == 'add':
+        line = str(r.get('line') or '').strip()
+        fp = key_line_checked(line)
+        if not any(k['fp'] == fp for k in auth_keys(lines)):
+            user_auth_write(pw, [ln for ln in lines if ln.strip()] + [line])
+    elif do == 'drop':
+        fp = str(r.get('fp') or '')
+        hit = [k for k in auth_keys(lines) if k['fp'] and k['fp'] == fp]
+        if not hit:
+            raise Refused('no key %s is there' % fp)
+        gone = {k['line'] for k in hit}
+        user_auth_write(pw, [ln for i, ln in enumerate(lines) if i not in gone])
+    elif do != 'list':
+        raise Refused('list, add or drop')
+    lines = user_auth_read(pw)
+    return {'user': name, 'keys': [dict((k, v) for k, v in x.items() if k != 'line')
+                                   for x in auth_keys(lines)],
+            'file': user_auth_paths(pw)[1], 'users': normal_users(), 'sshd': sshd_says()}
+
+
 def sshkeys_do(r):
+    user = str(r.get('user') or 'root')
+    if user != 'root':
+        return sshkeys_user_do(r, user)
     do = r.get('do')
     lines = auth_lines()
     if do == 'add':
@@ -2939,7 +3193,9 @@ def sshkeys_do(r):
         raise Refused('list, add or drop')
     lines = auth_lines()
     return {'keys': [dict((k, v) for k, v in x.items() if k != 'line') for x in auth_keys(lines)],
-            'file': ROOT_AUTH, 'sshd': sshd_says()}
+            'file': ROOT_AUTH, 'sshd': sshd_says(), 'user': 'root',
+            # Who else may sign in here (1.0.240): their keys on the pages too.
+            'users': normal_users()}
 
 
 def sshkeys_part():

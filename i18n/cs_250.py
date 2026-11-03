@@ -33,3 +33,33 @@ P250 = {
   "Zobrazí se jen tentokrát. Kdokoli ho má, přihlásí se na {0} jako {1}.",
  "Then, on your machine: ssh -i {0} {1}@…": "Potom na svém počítači: ssh -i {0} {1}@…",
 }
+S250.update({
+ "PEM files - the certificate, its key, the chain, the root, in any order or all in one - or one PFX / PKCS#12 file. An RSA and an ECDSA certificate of the same names together (both keys in the PEM, or two PFX files): both are put in, the ECDSA one beside - nginx gives each client the one it takes. A request waits here: the certificate the authority sent back is enough, its key is here.":
+  "Soubory PEM – certifikát, jeho klíč, řetěz, kořen, v libovolném pořadí nebo vše v jednom – nebo jeden soubor PFX / PKCS#12. Certifikát RSA a ECDSA se stejnými jmény zároveň (oba klíče v PEM, nebo dva soubory PFX): vloží se oba, ECDSA vedle – nginx dá každému klientovi ten, který bere. Čeká tu žádost: stačí certifikát, který autorita poslala zpět, jeho klíč je tady.",
+ "PEM files - the certificate, its key, the chain, the root, in any order or all in one - or one PFX / PKCS#12 file. An RSA and an ECDSA certificate of the same names together (both keys in the PEM, or two PFX files): both are put in, the ECDSA one beside - nginx gives each client the one it takes. The key has to come with it.":
+  "Soubory PEM – certifikát, jeho klíč, řetěz, kořen, v libovolném pořadí nebo vše v jednom – nebo jeden soubor PFX / PKCS#12. Certifikát RSA a ECDSA se stejnými jmény zároveň (oba klíče v PEM, nebo dva soubory PFX): vloží se oba, ECDSA vedle – nginx dá každému klientovi ten, který bere. Klíč musí přijít s ním.",
+ "two PFX / PKCS#12 files at most - an RSA and an ECDSA one": "nejvýš dva soubory PFX / PKCS#12 – jeden RSA a jeden ECDSA",
+ "Which certificate": "Který certifikát",
+ "Both (.zip)": "Oba (.zip)",
+ "Both: one .zip with the two files in the format below - each key locked with the same password.":
+  "Oba: jeden .zip se dvěma soubory ve formátu níže – každý klíč zamčený stejným heslem.",
+ "there is no second (ECDSA) certificate beside this one": "vedle tohoto certifikátu není druhý (ECDSA)",
+})
+P250.update({
+ "RSA ({0})": "RSA ({0})",
+ "ECDSA ({0})": "ECDSA ({0})",
+ "two certificates come with two keys - one RSA, one ECDSA ({0} key(s) came)": "dva certifikáty přicházejí se dvěma klíči – jeden RSA, jeden ECDSA (přišlo klíčů: {0})",
+ "two certificates: one with an RSA key and one with an ECDSA key (these are {0})": "dva certifikáty: jeden s klíčem RSA a jeden s klíčem ECDSA (tyto jsou {0})",
+ "the two certificates are not of the same names ({0} / {1})": "ty dva certifikáty nemají stejná jména ({0} / {1})",
+})
+S250.update({
+ "Click to select it all": "Kliknutím označíte celý",
+ "the key is on the clipboard": "klíč je ve schránce",
+ "the token is on the clipboard": "token je ve schránce",
+ "Put it into the balancer now: NetScaler - the rewrite action otp_key; F5 - the iRule; nginx - proxy_set_header. Lost, make a new one: the old one stops at once.":
+  "Vložte ho do balanceru hned: NetScaler – rewrite action otp_key; F5 – iRule; nginx – proxy_set_header. Ztracený? Vytvořte nový: starý hned přestane platit.",
+})
+R250 = {
+ "Its <b>public</b> half goes into <code>~{0}/.ssh/authorized_keys</code> of {1} - written as {2}, so that the folder and the file are theirs. The <b>private</b> half is never kept here: it is shown to you once, to hand over.":
+  "Jeho <b>veřejná</b> část se zapíše do <code>~{0}/.ssh/authorized_keys</code> na {1} – zapisuje ji {2} sám, takže složka i soubor jsou jeho. <b>Soukromá</b> část se zde nikdy neukládá: zobrazí se vám jen jednou, k předání.",
+}

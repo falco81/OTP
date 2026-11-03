@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.239'
+__version__ = '1.0.240'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -27022,12 +27022,31 @@ TLS_EXPORT_KINDS = {
 }
 
 
-def tls_export(prof, kind, passphrase='', legacy=False):
+def tls_export(prof, kind, passphrase='', legacy=False, which='rsa'):
     """One certificate as a file to download (1.0.191): (bytes, ending). A private
     key in it is always locked with the passphrase - given to openssl on its
-    stdin, never on a command line; its file only in a folder of 0700, gone after."""
+    stdin, never on a command line; its file only in a folder of 0700, gone after.
+    `which` (1.0.240): the main certificate ('rsa'), the second one beside it ('ec'), or both
+    ('both': a .zip of the two, each as asked)."""
     if kind not in TLS_EXPORT_KINDS:
         raise ValueError('pem, fullchain, der, p7b, pfx or pemkey')
+    if which in ('ec', 'both'):
+        alt = tls_alt(prof)
+        if not alt:
+            raise ValueError('there is no second (ECDSA) certificate beside this one')
+        second = dict(alt, root=prof.get('root') or '')
+        if which == 'ec':
+            return tls_export(second, kind, passphrase, legacy)
+        import zipfile
+        a, ending = tls_export(prof, kind, passphrase, legacy)
+        b2, _ = tls_export(second, kind, passphrase, legacy)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.writestr('rsa' + ending, a)
+            z.writestr('ecdsa' + ending, b2)
+        return buf.getvalue(), '.zip'
+    if which != 'rsa':
+        raise ValueError('rsa, ec or both')
     cert = str(prof.get('cert') or '').strip()
     if not cert:
         raise ValueError('no certificate is kept for it')
@@ -27215,6 +27234,62 @@ def cert_bundle(cert='', key='', chain='', root='', pfx=b'', password='', pendin
             'root': ''.join(c + '\n' for c in roots), 'key': key_pem, 'info': info,
             'chain_info': [cert_info(c) for c in chain_out],
             'root_info': [cert_info(c) for c in roots], 'verify': verify}
+
+
+def cert_bundles(cert='', key='', chain='', root='', pfx=b'', password='', pending_key='',
+                 pfx2=b'', password2=''):
+    """As cert_bundle - and, when two keys came (1.0.240: an RSA and an ECDSA certificate of the
+    same names, in the PEM or as two PFX files), both: (the RSA one, the ECDSA one as a second
+    certificate beside it) - as ACME's "both" keeps them. One key: (the bundle, None), as until
+    now."""
+    texts = []
+    for blob, pw in ((pfx, password), (pfx2, password2 or password)):
+        if not blob:
+            continue
+        got = None
+        for extra in ([], ['-legacy']):
+            try:
+                got = _openssl(['pkcs12', '-nodes', '-passin', 'fd:@'] + extra, blob,
+                               secret=pw or '', what='the PFX / PKCS#12 file')
+                break
+            except ValueError as e:
+                last = e
+        if got is None:
+            raise ValueError('%s - is the password right?' % last)
+        texts.append(got.decode('utf-8', 'replace'))
+    keys = []
+    for part in texts + [str(cert or ''), str(chain or ''), str(root or ''), str(key or '')]:
+        keys += [m.group(0) for m in PEM_KEY.finditer(part)]
+    if len(keys) <= 1 and not pfx2:
+        return cert_bundle(cert, key, chain, root, pfx, password, pending_key), None
+    if len(keys) != 2:
+        raise ValueError('two certificates come with two keys - one RSA, one ECDSA (%d key(s) '
+                         'came)' % len(keys))
+    certs = []
+    for part in texts + [str(cert or ''), str(chain or ''), str(root or '')]:
+        certs += [m.group(0) for m in PEM_CERT.finditer(part) if m.group(0) not in certs]
+    plain = [key_plain(k, password) for k in keys]
+    leaves = []
+    for k in plain:
+        want = _pub_of_key(k)
+        leaf = next((c for c in certs if _pub_of_cert(c) == want), None)
+        if not leaf:
+            raise ValueError('one of the two keys has no certificate of its own among those sent')
+        leaves.append(leaf)
+    got = []
+    for i, k in enumerate(plain):
+        rest = [c for c in certs if c != leaves[1 - i]]
+        got.append(cert_bundle(cert='\n'.join(rest), key=k))
+    kinds = [str(g['info'].get('key') or '').split(' ')[0] for g in got]
+    if sorted(kinds) != ['EC', 'RSA']:
+        raise ValueError('two certificates: one with an RSA key and one with an ECDSA key '
+                         '(these are %s)' % ' and '.join(kinds))
+    main, alt = (got[0], got[1]) if kinds[0] == 'RSA' else (got[1], got[0])
+    names = lambda g: sorted(set([g['info'].get('cn') or ''] + list(g['info'].get('san') or [])) - {''})
+    if names(main) != names(alt):
+        raise ValueError('the two certificates are not of the same names (%s / %s)'
+                         % (', '.join(names(main)), ', '.join(names(alt))))
+    return main, alt
 
 
 def _san_ext(names):
@@ -33020,6 +33095,8 @@ def sshkeys_view(store):
                     late += 1
         nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
                       'keys': now.get('keys') or [], 'sshd': now.get('sshd') or {},
+                      # The normal users who may sign in there, and the keys of those read (1.0.240).
+                      'users': now.get('users') or [], 'keys_of': now.get('keys_of') or {},
                       'file': now.get('file') or '', 'at': now.get('at'),
                       'error': now.get('error') or ('%d change(s) asked of it more than five minutes ago '
                                                     'are not written - is otp-web.path running there?' % late
@@ -33030,7 +33107,13 @@ def sshkeys_view(store):
             'kept': rootkey_view(store, {n['name']: n['keys'] for n in nodes})}
 
 
-def sshkeys_ask(store, nodes, do, by, line='', fp='', last_ok=False):
+SSH_USER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}\Z')
+
+
+def sshkeys_ask(store, nodes, do, by, line='', fp='', last_ok=False, user='root'):
+    user = str(user or 'root')
+    if not SSH_USER_RE.match(user):
+        raise ValueError('that is not the name of a user')
     known = host_nodes(store)
     nodes = [n for n in known if n in (nodes or [])]
     if not nodes:
@@ -33051,12 +33134,12 @@ def sshkeys_ask(store, nodes, do, by, line='', fp='', last_ok=False):
             had = [had]
         had = [x for x in had if isinstance(x, dict) and time.time() - float(x.get('at') or 0) < 3600]
         had.append({'id': secrets.token_hex(6), 'do': do, 'line': line, 'fp': str(fp or '')[:80],
-                    'last_ok': bool(last_ok), 'by': by, 'at': time.time()})
+                    'last_ok': bool(last_ok), 'by': by, 'at': time.time(), 'user': user})
         store.set_meta(k, json.dumps(had[-10:]))
     if do != 'list':
         what = 'added the SSH key %s' % (line.split(' ', 2)[2] if line.count(' ') >= 2 else
                                          line[:40]) if do == 'add' else 'took away the SSH key %s' % fp
-        store.add_event('settings', '%s %s for root on %s' % (by, what, ', '.join(nodes)),
+        store.add_event('settings', '%s %s for %s on %s' % (by, what, user, ', '.join(nodes)),
                         'warn', who=by)
     return nodes
 
@@ -33084,9 +33167,13 @@ def sshkeys_tick(daemon):
         return
     HOST_WORK['ssh'] = True
     HOST_WORK['ssh_since'] = time.time()
-    # Reads asked again and again are one read (1.0.159).
+    # Reads asked again and again are one read (1.0.159) - one for each user (1.0.240).
     lists = [a for a in todo if a.get('do') == 'list']
-    todo = [a for a in todo if a.get('do') != 'list'] + lists[-1:]
+    last_list = {}
+    for a in lists:
+        last_list[str(a.get('user') or 'root')] = a
+    todo = [a for a in todo if a.get('do') != 'list'] + sorted(
+        last_list.values(), key=lambda a: float(a.get('at') or 0))
 
     def go():
         row = dict(now)
@@ -33094,16 +33181,33 @@ def sshkeys_tick(daemon):
         try:
             for a in todo or [{'id': '', 'do': 'list'}]:
                 err, got = '', None
+                user = str(a.get('user') or 'root')
                 try:
                     got = root_ask('sshkeys.ask', 'sshkeys.json', {
                         'do': a.get('do'), 'line': a.get('line') or '', 'fp': a.get('fp') or '',
-                        'last_ok': bool(a.get('last_ok'))}, 60)
+                        'last_ok': bool(a.get('last_ok')), 'user': user}, 60)
                 except Exception as e:                  # noqa: BLE001
                     err = str(e)[:300] or e.__class__.__name__
-                    log('root\'s SSH keys: %s' % err, 'warn')
+                    log('the SSH keys of %s: %s' % (user, err), 'warn')
                 if a.get('id'):
                     done.append(a['id'])
                 done.extend(x['id'] for x in lists if x.get('id') and x['id'] not in done)
+                if user != 'root':
+                    # A normal user's (1.0.240): kept apart, root's as they are; the last 30 read.
+                    of = dict(row.get('keys_of') or {})
+                    mine = dict(of.get(user) or {})
+                    mine.update(at=time.time(), error=err)
+                    if got:
+                        mine.update(keys=got.get('keys') or [], file=got.get('file') or '')
+                    of[user] = mine
+                    if len(of) > 30:
+                        for k in sorted(of, key=lambda k: float(of[k].get('at') or 0))[:len(of) - 30]:
+                            of.pop(k, None)
+                    row.update(keys_of=of, at=time.time(), done=done[-200:])
+                    if got:
+                        row.update(users=got.get('users') or [], sshd=got.get('sshd') or row.get('sshd') or {})
+                    store.set_meta('host:sshkeys:now:' + me, json.dumps(row))
+                    continue
                 # Written after each, so what is done shows as it is done.
                 # A change refused stays said over the read after it.
                 if err or a.get('do') != 'list' or not changed_err:
@@ -33113,7 +33217,7 @@ def sshkeys_tick(daemon):
                 row.update(at=time.time(), done=done[-200:])
                 if got:
                     row.update(keys=got.get('keys') or [], sshd=got.get('sshd') or {},
-                               file=got.get('file') or '')
+                               file=got.get('file') or '', users=got.get('users') or [])
                 store.set_meta('host:sshkeys:now:' + me, json.dumps(row))
             HOST_WORK['ssh_seen'] = time.time()
         except Exception as e:                          # noqa: BLE001
@@ -45119,17 +45223,27 @@ def _web_do(h):
                     raise ApiError(400, 'the PFX / PKCS#12 file did not arrive whole')
                 if len(pfx) > 200000:
                     raise ApiError(400, 'that is far bigger than any certificate file')
+            # A second PFX (1.0.240): the ECDSA certificate beside the RSA one.
+            pfx2 = b''
+            if b.get('pfx2'):
+                try:
+                    pfx2 = base64.b64decode(str(b['pfx2']), validate=True)
+                except (ValueError, binascii.Error):
+                    raise ApiError(400, 'the second PFX / PKCS#12 file did not arrive whole')
+                if len(pfx2) > 200000:
+                    raise ApiError(400, 'that is far bigger than any certificate file')
             pending = unseal_secret(prof['pending_key'], 'web:tls') if prof.get('pending_key') \
                 else ''
-            got = cert_bundle(b.get('cert'), b.get('key'), b.get('chain'), b.get('root'), pfx,
-                              str(b.get('password') or ''), pending)
+            got, got2 = cert_bundles(b.get('cert'), b.get('key'), b.get('chain'), b.get('root'), pfx,
+                                     str(b.get('password') or ''), pending, pfx2,
+                                     str(b.get('password2') or ''))
             how = 'uploaded'
         else:
             names = [x.strip() for x in re.split(r'[\s,;]+', str(b.get('names') or '')) if x.strip()]
             key, crt = make_selfsigned(str(b.get('cn') or '').strip(), names,
                                        int(b.get('days') or 825), str(b.get('kind') or 'rsa2048'),
                                        org=str(b.get('org') or ''))
-            got = cert_bundle(crt, key)
+            got, got2 = cert_bundle(crt, key), None
             how = 'self-signed, made here'
         info = got['info']
         if info.get('not_after') and info['not_after'] < time.time():
@@ -45138,6 +45252,13 @@ def _web_do(h):
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
                     verify=got['verify'], how=how)
+        if got2:
+            # Both of the same names (1.0.240): the ECDSA one beside, as ACME's "both".
+            prof['alt'] = {'cert': got2['cert'], 'chain': got2['chain'],
+                           'key': seal_secret(got2['key'], 'web:tls'), 'info': got2['info'],
+                           'for': tls_alt_for(got['cert'])}
+        else:
+            prof.pop('alt', None)
         prof.pop('pending_key', None)
         prof.pop('csr', None)
         prof.setdefault('preset', 'standard')
@@ -45146,8 +45267,10 @@ def _web_do(h):
         # One put in by hand is kept (1.0.170): ACME does not replace it at its
         # next renewal - Automatic certificates → Look after it gives it back.
         acme_care_set(store, target, False, who, 'a certificate was put in by hand')
-        store.add_event('settings', '%s put a certificate in for %s: %s (until %s)' % (
-            who, words, info.get('subject'), stamp(info.get('not_after')) if info.get('not_after') else '?'), 'warn', who=who)
+        store.add_event('settings', '%s put a certificate in for %s: %s (until %s)%s' % (
+            who, words, info.get('subject'), stamp(info.get('not_after')) if info.get('not_after') else '?',
+            ' - with a second one beside it, %s' % (got2['info'].get('key') or 'ECDSA') if got2 else ''),
+            'warn', who=who)
         return {'message': 'the certificate of %s is kept; the node%s put%s it in within a few '
                            'seconds' % (words, 's' if target == 'vip' else '',
                                         '' if target == 'vip' else 's'),
@@ -45195,11 +45318,16 @@ def _web_do(h):
         if not prof.get('cert'):
             raise ApiError(404, 'no certificate is kept for %s' % words)
         try:
-            blob, ending = tls_export(prof, kind, str(b.get('passphrase') or ''), bool(b.get('legacy')))
+            which = str(b.get('which') or 'rsa')
+            blob, ending = tls_export(prof, kind, str(b.get('passphrase') or ''), bool(b.get('legacy')),
+                                      which)
         except ValueError as e:
             raise ApiError(400, str(e))
         name = (re.sub(r'[^A-Za-z0-9._-]', '_', (prof.get('info') or {}).get('cn') or '') or
-                ('web-address' if target == 'vip' else target)) + ending
+                ('web-address' if target == 'vip' else target)) + \
+            {'rsa': '', 'ec': '-ecdsa', 'both': '-rsa-ecdsa'}[which] + ending
+        words = words + {'rsa': '', 'ec': ' (the second, ECDSA one)',
+                         'both': ' (both: RSA and ECDSA)'}[which]
         if TLS_EXPORT_KINDS[kind][2]:
             store.add_event('settings', '%s downloaded the certificate of %s WITH ITS PRIVATE KEY (%s, '
                             'locked with a passphrase)' % (who, words, TLS_EXPORT_KINDS[kind][0]),
@@ -45208,7 +45336,8 @@ def _web_do(h):
             store.add_event('settings', '%s downloaded the certificate of %s (%s)'
                             % (who, words, TLS_EXPORT_KINDS[kind][0]), who=who)
         return {'name': name, 'file': base64.b64encode(blob).decode(),
-                'type': 'application/x-pkcs12' if kind == 'pfx' else 'application/octet-stream'}
+                'type': 'application/zip' if ending == '.zip' else
+                'application/x-pkcs12' if kind == 'pfx' else 'application/octet-stream'}
     if act == 'tls_pem':
         if not prof.get('cert'):
             raise ApiError(404, 'no certificate is kept for %s' % words)
@@ -46606,7 +46735,10 @@ def _console_login_do(h):
     if not isinstance(on, bool):
         raise ApiError(400, 'on is true or false')
     try:
-        console_login_ask(h.store, str(b.get('node') or node_name()), on, s['name'])
+        # The normal users it opens for too (1.0.240): '*', a list of names, or none - left out,
+        # as they are.
+        console_login_ask(h.store, str(b.get('node') or node_name()), on, s['name'],
+                          users=b.get('users') if 'users' in b else None)
     except ValueError as e:
         raise ApiError(400, str(e))
     return {'message': 'asked: the console at login is switched on within seconds' if on else
@@ -46665,22 +46797,40 @@ def _sshkeys_do(h):
     nodes = b.get('nodes') or [node_name()]
     if not isinstance(nodes, list):
         raise ApiError(400, 'nodes is a list')
+    # Whose keys (1.0.240): root's as until now, or a normal user's of the nodes.
+    user = str(b.get('user') or 'root')
     try:
         if act == 'refresh':
-            sshkeys_ask(h.store, nodes, 'list', s['name'])
+            sshkeys_ask(h.store, nodes, 'list', s['name'], user=user)
             return {'message': 'asked again'}
         if act == 'add':
             # A public line, or a private key of which only the public half
             # is used and nothing else kept (1.0.161).
             line, was_private = rootkey_public(b.get('line'), str(b.get('passphrase') or ''))
-            sshkeys_ask(h.store, nodes, 'add', s['name'], line=line)
+            sshkeys_ask(h.store, nodes, 'add', s['name'], line=line, user=user)
             return {'message': 'the key goes onto %s within a few seconds%s' % (
                 ', '.join(nodes), ' - the private half was not kept' if was_private else '')}
         if act == 'drop':
             sshkeys_ask(h.store, nodes, 'drop', s['name'], fp=str(b.get('fp') or ''),
-                        last_ok=bool(b.get('last_ok')))
+                        last_ok=bool(b.get('last_ok')), user=user)
             return {'message': 'the key is taken away on %s within a few seconds'
                                % ', '.join(nodes)}
+        if act == 'uk_make':
+            # A key made for a normal user (1.0.240): its private half to the page once, its
+            # public half onto the nodes asked - remembered nowhere.
+            if user == 'root':
+                raise ValueError('root\'s key is made with the card above')
+            if b.get('kind', 'ed25519') not in ('ed25519', 'rsa4096'):
+                raise ValueError('ed25519 or rsa4096')
+            private, public, fp = sshkey_pair(str(b.get('kind') or 'ed25519'),
+                                              '%s@%s %s' % (user, node_name(), time.strftime('%Y-%m-%d')))
+            done = sshkeys_ask(h.store, nodes, 'add', s['name'], line=public, user=user)
+            h.store.add_event('settings', '%s made a new SSH key for %s on %s (%s) - its private '
+                              'half handed to the page once, kept nowhere' % (
+                                  s['name'], user, ', '.join(done), fp), 'warn', who=s['name'])
+            return {'private': private, 'pub': public, 'fp': fp, 'nodes': done,
+                    'file': 'otp-%s-%s' % (re.sub(r'[^A-Za-z0-9-]', '', user), time.strftime('%Y%m%d')),
+                    'message': 'made - keep the private half now, it is not shown again'}
         # Root's key made or given here (1.0.159): its private half kept nowhere.
         scope = str(b.get('scope') or 'all')
         if act == 'rk_make':
@@ -52540,6 +52690,27 @@ class Console(object):
                     self.note('The console at login', console_at_login_set(r == 'on'), 'ok')
                 except SystemExit as e:
                     self.note('The console at login', str(e), 'bad')
+
+        def at_login_users():
+            # The normal users it opens for too (1.0.240): through sudo, their own password.
+            users = console_users()
+            r = self.choose('The console at login - normal users', [
+                ('none', 'Nobody - only root (as until now)'),
+                ('all', 'Every normal user - through sudo, their own password'),
+                ('these', 'These users…')],
+                'Now: %s. Without sudo rights a user gets a line saying so and the ordinary shell.'
+                % console_users_words(users), cur=1 if users == '*' else (2 if users else 0))
+            if not r:
+                return
+            try:
+                if r == 'these':
+                    got = console_users_parse(self.ask('The users, separated by spaces',
+                                                       ' '.join(users) if isinstance(users, list) else ''))
+                else:
+                    got = '*' if r == 'all' else []
+                self.note('The console at login', console_at_login_set(console_at_login(), got), 'ok')
+            except (SystemExit, ValueError) as e:
+                self.note('The console at login', str(e), 'bad')
         return self.sub('The service', [
             ('1', 'Its state', lambda: self.act_argv(
                 ['systemctl', 'status', 'otp', '--no-pager', '-n', '60', '-l'],
@@ -52550,39 +52721,93 @@ class Console(object):
                 '$ systemctl status nginx php-fpm')),
             ('4', 'Its journal, live', self.journal, 'plain'),
             ('5', 'The console at login: on or off', at_login),
+            ('6', 'The console at login: for normal users too', at_login_users),
         ])
 
 
-def console_at_login():
+CONSOLE_USER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}\Z')
+
+
+def console_flag_lines():
+    """(root on, the normal users it opens for: '*', a list or []) - the second line of the
+    file (1.0.240): 'users: *' or 'users: alice bob'."""
     try:
         fd = os.open(str(CONSOLE_FLAG), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
-        return False
+        return False, []
     try:
         import stat as _stat
         if not _stat.S_ISREG(os.fstat(fd).st_mode):
-            return False
-        return os.read(fd, 8).decode('ascii', 'replace').strip() == 'on'
+            return False, []
+        text = os.read(fd, 8192).decode('utf-8', 'replace')
     finally:
         os.close(fd)
+    lines = text.split('\n')
+    users = []
+    for ln in lines[1:]:
+        if ln.startswith('users:'):
+            words = ln[6:].split()
+            users = '*' if words == ['*'] else [w for w in words if CONSOLE_USER_RE.match(w)][:200]
+    return lines[0].strip() == 'on', users
 
 
-def console_at_login_set(on):
+def console_at_login():
+    return console_flag_lines()[0]
+
+
+def console_users():
+    return console_flag_lines()[1]
+
+
+def console_users_parse(words):
+    """'*' (every normal user), [] (none: 'none' or nothing) or a list of names."""
+    if isinstance(words, list):
+        words = ' '.join(str(w) for w in words)
+    words = str(words or '').replace(',', ' ').split()
+    if words in (['*'], ['all']):
+        return '*'
+    if words in ([], ['none'], ['-']):
+        return []
+    out = []
+    for w in words:
+        if not CONSOLE_USER_RE.match(w) or w == 'root':
+            raise ValueError('%r is not the name of a normal user' % w[:40])
+        if w not in out:
+            out.append(w)
+    if len(out) > 200:
+        raise ValueError('200 users at most')
+    return out
+
+
+def console_users_words(users):
+    return 'every normal user' if users == '*' else (', '.join(users) if users else 'nobody')
+
+
+def console_at_login_set(on, users=None):
+    """`users` None: as they were (1.0.240)."""
     if os.geteuid() != 0:
         raise SystemExit('otp: only root sets that')
+    if users is None:
+        users = console_users()
+    text = 'on\n' if on else 'off\n'
+    if users:
+        text += 'users: %s\n' % ('*' if users == '*' else ' '.join(users))
     # Written beside it and put in its place (1.0.136): a link or a pipe
     # found there is replaced, never followed.
     tmp = '%s.%d.tmp' % (CONSOLE_FLAG, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     try:
-        os.write(fd, b'on\n' if on else b'off\n')
+        os.write(fd, text.encode())
         os.fchmod(fd, 0o644)
     finally:
         os.close(fd)
     os.rename(tmp, str(CONSOLE_FLAG))
-    return ('the otp console opens when root signs in at the console or over SSH (q leaves '
+    said = ('the otp console opens when root signs in at the console or over SSH (q leaves '
             'it for the shell)' if on else 'root signs in to the ordinary shell; '
             '`otp --console` opens the console')
+    if users:
+        said += '; for %s too, through sudo (their own password)' % console_users_words(users)
+    return said
 
 
 # ---- switched on the pages (1.0.141) ------------------------------------------------
@@ -52600,20 +52825,26 @@ def console_login_view(store):
         now = _meta_json(store, 'console:now:' + n) or {}
         want = _meta_json(store, 'console:want:' + n) or {}
         out.append({'name': n, 'me': n == node_name(), 'on': now.get('on'),
+                    'users': now.get('users') or [],
                     'at': now.get('at'), 'error': now.get('error') or '',
                     'pending': bool(want) and want.get('id') != now.get('done')})
     return {'nodes': out}
 
 
-def console_login_ask(store, node, on, by):
+def console_login_ask(store, node, on, by, users=None):
     known = [node_name()] + [n['name'] for n in ha_nodes(store)]
     if node not in known:
         raise ValueError('there is no node %s' % node)
-    store.set_meta('console:want:' + node, json.dumps({
-        'id': secrets.token_hex(6), 'on': bool(on), 'by': by, 'at': time.time()}))
+    if users is not None:
+        users = console_users_parse(users)
+    want = {'id': secrets.token_hex(6), 'on': bool(on), 'by': by, 'at': time.time()}
+    if users is not None:
+        want['users'] = users                   # the normal users it opens for too (1.0.240)
+    store.set_meta('console:want:' + node, json.dumps(want))
     store.add_event('settings', ('%s switched on the otp console at login on %s' if on else
-                                 '%s switched off the otp console at login on %s') % (by, node),
-                    'warn', who=by)
+                                 '%s switched off the otp console at login on %s') % (by, node) +
+                    ('' if users is None else ' - for normal users: %s (through sudo)'
+                     % console_users_words(users)), 'warn', who=by)
 
 
 def console_login_tick(daemon):
@@ -52629,13 +52860,16 @@ def console_login_tick(daemon):
             try:
                 err = ''
                 try:
-                    root_ask('console.ask', 'console.json',
-                             {'do': 'set', 'on': bool(want.get('on'))}, 60)
+                    ask = {'do': 'set', 'on': bool(want.get('on'))}
+                    if 'users' in want:
+                        ask['users'] = want['users']
+                    root_ask('console.ask', 'console.json', ask, 60)
                 except ValueError as e:
                     err = str(e)[:300]
                     log('the console at login could not be switched: %s' % err, 'warn')
+                on, users = console_flag_lines()
                 store.set_meta('console:now:' + me, json.dumps({
-                    'on': console_at_login(), 'at': time.time(), 'done': want.get('id'),
+                    'on': on, 'users': users, 'at': time.time(), 'done': want.get('id'),
                     'error': err}))
             finally:
                 CONSOLE_WORK['busy'] = False
@@ -52643,9 +52877,10 @@ def console_login_tick(daemon):
         return
     if time.time() - CONSOLE_WORK['seen'] > 60 and not CONSOLE_WORK['busy']:
         CONSOLE_WORK['seen'] = time.time()
-        on = console_at_login()
-        if now.get('on') != on or 'on' not in now:
-            store.set_meta('console:now:' + me, json.dumps(dict(now, on=on, at=time.time())))
+        on, users = console_flag_lines()
+        if now.get('on') != on or 'on' not in now or (now.get('users') or []) != users:
+            store.set_meta('console:now:' + me, json.dumps(dict(now, on=on, users=users,
+                                                                at=time.time())))
 
 
 def console_main(pal):
@@ -53337,6 +53572,9 @@ def build_parser():
     g.add_argument('--sso-key', action='store_true',
                    help='make a new key for the balancer to send in X-Otp-Sso-Key, shown once '
                         '(the one before is no longer taken)')
+    g.add_argument('--console-users', metavar='USERS',
+                   help='the console at login for normal users too, through sudo: * (every one), '
+                        'none, or names separated by spaces or commas')
     g.add_argument('--console-at-login', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='open the console when root signs in at the console or over SSH')
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
@@ -53543,7 +53781,9 @@ def build_parser():
                    'address) [this node]')
     g.add_argument('--tls-import', nargs='+', metavar='FILE', help='a certificate in: PEM '
                    'files (certificate, key, chain, root - in any order, or all in one) or a '
-                   '.pfx / .p12; its password in OTP_TLS_PASSWORD')
+                   '.pfx / .p12; its password in OTP_TLS_PASSWORD. An RSA and an ECDSA certificate '
+                   'of the same names together (two keys in the PEM, or two .pfx): both, the ECDSA '
+                   'one beside')
     g.add_argument('--tls-preset', choices=['standard', 'intermediate', 'modern'],
                    help='the protocols and ciphers: standard (TLS 1.2+1.3, ECDHE), intermediate '
                    '(Mozilla, with DHE), modern (TLS 1.3 only)')
@@ -54312,7 +54552,7 @@ def cli_ha_compare(store, pal, as_json=False):
 
 def cli_web(args, pal, store):
     """TLS and the VIP address on the command line (1.0.47)."""
-    who = 'command line'
+    who = cli_who()
     me = node_name()
     target = args.tls_for or me
     if (args.tls_import or args.tls_preset or args.tls_dh or args.tls_hsts is not None) and \
@@ -54321,18 +54561,22 @@ def cli_web(args, pal, store):
                          % target)
     said = []
     if args.tls_import:
-        pem, pfx = '', b''
+        pem, pfx, pfx2 = '', b'', b''
         for raw in args.tls_files:
             if b'-----BEGIN' in raw:
                 pem += raw.decode('utf-8', 'replace') + '\n'
             else:
+                # Two (1.0.240): the RSA and the ECDSA certificate of the same names.
+                if pfx2:
+                    raise ValueError('two .pfx / .p12 at most (an RSA and an ECDSA one)')
                 if pfx:
-                    raise ValueError('one .pfx / .p12 at a time')
-                pfx = raw
+                    pfx2 = raw
+                else:
+                    pfx = raw
         prof = tls_profile(store, target) or {}
         pending = unseal_secret(prof['pending_key'], 'web:tls') if prof.get('pending_key') else ''
-        got = cert_bundle(cert=pem, pfx=pfx, password=os.environ.get('OTP_TLS_PASSWORD', ''),
-                          pending_key=pending)
+        got, got2 = cert_bundles(cert=pem, pfx=pfx, password=os.environ.get('OTP_TLS_PASSWORD', ''),
+                                 pending_key=pending, pfx2=pfx2)
         # As on the pages (1.0.187): one run out is not put in.
         if got['info'].get('not_after') and got['info']['not_after'] < time.time():
             raise ValueError('this certificate ran out on %s' % stamp(got['info']['not_after']))
@@ -54340,6 +54584,12 @@ def cli_web(args, pal, store):
                     key=seal_secret(got['key'], 'web:tls'), info=got['info'],
                     chain_info=got['chain_info'], root_info=got['root_info'],
                     verify=got['verify'], how='imported on the command line')
+        if got2:
+            prof['alt'] = {'cert': got2['cert'], 'chain': got2['chain'],
+                           'key': seal_secret(got2['key'], 'web:tls'), 'info': got2['info'],
+                           'for': tls_alt_for(got['cert'])}
+        else:
+            prof.pop('alt', None)
         prof.pop('pending_key', None)
         prof.pop('csr', None)
         prof.setdefault('preset', 'standard')
@@ -54353,7 +54603,8 @@ def cli_web(args, pal, store):
             target, i.get('subject'), stamp(i.get('not_after')), len(got['chain_info']),
             'given' if got['root'] else 'not given',
             ', chain checked' if got['verify'] == 'ok' else
-            (' - the chain does not check: %s' % got['verify'] if got['verify'] else '')))
+            (' - the chain does not check: %s' % got['verify'] if got['verify'] else '')) +
+            (', with a second one beside it (%s)' % (got2['info'].get('key') or 'ECDSA') if got2 else ''))
         store.add_event('settings', 'a certificate was put in for %s on the command line: %s'
                         % (target, i.get('subject')), 'warn', who=who)
     if args.tls_preset or args.tls_dh or args.tls_hsts is not None:
@@ -54844,12 +55095,20 @@ def cli_main(argv=None):
         return cli_dir_guard(args, pal)
     if args.sso_status or args.sso_key:
         return cli_sso(args, pal)
-    if args.console_at_login:
-        if args.console_at_login != 'status':
-            print(pal.ok_line(console_at_login_set(args.console_at_login == 'on')))
+    if args.console_at_login or args.console_users is not None:
+        try:
+            users = (console_users_parse(args.console_users) if args.console_users is not None
+                     else None)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        if args.console_at_login in ('on', 'off') or users is not None:
+            on = (args.console_at_login == 'on') if args.console_at_login in ('on', 'off') \
+                else console_at_login()
+            print(pal.ok_line(console_at_login_set(on, users)))
         else:
             print(pal.ok_line('the console at login is %s' % ('ON' if console_at_login()
                                                                 else 'off')))
+            print('  for normal users too (through sudo): %s' % console_users_words(console_users()))
         if not CONSOLE_PROFILE.exists():
             print(pal.warn_line('%s is not there - install.sh puts it in' % CONSOLE_PROFILE))
         return 0
@@ -55218,7 +55477,7 @@ def cli_main(argv=None):
                                    '(otp --ha-resync --yes, there)'))
         return 0
     out = lambda data: print(json.dumps(data, indent=2, default=str, ensure_ascii=False))
-    who = 'command line'
+    who = cli_who()
 
     if args.status or args.check:
         d = Daemon(store, serve=False)
@@ -56854,6 +57113,15 @@ def cli_selinux(args, pal):
     sys.stdout.write(got.stdout)
     sys.stderr.write(got.stderr)
     return got.returncode
+
+
+def cli_who():
+    """Who did it, for the events: the command line - and, run through sudo (the console of a
+    normal user, 1.0.240), whose sudo it was."""
+    by = os.environ.get('SUDO_USER') or ''
+    if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
+        return 'command line (sudo %s)' % by
+    return 'command line'
 
 
 def cli_sso(args, pal):

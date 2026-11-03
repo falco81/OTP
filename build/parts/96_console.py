@@ -3104,6 +3104,27 @@ class Console(object):
                     self.note('The console at login', console_at_login_set(r == 'on'), 'ok')
                 except SystemExit as e:
                     self.note('The console at login', str(e), 'bad')
+
+        def at_login_users():
+            # The normal users it opens for too (1.0.240): through sudo, their own password.
+            users = console_users()
+            r = self.choose('The console at login - normal users', [
+                ('none', 'Nobody - only root (as until now)'),
+                ('all', 'Every normal user - through sudo, their own password'),
+                ('these', 'These users…')],
+                'Now: %s. Without sudo rights a user gets a line saying so and the ordinary shell.'
+                % console_users_words(users), cur=1 if users == '*' else (2 if users else 0))
+            if not r:
+                return
+            try:
+                if r == 'these':
+                    got = console_users_parse(self.ask('The users, separated by spaces',
+                                                       ' '.join(users) if isinstance(users, list) else ''))
+                else:
+                    got = '*' if r == 'all' else []
+                self.note('The console at login', console_at_login_set(console_at_login(), got), 'ok')
+            except (SystemExit, ValueError) as e:
+                self.note('The console at login', str(e), 'bad')
         return self.sub('The service', [
             ('1', 'Its state', lambda: self.act_argv(
                 ['systemctl', 'status', 'otp', '--no-pager', '-n', '60', '-l'],
@@ -3114,39 +3135,93 @@ class Console(object):
                 '$ systemctl status nginx php-fpm')),
             ('4', 'Its journal, live', self.journal, 'plain'),
             ('5', 'The console at login: on or off', at_login),
+            ('6', 'The console at login: for normal users too', at_login_users),
         ])
 
 
-def console_at_login():
+CONSOLE_USER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}\Z')
+
+
+def console_flag_lines():
+    """(root on, the normal users it opens for: '*', a list or []) - the second line of the
+    file (1.0.240): 'users: *' or 'users: alice bob'."""
     try:
         fd = os.open(str(CONSOLE_FLAG), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
-        return False
+        return False, []
     try:
         import stat as _stat
         if not _stat.S_ISREG(os.fstat(fd).st_mode):
-            return False
-        return os.read(fd, 8).decode('ascii', 'replace').strip() == 'on'
+            return False, []
+        text = os.read(fd, 8192).decode('utf-8', 'replace')
     finally:
         os.close(fd)
+    lines = text.split('\n')
+    users = []
+    for ln in lines[1:]:
+        if ln.startswith('users:'):
+            words = ln[6:].split()
+            users = '*' if words == ['*'] else [w for w in words if CONSOLE_USER_RE.match(w)][:200]
+    return lines[0].strip() == 'on', users
 
 
-def console_at_login_set(on):
+def console_at_login():
+    return console_flag_lines()[0]
+
+
+def console_users():
+    return console_flag_lines()[1]
+
+
+def console_users_parse(words):
+    """'*' (every normal user), [] (none: 'none' or nothing) or a list of names."""
+    if isinstance(words, list):
+        words = ' '.join(str(w) for w in words)
+    words = str(words or '').replace(',', ' ').split()
+    if words in (['*'], ['all']):
+        return '*'
+    if words in ([], ['none'], ['-']):
+        return []
+    out = []
+    for w in words:
+        if not CONSOLE_USER_RE.match(w) or w == 'root':
+            raise ValueError('%r is not the name of a normal user' % w[:40])
+        if w not in out:
+            out.append(w)
+    if len(out) > 200:
+        raise ValueError('200 users at most')
+    return out
+
+
+def console_users_words(users):
+    return 'every normal user' if users == '*' else (', '.join(users) if users else 'nobody')
+
+
+def console_at_login_set(on, users=None):
+    """`users` None: as they were (1.0.240)."""
     if os.geteuid() != 0:
         raise SystemExit('otp: only root sets that')
+    if users is None:
+        users = console_users()
+    text = 'on\n' if on else 'off\n'
+    if users:
+        text += 'users: %s\n' % ('*' if users == '*' else ' '.join(users))
     # Written beside it and put in its place (1.0.136): a link or a pipe
     # found there is replaced, never followed.
     tmp = '%s.%d.tmp' % (CONSOLE_FLAG, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     try:
-        os.write(fd, b'on\n' if on else b'off\n')
+        os.write(fd, text.encode())
         os.fchmod(fd, 0o644)
     finally:
         os.close(fd)
     os.rename(tmp, str(CONSOLE_FLAG))
-    return ('the otp console opens when root signs in at the console or over SSH (q leaves '
+    said = ('the otp console opens when root signs in at the console or over SSH (q leaves '
             'it for the shell)' if on else 'root signs in to the ordinary shell; '
             '`otp --console` opens the console')
+    if users:
+        said += '; for %s too, through sudo (their own password)' % console_users_words(users)
+    return said
 
 
 # ---- switched on the pages (1.0.141) ------------------------------------------------
@@ -3164,20 +3239,26 @@ def console_login_view(store):
         now = _meta_json(store, 'console:now:' + n) or {}
         want = _meta_json(store, 'console:want:' + n) or {}
         out.append({'name': n, 'me': n == node_name(), 'on': now.get('on'),
+                    'users': now.get('users') or [],
                     'at': now.get('at'), 'error': now.get('error') or '',
                     'pending': bool(want) and want.get('id') != now.get('done')})
     return {'nodes': out}
 
 
-def console_login_ask(store, node, on, by):
+def console_login_ask(store, node, on, by, users=None):
     known = [node_name()] + [n['name'] for n in ha_nodes(store)]
     if node not in known:
         raise ValueError('there is no node %s' % node)
-    store.set_meta('console:want:' + node, json.dumps({
-        'id': secrets.token_hex(6), 'on': bool(on), 'by': by, 'at': time.time()}))
+    if users is not None:
+        users = console_users_parse(users)
+    want = {'id': secrets.token_hex(6), 'on': bool(on), 'by': by, 'at': time.time()}
+    if users is not None:
+        want['users'] = users                   # the normal users it opens for too (1.0.240)
+    store.set_meta('console:want:' + node, json.dumps(want))
     store.add_event('settings', ('%s switched on the otp console at login on %s' if on else
-                                 '%s switched off the otp console at login on %s') % (by, node),
-                    'warn', who=by)
+                                 '%s switched off the otp console at login on %s') % (by, node) +
+                    ('' if users is None else ' - for normal users: %s (through sudo)'
+                     % console_users_words(users)), 'warn', who=by)
 
 
 def console_login_tick(daemon):
@@ -3193,13 +3274,16 @@ def console_login_tick(daemon):
             try:
                 err = ''
                 try:
-                    root_ask('console.ask', 'console.json',
-                             {'do': 'set', 'on': bool(want.get('on'))}, 60)
+                    ask = {'do': 'set', 'on': bool(want.get('on'))}
+                    if 'users' in want:
+                        ask['users'] = want['users']
+                    root_ask('console.ask', 'console.json', ask, 60)
                 except ValueError as e:
                     err = str(e)[:300]
                     log('the console at login could not be switched: %s' % err, 'warn')
+                on, users = console_flag_lines()
                 store.set_meta('console:now:' + me, json.dumps({
-                    'on': console_at_login(), 'at': time.time(), 'done': want.get('id'),
+                    'on': on, 'users': users, 'at': time.time(), 'done': want.get('id'),
                     'error': err}))
             finally:
                 CONSOLE_WORK['busy'] = False
@@ -3207,9 +3291,10 @@ def console_login_tick(daemon):
         return
     if time.time() - CONSOLE_WORK['seen'] > 60 and not CONSOLE_WORK['busy']:
         CONSOLE_WORK['seen'] = time.time()
-        on = console_at_login()
-        if now.get('on') != on or 'on' not in now:
-            store.set_meta('console:now:' + me, json.dumps(dict(now, on=on, at=time.time())))
+        on, users = console_flag_lines()
+        if now.get('on') != on or 'on' not in now or (now.get('users') or []) != users:
+            store.set_meta('console:now:' + me, json.dumps(dict(now, on=on, users=users,
+                                                                at=time.time())))
 
 
 def console_main(pal):

@@ -683,6 +683,9 @@ def build_parser():
     g.add_argument('--sso-key', action='store_true',
                    help='make a new key for the balancer to send in X-Otp-Sso-Key, shown once '
                         '(the one before is no longer taken)')
+    g.add_argument('--console-users', metavar='USERS',
+                   help='the console at login for normal users too, through sudo: * (every one), '
+                        'none, or names separated by spaces or commas')
     g.add_argument('--console-at-login', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='open the console when root signs in at the console or over SSH')
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
@@ -889,7 +892,9 @@ def build_parser():
                    'address) [this node]')
     g.add_argument('--tls-import', nargs='+', metavar='FILE', help='a certificate in: PEM '
                    'files (certificate, key, chain, root - in any order, or all in one) or a '
-                   '.pfx / .p12; its password in OTP_TLS_PASSWORD')
+                   '.pfx / .p12; its password in OTP_TLS_PASSWORD. An RSA and an ECDSA certificate '
+                   'of the same names together (two keys in the PEM, or two .pfx): both, the ECDSA '
+                   'one beside')
     g.add_argument('--tls-preset', choices=['standard', 'intermediate', 'modern'],
                    help='the protocols and ciphers: standard (TLS 1.2+1.3, ECDHE), intermediate '
                    '(Mozilla, with DHE), modern (TLS 1.3 only)')
@@ -1658,7 +1663,7 @@ def cli_ha_compare(store, pal, as_json=False):
 
 def cli_web(args, pal, store):
     """TLS and the VIP address on the command line (1.0.47)."""
-    who = 'command line'
+    who = cli_who()
     me = node_name()
     target = args.tls_for or me
     if (args.tls_import or args.tls_preset or args.tls_dh or args.tls_hsts is not None) and \
@@ -1667,18 +1672,22 @@ def cli_web(args, pal, store):
                          % target)
     said = []
     if args.tls_import:
-        pem, pfx = '', b''
+        pem, pfx, pfx2 = '', b'', b''
         for raw in args.tls_files:
             if b'-----BEGIN' in raw:
                 pem += raw.decode('utf-8', 'replace') + '\n'
             else:
+                # Two (1.0.240): the RSA and the ECDSA certificate of the same names.
+                if pfx2:
+                    raise ValueError('two .pfx / .p12 at most (an RSA and an ECDSA one)')
                 if pfx:
-                    raise ValueError('one .pfx / .p12 at a time')
-                pfx = raw
+                    pfx2 = raw
+                else:
+                    pfx = raw
         prof = tls_profile(store, target) or {}
         pending = unseal_secret(prof['pending_key'], 'web:tls') if prof.get('pending_key') else ''
-        got = cert_bundle(cert=pem, pfx=pfx, password=os.environ.get('OTP_TLS_PASSWORD', ''),
-                          pending_key=pending)
+        got, got2 = cert_bundles(cert=pem, pfx=pfx, password=os.environ.get('OTP_TLS_PASSWORD', ''),
+                                 pending_key=pending, pfx2=pfx2)
         # As on the pages (1.0.187): one run out is not put in.
         if got['info'].get('not_after') and got['info']['not_after'] < time.time():
             raise ValueError('this certificate ran out on %s' % stamp(got['info']['not_after']))
@@ -1686,6 +1695,12 @@ def cli_web(args, pal, store):
                     key=seal_secret(got['key'], 'web:tls'), info=got['info'],
                     chain_info=got['chain_info'], root_info=got['root_info'],
                     verify=got['verify'], how='imported on the command line')
+        if got2:
+            prof['alt'] = {'cert': got2['cert'], 'chain': got2['chain'],
+                           'key': seal_secret(got2['key'], 'web:tls'), 'info': got2['info'],
+                           'for': tls_alt_for(got['cert'])}
+        else:
+            prof.pop('alt', None)
         prof.pop('pending_key', None)
         prof.pop('csr', None)
         prof.setdefault('preset', 'standard')
@@ -1699,7 +1714,8 @@ def cli_web(args, pal, store):
             target, i.get('subject'), stamp(i.get('not_after')), len(got['chain_info']),
             'given' if got['root'] else 'not given',
             ', chain checked' if got['verify'] == 'ok' else
-            (' - the chain does not check: %s' % got['verify'] if got['verify'] else '')))
+            (' - the chain does not check: %s' % got['verify'] if got['verify'] else '')) +
+            (', with a second one beside it (%s)' % (got2['info'].get('key') or 'ECDSA') if got2 else ''))
         store.add_event('settings', 'a certificate was put in for %s on the command line: %s'
                         % (target, i.get('subject')), 'warn', who=who)
     if args.tls_preset or args.tls_dh or args.tls_hsts is not None:
@@ -2190,12 +2206,20 @@ def cli_main(argv=None):
         return cli_dir_guard(args, pal)
     if args.sso_status or args.sso_key:
         return cli_sso(args, pal)
-    if args.console_at_login:
-        if args.console_at_login != 'status':
-            print(pal.ok_line(console_at_login_set(args.console_at_login == 'on')))
+    if args.console_at_login or args.console_users is not None:
+        try:
+            users = (console_users_parse(args.console_users) if args.console_users is not None
+                     else None)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        if args.console_at_login in ('on', 'off') or users is not None:
+            on = (args.console_at_login == 'on') if args.console_at_login in ('on', 'off') \
+                else console_at_login()
+            print(pal.ok_line(console_at_login_set(on, users)))
         else:
             print(pal.ok_line('the console at login is %s' % ('ON' if console_at_login()
                                                                 else 'off')))
+            print('  for normal users too (through sudo): %s' % console_users_words(console_users()))
         if not CONSOLE_PROFILE.exists():
             print(pal.warn_line('%s is not there - install.sh puts it in' % CONSOLE_PROFILE))
         return 0
@@ -2564,7 +2588,7 @@ def cli_main(argv=None):
                                    '(otp --ha-resync --yes, there)'))
         return 0
     out = lambda data: print(json.dumps(data, indent=2, default=str, ensure_ascii=False))
-    who = 'command line'
+    who = cli_who()
 
     if args.status or args.check:
         d = Daemon(store, serve=False)
@@ -4200,6 +4224,15 @@ def cli_selinux(args, pal):
     sys.stdout.write(got.stdout)
     sys.stderr.write(got.stderr)
     return got.returncode
+
+
+def cli_who():
+    """Who did it, for the events: the command line - and, run through sudo (the console of a
+    normal user, 1.0.240), whose sudo it was."""
+    by = os.environ.get('SUDO_USER') or ''
+    if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
+        return 'command line (sudo %s)' % by
+    return 'command line'
 
 
 def cli_sso(args, pal):

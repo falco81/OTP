@@ -6590,17 +6590,27 @@ def _web_do(h):
                     raise ApiError(400, 'the PFX / PKCS#12 file did not arrive whole')
                 if len(pfx) > 200000:
                     raise ApiError(400, 'that is far bigger than any certificate file')
+            # A second PFX (1.0.240): the ECDSA certificate beside the RSA one.
+            pfx2 = b''
+            if b.get('pfx2'):
+                try:
+                    pfx2 = base64.b64decode(str(b['pfx2']), validate=True)
+                except (ValueError, binascii.Error):
+                    raise ApiError(400, 'the second PFX / PKCS#12 file did not arrive whole')
+                if len(pfx2) > 200000:
+                    raise ApiError(400, 'that is far bigger than any certificate file')
             pending = unseal_secret(prof['pending_key'], 'web:tls') if prof.get('pending_key') \
                 else ''
-            got = cert_bundle(b.get('cert'), b.get('key'), b.get('chain'), b.get('root'), pfx,
-                              str(b.get('password') or ''), pending)
+            got, got2 = cert_bundles(b.get('cert'), b.get('key'), b.get('chain'), b.get('root'), pfx,
+                                     str(b.get('password') or ''), pending, pfx2,
+                                     str(b.get('password2') or ''))
             how = 'uploaded'
         else:
             names = [x.strip() for x in re.split(r'[\s,;]+', str(b.get('names') or '')) if x.strip()]
             key, crt = make_selfsigned(str(b.get('cn') or '').strip(), names,
                                        int(b.get('days') or 825), str(b.get('kind') or 'rsa2048'),
                                        org=str(b.get('org') or ''))
-            got = cert_bundle(crt, key)
+            got, got2 = cert_bundle(crt, key), None
             how = 'self-signed, made here'
         info = got['info']
         if info.get('not_after') and info['not_after'] < time.time():
@@ -6609,6 +6619,13 @@ def _web_do(h):
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
                     verify=got['verify'], how=how)
+        if got2:
+            # Both of the same names (1.0.240): the ECDSA one beside, as ACME's "both".
+            prof['alt'] = {'cert': got2['cert'], 'chain': got2['chain'],
+                           'key': seal_secret(got2['key'], 'web:tls'), 'info': got2['info'],
+                           'for': tls_alt_for(got['cert'])}
+        else:
+            prof.pop('alt', None)
         prof.pop('pending_key', None)
         prof.pop('csr', None)
         prof.setdefault('preset', 'standard')
@@ -6617,8 +6634,10 @@ def _web_do(h):
         # One put in by hand is kept (1.0.170): ACME does not replace it at its
         # next renewal - Automatic certificates → Look after it gives it back.
         acme_care_set(store, target, False, who, 'a certificate was put in by hand')
-        store.add_event('settings', '%s put a certificate in for %s: %s (until %s)' % (
-            who, words, info.get('subject'), stamp(info.get('not_after')) if info.get('not_after') else '?'), 'warn', who=who)
+        store.add_event('settings', '%s put a certificate in for %s: %s (until %s)%s' % (
+            who, words, info.get('subject'), stamp(info.get('not_after')) if info.get('not_after') else '?',
+            ' - with a second one beside it, %s' % (got2['info'].get('key') or 'ECDSA') if got2 else ''),
+            'warn', who=who)
         return {'message': 'the certificate of %s is kept; the node%s put%s it in within a few '
                            'seconds' % (words, 's' if target == 'vip' else '',
                                         '' if target == 'vip' else 's'),
@@ -6666,11 +6685,16 @@ def _web_do(h):
         if not prof.get('cert'):
             raise ApiError(404, 'no certificate is kept for %s' % words)
         try:
-            blob, ending = tls_export(prof, kind, str(b.get('passphrase') or ''), bool(b.get('legacy')))
+            which = str(b.get('which') or 'rsa')
+            blob, ending = tls_export(prof, kind, str(b.get('passphrase') or ''), bool(b.get('legacy')),
+                                      which)
         except ValueError as e:
             raise ApiError(400, str(e))
         name = (re.sub(r'[^A-Za-z0-9._-]', '_', (prof.get('info') or {}).get('cn') or '') or
-                ('web-address' if target == 'vip' else target)) + ending
+                ('web-address' if target == 'vip' else target)) + \
+            {'rsa': '', 'ec': '-ecdsa', 'both': '-rsa-ecdsa'}[which] + ending
+        words = words + {'rsa': '', 'ec': ' (the second, ECDSA one)',
+                         'both': ' (both: RSA and ECDSA)'}[which]
         if TLS_EXPORT_KINDS[kind][2]:
             store.add_event('settings', '%s downloaded the certificate of %s WITH ITS PRIVATE KEY (%s, '
                             'locked with a passphrase)' % (who, words, TLS_EXPORT_KINDS[kind][0]),
@@ -6679,7 +6703,8 @@ def _web_do(h):
             store.add_event('settings', '%s downloaded the certificate of %s (%s)'
                             % (who, words, TLS_EXPORT_KINDS[kind][0]), who=who)
         return {'name': name, 'file': base64.b64encode(blob).decode(),
-                'type': 'application/x-pkcs12' if kind == 'pfx' else 'application/octet-stream'}
+                'type': 'application/zip' if ending == '.zip' else
+                'application/x-pkcs12' if kind == 'pfx' else 'application/octet-stream'}
     if act == 'tls_pem':
         if not prof.get('cert'):
             raise ApiError(404, 'no certificate is kept for %s' % words)

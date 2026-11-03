@@ -15,22 +15,40 @@ def _sshkeys_do(h):
     nodes = b.get('nodes') or [node_name()]
     if not isinstance(nodes, list):
         raise ApiError(400, 'nodes is a list')
+    # Whose keys (1.0.240): root's as until now, or a normal user's of the nodes.
+    user = str(b.get('user') or 'root')
     try:
         if act == 'refresh':
-            sshkeys_ask(h.store, nodes, 'list', s['name'])
+            sshkeys_ask(h.store, nodes, 'list', s['name'], user=user)
             return {'message': 'asked again'}
         if act == 'add':
             # A public line, or a private key of which only the public half
             # is used and nothing else kept (1.0.161).
             line, was_private = rootkey_public(b.get('line'), str(b.get('passphrase') or ''))
-            sshkeys_ask(h.store, nodes, 'add', s['name'], line=line)
+            sshkeys_ask(h.store, nodes, 'add', s['name'], line=line, user=user)
             return {'message': 'the key goes onto %s within a few seconds%s' % (
                 ', '.join(nodes), ' - the private half was not kept' if was_private else '')}
         if act == 'drop':
             sshkeys_ask(h.store, nodes, 'drop', s['name'], fp=str(b.get('fp') or ''),
-                        last_ok=bool(b.get('last_ok')))
+                        last_ok=bool(b.get('last_ok')), user=user)
             return {'message': 'the key is taken away on %s within a few seconds'
                                % ', '.join(nodes)}
+        if act == 'uk_make':
+            # A key made for a normal user (1.0.240): its private half to the page once, its
+            # public half onto the nodes asked - remembered nowhere.
+            if user == 'root':
+                raise ValueError('root\'s key is made with the card above')
+            if b.get('kind', 'ed25519') not in ('ed25519', 'rsa4096'):
+                raise ValueError('ed25519 or rsa4096')
+            private, public, fp = sshkey_pair(str(b.get('kind') or 'ed25519'),
+                                              '%s@%s %s' % (user, node_name(), time.strftime('%Y-%m-%d')))
+            done = sshkeys_ask(h.store, nodes, 'add', s['name'], line=public, user=user)
+            h.store.add_event('settings', '%s made a new SSH key for %s on %s (%s) - its private '
+                              'half handed to the page once, kept nowhere' % (
+                                  s['name'], user, ', '.join(done), fp), 'warn', who=s['name'])
+            return {'private': private, 'pub': public, 'fp': fp, 'nodes': done,
+                    'file': 'otp-%s-%s' % (re.sub(r'[^A-Za-z0-9-]', '', user), time.strftime('%Y%m%d')),
+                    'message': 'made - keep the private half now, it is not shown again'}
         # Root's key made or given here (1.0.159): its private half kept nowhere.
         scope = str(b.get('scope') or 'all')
         if act == 'rk_make':

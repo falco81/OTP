@@ -110,7 +110,10 @@ def _console_login_do(h):
     if not isinstance(on, bool):
         raise ApiError(400, 'on is true or false')
     try:
-        console_login_ask(h.store, str(b.get('node') or node_name()), on, s['name'])
+        # The normal users it opens for too (1.0.240): '*', a list of names, or none - left out,
+        # as they are.
+        console_login_ask(h.store, str(b.get('node') or node_name()), on, s['name'],
+                          users=b.get('users') if 'users' in b else None)
     except ValueError as e:
         raise ApiError(400, str(e))
     return {'message': 'asked: the console at login is switched on within seconds' if on else
