@@ -114,6 +114,9 @@ and a node renamed are signed again by otp afterwards - they work as before.
 1.0.231 it waited for `systemctl reload otp`, and that reload took the API token
 away from the pages - see below).
 
+**`otp --guard-status`** (1.0.236) says whether it is on on this node, and lists every row
+that reaches root not as otp wrote it - what it does not act on.
+
 **Another node's heartbeat** is a row and its signature, written in one
 transaction since 1.0.232. From a node still on 1.0.231 they came over by
 replication one after the other, and a node reading between them refused the

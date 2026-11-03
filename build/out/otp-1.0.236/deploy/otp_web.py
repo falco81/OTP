@@ -29,6 +29,7 @@ descriptor, never a path the otp account could swap for a link.
   otp_web.py --sshd-back                 a change of sshd on trial put back (its timer)
 """
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -37,6 +38,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -4336,6 +4338,17 @@ def se_do(r):
     said = []
     if do == 'check':
         return se_check(r)
+    if do == 'report':
+        # Read only (1.0.236): left in the web folder for the daemon, the otp group's to read.
+        node = re.sub(r'[^A-Za-z0-9._-]', '', str(r.get('node') or 'node'))[:60] or 'node'
+        data = se_report_bytes(r, node)
+        try:
+            import grp
+            gid = grp.getgrnam('otp').gr_gid
+        except (KeyError, ImportError):
+            gid = None
+        se_report_write(data, os.path.join(WEB_DIR, SE_REPORT_FILE), 0, gid)
+        return {'report': SE_REPORT_FILE, 'bytes': len(data), 'at': time.time()}
     mode = se_mode()
     if mode == 'absent':
         raise Refused('there is no SELinux on this machine')
@@ -4394,6 +4407,149 @@ def se_do(r):
     out = se_check(r)
     out['said'] = said
     return out
+
+
+# ---- what SELinux needs, gathered for whoever writes otp's module (1.0.236) -------------------
+SE_REPORT_FILE = 'selinux-report.tar.gz'
+SE_REPORT_MOST = 2 * 1024 * 1024        # each part at most, before it is packed
+SE_REPORT_PATHS = ('/run/otp', '/run/otp/api-token', '/var/lib/otp', '/var/lib/otp/web', '/etc/otp',
+                   '/etc/otp/config.json', '/var/www/otp', '/usr/local/lib/otp', '/var/log/otp',
+                   '/usr/libexec/keepalived/otp-vip-check', '/etc/nginx/certs', '/etc/nginx/conf.d',
+                   '/etc/keepalived/keepalived.conf', '/etc/chrony.conf', '/etc/ssh/sshd_config.d',
+                   '/etc/pam.d/sshd', '/run/php-fpm', '/var/lib/pgsql', '/etc/pki/rsyslog')
+SE_REPORT_COMMS = ('python', 'otp', 'nginx', 'php-fpm', 'keepalived', 'sshd', 'chronyd', 'postgres',
+                   'postmaster', 'mariadbd', 'mysqld', 'rsyslogd', 'auditd', 'otp-vip-check')
+SE_REPORT_PORT_TYPES = ('radius_port_t', 'ssh_port_t', 'http_port_t', 'postgresql_port_t',
+                        'mysqld_port_t', 'syslogd_port_t', 'snmp_port_t', 'ntp_port_t',
+                        'unreserved_port_t', 'vrrp_port_t')
+
+
+def _se_out(cmd, timeout=120, data=None, light=True):
+    """A command's words for the report - what it said, or why it said nothing."""
+    if not shutil.which(cmd[0]):
+        return '(%s is not on this machine)\n' % cmd[0]
+    if light:
+        if shutil.which('ionice'):
+            cmd = ['ionice', '-c', '3'] + cmd
+        if shutil.which('nice'):
+            cmd = ['nice', '-n', '19'] + cmd
+    try:
+        got = subprocess.run(cmd, input=data, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return '(%s: %s)\n' % (' '.join(cmd), e)
+    text = (got.stdout or '') + (('\n--- stderr ---\n' + got.stderr) if got.stderr.strip() else '')
+    return _se_cut(text)
+
+
+def _se_cut(text):
+    b = text.encode('utf-8', 'replace')
+    if len(b) <= SE_REPORT_MOST:
+        return text
+    # The newest lines kept: the end of the audit log is what came last.
+    return '(the first %d bytes left out - too long)\n' % (len(b) - SE_REPORT_MOST) + \
+        b[-SE_REPORT_MOST:].decode('utf-8', 'replace')
+
+
+def se_report_parts(r):
+    """Every part of the report: {name: text}. Read only - nothing is changed."""
+    parts = {}
+    check = se_check(r)
+    parts['check.json'] = json.dumps(check, indent=1, sort_keys=True)
+    parts['otp.json'] = json.dumps({'facts': r.get('facts') or {}, 'want': {
+        'booleans': r.get('booleans') or [], 'ports': r.get('ports') or []}}, indent=1, sort_keys=True)
+    raw = _se_out(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR', '-ts', 'boot'], 300)
+    parts['avc-raw.txt'] = raw
+    parts['avc.txt'] = _se_out(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR',
+                                '-ts', 'boot', '-i'], 300)
+    if raw.startswith('('):
+        parts['audit2why.txt'] = parts['audit2allow.te'] = raw
+    else:
+        parts['audit2why.txt'] = _se_out(['audit2why'], 300, data=raw)
+        parts['audit2allow.te'] = _se_out(['audit2allow', '-m', 'otp_local'], 300, data=raw)
+    sysw = []
+    for name, cmd in (('os-release', ['cat', '/etc/os-release']), ('kernel', ['uname', '-a']),
+                      ('started', ['uptime', '-s']), ('getenforce', ['getenforce']),
+                      ('sestatus', ['sestatus', '-v']),
+                      ('packages', ['rpm', '-q', 'selinux-policy', 'selinux-policy-targeted',
+                                    'policycoreutils', 'policycoreutils-python-utils',
+                                    'libselinux-utils', 'audit', 'nginx', 'php-fpm', 'keepalived',
+                                    'openssh-server', 'chrony', 'postgresql-server']),
+                      ('kernel command line', ['cat', SE_CMDLINE]),
+                      ('selinux config', ['cat', SE_CONFIG]),
+                      ('auditd', ['systemctl', 'is-active', 'auditd'])):
+        sysw.append('==== %s\n%s' % (name, _se_out(cmd, 60, light=False)))
+    parts['system.txt'] = '\n'.join(sysw)
+    lab = []
+    for p in SE_REPORT_PATHS:
+        if os.path.lexists(p):
+            lab.append(_se_out(['ls', '-Zd', p], 20, light=False).rstrip())
+            if os.path.isdir(p):
+                lab.append(_se_out(['ls', '-Za', p], 20, light=False).rstrip())
+            lab.append('  policy says: ' + _se_out(['matchpathcon', p], 20, light=False).strip())
+    parts['labels.txt'] = '\n'.join(lab) + '\n'
+    ps = _se_out(['ps', '-eZo', 'label,user,pid,comm,args'], 60, light=False)
+    keep = [x for x in ps.splitlines() if x.startswith('LABEL') or
+            any(c in x for c in SE_REPORT_COMMS)]
+    # Arguments cut to 200: what runs, not every word it was given.
+    parts['processes.txt'] = '\n'.join(x[:200] for x in keep) + '\n'
+    ports = _se_out(['semanage', 'port', '-l'], 300)
+    parts['ports.txt'] = '==== labelled\n' + '\n'.join(
+        x for x in ports.splitlines() if x.split()[:1] and x.split()[0] in SE_REPORT_PORT_TYPES) + \
+        '\n\n==== listening\n' + _se_out(['ss', '-lntupZ'], 60, light=False)
+    bools = _se_out(['getsebool', '-a'], 60, light=False)
+    parts['booleans.txt'] = '\n'.join(x for x in bools.splitlines() if re.match(
+        r'^(httpd_|authlogin_|nis_enabled|keepalived|daemons_|logging_|ssh|use_nfs|domain_can)',
+        x)) + '\n'
+    mods = _se_out(['semodule', '-l'], 300)
+    parts['modules.txt'] = '==== otp\n' + '\n'.join(
+        x for x in mods.splitlines() if 'otp' in x.lower()) + '\n\n==== %s\n%s\n==== in the policy\n%s\n' % (
+        SE_CIL, _read_or(SE_CIL) or '(not there)', _read_or(SE_CIL + '.in-policy') or '(none put in yet)')
+    parts['README.txt'] = (
+        'otp - what SELinux says on this node, for whoever writes otp\'s module (otp_server).\n'
+        'Made %s. Nothing was changed to make it.\n\n'
+        'check.json      the card: mode, module, labels, booleans, ports, refusals\n'
+        'avc*.txt        what SELinux refused since the machine started (raw and readable)\n'
+        'audit2why.txt   why; audit2allow.te: what would allow it - a hint, not to be loaded\n'
+        'labels.txt      the labels of otp\'s files and what the policy says they should be\n'
+        'processes.txt   the domains the programs run in; ports.txt, booleans.txt, modules.txt\n'
+        'system.txt      the system, the policy and the packages; otp.json: what otp uses here\n\n'
+        'No password, key or token of otp is in it. The audit log holds the command lines of the\n'
+        'programs refused something: otp never puts a secret on one - other programs on this\n'
+        'machine may. Look through avc*.txt before sending it on.\n' % time.strftime('%Y-%m-%d %H:%M:%S'))
+    return parts
+
+
+def se_report_bytes(r, top):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode='w:gz') as tf:
+        for name, text in se_report_parts(r).items():
+            data = text.encode('utf-8', 'replace')
+            info = tarfile.TarInfo('%s/%s' % (top, name))
+            info.size = len(data)
+            info.mtime = int(time.time())
+            info.mode = 0o600
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def se_report_write(data, path, uid=0, gid=None):
+    """Written whole and put in place, readable by root (and the otp group when asked)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix='.otp-selinux-')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+            f.flush()
+            os.fchmod(f.fileno(), 0o640 if gid is not None else 0o600)
+            if gid is not None:
+                os.fchown(f.fileno(), uid, gid)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def selinux_part():
@@ -4574,6 +4730,41 @@ def main(argv):
     if os.geteuid() != 0:
         print('otp_web.py: root only', file=sys.stderr)
         return 2
+    if argv[:1] == ['--selinux-report'] and len(argv) >= 2:
+        # `otp --selinux-report` (1.0.236): what otp needs and what came on stdin, into a file.
+        want = {}
+        try:
+            want = json.loads(sys.stdin.read(65536) or '{}')
+        except ValueError:
+            want = {}
+        want = want if isinstance(want, dict) else {}
+        out = argv[1]
+        node = re.sub(r'[^A-Za-z0-9._-]', '', str(want.get('node') or 'node'))[:60] or 'node'
+        try:
+            data = se_report_bytes(want, node)
+            se_report_write(data, out)
+        except (Refused, OSError) as e:
+            print('otp_web.py: %s' % e, file=sys.stderr)
+            return 2
+        print(out)
+        return 0
+    if argv[:1] == ['--selinux-do'] and len(argv) >= 2:
+        # `otp --selinux prepare|apply|enforce|permissive` (1.0.236): one step on this machine.
+        want = {}
+        try:
+            want = json.loads(sys.stdin.read(65536) or '{}')
+        except ValueError:
+            want = {}
+        do = {'apply': 'prepare'}.get(argv[1], argv[1])
+        try:
+            c = se_do(dict(want if isinstance(want, dict) else {}, do=do))
+        except Refused as e:
+            print('otp_web.py: %s' % e, file=sys.stderr)
+            return 2
+        said = c.pop('said', []) if isinstance(c, dict) else []
+        print(json.dumps(c) if '--json' in argv else
+              '\n'.join(['done: ' + x for x in said] + [se_report(c)]))
+        return 0
     if argv[:1] == ['--selinux-check']:
         # `otp --selinux-check` (1.0.233): what otp needs here comes on stdin from the otp
         # command, as JSON; nothing is changed.

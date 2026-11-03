@@ -183,6 +183,32 @@ except ValueError:
     j = {}
 ok('--selinux-check --json: exit 1 with what is missing', g.returncode == 1 and j.get('problems'), g.stdout[-300:] + g.stderr)
 
+# ---- the report (1.0.236): read only, every part in it ----
+fake('Permissive', labels=GOOD, avc=AVC)
+mode_before = open(FAKE + '/mode').read()
+calls_n = len(open(FAKE + '/calls').read().splitlines())
+data = W.se_report_bytes(dict(WANT, node='se1', facts={'otp': 'x', 'db_engine': 'sqlite'}), 'se1')
+import tarfile as _tf, io as _io
+with _tf.open(fileobj=_io.BytesIO(data), mode='r:gz') as tf:
+    names = sorted(m.name for m in tf.getmembers())
+    avc_txt = tf.extractfile('se1/avc-raw.txt').read().decode()
+    readme = tf.extractfile('se1/README.txt').read().decode()
+    otpj = json.loads(tf.extractfile('se1/otp.json').read().decode())
+ok('the report: every part in one folder of the node (%d)' % len(names),
+   all('se1/%s' % n in names for n in ('check.json', 'avc-raw.txt', 'avc.txt', 'audit2why.txt', 'audit2allow.te',
+                                       'system.txt', 'labels.txt', 'processes.txt', 'ports.txt', 'booleans.txt',
+                                       'modules.txt', 'otp.json', 'README.txt')), names)
+ok('...what SELinux refused in it, and what otp uses', 'php-fpm' in avc_txt and otpj['facts'].get('db_engine') == 'sqlite')
+ok('...it says to look through the command lines before sending it on', 'command lines' in readme)
+ok('...and nothing was changed to make it', open(FAKE + '/mode').read() == mode_before and not any(
+   x.startswith(('setenforce', 'setsebool', 'semodule -i', 'semanage port -a')) for x in open(FAKE + '/calls').read().splitlines()[calls_n:]),
+   open(FAKE + '/calls').read().splitlines()[calls_n:])
+g = subprocess.run(['/usr/bin/python3', '-I', V + '/deploy/otp_web.py', '--selinux-report', TOP + '/r.tar.gz'],
+                   input=json.dumps(dict(WANT, node='se1')), capture_output=True, text=True, env=dict(os.environ))
+ok('otp_web.py --selinux-report FILE (as otp --selinux-report runs it): written, root\'s only',
+   g.returncode == 0 and os.path.exists(TOP + '/r.tar.gz') and oct(os.stat(TOP + '/r.tar.gz').st_mode & 0o777) == '0o600', g.stderr)
+fake('Permissive', labels=GOOD, avc='')
+
 # ---- end to end: the daemon, the API, the helper ----
 D = TOP + '/node'
 os.makedirs(D + '/run'); os.makedirs(D + '/web')
@@ -287,6 +313,28 @@ ok('enforce from the page, nothing missing: enforcing', bool(n), node())
 c, h = call('/api/hisec', None, S)
 items = [w.get('what', '') for w in (h.get('warn') or [])] if isinstance(h, dict) else []
 ok('...and the security check has nothing of SELinux to say', not any(w.startswith('SELinux on') for w in items), items)
+# the report from the pages: every node asked, kept sealed, downloaded as one
+c, x = call('/api/selinux', {'action': 'report', 'node': '*'}, S)
+ok('the report asked of every node (%s)' % c, c == 200, x)
+got = until(lambda: (call('/api/selinux', None, S)[1].get('reports') or {}).get('se1'), 60)
+ok('...made by the node and kept: %s bytes' % (got or {}).get('bytes'), got and got.get('bytes') and not got.get('error'), got)
+rawrow = st.db.value("SELECT v FROM meta WHERE k = 'host:selinux:report:se1'") or ''
+ok('...sealed in the database (no README to be read in it)', 'README' not in rawrow and 'sealed' in rawrow, rawrow[:80])
+c, x = call('/api/selinux', {'action': 'download'}, S)
+import base64 as _b64
+try:
+    with _tf.open(fileobj=_io.BytesIO(_b64.b64decode(x.get('file') or '')), mode='r:gz') as tf:
+        outer = sorted(m.name for m in tf.getmembers())
+except Exception as e:
+    outer = [str(e)]
+ok('downloaded: one archive, the node\'s report in it and a README (%s)' % outer,
+   c == 200 and 'otp-selinux-report-se1.tar.gz' in outer and 'README.txt' in outer and not x.get('missing'), x.get('missing'))
+c, x = call('/api/selinux', {'action': 'download'}, SR)
+ok('...not for a read-only administrator (%s)' % c, c == 403)
+rep = json.loads(st.db.value("SELECT v FROM meta WHERE k = 'host:selinux:report:se1'"))
+rep['at'] = time.time() - 4000
+st.db.run("UPDATE meta SET v = ? WHERE k = 'host:selinux:report:se1'", (json.dumps(rep),))
+ok('an hour old: taken out of the database by the node', until(lambda: st.db.value("SELECT v FROM meta WHERE k = 'host:selinux:report:se1'") is None, 30))
 # the guard: a step written straight into the database is not done
 r = subprocess.run([sys.executable, V + '/otp.py', '--set', 'db_guard=1'], env=NENV, capture_output=True, text=True, timeout=60)
 time.sleep(8)

@@ -1389,6 +1389,26 @@ class Console(object):
                 ('groups', lambda r: '; '.join(g.get('group', '') for g in r.get('groups') or [])
                  or '(anybody)', 40, None)], self.realm_do)
 
+        def dir_cap():
+            got = self.form('A directory\'s own cap of wrong passwords', [
+                {'key': 'name', 'label': 'the directory', 'need': True},
+                {'key': 'spec', 'label': 'the cap', 'need': True,
+                 'help': '3/30: 3 wrong passwords in 30 min · setting: as the setting · none: no cap'}])
+            if got:
+                self.act('--dir-cap', '%s=%s' % (got['name'], got['spec']))
+
+        def dir_policy():
+            got = self.form('Read a domain\'s policy', [{'key': 'name', 'label': 'the directory', 'need': True}])
+            if got:
+                self.act('--dir-policy', got['name'])
+
+        def dir_sample():
+            got = self.form('Every attribute of one person', [
+                {'key': 'name', 'label': 'the directory', 'need': True},
+                {'key': 'user', 'label': 'the person', 'need': True, 'help': 'novak, novak@corp.cz'}])
+            if got:
+                self.act('--dir-sample', got['name'], got['user'])
+
         def directories():
             return self.pick('Directories', lambda: self._rows(self.out('--directories')), [
                 ('directory', lambda r: r.get('name'), 14, None),
@@ -1402,6 +1422,10 @@ class Console(object):
             ('4', 'Add a realm', lambda: self.realm_edit(None)),
             ('5', 'Directories (Enter: try one, change it)', directories),
             ('6', 'Add a directory', lambda: self.directory_edit(None)),
+            ('7', 'Each directory\'s cap of wrong passwords', lambda: self.act('--dir-caps')),
+            ('8', 'A directory\'s own cap', dir_cap),
+            ('9', 'Read a domain\'s lockout and password policy', dir_policy),
+            ('10', 'Every attribute of one person (mail, mobile)', dir_sample),
         ])
 
     def client_edit(self, r):
@@ -2863,6 +2887,24 @@ class Console(object):
                                 'Yes', danger=on):
                     self.act('--hisec-waive', r, 'on' if on else 'off')
 
+        def se_step():
+            st = self.choose('SELinux: a step on this machine', [
+                ('prepare', 'make it ready - permissive at the next start (from disabled)'),
+                ('apply', 'put in what otp needs (while permissive)'),
+                ('enforce', 'switch to enforcing'),
+                ('permissive', 'back to permissive')])
+            if st and self.confirm('SELinux on this machine', {
+                    'prepare': 'The configuration says permissive, and every file is labelled at '
+                               'the next start of the machine. The machine is not restarted now.',
+                    'apply': 'otp\'s module, the labels of its files, the booleans and the ports it '
+                             'needs are put in. Still permissive: nothing is refused.',
+                    'enforce': 'From now on SELinux refuses what its policy does not allow - and '
+                               'stays enforcing after a restart. Refused while anything is missing '
+                               'or was refused.',
+                    'permissive': 'SELinux no longer refuses anything, now and after a restart.'}[st],
+                    'Do it', danger=st in ('enforce', 'prepare')):
+                self.act('--selinux', st, '--yes')
+
         return self.sub('Encryption, sending out, time, network, high security', [
             ('1', 'Encryption to the database server: how it stands', lambda: self.act('--db-tls')),
             ('2', 'Encryption to the database server: try a mode', db_probe),
@@ -2879,6 +2921,11 @@ class Console(object):
             ('13', 'The network of each node', lambda: self.act('--net')),
             ('14', 'High security: every rule', lambda: self.act('--hisec')),
             ('15', 'High security: an exception, or not any more', waive),
+            ('16', 'SELinux: how it stands on this machine', lambda: self.act('--selinux-check')),
+            ('17', 'SELinux: a step on this machine', se_step),
+            ('18', 'SELinux: the report for otp\'s module (a file)', lambda: self.act('--selinux-report')),
+            ('19', 'The guard against writes to the database: rows not as otp wrote them',
+             lambda: self.act('--guard-status')),
         ])
 
     def m_upgrades(self):

@@ -37,6 +37,8 @@ const seed = s => execFileSync('python3', [__dirname + '/ui_selinux_seed.py', s]
       ok(tag + 'not ready: "Switch to enforcing" there but greyed out', await enf.count() === 1 && await enf.isDisabled());
       ok(tag + 'enforcing node offers only "Back to permissive"', await o2.locator('button').count() === 1 &&
          /permissive/i.test(await o2.locator('button').innerText()));
+      const repBtn = p.locator('.se-card button', { hasText: lang === 'cs' ? 'Stáhnout report' : 'Download the report' });
+      ok(tag + 'the report button for every node (1.0.236)', await repBtn.count() === 1);
       if (lang === 'cs') ok(tag + 'in Czech', /Na enforcing zatím není připraveno/.test(tv) && /Od startu stroje nic neodepřeno/.test(t2) && /API token, který čtou stránky/.test(tv), tv.slice(0, 300));
       const scroll = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
       ok(tag + 'no horizontal scroll', !scroll);

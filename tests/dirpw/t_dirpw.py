@@ -181,6 +181,26 @@ st2.directory_save({k: row[k] for k in ('id', 'name', 'hosts', 'port', 'tls', 'b
 adm('/api/directories', {'action': 'pw_caps_save', 'caps': {'Domena': {'tries': None, 'window_min': None}}})
 c, x = adm('/api/directories', {'action': 'pw_caps'})
 ok('back to as the setting', ({d_['name']: d_ for d_ in x['directories']}['Domena']).get('tries') is None)
+# ---- the same from the command line (1.0.236) ---------------------------------------------------------
+def cli(*a):
+    g = subprocess.run([sys.executable, V + '/otp.py'] + list(a), env=env, capture_output=True, text=True, timeout=120)
+    return g.returncode, g.stdout + g.stderr
+rc, out = cli('--dir-cap', 'Domena=2/20')
+ok('otp --dir-cap Domena=2/20: saved (%s)' % rc, rc == 0 and 'Domena: 2 in 20 min' in out, out)
+rc, out = cli('--dir-caps')
+ok('otp --dir-caps: the setting and each directory\'s own', rc == 0 and 'Domena' in out and '2 in 20 min' in out, out)
+rc, out = cli('--dir-cap', 'Domena=setting')
+rc2, out2 = cli('--dir-cap', 'Nowhere=3')
+ok('otp --dir-cap back to the setting; a directory not there refused', rc == 0 and 'as the setting' in out and rc2 != 0 and 'no directory' in out2, (out, out2))
+rc, out = cli('--dir-cap', 'Domena=nonsense')
+ok('otp --dir-cap with words it does not know: refused (%s)' % rc, rc != 0, out)
+rc, out = cli('--dir-policy', 'Domena')
+ok('otp --dir-policy Domena: the lockout, the passwords, the fine-grained policy and the recommendation',
+   rc == 0 and '5 wrong passwords' in out and 'Admins PSO' in out and 'recommended: 2' in out and '--dir-cap Domena=2/30' in out, out)
+rc, out = cli('--dir-sample', 'Domena', 'jcermak')
+ok('otp --dir-sample Domena jcermak: every attribute, mail marked', rc == 0 and 'mail ' in out and 'userPrincipalName' in out, out[:400])
+rc, out = cli('--guard-status')
+ok('otp --guard-status: off here, said so', rc == 0 and 'off' in out, out)
 ev = st.db.rows("SELECT words FROM events WHERE words LIKE '%cleared the count of wrong directory passwords%'")
 ok('a clearing written in the events', len(ev) >= 2)
 print('ALL %d / %d' % (sum(R), len(R)))

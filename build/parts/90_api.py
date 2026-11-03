@@ -666,6 +666,71 @@ def lockouts_said(store, a, n):
 
 
 # ---- the cap of wrong directory passwords per person (1.0.230) -------------------------------
+def dir_pw_caps_list(store):
+    """Each directory with its own cap of wrong passwords, and the setting's (1.0.232)."""
+    caps = dir_pw_caps(store)
+    out = []
+    for d in store.directories():
+        own = caps.get(d['name'].lower()) or {}
+        out.append({'name': d['name'], 'hosts': d.get('hosts') or '', 'tls': d.get('tls') or '',
+                    'enabled': bool(d.get('enabled', 1)), 'base': d.get('base') or '',
+                    'tries': own.get('tries'), 'window_min': own.get('window_min'),
+                    'policy': own.get('policy')})
+    return {'directories': out, 'setting': {'tries': int(CONFIG.get('dir_pw_tries') or 0),
+                                            'window_min': int(CONFIG.get('dir_pw_window_min') or 30)}}
+
+
+def dir_pw_caps_set(store, want, by):
+    """Directories' own caps saved (the pages, otp --dir-cap): {name: {tries, window_min}} -
+    tries None as the setting, 0 no cap. ValueError with the words when it may not be."""
+    if not isinstance(want, dict):
+        raise ValueError('the caps are an object of directories')
+    names = {d['name'].lower(): d['name'] for d in store.directories()}
+    caps = dir_pw_caps(store)
+    said = []
+    for name, c in want.items():
+        key = str(name).lower()
+        if key not in names:
+            raise ValueError('there is no directory called %s' % name)
+        c = c if isinstance(c, dict) else {}
+        tries, window = c.get('tries'), c.get('window_min')
+        try:
+            tries = None if tries in (None, '') else int(tries)
+            window = None if window in (None, '') else int(window)
+        except (TypeError, ValueError):
+            raise ValueError('%s: the cap and its time are whole numbers' % names[key])
+        if tries is not None and not 0 <= tries <= 100:
+            raise ValueError('%s: the cap is 0 to 100 wrong passwords' % names[key])
+        if window is not None and not 1 <= window <= 1440:
+            raise ValueError('%s: the time is 1 to 1440 min' % names[key])
+        was = caps.get(key) or {}
+        now = dict(was, tries=tries, window_min=window)
+        if now != was:
+            caps[key] = now
+            said.append('%s: %s' % (names[key], 'as the setting' if tries is None else
+                                    ('no cap' if tries == 0 else '%d in %s min' % (
+                                        tries, window or CONFIG.get('dir_pw_window_min') or 30))))
+    for key in list(caps):
+        if key not in names:
+            caps.pop(key, None)
+    store.set_meta('dirpw:conf', json.dumps(caps))
+    if said:
+        store.add_event('settings', '%s set the cap of wrong directory passwords: %s'
+                        % (by, '; '.join(said)), who=by)
+    return said
+
+
+def dir_policy_read(store, ad):
+    """The domain's lockout and password policy read, its recommendation with it, and kept beside
+    the directory's cap for the card (not a setting). LdapError as the directory says it."""
+    pol = ad.policy()
+    caps = dir_pw_caps(store)
+    key = ad.name.lower()
+    caps[key] = dict(caps.get(key) or {}, policy={k: pol[k] for k in ('lockout', 'password', 'at', 'name')})
+    store.set_meta('dirpw:conf', json.dumps(caps))
+    return pol
+
+
 def db_fingerprint(db):
     """What a database holds that a move must not leave behind (1.0.234): the number of rows and
     the newest change of each table people change - not what RADIUS changes as it is used."""
@@ -2985,53 +3050,13 @@ def _dirs_do(h):
     if act == 'pw_caps':
         # Each directory with its own cap of wrong passwords, and the setting's (1.0.232).
         h.me('fulladmin')
-        caps = dir_pw_caps(h.store)
-        out = []
-        for d in h.store.directories():
-            own = caps.get(d['name'].lower()) or {}
-            out.append({'name': d['name'], 'hosts': d.get('hosts') or '', 'tls': d.get('tls') or '',
-                        'enabled': bool(d.get('enabled', 1)), 'base': d.get('base') or '',
-                        'tries': own.get('tries'), 'window_min': own.get('window_min'),
-                        'policy': own.get('policy')})
-        return {'directories': out, 'setting': {'tries': int(CONFIG.get('dir_pw_tries') or 0),
-                                                'window_min': int(CONFIG.get('dir_pw_window_min') or 30)}}
+        return dir_pw_caps_list(h.store)
     if act == 'pw_caps_save':
         s = h.me('fulladmin')
-        want = b.get('caps') or {}
-        if not isinstance(want, dict):
-            raise ApiError(400, 'the caps are an object of directories')
-        names = {d['name'].lower(): d['name'] for d in h.store.directories()}
-        caps = dir_pw_caps(h.store)
-        said = []
-        for name, c in want.items():
-            key = str(name).lower()
-            if key not in names:
-                raise ApiError(400, 'there is no directory called %s' % name)
-            c = c if isinstance(c, dict) else {}
-            tries, window = c.get('tries'), c.get('window_min')
-            try:
-                tries = None if tries in (None, '') else int(tries)
-                window = None if window in (None, '') else int(window)
-            except (TypeError, ValueError):
-                raise ApiError(400, '%s: the cap and its time are whole numbers' % names[key])
-            if tries is not None and not 0 <= tries <= 100:
-                raise ApiError(400, '%s: the cap is 0 to 100 wrong passwords' % names[key])
-            if window is not None and not 1 <= window <= 1440:
-                raise ApiError(400, '%s: the time is 1 to 1440 min' % names[key])
-            was = caps.get(key) or {}
-            now = dict(was, tries=tries, window_min=window)
-            if now != was:
-                caps[key] = now
-                said.append('%s: %s' % (names[key], 'as the setting' if tries is None else
-                                        ('no cap' if tries == 0 else '%d in %s min' % (
-                                            tries, window or CONFIG.get('dir_pw_window_min') or 30))))
-        for key in list(caps):
-            if key not in names:
-                caps.pop(key, None)
-        h.store.set_meta('dirpw:conf', json.dumps(caps))
-        if said:
-            h.store.add_event('settings', '%s set the cap of wrong directory passwords: %s'
-                              % (s['name'], '; '.join(said)), who=s['name'])
+        try:
+            said = dir_pw_caps_set(h.store, b.get('caps') or {}, s['name'])
+        except ValueError as e:
+            raise ApiError(400, str(e))
         return {'message': 'saved' if said else 'nothing changed', 'saved': said}
     if act == 'policy':
         s = h.me('fulladmin')
@@ -3039,17 +3064,11 @@ def _dirs_do(h):
         if not ad:
             raise ApiError(404, 'there is no directory called %s (switched on)' % b.get('name'))
         try:
-            pol = ad.policy()
+            return {'policy': dir_policy_read(h.store, ad)}
         except LdapUnreachable as e:
             raise ApiError(503, 'the directory cannot be reached: %s' % e)
         except LdapError as e:
             raise ApiError(400, 'the directory said: %s' % e)
-        # Kept beside its cap, for the card to show what was read last (not a setting).
-        caps = dir_pw_caps(h.store)
-        key = ad.name.lower()
-        caps[key] = dict(caps.get(key) or {}, policy={k: pol[k] for k in ('lockout', 'password', 'at', 'name')})
-        h.store.set_meta('dirpw:conf', json.dumps(caps))
-        return {'policy': pol}
     if act == 'check_all':
         if str(b.get('name') or '').lower() not in h.d.dirs:
             raise ApiError(404, 'there is no directory called %s (switched on)' % b.get('name'))
@@ -3163,6 +3182,23 @@ def dir_sample(h, b):
     if len(who) > 256 or any(ord(c) < 32 for c in who):
         raise ApiError(400, 'that is not a name')
     ad = dir_sample_directory(h, b.get('directory') or {})
+    try:
+        got = dir_sample_of(ad, who)
+    except LdapUnreachable as e:
+        raise ApiError(503, 'the directory cannot be reached: %s' % e)
+    except LdapError as e:
+        raise ApiError(400, 'the directory said: %s' % e)
+    except LookupError as e:
+        raise ApiError(404, str(e))
+    h.store.add_event('directories', '%s looked at every attribute of %s in %s, to choose where '
+                      'the e-mail address and the mobile number are read'
+                      % (s['name'], got['dn'], ad.name), who=s['name'])
+    return got
+
+
+def dir_sample_of(ad, who):
+    """Every attribute of the first person called `who` in the directory (the pages, otp
+    --dir-sample). LookupError when nobody is."""
     bare = who.split('\\')[-1]
     short = bare.split('@', 1)[0]
     attr = str(ad.row.get('user_attr') or 'sAMAccountName')
@@ -3170,15 +3206,10 @@ def dir_sample(h, b):
                    ldap_or(ldap_equal(attr, short), ldap_equal('userPrincipalName', bare),
                            ldap_equal('mail', bare)))
     t = time.time()
-    try:
-        rows = ad.asked(lambda link: link.search(ad.base, flt, ('*',), scope=2, limit=4))
-    except LdapUnreachable as e:
-        raise ApiError(503, 'the directory cannot be reached: %s' % e)
-    except LdapError as e:
-        raise ApiError(400, 'the directory said: %s' % e)
+    rows = ad.asked(lambda link: link.search(ad.base, flt, ('*',), scope=2, limit=4))
     rows = [r for r in rows if not computer_account(r)]
     if not rows:
-        raise ApiError(404, 'nobody called %s is in the directory under %s' % (who, ad.base))
+        raise LookupError('nobody called %s is in the directory under %s' % (who, ad.base))
     r = rows[0]
     out = []
     for name, vals in sorted(r['attrs'].items(), key=lambda kv: kv[0].lower()):
@@ -3189,9 +3220,6 @@ def dir_sample(h, b):
                     'values': [] if binary else [v[:200] for v in vals[:4]],
                     'mail': mail, 'phone': phone})
     a = {k.lower(): v for k, v in r['attrs'].items()}
-    h.store.add_event('directories', '%s looked at every attribute of %s in %s, to choose where '
-                      'the e-mail address and the mobile number are read'
-                      % (s['name'], r['dn'], ad.name), who=s['name'])
     return {'dn': r['dn'], 'display': ((a.get('displayname') or [''])[0]),
             'many': len(rows) > 1, 'attrs': out, 'took_ms': int((time.time() - t) * 1000),
             'defaults': {'mail': ', '.join(DIR_MAIL_DEFAULT), 'mobile': ', '.join(DIR_MOBILE_DEFAULT)}}

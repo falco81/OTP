@@ -8,7 +8,9 @@
 # The first look two minutes after the start (1.0.234), not at once: the helper's semanage and
 # ausearch take a core for seconds, beside a daemon that has just begun to answer.
 SE_WORK = {'busy': False, 'seen': time.time() - 1800 + 120, 'tried': ''}
-SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive')
+SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive', 'report')
+SE_REPORT_KEEP_S = 3600        # a report in the database an hour at most (1.0.236)
+SE_REPORT_MOST = 4 * 1024 * 1024
 SE_EVERY = 1800
 
 
@@ -43,7 +45,31 @@ def selinux_want(store):
     if eng == 'postgres' and host in ('', '127.0.0.1', 'localhost', '::1') and dp not in (0, 5432):
         ports.append({'port': dp, 'proto': 'tcp', 'type': 'postgresql_port_t',
                       'why': 'PostgreSQL of this node listens on it'})
-    return {'booleans': bools, 'ports': ports}
+    return {'booleans': bools, 'ports': ports, 'node': node_name(), 'facts': selinux_facts(store)}
+
+
+def selinux_facts(store):
+    """What otp uses on this node, for the report (1.0.236): switches and ports only - nothing
+    secret."""
+    def on(k):
+        return bool(CONFIG.get(k))
+    try:
+        kinds = sorted({str(t.get('kind') or '') for t in rb_targets(store) if t.get('enabled')})
+    except Exception:                                   # noqa: BLE001
+        kinds = []
+    try:
+        gate = bool(ssh_gate_wanted(store))
+    except Exception:                                   # noqa: BLE001
+        gate = False
+    return {'otp': __version__, 'ha_mode': CONFIG.get('ha_mode') or '', 'db_engine': CONFIG.get('db_engine'),
+            'db_local': str(CONFIG.get('db_host') or '').strip().lower() in ('', '127.0.0.1', 'localhost', '::1'),
+            'db_port': CONFIG.get('db_port') or 0, 'api_port': CONFIG.get('api_port') or 9861,
+            'radius_ports': [CONFIG.get('radius_auth_port'), CONFIG.get('radius_acct_port')],
+            'ssh_with_a_code': gate, 'isemon': on('isemon'), 'siem': on('siem'), 'metrics': on('metrics'),
+            'snmp': on('snmp'), 'acme': on('acme'), 'acme_challenge': CONFIG.get('acme_challenge') or '',
+            'mail_mode': CONFIG.get('mail_mode') or '', 'sms_mode': CONFIG.get('sms_mode') or '',
+            'proxy': on('proxy'), 'remote_backups': kinds, 'db_guard': on('db_guard'),
+            'high_security': on('high_security')}
 
 
 def selinux_view(store):
@@ -57,7 +83,7 @@ def selinux_view(store):
                     'said': now.get('said') or [], 'action': now.get('action') or '',
                     'pending': (want.get('do') if want and want.get('id') != now.get('done')
                                 else '')})
-    return {'nodes': out}
+    return {'nodes': out, 'reports': selinux_reports(store)}
 
 
 def selinux_ask(store, node, action, by):
@@ -68,7 +94,9 @@ def selinux_ask(store, node, action, by):
         raise ValueError('check, prepare, enforce or permissive')
     store.set_meta('host:selinux:want:' + node, json.dumps({
         'id': secrets.token_hex(6), 'do': action, 'by': by, 'at': time.time()}))
-    if action != 'check':
+    if action == 'report':
+        store.add_event('settings', '%s asked for the SELinux report of %s' % (by, node), 'info', who=by)
+    elif action != 'check':
         store.add_event('settings', '%s asked SELinux on %s: %s' % (by, node, {
             'prepare': 'made ready, permissive', 'enforce': 'enforcing',
             'permissive': 'permissive again'}[action]), 'warn', who=by)
@@ -78,6 +106,10 @@ def selinux_tick(daemon):
     """Every few seconds: a step asked for this node done; how it is, looked at now and then."""
     store = daemon.store
     me = node_name()
+    try:
+        selinux_report_tidy(store)
+    except Exception:                                   # noqa: BLE001
+        pass
     want = _meta_json(store, 'host:selinux:want:' + me) or {}
     now = _meta_json(store, 'host:selinux:now:' + me) or {}
     # A step tried is not tried again (1.0.234): with its answer not written (the database
@@ -102,9 +134,28 @@ def selinux_tick(daemon):
                 said = data.pop('said', []) if isinstance(data, dict) else []
             except ValueError as e:
                 err = str(e)[:400]
-                if do != 'check':
+                if do not in ('check', 'report'):
                     log('SELinux on %s: %s' % (me, err), 'warn')
-            if do != 'check':
+            if do == 'report':
+                # Kept sealed in the database an hour (1.0.236), so the pages of any node give it.
+                rep = {'id': want.get('id'), 'at': time.time(), 'error': err, 'bytes': 0, 'data': ''}
+                if not err:
+                    try:
+                        raw = (WEB_DIR / 'selinux-report.tar.gz').read_bytes()
+                        if len(raw) > SE_REPORT_MOST:
+                            raise ValueError('the report is %d MB - too large to pass on; '
+                                             'otp --selinux-report on the node itself' % (len(raw) >> 20))
+                        rep.update(bytes=len(raw), data=seal_secret(base64.b64encode(raw).decode('ascii'),
+                                                                     'selinux:report'))
+                    except (OSError, ValueError) as e:
+                        rep['error'] = str(e)[:400]
+                    try:
+                        (WEB_DIR / 'selinux-report.tar.gz').unlink()
+                    except OSError:
+                        pass
+                store.set_meta('host:selinux:report:' + me, json.dumps(rep))
+                data = (now.get('data') or {})
+            if do not in ('check', 'report'):
                 store.add_event('settings', 'SELinux on %s: %s' % (
                     me, err or '; '.join(said) or 'done'), 'bad' if err else 'warn')
                 if not err:
@@ -131,3 +182,53 @@ def selinux_problems(store, node=None):
     if d.get('mode') == 'Permissive' and not out:
         out.append('SELinux is permissive: nothing is refused - otp is ready for enforcing')
     return out
+
+
+def selinux_report_tidy(store):
+    """This node's report taken out of the database once it is an hour old (1.0.236)."""
+    k = 'host:selinux:report:' + node_name()
+    rep = _meta_json(store, k) or {}
+    if rep and time.time() - float(rep.get('at') or 0) > SE_REPORT_KEEP_S:
+        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+
+
+def selinux_reports(store):
+    """Every node's report as the pages show it: {node: {'at', 'bytes', 'error', 'id'}}."""
+    out = {}
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'host:selinux:report:%'"):
+        try:
+            rep = json.loads(r['v'] or '{}')
+        except (TypeError, ValueError):
+            continue
+        out[r['k'][len('host:selinux:report:'):]] = {k: rep.get(k) for k in ('at', 'bytes', 'error', 'id')}
+    return out
+
+
+def selinux_report_bundle(store):
+    """One archive with each node's report in it, and a word on those that have none."""
+    buf = io.BytesIO()
+    missing = []
+    nodes = [node_name()] + [n['name'] for n in ha_nodes(store) if n['name'] != node_name()]
+    with tarfile.open(fileobj=buf, mode='w:gz') as tf:
+        for n in nodes:
+            rep = _meta_json(store, 'host:selinux:report:' + n) or {}
+            raw = None
+            if rep.get('data'):
+                got = unseal_secret(rep['data'], 'selinux:report')
+                try:
+                    raw = base64.b64decode(got) if got else None
+                except (ValueError, TypeError):
+                    raw = None
+            if not raw:
+                missing.append('%s: %s' % (n, rep.get('error') or 'no report (the node did not answer)'))
+                continue
+            info = tarfile.TarInfo('otp-selinux-report-%s.tar.gz' % re.sub(r'[^A-Za-z0-9._-]', '', n))
+            info.size, info.mtime, info.mode = len(raw), int(rep.get('at') or time.time()), 0o600
+            tf.addfile(info, io.BytesIO(raw))
+        words = ('otp %s - the SELinux report of each node, made %s.\n\n' % (__version__, time.strftime('%Y-%m-%d %H:%M')) +
+                 ('Missing:\n' + '\n'.join('  ' + m for m in missing) + '\n' if missing else 'Every node is in it.\n'))
+        data = words.encode('utf-8')
+        info = tarfile.TarInfo('README.txt')
+        info.size, info.mtime, info.mode = len(data), int(time.time()), 0o600
+        tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue(), missing

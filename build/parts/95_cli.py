@@ -654,6 +654,29 @@ def build_parser():
                         'labels, booleans and ports it needs, what was refused since the start '
                         '(as root; nothing is changed)')
     g.add_argument('--selinux-want', action='store_true', help=argparse.SUPPRESS)
+    g.add_argument('--selinux', choices=('check', 'prepare', 'apply', 'enforce', 'permissive'),
+                   metavar='STEP', help='SELinux on this machine, as on the pages: check, prepare '
+                   '(permissive at the next start, from disabled), apply (put in what otp needs, '
+                   'while permissive), enforce, permissive - asked first unless --yes (as root)')
+    g.add_argument('--selinux-report', nargs='?', const='', metavar='FILE',
+                   help='what SELinux says on this machine, for whoever writes otp\'s module: one '
+                        'file (/root/otp-selinux-report-NODE-DATE.tar.gz unless named); nothing '
+                        'is changed (as root)')
+    g.add_argument('--dir-caps', action='store_true',
+                   help='each directory\'s cap of wrong passwords on these pages, and its domain\'s '
+                        'policy as last read')
+    g.add_argument('--dir-cap', metavar='NAME=SPEC', action='append',
+                   help='a directory\'s own cap: NAME=3/30 (3 wrong passwords in 30 min), '
+                        'NAME=setting (as the setting), NAME=none (no cap)')
+    g.add_argument('--dir-policy', metavar='NAME',
+                   help='read the domain\'s lockout and password policy (and its fine-grained ones) '
+                        'and say the cap recommended')
+    g.add_argument('--dir-sample', nargs=2, metavar=('NAME', 'USER'),
+                   help='every attribute of one person in a directory - where the e-mail address '
+                        'and the mobile number can be read')
+    g.add_argument('--guard-status', action='store_true',
+                   help='the guard against writes to the database on this node: on or off, and '
+                        'every row that reaches root not as otp wrote it')
     g.add_argument('--console-at-login', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='open the console when root signs in at the console or over SSH')
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
@@ -2149,26 +2172,10 @@ def cli_main(argv=None):
         # What otp needs of SELinux here, for --selinux-check (1.0.233): read as the service.
         print(json.dumps(selinux_want(cli_store())))
         return 0
-    if args.selinux_check:
-        if os.geteuid() != 0:
-            raise SystemExit('otp: --selinux-check is for root')
-        try:
-            want = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--selinux-want'],
-                                  capture_output=True, text=True, timeout=120).stdout.strip()
-            json.loads(want or '{}')
-        except (OSError, subprocess.SubprocessError, ValueError):
-            want = '{}'
-        helper = Path(__file__).resolve().parent / 'otp_web.py'
-        if not helper.exists():
-            helper = Path('/usr/local/lib/otp/otp_web.py')
-        if not helper.exists():
-            raise SystemExit('otp: the root helper (otp_web.py) is not installed')
-        got = subprocess.run(['/usr/bin/python3', '-I', str(helper), '--selinux-check',
-                              '--want-stdin'] + (['--json'] if args.json else []),
-                             input=want or '{}', capture_output=True, text=True, timeout=600)
-        sys.stdout.write(got.stdout)
-        sys.stderr.write(got.stderr)
-        return got.returncode
+    if args.selinux_check or args.selinux or args.selinux_report is not None:
+        return cli_selinux(args, pal)
+    if args.dir_caps or args.dir_cap or args.dir_policy or args.dir_sample or args.guard_status:
+        return cli_dir_guard(args, pal)
     if args.console_at_login:
         if args.console_at_login != 'status':
             print(pal.ok_line(console_at_login_set(args.console_at_login == 'on')))
@@ -4120,6 +4127,174 @@ def cli_dump_copy():
         sys.stdout.buffer.flush()
     finally:
         db.close()
+    return 0
+
+
+def _selinux_helper(extra, want, timeout=600):
+    """The root helper of this machine run for SELinux, what otp needs given on stdin."""
+    helper = Path(__file__).resolve().parent / 'otp_web.py'
+    if not helper.exists():
+        helper = Path('/usr/local/lib/otp/otp_web.py')
+    if not helper.exists():
+        raise SystemExit('otp: the root helper (otp_web.py) is not installed')
+    return subprocess.run(['/usr/bin/python3', '-I', str(helper)] + extra, input=want or '{}',
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def cli_selinux(args, pal):
+    """otp --selinux-check, --selinux STEP, --selinux-report (1.0.233, 1.0.236): as root - the
+    root helper does it, what otp needs read first as the service."""
+    if os.geteuid() != 0:
+        raise SystemExit('otp: SELinux is root\'s - run it as root')
+    try:
+        want = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--selinux-want'],
+                              capture_output=True, text=True, timeout=120).stdout.strip()
+        json.loads(want or '{}')
+    except (OSError, subprocess.SubprocessError, ValueError):
+        want = '{}'
+    if args.selinux_report is not None:
+        node = re.sub(r'[^A-Za-z0-9._-]', '', node_name())[:60] or 'node'
+        out = args.selinux_report or '/root/otp-selinux-report-%s-%s.tar.gz' % (
+            node, time.strftime('%Y%m%d-%H%M'))
+        print(pal.dim('gathering what SELinux says here - a minute or two (ausearch, semanage)...'))
+        got = _selinux_helper(['--selinux-report', out], want, 1200)
+        sys.stderr.write(got.stderr)
+        if got.returncode != 0:
+            return got.returncode
+        print(pal.ok_line('the report is in %s (%d kB)' % (out, os.path.getsize(out) >> 10)))
+        print('  look through avc*.txt in it before sending it on: the audit log holds the command '
+              'lines of the programs SELinux refused something to')
+        return 0
+    step = args.selinux or 'check'
+    if step == 'check':
+        got = _selinux_helper(['--selinux-check', '--want-stdin'] + (['--json'] if args.json else []),
+                              want)
+    else:
+        words = {'prepare': 'SELinux permissive at the next start of this machine, every file '
+                            'labelled then (the machine is not restarted now)',
+                 'apply': 'otp\'s module, the labels of its files, the booleans and ports it needs '
+                          'put in (still permissive)',
+                 'enforce': 'SELinux ENFORCING on this machine, now and after a restart',
+                 'permissive': 'SELinux permissive on this machine, now and after a restart'}[step]
+        if not args.yes:
+            if not sys.stdin.isatty():
+                raise SystemExit('otp: %s - add --yes to do it without a terminal' % words)
+            if input('%s. Go on? [y/N] ' % words).strip().lower() not in ('y', 'yes'):
+                print('nothing done')
+                return 1
+        got = _selinux_helper(['--selinux-do', step] + (['--json'] if args.json else []), want)
+    sys.stdout.write(got.stdout)
+    sys.stderr.write(got.stderr)
+    return got.returncode
+
+
+def cli_dir_guard(args, pal):
+    """otp --dir-caps, --dir-cap, --dir-policy, --dir-sample, --guard-status (1.0.236)."""
+    store = cli_store()
+    by = 'root on %s' % node_name()
+    if args.guard_status:
+        on = bool(CONFIG.get('db_guard'))
+        bad = []
+        if on:
+            for r in store.db.rows('SELECT k, v FROM meta'):
+                if dbguard_meta_kept(r['k']) and not dbguard_ok(store.db, 'm', r['k'], r['v'], quiet=True):
+                    bad.append(('meta', r['k']))
+            for r in store.db.rows('SELECT k, v FROM settings'):
+                if dbguard_setting_kept(r['k']) and not dbguard_ok(store.db, 's', r['k'], r['v'], quiet=True):
+                    bad.append(('setting', r['k']))
+            for r in store.db.rows('SELECT * FROM accounts'):
+                if not dbguard_account_ok(store.db, r):
+                    bad.append(('account', r['name']))
+            for r in store.db.rows('SELECT * FROM directories'):
+                if not dbguard_directory_ok(store.db, r['name']):
+                    bad.append(('directory', r['name']))
+        if args.json:
+            print(json.dumps({'on': on, 'not_otps': [{'kind': k, 'what': w} for k, w in bad]}))
+            return 0
+        print(pal.ok_line('the guard against writes to the database is %s on %s' % (
+            'ON' if on else 'off', node_name())))
+        if on:
+            print(('  %d row(s) that reach root are not as otp wrote them - not acted on:' % len(bad))
+                  if bad else '  every row that reaches root is as otp wrote it')
+            for k, w in bad[:200]:
+                print('    %-9s %s' % (k, w))
+        return 0
+    if args.dir_cap:
+        want = {}
+        for spec in args.dir_cap:
+            name, _, rule = spec.partition('=')
+            rule = rule.strip().lower()
+            if rule == 'setting':
+                want[name.strip()] = {'tries': None, 'window_min': None}
+            elif rule == 'none':
+                want[name.strip()] = {'tries': 0}
+            else:
+                m = re.match(r'^(\d+)(?:/(\d+))?$', rule)
+                if not m or int(m.group(1)) < 1:
+                    raise SystemExit('otp: --dir-cap NAME=3/30, NAME=setting or NAME=none')
+                want[name.strip()] = {'tries': int(m.group(1)), 'window_min': int(m.group(2)) if m.group(2) else None}
+        try:
+            said = dir_pw_caps_set(store, want, by)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        print(pal.ok_line('saved: %s' % '; '.join(said)) if said else 'nothing changed')
+        return 0
+    if args.dir_policy or args.dir_sample:
+        name = args.dir_policy or args.dir_sample[0]
+        row = next((d for d in store.directories(with_secret=True)
+                    if d['name'].lower() == str(name).lower()), None)
+        if not row:
+            raise SystemExit('otp: there is no directory called %s' % name)
+        ad = Directory(row)
+        try:
+            if args.dir_policy:
+                pol = dir_policy_read(store, ad)
+                if args.json:
+                    print(json.dumps(pol))
+                    return 0
+                lo, pw = pol.get('lockout') or {}, pol.get('password') or {}
+                print(pal.ok_line('%s - %s' % (ad.name, pol.get('name') or ad.base)))
+                print('  lockout: %s wrong passwords, counted over %s s, locked %s' % (
+                    lo.get('threshold') or 'never', lo.get('window_s'), lo.get('duration_s')))
+                print('  passwords: at least %s characters, complex %s, %s remembered' % (
+                    pw.get('min_length'), 'yes' if pw.get('complex') else 'no', pw.get('history')))
+                for p in pol.get('psos') or []:
+                    print('  fine-grained %s: locks after %s' % (p.get('name'), p.get('threshold') or 'never'))
+                rec = pol.get('recommend') or {}
+                print(pal.ok_line('recommended: %s wrong passwords in %s min - %s' % (
+                    rec.get('tries'), rec.get('window_min'), rec.get('why'))))
+                print('  otp --dir-cap %s=%s/%s   puts it in' % (ad.name, rec.get('tries'), rec.get('window_min')))
+                return 0
+            got = dir_sample_of(ad, args.dir_sample[1])
+        except (LdapError, LookupError) as e:
+            raise SystemExit('otp: %s' % e)
+        store.add_event('directories', '%s looked at every attribute of %s in %s' % (by, got['dn'], ad.name), who=by)
+        if args.json:
+            print(json.dumps(got))
+            return 0
+        print(pal.ok_line('%s%s' % (got['dn'], ' (more than one answers to that name)' if got.get('many') else '')))
+        for a in got['attrs']:
+            mark = 'mail ' if a['mail'] else ('phone' if a['phone'] else '     ')
+            print('  %s %-32s %s' % (mark, a['name'], '(binary)' if a['binary'] else
+                                     ' | '.join(a['values'])[:120]))
+        print('  used now: mail %s; mobile %s' % (row.get('mail_attr') or got['defaults']['mail'],
+                                                   row.get('mobile_attr') or got['defaults']['mobile']))
+        return 0
+    got = dir_pw_caps_list(store)
+    if args.json:
+        print(json.dumps(got))
+        return 0
+    st = got['setting']
+    print(pal.ok_line('the setting: %s' % ('no cap' if not st['tries'] else
+                                           '%d wrong passwords in %d min' % (st['tries'], st['window_min']))))
+    for d in got['directories']:
+        own = 'as the setting' if d['tries'] is None else ('no cap' if d['tries'] == 0 else
+                                                          '%d in %s min' % (d['tries'], d['window_min'] or st['window_min']))
+        pol = d.get('policy') or {}
+        lo = pol.get('lockout') or {}
+        print('  %-20s %-18s %s%s' % (d['name'], own, ('domain locks after %s' % (lo.get('threshold') or 'never'))
+                                      if pol else 'policy not read (otp --dir-policy %s)' % d['name'],
+                                      '' if d['enabled'] else '  (switched off)'))
     return 0
 
 

@@ -878,7 +878,37 @@ PY
 # so the pages may read the API token under enforcing. Kept beside the program always; put
 # into the policy where SELinux is on, and only when it changed (semodule takes its time).
 # Where SELinux is disabled nothing is done: "Prepare" on the pages puts it in.
+# The tools SELinux is looked after with (1.0.236), where the system has them in its own
+# repositories (RHEL, Rocky, AlmaLinux): put in when missing, at every install and upgrade, with
+# SELinux disabled too - "Make it ready" and otp --selinux-check need them; the mode is not
+# touched. auditd started where SELinux is on (without it nothing refused is written down).
+# Offline: said, not fatal.
+selinux_tools() {
+    [[ "${PKG:-}" == "dnf" ]] || return 0
+    [[ -d /etc/selinux || -x /usr/sbin/getenforce ]] || return 0
+    local want=() p
+    for p in policycoreutils libselinux-utils policycoreutils-python-utils audit selinux-policy-targeted; do
+        rpm -q "$p" >/dev/null 2>&1 || want+=("$p")
+    done
+    if (( ${#want[@]} )); then
+        if run dnf install -y "${want[@]}" >/dev/null 2>&1; then
+            good "SELinux: put in ${want[*]}"
+        else
+            warn "SELinux: ${want[*]} could not be put in (no repository reached?) - dnf install -y ${want[*]}"
+        fi
+    fi
+    if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] &&
+            command -v auditd >/dev/null 2>&1 && ! systemctl is-active --quiet auditd 2>/dev/null; then
+        # auditd refuses to be started by systemctl on some releases: service(8) then.
+        { run systemctl enable --now auditd >/dev/null 2>&1 || run service auditd start >/dev/null 2>&1; } &&
+            good "SELinux: auditd started - what SELinux refuses is written down" ||
+            warn "SELinux: auditd could not be started - systemctl enable --now auditd"
+    fi
+    return 0
+}
+
 selinux_module() {
+    selinux_tools
     [[ -f "$SOURCE_DIR/deploy/otp_server.cil" ]] || return 0
     local had=""
     # Compared with the one last put into the policy (1.0.234), not with the copy beside the

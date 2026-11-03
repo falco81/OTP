@@ -4,6 +4,33 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.236 — 3 November 2026
+
+**The SELinux report, for otp's module** (*Settings → High security → SELinux → Download the report
+(all nodes)*; `otp --selinux-report`). Every node gathers what SELinux says there - what it refused
+since the start (raw, readable, `audit2why`, `audit2allow`'s suggestion), the card's state, the labels
+of otp's files and what the policy says they should be, the programs' domains, ports, booleans, the
+versions, and what otp uses on the node (switches and ports, nothing secret) - and the pages give one
+file with each node's in it. Nothing is changed to make it; kept sealed in the database an hour.
+Sent on, it becomes rules of `otp_server`, so that a new installation needs less of it.
+
+**SELinux's tools put in by the installer and every upgrade** where they are missing (RHEL, Rocky,
+AlmaLinux): `policycoreutils`, `libselinux-utils`, `policycoreutils-python-utils`, `audit`,
+`selinux-policy-targeted` - with SELinux disabled too; the mode is not touched. auditd started where
+SELinux is on. Without a repository, said and gone on.
+
+**The command line and the console have what the pages have:**
+
+- `otp --selinux check|prepare|apply|enforce|permissive` (asked first unless `--yes`).
+- `otp --dir-caps`, `otp --dir-cap NAME=3/30|setting|none`, `otp --dir-policy NAME` (the domain's
+  lockout and password policy and the cap recommended), `otp --dir-sample NAME USER` (every attribute
+  of one person).
+- `otp --guard-status`: the guard against writes to the database on this node, and every row that
+  reaches root not as otp wrote it.
+- The console: SELinux (how it stands, a step, the report) and the guard in *Encryption, sending out,
+  time, network, high security*; the directories' caps, policy and attributes in *RADIUS clients,
+  realms and directories*.
+
 ## 1.0.235 — 3 November 2026
 
 **Bug hunt, round B** - the tokens and the enrolment pages, the root helper, the backups, TLS, ACME and

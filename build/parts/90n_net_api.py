@@ -129,12 +129,26 @@ def _selinux_do(h):
     b = h.body()
     node = str(b.get('node') or node_name())
     action = str(b.get('action') or '')
+    if action == 'download':
+        # Every node's report in one archive (1.0.236), from the database - whichever node answers.
+        data, missing = selinux_report_bundle(h.store)
+        h.store.add_event('settings', '%s took the SELinux report%s' % (
+            s['name'], (' - without %s' % ', '.join(m.split(':')[0] for m in missing)) if missing else ''),
+            'info', who=s['name'])
+        return {'name': 'otp-selinux-report-%s.tar.gz' % time.strftime('%Y%m%d-%H%M'),
+                'file': base64.b64encode(data).decode('ascii'), 'mime': 'application/gzip',
+                'missing': missing}
     try:
+        if action == 'report' and node == '*':
+            for n in [node_name()] + [x['name'] for x in ha_nodes(h.store) if x['name'] != node_name()]:
+                selinux_ask(h.store, n, 'report', s['name'])
+            return {'message': 'asked: every node makes its report within a minute'}
         selinux_ask(h.store, node, action, s['name'])
     except ValueError as e:
         raise ApiError(400, str(e))
     return {'message': {'check': 'asked: %s looks within seconds',
                         'prepare': 'asked: %s makes SELinux ready and permissive within seconds',
                         'enforce': 'asked: %s switches SELinux to enforcing within seconds',
-                        'permissive': 'asked: %s switches SELinux to permissive within seconds'
+                        'permissive': 'asked: %s switches SELinux to permissive within seconds',
+                        'report': 'asked: %s makes its report within a minute'
                         }[action] % node}
