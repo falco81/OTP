@@ -1717,7 +1717,7 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
       <div id="fw-nodes" class="fw-nodes"></div>
       <div id="fw-body"></div>
     </div>
-    <div class="card full fulladmin-only"><h2>Taken back unless kept</h2><div id="sect-fw"></div></div>
+    <div class="card full fulladmin-only"><h2>Settings</h2><div id="sect-fw"></div></div>
   </div>
   <div class="ctl-pane" id="pane-upgrade" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Upgrades and maintenance</h2>

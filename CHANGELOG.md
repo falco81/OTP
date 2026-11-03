@@ -4,6 +4,24 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.237 — 3 November 2026
+
+**Behind a load balancer or WAF** (*Settings → Firewall and access*; off by default - nginx as until
+now). Switched on, nginx takes the client's own address from the header the balancer sends
+(`X-Forwarded-For`, or the one named: `X-Real-IP`, `True-Client-IP`...) - only for requests from the
+balancers' addresses named, never anybody else's - so that the sign-in pause, the caps, who may reach
+which page, nginx's limits and every log see the client, not the balancer. In this node's server and
+the VIP address's, on every node, through the root helper (`nginx -t`, put back when refused). It
+takes the place of what `otp --trusted-proxy` wrote while on; off, only its own lines go. Refused on
+without the balancers named. docs/load-balancers.md.
+
+**SELinux: the first rule learnt on a real node.** Before every command of the unit - `systemctl
+reload otp` too - systemd hands `/run/otp` back to the service's account; with `/run/otp` labelled for
+the pages it was refused that (`init_t → httpd_var_run_t file { setattr }`), and under enforcing the
+reload would have failed. `otp_server` allows systemd the owner and mode of what is there, nothing
+else, in a block of its own. The card says plainly when something was refused that otp does not know
+yet - *Put in what otp needs* changes nothing for it: the report is what tells how.
+
 ## 1.0.236 — 3 November 2026
 
 **The SELinux report, for otp's module** (*Settings → High security → SELinux → Download the report
