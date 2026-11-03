@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.230'
+__version__ = '1.0.231'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -160,6 +160,9 @@ DEFAULTS = {
     'totp_window': 1,
     'admin_show_key': 1,
     'high_security': 0,
+    # Root's actions only from rows of the database otp signed (1.0.231): a setting of this
+    # node's config.json, never of the database. 0 - as until now.
+    'db_guard': 0,
     'totp_disallow_reuse': 1,
     # --- upgrades from the web (1.0.123) ----------------------------------
     'upgrade_check': 1,
@@ -446,7 +449,7 @@ DB_KEYS = ('db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password
 
 # ...and the name of this node of a cluster, which is this machine's own.
 FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_peer_port',
-                             'ha_address', 'ha_tls', 'ha_tls_ca')
+                             'ha_address', 'ha_tls', 'ha_tls_ca', 'db_guard')
 
 # Settings of one node of a cluster, not of the cluster (1.0.37): saved as
 # `key@node` and read only by that node; without one it takes the cluster's.
@@ -715,6 +718,7 @@ NAMES = {
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
     'high_security': 'High security',
+    'db_guard': 'Root\u2019s actions only from rows otp signed',
     'upgrade_check': 'Look for a new version every day',
     'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
@@ -1057,6 +1061,19 @@ SAYS = {
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
                    'service\'s environment.',
+    'db_guard': 'What this node does as root - the firewall, sshd and root\u2019s SSH keys, the '
+                'network, a restart, the system\u2019s updates and their proxy, the time servers, '
+                'nginx\u2019s certificates, the VIP, the TLS of the database link - follows rows of '
+                'the database, and so do the accounts and the sign-ins of these pages. Anybody who '
+                'can write the database (its server, a db_password found out, a copy of it put '
+                'back) could write those rows. Every one is signed when otp writes it, with a key '
+                'from secrets.key that is in no database. On: this node acts on such a row only '
+                'when its signature is right and it is not an older one put back; anything else is '
+                'left as it was, and said under the security check and in Events. RADIUS, the codes '
+                'and the tokens are never held up by it. Kept in this node\'s config.json (not in '
+                'the database), switched off only on this node itself. In a cluster, switch it on '
+                'on every node, once all of them run 1.0.231 or later. Not against the other node '
+                'of a cluster: it holds the same key.',
     'high_security': 'Every way of doing something less safely switched off - plain LDAP, unencrypted '
                      'mail, syslog and backups, certificates not checked, weak TLS, SSH with '
                      'passwords, exports not locked and the rest listed above. Switched on only '
@@ -1587,7 +1604,7 @@ PANES = {
              'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
     'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
               'power_auto_needed'],
-    'hisec': ['high_security'],
+    'hisec': ['high_security', 'db_guard'],
     'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_update',

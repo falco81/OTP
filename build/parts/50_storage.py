@@ -619,6 +619,9 @@ class Storage(object):
     # ---- meta, settings, events ------------------------------------------
     def get_meta(self, k, default=None):
         got = self.db.value('SELECT v FROM meta WHERE k = ?', (k,))
+        if got is not None and dbguard_on() and dbguard_meta_kept(k) and \
+                not dbguard_ok(self.db, 'm', k, got):
+            return default          # not otp's word (1.0.231): as if it were not there
         return default if got is None else got
 
     def set_meta(self, k, v):
@@ -626,6 +629,8 @@ class Storage(object):
         # client seen waited here behind a page holding the lock for a slow
         # query on the main connection - the VPN timed out.
         self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
+        if dbguard_meta_signed(k):
+            dbguard_sign(self.db, 'm', k, str(v))     # 1.0.231
 
     def settings_saved(self):
         out = {}
@@ -643,9 +648,13 @@ class Storage(object):
     def save_setting(self, k, v, by=''):
         self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
                                          'by_who': str(by or '')[:190]})
+        if dbguard_setting_kept(k):
+            dbguard_sign(self.db, 's', k, json.dumps(v))     # 1.0.231
 
     def drop_setting(self, k):
         self.db.run('DELETE FROM settings WHERE k = ?', (k,))
+        if dbguard_setting_kept(k):
+            dbguard_sign(self.db, 's', k, None)
 
     def add_event(self, kind, words, level='info', who=''):
         if HA_REBUILDING.is_set():
@@ -842,9 +851,12 @@ class Storage(object):
             r.pop('cols_at', None)
         return rows
 
-    def account(self, name):
-        return self.db.row('SELECT * FROM accounts WHERE LOWER(name) = ?',
-                           (str(name or '').strip().lower(),))
+    def account(self, name, checked=False):
+        row = self.db.row('SELECT * FROM accounts WHERE LOWER(name) = ?',
+                          (str(name or '').strip().lower(),))
+        if checked and row and not dbguard_account_ok(self.db, row):
+            return None             # put in by somebody else than otp (1.0.231)
+        return row
 
     def add_account(self, name, role, password=None, source='local', note='', must_change=0,
                     display='', dn='', groups=''):
@@ -865,12 +877,14 @@ class Storage(object):
         # A second step left by an account of this name taken away before
         # (1.0.146) is not this one's: somebody else's phone would answer it.
         self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
-        return self.db.insert('accounts', {
+        got = self.db.insert('accounts', {
             'name': name, 'role': role, 'pw': password_hash(password) if password else '',
             'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
             'note': str(note or '')[:400], 'created': time.time(), 'last_in': None,
             'last_from': '', 'prefs': '{}', 'display': display, 'dn': dn,
             'group_list': groups})
+        dbguard_account_sign(self.db, name)
+        return got
 
     def set_account(self, name, **fields):
         one = self.account(name)
@@ -884,12 +898,15 @@ class Storage(object):
         if 'role' in fields and fields['role'] not in ROLES_ALL:
             raise ValueError('the role is one of %s' % ', '.join(ROLES_ALL))
         self.db.update('accounts', one['id'], fields)
+        if set(fields) & set(ACCOUNT_SIGNED):
+            dbguard_account_sign(self.db, fields.get('name') or one['name'])
 
     def drop_account(self, name):
         one = self.account(name)
         if not one:
             raise ValueError('there is no account called %s' % name)
         self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
+        dbguard_account_sign(self.db, one['name'])
         self.db.run('DELETE FROM sessions WHERE kind = ? AND LOWER(name) = ?',
                     ('admin', one['name'].lower()))
         # Its second step with it (1.0.146): a new account of the same name
@@ -1014,11 +1031,13 @@ class Storage(object):
     def session_new(self, kind, name, role, ip, hours, data=None):
         token = secrets.token_urlsafe(32)
         t = time.time()
-        self.db.insert('sessions', {
-            'token_hash': hashlib.sha256(token.encode()).hexdigest(), 'kind': kind,
-            'name': name, 'role': role, 'created': t, 'last': t,
-            'expires': t + float(hours) * 3600, 'ip': str(ip or '')[:60],
-            'data': json.dumps(data or {})})
+        row = {'token_hash': hashlib.sha256(token.encode()).hexdigest(), 'kind': kind,
+               'name': name, 'role': role, 'created': t, 'last': t,
+               'expires': t + float(hours) * 3600, 'ip': str(ip or '')[:60],
+               'data': json.dumps(data or {})}
+        self.db.insert('sessions', row)
+        if kind == 'admin':
+            dbguard_sign(self.db, 'x', row['token_hash'], dbguard_session_text(row))     # 1.0.231
         return token
 
     def session_get(self, token, kind, idle_s, touch=True):
@@ -1028,6 +1047,9 @@ class Storage(object):
                           (hashlib.sha256(str(token).encode()).hexdigest(), kind))
         if not row:
             return None
+        if kind == 'admin' and dbguard_on() and \
+                not dbguard_ok(self.db, 'x', row['token_hash'], dbguard_session_text(row)):
+            return None             # a sign-in otp did not open (1.0.231)
         t = time.time()
         if row['expires'] < t or t - float(row['last'] or 0) > idle_s:
             self.db.run('DELETE FROM sessions WHERE id = ?', (row['id'],))
@@ -1742,6 +1764,9 @@ class Storage(object):
                 row['created'] = time.time()
                 ident = self.db.insert('directories', row)
             self._dirs = None
+        if old and old['name'] != name:
+            dbguard_directory_sign(self.db, old['name'])
+        dbguard_directory_sign(self.db, name)          # 1.0.231
         return ident
 
     def directory_drop(self, ident):

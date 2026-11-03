@@ -95,7 +95,7 @@ def _mfa_session(h):
     s = h.session('admin')
     if not s:
         raise ApiError(401, 'not signed in, or the sign-in has run out')
-    acc = h.store.account(s['name'])
+    acc = h.store.account(s['name'], checked=True)
     if not acc or acc.get('disabled'):
         raise ApiError(401, 'that account may no longer sign in')
     return s, acc

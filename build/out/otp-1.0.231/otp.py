@@ -93,7 +93,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.230'
+__version__ = '1.0.231'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -160,6 +160,9 @@ DEFAULTS = {
     'totp_window': 1,
     'admin_show_key': 1,
     'high_security': 0,
+    # Root's actions only from rows of the database otp signed (1.0.231): a setting of this
+    # node's config.json, never of the database. 0 - as until now.
+    'db_guard': 0,
     'totp_disallow_reuse': 1,
     # --- upgrades from the web (1.0.123) ----------------------------------
     'upgrade_check': 1,
@@ -446,7 +449,7 @@ DB_KEYS = ('db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password
 
 # ...and the name of this node of a cluster, which is this machine's own.
 FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_peer_port',
-                             'ha_address', 'ha_tls', 'ha_tls_ca')
+                             'ha_address', 'ha_tls', 'ha_tls_ca', 'db_guard')
 
 # Settings of one node of a cluster, not of the cluster (1.0.37): saved as
 # `key@node` and read only by that node; without one it takes the cluster's.
@@ -715,6 +718,7 @@ NAMES = {
     'totp_window': 'Steps of clock drift allowed',
     'admin_show_key': 'Administrators may show a token\'s QR code and key',
     'high_security': 'High security',
+    'db_guard': 'Root\u2019s actions only from rows otp signed',
     'upgrade_check': 'Look for a new version every day',
     'upgrade_downgrade': 'Offer going back to an older version',
     'upgrade_url': 'Where new versions are looked for',
@@ -1057,6 +1061,19 @@ SAYS = {
                    'a web page or folder listing that links to the packages, or one package\'s '
                    'own address. HTTPS only; a proxy is taken from https_proxy in the '
                    'service\'s environment.',
+    'db_guard': 'What this node does as root - the firewall, sshd and root\u2019s SSH keys, the '
+                'network, a restart, the system\u2019s updates and their proxy, the time servers, '
+                'nginx\u2019s certificates, the VIP, the TLS of the database link - follows rows of '
+                'the database, and so do the accounts and the sign-ins of these pages. Anybody who '
+                'can write the database (its server, a db_password found out, a copy of it put '
+                'back) could write those rows. Every one is signed when otp writes it, with a key '
+                'from secrets.key that is in no database. On: this node acts on such a row only '
+                'when its signature is right and it is not an older one put back; anything else is '
+                'left as it was, and said under the security check and in Events. RADIUS, the codes '
+                'and the tokens are never held up by it. Kept in this node\'s config.json (not in '
+                'the database), switched off only on this node itself. In a cluster, switch it on '
+                'on every node, once all of them run 1.0.231 or later. Not against the other node '
+                'of a cluster: it holds the same key.',
     'high_security': 'Every way of doing something less safely switched off - plain LDAP, unencrypted '
                      'mail, syslog and backups, certificates not checked, weak TLS, SSH with '
                      'passwords, exports not locked and the rest listed above. Switched on only '
@@ -1587,7 +1604,7 @@ PANES = {
              'osup_auto_day', 'osup_auto_at', 'osup_auto_reboot'],
     'power': ['power_auto', 'power_auto_every', 'power_auto_day', 'power_auto_at',
               'power_auto_needed'],
-    'hisec': ['high_security'],
+    'hisec': ['high_security', 'db_guard'],
     'siem': ['siem', 'siem_targets', 'siem_format', 'siem_events', 'siem_signins',
              'siem_facility', 'siem_hostname', 'siem_verify', 'siem_ca'],
     'proxy': ['proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_no', 'proxy_update',
@@ -6944,6 +6961,9 @@ class Storage(object):
     # ---- meta, settings, events ------------------------------------------
     def get_meta(self, k, default=None):
         got = self.db.value('SELECT v FROM meta WHERE k = ?', (k,))
+        if got is not None and dbguard_on() and dbguard_meta_kept(k) and \
+                not dbguard_ok(self.db, 'm', k, got):
+            return default          # not otp's word (1.0.231): as if it were not there
         return default if got is None else got
 
     def set_meta(self, k, v):
@@ -6951,6 +6971,8 @@ class Storage(object):
         # client seen waited here behind a page holding the lock for a slow
         # query on the main connection - the VPN timed out.
         self.db.upsert('meta', 'k', {'k': k, 'v': str(v)})
+        if dbguard_meta_signed(k):
+            dbguard_sign(self.db, 'm', k, str(v))     # 1.0.231
 
     def settings_saved(self):
         out = {}
@@ -6968,9 +6990,13 @@ class Storage(object):
     def save_setting(self, k, v, by=''):
         self.db.upsert('settings', 'k', {'k': k, 'v': json.dumps(v), 'at': time.time(),
                                          'by_who': str(by or '')[:190]})
+        if dbguard_setting_kept(k):
+            dbguard_sign(self.db, 's', k, json.dumps(v))     # 1.0.231
 
     def drop_setting(self, k):
         self.db.run('DELETE FROM settings WHERE k = ?', (k,))
+        if dbguard_setting_kept(k):
+            dbguard_sign(self.db, 's', k, None)
 
     def add_event(self, kind, words, level='info', who=''):
         if HA_REBUILDING.is_set():
@@ -7167,9 +7193,12 @@ class Storage(object):
             r.pop('cols_at', None)
         return rows
 
-    def account(self, name):
-        return self.db.row('SELECT * FROM accounts WHERE LOWER(name) = ?',
-                           (str(name or '').strip().lower(),))
+    def account(self, name, checked=False):
+        row = self.db.row('SELECT * FROM accounts WHERE LOWER(name) = ?',
+                          (str(name or '').strip().lower(),))
+        if checked and row and not dbguard_account_ok(self.db, row):
+            return None             # put in by somebody else than otp (1.0.231)
+        return row
 
     def add_account(self, name, role, password=None, source='local', note='', must_change=0,
                     display='', dn='', groups=''):
@@ -7190,12 +7219,14 @@ class Storage(object):
         # A second step left by an account of this name taken away before
         # (1.0.146) is not this one's: somebody else's phone would answer it.
         self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
-        return self.db.insert('accounts', {
+        got = self.db.insert('accounts', {
             'name': name, 'role': role, 'pw': password_hash(password) if password else '',
             'source': source, 'disabled': 0, 'must_change': int(bool(must_change)),
             'note': str(note or '')[:400], 'created': time.time(), 'last_in': None,
             'last_from': '', 'prefs': '{}', 'display': display, 'dn': dn,
             'group_list': groups})
+        dbguard_account_sign(self.db, name)
+        return got
 
     def set_account(self, name, **fields):
         one = self.account(name)
@@ -7209,12 +7240,15 @@ class Storage(object):
         if 'role' in fields and fields['role'] not in ROLES_ALL:
             raise ValueError('the role is one of %s' % ', '.join(ROLES_ALL))
         self.db.update('accounts', one['id'], fields)
+        if set(fields) & set(ACCOUNT_SIGNED):
+            dbguard_account_sign(self.db, fields.get('name') or one['name'])
 
     def drop_account(self, name):
         one = self.account(name)
         if not one:
             raise ValueError('there is no account called %s' % name)
         self.db.run('DELETE FROM accounts WHERE id = ?', (one['id'],))
+        dbguard_account_sign(self.db, one['name'])
         self.db.run('DELETE FROM sessions WHERE kind = ? AND LOWER(name) = ?',
                     ('admin', one['name'].lower()))
         # Its second step with it (1.0.146): a new account of the same name
@@ -7339,11 +7373,13 @@ class Storage(object):
     def session_new(self, kind, name, role, ip, hours, data=None):
         token = secrets.token_urlsafe(32)
         t = time.time()
-        self.db.insert('sessions', {
-            'token_hash': hashlib.sha256(token.encode()).hexdigest(), 'kind': kind,
-            'name': name, 'role': role, 'created': t, 'last': t,
-            'expires': t + float(hours) * 3600, 'ip': str(ip or '')[:60],
-            'data': json.dumps(data or {})})
+        row = {'token_hash': hashlib.sha256(token.encode()).hexdigest(), 'kind': kind,
+               'name': name, 'role': role, 'created': t, 'last': t,
+               'expires': t + float(hours) * 3600, 'ip': str(ip or '')[:60],
+               'data': json.dumps(data or {})}
+        self.db.insert('sessions', row)
+        if kind == 'admin':
+            dbguard_sign(self.db, 'x', row['token_hash'], dbguard_session_text(row))     # 1.0.231
         return token
 
     def session_get(self, token, kind, idle_s, touch=True):
@@ -7353,6 +7389,9 @@ class Storage(object):
                           (hashlib.sha256(str(token).encode()).hexdigest(), kind))
         if not row:
             return None
+        if kind == 'admin' and dbguard_on() and \
+                not dbguard_ok(self.db, 'x', row['token_hash'], dbguard_session_text(row)):
+            return None             # a sign-in otp did not open (1.0.231)
         t = time.time()
         if row['expires'] < t or t - float(row['last'] or 0) > idle_s:
             self.db.run('DELETE FROM sessions WHERE id = ?', (row['id'],))
@@ -8067,6 +8106,9 @@ class Storage(object):
                 row['created'] = time.time()
                 ident = self.db.insert('directories', row)
             self._dirs = None
+        if old and old['name'] != name:
+            dbguard_directory_sign(self.db, old['name'])
+        dbguard_directory_sign(self.db, name)          # 1.0.231
         return ident
 
     def directory_drop(self, ident):
@@ -8453,6 +8495,392 @@ class Storage(object):
     def counts(self):
         return {t: int(self.db.value('SELECT COUNT(*) AS n FROM %s' % t, (), 0) or 0)
                 for t in TABLES if t not in ('meta',)}
+# ---------------------------------------------------------------------------
+# The database's word, signed (1.0.231): root's actions only from rows written by otp
+# ---------------------------------------------------------------------------
+# What a node has done as root - the firewall, sshd and root's SSH keys, the network, a
+# restart, the system's updates and their proxy, the time servers, nginx's certificates, the
+# VIP, the TLS of the database link - follows rows of the database: settings, rows of `meta`,
+# requests one node leaves for another. Anybody who can write the database (its server, a
+# db_password found out, a copy of it put back) could write those rows, and the node did as
+# they said - even signing in to these pages, with an account or a session put in the table.
+#
+# Every such row is signed now when otp writes it: an HMAC under a key worked out from
+# secrets.key, which is in no database (both nodes of a cluster have it). The signature is a row
+# of its own beside it, `sig:<kind>:<hash of the name>:<node>` = {"n": counter, "m": mac} - versions
+# before this one see a row of meta they do not know, and leave it. With `db_guard` on (a
+# setting of config.json, never of the database; off by default - as until now) a node takes
+# a row it acts on as root only when its signature is right and its counter not older than the
+# one it saw last (kept in its own file, not in the database): a row written by somebody else
+# reads as not there - an older signed row put back as well. Settings keep their last good
+# value then; RADIUS, the codes and the tokens are never held up by any of it.
+#
+# Not against the other node of a cluster: it holds the same key, and root on it is root of the
+# cluster's database anyway.
+
+DBGUARD_META_EXACT = frozenset((
+    'web:vip', 'web:access', 'fw:conf', 'fw:trial', 'fw_trial_back', 'ntp:conf', 'power:plan',
+    'readdress:ask', 'hatls:ca', 'hatls:want', 'host:osup:plan', 'host:sshd:conf',
+    'host:sshd:keep', 'host:sshd:back', 'sshotp:gate', 'host:logs:again', 'upgrade:plan',
+    'upgrade:pkg', 'acme_push:conf', 'acme_push:pairing', 'hisec:waive'))
+DBGUARD_META_PREFIXES = (
+    'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
+    'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
+    'host:sshkeys:want:', 'host:rootkey:', 'host:osup:checkwant:', 'sshotp:u:', 'sshotp:port:',
+    'console:want:', 'acme_push:key:', 'adm2fa:')
+# Settings whose word reaches root, or who may sign in to these pages.
+DBGUARD_SETTINGS = frozenset((
+    'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
+    'radius_acct_port', 'snmp', 'snmp_from', 'snmp_port', 'net_confirm_min', 'fw_confirm_min',
+    'proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_os', 'proxy_no', 'proxy_update',
+    'osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_every', 'osup_auto_day',
+    'osup_auto_at', 'osup_auto_reboot', 'osup_auto_what', 'power_auto', 'power_auto_every',
+    'power_auto_day', 'power_auto_at', 'power_auto_needed', 'logs_journal_mb',
+    'logs_journal_days', 'logs_keep', 'logs_max_mb', 'ssh_gate_port', 'upgrade_downgrade',
+    'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
+    'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
+    'admin_2fa_sms', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
+    'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
+    'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
+    'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify'))
+DBGUARD_FILE = STATE_DIR / 'guard.json'
+DBGUARD = {'seen': None, 'good': None, 'dirty': 0.0, 'refused': {}, 'lock': threading.Lock()}
+
+
+def dbguard_on():
+    return bool(CONFIG.get('db_guard'))
+
+
+def dbguard_key():
+    key = sealing_key()
+    return hmac.new(key, b'otp-db-guard-1', hashlib.sha256).digest() if key else None
+
+
+def dbguard_meta_kept(k):
+    """Whether a row of meta is one that is signed."""
+    k = str(k or '')
+    return k in DBGUARD_META_EXACT or k.startswith(DBGUARD_META_PREFIXES)
+
+
+def dbguard_meta_signed(k):
+    """Signed when written: those above, and the nodes' heartbeats (checked only where root
+    uses them - the firewall's cluster rule, nginx's access, the VIP's and chrony's peer)."""
+    return dbguard_meta_kept(k) or str(k or '').startswith('node:')
+
+
+def dbguard_setting_kept(k):
+    return str(k or '').split('@', 1)[0] in DBGUARD_SETTINGS
+
+
+def _dbguard_hash(ident):
+    return hashlib.sha256(str(ident).encode('utf-8')).hexdigest()[:40]
+
+
+def _dbguard_sid(kind, ident, node=None):
+    """This node's signature of a row (each node writes only its own - two nodes making one row
+    at once is a duplicate key that stops replication for good)."""
+    return 'sig:%s:%s:%s' % (kind, _dbguard_hash(ident), node or node_name())
+
+
+def _dbguard_head_rows(db, head):
+    """The rows of meta whose key starts with `head` (letters, digits and colons only), read by
+    the key's index: a range on SQLite and MariaDB (their keys compare byte by byte), LIKE on
+    PostgreSQL (a collation of a language may not order the colon as a byte would)."""
+    if db.engine == 'postgres':
+        return db.rows("SELECT k, v FROM meta WHERE k LIKE ?", (head + '%',))
+    return db.rows("SELECT k, v FROM meta WHERE k >= ? AND k < ?", (head, head[:-1] + ';'))
+
+
+def _dbguard_sigs(db, kind, ident):
+    """Every node's signature of a row: [(k, n, mac)]."""
+    # A range of the key, not LIKE (1.0.231): LIKE read the whole of meta on SQLite at every
+    # heartbeat - RADIUS waited behind it.
+    head = 'sig:%s:%s:' % (kind, _dbguard_hash(ident))
+    out = []
+    for r in _dbguard_head_rows(db, head):
+        if not r['k'].startswith(head):
+            continue
+        try:
+            sig = json.loads(r['v'] or 'null')
+            out.append((r['k'], int(sig.get('n') or 0), str(sig.get('m') or '')))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return out
+
+
+def _dbguard_mac(key, kind, ident, n, value):
+    body = b'\x01deleted' if value is None else b'\x00' + str(value).encode('utf-8', 'surrogatepass')
+    msg = ('%s\x00%s\x00%d' % (kind, ident, int(n))).encode('utf-8', 'surrogatepass') + body
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _dbguard_load():
+    with DBGUARD['lock']:
+        if DBGUARD['seen'] is None:
+            try:
+                got = json.loads(DBGUARD_FILE.read_text())
+            except (OSError, ValueError):
+                got = {}
+            DBGUARD['seen'] = dict(got.get('seen') or {}) if isinstance(got, dict) else {}
+            DBGUARD['good'] = dict(got.get('good') or {}) if isinstance(got, dict) else {}
+
+
+def dbguard_flush(force=False):
+    """The counters seen and the settings last found good, to this node's own file."""
+    if DBGUARD['seen'] is None or not DBGUARD['dirty']:
+        return
+    if not force and time.time() - DBGUARD['dirty'] < 3:
+        return
+    with DBGUARD['lock']:
+        data = json.dumps({'seen': DBGUARD['seen'], 'good': DBGUARD['good']})
+        DBGUARD['dirty'] = 0.0
+    try:
+        write_replacing(DBGUARD_FILE, data, 0o600)
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('guard-file', 'the counters of signed rows could not be written to %s: %s'
+                    % (DBGUARD_FILE, e), 'warn', every=600)
+
+
+def dbguard_sign(db, kind, ident, value, far=False):
+    """The row's signature written beside it, in `db` - this node's database, or (`far`) the
+    other node's for a row written straight there: only over this node's signature already
+    there, never a new row (replication brings that). Without the key nothing is written."""
+    key = dbguard_key()
+    if not key:
+        return False
+    sid = _dbguard_sid(kind, ident)
+    for _ in range(6):
+        try:
+            sigs = _dbguard_sigs(db, kind, ident)
+        except Exception:                               # noqa: BLE001
+            return False
+        raw = db.value('SELECT v FROM meta WHERE k = ?', (sid,))
+        # Newer than every node's (1.0.231): read in this order by every node, whatever the
+        # clocks say.
+        n = max([int(time.time() * 1000)] + [x[1] + 1 for x in sigs])
+        new = json.dumps({'n': n, 'm': _dbguard_mac(key, kind, ident, n, value)})
+        try:
+            if raw is None:
+                if far:
+                    return False
+                db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (sid, new))
+                return True
+            if db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, sid, raw)):
+                return True
+        except Exception:                               # noqa: BLE001
+            continue
+    return False
+
+
+def dbguard_ok(db, kind, ident, value, quiet=False):
+    """Whether a row is as otp wrote it: True whenever the guard is off."""
+    if not dbguard_on():
+        return True
+    key = dbguard_key()
+    sid = 'sig:%s:%s:*' % (kind, _dbguard_hash(ident))
+    why = ''
+    try:
+        sigs = _dbguard_sigs(db, kind, ident)
+    except Exception:                                   # noqa: BLE001
+        sigs = []
+    if not key:
+        why = 'this node has no key to check it with'
+    elif not sigs:
+        why = 'it is not signed'
+    else:
+        good = [n for _k, n, m in sigs if hmac.compare_digest(m, _dbguard_mac(key, kind, ident, n, value))]
+        if not good:
+            why = 'its signature is not right'
+        else:
+            n = max(good)
+            _dbguard_load()
+            with DBGUARD['lock']:
+                seen = int(DBGUARD['seen'].get(sid) or 0)
+                if n < seen:
+                    why = 'it is an older one put back'
+                elif n > seen:
+                    DBGUARD['seen'][sid] = n
+                    DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
+    if not why:
+        return True
+    with DBGUARD['lock']:
+        was = DBGUARD['refused'].get(sid)
+        DBGUARD['refused'][sid] = {'kind': kind, 'what': str(ident)[:120], 'why': why,
+                                 'at': time.time(), 'first': (was or {}).get('first') or time.time()}
+        if len(DBGUARD['refused']) > 200:
+            for old in sorted(DBGUARD['refused'], key=lambda s: DBGUARD['refused'][s]['at'])[:50]:
+                DBGUARD['refused'].pop(old, None)
+    if not quiet:
+        log_sparing('guard:' + sid, 'a row of the database not written by otp is not acted on: %s '
+                    '%s - %s' % ({'m': 'meta', 's': 'the setting', 'a': 'the account',
+                                  'x': 'a sign-in', 'd': 'the directory'}.get(kind, kind),
+                                 str(ident)[:120], why), 'error', every=600)
+    return False
+
+
+def dbguard_settings(saved, store):
+    """The settings of the database, those that reach root taken only as signed - else as
+    they were last found good, else as config.json and the defaults have them."""
+    if not dbguard_on() or store is None:
+        return saved
+    _dbguard_load()
+    out = dict(saved)
+    raw = {}
+    try:
+        raw = {r['k']: r['v'] for r in store.db.rows('SELECT k, v FROM settings')}
+    except Exception:                                   # noqa: BLE001
+        return saved
+    keys = set(k for k in raw if dbguard_setting_kept(k)) | set(
+        k for k in (DBGUARD['good'] or {}) if k not in raw)
+    for k in keys:
+        v = raw.get(k)
+        if dbguard_ok(store.db, 's', k, v):
+            with DBGUARD['lock']:
+                if v is None:
+                    DBGUARD['good'].pop(k, None)
+                elif DBGUARD['good'].get(k) != v:
+                    DBGUARD['good'][k] = v
+                    DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
+            continue
+        good = (DBGUARD['good'] or {}).get(k)
+        if good is None:
+            out.pop(k, None)
+        else:
+            try:
+                out[k] = json.loads(good)
+            except (TypeError, ValueError):
+                out.pop(k, None)
+    return out
+
+
+def dbguard_rows(db, rows):
+    """Rows of meta read straight with SQL: those that are signed, the others left out."""
+    if not dbguard_on():
+        return rows
+    return [r for r in rows if not dbguard_meta_kept(r.get('k')) or dbguard_ok(db, 'm', r['k'], r.get('v'))]
+
+
+ACCOUNT_SIGNED = ('name', 'role', 'pw', 'source', 'disabled', 'must_change', 'dn')
+DIRECTORY_SIGNED = ('name', 'hosts', 'port', 'tls', 'verify', 'ca', 'base', 'bind_dn', 'bind_pw',
+                    'user_attr', 'enabled', 'weak')
+
+
+def dbguard_row_text(row, cols):
+    return json.dumps([None if row.get(c) is None else str(row.get(c)) for c in cols])
+
+
+def dbguard_account_sign(db, name):
+    row = db.row('SELECT * FROM accounts WHERE LOWER(name) = ?', (str(name or '').strip().lower(),))
+    dbguard_sign(db, 'a', str(name or '').strip().lower(), dbguard_row_text(row, ACCOUNT_SIGNED) if row else None)
+
+
+def dbguard_account_ok(db, row):
+    if not row or not dbguard_on():
+        return True
+    return dbguard_ok(db, 'a', str(row.get('name') or '').lower(), dbguard_row_text(row, ACCOUNT_SIGNED))
+
+
+def dbguard_directory_sign(db, name):
+    row = db.row('SELECT * FROM directories WHERE LOWER(name) = ?', (str(name or '').lower(),))
+    dbguard_sign(db, 'd', str(name or '').lower(), dbguard_row_text(row, DIRECTORY_SIGNED) if row else None)
+
+
+def dbguard_directory_ok(db, name):
+    if not dbguard_on():
+        return True
+    row = db.row('SELECT * FROM directories WHERE LOWER(name) = ?', (str(name or '').lower(),))
+    return bool(row) and dbguard_ok(db, 'd', str(name or '').lower(), dbguard_row_text(row, DIRECTORY_SIGNED))
+
+
+SESSION_SIGNED = ('kind', 'name', 'role', 'created', 'expires')
+
+
+def dbguard_session_text(row):
+    return json.dumps([str(row.get('kind') or ''), str(row.get('name') or ''),
+                       str(row.get('role') or ''), '%.3f' % float(row.get('created') or 0),
+                       '%.3f' % float(row.get('expires') or 0)])
+
+
+def dbguard_node_ok(store, name):
+    """Whether a node's heartbeat is otp's - before its address is let through the firewall,
+    into nginx's lists, or taken for the VIP's and chrony's peer."""
+    if not dbguard_on() or name == node_name():
+        return True
+    try:
+        raw = store.db.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,))
+    except Exception:                                   # noqa: BLE001
+        return False
+    return raw is not None and dbguard_ok(store.db, 'm', 'node:' + name, raw)
+
+
+class SimpleStore(object):
+    """A database alone, as dbguard_resign needs it."""
+
+    def __init__(self, db):
+        self.db = db
+
+    def add_event(self, *a, **k):
+        return None
+
+
+def dbguard_resign(store, why=''):
+    """Every row that is signed, signed again as it is now - when the guard is switched on, and
+    after this node itself put rows in from elsewhere (a copy put back, an import, the
+    database moved, a node renamed): what is there now is otp's word."""
+    db = store.db
+    n = 0
+    if not dbguard_key():
+        return 0
+    for r in db.rows('SELECT k, v FROM meta'):
+        if dbguard_meta_signed(r['k']):
+            n += bool(dbguard_sign(db, 'm', r['k'], r['v']))
+    for r in db.rows('SELECT k, v FROM settings'):
+        if dbguard_setting_kept(r['k']):
+            n += bool(dbguard_sign(db, 's', r['k'], r['v']))
+    for r in db.rows('SELECT * FROM accounts'):
+        n += bool(dbguard_sign(db, 'a', str(r['name']).lower(), dbguard_row_text(r, ACCOUNT_SIGNED)))
+    for r in db.rows('SELECT * FROM directories'):
+        n += bool(dbguard_sign(db, 'd', str(r['name']).lower(), dbguard_row_text(r, DIRECTORY_SIGNED)))
+    for r in db.rows("SELECT * FROM sessions WHERE kind = 'admin'"):
+        n += bool(dbguard_sign(db, 'x', r['token_hash'], dbguard_session_text(r)))
+    # What is seen from now on starts here: older ones put back are older than these.
+    with DBGUARD['lock']:
+        DBGUARD['seen'] = {}
+        DBGUARD['good'] = {}
+        DBGUARD['refused'] = {}
+        DBGUARD['dirty'] = time.time()
+    if why:
+        try:
+            store.add_event('security', 'the rows of the database that reach root signed again '
+                            '(%d) - %s' % (n, why), 'warn')
+        except Exception:                               # noqa: BLE001
+            pass
+    return n
+
+
+def dbguard_tidy(store):
+    """Signatures of sign-ins that are over."""
+    try:
+        have = {_dbguard_sid('x', r['token_hash']) for r in store.db.rows(
+            "SELECT token_hash FROM sessions WHERE kind = 'admin'")}
+        for r in _dbguard_head_rows(store.db, 'sig:x:'):
+            if r['k'] not in have and r['k'].endswith(':' + node_name()):
+                try:
+                    if time.time() * 1000 - float((json.loads(r['v']) or {}).get('n') or 0) < 3600e3:
+                        continue
+                except (ValueError, TypeError, AttributeError):
+                    pass
+                store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+    except Exception:                                   # noqa: BLE001
+        pass
+    dbguard_flush()
+
+
+def dbguard_view():
+    _dbguard_load()
+    with DBGUARD['lock']:
+        refused = sorted(DBGUARD['refused'].values(), key=lambda x: -x['at'])[:50]
+    return {'on': dbguard_on(), 'key': bool(dbguard_key()), 'refused': refused}
 
 
 # ---------------------------------------------------------------------------
@@ -11084,10 +11512,10 @@ def node_key(prefix, name):
 def node_key_rows(store, prefix, name):
     """Every node's row for `name` (and one written before 1.0.146)."""
     n = norm_name(name)
-    return store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
-                         ('%s:%s' % (prefix, n),
-                          '%s:%s%s%%' % (prefix, n.replace('!', '!!').replace('%', '!%')
-                                         .replace('_', '!_'), NODE_KEY_SEP)))
+    return dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
+                                              ('%s:%s' % (prefix, n),
+                                               '%s:%s%s%%' % (prefix, n.replace('!', '!!').replace('%', '!%')
+                                                              .replace('_', '!_'), NODE_KEY_SEP))))
 
 
 def node_key_name(prefix, k):
@@ -15326,6 +15754,33 @@ class Daemon(object):
 
     RELOAD_LOCK = threading.RLock()
 
+    def dbguard_switch(self, on, by):
+        """The guard of root's actions switched on or off on this node (1.0.231): written to
+        its config.json at once, in effect at once."""
+        if on == bool(CONFIG.get('db_guard')):
+            return []
+        if on:
+            if not dbguard_key():
+                raise BadSetting('db_guard: this node has no secrets.key to sign with')
+            old = [n['name'] for n in ha_nodes(self.store)
+                   if not n.get('me') and n.get('alive') and
+                   _ver_tuple(n.get('version') or '0') < (1, 0, 231)]
+            if old:
+                raise BadSetting('db_guard: %s run an older version that does not sign what it '
+                                 'writes - upgrade them first' % ', '.join(old))
+            n = dbguard_resign(self.store, 'switched on by %s: what the database holds now is '
+                                         'taken as otp\'s word' % by)
+            write_file_settings({'db_guard': 1})
+            CONFIG['db_guard'] = 1
+            log('root\'s actions only from rows otp signed: on (%d rows signed)' % n)
+            return ['this node acts as root only on rows otp signed (%d signed now)' % n]
+        write_file_settings({'db_guard': 0})
+        CONFIG['db_guard'] = 0
+        self.store.add_event('security', '%s switched off the guard of root\'s actions on %s: '
+                             'rows of the database are acted on whoever wrote them'
+                             % (by, node_name()), 'bad', who=by)
+        return ['this node acts on rows of the database whoever wrote them, as before 1.0.231']
+
     def reload_all(self, why=''):
         """Everything read again from the database: the settings, the
         clients, the realms, the directories. One at a time (1.0.94): a save
@@ -15334,7 +15789,8 @@ class Daemon(object):
             return self._reload_all(why)
 
     def _reload_all(self, why=''):
-        load_config(saved=self.store.settings_saved())
+        # The settings that reach root as signed only, with the guard on (1.0.231).
+        load_config(saved=dbguard_settings(self.store.settings_saved(), self.store))
         if not BIND_STRICT.get('tokens'):
             bind_tokens(self.store)
         self.store._clients = None
@@ -15492,6 +15948,8 @@ class Daemon(object):
             else:
                 self.store.save_setting(k, v, by)
         said = []
+        if 'db_guard' in file_side:
+            said += self.dbguard_switch(bool(file_side.pop('db_guard')), by)
         if file_side:
             if any(k in DB_KEYS for k in file_side) and (
                     file_side.get('db_engine', CONFIG.get('db_engine')) != 'sqlite' or
@@ -15830,6 +16288,7 @@ class Daemon(object):
         last_tidy = time.monotonic() - 3601
         last_backup_day = self.store.get_meta('backup_day', '')
         while not self.stop_flag.wait(5):
+            dbguard_flush()                             # the counters seen (1.0.231)
             if self.hup_asked.is_set():
                 self.hup_asked.clear()
                 self._hup()
@@ -16085,6 +16544,10 @@ class Daemon(object):
             except Exception as e:                      # noqa: BLE001
                 log('the tables taken from the other node could not be read again: %s'
                     % str(e).split('\n')[0][:200], 'info')
+        try:
+            dbguard_tidy(self.store)                    # signatures of sign-ins over (1.0.231)
+        except Exception:                               # noqa: BLE001
+            pass
         try:
             chal_tidy(self.store)                       # codes asked for and gone (1.0.76)
         except Exception as e:                          # noqa: BLE001
@@ -16515,6 +16978,7 @@ def db_move(store, c, by):
                 tally[table] = done
                 progress(sum(tally.values()), whole, '%s: %s' % (table, done))
             load_tables(far, copy, say=along)
+            dbguard_resign(SimpleStore(far))       # the rows carried signed there (1.0.231)
             after = {t: int(far.value('SELECT COUNT(*) FROM %s' % t) or 0)
                      for t in TABLES if t != 'meta'}
             words = 'everything was carried into %s (%s), by %s' % (
@@ -17810,7 +18274,14 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
         RESTORE_WHY[0] = 'a backup is being put back'
         RESTORE_RUNNING.set()
         try:
-            return _db_file_restore(store, path, by, key_file, from_name, kind)
+            got = _db_file_restore(store, path, by, key_file, from_name, kind)
+            # What the copy holds signed as this node's word now (1.0.231): put back on
+            # purpose, its rows are newer than any seen before it.
+            try:
+                dbguard_resign(store, 'a copy put back by %s' % by)
+            except Exception as e:                      # noqa: BLE001
+                log('the rows put back could not be signed: %s' % e, 'warn')
+            return got
         finally:
             RESTORE_RUNNING.clear()
     finally:
@@ -23898,7 +24369,10 @@ def _peer_update(k, v):
     except Exception:                                   # noqa: BLE001
         return False
     try:
-        return bool(far.run('UPDATE meta SET v = ? WHERE k = ?', (v, k)))
+        done = bool(far.run('UPDATE meta SET v = ? WHERE k = ?', (v, k)))
+        if done and dbguard_meta_signed(k):
+            dbguard_sign(far, 'm', k, v, far=True)        # 1.0.231
+        return done
     except Exception:                                   # noqa: BLE001
         return False
     finally:
@@ -23918,6 +24392,8 @@ def _row_write(store, k, data, mine=True, mirror=True):
         store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, v))
     else:
         store.db.run('UPDATE meta SET v = ? WHERE k = ?', (v, k))
+    if dbguard_meta_signed(k):
+        dbguard_sign(store.db, 'm', k, v)                 # 1.0.231
     if mirror:
         _peer_update(k, v)
 
@@ -25448,6 +25924,14 @@ def hisec_findings(store, conf=None):
         if not (sshd_now(store, n) or {}).get('values'):
             warn.append(_hs_item('check', 'the SSH server of %s has not said yet how it is set' % n,
                                  'look again', 'sshd'))
+    # Rows of the database refused as root's word (1.0.231): somebody else wrote them.
+    g = dbguard_view()
+    if g['on'] and g['refused']:
+        warn.append(_hs_item('check', '%d row(s) of the database that would reach root were not '
+                             'written by otp and are not acted on: %s' % (
+                                 len(g['refused']), '; '.join('%s (%s)' % (r['what'], r['why'])
+                                                            for r in g['refused'][:5])),
+                             'look who can write the database', 'hisec'))
     # The security check (1.0.169): what is not as it should be now - as the
     # alerts see it, and the rest. It never stops high security.
     if not fw_conf(store).get('on'):
@@ -25577,7 +26061,7 @@ def hisec_sshd(c):
 
 def hisec_view(store):
     got = hisec_findings(store)
-    return dict(got, on=_hs_on())
+    return dict(got, on=_hs_on(), guard=dbguard_view())
 
 # ---- going back to an older version (1.0.143) ---------------------------------------
 # Never by putting a database back: the tables stay as they are - every column
@@ -26406,7 +26890,7 @@ def vip_peer_seen(store):
     (a cluster of one shared database)."""
     me = node_name()
     for n in ha_nodes(store):
-        if n['name'] != me and n.get('address'):
+        if n['name'] != me and n.get('address') and dbguard_node_ok(store, n['name']):
             return n['address']
     return ''
 
@@ -26921,6 +27405,7 @@ def node_carry(store, old, new, by='the daemon'):
         store.db.run('DELETE FROM meta WHERE k = ?', (k + old,))
     store.add_event('settings', 'the node %s is called %s now; carried over: %s' % (
         old, new, ', '.join(said) or 'nothing (it had nothing of its own)'), 'warn', who=by)
+    dbguard_resign(store, 'the node %s is called %s now' % (old, new))      # 1.0.231
     return said
 
 
@@ -26987,7 +27472,7 @@ def cluster_addresses(store, node):
     me = node_name()
     out = set()
     for n in ha_nodes(store):
-        if n['name'] != node and n.get('address'):
+        if n['name'] != node and n.get('address') and dbguard_node_ok(store, n['name']):
             out.add(n['address'])
     if CONFIG.get('ha_mode'):
         if node == me and CONFIG.get('ha_peer'):
@@ -29257,7 +29742,7 @@ def hatls_view(store):
     mode, ca_file = ha_link_tls()
     ca = hatls_ca(store)
     nodes = []
-    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'hatls:node:%'"):
+    for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'hatls:node:%'")):
         try:
             one = json.loads(r['v'] or '{}')
         except ValueError:
@@ -29314,7 +29799,10 @@ def hatls_start(store, by, here=True):
             # for good. A row new here goes over by replication.
             hits = 0
             for k, v in (('hatls:ca', store.get_meta('hatls:ca')), ('hatls:want', json.dumps(w))):
-                hits += far.run('UPDATE meta SET v = ? WHERE k = ?', (v, k)) or 0
+                hit = far.run('UPDATE meta SET v = ? WHERE k = ?', (v, k)) or 0
+                if hit:
+                    dbguard_sign(far, 'm', k, v, far=True)      # 1.0.231
+                hits += hit
             told = hits > 0
             break
         except Exception:                               # noqa: BLE001
@@ -29354,6 +29842,8 @@ def hatls_off(store, by, here=True):
         try:
             told = bool(far.run('UPDATE meta SET v = ? WHERE k = ?',
                                 ('hatls:want', json.dumps(w))))   # see hatls_start
+            if told:
+                dbguard_sign(far, 'm', 'hatls:want', json.dumps(w), far=True)
             break
         except Exception:                               # noqa: BLE001
             continue
@@ -30074,6 +30564,9 @@ def readdress_tell(peer, mine, by, keep_old=False):
         try:
             far.run('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE '
                     'SET v = EXCLUDED.v', ('readdress:ask', json.dumps(ask)))
+            # Signed there as the row is written there (1.0.231): the row is this node's
+            # word, made only there.
+            dbguard_sign(far, 'm', 'readdress:ask', json.dumps(ask))
             told = True
             break
         except Exception:                               # noqa: BLE001
@@ -31346,7 +31839,7 @@ def net_trial_answer(store, node, act, by):
 def readdress_dropold_tick(store):
     """The other node's new address kept: its old one no longer let in."""
     me = node_name()
-    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'readdress:dropold:%'"):
+    for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'readdress:dropold:%'")):
         try:
             ask = json.loads(r['v'] or '{}')
         except ValueError:
@@ -31458,7 +31951,7 @@ def trials_view(store):
     """What waits to be kept, for the banner of every page and --status."""
     out = []
     t = time.time()
-    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'net:job:%'"):
+    for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'net:job:%'")):
         try:
             job = json.loads(r['v'] or '{}')
         except ValueError:
@@ -37439,7 +37932,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         s = self.session('admin')
         if not s:
             raise ApiError(401, 'not signed in, or the sign-in has run out')
-        acc = self.store.account(s['name'])
+        acc = self.store.account(s['name'], checked=True)
         if not acc or acc.get('disabled'):
             self.store.session_end(self.headers.get('X-Otp-Session'))
             raise ApiError(401, 'that account may no longer sign in')
@@ -38059,6 +38552,11 @@ def admin_ask_directory(h, name, password):
     if entry_unusable(entry):
         return {'ok': False, 'said': 'the account may not sign in: %s' % entry_unusable(entry),
                 'dn': entry['dn'], 'directory': ad.name}
+    if not dbguard_directory_ok(h.store.db, ad.name):
+        # The directory's row not as otp wrote it (1.0.231): another server put in - asked
+        # there, anybody would be an administrator here.
+        return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
+                'directory': ad.name}
     held = dir_pw_take(h, who)          # the cap per person (1.0.230)
     try:
         ad.password_ok(entry, password)
@@ -38136,7 +38634,7 @@ def admin_from_directory(h, name, password):
         h.store.add_account(name, role, None, source='directory',
                             note='signed in from %s' % said['directory'],
                             display=entry.get('display') or '', dn=entry['dn'], groups=groups)
-    return h.store.account(name)
+    return h.store.account(name, checked=True)
 
 
 def dir_account_far(store, name, role, said, entry, groups):
@@ -38156,6 +38654,7 @@ def dir_account_far(store, name, role, said, entry, groups):
         try:
             if not far.row('SELECT id FROM accounts WHERE LOWER(name) = ?', (name.lower(),)):
                 far.insert('accounts', row)
+                dbguard_account_sign(far, name)               # signed there too (1.0.231)
             done = True
             break
         except Exception:                               # noqa: BLE001
@@ -38180,8 +38679,8 @@ def _login(h):
     password = str(b.get('password') or '')
     key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                      int(CONFIG.get('login_wait_min') or 15), name=name)
-    acc = h.store.account(name) or (h.store.account(admin_name_parts(name)[0])
-                                    if CONFIG.get('admin_directory') else None)
+    acc = h.store.account(name, checked=True) or (h.store.account(admin_name_parts(name)[0], checked=True)
+                                                  if CONFIG.get('admin_directory') else None)
     ok = None
     if acc and acc.get('source') != 'directory':
         ok = acc if (acc.get('pw') and password_ok(password, acc['pw'])) else None
@@ -41830,6 +42329,8 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         if said:
             try:
                 daemon.changed('all')
+                # Signed as this node's word first (1.0.231), then read in.
+                dbguard_resign(store, '%s imported a configuration' % by)
                 # Read in here too (1.0.62): a setting put back to its default
                 # stayed at the old value in this process until a restart.
                 daemon.reload_all('a configuration was imported')
@@ -44033,7 +44534,7 @@ def _mfa_session(h):
     s = h.session('admin')
     if not s:
         raise ApiError(401, 'not signed in, or the sign-in has run out')
-    acc = h.store.account(s['name'])
+    acc = h.store.account(s['name'], checked=True)
     if not acc or acc.get('disabled'):
         raise ApiError(401, 'that account may no longer sign in')
     return s, acc

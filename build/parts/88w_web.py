@@ -559,7 +559,7 @@ def vip_peer_seen(store):
     (a cluster of one shared database)."""
     me = node_name()
     for n in ha_nodes(store):
-        if n['name'] != me and n.get('address'):
+        if n['name'] != me and n.get('address') and dbguard_node_ok(store, n['name']):
             return n['address']
     return ''
 
@@ -1074,6 +1074,7 @@ def node_carry(store, old, new, by='the daemon'):
         store.db.run('DELETE FROM meta WHERE k = ?', (k + old,))
     store.add_event('settings', 'the node %s is called %s now; carried over: %s' % (
         old, new, ', '.join(said) or 'nothing (it had nothing of its own)'), 'warn', who=by)
+    dbguard_resign(store, 'the node %s is called %s now' % (old, new))      # 1.0.231
     return said
 
 
@@ -1140,7 +1141,7 @@ def cluster_addresses(store, node):
     me = node_name()
     out = set()
     for n in ha_nodes(store):
-        if n['name'] != node and n.get('address'):
+        if n['name'] != node and n.get('address') and dbguard_node_ok(store, n['name']):
             out.add(n['address'])
     if CONFIG.get('ha_mode'):
         if node == me and CONFIG.get('ha_peer'):

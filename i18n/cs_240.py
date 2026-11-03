@@ -1,0 +1,14 @@
+# 1.0.231: root's actions only from rows otp signed.
+S240 = {
+ "Root’s actions only from rows otp signed": "Root akce jen z řádků podepsaných otp",
+ "What this node does as root - the firewall, sshd and root’s SSH keys, the network, a restart, the system’s updates and their proxy, the time servers, nginx’s certificates, the VIP, the TLS of the database link - follows rows of the database, and so do the accounts and the sign-ins of these pages. Anybody who can write the database (its server, a db_password found out, a copy of it put back) could write those rows. Every one is signed when otp writes it, with a key from secrets.key that is in no database. On: this node acts on such a row only when its signature is right and it is not an older one put back; anything else is left as it was, and said under the security check and in Events. RADIUS, the codes and the tokens are never held up by it. Kept in this node's config.json (not in the database), switched off only on this node itself. In a cluster, switch it on on every node, once all of them run 1.0.231 or later. Not against the other node of a cluster: it holds the same key.":
+  "Co tento uzel dělá jako root – firewall, sshd a SSH klíče roota, síť, restart, aktualizace systému a jejich proxy, časové servery, certifikáty nginx, VIP, TLS spojení databází – se řídí řádky databáze, stejně jako účty a přihlášení na tyto stránky. Kdo může do databáze zapisovat (její server, vyzrazené db_password, vrácená kopie), mohl by tyto řádky napsat. Každý se při zápisu otp podepíše klíčem odvozeným ze secrets.key, který v žádné databázi není. Zapnuto: uzel podle takového řádku jedná, jen když má správný podpis a není to starší vrácený řádek; jinak nechá vše, jak bylo, a řekne to v kontrole zabezpečení a v událostech. RADIUS, kódy a tokeny to nikdy nezdrží. Ukládá se do config.json tohoto uzlu (ne do databáze), vypnout jde jen přímo na tomto uzlu. V clusteru zapněte na každém uzlu, až všechny poběží na 1.0.231 nebo novější. Neochrání před druhým uzlem clusteru: ten má stejný klíč.",
+ "look who can write the database": "zjistěte, kdo může zapisovat do databáze",
+ "this node acts on rows of the database whoever wrote them, as before 1.0.231": "tento uzel jedná podle řádků databáze, ať je zapsal kdokoli, jako před 1.0.231",
+ "db_guard: this node has no secrets.key to sign with": "db_guard: tento uzel nemá secrets.key, kterým by podepisoval",
+}
+P240 = {
+ "{0} row(s) of the database that would reach root were not written by otp and are not acted on: {1}": "{0} řádků databáze, které by vedly k root akcím, nezapsal otp a nejedná se podle nich: {1}",
+ "db_guard: {0} run an older version that does not sign what it writes - upgrade them first": "db_guard: {0} běží na starší verzi, která nepodepisuje, co zapisuje – nejdřív je aktualizujte",
+ "this node acts as root only on rows otp signed ({0} signed now)": "tento uzel jedná jako root jen podle řádků podepsaných otp (právě podepsáno {0})",
+}

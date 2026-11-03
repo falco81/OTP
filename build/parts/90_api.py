@@ -312,7 +312,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         s = self.session('admin')
         if not s:
             raise ApiError(401, 'not signed in, or the sign-in has run out')
-        acc = self.store.account(s['name'])
+        acc = self.store.account(s['name'], checked=True)
         if not acc or acc.get('disabled'):
             self.store.session_end(self.headers.get('X-Otp-Session'))
             raise ApiError(401, 'that account may no longer sign in')
@@ -932,6 +932,11 @@ def admin_ask_directory(h, name, password):
     if entry_unusable(entry):
         return {'ok': False, 'said': 'the account may not sign in: %s' % entry_unusable(entry),
                 'dn': entry['dn'], 'directory': ad.name}
+    if not dbguard_directory_ok(h.store.db, ad.name):
+        # The directory's row not as otp wrote it (1.0.231): another server put in - asked
+        # there, anybody would be an administrator here.
+        return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
+                'directory': ad.name}
     held = dir_pw_take(h, who)          # the cap per person (1.0.230)
     try:
         ad.password_ok(entry, password)
@@ -1009,7 +1014,7 @@ def admin_from_directory(h, name, password):
         h.store.add_account(name, role, None, source='directory',
                             note='signed in from %s' % said['directory'],
                             display=entry.get('display') or '', dn=entry['dn'], groups=groups)
-    return h.store.account(name)
+    return h.store.account(name, checked=True)
 
 
 def dir_account_far(store, name, role, said, entry, groups):
@@ -1029,6 +1034,7 @@ def dir_account_far(store, name, role, said, entry, groups):
         try:
             if not far.row('SELECT id FROM accounts WHERE LOWER(name) = ?', (name.lower(),)):
                 far.insert('accounts', row)
+                dbguard_account_sign(far, name)               # signed there too (1.0.231)
             done = True
             break
         except Exception:                               # noqa: BLE001
@@ -1053,8 +1059,8 @@ def _login(h):
     password = str(b.get('password') or '')
     key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                      int(CONFIG.get('login_wait_min') or 15), name=name)
-    acc = h.store.account(name) or (h.store.account(admin_name_parts(name)[0])
-                                    if CONFIG.get('admin_directory') else None)
+    acc = h.store.account(name, checked=True) or (h.store.account(admin_name_parts(name)[0], checked=True)
+                                                  if CONFIG.get('admin_directory') else None)
     ok = None
     if acc and acc.get('source') != 'directory':
         ok = acc if (acc.get('pw') and password_ok(password, acc['pw'])) else None
@@ -4703,6 +4709,8 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         if said:
             try:
                 daemon.changed('all')
+                # Signed as this node's word first (1.0.231), then read in.
+                dbguard_resign(store, '%s imported a configuration' % by)
                 # Read in here too (1.0.62): a setting put back to its default
                 # stayed at the old value in this process until a restart.
                 daemon.reload_all('a configuration was imported')

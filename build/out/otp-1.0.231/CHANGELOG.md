@@ -4,6 +4,26 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.231 — 3 November 2026
+
+**Root's actions only from rows otp signed** (*Settings → High security*, `db_guard`; off by default -
+as until now). What a node does as root - the firewall, sshd and root's SSH keys, the network, a
+restart, the system's updates and their proxy, the time servers, nginx's certificates, the VIP, the
+TLS of the database link - follows rows of the database, and so do the accounts and sign-ins of these
+pages. Anybody who could write the database (its server, a db_password found out, a copy put back)
+could have the node do any of it.
+
+- Every such row is signed when otp writes it - an HMAC with a key from secrets.key, in no database -
+  in a row of its own beside it (`sig:<kind>:<hash>:<node>`; each node writes only its own). Versions before
+  this one leave those rows alone.
+- On: a sign-in, an account, the administrators' directory, a setting that reaches root, a row of
+  meta root acts on, another node's heartbeat - not written by otp, or an older one put back - is
+  not acted on; settings keep their last good value. Said in the log, in Events and in the security
+  check. RADIUS, the codes and the tokens are never held up by it.
+- Kept in this node's config.json, not in the database; switched off only on the node itself. A copy
+  put back, an import, the database moved and a node renamed are signed again afterwards.
+- docs/high-security.md says all of it.
+
 ## 1.0.230 — 3 November 2026
 
 **Wrong directory passwords per person capped** (*Settings → Sign-in protection → Wrong directory
