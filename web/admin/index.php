@@ -329,6 +329,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp', 'clock' => '/api/clock',
         'console-login' => '/api/console-login',
         'selinux' => '/api/selinux',
+        'portal-sso' => '/api/portal-sso',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
@@ -348,6 +349,7 @@ if (isset($_GET['api'])) {
         'rbackup' => '/api/rbackup', 'lockouts' => '/api/lockouts', 'trial' => '/api/trial', 'net' => '/api/net', 'power' => '/api/power', 'ntp' => '/api/ntp', 'clock' => '/api/clock',
         'console-login' => '/api/console-login',
         'selinux' => '/api/selinux',
+        'portal-sso' => '/api/portal-sso',
         'mfa' => '/api/auth/mfa',
         'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
@@ -931,6 +933,14 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       <p class="note small" id="art-said"></p>
     </div>
     <div class="card full"><div id="sect-portal"></div></div>
+    <div class="card full" id="sso-card">
+      <h2>Signed in by a load balancer or WAF (SSO)</h2>
+      <p class="note">The enrolment pages published through a NetScaler, an F5 or another
+        balancer that signs people in against the directory first: they then come in signed in,
+        without a second password. Off, the pages are as until now.</p>
+      <div id="sect-portalsso"></div>
+      <div id="sso-host"></div>
+    </div>
   </div>
 
   <div class="ctl-pane" id="pane-import" hidden>

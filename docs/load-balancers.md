@@ -372,3 +372,11 @@ the pages, `otp --trusted-proxy` refuses and says to change it there.
 otp --set web_proxy_from='192.0.2.5/32 10.20.0.0/24' --set web_proxy_header=X-Forwarded-For --set web_proxy=1
 ```
 
+
+## Signed in by the balancer (1.0.239)
+
+A NetScaler or an F5 APM that signs people in against the directory before the enrolment pages
+can hand who it signed in to otp, so that the pages ask no password again - only from the
+balancers named, only with a key of otp's own, the one-time code before the first token still
+asked. *Settings → The enrolment pages → Signed in by a load balancer or WAF*; the whole of it in
+docs/portal-sso.md.

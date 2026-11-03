@@ -4,6 +4,34 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.239 — 3 November 2026
+
+**Signed in by a load balancer or WAF (SSO)** (*Settings → The enrolment pages*; off by default - the
+pages as until now). The enrolment pages published to the internet through a NetScaler, an F5 APM or
+another balancer that signs people in against the directory first: who it signed in comes in a header
+(`X-Otp-User`, or one named), and the pages ask no password again. Believed only on a connection from
+the balancers named - the machine the request really came from (nginx's `$realip_remote_addr`, passed
+to the page as `OTP_PEER`), never the client's address from `X-Forwarded-For` - and only with the key
+in `X-Otp-Sso-Key` (made on the pages or with `otp --sso-key`, shown once, kept sealed, compared in
+constant time). Everything after the password as it was: the directory asked who it is, the realm's
+groups and *Who may enrol* decide, **the one-time code by mail or SMS before the first token is still
+sent and asked**; replacing a token asks no password but still the old one's code. The same person on
+the next page goes on in the same session, another one on the same browser ends it. *Sign out* goes
+to the balancer's own sign-out when one is set, or holds the sign-in by the balancer until asked again.
+Every refusal in *Events* with its reason. The card shows the last sign-in by the balancer each node
+saw and - switched on - the configuration of NetScaler (nFactor/LDAP, rewrite of the headers, `/admin`
+dropped, the Web App Firewall), F5 APM (access profile, iRule) and nginx / oauth2-proxy, filled in with
+this server's values, with Copy buttons. Refused on without the balancers named or without a key. Each
+node's root helper adds one line to the enrolment pages' `location = /` (checked with `nginx -t`); off,
+only that line goes - both nodes of a cluster, the VIP address too, standalone the same. The
+administration pages are not concerned. `otp --sso-status`, `otp --sso-key`; on the console under
+Tests and checks. docs/portal-sso.md.
+
+**Fewer reads of the database for the web state.** Whether "behind a load balancer" or "signed in
+by it" was ever switched on is read at most every 30 s (and at once after a save here), not on every
+look at the web state - during a restart of PostgreSQL (its TLS renewed) one RADIUS answer on the VIP
+address could come too late.
+
 ## 1.0.238 — 3 November 2026
 
 **SELinux: what the policy now allows no longer counts as refused.** After an upgrade with a newer

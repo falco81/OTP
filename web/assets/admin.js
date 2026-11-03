@@ -2581,6 +2581,8 @@ $('ctl-find').addEventListener('input', function () {
     b.type = 'button';
     b.appendChild(el('span', 'ctl-hit-t', s.name));
     var pane = Object.keys(SETTINGS.panes).filter(function (p) { return SETTINGS.panes[p].indexOf(s.key) >= 0; })[0];
+    /* A card of its own on another pane's page (1.0.239): signed in by the balancer is on the enrolment pages'. */
+    pane = SET_PANE_HOME[pane] || pane;
     var where = document.querySelector('.ctl-nav [data-pane="' + (pane || 'about') + '"]');
     b.appendChild(el('span', 'ctl-hit-w', where ? where.textContent.trim() : (pane || '')));
     b.onclick = function () {
@@ -2651,7 +2653,14 @@ var TALL = {portal_help: 1, portal_groups: 1, sms_body: 1, sms_headers: 1, isemo
 /* A pane drawn in sections (1.0.88): what belongs together side by side,
    and what only one choice uses in a panel of its own that is there only
    while that choice is made - not a page of greyed-out boxes. */
+var SET_PANE_HOME = {portalsso: 'portal'};
 var PANE_LAYOUT = {
+  portalsso: [
+    {title: 'Who is believed', icon: 'shield', cols: 4,
+     keys: ['portal_sso', 'portal_sso_from', 'portal_sso_header'], wide: {portal_sso_from: 2}},
+    {title: 'The key and signing out', icon: 'key', cols: 4,
+     keys: ['portal_sso_key', 'portal_sso_logout'], wide: {portal_sso_key: 2, portal_sso_logout: 2}}
+  ],
   fw: [
     {title: 'Taken back unless kept', icon: 'undo', keys: ['fw_confirm_min']},
     {title: 'Behind a load balancer or WAF', icon: 'net', cols: 4,
@@ -2924,6 +2933,8 @@ function drawSettings() {
     });
     host.appendChild(grid);
   });
+  /* Signed in by the balancer (1.0.239): its card under the enrolment pages' settings. */
+  loadSso();
   var rest = SETTINGS.settings.filter(function (s) { return !shown[s.key]; });
   var host = $('sect-rest');
   clear(host);
@@ -8741,6 +8752,245 @@ function drawHaLb(d) {
   }
   paint();
   host.appendChild(el('p', 'note', 'More, with the reasons: docs/load-balancers.md in the package.'));
+}
+
+/* ---- signed in by a load balancer or WAF (1.0.239) ------------------------------------------
+   The card under the enrolment pages' settings: the key (made here, shown once), the last
+   sign-in by the balancer each node saw, and - once switched on - the configuration of the
+   NetScaler, the F5 or another balancer, filled in with this server's own values. */
+var SSO = {d: null, key: '', ui: (function () {
+  var st = {};
+  try { st = JSON.parse(localStorage.getItem('otp.sso') || '{}') || {}; } catch (e) { st = {}; }
+  return st;
+})()};
+function ssoKeep() {
+  /* The key is never kept in the browser. */
+  try { localStorage.setItem('otp.sso', JSON.stringify(Object.assign({}, SSO.ui, {key: undefined}))); } catch (e) { /* not kept */ }
+}
+function loadSso() {
+  if (!$('sso-host')) return;
+  api('portal-sso').then(function (d) { SSO.d = d; drawSso(); }).catch(function (e) {
+    var host = $('sso-host');
+    clear(host);
+    host.appendChild(el('p', 'note bad', String(e.message || e)));
+  });
+}
+var SSO_GUIDES = [
+  ['netscaler', 'NetScaler (Citrix ADC)', 'nFactor / LDAP', function (v) {
+    return [
+      ['1. Who signs in: an authentication virtual server against the directory (LDAPS)',
+        'add authentication ldapAction otp_ldap -serverIP {dc} -serverPort 636 -secType SSL \\\n'
+        + '    -ldapBase "{base}" -ldapBindDn "{bind}" -ldapBindDnPassword "<its password>" \\\n'
+        + '    -ldapLoginName sAMAccountName -groupAttrName memberOf -subAttributeName cn\n'
+        + 'add authentication Policy otp_ldap_pol -rule true -action otp_ldap\n'
+        + 'add authentication vserver otp_aaa SSL 0.0.0.0\n'
+        + 'bind ssl vserver otp_aaa -certkeyName {cert}\n'
+        + 'bind authentication vserver otp_aaa -policy otp_ldap_pol -priority 100\n'
+        + 'add authentication authnProfile otp_authn -authnVsName otp_aaa -AuthenticationHost {name}'],
+      ['2. The enrolment pages behind it - the service group of the nodes as on High availability → Load balancers',
+        'add lb vserver otp_portal_vs SSL {vip} 443 -persistenceType NONE -Authentication ON -authnProfile otp_authn\n'
+        + 'bind lb vserver otp_portal_vs otp_https\n'
+        + 'bind ssl vserver otp_portal_vs -certkeyName {cert}'],
+      ['3. The headers: what the client sent taken away first, then who signed in, the key and the client\'s address',
+        'add rewrite action otp_drop_user delete_http_header {header}\n'
+        + 'add rewrite action otp_drop_key delete_http_header ' + v.key_header + '\n'
+        + 'add rewrite action otp_drop_xff delete_http_header {xff}\n'
+        + 'add rewrite action otp_user insert_http_header {header} AAA.USER.NAME\n'
+        + 'add rewrite action otp_key insert_http_header ' + v.key_header + ' "\\"{key}\\""\n'
+        + 'add rewrite action otp_xff insert_http_header {xff} CLIENT.IP.SRC\n'
+        + 'add rewrite policy otp_drop_user_p true otp_drop_user\n'
+        + 'add rewrite policy otp_drop_key_p true otp_drop_key\n'
+        + 'add rewrite policy otp_drop_xff_p true otp_drop_xff\n'
+        + 'add rewrite policy otp_user_p "AAA.USER.IS_AUTHENTICATED" otp_user\n'
+        + 'add rewrite policy otp_key_p "AAA.USER.IS_AUTHENTICATED" otp_key\n'
+        + 'add rewrite policy otp_xff_p true otp_xff\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_drop_user_p -priority 100 -gotoPriorityExpression NEXT -type REQUEST\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_drop_key_p -priority 110 -gotoPriorityExpression NEXT -type REQUEST\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_drop_xff_p -priority 120 -gotoPriorityExpression NEXT -type REQUEST\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_user_p -priority 130 -gotoPriorityExpression NEXT -type REQUEST\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_key_p -priority 140 -gotoPriorityExpression NEXT -type REQUEST\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_xff_p -priority 150 -gotoPriorityExpression END -type REQUEST'],
+      ['4. Not the administration: /admin never through here',
+        'add responder policy otp_no_admin "HTTP.REQ.URL.PATH.SET_TEXT_MODE(IGNORECASE).STARTSWITH(\\"/admin\\")" DROP\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_no_admin -priority 10 -gotoPriorityExpression END -type REQUEST'],
+      ['5. The WAF (Web App Firewall) in front of the pages',
+        'add appfw profile otp_waf -defaults basic\n'
+        + 'add appfw policy otp_waf_p true otp_waf\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_waf_p -priority 100 -type REQUEST'],
+      ['Signing out: set "Where signing out goes" above to /cgi/tmlogout - NetScaler\'s own sign-out. AAA.USER.NAME is the name as it was typed; with -ldapLoginName userPrincipalName it is novak@example.cz. Check the commands against your ADC\'s version.', '']];
+  }],
+  ['f5', 'F5 BIG-IP APM', 'access policy + iRule', function (v) {
+    return [
+      ['1. An access profile (Access → Profiles): Logon Page → AD Auth (or LDAP Auth) against the domain controllers → Allow. Its name below: otp_access.', ''],
+      ['2. The iRule - what the client sent taken away, then who signed in and the key, /admin refused',
+        'when HTTP_REQUEST {\n'
+        + '    if { [string tolower [HTTP::path]] starts_with "/admin" } {\n'
+        + '        HTTP::respond 403 content "Not here."\n'
+        + '        return\n'
+        + '    }\n'
+        + '    HTTP::header remove "{header}"\n'
+        + '    HTTP::header remove "' + v.key_header + '"\n'
+        + '    HTTP::header replace "{xff}" [IP::client_addr]\n'
+        + '}\n'
+        + 'when ACCESS_ACL_ALLOWED {\n'
+        + '    HTTP::header replace "{header}" [ACCESS::session data get "session.logon.last.username"]\n'
+        + '    HTTP::header replace "' + v.key_header + '" "{key}"\n'
+        + '}'],
+      ['3. tmsh: the iRule and the access profile on the virtual server of the pages (the pool of the nodes as on High availability → Load balancers)',
+        'tmsh create ltm rule otp_sso_rule   # paste the iRule above\n'
+        + 'tmsh modify ltm virtual otp_portal_vs destination {vip}:443 profiles add { otp_access { } } rules { otp_sso_rule }\n'
+        + 'tmsh modify ltm virtual otp_portal_vs profiles add { otp_waf_policy_profile { } }   # Advanced WAF / ASM policy, if licensed\n'
+        + 'tmsh save sys config'],
+      ['Signing out: set "Where signing out goes" above to /vdesk/hangup.php3 - APM\'s own sign-out. session.logon.last.username is the name as typed; for the UPN use session.ad.last.attr.userPrincipalName.', '']];
+  }],
+  ['nginx', 'nginx / oauth2-proxy', 'any IdP', function (v) {
+    return [['A reverse proxy that signs in by OIDC or SAML (oauth2-proxy here): the headers set by it, never passed on from the client',
+      'location /oauth2/ { proxy_pass http://127.0.0.1:4180; }\n'
+      + 'location = /oauth2/auth {\n    proxy_pass http://127.0.0.1:4180;\n    proxy_pass_request_body off;\n'
+      + '    proxy_set_header Content-Length "";\n}\n'
+      + 'location /admin { return 403; }\n'
+      + 'location / {\n    auth_request /oauth2/auth;\n    error_page 401 = /oauth2/sign_in;\n'
+      + '    auth_request_set $otp_user $upstream_http_x_auth_request_preferred_username;\n'
+      + '    proxy_set_header {header} $otp_user;\n'
+      + '    proxy_set_header ' + v.key_header + ' "{key}";\n'
+      + '    proxy_set_header {xff} $remote_addr;\n'
+      + '    proxy_set_header Host $host;\n    proxy_pass https://otp_nodes;\n}']];
+  }]
+];
+function drawSso() {
+  var host = $('sso-host');
+  var d = SSO.d;
+  if (!host || !d) return;
+  var open = {};
+  host.querySelectorAll('details.lb-guide').forEach(function (x) { open[x.dataset.k] = x.open; });
+  if (host.contains(document.activeElement) && liveControl(document.activeElement)) return;
+  clear(host);
+  /* How it stands. */
+  var facts = el('div', 'lb-facts');
+  var chip = function (cls, words) { var c = el('span', 'cchip ' + cls); c.appendChild(el('span', '', words)); facts.appendChild(c); return c; };
+  chip(d.on ? 'good' : 'dim', d.on ? 'On' : 'Off');
+  chip(d.key_set ? 'good' : 'warn', d.key_set ? 'A key is set' : 'No key yet');
+  var fc = chip(d.from.length ? '' : 'warn', d.from.length ? 'From' : 'No balancer named');
+  if (d.from.length) fc.appendChild(noI18n(el('span', 'mono', ' ' + d.from.join(', '))));
+  var hc = chip('', 'Header');
+  hc.appendChild(noI18n(el('span', 'mono', ' ' + d.header)));
+  host.appendChild(facts);
+  var row = el('div', 'btnrow');
+  if (ADMIN) {
+    var mk = cmdButton(d.key_set ? 'Make a new key…' : 'Make a key…', 'key', 'small' + (d.key_set ? '' : ' primary'));
+    explain(mk, 'A key for the balancer to send in X-Otp-Sso-Key, shown once - the one before is no longer taken at once.');
+    mk.onclick = function () {
+      confirmThen(d.key_set ? 'Make a new key for the balancer?' : 'Make a key for the balancer?',
+        d.key_set ? 'The key used now is no longer taken at once - put the new one into the balancer.' : 'Shown once: put it into the balancer\'s configuration below.',
+        'Make it', function () {
+          api('portal-sso', {action: 'key'}).then(function (x) {
+            SSO.key = x.key; SSO.d = x.view;
+            modal('The key for the balancer', function (body) {
+              body.appendChild(el('p', 'note', 'Shown only now - and put into the configuration below until this page is left. The balancer sends it in X-Otp-Sso-Key with every request.'));
+              var pre = noI18n(el('pre', 'wrap mono', x.key));
+              body.appendChild(pre);
+              var cp = cmdButton('Copy', 'copy', 'small');
+              cp.onclick = function () { copyText(x.key, cp); };
+              body.appendChild(cp);
+            });
+            loadSettings();
+            drawSso();
+          }).catch(oops);
+        }, false);
+    };
+    row.appendChild(mk);
+  }
+  var chk = cmdButton('Look again', 'refresh', 'small');
+  chk.onclick = function () { busy(chk, true); api('portal-sso').then(function (x) { SSO.d = x; drawSso(); }).catch(oops); };
+  row.appendChild(chk);
+  host.appendChild(row);
+  /* Words about what else it needs. */
+  if (!d.portal) host.appendChild(el('p', 'note warn', 'The enrolment pages are switched off (above): nobody is signed in by the balancer either.'));
+  if (d.on && !d.web_proxy) host.appendChild(el('p', 'note warn', 'Switch on Settings → Firewall and access → Behind a load balancer or WAF as well, with the balancer\'s address: otherwise every client is the balancer\'s address - the sign-in pause of one is everybody\'s, and the logs do not say who it was.'));
+  if (d.on) host.appendChild(el('p', 'note', 'Published to the internet: who may reach the enrolment pages (Settings → Firewall and access → the allow lists) must take the clients\' own addresses, as the balancer passes them on - the private networks alone keep everybody from outside out.'));
+  /* The last sign-in by the balancer each node saw. */
+  host.appendChild(el('h3', 'peek-h', 'The last sign-in by the balancer'));
+  if (!d.last.length) {
+    host.appendChild(el('p', 'muted small', d.on ? 'None yet. Open the enrolment pages through the balancer, then Look again.' : 'None - it is off.'));
+  } else {
+    var t = el('table', 'se-avc-t');
+    d.last.forEach(function (x) {
+      var tr = el('tr', '');
+      tr.appendChild(noI18n(el('td', 'mono small', x.node || '')));
+      tr.appendChild(el('td', 'small', x.at ? new Date(x.at * 1000).toLocaleString() : ''));
+      var st = el('td', '');
+      st.appendChild(el('span', 'tag ' + (x.ok ? 'good' : 'bad'), x.ok ? 'signed in' : 'refused'));
+      tr.appendChild(st);
+      tr.appendChild(noI18n(el('td', 'mono small', (x.name || '?') + '  ← ' + (x.peer || '?') + (x.client && x.client !== x.peer ? '  (client ' + x.client + ')' : ''))));
+      tr.appendChild(el('td', 'small muted', x.why || ''));
+      t.appendChild(tr);
+    });
+    host.appendChild(t);
+  }
+  /* The configuration of the balancer - once switched on. */
+  if (!d.on) {
+    host.appendChild(el('p', 'note', 'Switched on, the configuration for NetScaler, F5 and others is shown here, filled in with this server\'s own values.'));
+    return;
+  }
+  host.appendChild(el('h3', 'peek-h', 'On the balancer'));
+  host.appendChild(el('p', 'note', 'Pick yours: the configuration is filled in with what is set here, marked in colour, and follows what you type below. Whatever the balancer: it takes the client\'s own ' + d.header + ' and X-Otp-Sso-Key away first, puts in its own only after it signed the person in, and never passes /admin on.'));
+  var ui = SSO.ui;
+  var v0 = {name: ui.name || location.hostname, vip: ui.vip || '203.0.113.10', dc: ui.dc || 'dc1.example.cz',
+            base: ui.base || 'DC=example,DC=cz', bind: ui.bind || 'CN=svc-netscaler,OU=Service,DC=example,DC=cz',
+            cert: ui.cert || 'otp_portal_cert'};
+  var form = el('div', 'lb-form');
+  var field = function (words, key, help) {
+    var f = el('label', 'lb-f');
+    f.appendChild(el('span', 'lb-f-k', words));
+    var i = textBox('', '', 'mono');
+    i.value = v0[key]; i.spellcheck = false;
+    i.oninput = function () { ui[key] = i.value.trim(); ssoKeep(); paint(); };
+    f.appendChild(i);
+    if (help) f.appendChild(el('span', 'arow-s', help));
+    form.appendChild(f);
+  };
+  field('The name people use', 'name', 'the pages\' public name, in the balancer\'s certificate');
+  field('The balancer\'s public address', 'vip', 'its virtual server for the pages');
+  field('A domain controller', 'dc', 'LDAPS, port 636');
+  field('Where the accounts are', 'base', 'the directory\'s base DN');
+  field('The balancer\'s own account', 'bind', 'reads the directory');
+  field('The certificate on the balancer', 'cert', 'its name there');
+  host.appendChild(form);
+  var list = el('div', 'lb-list');
+  host.appendChild(list);
+  function values() {
+    var v = {header: d.header, xff: d.web_proxy_header || 'X-Forwarded-For', key: SSO.key || '<the key - Make a key>',
+             key_header: d.key_header};
+    Object.keys(v0).forEach(function (k) { v[k] = ui[k] || v0[k]; });
+    return v;
+  }
+  function paint() {
+    var v = values();
+    clear(list);
+    SSO_GUIDES.concat([['check', 'Check it', 'after', function () {
+      return [['From a machine that is not the balancer: the headers are not taken from anybody else - the page asks for the password',
+        'curl -sk -H "{header}: novak" -H "' + v.key_header + ': guess" https://{name}/ | grep -c in-pass   # 1: the sign-in page\n\n'
+        + '# through the balancer, signed in: the page of the person, no password\n'
+        + '# then above: Look again - "signed in", the balancer\'s address, the client\'s'],
+        ['Refused ones are in Events (enrolment) with the reason: not from the balancers named, the key wrong or missing, a name the directory does not know.', '']];
+    }]]).forEach(function (g) {
+      var det = el('details', 'lb-guide');
+      det.dataset.k = g[0];
+      var sum = el('summary', '');
+      sum.appendChild(el('b', '', g[1]));
+      sum.appendChild(el('span', 'tag dim', g[2]));
+      det.appendChild(sum);
+      g[3](v).forEach(function (part) {
+        if (part[1]) det.appendChild(lbBlock(part[1], v, part[0]));
+        else det.appendChild(el('p', 'note', part[0]));
+      });
+      det.open = !!open[g[0]];
+      det.ontoggle = function () { open[g[0]] = det.open; };
+      list.appendChild(det);
+    });
+  }
+  paint();
+  host.appendChild(el('p', 'note', 'More, with the reasons: docs/portal-sso.md in the package.'));
 }
 
 if ($('ha-bundle')) {

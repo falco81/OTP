@@ -127,7 +127,7 @@ function gateForm(g) {
   back.type = 'button';
   back.title = 'Sign in as somebody else';
   back.onclick = function () {
-    api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); });
+    portalSignOut(!!(g && g.sso));
   };
   row.appendChild(back);
   wrap.appendChild(row);
@@ -185,13 +185,21 @@ function gateForm(g) {
 
 var ME = null;
 
+/* Signed out - and, signed in by the balancer (1.0.239), on to its own sign-out when one is set:
+   otherwise the next page would sign the person straight back in. */
+function portalSignOut(sso) {
+  var done = function (d) {
+    if (d && d.go) location.href = d.go;
+    else location.reload();
+  };
+  api('logout', {sso: !!sso}).then(done, function () { location.reload(); });
+}
+
 function portalApp(me) {
   ME = me;
   drawLangPick();
   dressButtons(document);
-  $('signout').onclick = function () {
-    api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); });
-  };
+  $('signout').onclick = function () { portalSignOut(!!(ME && ME.sso)); };
   if ($('mebtn')) $('mebtn').onclick = aboutMe;
   drawPortal();
 }
@@ -850,7 +858,13 @@ function reissueCard() {
   var sent = ME.token && ME.token.kind && ME.token.kind !== 'totp';
   var ways = ME.methods || ['totp'];
   card.appendChild(el('h2', '', sent ? 'Another address, number or way' : 'A new phone, or a new token'));
-  card.appendChild(el('p', 'note', sent
+  /* Signed in by the balancer (1.0.239): it asked the password - the code is still asked. */
+  var sso = !!ME.sso;
+  card.appendChild(el('p', 'note', sso ? (sent
+    ? 'To change where your codes go, type a code we send you now - or one of your recovery '
+      + 'codes. If you have neither, ask the administrator.'
+    : 'To replace your token, type a code from the token you have now - or one of your recovery '
+      + 'codes. If you have lost both, ask the administrator.') : sent
     ? 'To change where your codes go, type your password and a code we send you now - or one '
       + 'of your recovery codes. If you have neither, ask the administrator.'
     : 'To replace your token, type your password and a code from '
@@ -866,7 +880,7 @@ function reissueCard() {
   code.style.fontFamily = 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
   code.inputMode = 'numeric';
   var grid = el('div', 'formgrid');
-  grid.appendChild(formField('Your password', pw));
+  if (!sso) grid.appendChild(formField('Your password', pw));
   /* With codes sent (1.0.80): the code has to be asked for first - a button
      of its own beside the box, as tall as it, not a small one under it. */
   var codeHost = code;
@@ -912,7 +926,7 @@ function reissueCard() {
     busy(go, true);
     said.className = 'said';
     said.textContent = '';
-    api('reissue', {password: pw.value, code: code.value.replace(/\s/g, ''), kind: sent ? 'other' : want}).then(function (d) {
+    api('reissue', {password: sso ? '' : pw.value, code: code.value.replace(/\s/g, ''), kind: sent ? 'other' : want}).then(function (d) {
       if (d.choose) { ME = d.me; drawPortal(); return; }
       showMade(d.made, d.confirm, true);
     }).catch(function (e) {

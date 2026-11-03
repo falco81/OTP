@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.238'
+__version__ = '1.0.239'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -199,6 +199,12 @@ DEFAULTS = {
     'portal_codes_view': 0,
     'portal_session_min': 15,
     'portal_help': '',
+    # Signed in by a load balancer or WAF in front (1.0.239): NetScaler, F5 - off by default.
+    'portal_sso': 0,
+    'portal_sso_from': '',
+    'portal_sso_header': 'X-Otp-User',
+    'portal_sso_key': '',
+    'portal_sso_logout': '',
     'portal_tries': 5,
     'portal_wait_min': 15,
     # --- the administration pages -------------------------------------------
@@ -479,11 +485,12 @@ METRICS_TOKEN_RE_HEAD = re.compile(r'^[A-Za-z0-9_.~+/=-]{24,200}\Z')
 SECRET_KEYS = ('db_password', 'smtp_password', 'sms_token', 'sms_tel_password',
                'rbackup_password', 'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token',
                'acme_dns_key', 'acme_desec_token', 'metrics_token', 'snmp_auth_pass',
-               'snmp_priv_pass')
+               'snmp_priv_pass', 'portal_sso_key')
 # Secrets kept in the database, sealed with the key that seals the tokens.
 SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_password',
                'proxy_password', 'acme_dns_tsig_secret', 'acme_dns_token', 'acme_dns_key',
-               'acme_desec_token', 'metrics_token', 'snmp_auth_pass', 'snmp_priv_pass')
+               'acme_desec_token', 'metrics_token', 'snmp_auth_pass', 'snmp_priv_pass',
+               'portal_sso_key')
 
 # Saved as a row even when equal to the default (1.0.238): what they were before tells "switched
 # off" from "never switched on".
@@ -506,7 +513,7 @@ TUNABLE = {
     'dir_pw_tries': (0, 100), 'dir_pw_window_min': (1, 1440),
     'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
-    'web_proxy': (0, 1), 'web_proxy_recursive': (0, 1),
+    'web_proxy': (0, 1), 'web_proxy_recursive': (0, 1), 'portal_sso': (0, 1),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
     'names_czsk_letters': (0, 1),
@@ -771,6 +778,11 @@ NAMES = {
     'portal_codes_view': 'People may look at their recovery codes again',
     'portal_session_min': 'An enrolment sign-in lasts (min)',
     'portal_help': 'Help text on the enrolment pages',
+    'portal_sso': 'Signed in by the load balancer or WAF (SSO)',
+    'portal_sso_from': 'The balancers that sign people in',
+    'portal_sso_header': 'The header with who signed in',
+    'portal_sso_key': 'The key the balancer sends',
+    'portal_sso_logout': 'Where signing out goes',
     'portal_tries': 'Wrong passwords on the enrolment pages before a pause',
     'portal_wait_min': '...and the pause (min)',
     'session_hours': 'A sign-in lasts (h)',
@@ -1278,6 +1290,27 @@ SAYS = {
                       'still made, and only an administrator can see new ones.',
     'portal_session_min': 'How long somebody stays signed in on the enrolment pages. Short, '
                           'because the page holds a key that is somebody’s second factor.',
+    'portal_sso': 'The enrolment pages published through a NetScaler, an F5 or another balancer '
+                  'or WAF that signs people in against the directory first: who it signed in '
+                  'comes in a header, and the pages ask no password again. Only from the '
+                  'balancers\' own addresses below, and only with the key below - nobody else\'s '
+                  'header is believed. The directory is still asked who it is, the realm\'s groups '
+                  'and who may enrol still decide, and the one-time code by mail or SMS before '
+                  'the first token is still sent. The administration pages are not concerned. '
+                  'Off: the pages as until now.',
+    'portal_sso_from': 'The balancers\' own addresses or networks, as this node sees the '
+                       'connection come in (not the client\'s) - one or more, separated by '
+                       'spaces. Needed to switch it on.',
+    'portal_sso_header': 'Where the balancer puts the name it signed in: X-Otp-User, or the '
+                         'one it already sends. The name as people type it - novak, '
+                         'novak@example.cz or EXAMPLE\\novak - as on the sign-in of these pages.',
+    'portal_sso_key': 'Sent by the balancer in X-Otp-Sso-Key with every request, so that a '
+                      'header put in by anybody else is never taken. Made below (Make a key), '
+                      'shown once; kept sealed.',
+    'portal_sso_logout': 'Where Sign out sends the browser afterwards - the balancer\'s own '
+                         'sign-out (NetScaler: /cgi/tmlogout, F5: /vdesk/hangup.php3), so that it '
+                         'does not sign the person in again at once. Empty: the sign-in of these '
+                         'pages, with a button to sign in through the balancer again.',
     'portal_help': 'Words shown on the enrolment pages under the title: where to get the '
                    'application, whom to ring. Plain text; an empty line starts a new '
                    'paragraph.',
@@ -1610,6 +1643,9 @@ PANES = {
                'portal_show_secret',
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
+    # Signed in by the balancer (1.0.239): a card of its own on the enrolment pages' pane.
+    'portalsso': ['portal_sso', 'portal_sso_from', 'portal_sso_header', 'portal_sso_key',
+                  'portal_sso_logout'],
     'isemon': ['isemon', 'isemon_targets', 'isemon_hostname', 'isemon_detail',
                'isemon_events', 'isemon_max_bytes', 'isemon_verify', 'isemon_mtls',
                'isemon_ca', 'ship_files'],
@@ -1677,6 +1713,8 @@ ONLY_WHEN = {
     'portal_reissue': ['portal', '1'], 'portal_show_secret': ['portal', '1'],
     'portal_scratch': ['portal', '1'], 'portal_session_min': ['portal', '1'],
     'portal_help': ['portal', '1'], 'portal_tries': ['portal', '1'],
+    'portal_sso_from': ['portal_sso', '1'], 'portal_sso_header': ['portal_sso', '1'],
+    'portal_sso_key': ['portal_sso', '1'], 'portal_sso_logout': ['portal_sso', '1'],
     'portal_wait_min': ['portal', '1'],
     'isemon_targets': ['isemon', '1'], 'isemon_hostname': ['isemon', '1'],
     'isemon_detail': ['isemon', '1'], 'isemon_events': ['isemon', '1'],
@@ -1883,6 +1921,29 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('web_proxy_from: %r is not an address or a network' % one)
+    if key == 'portal_sso_from':
+        for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
+            try:
+                ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                raise BadSetting('portal_sso_from: %r is not an address or a network' % one)
+    if key == 'portal_sso_header':
+        # A header's name only (1.0.239); never one a browser or nginx sets itself.
+        if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
+                str(got).lower() in ('host', 'cookie', 'authorization', 'content-length',
+                                     'content-type', 'transfer-encoding', 'connection',
+                                     'x-forwarded-for', 'x-real-ip', 'x-otp-sso-key',
+                                     'user-agent', 'referer', 'origin', 'accept'):
+            raise BadSetting('portal_sso_header: the name of a header of its own, as X-Otp-User')
+    if key == 'portal_sso_key' and str(got).strip() and not is_masked(got) and \
+            not METRICS_TOKEN_RE_HEAD.match(str(got).strip()):
+        raise BadSetting('portal_sso_key: 24 to 200 letters, digits and -_.~+/=')
+    if key == 'portal_sso_logout' and str(got).strip():
+        u = str(got).strip()
+        if len(u) > 400 or re.search(r'[\x00-\x20\x7f"<>\\]', u) or \
+                not (re.match(r'^https://[A-Za-z0-9.-]+(:\d{1,5})?(/|\Z)', u) or
+                     re.match(r'^/(?!/)', u)):
+            raise BadSetting('portal_sso_logout: an https:// address or a path starting with /')
     if key == 'web_proxy_header':
         # A header's name only (1.0.237) - it goes into nginx's configuration as it is.
         if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
@@ -8651,6 +8712,7 @@ DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
     'radius_acct_port', 'snmp', 'snmp_from', 'snmp_port', 'net_confirm_min', 'fw_confirm_min',
     'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive',
+    'portal_sso', 'portal_sso_from', 'portal_sso_header', 'portal_sso_key', 'portal_sso_logout',
     'proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_os', 'proxy_no', 'proxy_update',
     'osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_every', 'osup_auto_day',
     'osup_auto_at', 'osup_auto_reboot', 'osup_auto_what', 'power_auto', 'power_auto_every',
@@ -16216,6 +16278,17 @@ class Daemon(object):
             if after.get('web_proxy') and not str(after.get('web_proxy_from') or '').split():
                 raise BadSetting('behind a load balancer or WAF: say which addresses are the '
                                  'balancers first (The load balancers and WAFs)')
+        if any(k in checked for k in ('portal_sso', 'portal_sso_from', 'portal_sso_key')):
+            # Signed in by the balancer only from the balancers, with the key (1.0.239): on
+            # without either, a header of anybody's would have been a sign-in.
+            after = dict(CONFIG)
+            after.update(checked)
+            if after.get('portal_sso'):
+                if not str(after.get('portal_sso_from') or '').split():
+                    raise BadSetting('signed in by the load balancer: say which addresses are the '
+                                     'balancers first (The balancers that sign people in)')
+                if not unseal_secret(str(after.get('portal_sso_key') or '')):
+                    raise BadSetting('signed in by the load balancer: make the key first (Make a key)')
         if any(k in checked for k in FIRST_CODE_KEYS):
             # The code before the first token only with a way to send it (1.0.228): switched
             # on without one, or the mail or the SMS switched off under it, nobody could enrol.
@@ -16285,6 +16358,7 @@ class Daemon(object):
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)
+        SAVED_KEYS['at'] = 0.0          # read again by the web state (1.0.239)
         said = []
         if 'db_guard' in file_side:
             said += self.dbguard_switch(bool(file_side.pop('db_guard')), by)
@@ -27373,6 +27447,20 @@ def vip_last_keep(address, own, peer):
         pass
 
 
+SAVED_KEYS = {'at': 0.0, 'keys': frozenset()}
+
+
+def saved_keys(store):
+    """The names of the settings saved in the database - read at most every 30 s (1.0.239): the
+    web state is worked out every few seconds, and "was it ever switched on" (behind a balancer,
+    signed in by it) asked the database each time, twice."""
+    t = time.time()
+    if t - SAVED_KEYS['at'] > 30 or t < SAVED_KEYS['at']:
+        SAVED_KEYS['keys'] = frozenset(store.settings_saved())
+        SAVED_KEYS['at'] = t
+    return SAVED_KEYS['keys']
+
+
 def realip_desired(store):
     """{'from': [...], 'header', 'recursive'} for nginx - empty 'from' takes otp's own out again;
     None where it was never switched on (nginx left as it is)."""
@@ -27390,8 +27478,21 @@ def realip_desired(store):
     try:
         # Switched off: the row kept off (1.0.238) - or, switched off before that, the balancers
         # named are still there.
-        if any(k.split('@', 1)[0].startswith('web_proxy') for k in store.settings_saved()):
+        if any(k.split('@', 1)[0].startswith('web_proxy') for k in saved_keys(store)):
             return {'from': [], 'header': '', 'recursive': False}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
+def sso_peer_desired(store):
+    """True: nginx tells the enrolment page which machine a request came from (OTP_PEER); False:
+    no longer; None where the sign-in by the balancer was never switched on (nginx as it is)."""
+    if CONFIG.get('portal_sso'):
+        return True
+    try:
+        if any(k.split('@', 1)[0].startswith('portal_sso') for k in saved_keys(store)):
+            return False
     except Exception:                                   # noqa: BLE001
         pass
     return None
@@ -27442,6 +27543,10 @@ def web_desired(store):
     rp = realip_desired(store)
     if rp is not None:
         out['realip'] = rp
+    # Signed in by the balancer (1.0.239): the same - asked once switched on, or off after.
+    sp = sso_peer_desired(store)
+    if sp is not None:
+        out['sso_peer'] = sp
     if fw is not None:
         out['fw'] = fw
     if access is not None:
@@ -43372,6 +43477,10 @@ def portal_me(h, gate_ok=False):
     if not CONFIG.get('portal'):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(403, 'enrolling a token here is switched off')
+    # Signed in by the balancer, and that switched off meanwhile (1.0.239): it ends.
+    if (s.get('data') or {}).get('sso') and not CONFIG.get('portal_sso'):
+        h.store.session_end(h.headers.get('X-Otp-Session'))
+        raise ApiError(401, 'sign in again')
     # The one-time code before the first token (1.0.228): until it is typed, the sign-in may
     # do that and nothing else.
     if portal_gated(s) and not gate_ok:
@@ -43457,7 +43566,8 @@ def portal_gate_view(s):
     return {'kind': kind, 'dest': dest_masked(kind, g.get('dest') or w.get('dest')),
             'live': bool(g) and float(g.get('exp') or 0) > time.time(),
             'digits': int(CONFIG.get('code_digits') or 6),
-            'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60)}
+            'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60),
+            'sso': bool(data.get('sso'))}           # signed in by the balancer (1.0.239)
 
 
 # The pictures of the two sign-ins (1.0.71; each its own since 1.0.72):
@@ -43697,7 +43807,11 @@ def _portal_info(h):
             'art': art_read(h.store, 'portal'), 'admin_art': art_read(h.store, 'admin'),
             'hint': CONFIG.get('portal_hint') or '', 'help': CONFIG.get('portal_help') or '',
             'lang': CONFIG.get('ui_lang') or 'cs', 'issuer': CONFIG.get('totp_issuer') or '',
-            'site': CONFIG.get('site_name') or short_host()}
+            'site': CONFIG.get('site_name') or short_host(),
+            # Signed in by the balancer (1.0.239): which header the page passes on - only when on.
+            'sso': {'header': CONFIG.get('portal_sso_header') or 'X-Otp-User',
+                    'logout': CONFIG.get('portal_sso_logout') or ''}
+            if CONFIG.get('portal_sso') and CONFIG.get('portal') else None}
 
 
 @route('POST', '/api/portal/login')
@@ -43769,6 +43883,13 @@ def _portal_login(h):
         h.store.add_event('enrolment', '%s could not sign in to the enrolment pages from %s: %s'
                           % (full, h.client_ip(), e), 'warn', who=full)
         raise ApiError(401, 'the name or the password is not right')
+    return portal_open(h, full, realm, ad, entry, key, str(b.get('lang') or ''))
+
+
+def portal_open(h, full, realm, ad, entry, key, lang, sso=False):
+    """After the directory said who it is - by the password, or by the balancer that signed them
+    in (1.0.239): the realm's groups, who may enrol, the same person under another name, the
+    one-time code before the first token, the session. One way for both."""
     # The realm's groups always: nobody enrols a token the VPN would refuse.
     # "Who may enrol" can only narrow that further, never widen it.
     who = CONFIG.get('portal_who') or 'realm_groups'
@@ -43837,7 +43958,7 @@ def _portal_login(h):
             raise ApiError(403, 'the directory has no e-mail address or mobile number of yours to '
                                 'send the code to - ask the administrator')
         gate = portal_gate_send(h, tname, kind, dest, display=entry.get('display') or '',
-                                lang=str(b.get('lang') or ''))
+                                lang=lang)
     token = h.store.session_new('portal', tname, 'portal', h.client_ip(),
                                 max(1, int(CONFIG.get('portal_session_min') or 15)) / 60.0 * 4,
                                 {'display': entry.get('display') or '', 'dn': entry['dn'],
@@ -43857,14 +43978,18 @@ def _portal_login(h):
                                            'directory': realm.get('directory') or ''},
                                  'gate': gate,
                                  'gate_wait': {'kind': gate['kind'], 'dest': gate['dest']}
-                                 if gate else None})
+                                 if gate else None,
+                                 # Signed in by the balancer (1.0.239): no password asked
+                                 # again - replacing a token still takes the old one's code.
+                                 'sso': bool(sso)})
     if gate:
         return {'token': token, 'name': tname,
                 'gate': {'kind': gate['kind'], 'dest': dest_masked(gate['kind'], gate['dest']),
                          'live': True, 'digits': int(CONFIG.get('code_digits') or 6),
                          'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60)}}
-    h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s'
-                      % (tname, h.client_ip()), who=tname)
+    h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s%s'
+                      % (tname, h.client_ip(), ' - signed in by the load balancer' if sso else ''),
+                      who=tname)
     return {'token': token, 'name': tname}
 
 
@@ -44039,7 +44164,10 @@ def portal_state(h, s):
             'show_scratch': bool(CONFIG.get('portal_scratch')),
             'codes_view': bool(CONFIG.get('portal_codes_view')) and bool(shown) and
             bool((shown or {}).get('scratch_kept')),
-            'title': CONFIG.get('portal_title') or '', 'help': CONFIG.get('portal_help') or ''}
+            'title': CONFIG.get('portal_title') or '', 'help': CONFIG.get('portal_help') or '',
+            # Signed in by the balancer (1.0.239): no password on the page; where signing out goes.
+            'sso': bool(data.get('sso')),
+            'sso_logout': (CONFIG.get('portal_sso_logout') or '') if data.get('sso') else ''}
 
 
 @route('GET', '/api/portal/me')
@@ -44390,6 +44518,20 @@ def _portal_reissue(h):
     ad = h.d.auth.directory(realm['directory']) if realm else None
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
+    if (s.get('data') or {}).get('sso') and CONFIG.get('portal_sso'):
+        # Signed in by the balancer (1.0.239): it asked the password - the code of the old
+        # token below is still asked.
+        pass
+    else:
+        portal_reissue_password(h, s, realm, b, key)
+    stop = h.d.tokens.blocked(s['name'])
+    if stop:
+        raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
+    return portal_reissue_rest(h, s, b, key)
+
+
+def portal_reissue_password(h, s, realm, b, key):
+    ad = h.d.auth.directory(realm['directory'])
     held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'],
                        (realm or {}).get('directory') or '',
                        {'dn': (s.get('data') or {}).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
@@ -44406,9 +44548,9 @@ def _portal_reissue(h):
         # lost the words saying what was wrong.
         raise ApiError(403, 'the password is not right')
     dir_pw_done(h, held, False)
-    stop = h.d.tokens.blocked(s['name'])
-    if stop:
-        raise ApiError(403, 'the token cannot be replaced here: %s' % stop)
+
+
+def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
     old = (s.get('data') or {}).get('old') or {}
     if old and float(old.get('exp') or 0) >= time.time() and \
@@ -45480,6 +45622,197 @@ def _texts_do(h):
                           % (s['name'], m['title'], lang.upper(), to), who=s['name'])
         return {'message': 'sent to %s with sample values: %s' % (to, said)}
     raise ApiError(400, 'no such thing to do with the texts')
+
+# ---- signed in by the load balancer or WAF in front (1.0.239) ----------------------------------
+# A NetScaler (nFactor / LDAP), an F5 APM or another balancer signs people in against the
+# directory before the enrolment pages are shown; who it signed in comes in a header of its own,
+# with a key only the balancer has (X-Otp-Sso-Key), on a connection from the balancer's own
+# address - nginx's $realip_remote_addr, which the page passes on as X-Otp-Peer, never the
+# client's address from X-Forwarded-For. Everything after the password is as it was: the
+# directory is asked who it is, the realm's groups and who may enrol decide, the one-time code
+# before the first token is sent. Off by default; the administration pages are not concerned.
+
+SSO_KEY_HEADER = 'X-Otp-Sso-Key'
+SSO_NOTED = {'at': 0.0, 'what': None}
+
+
+def sso_nets(conf=None):
+    out = []
+    for w in re.split(r'[\s,;]+', str((conf or CONFIG).get('portal_sso_from') or '')):
+        if not w:
+            continue
+        try:
+            out.append(ipaddress.ip_network(w, strict=False))
+        except ValueError:
+            continue
+    return out
+
+
+def sso_peer_ok(peer):
+    try:
+        a = ipaddress.ip_address(str(peer or '').strip().split('%')[0])
+    except ValueError:
+        return False
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    return any(a in n for n in sso_nets() if n.version == a.version)
+
+
+def sso_note(h, ok, why, peer, name):
+    """The last sign-in by the balancer this node saw - for "Check it" on the administration
+    pages. A refusal always; one that went well at most once a minute (a write on every page)."""
+    what = (bool(ok), str(why)[:200], str(peer)[:64], str(name)[:120])
+    t = time.time()
+    if ok and SSO_NOTED['what'] == what and t - SSO_NOTED['at'] < 60:
+        return
+    SSO_NOTED.update(at=t, what=what)
+    rec = {'at': t, 'ok': bool(ok), 'why': what[1], 'peer': what[2], 'name': what[3],
+           'client': h.client_ip(), 'node': node_name()}
+    try:
+        # The last that went well and the last refused, each its own (a refusal hid the sign-ins).
+        h.store.set_meta('portal_sso:last:%s:%s' % (node_name(), 'ok' if ok else 'refused'),
+                         json.dumps(rec))
+    except Exception as e:                                  # noqa: BLE001
+        log('the last sign-in by the load balancer could not be noted: %s' % e, 'warn')
+
+
+def sso_refuse(h, peer, name, why, code=401, said=None):
+    """Refused - in the events with the reason, to the page in general words."""
+    sso_note(h, False, why, peer, name)
+    log_sparing('sso-refused:' + why[:40], 'the enrolment pages refused a sign-in by the load '
+                'balancer from %s (%s): %s' % (peer or '?', name or '?', why), 'warn', every=300)
+    h.store.add_event('enrolment', 'a sign-in by the load balancer was refused (from %s, for %s): '
+                      '%s' % (peer or '?', name or '?', why), 'warn', who=name or None)
+    raise ApiError(code, said or 'the sign-in through the load balancer was not taken here - '
+                                 'sign in with your password, or ask the administrator')
+
+
+@route('POST', '/api/portal/sso')
+def _portal_sso(h):
+    if not CONFIG.get('portal'):
+        raise ApiError(403, 'enrolling a token here is switched off')
+    if not CONFIG.get('portal_sso'):
+        raise ApiError(404, 'signing in through the load balancer is switched off')
+    b = h.body()
+    name = str(b.get('name') or '').strip()
+    given = str(b.get('key') or '')
+    peer = str(h.headers.get('X-Otp-Peer') or '').strip()
+    # Counted per address and per name as the sign-in is - more loosely per address: without
+    # "Behind a load balancer" every client is the balancer's address.
+    tries = int(CONFIG.get('portal_tries') or 5)
+    key = h.throttle('portal-sso', tries, int(CONFIG.get('portal_wait_min') or 15), name=name,
+                     ip_tries=max(50, tries * 10), what='refused sign-ins by the load balancer')
+    if not peer:
+        h.failed(key)
+        sso_refuse(h, peer, name, 'nginx does not say which machine the request came from '
+                   '(OTP_PEER) - the node\'s nginx has not been set up for it yet', 503)
+    if not sso_peer_ok(peer):
+        h.failed(key)
+        sso_refuse(h, peer, name, 'not from the balancers named (%s)'
+                   % (CONFIG.get('portal_sso_from') or 'none'))
+    want = unseal_secret(str(CONFIG.get('portal_sso_key') or '')) or ''
+    if not want:
+        sso_refuse(h, peer, name, 'no key is set (Make a key)', 503)
+    if not hmac.compare_digest(given.encode('utf-8', 'replace'), want.encode('utf-8', 'replace')):
+        h.failed(key)
+        sso_refuse(h, peer, name, 'the key in %s is %s' % (SSO_KEY_HEADER,
+                                                           'not the one set' if given else 'not there'))
+    if not name or len(name) > 256 or re.search(r'[\x00-\x1f\x7f]', name):
+        h.failed(key)
+        sso_refuse(h, peer, name[:60], 'no name in %s' % (CONFIG.get('portal_sso_header') or
+                                                         'X-Otp-User'))
+    full = Authenticator.full_name(name, CONFIG.get('portal_realm') or
+                                   CONFIG.get('default_realm') or '')
+    # Signed in already, as the same person by the balancer: the same session goes on.
+    s = h.session('portal')
+    if s:
+        data = s.get('data') or {}
+        if data.get('sso') and str(data.get('login') or '').lower() == str(full or '').lower():
+            return {'same': True, 'name': s['name']}
+        # Somebody else now (a shared machine), or signed in with a password before: that one ends.
+        h.store.session_end(h.headers.get('X-Otp-Session'))
+    if full and name_letters_problem(full):
+        h.failed(key)
+        sso_refuse(h, peer, full, 'the name has letters this server does not take', 400,
+                   'that name has letters this server does not take (accents or another '
+                   'language) - ask the administrator')
+    realm = h.store.realm_for(full) if full else None
+    if not realm or not realm.get('directory'):
+        h.failed(key)
+        sso_refuse(h, peer, full, 'no realm with a directory for that name')
+    ad = h.d.auth.directory(realm['directory'])
+    if not ad:
+        raise ApiError(503, 'the directory of this realm is not set up')
+    how = realm.get('lookup') if realm.get('lookup') in ('upn', 'sam') else (
+        'upn' if '@' in full else 'sam')
+    try:
+        entry = Authenticator.find_person(ad, full, how, realm)
+        if not entry:
+            raise LdapError('there is no such account')
+        if entry.get('many'):
+            raise LdapError('more than one account answers to that name')
+        if entry_unusable(entry):
+            raise LdapError('the account may not sign in: %s' % entry_unusable(entry))
+    except LdapUnreachable as e:
+        log('the enrolment pages could not reach the directory: %s' % e, 'warn')
+        raise ApiError(503, 'the directory cannot be reached just now')
+    except LdapError as e:
+        h.failed(key)
+        sso_refuse(h, peer, full, 'the directory: %s' % e)
+    try:
+        got = portal_open(h, full, realm, ad, entry, key, str(b.get('lang') or ''), sso=True)
+    except ApiError as e:
+        sso_note(h, False, str(e), peer, full)
+        raise
+    sso_note(h, True, '', peer, full)
+    return got
+
+
+def sso_view(store):
+    """What the card on the administration pages shows: set or not, and the last sign-in by the
+    balancer each node saw."""
+    last = []
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'portal_sso:last:%'"):
+        try:
+            rec = json.loads(r['v'])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(rec, dict):
+            last.append({k: rec.get(k) for k in ('at', 'ok', 'why', 'peer', 'name', 'client',
+                                                 'node')})
+    last.sort(key=lambda x: -float(x.get('at') or 0))
+    return {'on': bool(CONFIG.get('portal_sso')), 'portal': bool(CONFIG.get('portal')),
+            'key_set': bool(unseal_secret(str(CONFIG.get('portal_sso_key') or ''))),
+            'from': [str(n) for n in sso_nets()],
+            'header': CONFIG.get('portal_sso_header') or 'X-Otp-User',
+            'key_header': SSO_KEY_HEADER, 'logout': CONFIG.get('portal_sso_logout') or '',
+            'web_proxy': bool(CONFIG.get('web_proxy')),
+            'web_proxy_from': str(CONFIG.get('web_proxy_from') or ''),
+            'web_proxy_header': CONFIG.get('web_proxy_header') or 'X-Forwarded-For',
+            'site': CONFIG.get('site_name') or short_host(), 'last': last[:8]}
+
+
+@route('GET', '/api/portal-sso')
+def _portal_sso_view(h):
+    h.me('readonly')
+    return sso_view(h.store)
+
+
+@route('POST', '/api/portal-sso')
+def _portal_sso_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    if act == 'key':
+        tok = secrets.token_urlsafe(32)
+        h.d.save_settings({'portal_sso_key': tok}, by=s['name'])
+        h.store.add_event('settings', '%s made a new key for the sign-in by the load balancer - '
+                          'the one before is no longer taken' % s['name'], 'warn', who=s['name'])
+        return {'key': tok, 'view': sso_view(h.store)}
+    if act == 'forget':
+        h.store.db.run("DELETE FROM meta WHERE k LIKE 'portal_sso:last:%'")
+        return {'view': sso_view(h.store)}
+    raise ApiError(400, 'no such thing to do')
 # ---- a second step for the administration (1.0.125) ---------------------------------
 # With admin_2fa on, a password right for these pages opens a sign-in that can
 # do nothing yet but its second step (MFA_ALLOWED): a code from an app, or one
@@ -50755,6 +51088,7 @@ class Console(object):
     PANE_TITLES = [('radius', 'The RADIUS server'), ('guard', 'Sign-in protection'),
                    ('realms', 'Realms'), ('tokens', 'Tokens'),
                    ('codes', 'Codes by e-mail and SMS'), ('portal', 'The enrolment pages'),
+                   ('portalsso', 'Signed in by a load balancer (SSO)'),
                    ('mail', 'Mail'), ('people', 'Accounts'), ('isemon', 'isemon'),
                    ('db', 'The database'), ('backup', 'Backups'), ('ha', 'High availability'),
                    ('upgrade', 'Upgrades'), ('about', 'About and debugging')]
@@ -52029,6 +52363,12 @@ class Console(object):
             ('18', 'SELinux: the report for otp\'s module (a file)', lambda: self.act('--selinux-report')),
             ('19', 'The guard against writes to the database: rows not as otp wrote them',
              lambda: self.act('--guard-status')),
+            ('20', 'Signed in by a load balancer (SSO): how it stands, the last sign-ins',
+             lambda: self.act('--sso-status')),
+            ('21', 'Signed in by a load balancer (SSO): a new key, shown once',
+             lambda: self.act('--sso-key', '--yes') if self.confirm(
+                 'A new key for the balancer', 'The one the balancer sends now is no longer taken '
+                 '- put the new one into the balancer.', yes='Make it', no='Cancel') else None),
         ])
 
     def m_upgrades(self):
@@ -52991,6 +53331,12 @@ def build_parser():
     g.add_argument('--guard-status', action='store_true',
                    help='the guard against writes to the database on this node: on or off, and '
                         'every row that reaches root not as otp wrote it')
+    g.add_argument('--sso-status', action='store_true',
+                   help='the sign-in by a load balancer or WAF on the enrolment pages: on or off, '
+                        'which balancers, which header, and the last sign-in each node saw')
+    g.add_argument('--sso-key', action='store_true',
+                   help='make a new key for the balancer to send in X-Otp-Sso-Key, shown once '
+                        '(the one before is no longer taken)')
     g.add_argument('--console-at-login', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='open the console when root signs in at the console or over SSH')
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
@@ -54496,6 +54842,8 @@ def cli_main(argv=None):
         return cli_selinux(args, pal)
     if args.dir_caps or args.dir_cap or args.dir_policy or args.dir_sample or args.guard_status:
         return cli_dir_guard(args, pal)
+    if args.sso_status or args.sso_key:
+        return cli_sso(args, pal)
     if args.console_at_login:
         if args.console_at_login != 'status':
             print(pal.ok_line(console_at_login_set(args.console_at_login == 'on')))
@@ -56506,6 +56854,53 @@ def cli_selinux(args, pal):
     sys.stdout.write(got.stdout)
     sys.stderr.write(got.stderr)
     return got.returncode
+
+
+def cli_sso(args, pal):
+    """otp --sso-status, --sso-key (1.0.239): the sign-in by a load balancer or WAF."""
+    store = cli_store()
+    if args.sso_key:
+        if not args.yes and sys.stdin.isatty():
+            got = input('a new key: the one the balancer sends now is no longer taken. Go on? [y/N] ')
+            if got.strip().lower() not in ('y', 'yes'):
+                print('nothing changed')
+                return 1
+        tok = secrets.token_urlsafe(32)
+        d = Daemon(store, serve=False)
+        try:
+            d.save_settings({'portal_sso_key': tok}, by='root on %s' % node_name())
+        except (BadSetting, OSError) as e:
+            raise SystemExit('otp: %s' % e)
+        store.add_event('settings', 'root on %s made a new key for the sign-in by the load '
+                        'balancer - the one before is no longer taken' % node_name(), 'warn')
+        if args.json:
+            print(json.dumps({'key': tok}))
+        else:
+            print(pal.ok_line('the new key - shown only now; the balancer sends it in %s:'
+                              % SSO_KEY_HEADER))
+            print(tok)
+        return 0
+    v = sso_view(store)
+    if args.json:
+        print(json.dumps(v))
+        return 0
+    print(pal.ok_line('signed in by the load balancer on the enrolment pages: %s'
+                      % ('ON' if v['on'] else 'off')))
+    print('  the balancers:   %s' % (', '.join(v['from']) or '(none named)'))
+    print('  the header:      %s   (with the key in %s: %s)'
+          % (v['header'], v['key_header'], 'set' if v['key_set'] else 'NOT SET - otp --sso-key'))
+    print('  signing out:     %s' % (v['logout'] or '(the sign-in of these pages)'))
+    if v['on'] and not v['web_proxy']:
+        print('  note: "Behind a load balancer or WAF" is off - every client is the balancer\'s '
+              'address (otp --set web_proxy_from=ADDR --set web_proxy=1)')
+    for x in v['last']:
+        print('  last on %-10s %s  %-9s %s <- %s%s' % (
+            x.get('node') or '?', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(x.get('at') or 0))),
+            'signed in' if x.get('ok') else 'REFUSED', x.get('name') or '?', x.get('peer') or '?',
+            ('  (%s)' % x['why']) if x.get('why') else ''))
+    if not v['last']:
+        print('  no sign-in by the balancer seen yet')
+    return 0
 
 
 def cli_dir_guard(args, pal):
