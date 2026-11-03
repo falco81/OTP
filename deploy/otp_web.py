@@ -3964,6 +3964,416 @@ def osup_job(ident, kind, security=False):
     return 0
 
 
+# ---- SELinux (1.0.233) -------------------------------------------------------------------
+# Asked in selinux.ask by the daemon of this node, from the pages (Settings - High security)
+# or `otp --selinux-check`: how it is - the mode, otp's module, the labels otp's files have,
+# the booleans and ports otp needs, what SELinux refused since the machine started - and,
+# when asked, the three steps: made ready and permissive, enforcing, permissive again.
+# Nothing of it is done unless asked; a machine with SELinux disabled stays so.
+SELINUX_ASK, SELINUX_FILE = 'selinux.ask', 'selinux.json'
+SE_CONFIG = os.environ.get('OTP_SELINUX_CONFIG', '/etc/selinux/config')
+SE_RELABEL = os.environ.get('OTP_SELINUX_RELABEL', '/.autorelabel')
+SE_CMDLINE = os.environ.get('OTP_SELINUX_CMDLINE', '/proc/cmdline')
+SE_MODULE = 'otp_server'
+SE_CIL = os.environ.get('OTP_SELINUX_CIL', '/usr/local/lib/otp/otp_server.cil')
+# What otp's files should be labelled; the label is the third field of the context.
+SE_LABELS = (('/run/otp', 'httpd_var_run_t', 'the folder of the API token'),
+             ('/run/otp/api-token', 'httpd_var_run_t', 'the API token the pages read'),
+             ('/var/www/otp', 'httpd_sys_content_t', 'the pages'),
+             ('/usr/libexec/keepalived/otp-vip-check', 'keepalived_unconfined_script_exec_t',
+              'keepalived\'s check of this node'))
+SE_BOOLEANS = ('httpd_can_network_connect', 'authlogin_radius')
+SE_PORT_TYPES = ('radius_port_t', 'postgresql_port_t', 'ssh_port_t')
+# The programs whose refusals are otp's business.
+SE_DOMAINS = ('httpd_t', 'keepalived_t', 'keepalived_unconfined_script_t', 'sshd_t',
+              'chronyd_t', 'postgresql_t', 'syslogd_t', 'logrotate_t', 'unconfined_service_t',
+              'init_t')
+
+
+def _se_run(cmd, timeout=120):
+    if not shutil.which(cmd[0]):
+        return None
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def se_mode():
+    got = _se_run(['getenforce'], 20)
+    if got is None:
+        return 'absent'                 # no SELinux on this machine at all (Debian, Ubuntu)
+    return (got.stdout or '').strip() or 'Disabled'
+
+
+def se_config():
+    text = _read_or(SE_CONFIG) or ''
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r'^\s*(SELINUX|SELINUXTYPE)\s*=\s*([A-Za-z0-9_-]+)\s*$', line)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return {'mode': out.get('SELINUX', ''), 'type': out.get('SELINUXTYPE', ''),
+            'there': bool(text)}
+
+
+def se_config_set(mode):
+    """SELINUX= in /etc/selinux/config, the rest of the file as it is."""
+    if mode not in ('permissive', 'enforcing'):
+        raise Refused('permissive or enforcing')
+    text = _read_or(SE_CONFIG)
+    if text is None:
+        raise Refused('%s is not there - is the SELinux policy installed? '
+                      '(dnf install selinux-policy-targeted)' % SE_CONFIG)
+    if re.search(r'(?m)^\s*SELINUX\s*=', text):
+        new = re.sub(r'(?m)^(\s*)SELINUX\s*=.*$', r'\g<1>SELINUX=%s' % mode, text)
+    else:
+        new = text.rstrip('\n') + '\nSELINUX=%s\n' % mode
+    if new != text:
+        _put_file(SE_CONFIG, new)
+
+
+def se_cmdline_off():
+    """selinux=0 on the kernel's command line: the config alone does not switch it on."""
+    return bool(re.search(r'(?:^|\s)selinux=0(?:\s|$)', _read_or(SE_CMDLINE) or ''))
+
+
+def se_label(path):
+    fake = os.environ.get('OTP_SELINUX_LABELS')         # tests: {path: label}
+    if fake:
+        try:
+            return (json.load(open(fake)) or {}).get(path)
+        except (OSError, ValueError):
+            return None
+    try:
+        raw = os.getxattr(path, 'security.selinux', follow_symlinks=False)
+    except (OSError, AttributeError):
+        return None
+    ctx = raw.decode('utf-8', 'replace').rstrip('\0')
+    parts = ctx.split(':')
+    return parts[2] if len(parts) >= 3 else None
+
+
+def se_module_in():
+    got = _se_run(['semodule', '-l'], 120)
+    if got is None or got.returncode != 0:
+        return None
+    return any(line.split()[:1] == [SE_MODULE] for line in got.stdout.splitlines())
+
+
+def se_bool(name):
+    got = _se_run(['getsebool', name], 20)
+    if got is None or got.returncode != 0:
+        return None
+    return bool(re.search(r'-->\s*on\s*$', got.stdout.strip()))
+
+
+def se_ports():
+    """semanage port -l: {(type, proto): [(lo, hi), ...]}; None without semanage."""
+    got = _se_run(['semanage', 'port', '-l'], 120)
+    if got is None or got.returncode != 0:
+        return None
+    out = {}
+    for line in got.stdout.splitlines():
+        m = re.match(r'^(\S+_port_t)\s+(tcp|udp|sctp|dccp)\s+(.+)$', line.strip())
+        if not m:
+            continue
+        spans = []
+        for p in m.group(3).split(','):
+            p = p.strip()
+            a, _, b = p.partition('-')
+            try:
+                spans.append((int(a), int(b or a)))
+            except ValueError:
+                continue
+        out.setdefault((m.group(1), m.group(2)), []).extend(spans)
+    return out
+
+
+def se_port_has(ports, kind, proto, port):
+    return any(lo <= port <= hi for lo, hi in (ports or {}).get((kind, proto), []))
+
+
+def se_denials():
+    """What SELinux refused since the machine started, for the programs otp works with."""
+    got = _se_run(['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'boot', '-i'], 120)
+    if got is None:
+        return {'tool': False, 'total': 0, 'groups': []}
+    groups = {}
+    total = 0
+    for line in (got.stdout or '').splitlines():
+        if 'avc:' not in line or 'denied' not in line:
+            continue
+        perms = re.search(r'denied\s+\{([^}]*)\}', line)
+        sc = re.search(r'scontext=(\S+)', line)
+        tc = re.search(r'tcontext=(\S+)', line)
+        cl = re.search(r'tclass=(\S+)', line)
+        comm = re.search(r'comm=(\S+)', line)
+        name = re.search(r'\bname=(\S+)', line)
+        if not (perms and sc and tc and cl):
+            continue
+        st = (sc.group(1).split(':') + ['', '', ''])[2]
+        tt = (tc.group(1).split(':') + ['', '', ''])[2]
+        what = ' '.join(x for x in (comm.group(1) if comm else '', name.group(1) if name else '')
+                        if x)
+        if st not in SE_DOMAINS and 'otp' not in line:
+            continue
+        total += 1
+        key = (st, tt, cl.group(1), perms.group(1).strip())
+        g = groups.setdefault(key, {'source': st, 'target': tt, 'class': cl.group(1),
+                                    'perms': perms.group(1).strip(), 'count': 0, 'what': ''})
+        g['count'] += 1
+        g['what'] = what.replace('"', '')[:120] or g['what']
+        g['permissive'] = 'permissive=1' in line
+    out = sorted(groups.values(), key=lambda g: -g['count'])[:30]
+    return {'tool': True, 'total': total, 'groups': out}
+
+
+def se_want_checked(r):
+    """What the daemon says otp needs here: booleans and ports, checked against what may be."""
+    bools = []
+    for b in (r.get('booleans') or [])[:8]:
+        if not isinstance(b, dict) or b.get('name') not in SE_BOOLEANS:
+            raise Refused('a boolean otp does not set')
+        bools.append({'name': b['name'], 'why': str(b.get('why') or '')[:120]})
+    ports = []
+    for p in (r.get('ports') or [])[:16]:
+        if not isinstance(p, dict) or p.get('type') not in SE_PORT_TYPES or \
+                p.get('proto') not in ('tcp', 'udp'):
+            raise Refused('a port type otp does not set')
+        try:
+            n = int(p.get('port'))
+        except (TypeError, ValueError):
+            raise Refused('a port is a number')
+        if not 1 <= n <= 65535:
+            raise Refused('a port is 1 to 65535')
+        ports.append({'port': n, 'proto': p['proto'], 'type': p['type'],
+                      'why': str(p.get('why') or '')[:120]})
+    return bools, ports
+
+
+def se_check(r):
+    bools, ports = se_want_checked(r)
+    mode = se_mode()
+    conf = se_config()
+    out = {'mode': mode, 'config': conf['mode'], 'policy': conf['type'],
+           'relabel_pending': os.path.exists(SE_RELABEL), 'cmdline_off': se_cmdline_off(),
+           'tools': {'semanage': bool(shutil.which('semanage')),
+                     'ausearch': bool(shutil.which('ausearch')),
+                     'semodule': bool(shutil.which('semodule'))},
+           'module': None, 'labels': [], 'booleans': [], 'ports': [],
+           'denials': {'tool': False, 'total': 0, 'groups': []}, 'problems': []}
+    if mode == 'absent':
+        out['ready'] = False
+        return out
+    on = mode in ('Enforcing', 'Permissive')
+    out['module'] = se_module_in()
+    for path, want, why in SE_LABELS:
+        if not os.path.exists(path):
+            continue
+        got = se_label(path) if on else None
+        out['labels'].append({'path': path, 'label': got, 'want': want, 'why': why,
+                              'ok': (got == want) if on else None})
+    for b in bools:
+        v = se_bool(b['name']) if on else None
+        out['booleans'].append(dict(b, on=v))
+    known = se_ports() if on else None
+    for p in ports:
+        out['ports'].append(dict(p, labelled=(se_port_has(known, p['type'], p['proto'], p['port'])
+                                             if known is not None else None)))
+    if on:
+        out['denials'] = se_denials()
+    probs = out['problems']
+    if on:
+        if out['module'] is False:
+            probs.append('otp\'s module (%s) is not installed' % SE_MODULE)
+        probs.extend('%s is labelled %s, not %s (%s)' % (x['path'], x['label'] or '?', x['want'],
+                                                         x['why'])
+                     for x in out['labels'] if x['ok'] is False)
+        probs.extend('the boolean %s is off (%s)' % (x['name'], x['why'])
+                     for x in out['booleans'] if x['on'] is False)
+        probs.extend('port %d/%s is not labelled %s (%s)' % (x['port'], x['proto'], x['type'],
+                                                             x['why'])
+                     for x in out['ports'] if x['labelled'] is False)
+        if known is None and ports:
+            probs.append('semanage is not on this machine - the ports cannot be checked '
+                         '(dnf install policycoreutils-python-utils)')
+        if out['denials']['total']:
+            probs.append('SELinux refused %d thing(s) since the machine started'
+                         % out['denials']['total'])
+        if not out['denials']['tool']:
+            probs.append('ausearch is not on this machine - what SELinux refused cannot be '
+                         'read (dnf install audit)')
+    out['ready'] = (mode == 'Permissive' and not probs)
+    return out
+
+
+def se_apply(bools, ports, said):
+    """otp's module, labels, booleans and ports - on a machine where SELinux is on."""
+    if os.path.exists(SE_CIL) and shutil.which('semodule'):
+        got = _se_run(['semodule', '-i', SE_CIL], 300)
+        if got is None or got.returncode != 0:
+            raise Refused('semodule -i %s: %s' % (SE_CIL, ((got.stderr or got.stdout)
+                                                           if got else '').strip()[-200:]))
+        said.append('otp\'s module installed')
+    for b in bools:
+        if se_bool(b['name']) is False:
+            got = _se_run(['setsebool', '-P', b['name'], 'on'], 300)
+            if got is None or got.returncode != 0:
+                raise Refused('setsebool -P %s on: %s' % (b['name'], ((got.stderr or '') if got
+                                                                      else '').strip()[-200:]))
+            said.append('%s on' % b['name'])
+    known = se_ports()
+    for p in ports:
+        if known is None:
+            raise Refused('semanage is not on this machine (dnf install '
+                          'policycoreutils-python-utils)')
+        if se_port_has(known, p['type'], p['proto'], p['port']):
+            continue
+        got = _se_run(['semanage', 'port', '-a', '-t', p['type'], '-p', p['proto'],
+                       str(p['port'])], 300)
+        if got is not None and got.returncode != 0 and 'already defined' in (got.stderr or ''):
+            got = _se_run(['semanage', 'port', '-m', '-t', p['type'], '-p', p['proto'],
+                           str(p['port'])], 300)
+        if got is None or got.returncode != 0:
+            raise Refused('semanage port %d/%s: %s' % (p['port'], p['proto'], ((got.stderr or '')
+                                                       if got else '').strip()[-200:]))
+        said.append('port %d/%s labelled %s' % (p['port'], p['proto'], p['type']))
+    if shutil.which('restorecon'):
+        _se_run(['restorecon', '-R'] + [x for x in ('/run/otp', '/var/www/otp',
+                                                    '/usr/libexec/keepalived')
+                                        if os.path.exists(x)], 300)
+        said.append('otp\'s files labelled again')
+
+
+def se_do(r):
+    do = r.get('do')
+    bools, ports = se_want_checked(r)
+    said = []
+    if do == 'check':
+        return se_check(r)
+    mode = se_mode()
+    if mode == 'absent':
+        raise Refused('there is no SELinux on this machine')
+    if do == 'prepare':
+        if mode == 'Enforcing':
+            raise Refused('SELinux is enforcing already')
+        se_config_set('permissive')
+        said.append('%s: SELINUX=permissive' % SE_CONFIG)
+        if mode == 'Disabled':
+            # Every file labelled at the next start, before anything runs (minutes); the
+            # module, booleans and ports are put in by the next "check" or this step again.
+            open(SE_RELABEL, 'a').close()
+            said.append('the files are labelled at the next start of the machine')
+            if se_cmdline_off() and shutil.which('grubby'):
+                got = _se_run(['grubby', '--update-kernel', 'ALL', '--remove-args', 'selinux'],
+                              120)
+                if got is None or got.returncode != 0:
+                    raise Refused('grubby: %s' % ((got.stderr or '') if got else '')[-200:])
+                said.append('selinux=0 taken off the kernel\'s command line')
+            elif se_cmdline_off():
+                said.append('the kernel\'s command line has selinux=0: take it away '
+                            '(grubby --update-kernel ALL --remove-args selinux)')
+            if os.path.exists(SE_CIL) and shutil.which('semodule'):
+                got = _se_run(['semodule', '-i', SE_CIL], 300)    # into the store; may not
+                if got is not None and got.returncode == 0:       # work while disabled
+                    said.append('otp\'s module installed')
+            said.append('restart the machine - it comes up permissive: nothing is refused yet, '
+                        'what would be is written down')
+        else:
+            se_apply(bools, ports, said)
+    elif do == 'enforce':
+        if mode != 'Permissive':
+            raise Refused('SELinux is %s - it goes to enforcing from permissive only'
+                          % mode.lower())
+        se_apply(bools, ports, said)
+        c = se_check(r)
+        if c['problems']:
+            raise Refused('not yet: ' + '; '.join(c['problems'][:4]))
+        got = _se_run(['setenforce', '1'], 60)
+        if got is None or got.returncode != 0:
+            raise Refused('setenforce 1: %s' % ((got.stderr or '') if got else '')[-200:])
+        se_config_set('enforcing')
+        said.append('SELinux is enforcing, and stays so after a restart')
+    elif do == 'permissive':
+        if mode == 'Disabled':
+            raise Refused('SELinux is disabled - "prepare" makes it permissive')
+        if mode == 'Enforcing':
+            got = _se_run(['setenforce', '0'], 60)
+            if got is None or got.returncode != 0:
+                raise Refused('setenforce 0: %s' % ((got.stderr or '') if got else '')[-200:])
+        se_config_set('permissive')
+        said.append('SELinux is permissive, and stays so after a restart')
+    else:
+        raise Refused('check, prepare, enforce or permissive')
+    out = se_check(r)
+    out['said'] = said
+    return out
+
+
+def selinux_part():
+    d = web_fd()
+    try:
+        raw = read_req(SELINUX_ASK, 16384)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(SELINUX_ASK, d)
+        return
+    drop_ask(SELINUX_ASK, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict):
+            raise Refused('the request is not an object')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        out['data'] = se_do(r)
+        out['ok'] = True
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(SELINUX_FILE, json.dumps(out))
+
+
+def se_report(c):
+    """`otp --selinux-check`: what se_check found, for a person."""
+    lines = ['SELinux: %s (config: %s%s)' % (c['mode'], c.get('config') or '?',
+                                            ', %s' % c['policy'] if c.get('policy') else '')]
+    if c['mode'] == 'absent':
+        lines.append('  no SELinux on this machine - nothing to do')
+        return '\n'.join(lines)
+    if c.get('relabel_pending'):
+        lines.append('  the files are labelled at the next start of the machine')
+    if c.get('cmdline_off'):
+        lines.append('  the kernel\'s command line has selinux=0')
+    if c['mode'] == 'Disabled':
+        lines.append('  disabled - otp runs as always; "Make it ready (permissive)" on the pages '
+                     '(Settings - High security) makes it permissive at the next start')
+        return '\n'.join(lines)
+    lines.append('  module %s: %s' % (SE_MODULE, {True: 'installed', False: 'NOT installed',
+                                                  None: '?'}[c['module']]))
+    for x in c['labels']:
+        lines.append('  %s %s: %s%s' % ('ok  ' if x['ok'] else 'FAIL', x['path'], x['label'] or '?',
+                                        '' if x['ok'] else ' (want %s)' % x['want']))
+    for x in c['booleans']:
+        lines.append('  %s boolean %s: %s - %s' % ('ok  ' if x['on'] else 'FAIL', x['name'],
+                                                   'on' if x['on'] else 'off', x['why']))
+    for x in c['ports']:
+        lines.append('  %s port %d/%s %s - %s' % ('ok  ' if x['labelled'] else 'FAIL', x['port'],
+                                                 x['proto'], x['type'], x['why']))
+    d = c['denials']
+    lines.append('  refused since the start: %s' % (d['total'] if d['tool'] else
+                                                    '? (ausearch is not there)'))
+    for g in d['groups'][:15]:
+        lines.append('    %4dx %s -> %s %s { %s } %s' % (g['count'], g['source'], g['target'],
+                                                         g['class'], g['perms'], g['what']))
+    lines.append('ready for enforcing' if c.get('ready') else
+                 ('enforcing' if c['mode'] == 'Enforcing' and not c['problems'] else
+                  'not ready: ' + '; '.join(c['problems'][:6]) if c['problems'] else ''))
+    return '\n'.join(x for x in lines if x)
+
+
 def serve():
     d = web_fd()
     try:
@@ -4006,6 +4416,10 @@ def serve():
         logs_part()
     except Exception as e:                              # noqa: BLE001
         print('otp_web.py: the journal and the logs: %s' % e, file=sys.stderr)
+    try:
+        selinux_part()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: SELinux: %s' % e, file=sys.stderr)
     try:
         os.replace('request.json', 'request.taken', src_dir_fd=d, dst_dir_fd=d)
     except FileNotFoundError:
@@ -4058,6 +4472,22 @@ def main(argv):
     if os.geteuid() != 0:
         print('otp_web.py: root only', file=sys.stderr)
         return 2
+    if argv[:1] == ['--selinux-check']:
+        # `otp --selinux-check` (1.0.233): what otp needs here comes on stdin from the otp
+        # command, as JSON; nothing is changed.
+        want = {}
+        if '--want-stdin' in argv:
+            try:
+                want = json.loads(sys.stdin.read(65536) or '{}')
+            except ValueError:
+                want = {}
+        try:
+            c = se_check(want if isinstance(want, dict) else {})
+        except Refused as e:
+            print('otp_web.py: %s' % e, file=sys.stderr)
+            return 2
+        print(json.dumps(c) if '--json' in argv else se_report(c))
+        return 0 if (c['mode'] in ('absent', 'Disabled') or not c['problems']) else 1
     if argv[:1] == ['--sshd-back']:
         # The timer of a change of sshd on trial (1.0.163): not kept in time.
         sshd_put_back()

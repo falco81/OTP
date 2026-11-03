@@ -84,6 +84,7 @@ Mailing tokens out: [docs/mail.md](docs/mail.md).
 Sending the logs to isemon: [docs/isemon.md](docs/isemon.md).
 Syslog and SIEM, the proxy, the disks and the logs: [docs/syslog-proxy-and-logs.md](docs/syslog-proxy-and-logs.md).
 High security: [docs/high-security.md](docs/high-security.md).
+SELinux - what otp needs of it, permissive, enforcing: [docs/selinux.md](docs/selinux.md).
 Automatic certificates (ACME, HTTP-01 and DNS-01): [docs/acme.md](docs/acme.md).
 Encryption to the database server, every node: [docs/database-tls.md](docs/database-tls.md).
 isemon over TLS, and what to do on the isemon machine: [docs/isemon-tls.md](docs/isemon-tls.md).

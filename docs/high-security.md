@@ -132,3 +132,7 @@ and the token back to `otp-web` the moment the reload arrives, and checks it eve
 
 Not against the other node of a cluster: it holds the same key, and root on it is
 root of the cluster's database anyway.
+
+## SELinux (1.0.233)
+
+The same pane has a card for SELinux on each node - what otp needs of it, what it refused, and the steps from disabled to permissive to enforcing, each asked by hand. See docs/selinux.md.

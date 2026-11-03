@@ -1,0 +1,10 @@
+; otp - what SELinux needs for otp that the system's policy does not say (1.0.233).
+; Installed by install.sh and by every upgrade (semodule -i otp_server.cil), taken away with
+; semodule -r otp_server. It only labels: no rule of its own, nothing allowed beyond what the
+; policy already allows the web server.
+;
+; /run/otp holds the daemon's API token and port. The pages (php-fpm, httpd_t) read them;
+; made by systemd as var_run_t, httpd_t may not read it. Labelled as the web server's own
+; run files, which httpd_t reads; the daemon (unconfined_service_t) writes it as before.
+(filecon "/run/otp" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/run/otp/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))

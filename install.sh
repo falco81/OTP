@@ -382,6 +382,11 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     if [[ -f "$SOURCE_DIR/deploy/otp_web.py" ]]; then
         run python3 -I "$SOURCE_DIR/deploy/otp_web.py" --pam-off || warn "sshd's PAM could not be put back: take otp's block out of /etc/pam.d/sshd by hand"
     fi
+    # otp's SELinux module (1.0.233): only labels, gone with it. The mode SELinux is in, its
+    # booleans and the ports labelled are the machine's, left as they are.
+    if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '{print $1}' | grep -qx otp_server; then
+        run semodule -r otp_server 2>/dev/null || warn "SELinux: semodule -r otp_server did not go"
+    fi
     [[ -d "$LIB_DIR" ]] && run rm -rf "$LIB_DIR"
     [[ -d "$WEB_DIR" ]] && run rm -rf "$WEB_DIR"
     run systemctl daemon-reload
@@ -859,6 +864,7 @@ PY
     nginx_upload_guard
 
     # ---- SELinux ---------------------------------------------------------------
+    selinux_module
     if command -v getenforce >/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
         say "SELinux is $(getenforce)"
         run setsebool -P httpd_can_network_connect 1 2>/dev/null || warn "could not set httpd_can_network_connect"
@@ -866,6 +872,28 @@ PY
         good "the pages may talk to the daemon on 127.0.0.1"
         note "If the pages say the token is unreadable: ausearch -m avc -ts recent | audit2allow -M otp-local"
     fi
+}
+
+# otp's SELinux module (1.0.233): only labels - /run/otp as the web server's own run files,
+# so the pages may read the API token under enforcing. Kept beside the program always; put
+# into the policy where SELinux is on, and only when it changed (semodule takes its time).
+# Where SELinux is disabled nothing is done: "Prepare" on the pages puts it in.
+selinux_module() {
+    [[ -f "$SOURCE_DIR/deploy/otp_server.cil" ]] || return 0
+    local had=""
+    cmp -s "$SOURCE_DIR/deploy/otp_server.cil" "$LIB_DIR/otp_server.cil" 2>/dev/null && had=1
+    run install -D -m 0644 "$SOURCE_DIR/deploy/otp_server.cil" "$LIB_DIR/otp_server.cil"
+    command -v getenforce >/dev/null 2>&1 || return 0
+    command -v semodule >/dev/null 2>&1 || return 0
+    [[ "$(getenforce)" == "Disabled" ]] && return 0
+    if [[ -z "$had" ]] || ! semodule -l 2>/dev/null | awk '{print $1}' | grep -qx otp_server; then
+        if run semodule -i "$LIB_DIR/otp_server.cil" 2>/dev/null; then
+            good "SELinux: otp's module (otp_server) is in the policy"
+        else
+            warn "SELinux: otp's module could not be put in: semodule -i $LIB_DIR/otp_server.cil"
+        fi
+    fi
+    [[ -d /run/otp ]] && command -v restorecon >/dev/null 2>&1 && run restorecon -R /run/otp 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------

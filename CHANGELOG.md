@@ -4,6 +4,28 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.233 — 3 November 2026
+
+**SELinux** (*Settings → High security → SELinux*, a card for each node; `otp --selinux-check`).
+Nothing changes unless asked: a machine with SELinux disabled stays so, and otp runs on it as before.
+
+- otp's module `otp_server` (`deploy/otp_server.cil`): only labels - `/run/otp` and the API token as
+  the web server's own run files, so the pages (php-fpm, `httpd_t`) can read the token under
+  enforcing. Put in by install.sh and every upgrade where SELinux is on (only when it changed), taken
+  out by `--uninstall`.
+- The card: the mode now and after a restart, the module, the labels of otp's files, the booleans
+  (`httpd_can_network_connect`; `authlogin_radius` with SSH with a code) and ports (the SSH gate,
+  sshd's own, a local PostgreSQL's) otp needs, and what SELinux refused since the machine started,
+  grouped and counted. Looked at every half hour and on *Look again*.
+- The steps, each asked of one node and done by its root helper: *Make it ready (permissive)* -
+  the configuration, every file labelled at the next start, `selinux=0` off the kernel's command
+  line, the module; the machine is not restarted. *Switch to enforcing* - from permissive only, and
+  only with nothing missing and nothing refused since the start. *Back to permissive*. Each in Events;
+  with the guard on, one written straight into the database is not done.
+- The security check lists what keeps a node where SELinux is on from being protected; on a disabled
+  node it says nothing.
+- docs/selinux.md says all of it.
+
 ## 1.0.232 — 3 November 2026
 
 **`systemctl reload otp` took the pages off the node.** systemd gives the service's `/run/otp` back
