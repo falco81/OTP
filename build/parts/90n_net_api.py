@@ -115,3 +115,26 @@ def _console_login_do(h):
         raise ApiError(400, str(e))
     return {'message': 'asked: the console at login is switched on within seconds' if on else
             'asked: the console at login is switched off within seconds'}
+
+
+@route('GET', '/api/selinux')
+def _selinux(h):
+    h.me('fulladmin')
+    return selinux_view(h.store)
+
+
+@route('POST', '/api/selinux')
+def _selinux_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    node = str(b.get('node') or node_name())
+    action = str(b.get('action') or '')
+    try:
+        selinux_ask(h.store, node, action, s['name'])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    return {'message': {'check': 'asked: %s looks within seconds',
+                        'prepare': 'asked: %s makes SELinux ready and permissive within seconds',
+                        'enforce': 'asked: %s switches SELinux to enforcing within seconds',
+                        'permissive': 'asked: %s switches SELinux to permissive within seconds'
+                        }[action] % node}

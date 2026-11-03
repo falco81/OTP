@@ -1,0 +1,5 @@
+#!/bin/bash
+. "$(dirname "$0")/_common"
+touch "$S/modules"
+case "$1" in -l) cat "$S/modules";; -i) n=$(basename "$2" .cil); grep -qx "$n" "$S/modules" || echo "$n" >> "$S/modules";;
+  -r) grep -vx "$2" "$S/modules" > "$S/m2"; mv "$S/m2" "$S/modules";; esac

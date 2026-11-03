@@ -1,0 +1,4 @@
+#!/bin/bash
+. "$(dirname "$0")/_common"
+m=$(cat "$S/mode"); [ "$m" = Disabled ] && { echo "setenforce: SELinux is disabled" >&2; exit 1; }
+case "$1" in 1|Enforcing) echo Enforcing > "$S/mode";; 0|Permissive) echo Permissive > "$S/mode";; *) exit 1;; esac

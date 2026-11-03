@@ -1,0 +1,2 @@
+#!/bin/bash
+. "$(dirname "$0")/_common"; exit 0

@@ -1,0 +1,2 @@
+#!/bin/bash
+. "$(dirname "$0")/_common"; sed -i 's/ selinux=0//' "${OTP_SELINUX_CMDLINE:?}"; exit 0

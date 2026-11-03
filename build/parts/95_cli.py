@@ -649,6 +649,11 @@ def build_parser():
     g.add_argument('--console', action='store_true',
                    help='the otp console: the whole of otp by its menus, the live log and the '
                         'live RADIUS requests (q leaves it)')
+    g.add_argument('--selinux-check', action='store_true',
+                   help='how SELinux stands for otp on this machine: the mode, otp\'s module, the '
+                        'labels, booleans and ports it needs, what was refused since the start '
+                        '(as root; nothing is changed)')
+    g.add_argument('--selinux-want', action='store_true', help=argparse.SUPPRESS)
     g.add_argument('--console-at-login', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='open the console when root signs in at the console or over SSH')
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
@@ -2140,6 +2145,30 @@ def cli_main(argv=None):
             args.tls_files.append(Path(f).read_bytes())
         except OSError as e:
             raise SystemExit('otp: %s' % e)
+    if args.selinux_want:
+        # What otp needs of SELinux here, for --selinux-check (1.0.233): read as the service.
+        print(json.dumps(selinux_want(cli_store())))
+        return 0
+    if args.selinux_check:
+        if os.geteuid() != 0:
+            raise SystemExit('otp: --selinux-check is for root')
+        try:
+            want = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--selinux-want'],
+                                  capture_output=True, text=True, timeout=120).stdout.strip()
+            json.loads(want or '{}')
+        except (OSError, subprocess.SubprocessError, ValueError):
+            want = '{}'
+        helper = Path(__file__).resolve().parent / 'otp_web.py'
+        if not helper.exists():
+            helper = Path('/usr/local/lib/otp/otp_web.py')
+        if not helper.exists():
+            raise SystemExit('otp: the root helper (otp_web.py) is not installed')
+        got = subprocess.run(['/usr/bin/python3', '-I', str(helper), '--selinux-check',
+                              '--want-stdin'] + (['--json'] if args.json else []),
+                             input=want or '{}', capture_output=True, text=True, timeout=600)
+        sys.stdout.write(got.stdout)
+        sys.stderr.write(got.stderr)
+        return got.returncode
     if args.console_at_login:
         if args.console_at_login != 'status':
             print(pal.ok_line(console_at_login_set(args.console_at_login == 'on')))
