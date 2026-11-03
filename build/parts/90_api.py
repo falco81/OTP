@@ -677,7 +677,9 @@ def dir_pw_caps_list(store):
                     'tries': own.get('tries'), 'window_min': own.get('window_min'),
                     'policy': own.get('policy')})
     return {'directories': out, 'setting': {'tries': int(CONFIG.get('dir_pw_tries') or 0),
-                                            'window_min': int(CONFIG.get('dir_pw_window_min') or 30)}}
+                                            'window_min': int(CONFIG.get('dir_pw_window_min') or 30)},
+            # In use only with "Block a place that keeps guessing" on (1.0.241).
+            'in_use': bool(CONFIG.get('radius_guard'))}
 
 
 def dir_pw_caps_set(store, want, by):
@@ -786,8 +788,11 @@ def dir_pw_caps(store):
 
 
 def dir_pw_cap_of(store, directory):
-    """(tries, window in seconds) for a directory: its own, else the setting's."""
+    """(tries, window in seconds) for a directory: its own, else the setting's. None at all while
+    "Block a place that keeps guessing" is off (1.0.241): one switch for the guessing guards."""
     own = dir_pw_caps(store).get(str(directory or '').lower()) or {}
+    if not CONFIG.get('radius_guard'):
+        return 0, 60 * int(own.get('window_min') or CONFIG.get('dir_pw_window_min') or 30)
     tries = own.get('tries') if own.get('tries') is not None else CONFIG.get('dir_pw_tries')
     window = own.get('window_min') if own.get('window_min') else CONFIG.get('dir_pw_window_min')
     return int(tries or 0), 60 * int(window or 30)

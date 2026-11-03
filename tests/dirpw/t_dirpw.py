@@ -77,6 +77,11 @@ ok('off: nothing of it among Locked out', not any(r.get('kind') == 'dir-password
 # ---- on: 3 -----------------------------------------------------------------------------------------------
 c, x = adm('/api/settings', {'settings': {'dir_pw_tries': 3, 'dir_pw_window_min': 30}})
 ok('a cap of 3 saved: %s' % c, c == 200, x)
+# "Block a place that keeps guessing" off (1.0.241): the caps with it - none applied
+codes = [pl('wrong-g%d' % i, 'pnovak')[0] for i in range(5)]
+ok('guard off: the cap not applied - five wrong passwords for pnovak all asked (401): %s' % codes, codes == [401] * 5)
+c, x = adm('/api/settings', {'settings': {'radius_guard': 1}})
+ok('"Block a place that keeps guessing" on: %s' % c, c == 200, x)
 codes = [pl('wrong-a%d' % i, 'žofie')[0] for i in range(3)]
 ok('three wrong passwords for žofie from three addresses: asked, 401 each: %s' % codes, codes == [401] * 3)
 c, x = pl('wrong-a4', 'žofie')

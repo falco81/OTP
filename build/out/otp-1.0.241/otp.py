@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.240'
+__version__ = '1.0.241'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1701,6 +1701,8 @@ PANES = {
 # greyed out with the reason beside it, as on isemon.
 ONLY_WHEN = {
     'radius_guard_tries': ['radius_guard', '1'], 'radius_guard_names': ['radius_guard', '1'],
+    # The directory passwords' caps with it (1.0.241): one switch for the guessing guards.
+    'dir_pw_tries': ['radius_guard', '1'], 'dir_pw_window_min': ['radius_guard', '1'],
     'radius_guard_window_min': ['radius_guard', '1'],
     'radius_guard_block_min': ['radius_guard', '1'],
     'radius_guard_trusted': ['radius_guard', '1'],
@@ -39310,7 +39312,9 @@ def dir_pw_caps_list(store):
                     'tries': own.get('tries'), 'window_min': own.get('window_min'),
                     'policy': own.get('policy')})
     return {'directories': out, 'setting': {'tries': int(CONFIG.get('dir_pw_tries') or 0),
-                                            'window_min': int(CONFIG.get('dir_pw_window_min') or 30)}}
+                                            'window_min': int(CONFIG.get('dir_pw_window_min') or 30)},
+            # In use only with "Block a place that keeps guessing" on (1.0.241).
+            'in_use': bool(CONFIG.get('radius_guard'))}
 
 
 def dir_pw_caps_set(store, want, by):
@@ -39419,8 +39423,11 @@ def dir_pw_caps(store):
 
 
 def dir_pw_cap_of(store, directory):
-    """(tries, window in seconds) for a directory: its own, else the setting's."""
+    """(tries, window in seconds) for a directory: its own, else the setting's. None at all while
+    "Block a place that keeps guessing" is off (1.0.241): one switch for the guessing guards."""
     own = dir_pw_caps(store).get(str(directory or '').lower()) or {}
+    if not CONFIG.get('radius_guard'):
+        return 0, 60 * int(own.get('window_min') or CONFIG.get('dir_pw_window_min') or 30)
     tries = own.get('tries') if own.get('tries') is not None else CONFIG.get('dir_pw_tries')
     window = own.get('window_min') if own.get('window_min') else CONFIG.get('dir_pw_window_min')
     return int(tries or 0), 60 * int(window or 30)
@@ -57270,6 +57277,10 @@ def cli_dir_guard(args, pal):
     st = got['setting']
     print(pal.ok_line('the setting: %s' % ('no cap' if not st['tries'] else
                                            '%d wrong passwords in %d min' % (st['tries'], st['window_min']))))
+    if not CONFIG.get('radius_guard'):
+        # One switch for the guessing guards (1.0.241).
+        print(pal.warn_line('not in use: "Block a place that keeps guessing" is off - no cap is applied '
+                            '(otp --set radius_guard=1)'))
     for d in got['directories']:
         own = 'as the setting' if d['tries'] is None else ('no cap' if d['tries'] == 0 else
                                                           '%d in %s min' % (d['tries'], d['window_min'] or st['window_min']))

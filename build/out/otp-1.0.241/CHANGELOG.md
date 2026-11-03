@@ -4,6 +4,20 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.241 — 3 November 2026
+
+**SSH tokens: the account names offered from the nodes** (*SSH server and notices → Add an SSH
+token*): root and every user who may sign in on the nodes (a login shell, UID 1000 and up - the same
+list as *SSH keys → Whose keys*) are offered as the account is typed; one that has an SSH token
+already says so. Not read from the nodes yet: they are asked, and offered as soon as they say. Any
+name can still be typed.
+
+**One switch for the guessing guards** (*Sign-in protection*): *Wrong directory passwords per person*
+and each directory's own cap go with *Block a place that keeps guessing* - off, none of them is applied
+(and shown as not in use; what is set is kept for when it is switched on). **Note:** a node with *Block
+a place* off and a cap set had the cap applied until now - after the upgrade it is not, until *Block a
+place* is switched on. `otp --dir-caps` says so too.
+
 ## 1.0.240 — 3 November 2026
 
 **SSH keys of every user who may sign in** (*Settings → SSH keys*, full administrators; was *SSH keys

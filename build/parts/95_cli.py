@@ -4381,6 +4381,10 @@ def cli_dir_guard(args, pal):
     st = got['setting']
     print(pal.ok_line('the setting: %s' % ('no cap' if not st['tries'] else
                                            '%d wrong passwords in %d min' % (st['tries'], st['window_min']))))
+    if not CONFIG.get('radius_guard'):
+        # One switch for the guessing guards (1.0.241).
+        print(pal.warn_line('not in use: "Block a place that keeps guessing" is off - no cap is applied '
+                            '(otp --set radius_guard=1)'))
     for d in got['directories']:
         own = 'as the setting' if d['tries'] is None else ('no cap' if d['tries'] == 0 else
                                                           '%d in %s min' % (d['tries'], d['window_min'] or st['window_min']))

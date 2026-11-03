@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.240'
+__version__ = '1.0.241'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1701,6 +1701,8 @@ PANES = {
 # greyed out with the reason beside it, as on isemon.
 ONLY_WHEN = {
     'radius_guard_tries': ['radius_guard', '1'], 'radius_guard_names': ['radius_guard', '1'],
+    # The directory passwords' caps with it (1.0.241): one switch for the guessing guards.
+    'dir_pw_tries': ['radius_guard', '1'], 'dir_pw_window_min': ['radius_guard', '1'],
     'radius_guard_window_min': ['radius_guard', '1'],
     'radius_guard_block_min': ['radius_guard', '1'],
     'radius_guard_trusted': ['radius_guard', '1'],

@@ -63,3 +63,8 @@ R250 = {
  "Its <b>public</b> half goes into <code>~{0}/.ssh/authorized_keys</code> of {1} - written as {2}, so that the folder and the file are theirs. The <b>private</b> half is never kept here: it is shown to you once, to hand over.":
   "Jeho <b>veřejná</b> část se zapíše do <code>~{0}/.ssh/authorized_keys</code> na {1} – zapisuje ji {2} sám, takže složka i soubor jsou jeho. <b>Soukromá</b> část se zde nikdy neukládá: zobrazí se vám jen jednou, k předání.",
 }
+S250.update({"has a token": "už má token"})
+P250.update({
+ "Not in use while {0} is off - no cap is applied to any directory. What is set here is kept for when it is on.":
+  "Nepoužívá se, dokud je vypnuto {0} – na žádný adresář se nepoužije žádný strop. Co je tu nastaveno, zůstane pro chvíli, kdy se zapne.",
+})
