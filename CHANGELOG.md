@@ -4,6 +4,35 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.240 — 3 November 2026
+
+**SSH keys of every user who may sign in** (*Settings → SSH keys*, full administrators; was *SSH keys
+of root*). *Whose keys*: root as until now, or any normal user of the nodes (UID 1000 and up, a login
+shell) - their own `~/.ssh/authorized_keys` read from every node, a key added, made here (the private
+half shown once, kept nowhere), exported or taken away, on the nodes where the user is. Read and written
+**as that user** by a child of the root helper with their UID, GID and groups: `~/.ssh` 0700 and the
+file 0600, theirs; a link in their home is refused and never followed. System accounts, `nologin` ones
+and anything else refused. Every change in Events with the user's name. docs/ssh-keys.md.
+
+**The console at login for normal users too** (*Settings → About → The console at login*: *normal
+users: nobody / every one / these…*; `otp --console-users "alice bob"`, `'*'` or `none`; on the
+console under The service). Off by default - root only, as until now. Named users land in the console
+**through sudo, with their own password**: only who may become root with sudo gets it; anybody else
+named gets one line saying so and the ordinary shell. What is done from such a console is in Events as
+`command line (sudo alice)`. `/etc/otp-console-login` gets a second line (`users: …`); root's own switch
+is kept apart. Both nodes of a cluster each their own, standalone the same. docs/console.md.
+
+**Dual certificates in and out** (*Certificates and TLS*): an RSA and an ECDSA certificate of the same
+names uploaded together - both keys in the PEM, two PFX files, or one of each; on the command line
+`otp --tls-import rsa.pfx ecdsa.pfx` - are both put in, the RSA one the main and the ECDSA one beside it,
+as ACME's "both" keeps them (nginx gives each client the one it takes). One alone is as until now, and a
+second one there before is dropped. Two RSA, other names or a key without its certificate are refused.
+*Download* of such a certificate asks which: RSA, ECDSA, or both (a .zip of the two in the format chosen,
+each key locked with the password); in Events which and with what.
+
+**A key shown once, shown big**: the balancer's key (signed in by a load balancer) and Prometheus's
+token are in a large box across the dialog, picked whole with one click, with Copy beside them.
+
 ## 1.0.239 — 3 November 2026
 
 **Signed in by a load balancer or WAF (SSO)** (*Settings → The enrolment pages*; off by default - the
