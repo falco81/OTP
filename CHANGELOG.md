@@ -4,6 +4,21 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.238 — 3 November 2026
+
+**SELinux: what the policy now allows no longer counts as refused.** After an upgrade with a newer
+`otp_server` (1.0.237's rule for systemd's `/run/otp`), the card still said *SELinux refused 1
+thing* with a red dot, and *Put in what otp needs* did not clear it - there was nothing left for
+it to put in, and only a change starts the count again. Every kind of refusal is now put to
+`audit2why`: one the policy loaded now allows (*would be allowed by active policy*) is listed as
+*refused before, allowed now* and not counted - the node can be ready for enforcing. Without
+`audit2why`, or for anything it does not say is allowed, counted as until now.
+
+**Behind a load balancer or WAF: switched off is off again.** Switched off on the pages, the 0 was
+dropped as the default value - and read as *never switched on*, so nginx kept believing the header
+from the balancers named (1.0.237). The row is kept off now, and a node switched off on 1.0.237 (the
+balancers still named) has otp's lines taken out of nginx at the upgrade.
+
 ## 1.0.237 — 3 November 2026
 
 **Behind a load balancer or WAF** (*Settings → Firewall and access*; off by default - nginx as until

@@ -17526,6 +17526,8 @@ function seNode(n) {
     seRow(list, d.tool ? !d.total : null, !d.tool ? 'What SELinux refused cannot be read: ausearch is not on this machine (dnf install audit)'
       : d.since ? (d.total ? 'SELinux refused ' + num(d.total) + ' thing(s) since otp\'s needs were put in' : 'Nothing refused since otp\'s needs were put in')
       : d.total ? 'SELinux refused ' + num(d.total) + ' thing(s) since the machine started' : 'Nothing refused since the machine started');
+    /* Refused once, allowed by the policy loaded now (1.0.238) - a newer module, a boolean: not counted. */
+    if (d.tool && d.settled) seRow(list, true, num(d.settled) + ' refused before, allowed now - by a newer otp_server or a boolean put in since; not counted');
     if (s.auditd === false) seRow(list, false, 'auditd does not run - what SELinux refuses is not written down (systemctl enable --now auditd)');
     box.appendChild(list);
     if ((d.groups || []).length) {
