@@ -3720,3 +3720,29 @@ table.split-scen{table-layout:fixed;width:100%;min-width:760px}
   .osu-tags { margin-left: 0; }
 }
 .osu-all { margin: 0 0 10px; font-size: 13px; }
+
+/* High security and the guard: each node's light (1.0.244) */
+.hs-lights { display: grid; grid-template-columns: 1fr; gap: 6px; margin: 2px 0 6px; padding: 10px 14px;
+  border: 1px solid var(--line, rgba(255,255,255,.1)); border-radius: 10px; background: rgba(0,0,0,.18);
+  max-width: 340px; }
+.hs-light { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  font-size: 13px; line-height: 1.5; }
+.hs-light .dot { width: 8px; height: 8px; border-radius: 50%; background: #8a94a6; }
+.hs-light-n { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
+.hs-light-n .tag { font-weight: 600; }
+.hs-light-v { text-align: right; color: var(--tx-dim, #8a94a6); white-space: nowrap; }
+.hs-light.on .dot { background: var(--good, #3ecf8e); box-shadow: 0 0 6px rgba(62,207,142,.55); }
+.hs-light.on .hs-light-v { color: var(--good, #3ecf8e); }
+.hs-light.gone .dot { background: var(--bad, #f05252); }
+.hs-light.gone .hs-light-v { color: var(--bad, #f05252); }
+.hs-light.unknown { opacity: .6; }
+/* Local users: switches (1.0.244) */
+.osu-sw { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 10px; margin: 10px 0; }
+.osu-sw .sw { flex: none; margin-top: 1px; }
+.osu-sw-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.osu-sw-w { cursor: pointer; }
+.osu-sw .osu-says { margin-left: 0; flex-basis: auto; }
+.osu-node { display: inline-flex; margin: 4px 18px 4px 0; align-items: center; }
+.osu-node.off { opacity: .55; }
+.osu-nodes { display: flex; flex-wrap: wrap; align-items: center; }
+.osu-nodes > .k { flex-basis: 100%; }

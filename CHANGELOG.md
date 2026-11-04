@@ -4,6 +4,29 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.244 — 4 November 2026
+
+**`otp --get KEY…`, the counterpart of `--set`.** The value of a setting as it is in effect on this
+node - saved on the pages, from config.json or the default: one key gives the value alone (for a
+script: `[ "$(otp --get db_guard)" = 1 ]`), switches as 0 or 1, lists as JSON; several give
+`KEY=VALUE` a line, with `--json` one object. A key not known ends with 2 and the keys that were
+probably meant. A secret is never shown, not even in part: only `set` or `not set`. `otp --settings
+--search` stays for looking around.
+
+**High security and the guard: how each node stands** (*Settings → High security → Settings*). Under
+both switches a small panel, a line a node: a green light and *on*, grey and *off*, red and *not
+answering* (what it said last), with *this node* marked and how many rows the guard refused there.
+This node as it is now, the other as its last heartbeat says. Only the nodes of the cluster: a node
+alone shows itself, a pair the two - a node not heard from for a day (taken out, renamed) is not
+listed.
+
+**A local user made is in SSH keys at once** - *Whose keys* offered it only after the page was loaded
+again: each node reads its users for the SSH keys again after a change of its local users, and the
+pane watches until the read has come.
+
+**Local users: switches, not boxes to tick** - *To be changed at the first sign-in*, *May become root
+with sudo*, *Its home folder too*, the nodes a change goes to and *Also the accounts with no shell*.
+
 ## 1.0.243 — 4 November 2026
 
 **Local users of the machines** (*Settings → Local users*, full admin). The users of each node's own
