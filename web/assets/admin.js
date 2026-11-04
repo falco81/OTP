@@ -677,8 +677,15 @@ function paintCards2(s) {
   $('m-db').textContent = ({sqlite: 'SQLite', mariadb: 'MariaDB', postgres: 'PostgreSQL'})[db.engine] || db.engine || '–';
   $('m-db-sub').textContent = (db.size ? bytes(db.size) : '') + (db.last_backup ? ' · last copy ' + ago(db.last_backup) : ' · no copy yet')
     + (db.key_there === false ? ' · KEY MISSING' : '');
-  $('card-db').className = 'card metric ' + (db.key_there === false ? 'crit' : (db.last_backup && Date.now() / 1000 - db.last_backup < 2 * 86400 ? 'ok' : 'warn'))
-    + ($('card-db').classList.contains('tappable') ? ' tappable' : '');
+  var dbLevel = db.key_there === false ? 'crit' : (db.last_backup && Date.now() / 1000 - db.last_backup < 2 * 86400 ? 'ok' : 'warn');
+  $('card-db').className = 'card metric ' + dbLevel + ($('card-db').classList.contains('tappable') ? ' tappable' : '');
+  /* Why it has its colour (1.0.245): said at the top of what a click opens. */
+  var daily = db.backup_daily ? 'one is made every day' + (db.backup_at ? ' at ' + db.backup_at : '') : 'none is made by itself - Settings → Backups';
+  CARD_WHY['card-db'] = {level: dbLevel, words: dbLevel === 'crit'
+    ? 'Red: the key that opens the tokens is not on this node - without it no token can be read. Put it back from beside a backup (Settings → The database).'
+    : dbLevel === 'ok' ? 'Green: a copy of the last two days is here, and ' + daily + '.'
+    : db.last_backup ? 'Yellow: the last copy is ' + ago(db.last_backup) + ' - older than two days; ' + daily + '.'
+    : 'Yellow: there is no copy of the database yet; ' + daily + '.'};
   var mn = s.maint_nodes || [];
   var up = s.upgrade || {};
   var running = up.plan && up.plan.state === 'running';
@@ -691,9 +698,13 @@ function paintCards2(s) {
 }
 
 /* The cards open what they count (1.0.37, as isemon's). */
+/* Why each card of the overview has its colour (1.0.245): {level, words}, at the top of its popup. */
+var CARD_WHY = {};
 function cardOpens(id, words, go) {
   var card = $(id);
   if (!card) return;
+  var go0 = go;
+  go = function () { PEEK_WHY = CARD_WHY[id] || null; go0(); };
   card.classList.add('tappable');
   card.setAttribute('role', 'button');
   card.setAttribute('tabindex', '0');
@@ -15831,6 +15842,7 @@ function drawOsUsers(live) {
         card.appendChild(el('p', 'note', 'Only root is on ' + (nodes.length > 1 ? 'the nodes' : 'this node') + ' - Add a user makes one, on ' + (nodes.length > 1 ? 'every node at once.' : 'this node.')));
     }
     host.appendChild(card);
+    host.appendChild(pwpCard(d));
     /* What was done last, on each node, with what it said. */
     var said = [];
     nodes.forEach(function (n) { (n.said || []).forEach(function (s) { said.push({n: n.name, s: s}); }); });
@@ -15856,6 +15868,130 @@ function drawOsUsers(live) {
     if (pend.length) host.appendChild(el('p', 'note info', 'Being done on ' + pend.map(function (n) { return n.name; }).join(', ') + '…'));
   }, live);
 }
+/* ---- Local users → Password policy (1.0.245) --------------------------------------
+   One policy for every local user of the cluster, put in by each node into its system's own
+   files - so that it holds however a password is changed. Not set by otp: each node as its
+   system has it, nothing written. Under it, what each node has in effect. */
+var PWP_EDIT = null;
+function pwpNum(v, min, max) {
+  var i = el('input', 'mono pwp-num'); i.type = 'number'; i.min = min; i.max = max; i.value = v; return i;
+}
+function pwpField(label, input, says) {
+  var f = formField(label, input, says);
+  f.classList.add('pwp-f');
+  return f;
+}
+function pwpCard(d) {
+  var c = d.policy || {}, nodes = d.nodes || [];
+  if (!PWP_EDIT) PWP_EDIT = JSON.parse(JSON.stringify(c));
+  var e = PWP_EDIT;
+  var card = el('div', 'card full pwp-card');
+  var h = el('h2', '', 'Password policy');
+  var st = el('span', 'right pwp-state');
+  nodes.forEach(function (n) {
+    var ok = n.policy_applied && !n.policy_error;
+    var chip = el('span', 'hs-light ' + (!n.alive ? 'gone' : n.policy_error ? 'gone' : ok ? (c.managed ? 'on' : 'off') : 'unknown'));
+    chip.appendChild(el('span', 'dot'));
+    chip.appendChild(noI18n(el('span', 'hs-light-n', n.name)));
+    chip.appendChild(el('span', 'hs-light-v', !n.alive ? 'not answering' : n.policy_error ? 'refused' : !ok ? 'being put in…' : c.managed ? 'as set here' : 'the system\'s own'));
+    if (n.policy_error) explain(chip, n.policy_error);
+    st.appendChild(chip);
+  });
+  h.appendChild(st);
+  card.appendChild(h);
+  if (d.policy_refused) card.appendChild(el('p', 'note bad', 'The row of the policy in the database is not as otp wrote it - the guard of root\'s actions refused it: every node keeps the policy it has put in, and changes nothing. Save the policy here again.'));
+  card.appendChild(el('p', 'muted small', 'For every local user, however the password is changed - passwd, a password run out at sign-in, these pages. Put into each node\'s own files: pam_pwquality, pam_pwhistory, pam_faillock and login.defs (with authselect, the features that put the modules in). Not set here, each node keeps what its system has, and nothing is written.'));
+  var on = osuCheck('Set by otp on every node', e.managed, e.managed ? '' : 'Off: as each node\'s system has it - what otp wrote before is taken out again.');
+  on.input.onchange = function () { e.managed = on.input.checked; drawOsUsers(); };
+  card.appendChild(on.box);
+  if (e.managed) {
+    var grid = el('div', 'pwp-grid');
+    var col = function (title) { var c1 = el('div', 'pwp-col'); c1.appendChild(el('h3', '', title)); grid.appendChild(c1); return c1; };
+    var bind = function (input, key) { input.onchange = input.oninput = function () { e[key] = parseInt(input.value, 10) || 0; }; return input; };
+    var flag = function (box, words, key, says) {
+      var s1 = osuCheck(words, !!e[key], says);
+      s1.input.onchange = function () { e[key] = s1.input.checked ? 1 : 0; };
+      box.appendChild(s1.box);
+    };
+    var a = col('The password');
+    a.appendChild(pwpField('Characters at least', bind(pwpNum(e.minlen, 6, 128), 'minlen')));
+    var kinds = selectBox([['0', 'any'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', 'all 4']], String(e.minclass));
+    kinds.onchange = function () { e.minclass = parseInt(kinds.value, 10); };
+    a.appendChild(pwpField('Kinds of characters at least', kinds, 'small letters, capitals, digits, the others'));
+    a.appendChild(pwpField('The same character in a row at most', bind(pwpNum(e.maxrepeat, 0, 20), 'maxrepeat'), '0: as many as wanted'));
+    a.appendChild(pwpField('Characters not in the old one', bind(pwpNum(e.difok, 0, 20), 'difok')));
+    flag(a, 'No word of the dictionary', 'dictcheck');
+    flag(a, 'Not the user\'s name', 'usercheck');
+    var b = col('How long it is good');
+    var runs = osuCheck('A password runs out', e.max_days < 99999);
+    b.appendChild(runs.box);
+    var maxI = bind(pwpNum(e.max_days < 99999 ? e.max_days : 90, 1, 99998), 'max_days');
+    var maxF = pwpField('Good for (days)', maxI);
+    maxF.hidden = !(e.max_days < 99999);
+    runs.input.onchange = function () { maxF.hidden = !runs.input.checked; e.max_days = runs.input.checked ? (parseInt(maxI.value, 10) || 90) : 99999; };
+    b.appendChild(maxF);
+    b.appendChild(pwpField('Warned so many days before', bind(pwpNum(e.warn_days, 0, 365), 'warn_days')));
+    b.appendChild(pwpField('The least days between two changes', bind(pwpNum(e.min_days, 0, 365), 'min_days'), '0: changed again at once'));
+    b.appendChild(pwpField('The last passwords not taken again', bind(pwpNum(e.remember, 0, 50), 'remember'), '0: any; needs pam_pwhistory'));
+    flag(b, 'Also for the users there now', 'existing', 'Without it, the days are for users made from now on (login.defs); a user\'s own are in their popup.');
+    var g = col('Wrong passwords');
+    g.appendChild(pwpField('Locked after so many wrong (faillock)', bind(pwpNum(e.deny, 0, 100), 'deny'), '0: never locked; root never'));
+    g.appendChild(pwpField('...for (seconds)', bind(pwpNum(e.unlock_time, 0, 86400), 'unlock_time'), '0: until unlocked by root (faillock --reset)'));
+    g.appendChild(pwpField('...counted within (seconds)', bind(pwpNum(e.fail_interval, 60, 86400), 'fail_interval')));
+    card.appendChild(grid);
+  }
+  var row = el('div', 'btnrow');
+  var save = cmdButton('Save the policy', 'save', 'small primary');
+  save.onclick = function () {
+    api('osusers', {action: 'policy', policy: e}).then(function (x) { toast(x.message, 'good'); PWP_EDIT = null; osuPoll(true); }).catch(oops);
+  };
+  var back = cmdButton('As it is saved', 'undo', 'small');
+  back.onclick = function () { PWP_EDIT = null; drawOsUsers(); };
+  row.appendChild(save); row.appendChild(back);
+  card.appendChild(row);
+  /* What each node has in effect, read from its files. */
+  if (nodes.some(function (n) { return n.policy && n.policy.pwquality; })) {
+    var det = el('details', 'pwp-now');
+    det.open = !!PWP_OPEN;
+    det.ontoggle = function () { PWP_OPEN = det.open; };
+    det.appendChild(el('summary', '', 'In effect on the nodes'));
+    var pick = function (n, f) { try { return f(n.policy || {}); } catch (x) { return undefined; } };
+    var yes = function (v) { return v ? 'yes' : 'no'; };
+    var rows = [
+      ['Characters at least', function (p) { return p.pwquality.minlen; }],
+      ['Kinds of characters at least', function (p) { return p.pwquality.minclass; }],
+      ['The same character in a row at most', function (p) { return p.pwquality.maxrepeat || '–'; }],
+      ['No word of the dictionary', function (p) { return yes(p.pwquality.dictcheck); }],
+      ['The last passwords not taken again', function (p) { return p.pam.pwhistory ? p.remember : 'no (pam_pwhistory not in PAM)'; }],
+      ['Good for (days)', function (p) { return p.aging.max_days >= 99999 ? 'no end' : p.aging.max_days; }],
+      ['Warned so many days before', function (p) { return p.aging.warn_days; }],
+      ['The least days between two changes', function (p) { return p.aging.min_days; }],
+      ['Locked after so many wrong (faillock)', function (p) { return !p.pam.faillock ? 'no (pam_faillock not in PAM)' : p.faillock.deny ? p.faillock.deny + ' / ' + p.faillock.unlock_time + ' s' : '–'; }],
+      ['pam_pwquality in PAM', function (p) { return yes(p.pam.pwquality); }],
+      ['authselect', function (p) { return p.authselect ? p.authselect.profile + (p.authselect.features.length ? ' + ' + p.authselect.features.join(', ') : '') : 'not used'; }]
+    ];
+    det.appendChild(listTable(['Rule'].concat(nodes.map(function (n) { return n.name; })), rows, function (r) {
+      var tr = el('tr');
+      tr.appendChild(el('td', 'small', r[0]));
+      nodes.forEach(function (n) {
+        var v = pick(n, r[1]);
+        var t = v === undefined ? '–' : String(v);
+        tr.appendChild(el('td', /^[0-9 /s–.]+$/.test(t) ? 'small mono' : 'small', t));
+      });
+      return tr;
+    }));
+    nodes.forEach(function (n) {
+      var p = n.policy || {};
+      if (e.managed && p.pam && p.pam.read && !p.pam.pwquality)
+        det.appendChild(el('p', 'note warn', n.name + ': pam_pwquality is not in its PAM - the rules of the password are not kept there by passwd.'));
+      if (e.managed && e.deny && p.pam && !p.pam.faillock && !p.authselect)
+        det.appendChild(el('p', 'note warn', n.name + ': pam_faillock is not in its PAM, and authselect does not manage it - the lockout is not in use there.'));
+    });
+    card.appendChild(det);
+  }
+  return card;
+}
+var PWP_OPEN = false;
 /* The nodes a change goes to: those the user is on (or every one, to make it), alive. */
 function osuNodePicker(body, name, making) {
   var nodes = (OSU.d && OSU.d.nodes) || [];
@@ -16023,6 +16159,23 @@ function osuEdit(name) {
     };
     var r2 = el('div', 'btnrow'); r2.appendChild(sp); s2.appendChild(r2);
     body.appendChild(s2);
+    /* Its own password aging (1.0.245). */
+    var sa = el('div', 'osu-sect');
+    sa.appendChild(el('h3', '', 'Password aging'));
+    var ag = el('div', 'pwp-aging');
+    var mx = pwpNum(u.max_days === null || u.max_days === undefined ? 99999 : u.max_days, 0, 99999);
+    var mn = pwpNum(u.min_days || 0, 0, 365), wn = pwpNum(u.warn_days === undefined || u.warn_days === null ? 7 : u.warn_days, 0, 365);
+    ag.appendChild(pwpField('Good for (days)', mx, '99999: no end'));
+    ag.appendChild(pwpField('Warned so many days before', wn));
+    ag.appendChild(pwpField('The least days between two changes', mn));
+    sa.appendChild(ag);
+    if (u.pw_ends) sa.appendChild(el('p', 'muted small', 'The password runs out on ' + osuDay(u.pw_ends) + '.'));
+    var sg = cmdButton('Save the aging', 'save', 'small');
+    sg.onclick = function () {
+      api('osusers', {action: 'aging', name: name, max_days: mx.value, min_days: mn.value, warn_days: wn.value, nodes: pick()}).then(function (x) { toast(x.message, 'good'); osuPoll(true); }).catch(oops);
+    };
+    var ra = el('div', 'btnrow'); ra.appendChild(sg); sa.appendChild(ra);
+    body.appendChild(sa);
     /* sudo and sign-in. */
     var s3 = el('div', 'osu-sect');
     s3.appendChild(el('h3', '', 'What they may do'));

@@ -3746,3 +3746,14 @@ table.split-scen{table-layout:fixed;width:100%;min-width:760px}
 .osu-node.off { opacity: .55; }
 .osu-nodes { display: flex; flex-wrap: wrap; align-items: center; }
 .osu-nodes > .k { flex-basis: 100%; }
+
+/* Local users: the password policy (1.0.245) */
+.pwp-card h2 .pwp-state { display: inline-flex; flex-wrap: wrap; gap: 6px; font-size: 12px; font-weight: 400; }
+.pwp-card h2 .pwp-state .hs-light { display: inline-flex; gap: 6px; padding: 3px 10px; border: 1px solid var(--line, rgba(255,255,255,.12)); border-radius: 999px; }
+.pwp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 28px; margin: 6px 0 4px; }
+.pwp-col h3 { font-size: 13px; margin: 6px 0 10px; color: var(--tx-dim, #8a94a6); text-transform: uppercase; letter-spacing: .05em; }
+.pwp-col .pwp-f { margin-bottom: 10px; }
+.pwp-num { max-width: 120px; }
+.pwp-now { margin-top: 14px; }
+.pwp-now > summary { cursor: pointer; font-size: 13px; margin-bottom: 8px; }
+.pwp-aging { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0 16px; }
