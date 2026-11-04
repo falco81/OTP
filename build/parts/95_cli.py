@@ -693,11 +693,23 @@ def build_parser():
                    help='change a local user on the nodes (never root): add, password, lock, unlock, '
                         'sudo-on, sudo-off, drop or drop-home - a password is asked, never given on '
                         'the command line')
+    g.add_argument('--local-policy', action='store_true',
+                   help='the password policy of the local users: as set, and as in effect on each node')
+    g.add_argument('--local-policy-set', nargs='+', metavar='KEY=VALUE',
+                   help='set the password policy of the local users on every node: managed=1|0, minlen, '
+                        'minclass, maxrepeat, difok, dictcheck, usercheck, remember, max_days, min_days, '
+                        'warn_days, deny, unlock_time, fail_interval, existing')
     g.add_argument('--local-nodes', metavar='NODES', default='',
                    help='with --local-user: only these nodes (separated by commas); every node if not given')
     g.add_argument('--local-full-name', metavar='TEXT', default=None, help='with --local-user add: the full name')
     g.add_argument('--local-shell', metavar='PATH', default=None,
                    help='with --local-user add: the shell (/bin/bash if not given)')
+    g.add_argument('--local-max-days', metavar='N', default=None,
+                   help='with --local-user aging: the days a password is good (99999: no end)')
+    g.add_argument('--local-min-days', metavar='N', default=None,
+                   help='with --local-user aging: the least days between two changes')
+    g.add_argument('--local-warn-days', metavar='N', default=None,
+                   help='with --local-user aging: warned so many days before it runs out')
     g.add_argument('--local-must-change', action='store_true',
                    help='with --local-user add or password: to be changed at the next sign-in')
     g.add_argument('--console-users', metavar='USERS',
@@ -2223,6 +2235,8 @@ def cli_main(argv=None):
         return cli_dir_guard(args, pal)
     if args.sso_status or args.sso_key:
         return cli_sso(args, pal)
+    if args.local_policy or args.local_policy_set:
+        return cli_pwpolicy(args, pal)
     if args.local_users or args.local_user:
         return cli_osusers(args, pal)
     if args.console_at_login or args.console_users is not None:
@@ -4297,6 +4311,61 @@ def cli_get(store, args):
     return 0
 
 
+def cli_pwpolicy(args, pal):
+    """otp --local-policy [KEY=VALUE...] (1.0.245): the password policy of the local users."""
+    store = cli_store()
+    if args.local_policy_set:
+        b = dict(pwp_conf(store))
+        for w in args.local_policy_set:
+            if '=' not in w:
+                print('KEY=VALUE, e.g. minlen=12')
+                return 2
+            k, v = w.split('=', 1)
+            if k not in PWP_DEFAULT:
+                print('no such rule: %s (%s)' % (k, ', '.join(sorted(PWP_DEFAULT))))
+                return 2
+            b[k] = v.strip().lower() in ('1', 'yes', 'on', 'true') if k in ('managed', 'existing') else v
+        try:
+            c = pwp_checked_api(b)
+        except ValueError as e:
+            print('refused: %s' % e)
+            return 1
+        store.set_meta('host:pwpolicy:conf', json.dumps(dict(c, at=time.time(), by=cli_who())))
+        store.add_event('settings', '%s %s the password policy of the local users' % (
+            cli_who(), 'set' if c['managed'] else 'gave back to the system'), 'warn', who=cli_who())
+        print('saved - each node puts it in within a few seconds')
+    c = pwp_conf(store)
+    print('the password policy of the local users: %s' % ('set by otp on every node' if c['managed']
+                                                          else "each node's system's own (nothing written)"))
+    if c['managed']:
+        print('  at least %d characters, %d kind(s); the same in a row at most %s; %d not in the old one;'
+              ' dictionary %s; the name %s' % (c['minlen'], c['minclass'], c['maxrepeat'] or 'any',
+                                               c['difok'], 'refused' if c['dictcheck'] else 'taken',
+                                               'refused' if c['usercheck'] else 'taken'))
+        print('  good for %s; warned %d days before; %d days at least between two; the last %d not again'
+              % ('%d days' % c['max_days'] if c['max_days'] < 99999 else 'ever', c['warn_days'],
+                 c['min_days'], c['remember']))
+        print('  %s' % ('locked after %d wrong for %d s (counted within %d s)' % (
+            c['deny'], c['unlock_time'], c['fail_interval']) if c['deny'] else 'never locked for wrong passwords'))
+    v = osu_view(store)
+    for n in v['nodes']:
+        p = n.get('policy') or {}
+        state = ('not answering' if not n['alive'] else 'refused: ' + n['policy_error'] if n.get('policy_error')
+                 else 'as set' if n.get('policy_applied') else 'being put in')
+        print('%s: %s' % (n['name'], state))
+        if p.get('pwquality'):
+            q = p['pwquality']
+            pam = p.get('pam') or {}
+            print('  in effect: minlen %s, minclass %s, maxrepeat %s, dictcheck %s; remember %s; good for %s days;'
+                  ' faillock deny %s; PAM: pwquality %s, pwhistory %s, faillock %s%s' % (
+                      q.get('minlen'), q.get('minclass'), q.get('maxrepeat'), q.get('dictcheck'), p.get('remember'),
+                      (p.get('aging') or {}).get('max_days'), (p.get('faillock') or {}).get('deny'),
+                      'yes' if pam.get('pwquality') else 'no', 'yes' if pam.get('pwhistory') else 'no',
+                      'yes' if pam.get('faillock') else 'no',
+                      ('; authselect ' + p['authselect']['profile']) if p.get('authselect') else ''))
+    return 0
+
+
 def cli_osusers(args, pal):
     """otp --local-users, --local-user WHAT NAME (1.0.243): Settings -> Local users. The change is
     asked as from the pages - each node's daemon has its root helper do it."""
@@ -4323,10 +4392,19 @@ def cli_osusers(args, pal):
         what, name = args.local_user
         f = {'name': name}
         do = {'add': 'add', 'password': 'password', 'lock': 'lock', 'unlock': 'unlock',
-              'sudo-on': 'sudo', 'sudo-off': 'sudo', 'drop': 'drop', 'drop-home': 'drop'}.get(what)
+              'sudo-on': 'sudo', 'sudo-off': 'sudo', 'drop': 'drop', 'drop-home': 'drop',
+              'aging': 'aging'}.get(what)
         if not do:
-            print('add, password, lock, unlock, sudo-on, sudo-off, drop or drop-home')
+            print('add, password, lock, unlock, sudo-on, sudo-off, drop, drop-home or aging')
             return 2
+        if do == 'aging':
+            for k in ('max_days', 'min_days', 'warn_days'):
+                v = getattr(args, 'local_' + k)
+                if v is not None:
+                    f[k] = v
+            if len(f) == 1:
+                print('--local-max-days, --local-min-days or --local-warn-days')
+                return 2
         if do in ('add', 'password'):
             if not sys.stdin.isatty():
                 print('the password is asked at a terminal only - never given on the command line')

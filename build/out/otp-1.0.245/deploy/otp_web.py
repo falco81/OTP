@@ -3283,7 +3283,7 @@ def lu_shadow():
             for ln in f:
                 p = ln.rstrip('\n').split(':')
                 if len(p) >= 8:
-                    out[p[0]] = (p[1], p[2], p[4], p[7])
+                    out[p[0]] = (p[1], p[2], p[4], p[7], p[3], p[5])
     except OSError:
         pass
     return out
@@ -3291,7 +3291,7 @@ def lu_shadow():
 
 def lu_one(p, sh, admin, today):
     import grp
-    h, last, mx, exp = sh.get(p.pw_name, ('', '', '', ''))
+    h, last, mx, exp, mn, wn = sh.get(p.pw_name, ('', '', '', '', '', ''))
     groups = sorted({g.gr_name for g in grp.getgrall() if p.pw_name in g.gr_mem} |
                     ({grp.getgrgid(p.pw_gid).gr_name} if _gid_ok(p.pw_gid) else set()))
     plain = h.lstrip('!')
@@ -3307,6 +3307,10 @@ def lu_one(p, sh, admin, today):
             'changed': int(last) if last.isdigit() and last != '0' else None,
             'expires': int(exp) if exp.isdigit() else None,
             'max_days': int(mx) if mx.isdigit() and int(mx) < 99999 else None,
+            'min_days': int(mn) if mn.isdigit() else 0, 'warn_days': int(wn) if wn.isdigit() else None,
+            # The day the password runs out (1.0.245): its last change and the days it is good.
+            'pw_ends': (int(last) + int(mx)) if last.isdigit() and last != '0' and mx.isdigit()
+            and int(mx) < 99999 else None,
             'home_there': os.path.isdir(p.pw_dir)}
 
 
@@ -3333,7 +3337,12 @@ def lu_list():
             u['root'] = p.pw_name == 'root'
             users.append(u)
     users.sort(key=lambda u: (not u['root'], u['name']))
+    try:
+        policy = pwp_read()
+    except Exception as e:                              # noqa: BLE001
+        policy = {'error': str(e)[:200]}
     return {'users': users[:500], 'uid_min': lo, 'uid_max': hi, 'used': sorted(set(used))[:5000],
+            'policy': policy,
             'names': sorted(p.pw_name for p in pwd.getpwall())[:5000],
             'admin_group': admin, 'shells': lu_shells(), 'today': today}
 
@@ -3367,6 +3376,10 @@ def lu_do(r):
     said = ''
     if do == 'list':
         return dict(lu_list(), said='')
+    if do == 'policy':
+        # The password policy (1.0.245): for every local user, not one.
+        said = pwp_apply(r.get('conf') or {})
+        return dict(lu_list(), said='; '.join(said))
     p = lu_target(name)
     if r.get('hash') or do == 'password':
         lu_hash_checked(r.get('hash'))          # before anything is done
@@ -3449,6 +3462,20 @@ def lu_do(r):
         if len(argv) > 1:
             lu_run(argv + ['--', name])
         said = '%s changed' % name
+    elif do == 'aging':
+        # Its own password aging (1.0.245): how long a password is good, the least between two
+        # changes, the warning before it runs out.
+        argv = ['chage']
+        for k, opt, lo, hi in (('max_days', '-M', 0, 99999), ('min_days', '-m', 0, 365),
+                               ('warn_days', '-W', 0, 365)):
+            if k in r:
+                v = pwp_int(r.get(k))
+                if v is None or not lo <= v <= hi:
+                    raise Refused('%s is %d to %d' % (k, lo, hi))
+                argv += [opt, str(v)]
+        if len(argv) > 1:
+            lu_run(argv + [name])
+        said = 'the password aging of %s set' % name
     elif do == 'drop':
         busy = subprocess.run(['pgrep', '-u', str(p.pw_uid)], capture_output=True, text=True)
         if busy.stdout.strip() and not r.get('force'):
@@ -3456,7 +3483,7 @@ def lu_do(r):
         lu_run(['userdel'] + (['-r'] if r.get('home') else []) + ['--', name])
         said = '%s taken away%s' % (name, ' with the home folder' if r.get('home') else '')
     else:
-        raise Refused('list, add, password, lock, unlock, sudo, set or drop')
+        raise Refused('list, add, password, lock, unlock, sudo, set, aging or drop')
     return dict(lu_list(), said=said)
 
 
@@ -3471,6 +3498,311 @@ def lu_sudo(name, on):
     elif not on and member:
         lu_run(['gpasswd', '-d', name, g])
 
+
+# ---- the password policy of the local users (1.0.245) ----------------------------------
+# Settings -> Local users -> Password policy: one policy for the cluster, put in by each node's
+# root helper into the system's own files - so that it holds however a password is changed
+# (passwd, a password run out at sign-in, the pages): pam_pwquality's drop-in, pam_pwhistory's
+# and pam_faillock's files (otp's lines between marks), login.defs' aging (the values before
+# kept to be put back), and with authselect the features that put the modules in PAM. Not
+# managed (the default): nothing is written, and what was written is taken out again.
+SEC_DIR = os.environ.get('OTP_SECURITY_DIR', '/etc/security')
+PAM_DIR = os.environ.get('OTP_PAM_DIR', '/etc/pam.d')
+AUTHSELECT = os.environ.get('OTP_AUTHSELECT', shutil.which('authselect') or '')
+PWQ_DROPIN = 'pwquality.conf.d/50-otp.conf'
+PWP_MARK_A = '# ---- otp: Settings -> Local users -> Password policy (from here) ----\n'
+PWP_MARK_B = '# ---- otp: (to here) ----\n'
+PWP_ORIG = os.environ.get('OTP_PWP_ORIG') or os.path.join(STATE_DIR, 'pwpolicy-orig.json')
+PWQ_KEYS = ('minlen', 'minclass', 'maxrepeat', 'dictcheck', 'usercheck', 'enforce_for_root',
+            'difok', 'retry', 'dcredit', 'ucredit', 'lcredit', 'ocredit', 'maxclassrepeat')
+PWQ_DEFAULT = {'minlen': 8, 'minclass': 0, 'maxrepeat': 0, 'dictcheck': 1, 'usercheck': 1,
+               'enforce_for_root': 0, 'difok': 1, 'retry': 1}
+DEFS_KEYS = ('PASS_MAX_DAYS', 'PASS_MIN_DAYS', 'PASS_WARN_AGE')
+
+
+def pwp_conf_read(path, flags=('enforce_for_root', 'even_deny_root', 'enforce_for_root')):
+    """key = value lines (and lone flags) of a pam module's file, comments left out."""
+    out = {}
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for ln in f:
+                ln = ln.split('#', 1)[0].strip()
+                if not ln:
+                    continue
+                if '=' in ln:
+                    k, v = [x.strip() for x in ln.split('=', 1)]
+                    out[k] = v
+                elif ln in flags:
+                    out[ln] = '1'
+    except OSError:
+        pass
+    return out
+
+
+def pwp_int(v, default=None):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def pwp_pam():
+    """Which of pwquality, pwhistory and faillock the PAM stack of the system uses."""
+    files = ['system-auth', 'password-auth', 'common-password', 'common-auth', 'common-account']
+    text = ''
+    for f in files:
+        try:
+            with open(os.path.join(PAM_DIR, f), encoding='utf-8', errors='replace') as fh:
+                text += fh.read() + '\n'
+        except OSError:
+            continue
+    lines = [ln for ln in text.splitlines() if not ln.strip().startswith('#')]
+    has = lambda m: any(m in ln for ln in lines)
+    return {'pwquality': has('pam_pwquality'), 'pwhistory': has('pam_pwhistory'),
+            'faillock': has('pam_faillock'), 'read': bool(text.strip())}
+
+
+def pwp_authselect():
+    """(profile, features) of authselect, or None where it does not manage PAM."""
+    if not AUTHSELECT or not os.path.exists(AUTHSELECT):
+        return None
+    got = subprocess.run([AUTHSELECT, 'current', '--raw'], capture_output=True, text=True, timeout=30)
+    if got.returncode != 0 or not got.stdout.strip():
+        return None
+    words = got.stdout.split()
+    return {'profile': words[0], 'features': words[1:]}
+
+
+def pwp_read():
+    """The policy as in effect on this node, read from its files."""
+    pwq = dict(PWQ_DEFAULT)
+    base = os.path.join(SEC_DIR, 'pwquality.conf')
+    raw = pwp_conf_read(base)
+    d = os.path.join(SEC_DIR, 'pwquality.conf.d')
+    try:
+        for name in sorted(os.listdir(d)):
+            if name.endswith('.conf'):
+                raw.update(pwp_conf_read(os.path.join(d, name)))
+    except OSError:
+        pass
+    for k in PWQ_KEYS:
+        if k in raw:
+            pwq[k] = pwp_int(raw[k], raw[k])
+    hist = pwp_conf_read(os.path.join(SEC_DIR, 'pwhistory.conf'))
+    fl = pwp_conf_read(os.path.join(SEC_DIR, 'faillock.conf'), flags=('even_deny_root', 'silent', 'audit'))
+    defs = {}
+    try:
+        for ln in open(LOGIN_DEFS, encoding='utf-8', errors='replace'):
+            w = ln.split()
+            if len(w) >= 2 and w[0] in DEFS_KEYS:
+                defs[w[0]] = pwp_int(w[1], w[1])
+    except OSError:
+        pass
+    pam = pwp_pam()
+    return {'pwquality': pwq, 'remember': pwp_int(hist.get('remember'), 10 if pam['pwhistory'] else 0),
+            'faillock': {'deny': pwp_int(fl.get('deny'), 3), 'unlock_time': pwp_int(fl.get('unlock_time'), 600),
+                         'fail_interval': pwp_int(fl.get('fail_interval'), 900)},
+            'aging': {'max_days': defs.get('PASS_MAX_DAYS', 99999), 'min_days': defs.get('PASS_MIN_DAYS', 0),
+                      'warn_days': defs.get('PASS_WARN_AGE', 7)},
+            'pam': pam, 'authselect': pwp_authselect(),
+            'managed': os.path.exists(os.path.join(SEC_DIR, PWQ_DROPIN)),
+            'pwscore': bool(shutil.which('pwscore'))}
+
+
+def pwp_block_put(path, lines):
+    """otp's lines between the marks in a file of the system: put in, replaced, or (None) taken out;
+    the rest of the file as it is. A file that is not there is made only to put lines in."""
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused('%s is not a plain file - not written' % path)
+        with open(path, encoding='utf-8', errors='replace') as f:
+            text = f.read()
+        mode = stat.S_IMODE(st.st_mode)
+    except FileNotFoundError:
+        if lines is None:
+            return
+        text, mode = '', 0o644
+    a, b = text.find(PWP_MARK_A), text.find(PWP_MARK_B)
+    if lines is None and not (a >= 0 and b > a):
+        return                          # none of otp's there: the file left as it is
+    was = text
+    if a >= 0 and b > a:
+        text = text[:a] + text[b + len(PWP_MARK_B):]
+    if lines is not None:
+        if text and not text.endswith('\n'):
+            text += '\n'
+        text += PWP_MARK_A + ''.join('%s\n' % ln for ln in lines) + PWP_MARK_B
+    if text != was:
+        write_root(path, text, mode)
+
+
+def pwp_defs_put(values):
+    """login.defs' aging lines set (values) or put back as they were (None). The lines as they were
+    are kept in login.defs itself, commented between otp's marks - so that whatever node or copy of
+    the state puts it back, it is what the machine had (1.0.245)."""
+    with open(LOGIN_DEFS, encoding='utf-8', errors='replace') as f:
+        text = f.read()
+    a, b = text.find(PWP_MARK_A), text.find(PWP_MARK_B)
+    was = {}
+    if a >= 0 and b > a:
+        for ln in text[a + len(PWP_MARK_A):b].split('\n'):
+            if ln.startswith('# otp-was: '):
+                k, _, line = ln[len('# otp-was: '):].partition(' ')
+                if k in DEFS_KEYS:
+                    was[k] = line                   # '' - there was no such line
+        text = text[:a] + text[b + len(PWP_MARK_B):]
+    lines = text.split('\n')
+    if values is not None and not was:
+        for k in DEFS_KEYS:
+            was[k] = next((ln for ln in lines if ln.split()[:1] == [k]), '')
+    out, seen = [], set()
+    for ln in lines:
+        w = ln.split()
+        if w and w[0] in DEFS_KEYS:
+            if values is not None:
+                if w[0] not in seen:
+                    out.append('%s\t%s' % (w[0], values[w[0]]))
+                seen.add(w[0])
+                continue
+            if w[0] in was:
+                if w[0] not in seen and was[w[0]]:
+                    out.append(was[w[0]])
+                seen.add(w[0])
+                continue
+        out.append(ln)
+    if values is not None:
+        for k in DEFS_KEYS:
+            if k not in seen:
+                out.append('%s\t%s' % (k, values[k]))
+        text = '\n'.join(out)
+        if not text.endswith('\n'):
+            text += '\n'
+        text += PWP_MARK_A + ''.join('# otp-was: %s %s\n' % (k, was.get(k, '')) for k in DEFS_KEYS) + PWP_MARK_B
+    else:
+        for k in DEFS_KEYS:
+            if k in was and was[k] and k not in seen:
+                out.append(was[k])
+        text = '\n'.join(out)
+    st = os.stat(LOGIN_DEFS)
+    write_root(LOGIN_DEFS, text, stat.S_IMODE(st.st_mode))
+
+
+def pwp_orig_write(orig):
+    if orig:
+        write_root(PWP_ORIG, json.dumps(orig), 0o600)
+    else:
+        try:
+            os.unlink(PWP_ORIG)
+        except OSError:
+            pass
+
+
+def pwp_checked(c):
+    """The policy as asked, every value in its range - refused otherwise."""
+    if not isinstance(c, dict):
+        raise Refused('the policy is not an object')
+
+    def num(k, lo, hi, default):
+        v = c.get(k, default)
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            raise Refused('%s is a number' % k)
+        if not lo <= v <= hi:
+            raise Refused('%s is %d to %d' % (k, lo, hi))
+        return v
+    return {'managed': bool(c.get('managed')),
+            'minlen': num('minlen', 6, 128, 12), 'minclass': num('minclass', 0, 4, 3),
+            'maxrepeat': num('maxrepeat', 0, 20, 3), 'dictcheck': 1 if c.get('dictcheck', 1) else 0,
+            'usercheck': 1 if c.get('usercheck', 1) else 0, 'difok': num('difok', 0, 20, 5),
+            'remember': num('remember', 0, 50, 5),
+            'max_days': num('max_days', 0, 99999, 99999), 'min_days': num('min_days', 0, 365, 0),
+            'warn_days': num('warn_days', 0, 365, 7),
+            'deny': num('deny', 0, 100, 0), 'unlock_time': num('unlock_time', 0, 86400, 900),
+            'fail_interval': num('fail_interval', 60, 86400, 900),
+            'existing': bool(c.get('existing'))}
+
+
+def pwp_apply(c):
+    """Put the policy in (managed) or take otp's out again (not managed)."""
+    import pwd
+    c = pwp_checked(c)
+    said = []
+    try:
+        orig = json.load(open(PWP_ORIG))
+    except (OSError, ValueError):
+        orig = {}
+    sel = pwp_authselect()
+    added = list(orig.get('features') or [])
+    dropin = os.path.join(SEC_DIR, PWQ_DROPIN)
+    if not c['managed']:
+        try:
+            os.unlink(dropin)
+            said.append('pwquality: otp\'s drop-in taken out')
+        except FileNotFoundError:
+            pass
+        for f in ('pwhistory.conf', 'faillock.conf'):
+            pwp_block_put(os.path.join(SEC_DIR, f), None)
+        if PWP_MARK_A in open(LOGIN_DEFS, encoding='utf-8', errors='replace').read():
+            pwp_defs_put(None)
+            said.append('login.defs: the aging as it was')
+        if sel:
+            for feat in added:
+                if feat in sel['features']:
+                    lu_run([AUTHSELECT, 'disable-feature', feat])
+                    said.append('authselect: %s taken out again' % feat)
+        orig = {}
+        try:
+            orig = json.load(open(PWP_ORIG))
+        except (OSError, ValueError):
+            pass
+        orig.pop('features', None)
+        pwp_orig_write(orig)
+        return said or ['nothing of otp\'s was there']
+    os.makedirs(os.path.dirname(dropin), exist_ok=True)
+    write_root(dropin, '# written by otp - Settings -> Local users -> Password policy\n'
+               'minlen = %(minlen)d\nminclass = %(minclass)d\nmaxrepeat = %(maxrepeat)d\n'
+               'dictcheck = %(dictcheck)d\nusercheck = %(usercheck)d\ndifok = %(difok)d\n'
+               'retry = 3\n' % c, 0o644)
+    said.append('pwquality: at least %d characters, %d kinds' % (c['minlen'], c['minclass']))
+    pwp_block_put(os.path.join(SEC_DIR, 'pwhistory.conf'),
+                  ['remember = %d' % c['remember']] if c['remember'] else None)
+    pwp_block_put(os.path.join(SEC_DIR, 'faillock.conf'),
+                  ['deny = %d' % c['deny'], 'unlock_time = %d' % c['unlock_time'],
+                   'fail_interval = %d' % c['fail_interval']] if c['deny'] else None)
+    pwp_defs_put({'PASS_MAX_DAYS': c['max_days'], 'PASS_MIN_DAYS': c['min_days'],
+                  'PASS_WARN_AGE': c['warn_days']})
+    said.append('login.defs: a password good for %s days' % (c['max_days'] if c['max_days'] < 99999 else 'all'))
+    if sel:
+        want = (['with-pwhistory'] if c['remember'] else []) + (['with-faillock'] if c['deny'] else [])
+        for feat in want:
+            if feat not in sel['features']:
+                lu_run([AUTHSELECT, 'enable-feature', feat])
+                added.append(feat)
+                said.append('authselect: %s put in' % feat)
+        for feat in [f for f in added if f not in want]:
+            if feat in sel['features'] or feat in added:
+                lu_run([AUTHSELECT, 'disable-feature', feat])
+                added = [f for f in added if f != feat]
+                said.append('authselect: %s taken out again' % feat)
+        try:
+            orig = json.load(open(PWP_ORIG))
+        except (OSError, ValueError):
+            orig = {}
+        orig['features'] = added
+        pwp_orig_write(orig)
+    if c['existing']:
+        lo, hi = uid_range()
+        n = 0
+        for p in pwd.getpwall():
+            if lo <= p.pw_uid <= hi and p.pw_uid != 65534 and p.pw_name not in KEEP_NAMES and \
+                    USER_NAME_RE.match(p.pw_name):
+                lu_run(['chage', '-M', str(c['max_days']), '-m', str(c['min_days']),
+                        '-W', str(c['warn_days']), p.pw_name])
+                n += 1
+        said.append('the aging put on %d user(s) of this node too' % n)
+    return said
 
 def users_part():
     d = web_fd()

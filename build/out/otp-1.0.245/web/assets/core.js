@@ -888,6 +888,7 @@ setInterval(function () {
   hideHelp();
 }, 1000);
 window.addEventListener('scroll', hideHelp, true);
+var PEEK_WHY = null;
 function peek(title, ask, draw, jump) {
   var mine = ++PEEK;
   var buttons = [{words: 'Close', close: true}];
@@ -915,6 +916,10 @@ function peek(title, ask, draw, jump) {
     if (mine !== PEEK || !modalStill(ticket)) return;  /* they moved on */
     var body = $('modal-body');
     clear(body);
+    /* Why the card that opened it has its colour (1.0.245). */
+    var why = PEEK_WHY;
+    PEEK_WHY = null;
+    if (why && why.words) body.appendChild(el('p', 'note peek-why ' + ({ok: 'good', warn: 'warn', crit: 'bad', info: 'info'}[why.level] || 'info'), why.words));
     draw(body, d);
     explainWhatWasDrawn(body);
   }).catch(function (e) {

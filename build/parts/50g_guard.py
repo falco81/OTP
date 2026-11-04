@@ -25,7 +25,7 @@ DBGUARD_META_EXACT = frozenset((
     'web:vip', 'web:access', 'fw:conf', 'fw:trial', 'fw_trial_back', 'ntp:conf', 'power:plan',
     'readdress:ask', 'hatls:ca', 'hatls:want', 'host:osup:plan', 'host:sshd:conf',
     'host:sshd:keep', 'host:sshd:back', 'sshotp:gate', 'host:logs:again', 'upgrade:plan',
-    'upgrade:pkg', 'acme_push:conf', 'acme_push:pairing', 'hisec:waive'))
+    'upgrade:pkg', 'acme_push:conf', 'acme_push:pairing', 'hisec:waive', 'host:pwpolicy:conf'))
 DBGUARD_META_PREFIXES = (
     'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',

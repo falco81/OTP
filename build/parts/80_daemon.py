@@ -1613,6 +1613,9 @@ class Daemon(object):
             except Exception:                           # noqa: BLE001
                 pass
             got['key_there'] = bool(sealing_key())
+            # For the words under the colour of the card on the overview (1.0.245).
+            got['backup_daily'] = bool(CONFIG.get('backup_daily'))
+            got['backup_at'] = str(CONFIG.get('backup_at') or '')
             self.DB_SUMMARY.update(at=time.time(), got=got)
         return self.DB_SUMMARY['got']
 

@@ -79,7 +79,7 @@ function gone() { try { execSync('userdel -r otpl_ui 2>/dev/null'); } catch (e) 
         }
         await p.waitForSelector('#modal:not([hidden]) .osu-fact');
         const sects = await p.$$eval('#modal-body .osu-sect h3', x => x.map(h => h.textContent));
-        ok(tag + 'its popup: the facts, four sections', (await p.$$('#modal-body .osu-fact')).length >= 1 && sects.length === 4, sects);
+        ok(tag + 'its popup: the facts, five sections', (await p.$$('#modal-body .osu-fact')).length >= 1 && sects.length === 5, sects);
         const mw = await p.evaluate(() => { const m = document.querySelector('#modal-box'); return m.scrollWidth <= m.clientWidth + 1; });
         ok(tag + '...nothing wider than the popup', mw);
         await p.screenshot({ path: '/tmp/claude-0/osuui/edit-' + lang + '-' + width + '.png' });

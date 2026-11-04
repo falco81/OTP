@@ -2882,6 +2882,22 @@ class Console(object):
             if got:
                 osu_do('password', got['name'].strip(), password=got['pw'], must_change=got.get('must') == 'yes')
 
+        def pwp_set():
+            c = pwp_conf(cli_store())
+            got = self.form('The password policy of local users (every node)', [
+                {'key': 'managed', 'label': 'set by otp', 'kind': 'choice', 'value': 'yes' if c['managed'] else 'no',
+                 'options': [('yes', 'yes - on every node'), ('no', "no - each system's own")]},
+                {'key': 'minlen', 'label': 'characters at least', 'kind': 'number', 'value': c['minlen'], 'range': (6, 128)},
+                {'key': 'minclass', 'label': 'kinds at least', 'kind': 'number', 'value': c['minclass'], 'range': (0, 4)},
+                {'key': 'remember', 'label': 'last ones not again', 'kind': 'number', 'value': c['remember'], 'range': (0, 50)},
+                {'key': 'max_days', 'label': 'good for (days)', 'kind': 'number', 'value': c['max_days'], 'range': (1, 99999)},
+                {'key': 'warn_days', 'label': 'warned (days)', 'kind': 'number', 'value': c['warn_days'], 'range': (0, 365)},
+                {'key': 'deny', 'label': 'locked after wrong', 'kind': 'number', 'value': c['deny'], 'range': (0, 100)}])
+            if got:
+                words = ['managed=%s' % ('1' if got['managed'] == 'yes' else '0')] + [
+                    '%s=%s' % (k, got[k]) for k in ('minlen', 'minclass', 'remember', 'max_days', 'warn_days', 'deny')]
+                self.act('--local-policy-set', *words)
+
         def osu_change():
             name = osu_pick('Change a local user')
             if not name:
@@ -2923,6 +2939,8 @@ class Console(object):
             ('17', 'Add a local user', osu_add),
             ('18', 'A new password for a local user', osu_pw),
             ('19', 'Lock, unlock, sudo or take away a local user', osu_change),
+            ('20', 'The password policy of local users: how it stands', lambda: self.act('--local-policy')),
+            ('21', 'Set the password policy of local users', pwp_set),
         ])
 
     def m_more(self):

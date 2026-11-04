@@ -4,6 +4,29 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.245 — 4 November 2026
+
+**A password policy for the local users** (*Settings → Local users → Password policy*; not set by
+otp by default - each node as its system has it, nothing written). One policy for the cluster, put in
+by each node into the system's own files, so that it holds however a password is changed (`passwd`, a
+password run out at sign-in, these pages): the length, the kinds of characters, the same character in
+a row, the characters not in the old one, no word of the dictionary, not the user's name
+(pam_pwquality's drop-in); the last passwords not taken again (pam_pwhistory); how long a password is
+good, the warning before, the least days between two changes (login.defs - and, asked, on the users
+there now); the lock after so many wrong passwords (pam_faillock; never root). With authselect the
+features that put the modules into PAM are switched on, and off again when no longer needed - only
+those otp switched on. Switched off, every file is as it was. Each node's light says whether it has
+put it in; *In effect on the nodes* shows what each has, and where a module is not in its PAM. A
+password typed on the pages is checked against it first (`pwscore` where it is installed). Each
+user's own **password aging** in their popup, and the day their password runs out. `otp --local-policy`,
+`otp --local-policy-set KEY=VALUE…`, `otp --local-user aging NAME --local-max-days N …`; on the console
+too. The policy's row is signed by the guard of root's actions.
+
+**The database card on the overview says why it has its colour.** Clicked, its popup starts with
+one line in the card's colour: green - a copy of the last two days is here, and when the next is
+made; yellow - the last copy is older than two days, or there is none yet, and whether one is made
+by itself; red - the key that opens the tokens is not on this node, and where to put it back from.
+
 ## 1.0.244 — 4 November 2026
 
 **`otp --get KEY…`, the counterpart of `--set`.** The value of a setting as it is in effect on this
