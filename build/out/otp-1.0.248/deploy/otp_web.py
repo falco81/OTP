@@ -129,6 +129,29 @@ def write_here(name, text):
     os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
 
 
+def write_here_bytes(name, data):
+    """write_here for bytes: in the folder opened at the start, never by its path - the service
+    owns the folder above it and could have put a link in its place meanwhile."""
+    d = web_fd()
+    tmp = '.%s.%d' % (name, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=d)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+            try:
+                import grp
+                os.fchown(f.fileno(), 0, grp.getgrnam('otp').gr_gid)
+            except (KeyError, OSError):
+                pass
+        os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=d)
+        except OSError:
+            pass
+        raise
+
+
 def write_root(path, text, mode):
     """A file of root's, replaced whole."""
     folder = os.path.dirname(path)
@@ -528,7 +551,7 @@ def realip_checked(rp):
     nets = []
     for w in (rp.get('from') or [])[:64]:
         try:
-            nets.append(str(ipaddress.ip_network(str(w), strict=False)))
+            nets.append(str(plain(w, 'network')))    # no scope id: a line of its own (1.0.248)
         except ValueError:
             raise Refused('realip: %r is not an address or a network' % str(w)[:60])
     head = str(rp.get('header') or 'X-Forwarded-For')
@@ -1683,6 +1706,18 @@ def pgtls_checked(r):
         if str(r[k]).lower() in PG_HBA_WORDS:
             raise Refused('%s is a word of pg_hba.conf, not otp\'s database or account' % r[k])
         out[k] = str(r[k])
+    # Never the superuser, nor the system's own databases (1.0.248): "peer" put
+    # "host postgres postgres ADDRESS" first in pg_hba.conf and opened it to the network.
+    if out['db'].lower() in ('postgres', 'template0', 'template1') or out['user'].lower() == 'postgres':
+        raise Refused('%s / %s is PostgreSQL\'s own, not otp\'s database and account' % (out['db'], out['user']))
+    if out['do'] in ('hba', 'peer'):
+        try:
+            sup = pg_sql(out['port'], "SELECT rolsuper FROM pg_roles WHERE rolname = '%s'"
+                         % out['user'].replace("'", "''"))
+        except (Refused, OSError, subprocess.SubprocessError):
+            sup = ''
+        if sup.strip() == 't':
+            raise Refused('%s is a superuser of PostgreSQL - not let in from the network by otp' % out['user'])
     peer = str(r.get('peer') or '').strip()
     try:
         out['peer'] = str(plain(peer, 'address')) if peer else ''
@@ -2394,7 +2429,9 @@ def net_restore(r):
         write_root(path, profile, stat.S_IMODE(st.st_mode) if st else 0o600)
         try:
             run([NMCLI, 'connection', 'load', path], 'nmcli connection load')
-            done = True
+            # A profile of /run (1.0.248): the change made it one of /etc, which the reboot
+            # keeps while /run is emptied - its settings put back one by one as well.
+            done = not path.startswith('/run/')
             said.append('NetworkManager: the profile of %s put back as it was' % con)
         except Refused as e:
             said.append('the profile could not be loaded (%s) - its settings put back one by '
@@ -2666,8 +2703,18 @@ def ntp_apply(n):
         said.append('%s: %s' % (CHRONY_CONF, ', '.join(x['host'] for x in n['servers'])
                                 if n['manage'] else 'its own servers again'))
         if not NO_SERVICES and not os.environ.get('OTP_NTP_NO_SERVICE'):
-            run(['systemctl', 'enable', '--now', 'chronyd'], 'systemctl enable chronyd')
-            run(['systemctl', 'restart', 'chronyd'], 'systemctl restart chronyd')
+            try:
+                run(['systemctl', 'enable', '--now', 'chronyd'], 'systemctl enable chronyd')
+                run(['systemctl', 'restart', 'chronyd'], 'systemctl restart chronyd')
+            except Refused as e:
+                # chronyd will not start on the new file (an older chrony and "nts", say -
+                # 1.0.248): the file as it was, and chronyd started on it again.
+                write_root(CHRONY_CONF, had, 0o644)
+                try:
+                    run(['systemctl', 'restart', 'chronyd'], 'systemctl restart chronyd')
+                except Refused:
+                    pass
+                raise Refused('%s - chrony.conf put back as it was' % e)
             said.append('chronyd restarted')
     if n['timezone']:
         try:
@@ -2878,13 +2925,21 @@ def auth_lines():
         return f.read(1 << 20).split('\n')
 
 
+AUTH_KEYS_MAX = 1000
+
+
 def auth_keys(lines):
+    # At most 1000 lines, and half a minute of ssh-keygen (1.0.248): a user's own file of many
+    # thousand short lines kept the helper - and every other ask behind it - busy for half an hour.
     out = []
+    end = time.monotonic() + 30
     for i, ln in enumerate(lines):
         t = ln.strip()
         if not t or t.startswith('#'):
             continue
-        facts = key_facts(t)
+        if len(out) >= AUTH_KEYS_MAX:
+            break
+        facts = key_facts(t) if time.monotonic() < end and len(t) <= 16500 else None
         m = KEY_LINE_RE.match(t)
         out.append({'line': i, 'fp': facts[1] if facts else '', 'bits': facts[0] if facts else 0,
                     'type': facts[2] if facts else '?',
@@ -3417,18 +3472,35 @@ def lu_do(r):
                 if other:
                     raise Refused('UID %d is %s\'s here' % (uid, other))
                 argv += ['-u', str(uid)]
-            lu_run(argv + ['--', name])
-            said = '%s made' % name
+            try:
+                lu_run(argv + ['--', name])
+                said = '%s made' % name
+            except Exception as e:
+                # Made in between by another ask (both nodes of the sandbox are one machine, or
+                # the same ask twice at once, 1.0.248): there now, with the UID asked for, is no
+                # fault - the same as "here already".
+                import pwd
+                try:
+                    p = pwd.getpwnam(name)
+                except KeyError:
+                    raise e
+                if uid not in (None, '') and int(uid) != p.pw_uid:
+                    raise e
+                said = '%s was here already' % name
         import pwd
         p = pwd.getpwnam(name)
+        if not said.endswith('made'):
+            # There already (1.0.248): its password, sudo and aging are not changed by an add -
+            # "make alice on B too" sent to every node took her sudo away and her password on A.
+            return dict(lu_list(), said=said)
         if r.get('hash'):
             lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, lu_hash_checked(r['hash'])))
-        elif said.endswith('made'):
+        else:
             # No password - a key (and otp's code) only (1.0.246): no password aging for it, or
             # once its days from login.defs ran out sshd would ask, at every sign-in by a key or
             # a code too, for a new password the user never had - and let nobody in.
             lu_run(['chage', '-M', '-1', '-I', '-1', name])
-        if r.get('must_change'):
+        if r.get('must_change') and r.get('hash'):     # never for one with no password (1.0.248)
             lu_run(['chage', '-d', '0', name])
         if r.get('sudo') is not None:
             lu_sudo(name, bool(r['sudo']))
@@ -3455,8 +3527,12 @@ def lu_do(r):
         said = '%s locked' % name
     elif do == 'unlock':
         sh = lu_shadow().get(name, ('',))[0]
-        if sh.startswith('!') and len(sh) > 2:
+        # Every '!' (1.0.248): passwd -l on RHEL writes '!!', and usermod -U takes one away.
+        for _ in range(4):
+            if not (sh.startswith('!') and re.match(r'^\$[0-9a-z]{1,3}\$', sh.lstrip('!'))):
+                break
             lu_run(['usermod', '-U', name])
+            sh = lu_shadow().get(name, ('',))[0]
         lu_run(['chage', '-E', '-1', name])
         said = '%s unlocked' % name
     elif do == 'sudo':
@@ -3468,12 +3544,17 @@ def lu_do(r):
             g = str(r.get('gecos') or '')
             if not GECOS_RE.match(g):
                 raise Refused('the full name has letters that cannot be in it (a colon, a line break)')
-            argv += ['-c', g]
+            # The pages show the name, the first of the fields (1.0.248): the same name saved
+            # again kept "Room 12,555-1234" no longer.
+            if g != p.pw_gecos.split(',')[0]:
+                rest = p.pw_gecos.split(',', 1)[1:]
+                argv += ['-c', ','.join([g] + rest) if rest and ',' not in g else g]
         if 'shell' in r:
             s = str(r.get('shell') or '')
-            if s not in lu_shells():
-                raise Refused('%s is not a shell of /etc/shells here' % s[:60])
-            argv += ['-s', s]
+            if s != p.pw_shell:             # the one it has, taken as it is (1.0.248)
+                if s not in lu_shells():
+                    raise Refused('%s is not a shell of /etc/shells here' % s[:60])
+                argv += ['-s', s]
         if len(argv) > 1:
             lu_run(argv + ['--', name])
         said = '%s changed' % name
@@ -3527,7 +3608,14 @@ AUTHSELECT = os.environ.get('OTP_AUTHSELECT', shutil.which('authselect') or '')
 PWQ_DROPIN = 'pwquality.conf.d/50-otp.conf'
 PWP_MARK_A = '# ---- otp: Settings -> Local users -> Password policy (from here) ----\n'
 PWP_MARK_B = '# ---- otp: (to here) ----\n'
-PWP_ORIG = os.environ.get('OTP_PWP_ORIG') or os.path.join(STATE_DIR, 'pwpolicy-orig.json')
+# Which features of authselect otp switched on - in a folder of root's (1.0.248): in otp's own
+# /var/lib/otp the service could write any feature there, and root switched it off at the next
+# policy (nullok back, access.conf and faillock gone).
+ROOT_STATE_DIR = os.environ.get('OTP_ROOT_STATE') or (
+    '/var/lib/otp-root' if STATE_DIR == '/var/lib/otp' else STATE_DIR.rstrip('/') + '-root')
+PWP_ORIG = os.environ.get('OTP_PWP_ORIG') or os.path.join(ROOT_STATE_DIR, 'pwpolicy-orig.json')
+PWP_ORIG_OLD = '' if os.environ.get('OTP_PWP_ORIG') else os.path.join(STATE_DIR, 'pwpolicy-orig.json')
+PWP_FEATURES = ('with-pwhistory', 'with-faillock')
 PWQ_KEYS = ('minlen', 'minclass', 'maxrepeat', 'dictcheck', 'usercheck', 'enforce_for_root',
             'difok', 'retry', 'dcredit', 'ucredit', 'lcredit', 'ocredit', 'maxclassrepeat')
 PWQ_DEFAULT = {'minlen': 8, 'minclass': 0, 'maxrepeat': 0, 'dictcheck': 1, 'usercheck': 1,
@@ -3703,12 +3791,45 @@ def pwp_defs_put(values):
     write_root(LOGIN_DEFS, text, stat.S_IMODE(st.st_mode))
 
 
+def pwp_orig_read():
+    """What otp switched on, as root kept it - only features otp switches on at all."""
+    got = {}
+    for p in (PWP_ORIG, PWP_ORIG_OLD):
+        if not p:
+            continue
+        try:
+            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd) as f:
+                # The one of the service's folder only as root wrote it (1.0.248): one of the
+                # otp account's own there is no word of root's.
+                if p == PWP_ORIG_OLD and os.fstat(f.fileno()).st_uid != 0:
+                    continue
+                got = json.load(f)
+            break
+        except (OSError, ValueError):
+            continue
+    if not isinstance(got, dict):
+        got = {}
+    got['features'] = [f for f in (got.get('features') or []) if f in PWP_FEATURES]
+    if not got['features']:
+        got.pop('features')
+    return got
+
+
 def pwp_orig_write(orig):
     if orig:
+        if os.path.dirname(PWP_ORIG) == ROOT_STATE_DIR:
+            os.makedirs(ROOT_STATE_DIR, mode=0o700, exist_ok=True)
+            os.chmod(ROOT_STATE_DIR, 0o700)
         write_root(PWP_ORIG, json.dumps(orig), 0o600)
     else:
         try:
             os.unlink(PWP_ORIG)
+        except OSError:
+            pass
+    if PWP_ORIG_OLD:
+        try:
+            os.unlink(PWP_ORIG_OLD)     # the one of the service's folder, before 1.0.248
         except OSError:
             pass
 
@@ -3744,10 +3865,7 @@ def pwp_apply(c):
     import pwd
     c = pwp_checked(c)
     said = []
-    try:
-        orig = json.load(open(PWP_ORIG))
-    except (OSError, ValueError):
-        orig = {}
+    orig = pwp_orig_read()
     sel = pwp_authselect()
     added = list(orig.get('features') or [])
     dropin = os.path.join(SEC_DIR, PWQ_DROPIN)
@@ -3767,11 +3885,7 @@ def pwp_apply(c):
                 if feat in sel['features']:
                     lu_run([AUTHSELECT, 'disable-feature', feat])
                     said.append('authselect: %s taken out again' % feat)
-        orig = {}
-        try:
-            orig = json.load(open(PWP_ORIG))
-        except (OSError, ValueError):
-            pass
+        orig = pwp_orig_read()
         orig.pop('features', None)
         pwp_orig_write(orig)
         return said or ['nothing of otp\'s was there']
@@ -3791,22 +3905,24 @@ def pwp_apply(c):
     said.append('login.defs: a password good for %s days' % (c['max_days'] if c['max_days'] < 99999 else 'all'))
     if sel:
         want = (['with-pwhistory'] if c['remember'] else []) + (['with-faillock'] if c['deny'] else [])
+        def note():
+            # Kept at once (1.0.248): written only at the end, one switched on before a later
+            # step failed was never noted - and never switched off again.
+            o = pwp_orig_read()
+            o['features'] = added
+            pwp_orig_write(o)
         for feat in want:
             if feat not in sel['features']:
-                lu_run([AUTHSELECT, 'enable-feature', feat])
                 added.append(feat)
+                note()
+                lu_run([AUTHSELECT, 'enable-feature', feat])
                 said.append('authselect: %s put in' % feat)
         for feat in [f for f in added if f not in want]:
-            if feat in sel['features'] or feat in added:
+            if feat in sel['features']:
                 lu_run([AUTHSELECT, 'disable-feature', feat])
-                added = [f for f in added if f != feat]
                 said.append('authselect: %s taken out again' % feat)
-        try:
-            orig = json.load(open(PWP_ORIG))
-        except (OSError, ValueError):
-            orig = {}
-        orig['features'] = added
-        pwp_orig_write(orig)
+            added = [f for f in added if f != feat]
+        note()
     if c['existing']:
         lo, hi = uid_range()
         n = skipped = 0
@@ -3877,15 +3993,34 @@ def keep_read():
             'admin_group': admin, 'at': time.time()}
 
 
+def keep_key_lines(lines):
+    """The lines of a kept authorized_keys that are put back: one public key each, of a kind
+    taken here, nothing before it (1.0.248) - options (command=, from=...) are added by hand."""
+    good, other = [], 0
+    for ln in lines[:200]:
+        ln = str(ln).strip()
+        if not ln or ln.startswith('#'):
+            continue
+        m = KEY_LINE_RE.match(ln)
+        if m and m.group('type') in KEY_TYPES and '\n' not in ln and len(ln) <= 16500:
+            good.append(ln)
+        else:
+            other += 1
+    return good, other
+
+
 def keep_putback(k):
     """What a backup kept of this machine, put back: only what is missing - never a user, key or
-    setting of the machine as it is now taken away or changed."""
+    setting of the machine as it is now taken away or changed. Each user on its own (1.0.248): one
+    that could not be made stopped the rest, root's keys and the booleans."""
     import pwd
     if not isinstance(k, dict):
         raise Refused('nothing to put back')
     lo, hi = uid_range()
-    said, made, keys_n = [], 0, 0
-    for u in k.get('users') or []:
+    said, made, keys_n, skipped, failed = [], 0, 0, 0, []
+    for u in (k.get('users') or [])[:500]:
+        if not isinstance(u, dict):
+            continue
         name = str(u.get('name') or '')
         if not USER_NAME_RE.match(name) or name in KEEP_NAMES:
             continue
@@ -3893,67 +4028,103 @@ def keep_putback(k):
             uid = int(u.get('uid'))
         except (TypeError, ValueError):
             continue
-        if not lo <= uid <= hi:
+        if not lo <= uid <= hi or uid == 65534:
             continue
         try:
-            p = pwd.getpwnam(name)
-        except KeyError:
-            p = None
-        if p is None:
             try:
-                other = pwd.getpwuid(uid).pw_name
+                p = pwd.getpwnam(name)
             except KeyError:
-                other = ''
-            shell = str(u.get('shell') or '/bin/bash')
-            if shell not in lu_shells() and not os.path.exists(shell):
-                shell = '/bin/bash'
-            argv = ['useradd', '-m', '-s', shell, '-c', str(u.get('gecos') or '')[:120].replace(':', ' '), '-U']
-            if not other:
-                argv += ['-u', str(uid)]
-            lu_run(argv + ['--', name])
-            h = str(u.get('hash') or '')
-            if PW_HASH_RE.match(h.lstrip('!')):
-                lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, h.lstrip('!')))
-                if h.startswith('!'):
-                    lu_run(['usermod', '-L', name])
-            # The aging as it was - the day of the last change, the days, the account's end.
-            args = ['chage']
-            for opt, key in (('-d', 'lastchg'), ('-m', 'min'), ('-M', 'max'), ('-W', 'warn'),
-                             ('-I', 'inactive'), ('-E', 'expire')):
-                v = str(u.get(key) or '')
-                args += [opt, v if re.match(r'^-?\d{1,6}\Z', v) else '-1']
-            lu_run(args + [name])
-            if u.get('sudo'):
+                p = None
+            if p is None:
                 try:
-                    lu_sudo(name, True)
-                except Refused:
-                    pass
-            made += 1
-            said.append('%s made again%s' % (name, '' if not other else ' (UID %d was %s\'s here)' % (uid, other)))
-            p = pwd.getpwnam(name)
-        lines = [str(x) for x in (k.get('keys') or {}).get(name) or []]
-        if lines:
-            have = user_auth_read(p)
-            add = [ln for ln in lines if ln not in have]
+                    other = pwd.getpwuid(uid).pw_name
+                except KeyError:
+                    other = ''
+                shell = str(u.get('shell') or '/bin/bash')
+                # A shell that lets nobody in (nologin, false) kept as it is, where it is here: a user
+                # of SFTP only made again with bash could sign in (1.0.248).
+                if shell not in lu_shells() and not (os.path.basename(shell) in NO_SHELLS and
+                                                     os.path.isfile(shell) and shell.startswith('/') and
+                                                     '..' not in shell):
+                    shell = '/bin/bash' if not os.path.basename(shell) in NO_SHELLS else \
+                        next((x for x in ('/usr/sbin/nologin', '/sbin/nologin', '/bin/false')
+                              if os.path.isfile(x)), '/bin/false')
+                gecos = str(u.get('gecos') or '')[:120]
+                if not GECOS_RE.match(gecos):
+                    gecos = re.sub(r'[:\n\x00-\x1f\x7f]', ' ', gecos)[:120]
+                argv = ['useradd', '-m', '-s', shell, '-c', gecos, '-U']
+                if not other:
+                    argv += ['-u', str(uid)]
+                lu_run(argv + ['--', name])
+                h = str(u.get('hash') or '')
+                if PW_HASH_RE.match(h.lstrip('!')):
+                    lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, h.lstrip('!')))
+                    if h.startswith('!'):
+                        lu_run(['usermod', '-L', name])
+                # The aging as it was - the day of the last change, the days, the account's end.
+                args = ['chage']
+                for opt, key in (('-d', 'lastchg'), ('-m', 'min'), ('-M', 'max'), ('-W', 'warn'),
+                                 ('-I', 'inactive'), ('-E', 'expire')):
+                    v = str(u.get(key) or '')
+                    args += [opt, v if re.match(r'^-?\d{1,6}\Z', v) else '-1']
+                lu_run(args + [name])
+                if u.get('sudo'):
+                    try:
+                        lu_sudo(name, True)
+                    except Refused:
+                        pass
+                made += 1
+                said.append('%s made again%s' % (name, '' if not other else ' (UID %d was %s\'s here)' % (uid, other)))
+            elif p.pw_uid != uid:
+                # Somebody else of that name here (1.0.248) - a system account of the new
+                # machine, say: never given the kept user's keys.
+                said.append('%s is here with UID %d (kept: %d) - left as it is' % (name, p.pw_uid, uid))
+                continue
+            lines, other_n = keep_key_lines((k.get('keys') or {}).get(name) or [])
+            skipped += other_n
+            if lines:
+                # The user of this machine of that name and the kept UID (checked above): its own
+                # home folder, written as the user (user_auth_write refuses another's).
+                pw = pwd.getpwnam(name)
+                if not lo <= pw.pw_uid <= hi or pw.pw_uid == 65534 or not pw.pw_dir.startswith('/') or \
+                        pw.pw_dir == '/':
+                    raise Refused('%s is no normal user here' % name)
+                have = user_auth_read(pw)
+                add = [ln for ln in lines if ln not in have]
+                if add:
+                    user_auth_write(pw, [ln for ln in have if ln.strip()] + add)
+                    keys_n += len(add)
+        except (Refused, OSError, subprocess.SubprocessError) as e:
+            failed.append('%s: %s' % (name, str(e)[:160]))
+    try:
+        root, other_n = keep_key_lines(k.get('root_keys') or [])
+        skipped += other_n
+        if root:
+            have = auth_lines()
+            add = [ln for ln in root if ln not in have]
             if add:
-                user_auth_write(p, [ln for ln in have if ln.strip()] + add)
+                auth_write([ln for ln in have if ln.strip()] + add)
                 keys_n += len(add)
-    root = [str(x) for x in k.get('root_keys') or []]
-    if root:
-        have = auth_lines()
-        add = [ln for ln in root if ln not in have]
-        if add:
-            auth_write([ln for ln in have if ln.strip()] + add)
-            keys_n += len(add)
-            said.append('%d key(s) of root put back' % len(add))
+                said.append('%d key(s) of root put back' % len(add))
+    except (Refused, OSError) as e:
+        failed.append('root\'s keys: %s' % str(e)[:160])
     for b, on in (k.get('selinux') or {}).items():
         if b in SEL_BOOLS and on and shutil.which('setsebool'):
-            got = subprocess.run(['getsebool', b], capture_output=True, text=True)
-            if got.returncode == 0 and not got.stdout.strip().endswith('on'):
-                subprocess.run(['setsebool', '-P', b, 'on'], capture_output=True, text=True, timeout=300)
-                said.append('SELinux: %s on' % b)
+            try:
+                got = subprocess.run(['getsebool', b], capture_output=True, text=True, timeout=60)
+                if got.returncode == 0 and not got.stdout.strip().endswith('on'):
+                    subprocess.run(['setsebool', '-P', b, 'on'], capture_output=True, text=True, timeout=300)
+                    said.append('SELinux: %s on' % b)
+            except (OSError, subprocess.SubprocessError) as e:
+                failed.append('SELinux %s: %s' % (b, str(e)[:120]))
+    if skipped:
+        said.append('%d key line(s) with options before the key (or not one key) left out - put '
+                    'those in by hand' % skipped)
+    if failed:
+        said.append('not put back: ' + '; '.join(failed[:10]))
     said.insert(0, '%d user(s) made again, %d SSH key(s) put back' % (made, keys_n))
     return said
+
 
 def users_part():
     d = web_fd()
@@ -4419,7 +4590,12 @@ def sshd_selinux_port(port):
                       '(dnf install policycoreutils-python-utils)')
     got = subprocess.run(['semanage', 'port', '-a', '-t', 'ssh_port_t', '-p', 'tcp', str(port)],
                          capture_output=True, text=True)
-    if got.returncode != 0 and 'already defined' not in (got.stderr or ''):
+    # "already defined" is said for a port of another type too (1.0.248): 8080 is http_cache_port_t
+    # - taken as done, sshd could not listen there after the reload, and SSH was down.
+    if got.returncode != 0 and 'already defined' in (got.stderr or '') and \
+            se_port_has(se_ports(), 'ssh_port_t', 'tcp', port):
+        return 'SELinux lets sshd use port %d' % port
+    if got.returncode != 0:
         got = subprocess.run(['semanage', 'port', '-m', '-t', 'ssh_port_t', '-p', 'tcp',
                               str(port)], capture_output=True, text=True)
         if got.returncode != 0:
@@ -5145,10 +5321,20 @@ def _se_run(cmd, timeout=120, light=False, data=None):
 
 
 def se_applied_at():
+    # In root's own folder (1.0.248): in the service's, a time ahead written there hid every
+    # refusal of SELinux from the check before enforcing.
     try:
-        return float(json.loads(_read_or(os.path.join(WEB_DIR, SE_APPLIED)) or '{}').get('at') or 0)
-    except (TypeError, ValueError, AttributeError):
+        fd = os.open(os.path.join(ROOT_STATE_DIR, SE_APPLIED), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as f:
+            return float((json.load(f) or {}).get('at') or 0)
+    except (OSError, TypeError, ValueError, AttributeError):
         return 0.0
+
+
+def root_state_write(name, text):
+    os.makedirs(ROOT_STATE_DIR, mode=0o700, exist_ok=True)
+    os.chmod(ROOT_STATE_DIR, 0o700)
+    write_root(os.path.join(ROOT_STATE_DIR, name), text, 0o600)
 
 
 def se_auditd():
@@ -5476,7 +5662,7 @@ def se_apply(bools, ports, said, mark=True):
     # Only when something was changed, and never on the way to enforcing: what was refused
     # before that still counts there.
     if mark and changed:
-        write_here(SE_APPLIED, json.dumps({'at': time.time()}))
+        root_state_write(SE_APPLIED, json.dumps({'at': time.time()}))
 
 
 def se_do(r):
@@ -5489,12 +5675,7 @@ def se_do(r):
         # Read only (1.0.236): left in the web folder for the daemon, the otp group's to read.
         node = re.sub(r'[^A-Za-z0-9._-]', '', str(r.get('node') or 'node'))[:60] or 'node'
         data = se_report_bytes(r, node)
-        try:
-            import grp
-            gid = grp.getgrnam('otp').gr_gid
-        except (KeyError, ImportError):
-            gid = None
-        se_report_write(data, os.path.join(WEB_DIR, SE_REPORT_FILE), 0, gid)
+        write_here_bytes(SE_REPORT_FILE, data)     # by the folder's descriptor, never a link (1.0.248)
         return {'report': SE_REPORT_FILE, 'bytes': len(data), 'at': time.time()}
     mode = se_mode()
     if mode == 'absent':
@@ -5855,12 +6036,32 @@ def serve():
         progress('checking what was asked', 1)
         r = checked(raw)
         out.update(id=r['id'], hash=r['hash'], vip_on=r['vip']['on'])
-        said_n, dh = nginx_part(r, last)
-        out['dh'] = dict(out['dh'], **dh)
-        said_v, keep = vip_part(r, last.get('applied') or {})
-        said_f, fw = fw_part(r['fw'])
-        out.update(state='done', said=[s for s in said_n + said_v + said_f if s], applied=keep,
-                   fw=fw, access=access_now())
+        # The firewall on its own (1.0.248): nginx or keepalived refusing a step stopped the
+        # firewall's too - a trial's rules put back never reached iptables.
+        errs, said = [], []
+        try:
+            said_n, dh = nginx_part(r, last)
+            out['dh'] = dict(out['dh'], **dh)
+            said += said_n
+            said_v, keep = vip_part(r, last.get('applied') or {})
+            said += said_v
+            out['applied'] = keep
+        except Refused as e:
+            errs.append(str(e))
+        except Exception as e:                          # noqa: BLE001
+            errs.append('it broke: %s' % e)
+        try:
+            said_f, fw = fw_part(r['fw'])
+            said += said_f
+            out['fw'] = fw
+        except Refused as e:
+            errs.append(str(e))
+        except Exception as e:                          # noqa: BLE001
+            errs.append('it broke: %s' % e)
+        if errs:
+            out.update(state='failed', said=errs + [s for s in said if s])
+        else:
+            out.update(state='done', said=[s for s in said if s], access=access_now())
     except Refused as e:
         out.update(state='failed', said=[str(e)])
     except Exception as e:                              # noqa: BLE001 - said, never lost

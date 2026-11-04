@@ -415,7 +415,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             # count each time for novak's password.
             pre = sep = ''
             if kind in ('code-test', 'radtest'):
-                pre, sep, who = who.rpartition('>')
+                # At the first '>' (1.0.248): an account's name has none, and a1>CORP\\novak,
+                # a2>CORP\\novak... split at the last one were a fresh count each for novak.
+                pre, sep, who = who.partition('>')
             who = who.split('\\', 1)[-1].rsplit('@', 1)[0].strip()
             keys.append((kind + '-name', (pre + sep + who)[:190]))
         t = time.time()
@@ -2530,6 +2532,7 @@ def totp_files_in_zip(b64, label, out, phrase=''):
             if len(infos) > 50000:
                 raise ValueError('more than 50 000 files in it')
             total = 0
+            locked_any = any(i.flag_bits & 1 for i in infos)
             for info in infos:
                 base = info.filename.replace('\\', '/').rsplit('/', 1)[-1]
                 if info.is_dir() or not base.endswith('.totp') or base.startswith('.') or \
@@ -2541,6 +2544,11 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                 total += info.file_size
                 if total > 64 * 1024 * 1024:
                     raise ValueError('it unpacks to more than 64 MB')
+                if locked_any and not info.flag_bits & 1:
+                    # A file not locked in a locked export (1.0.248): put in afterwards by somebody
+                    # who had the file, never by the export - not taken as if it came from it.
+                    out.append({'name': base, 'said': 'not imported: not locked, in a locked file'})
+                    continue
                 if info.flag_bits & 1:
                     # Locked (1.0.167): opened with the passphrase given.
                     if not phrase:
@@ -4115,7 +4123,7 @@ def _db_restore(h):
             raise ApiError(400, str(e))
         h.d.reload_all('a database was put back') if hasattr(h.d, 'reload_all') else None
         BIND_STRICT['tokens'] = False
-        bind_tokens(h.store)
+        bind_tokens(h.store, trusted=True)
         names_nfc_kept(h.store)       # an old copy's names, in one form (1.0.226)
         return got
     finally:
@@ -4185,7 +4193,7 @@ def _db_do(h):
                 except Exception:                       # noqa: BLE001
                     pass
                 BIND_STRICT['tokens'] = False
-                bind_tokens(store)
+                bind_tokens(store, trusted=True)
                 names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
                 return got
             finally:
@@ -4223,7 +4231,7 @@ def _db_do(h):
         if hasattr(h.d, 'reload_all'):
             h.d.reload_all('a database was put back')
         BIND_STRICT['tokens'] = False
-        bind_tokens(h.store)
+        bind_tokens(h.store, trusted=True)
         names_nfc_kept(h.store)       # an old copy's names, in one form (1.0.226)
         return got
     if act == 'erase':
@@ -5401,7 +5409,11 @@ def portal_open(h, full, realm, ad, entry, key, lang, sso=False):
             raise ApiError(403, 'this account may not have a token here - ask the '
                            'administrator')
     tname, _how = Authenticator.token_for(h.store, full, realm)
-    if Authenticator.alias_clash(ad, full, tname, entry):
+    try:
+        clash = Authenticator.alias_clash(ad, full, tname, entry, raise_gone=True)
+    except LdapError:
+        raise ApiError(503, 'the directory cannot be reached just now')
+    if clash:
         # Its token would be another person's (1.0.224): signed in under another suffix of
         # the realm, whose name there is somebody else's userPrincipalName.
         h.store.add_event('enrolment', '%s signed in, and %s is another account\'s name: no token '
@@ -5717,6 +5729,7 @@ def _picture_for_page(got):
         got = dict(got)
         got.pop('secret', None)
         got.pop('secret_spaced', None)
+        got.pop('uri', None)            # otpauth://...?secret= - the key as text (1.0.248)
     if not CONFIG.get('portal_scratch'):
         got = dict(got)
         got['scratch'] = []

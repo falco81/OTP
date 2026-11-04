@@ -224,12 +224,23 @@ def _ha_rename(c, say):
                 # taken is still there for it under the new name.
                 pg_admin("SELECT pg_copy_logical_replication_slot('%s', '%s')"
                          % (old_slot, new_slot), port, db)
-            for quiet in ("SET log_statement = 'none'",):
+            # The password kept out of the other node's log, a failed statement's too (1.0.248).
+            for quiet in ("SET log_statement = 'none'", "SET log_min_error_statement = 'panic'"):
                 try:
                     far.run(quiet)
                 except Exception:                       # noqa: BLE001
                     pass
-            far.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'" % (sub, conninfo.replace("'", "''"))))
+            try:
+                far.run(RawSql("ALTER SUBSCRIPTION %s CONNECTION '%s'" % (sub, conninfo.replace("'", "''"))))
+            except Exception as e:                      # noqa: BLE001
+                raise ValueError('the subscription %s could not be changed: %s'
+                                 % (sub, scrub_secret(str(e).split('\n')[0][:300])))
+            finally:
+                for back in ('RESET log_statement', 'RESET log_min_error_statement'):
+                    try:
+                        far.run(back)
+                    except Exception:                   # noqa: BLE001
+                        pass
             far.run('ALTER SUBSCRIPTION %s SET PUBLICATION %s WITH (refresh = false)'
                     % (sub, HA_PUB))
             far.run("ALTER SUBSCRIPTION %s SET (slot_name = '%s')" % (sub, new_slot))

@@ -891,6 +891,10 @@ window.addEventListener('scroll', hideHelp, true);
 var PEEK_WHY = null;
 function peek(title, ask, draw, jump) {
   var mine = ++PEEK;
+  /* Taken at once (1.0.248): left set when the popup was closed before its answer, the next
+     popup of anything at all began with the database card's colour. */
+  var why = PEEK_WHY;
+  PEEK_WHY = null;
   var buttons = [{words: 'Close', close: true}];
   /* ...but not when it is the page they are already on. Pressing it there
      closed the popup and did nothing whatever, which reads as a button that
@@ -917,8 +921,6 @@ function peek(title, ask, draw, jump) {
     var body = $('modal-body');
     clear(body);
     /* Why the card that opened it has its colour (1.0.245). */
-    var why = PEEK_WHY;
-    PEEK_WHY = null;
     if (why && why.words) body.appendChild(el('p', 'note peek-why ' + ({ok: 'good', warn: 'warn', crit: 'bad', info: 'info'}[why.level] || 'info'), why.words));
     draw(body, d);
     explainWhatWasDrawn(body);

@@ -76,7 +76,10 @@ def _portal_sso(h):
     # Counted per address and per name as the sign-in is - more loosely per address: without
     # "Behind a load balancer" every client is the balancer's address.
     tries = int(CONFIG.get('portal_tries') or 5)
-    key = h.throttle('portal-sso', tries, int(CONFIG.get('portal_wait_min') or 15), name=name,
+    # Per address only until the balancer and its key are known (1.0.248): counted per name from
+    # the start, twenty requests from anywhere naming somebody kept their balancer's sign-in
+    # refused for a quarter of an hour.
+    key = h.throttle('portal-sso-peer', tries, int(CONFIG.get('portal_wait_min') or 15),
                      ip_tries=max(50, tries * 10), what='refused sign-ins by the load balancer')
     if not peer:
         h.failed(key)
@@ -93,6 +96,8 @@ def _portal_sso(h):
         h.failed(key)
         sso_refuse(h, peer, name, 'the key in %s is %s' % (SSO_KEY_HEADER,
                                                            'not the one set' if given else 'not there'))
+    key = h.throttle('portal-sso', tries, int(CONFIG.get('portal_wait_min') or 15), name=name,
+                     ip_tries=max(50, tries * 10), what='refused sign-ins by the load balancer')
     if not name or len(name) > 256 or re.search(r'[\x00-\x1f\x7f]', name):
         h.failed(key)
         sso_refuse(h, peer, name[:60], 'no name in %s' % (CONFIG.get('portal_sso_header') or

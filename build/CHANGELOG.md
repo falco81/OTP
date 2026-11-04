@@ -4,6 +4,145 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.248 — 4 November 2026
+
+**Fixes from a review of the code (security and bugs), three rounds.**
+
+- **Security - the remote backups under the guard of root's actions.** Their destinations, their
+  password and their schedule were rows nobody had to sign: with `db_guard` on, somebody who could
+  write the database could add a destination of their own and have every backup sent there - with
+  secrets.key in it, the key of the guard itself. They are signed now; the rows written by the
+  versions before are signed once, as they are, at the first start of this version (in Events).
+- **Security - the local users' root helper:**
+  - putting back what a backup kept of the machine gives keys only to a normal user of this machine
+    of the same name and UID - never to an account of the system that has a kept user's name;
+    key lines with options before the key are left out (said - put those in by hand);
+  - which features of authselect otp switched on is kept in a folder of root's
+    (`/var/lib/otp-root`), not in the service's own - and only otp's two are ever switched off;
+  - a kept row of the machine that was never sealed is not opened;
+  - a user's own authorized_keys of thousands of lines no longer keeps the helper busy.
+  - a local user made by two asks at once (the same one sent twice) is said as there already, not as
+    a failure of the second.
+- **Security - sign-in through the load balancer:** requests from anywhere naming somebody counted
+  against that person before the balancer and its key were checked - twenty of them kept their
+  sign-in refused for a quarter of an hour. Counted per address until the balancer is known.
+- **A backup put back from the pages** (or from the command line while the service runs) puts back
+  the machine's own within a minute - within the hour the machine as it was had been kept over it,
+  and nothing was put back. Only on a machine installed anew (no tokens of its own): on a machine in
+  use, its users and keys are left as they are - a key taken away since the backup came back
+  otherwise.
+- **The putback**: one user that cannot be made (a group of that name there, say) no longer stops the
+  others, root's keys and SELinux's booleans; a putback that fails is tried again in 10 and 20 minutes
+  (it was at every tick), then given up and said in Events; its row is taken away with its signature.
+- **Joining a cluster of one shared database** takes the guard of root's actions as the cluster has
+  it, and puts back what the cluster kept of the machine - only the replicated join did.
+- **`otp --ha-resync` and `otp --ha-join` (replicated)** start the guard's counts again, as the pages'
+  rebuild does - rows of the other node were refused as older ones put back.
+- **Local users:**
+  - "make it on B too" gives the user the UID it has on A (it took the lowest free one of B - another
+    user's UID on A); two users added within seconds no longer get the same UID;
+  - an add sent to a node where the user is already there changes nothing of theirs - it took away
+    sudo and set a new password there;
+  - "must change at the next sign-in" only for a user with a password - a user of a key only was
+    asked at every sign-in for a password never given;
+  - unlock takes away every `!` (`passwd -l` on RHEL writes two);
+  - saving the full name again keeps its other fields (room, telephone); a shell the user has, not
+    of /etc/shells (`/bin/false`), no longer refuses a change of the name;
+  - `otp --local-policy-set dictcheck=0` (and `usercheck=0`, `existing=0`) switches it off - `0`
+    was taken as yes;
+  - `otp --local-users`, `--local-user` and the console wait for each node's list asked, not for the
+    old one;
+  - one worker of the local users at a time, however long it takes.
+- **Settings in a cluster:** a node not heard from for a day is no longer shown red on every card;
+  a cluster of one shared database shows its pill; "Ask again" asks at most once in a few seconds.
+- **SELinux:** "Look again" or a report no longer put aside a step asked and not done yet (making
+  ready, enforcing) - it never happened, and nothing said so.
+- **The firewall managed by otp, behind a load balancer**: the balancers' networks are let in to the
+  pages too - nginx checks the client's address they forward, the firewall sees theirs.
+- **The pages:** the SNMP card and the pill of Settings shared one variable - the SNMP card was drawn
+  from the wrong data after a while; the colour of the database card no longer opens the next popup
+  of something else when its own was closed before its answer.
+- **Security - a second token by a name spelled twice:** `A\B\novak` came through as `B\novak@realm`,
+  the form refused since 1.0.101 - the directory found novak, the token was another one, enrolled by
+  whoever had the password before novak did. Refused.
+- **Security - certificates from acme:** a paired acme's key read from the database without the
+  guard's signature - with `db_guard` on, a key put in by somebody who can write the database could
+  push the pages' certificate. Signed keys only.
+- **Security - the root helper:**
+  - the SELinux report written by the folder's descriptor, never by its path (a link put in place of
+    the service's folder had root write it anywhere); when otp's needs were last put in, kept in
+    root's folder - a time ahead written there hid every refusal from the check before enforcing;
+  - the balancers' networks for nginx refused with a scope id (`fe80::%x;...`) - lines of nginx's
+    configuration could be put in that way;
+  - the TLS of the database never lets PostgreSQL's superuser (or its own databases) in from the
+    network;
+  - a port for SSH that SELinux has for something else (8080) is made sshd's, or refused - taken as
+    done, sshd could not listen there and SSH was down;
+  - the firewall is put in even when nginx or keepalived refuses a step - a trial's rules put back
+    never reached iptables;
+  - a network profile of /run going back after a trial: its settings put back one by one too (the
+    reboot kept the change's copy in /etc);
+  - chrony.conf put back as it was when chronyd will not start on the new one.
+- **Security - the pages:** a test of a sign-in (RADIUS test, directory try) counted per person again
+  whatever comes before the name (`a1>CORP\novak`, `a2>...` were a fresh count each); with
+  `portal_show_secret` off, the key no longer goes to the enrolment page in the `otpauth://` address
+  either; the PHP side no longer takes a session or a header with a line end after it.
+- **Security - SIEM:** no control character anywhere in a line sent (a name with a line break forged
+  an event in the RFC 5424 and CEF formats).
+- **RADIUS:** the check that a name of an alias suffix is not another person's refuses when the
+  directory cannot say (it let in); an unsigned request with a tab in the password is answered (it
+  was left unanswered).
+- **High availability:**
+  - a node renamed keeps its place as the preferred node of a split - left on the old name, neither
+    node was preferred, and with the other one away nobody answered RADIUS; a preferred name no node
+    has falls back to the first node;
+  - a dead node whose clock ran ahead no longer reads as alive (and the lead) for as long as it was
+    ahead;
+  - a VIP moved by hand is wanted for a minute from when each node saw it, not by the asking node's
+    clock;
+  - the ACME account and the keys for certificates from acme are made by one node of a replicated
+    pair - both making them at once stopped the replication;
+  - the rename of 1.0.x (opt -> otp) keeps the replication's password out of the other node's log
+    when the change fails.
+- **Security - the command line as root:**
+  - a file given from outside the service's reach (`--restore`, `--restore-bundle`, `--import-config`,
+    `--ca`, `--downgrade`...) is copied into a folder opened once and used by its descriptor - by
+    its name, the otp account could put a link in its place, and root gave it any folder of the
+    machine; links in a folder copied are left out;
+  - the daemon is sent its signal (`--ha-setup`, `--ha-bundle`, a change of the address) only when
+    otp.lock names the daemon's own process - the number in the file was taken as it was (-1: every
+    process of the machine);
+  - `--tls-export` and `--isemon-tls-bundle` write their file as root, not through a link, with the
+    file's mode set - as the otp account `/root/x.pfx` was refused, and a file there kept its mode;
+  - `--radtest USER PASSWORD` says that a password on the command line stays in the shell's history.
+- **The console as root** stays root: the local users and their password policy are done by a child
+  of its own - the console became the otp account for good (restarts, upgrades and `!` then ran as
+  otp), and who did it was no longer said.
+- **Security - with the guard of root's actions on:**
+  - the DNS settings of ACME are signed too (a sealed secret of the database put in place of the
+    DNS key went to a server named by whoever wrote it);
+  - a token's key written into its row unsealed is no longer sealed at the next start and taken
+    (once only, at the first start with the guard on, for what was there before); a recovery code in
+    the shape of before 1.0.14, and a plain list of codes, only where the token's sealed copy has it;
+  - rows of a version before are taken as otp's only by a node that ran that version with the guard
+    - a node installed anew or joining signs nothing it finds.
+- **Security - imports:** a file not locked in a locked .totp ZIP is not imported (put in by somebody
+  who had the file); a password's hash with rounds out of a sane span is no password (an import of
+  two thousand million rounds made every try burn minutes).
+- **Remote backups:** the archive itself is checked to be locked before it is sent, and the manifest
+  says the password it was locked with (read twice, set between the two, an archive not locked was
+  named .enc and sent).
+- **The pages' PHP:** `mail`, `putenv`, `error_log`, `dl` and friends are not allowed in otp's pool.
+- **Putting back the machine's own after a restore:** a user that signs in to nothing (`nologin`,
+  `false`) is made again so; what could not be put back is kept as the backup had it for a week (it
+  was read again at once, the machine as it is now in its place); the service takes a restore of its
+  own name at once, a join or a restore under another name at its start.
+- **Smaller:** a full name changed keeps its other fields; unlock of older hashes ($1$, $2a$);
+  "make it on B" keeps the UID the user has on B; a node not preferred waits at most half an hour
+  for the first node to make the ACME account (ten minutes for acme's keys); a report of SELinux
+  asked of every node skips one with a step under way; the directory away for the alias check is
+  said as away (the other node asked, as for any sign-in), not as another account's name.
+
 ## 1.0.247 — 4 November 2026
 
 **A backup put back on machines installed anew brings everything back - on both nodes of a

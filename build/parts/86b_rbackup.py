@@ -1004,7 +1004,9 @@ def rb_restore_md(m):
         'the firewall, the SSH server and otp\'s gate for SSH, the time servers, the console at login,',
         'the password policy) and puts back what the backup kept of its machine: the local users',
         '(passwords, aging, sudo), the SSH keys of root and of them, SELinux\'s booleans - only what',
-        'is missing is added. The guard of root\'s actions is on again where it was.',
+        'is missing is added, and only on a machine installed anew (one with no tokens of its own;',
+        'on a machine in use its users and keys stay as they are). The guard of root\'s actions is',
+        'on again where it was.',
         '',
     ]
     if ha:
@@ -1049,9 +1051,12 @@ def rb_restore_md(m):
     return '\n'.join(lines)
 
 
-def rb_manifest(store, base, tokens='?'):
-    """What a backup made now is: the head of its manifest and of RESTORE.md."""
-    pw = rb_password()
+def rb_manifest(store, base, tokens='?', pw=None):
+    """What a backup made now is: the head of its manifest and of RESTORE.md - with the password
+    the archive is locked with (1.0.248: read again here, set between the two reads it named an
+    archive not locked .enc, and it was sent)."""
+    if pw is None:
+        pw = rb_password()
     m = {'otp': __version__, 'made': time.time(),
          'made_words': datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z').strip(),
          'site': CONFIG.get('site_name') or 'otp', 'node': node_name(),
@@ -1115,7 +1120,7 @@ def rb_build(store, work, progress=None):
     except Exception:                                   # noqa: BLE001
         tokens = '?'
     pw = rb_password()
-    m = rb_manifest(store, base, tokens)
+    m = rb_manifest(store, base, tokens, pw)
     for root, _dirs, files in os.walk(inner):
         for n in sorted(files):
             p = os.path.join(root, n)
@@ -1244,6 +1249,10 @@ def rb_run(store, by, only=None, progress=None):
             # during a long dump, the copy came out unlocked - it is not sent.
             raise RbError('the backup came out unlocked (its password was taken away meanwhile) '
                           '- not sent anywhere')
+        with open(path, 'rb') as f:
+            if f.read(8) != b'Salted__':
+                # The file itself looked at too (1.0.248), not only what the manifest says.
+                raise RbError('the backup is not locked as it should be - not sent anywhere')
         run.update(file=m['file'], bytes=m['bytes'], encrypted=m['encrypted'],
                    tokens=m['tokens'])
         sha = os.path.join(work, m['file'] + '.sha256')
@@ -1554,6 +1563,13 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
     os.chmod(work, 0o700)
     try:
         top, m = rb_open(path, password, work)
+        # A machine installed anew holds no token yet (1.0.248): only there is what the backup
+        # kept of the machine put back. A backup put back on a machine in use left its users and
+        # keys as they are - a key taken away since the backup came back otherwise.
+        try:
+            fresh = not int(store.db.value('SELECT COUNT(*) FROM tokens') or 0)
+        except Exception:                               # noqa: BLE001
+            fresh = False
         got = db_file_restore(store, os.path.join(top, 'otp-copy.json.gz'), by,
                               key_file=os.path.join(top, 'secrets.key'),
                               from_name=os.path.basename(str(path)), need_admin=need_admin)
@@ -1571,9 +1587,6 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
             pass
         # A machine new to this node: what it put in is put in again, and what the backup kept
         # of the machine (local users, SSH keys, SELinux's booleans) put back, at the next start.
-        keep_mark_putback()
-        said.append('the local users, SSH keys and SELinux\'s booleans the backup kept are put '
-                    'back at the start')
         old_name = node_name()
         if m.get('node') and not keep_node_name and m['node'] != old_name and \
                 not CONFIG.get('ha_mode'):
@@ -1584,6 +1597,15 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
             except Exception:                           # noqa: BLE001
                 pass
             said.append('this machine is node %s again (it was %s)' % (m['node'], old_name))
+        if fresh:
+            # Under the name it has from here on (1.0.248): the service running under the one before
+            # leaves it for its start.
+            keep_mark_putback('restore', str(CONFIG.get('node_name') or '') or node_name())
+            said.append('the local users, SSH keys and SELinux\'s booleans the backup kept are put '
+                        'back (within a minute, or when the service starts again)')
+        else:
+            said.append('the local users and SSH keys of this machine are left as they are (it held '
+                        'tokens of its own: not a machine installed anew)')
         store.add_event('backups', '%s put back the backup %s (made %s on %s, otp %s)' % (
             by, os.path.basename(str(path)), m.get('made_words'), m.get('node'), m.get('otp')),
             'warn', who=by)

@@ -54,9 +54,26 @@ def split_mode():
     return m if m in SPLIT_MODES else 'off'
 
 
+def split_prefer_known(store=None):
+    """The node chosen as preferred, if it is one of the cluster (1.0.248): a name no node has (a
+    node renamed) is none - the first node's rule then, not neither node preferred."""
+    want = str(CONFIG.get('split_prefer') or '').strip()
+    if not want:
+        return ''
+    store = store or HA_STORE.get('store')
+    if store is None or want == node_name():
+        return want
+    try:
+        names = [n['name'] for n in ha_nodes(store)]
+    except Exception:                                   # noqa: BLE001
+        return want
+    # No nodes read (the database away for a moment) is no rename: the one chosen.
+    return want if not names or want in names else ''
+
+
 def split_preferred_name(store=None):
     """The preferred node's name: the one chosen, else the first node (ha_slot 1)."""
-    want = str(CONFIG.get('split_prefer') or '').strip()
+    want = split_prefer_known(store)
     if want:
         return want
     if int(CONFIG.get('ha_slot') or 1) == 1:
@@ -69,7 +86,7 @@ def split_preferred_name(store=None):
 
 
 def split_me_preferred():
-    want = str(CONFIG.get('split_prefer') or '').strip()
+    want = split_prefer_known()
     if want:
         return want == node_name()
     return int(CONFIG.get('ha_slot') or 1) == 1

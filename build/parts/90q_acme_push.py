@@ -418,6 +418,9 @@ def push_pin(store, url, pin=None):
     return pin
 
 
+PUSH_WAIT = {}
+
+
 def push_box(store):
     """This server's own keys (the receiver's): app_id and the X25519 pair."""
     with PUSH_LOCK:
@@ -427,6 +430,12 @@ def push_box(store):
             plain = unseal_secret(got['priv'], 'acme_push:box')
             if plain:
                 priv = base64.b64decode(plain)
+        if not priv and not got.get('priv') and CONFIG.get('ha_mode') == 'replicated' and \
+                not ha_lead(store) and time.time() - PUSH_WAIT.setdefault('since', time.time()) < 600:
+            # Made by one node of a replicated pair only (1.0.248): both making it at once put the
+            # same key in each database, and replication stopped on the other's for good.
+            raise PushError(503, 'not_ready', 'the other node of this cluster makes this server\'s '
+                                              'keys - ask again in a minute')
         if not priv:
             priv = secrets.token_bytes(32)
             got = {'app_id': secrets.token_hex(16), 'at': time.time(),
@@ -451,7 +460,9 @@ def push_conf(store):
     for k in (got.get('keys') or []):
         if isinstance(k, dict) and k.get('public') and k.get('id'):
             keys[k['id']] = k
-    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'acme_push:key:%'"):
+    # Signed ones only, with the guard on (1.0.248): read with plain SQL, a key put in by somebody
+    # who can write the database was taken - and what it pushed became nginx's certificate.
+    for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'acme_push:key:%'")):
         try:
             k = json.loads(r['v'] or '{}')
         except ValueError:
@@ -951,7 +962,10 @@ del _op
 
 def push_view(store):
     conf = push_conf(store)
-    box = push_box(store) if conf['on'] else None
+    try:
+        box = push_box(store) if conf['on'] else None
+    except PushError:
+        box = None                  # made by the other node first (1.0.248)
     p = conf['pairing'] or {}
     # This server's own key as a sender - only where it is an acme (the
     # certificate manager), which pushes to others.

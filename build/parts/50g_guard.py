@@ -25,13 +25,14 @@ DBGUARD_META_EXACT = frozenset((
     'web:vip', 'web:access', 'fw:conf', 'fw:trial', 'fw_trial_back', 'ntp:conf', 'power:plan',
     'readdress:ask', 'hatls:ca', 'hatls:want', 'host:osup:plan', 'host:sshd:conf',
     'host:sshd:keep', 'host:sshd:back', 'sshotp:gate', 'host:logs:again', 'upgrade:plan',
-    'upgrade:pkg', 'acme_push:conf', 'acme_push:pairing', 'hisec:waive', 'host:pwpolicy:conf'))
+    'upgrade:pkg', 'acme_push:conf', 'acme_push:pairing', 'hisec:waive', 'host:pwpolicy:conf',
+    'rbackup:targets'))
 DBGUARD_META_PREFIXES = (
     'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
     'host:sshkeys:want:', 'host:rootkey:', 'host:osup:checkwant:', 'sshotp:u:', 'sshotp:port:',
     'console:want:', 'acme_push:key:', 'adm2fa:', 'host:selinux:want:',
-    'host:users:want:', 'host:keep:', 'host:putback:')
+    'host:users:want:', 'host:keep:', 'host:putback:', 'rbackup:now:')
 # Settings whose word reaches root, or who may sign in to these pages.
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
@@ -48,10 +49,29 @@ DBGUARD_SETTINGS = frozenset((
     'admin_2fa_sms', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
-    'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify'))
+    'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify',
+    # The remote backups (1.0.248): a destination and its password written by somebody else had
+    # every backup - with secrets.key, the key of this very guard - sent to them.
+    'rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep', 'rbackup_keep_days',
+    'rbackup_verify', 'rbackup_password',
+    # The DNS of ACME (1.0.248): its key went to the server named - any sealed secret of the
+    # database put in its place (the directory's password, say) went to a server of theirs.
+    'acme_dns', 'acme_dns_url', 'acme_dns_key', 'acme_dns_user', 'acme_dns_server',
+    'acme_dns_token', 'acme_dns_tsig_alg', 'acme_dns_tsig_name', 'acme_dns_tsig_secret',
+    'acme_desec_token', 'acme_desec_domain'))
+# Rows signed only since a version (1.0.248): written unsigned by the versions before it, they
+# are signed once as they are at the first start of that version with the guard on - until then
+# they were acted on whoever wrote them, and refused at once they had stopped what they drive.
+DBGUARD_SINCE = {
+    '1.0.248': {'meta': ('rbackup:targets',), 'meta_prefixes': ('rbackup:now:',),
+                'settings': ('rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
+                             'rbackup_keep_days', 'rbackup_verify', 'rbackup_password',
+                             'acme_dns', 'acme_dns_url', 'acme_dns_key', 'acme_dns_user', 'acme_dns_server',
+                             'acme_dns_token', 'acme_dns_tsig_alg', 'acme_dns_tsig_name', 'acme_dns_tsig_secret',
+                             'acme_desec_token', 'acme_desec_domain')}}
 DBGUARD_FILE = STATE_DIR / 'guard.json'
 DBGUARD = {'seen': None, 'good': None, 'seen_h': None, 'dirty': 0.0, 'refused': {}, 'nodes': {},
-           'lock': threading.Lock()}
+           'adopted': [], 'lock': threading.Lock()}
 
 
 def dbguard_on():
@@ -124,6 +144,7 @@ def _dbguard_mac(key, kind, ident, n, value):
 def _dbguard_load():
     with DBGUARD['lock']:
         if DBGUARD['seen'] is None:
+            DBGUARD['had_file'] = DBGUARD_FILE.exists()
             try:
                 got = json.loads(DBGUARD_FILE.read_text())
             except (OSError, ValueError):
@@ -131,6 +152,7 @@ def _dbguard_load():
             DBGUARD['seen'] = dict(got.get('seen') or {}) if isinstance(got, dict) else {}
             DBGUARD['good'] = dict(got.get('good') or {}) if isinstance(got, dict) else {}
             DBGUARD['seen_h'] = dict(got.get('seen_h') or {}) if isinstance(got, dict) else {}
+            DBGUARD['adopted'] = list(got.get('adopted') or []) if isinstance(got, dict) else []
 
 
 def dbguard_flush(force=False):
@@ -140,8 +162,13 @@ def dbguard_flush(force=False):
     if not force and time.time() - DBGUARD['dirty'] < 3:
         return
     with DBGUARD['lock']:
+        if not DBGUARD.get('had_file'):
+            # The file made now, by this version (1.0.248): nothing of a version before here is
+            # this node's own to take as otp's at a later start (dbguard_adopt, bind_tokens).
+            DBGUARD['adopted'] = sorted(set(DBGUARD.get('adopted') or []) | set(DBGUARD_SINCE) |
+                                        {'tokens'})
         data = json.dumps({'seen': DBGUARD['seen'], 'good': DBGUARD['good'],
-                           'seen_h': DBGUARD['seen_h'] or {}})
+                           'seen_h': DBGUARD['seen_h'] or {}, 'adopted': DBGUARD.get('adopted') or []})
         DBGUARD['dirty'] = 0.0
     try:
         write_replacing(DBGUARD_FILE, data, 0o600)
@@ -420,6 +447,52 @@ def dbguard_resign(store, why=''):
         except Exception:                               # noqa: BLE001
             pass
     return n
+
+
+def dbguard_adopt(store):
+    """At the start: the rows signed only since this version (DBGUARD_SINCE), found without a
+    signature that is right, signed once as they are - each version's once, noted in guard.json
+    (the other node, still of a version before, wrote them unsigned meanwhile)."""
+    if not dbguard_on() or not dbguard_key():
+        return []
+    _dbguard_load()
+    done = set(DBGUARD.get('adopted') or [])
+    if not DBGUARD.get('had_file'):
+        # A node with no counts of its own yet - installed anew, joining (1.0.248): it ran no
+        # version before with the guard, so there is nothing of its own to take as otp's - only
+        # rows of the database, which somebody may have put in. Rows of a version before are
+        # signed by the node that ran it, at its own first start.
+        with DBGUARD['lock']:
+            DBGUARD['adopted'] = sorted(done | set(DBGUARD_SINCE) | {'tokens'})
+            DBGUARD['dirty'] = time.time()
+        dbguard_flush(force=True)
+        return []
+    db = store.db
+    said = []
+    for ver, what in sorted(DBGUARD_SINCE.items()):
+        if ver in done:
+            continue
+        for r in db.rows('SELECT k, v FROM meta'):
+            k = str(r['k'])
+            if (k in what.get('meta', ()) or k.startswith(tuple(what.get('meta_prefixes', ())))) and \
+                    not dbguard_ok(db, 'm', k, r['v'], quiet=True) and dbguard_sign(db, 'm', k, r['v']):
+                said.append(k)
+        for r in db.rows('SELECT k, v FROM settings'):
+            k = str(r['k'])
+            if k.split('@', 1)[0] in what.get('settings', ()) and not dbguard_ok(db, 's', k, r['v'], quiet=True) and \
+                    dbguard_sign(db, 's', k, r['v']):
+                said.append(k)
+        with DBGUARD['lock']:
+            DBGUARD['adopted'] = sorted(set(DBGUARD.get('adopted') or []) | {ver})
+            DBGUARD['dirty'] = time.time()
+    dbguard_flush(force=True)
+    if said:
+        try:
+            store.add_event('security', 'rows signed only since this version, found unsigned, '
+                            'taken as otp\'s word once: %s' % ', '.join(sorted(said))[:900], 'warn')
+        except Exception:                               # noqa: BLE001
+            pass
+    return said
 
 
 def dbguard_tidy(store):

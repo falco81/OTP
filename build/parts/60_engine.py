@@ -969,7 +969,9 @@ def open_codes(value, bind=None):
     if not value:
         return None
     text = unseal_secret(value, bind)
-    if text is None and str(value).lstrip().startswith('['):
+    if text is None and str(value).lstrip().startswith('[') and not dbguard_on():
+        # A plain list of an older version - not with the guard on (1.0.248): written into a
+        # row by somebody without the key, its codes were made the token's recovery codes.
         text = value
     try:
         got = json.loads(text) if text else None
@@ -1542,6 +1544,14 @@ class Tokens(object):
                 kept = []
             key = sealing_key()
             hit, h = scratch_find(name, code, kept, key)
+            if hit and hit != h and dbguard_on():
+                # A code in the shape of before 1.0.14 (a hash without the key) - with the guard
+                # on only if the token's sealed copy has it too (1.0.248): anybody who can write
+                # the database could make such a hash of a code of theirs.
+                shown_ = codes_open(tok) or []
+                if not key or not any(not one.get('used') and hmac.compare_digest(
+                        scratch_hash(name, one.get('c') or '', key), h) for one in shown_):
+                    hit = None
             if hit:
                 was = tok.get('scratch') or '[]'
                 if not dry and split_scratch_refused(self.store, 'scratch', name, h):

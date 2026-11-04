@@ -62,7 +62,10 @@ def pwp_checked_api(b):
                 raise ValueError('%s is %d to %d' % (k, lo, hi))
             c[k] = v
         else:
-            c[k] = bool(b[k]) if k in ('managed', 'existing') else (1 if b[k] else 0)
+            # '0' from the command line is no yes (1.0.248): it switched the check on.
+            v = b[k]
+            on = v.strip().lower() in ('1', 'yes', 'on', 'true') if isinstance(v, str) else bool(v)
+            c[k] = on if k in ('managed', 'existing') else (1 if on else 0)
     if c['min_days'] and c['max_days'] < 99999 and c['min_days'] > c['max_days']:
         raise ValueError('the least days between two changes is more than the days a password is good')
     return c
@@ -185,21 +188,50 @@ def osu_hash(password, store=None, name=''):
 
 
 def osu_free_uid(store, nodes, name):
-    """One UID for the new user on every node: the one it has where it is there already, or the
-    lowest of the normal range none of the nodes uses."""
-    lo, hi, used = 1000, 60000, set()
+    """One UID for the new user on every node: the one it has where it is there already - on any
+    node of the cluster, not only those asked (1.0.248: "make it on B too" gave it another) - or
+    the lowest of the normal range no node uses, nor an add asked and not yet done."""
+    lo, hi = 1000, 60000
+    used = {}                                   # node -> the UIDs it uses
+    have = None
     for n in nodes:
+        # Where it is there already, on a node asked: its UID there (an add there is no change).
+        for u in osu_now(store, n).get('users') or []:
+            if u.get('name') == name and str(u.get('uid', '')).isdigit() and have is None:
+                have = int(u['uid'])
+    for n in host_nodes(store):
         now = osu_now(store, n)
-        if not now.get('at'):
+        if n in nodes and not now.get('at'):
             raise ValueError('%s has not said who its users are yet - wait a few seconds' % n)
+        if not now.get('at'):
+            continue
         lo = max(lo, int(now.get('uid_min') or 1000))
         hi = min(hi, int(now.get('uid_max') or 60000))
-        used.update(int(u) for u in now.get('used') or [] if str(u).isdigit())
+        u_here = set(int(u) for u in now.get('used') or [] if str(u).isdigit())
         for u in now.get('users') or []:
-            if u.get('name') == name:
-                return int(u['uid'])
+            if str(u.get('uid', '')).isdigit():
+                u_here.add(int(u['uid']))
+            if u.get('name') == name and have is None and str(u.get('uid', '')).isdigit():
+                have = int(u['uid'])
+        done = set(now.get('done') or [])
+        for a in osu_asks(store, n):
+            if a.get('do') == 'add' and a['id'] not in done and str(a.get('uid', '')).isdigit() and \
+                    time.time() - float(a.get('at') or 0) < 3600:
+                if a.get('name') == name and have is None:
+                    have = int(a['uid'])
+                elif a.get('name') != name:
+                    u_here.add(int(a['uid']))
+        used[n] = u_here
+    if have is not None:
+        for n in nodes:
+            now = osu_now(store, n)
+            if have in used.get(n, set()) and not any(u.get('name') == name for u in now.get('users') or []):
+                raise ValueError('%s has UID %d elsewhere in the cluster, and on %s that UID is '
+                                 'another\'s' % (name, have, n))
+        return have
+    every = set().union(*used.values()) if used else set()
     for uid in range(lo, hi + 1):
-        if uid not in used:
+        if uid not in every:
             return uid
     raise ValueError('no UID of the normal range is free on %s' % ', '.join(nodes))
 
@@ -243,7 +275,9 @@ def osu_ask(store, nodes, do, by, **f):
     if do == 'add':
         ask['uid'] = osu_free_uid(store, nodes, name)
         ask['sudo'] = bool(f.get('sudo'))
-        ask['must_change'] = bool(f.get('must_change'))
+        # A new password at the next sign-in only for one who has a password (1.0.248): a user of
+        # a key only was asked at every sign-in for one never given - and let in by nothing.
+        ask['must_change'] = bool(f.get('must_change')) and bool(f.get('password'))
         if f.get('password'):
             ask['hash'] = seal_secret(osu_hash(f['password'], store, name), 'osuser:' + name)
     elif do == 'password':
@@ -352,7 +386,10 @@ def osu_tick(daemon):
         osu_forget_hashes(store)
     except Exception as e:                              # noqa: BLE001
         log_sparing('osu-forget', 'the local users: %s' % e, 'warn', every=600)
-    if OSU_WORK['busy'] and time.time() - OSU_WORK['since'] < 900:
+    # One worker at a time, however long it takes (1.0.248): after 900 s a second one started on
+    # the same asks, and the two wrote over each other's row.
+    t = OSU_WORK.get('thread')
+    if t is not None and t.is_alive():
         return
     now = osu_now(store, me)
     done = list(now.get('done') or [])
@@ -422,7 +459,8 @@ def osu_tick(daemon):
             log_sparing('osu', 'the local users: %s' % e)
         finally:
             OSU_WORK['busy'] = False
-    threading.Thread(target=go, name='otp-osusers', daemon=True).start()
+    OSU_WORK['thread'] = threading.Thread(target=go, name='otp-osusers', daemon=True)
+    OSU_WORK['thread'].start()
 
 
 @route('GET', '/api/osusers')
@@ -477,6 +515,10 @@ def settings_in_effect(store, ask=False, daemon=None):
     serial = store.get_meta('conf_serial', '0')
     out = []
     for b in ha_nodes(store):
+        # A node not heard from for a day is no node of this cluster (1.0.248), as under High
+        # security: one taken out and not forgotten showed red on every card for ever.
+        if not b.get('me') and float(b.get('age') or 0) >= 86400:
+            continue
         known = 'conf_seen' in b
         if b.get('me') and daemon is not None:
             # This node as it is, not as its last heartbeat said.
@@ -486,7 +528,7 @@ def settings_in_effect(store, ask=False, daemon=None):
                     'age': round(float(b.get('age') or 0), 1), 'version': b.get('version') or '',
                     'known': known, 'seen': known and b.get('conf_seen') == serial,
                     'seen_at': b.get('conf_seen_at')})
-    return {'serial': serial, 'cluster': bool(CONFIG.get('ha_mode')) and len(out) > 1,
+    return {'serial': serial, 'cluster': in_cluster(store) and len(out) > 1,
             'nodes': out, 'at': time.time()}
 
 
@@ -499,9 +541,17 @@ def _settings_nodes(h):
 @route('POST', '/api/settings/nodes')
 def _settings_nodes_again(h):
     h.me()
-    if CONFIG.get('ha_mode'):
+    # Once in a few seconds (1.0.248): every press wrote a heartbeat here and asked one of the
+    # other node - a read-only account could keep both writing.
+    if time.time() - SN_ASKED['at'] < 4:
+        return settings_in_effect(h.store, daemon=h.d)
+    SN_ASKED['at'] = time.time()
+    if in_cluster(h.store):
         heartbeat(h.store, h.d)                 # this node's, now
     return settings_in_effect(h.store, ask=True, daemon=h.d)
+
+
+SN_ASKED = {'at': 0.0}
 
 
 # ---- what of the machine is kept for a backup (1.0.247) ------------------------------------
@@ -512,17 +562,21 @@ def _settings_nodes_again(h):
 # so every backup carries them. After a backup is put back, or a node joins under a name the
 # cluster kept them for, its root helper puts back what is missing - never taking anything away.
 KEEP_EVERY = 3600
-KEEP_WORK = {'at': 0.0, 'busy': False}
+KEEP_WORK = {'at': 0.0, 'busy': False, 'putback_at': 0.0, 'putback_tries': 0}
+PUTBACK_TRIES = 3
 PUTBACK_FILE = STATE_DIR / 'host-putback'
 APPLIED_PREFIXES = ('host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
                     'console:now:', 'host:selinux:now:', 'host:sshkeys:now:')
 
 
-def keep_mark_putback():
+def keep_mark_putback(why='restore', node=None):
     """Asked by a restore or a join: at the next start, this node forgets what it had put in (it
-    is a new machine) and puts back what the cluster kept of it."""
+    is a new machine) and puts back what the cluster kept of it. What and for which node said in
+    the mark (1.0.248): the running service takes only a restore of its own name and database at
+    once - a join, or a restore under another name, is for the start."""
     try:
-        write_replacing(PUTBACK_FILE, '%.0f\n' % time.time(), 0o600)
+        write_replacing(PUTBACK_FILE, json.dumps({'at': time.time(), 'why': why,
+                                                  'node': node or node_name()}) + '\n', 0o600)
     except OSError as e:
         log('the mark to put the machine\'s own back could not be written: %s' % e, 'warn')
 
@@ -532,8 +586,18 @@ def keep_at_start(store):
     if not PUTBACK_FILE.exists():
         return
     me = node_name()
+    # What the local users' asks of the last hour had done kept (1.0.248): their row gone, every
+    # ask younger than an hour that came with the copy was done again - before the putback.
+    done = []
+    try:
+        done = list((json.loads(store.get_meta('host:users:now:' + me) or '{}') or {}).get('done') or [])
+    except (ValueError, TypeError, AttributeError):
+        done = []
     for p in APPLIED_PREFIXES:
         store.db.run('DELETE FROM meta WHERE k = ?', (p + me,))
+    if done:
+        store.set_meta('host:users:now:' + me, json.dumps({'done': done[-300:]}))
+    KEEP_WORK.update(putback_at=0.0, putback_tries=0)
     if store.get_meta('host:keep:' + me):
         store.set_meta('host:putback:' + me, json.dumps({'at': time.time(), 'by': 'restore'}))
     try:
@@ -542,6 +606,15 @@ def keep_at_start(store):
         pass
     log('a machine new to this node\'s name: what was put in is put in again, and what the '
         'cluster kept of it is put back')
+
+
+def keep_mark_now():
+    """Whether the running service takes the mark now: a restore of this very node's name."""
+    try:
+        m = json.loads(PUTBACK_FILE.read_text() or '{}')
+    except (OSError, ValueError):
+        return False            # a mark of before 1.0.248, or none: at the start
+    return isinstance(m, dict) and m.get('why') == 'restore' and m.get('node') == node_name()
 
 
 def keep_view(store, node):
@@ -554,7 +627,10 @@ def keep_view(store, node):
 
 def keep_open(raw, node):
     try:
-        text = unseal_secret(str(raw.get('sealed') or ''), 'hostkeep:' + node)
+        sealed = str(raw.get('sealed') or '')
+        if not sealed.startswith(SEALED2):
+            return None         # never sealed: written by somebody without the key (1.0.248)
+        text = unseal_secret(sealed, 'hostkeep:' + node)
         return json.loads(text) if text else None
     except (TypeError, ValueError):
         return None
@@ -565,8 +641,23 @@ def keep_tick(daemon):
     me = node_name()
     if KEEP_WORK['busy']:
         return
+    if PUTBACK_FILE.exists() and keep_mark_now():
+        # A backup put back from the pages, or from the command line while the service ran
+        # (1.0.248): marked for the next start only, the machine as it is now was kept over
+        # what the backup had kept of it within the hour - and nothing was put back.
+        try:
+            keep_at_start(store)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('keep-start', 'the machine\'s own after a restore: %s' % e, 'warn', every=600)
+            return
     pending = store.get_meta('host:putback:' + me)
-    if not pending and time.time() - KEEP_WORK['at'] < KEEP_EVERY:
+    if pending and time.time() < KEEP_WORK['putback_at']:
+        return          # tried and failed: again later - and until then the kept row stays as it is
+    if not pending and (time.time() - KEEP_WORK['at'] < KEEP_EVERY or
+                        time.time() < KEEP_WORK.get('hold_until', 0)):
+        # What could not be put back is kept as the backup had it for a week (1.0.248): read
+        # again at once, the machine as it is now took its place - and nothing was left to put
+        # back by hand, nor in the next backup.
         return
     KEEP_WORK['busy'] = True
 
@@ -577,11 +668,31 @@ def keep_tick(daemon):
                 if k is None:
                     log('what the cluster kept of this machine could not be opened - nothing put back', 'warn')
                 else:
-                    got = users_ask({'do': 'putback', 'keep': k}, 600)
-                    store.add_event('settings', 'put back on %s what the backup kept of the machine: %s'
-                                    % (me, got.get('said') or 'nothing missing'), 'warn')
-                    log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
-                store.db.run('DELETE FROM meta WHERE k = ?', ('host:putback:' + me,))
+                    try:
+                        got = users_ask({'do': 'putback', 'keep': k}, 600)
+                    except Exception as e:              # noqa: BLE001
+                        # Again in 10, 20 minutes (1.0.248) - every tick before, and for ever.
+                        KEEP_WORK['putback_tries'] += 1
+                        if KEEP_WORK['putback_tries'] < PUTBACK_TRIES:
+                            KEEP_WORK['putback_at'] = time.time() + 600 * KEEP_WORK['putback_tries']
+                            raise
+                        store.add_event('settings', 'what the backup kept of %s\'s machine could not '
+                                        'be put back (%d tries): %s - otp --machine-kept putback '
+                                        'tries again' % (me, PUTBACK_TRIES, str(e)[:300]), 'bad')
+                        got = None
+                    if got is not None:
+                        store.add_event('settings', 'put back on %s what the backup kept of the machine: %s'
+                                        % (me, got.get('said') or 'nothing missing'),
+                                        'bad' if 'not put back:' in (got.get('said') or '') else 'warn')
+                        log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
+                    if got is None or 'not put back:' in (got.get('said') or ''):
+                        KEEP_WORK['hold_until'] = time.time() + 7 * 86400
+                    else:
+                        KEEP_WORK['hold_until'] = 0
+                KEEP_WORK.update(putback_at=0.0, putback_tries=0)
+                store.drop_meta('host:putback:' + me)       # with its signature (1.0.248)
+                if KEEP_WORK.get('hold_until', 0) > time.time():
+                    return              # the kept row as the backup had it: not read again now
             got = users_ask({'do': 'keep'}, 120)
             got.pop('at', None)
             text = json.dumps({k: got.get(k) for k in ('users', 'keys', 'root_keys', 'selinux',

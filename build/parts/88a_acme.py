@@ -39,6 +39,13 @@ class AcmeError(Exception):
     pass
 
 
+ACME_WAIT = {}
+
+
+class AcmeWait(AcmeError):
+    """Not now, and nothing wrong (1.0.248): the other node makes the cluster's account first."""
+
+
 def _b64u(data):
     if isinstance(data, str):
         data = data.encode('utf-8')
@@ -293,6 +300,14 @@ class Acme(object):
                 os.unlink(os.path.join(self.work, 'account.pem'))
             except OSError:
                 pass
+        if not pem and CONFIG.get('ha_mode') == 'replicated' and not ha_lead(self.store) and \
+                time.time() - (ACME_WAIT.setdefault('since', time.time())) < 1800:
+            # Half an hour at most: the first node makes it only when it orders a certificate of its
+            # own - one that needs none would have this node wait for good.
+            # The account of the cluster made by one node only (1.0.248): both making it at once
+            # wrote the same row in each database - and replication stopped on it for good.
+            raise AcmeWait('the first node of the cluster makes the account with the CA - '
+                           'ordered here once it is there')
         if not pem:
             pem = new_key(self.akind)
             row = {}
@@ -710,6 +725,8 @@ def acme_order(store, target, name, by, say=None):
                            stamp(info.get('not_after')) if info.get('not_after') else '?'),
                         'info', who=by)
         return st
+    except AcmeWait:
+        raise                       # no failure: due again at the next look (1.0.248)
     except Exception as e:                              # noqa: BLE001
         # Every failure written down (1.0.234): an odd answer of the CA (KeyError) or openssl
         # timing out was only logged - the order was due again within the hour, every hour.

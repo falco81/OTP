@@ -92,6 +92,16 @@ def selinux_ask(store, node, action, by):
         raise ValueError('there is no node %s' % node)
     if action not in SE_ACTIONS:
         raise ValueError('check, prepare, enforce or permissive')
+    # A step asked and not done yet is not put aside by a look or a report (1.0.248): its one row
+    # was written over, and "enforcing" never happened - said nowhere.
+    was = _meta_json(store, 'host:selinux:want:' + node) or {}
+    now = _meta_json(store, 'host:selinux:now:' + node) or {}
+    if action in ('check', 'report') and was.get('do') in ('prepare', 'enforce', 'permissive') and \
+            was.get('id') != now.get('done') and time.time() - float(was.get('at') or 0) < 3600:
+        if action == 'check':
+            return          # the step looks again when it is done
+        raise ValueError('%s has not done the step asked of it yet (%s) - ask for the report after it'
+                         % (node, was.get('do')))
     store.set_meta('host:selinux:want:' + node, json.dumps({
         'id': secrets.token_hex(6), 'do': action, 'by': by, 'at': time.time()}))
     if action == 'report':

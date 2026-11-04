@@ -1480,7 +1480,8 @@ def cli_ha_join_replicated(args, pal, data, ask):
     if data.get('db_guard'):
         write_file_settings({'db_guard': 1})
         say('the guard of root\'s actions on, as on %s' % (peer.get('name') or 'the other node'))
-    keep_mark_putback()
+    cli_guard_counts_again('joined from the command line: the rows are the other node\'s')
+    keep_mark_putback('join')
     say('every row of %s is here: %d' % (peer.get('name') or 'the other node', got['rows']))
     say('both directions replicate: this node -> %s and %s -> this node'
         % (peer.get('name'), peer.get('name')))
@@ -1491,6 +1492,18 @@ def cli_ha_join_replicated(args, pal, data, ask):
         say('otp started again as %s, on its own PostgreSQL' % node)
     print(pal.dim('  otp --ha-status shows both nodes and both directions.'))
     return 0
+
+
+def cli_guard_counts_again(why):
+    """After this node's database was taken from the other node (1.0.248): the newest signatures
+    it had seen forgotten, as the pages' rebuild does - else the rows copied, signed earlier
+    there, were refused here as older ones put back. The file stays the service's."""
+    try:
+        dbguard_forget_seen(why)
+        if DBGUARD_FILE.exists():
+            chown_to_service(DBGUARD_FILE, 0o600)
+    except Exception as e:                              # noqa: BLE001
+        print('otp: the guard\'s counts could not be started again: %s' % e, file=sys.stderr)
 
 
 def cli_sure(args, what):
@@ -1548,6 +1561,7 @@ def cli_ha_resync(args, pal):
                          int(CONFIG.get('ha_peer_port') or 5432), CONFIG.get('db_name'),
                          CONFIG.get('db_user'), CONFIG.get('db_password'),
                          lambda t: print(pal.dim('  ' + t)))
+        cli_guard_counts_again('rebuilt from the other node from the command line')
     except (ValueError, DbError) as e:
         raise SystemExit('otp: %s' % e)
     finally:
@@ -1924,14 +1938,16 @@ def cli_stage_files(args):
                 return False
             cur = up
 
-    def copy_in(src, dst):
+    def copy_in(src, name, dfd):
         """One file copied by its descriptors, never by name: not through a
-        link at either end, into a new file only."""
+        link at either end, into a new file only - made in the folder opened
+        once (1.0.248: by its path, the folder could be a link by then)."""
         fi = os.open(str(src), os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0))
         try:
             if not stat.S_ISREG(os.fstat(fi).st_mode):
                 raise OSError('%s is not a plain file' % src)
-            fo = os.open(str(dst), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            fo = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                         dir_fd=dfd)
             try:
                 while True:
                     chunk = os.read(fi, 1 << 20)
@@ -1946,6 +1962,24 @@ def cli_stage_files(args):
         finally:
             os.close(fi)
 
+    def copy_tree(src, name, pfd):
+        """A folder copied the same way: each folder made and opened by the
+        one above it, never a link followed - in the copy or in what is
+        copied (a link in somebody else's folder led root to anything)."""
+        os.mkdir(name, 0o700, dir_fd=pfd)
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+        try:
+            for e in os.scandir(str(src)):
+                if e.is_symlink():
+                    continue
+                if e.is_dir(follow_symlinks=False):
+                    copy_tree(e.path, e.name, fd)
+                elif e.is_file(follow_symlinks=False):
+                    copy_in(e.path, e.name, fd)
+            os.fchown(fd, ids[0], ids[1])
+        finally:
+            os.close(fd)
+
     def stage(path, with_key=False):
         src = Path(path)
         if not src.exists() or reachable(src):
@@ -1954,24 +1988,29 @@ def cli_stage_files(args):
             src = Path(os.path.realpath(str(src)))   # a link of root's own, followed
         # A folder of root's for each file, 0700 while it is filled, the otp
         # account's only once it is (1.0.149): handed over before the copy,
-        # a link put in it in between had root write wherever it led.
+        # a link put in it in between had root write wherever it led. Opened
+        # once and used by its descriptor (1.0.248): the otp account owns the
+        # folder it is in, and could put a link in its place meanwhile -
+        # root's chown by its name then gave it any folder of the machine.
         d = tempfile.mkdtemp(prefix='.otp-cli-', dir=str(STATE_DIR))
         atexit.register(shutil.rmtree, d, True)
-        dst = Path(d) / src.name
-        if src.is_dir():
-            shutil.copytree(str(src), str(dst), symlinks=False)
-            for root, dirs, files in os.walk(str(dst)):
-                for n in dirs + files:
-                    os.lchown(os.path.join(root, n), ids[0], ids[1])
-            os.lchown(str(dst), ids[0], ids[1])
-        else:
-            copy_in(src, dst)
-            if with_key:
-                k = _key_beside(src)
-                if k is not None and Path(k).is_file():
-                    copy_in(k, Path(d) / Path(k).name)
-        os.chown(d, ids[0], ids[1])
-        return str(dst)
+        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            st = os.fstat(dfd)
+            if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077:
+                raise OSError('%s is not the folder just made' % d)
+            if src.is_dir():
+                copy_tree(src, src.name, dfd)
+            else:
+                copy_in(src, src.name, dfd)
+                if with_key:
+                    k = _key_beside(src)
+                    if k is not None and Path(k).is_file():
+                        copy_in(k, Path(k).name, dfd)
+            os.fchown(dfd, ids[0], ids[1])
+        finally:
+            os.close(dfd)
+        return str(Path(d) / src.name)
     try:
         if getattr(args, 'restore', None):
             args.restore = stage(args.restore, with_key=True)
@@ -2000,6 +2039,20 @@ def cli_stage_files(args):
                          os.O_NOFOLLOW, mode)
             os.fchmod(fd, mode)
             args.export_fd = fd
+        # The files of a certificate and of isemon's bundle too (1.0.248): opened after the command
+        # line became the otp account, root's /root/x.pfx was refused, and a file there already
+        # kept its mode (0644 for a key).
+        te = getattr(args, 'tls_export', None)
+        if te and len(te) == 2 and te[0] in TLS_EXPORT_KINDS:
+            mode = 0o600 if TLS_EXPORT_KINDS[te[0]][2] else 0o644
+            fd = os.open(te[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+            os.fchmod(fd, mode)
+            args.tls_export_fd = fd
+        if getattr(args, 'isemon_tls_bundle', None):
+            fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                         0o600)
+            os.fchmod(fd, 0o600)
+            args.isemon_bundle_fd = fd
     except OSError as e:
         raise SystemExit('otp: %s' % e)
 
@@ -2369,11 +2422,7 @@ def cli_main(argv=None):
         if not got['done'] and not got['left']:
             print(got['message'])
         # The daemon reads config.json again (SIGHUP, as systemctl reload).
-        try:
-            pid = int((STATE_DIR / 'otp.lock').read_text().strip() or 0)
-            if pid > 1:
-                os.kill(pid, signal.SIGHUP)
-        except (OSError, ValueError):
+        if not daemon_hup():            # only the daemon's own process (1.0.248)
             print('restart the service so that it reads config.json again:  systemctl '
                   'restart otp')
         return 0 if not got['left'] else 2
@@ -3038,6 +3087,11 @@ def cli_main(argv=None):
         if code == '-':
             # Not on the command line, where `ps` shows it (1.0.136).
             code = os.environ.get('OTP_RADTEST_PASSWORD') or getpass.getpass('password + code: ')
+        elif not code.isdigit():
+            # A password on the command line (1.0.248): `ps` and the shell's history keep it.
+            print('otp: a password given on the command line stays in the shell\'s history and is '
+                  'shown by ps - give - as CODE: it is asked for (or OTP_RADTEST_PASSWORD)',
+                  file=sys.stderr)
         server = a[2] if len(a) > 2 else '127.0.0.1'
         try:
             port = int(a[3]) if len(a) > 3 else int(CONFIG.get('radius_auth_port') or 1812)
@@ -3682,7 +3736,7 @@ def cli_main(argv=None):
         except (RbError, ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False
-        bind_tokens(store)
+        bind_tokens(store, trusted=True)
         names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
         m = got['manifest']
         print(pal.ok_line('put back: %s, made %s on %s (otp %s); what this machine had is kept '
@@ -3707,7 +3761,7 @@ def cli_main(argv=None):
         except (ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False
-        bind_tokens(store)
+        bind_tokens(store, trusted=True)
         names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
         print(pal.ok_line('put back (%s); what it replaced is kept as %s; %s'
                           % (DUMP_WORDS.get(got['kind'], got['kind']), got['safety'], got['key'])))
@@ -4046,7 +4100,10 @@ def cli_main(argv=None):
             'a passphrase to lock the zip with (12 characters or more)', twice=True, env=None)
         got = api('POST', '/api/isemon', {'action': 'tls_bundle', 'port': 6514, 'mtls': args.mtls,
                                           'names': args.names or '', 'passphrase': phrase})
-        fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = getattr(args, 'isemon_bundle_fd', None)
+        if fd is None:
+            fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, 'wb') as f:
             f.write(base64.b64decode(got['file']))
         print(pal.ok_line('%s: isemon\'s certificate and key, locked with the passphrase given'
@@ -4076,7 +4133,11 @@ def cli_main(argv=None):
             body['passphrase'] = os.environ.get('OTP_PASSPHRASE') or ask_password(
                 'a password for the file (10 characters or more)', twice=True, env=None)
         got = api('POST', '/api/web', body)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if TLS_EXPORT_KINDS[kind][2] else 0o644)
+        mode = 0o600 if TLS_EXPORT_KINDS[kind][2] else 0o644
+        fd = getattr(args, 'tls_export_fd', None)
+        if fd is None:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+        os.fchmod(fd, mode)
         with os.fdopen(fd, 'wb') as f:
             f.write(base64.b64decode(got['file']))
         print(pal.ok_line('%s: %s' % (path, TLS_EXPORT_KINDS[kind][0])))
@@ -4404,11 +4465,15 @@ def cli_osusers(args, pal):
         print('no such node: %s (the nodes: %s)' % (', '.join(bad), ', '.join(every)))
         return 2
 
-    def settle(secs=60):
+    def settle(secs=60, since=None):
+        # A list asked is waited for too (1.0.248): it is no change, never "pending" - the row
+        # read was the old one, or none yet.
         end = time.time() + secs
         while time.time() < end:
             v = osu_view(store)
-            if not any(n['pending'] for n in v['nodes'] if n['name'] in nodes):
+            mine = [n for n in v['nodes'] if n['name'] in nodes]
+            if not any(n['pending'] for n in mine) and (
+                    since is None or all(float(n.get('at') or 0) >= since for n in mine if n['alive'])):
                 return v
             time.sleep(1)
         return osu_view(store)
@@ -4455,8 +4520,9 @@ def cli_osusers(args, pal):
                 print('nothing done')
                 return 1
         try:
+            t0 = time.time()
             osu_ask(store, nodes, 'list', who)
-            settle(30)                      # what each node has, read first (the UID)
+            settle(30, t0)                  # what each node has, read first (the UID)
             done = osu_ask(store, nodes, do, who, **f)
         except ValueError as e:
             print(pal.bad('refused: %s' % e) if hasattr(pal, 'bad') else 'refused: %s' % e)
@@ -4476,8 +4542,9 @@ def cli_osusers(args, pal):
                                       (' - ' + last[0]['said']) if last[0].get('said') else ''))
                 rc = rc or (0 if last[0]['ok'] else 1)
         return rc
+    t0 = time.time()
     osu_ask(store, nodes, 'list', who)
-    v = settle(30)
+    v = settle(30, t0)
     for n in v['nodes']:
         if n['name'] not in nodes:
             continue

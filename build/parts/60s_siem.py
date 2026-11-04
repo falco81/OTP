@@ -37,6 +37,9 @@ def siem_targets(text, strict=False):
     return out
 
 
+SIEM_CTRL = re.compile(r'[\x00-\x1f\x7f]')
+
+
 def _cef_head(text):
     return str(text).replace('\\', '\\\\').replace('|', '\\|')
 
@@ -111,8 +114,11 @@ class Siem(object):
             body = words
         stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='milliseconds')
         pri = int(CONFIG.get('siem_facility') or 13) * 8 + severity
-        return '<%d>1 %s %s otp %d %s %s \ufeff%s' % (
-            pri, stamp, self.host(), os.getpid(), kind, sd, body.replace('\n', ' '))
+        # No control character anywhere in the line (1.0.248): a name of a RADIUS request with a
+        # line break in it went into the structured data as it was - a forged event for a
+        # receiver that splits on lines.
+        return SIEM_CTRL.sub(' ', '<%d>1 %s %s otp %d %s %s \ufeff%s' % (
+            pri, stamp, self.host(), os.getpid(), kind, sd, body))
 
     def put(self, kind, severity, fields, words):
         if not CONFIG.get('siem') or not self.targets:

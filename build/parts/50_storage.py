@@ -665,6 +665,16 @@ class Storage(object):
             self.db.upsert('settings', 'k', row)
             dbguard_sign(self.db, 's', k, json.dumps(v))     # 1.0.231
 
+    def drop_meta(self, k):
+        """A row of meta taken away - with the guard's signature of its going (1.0.248): deleted
+        with plain SQL, its last value put back by somebody else read as signed still."""
+        if not dbguard_meta_signed(k):
+            self.db.run('DELETE FROM meta WHERE k = ?', (k,))
+            return
+        with self.db.transaction():
+            self.db.run('DELETE FROM meta WHERE k = ?', (k,))
+            dbguard_sign(self.db, 'm', k, None)
+
     def drop_setting(self, k):
         if not dbguard_setting_kept(k):
             self.db.run('DELETE FROM settings WHERE k = ?', (k,))

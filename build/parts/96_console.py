@@ -2821,32 +2821,45 @@ class Console(object):
         # The local users of the machines (1.0.243): as Settings -> Local users. Asked in-process:
         # a password typed here goes nowhere as itself, never onto a command line.
         def osu_do(do, name, **f):
-            try:
+            # In a child of its own (1.0.248): the database opened here made the console the otp
+            # account for good - restarts, upgrades and "!" then ran as otp, and who did it was
+            # no longer said. The child becomes otp; the console stays as it is.
+            who = cli_who()
+            self.working('working…  asking every node')
+
+            def job():
                 store = cli_store()
                 nodes = host_nodes(store)
-                osu_ask(store, nodes, 'list', cli_who())
-                time.sleep(2)
-                done = osu_ask(store, nodes, do, cli_who(), name=name, **f)
-            except (ValueError, OSError) as e:
-                self.note('Local users', 'refused: %s' % e, 'bad')
+                t0 = time.time()
+                osu_ask(store, nodes, 'list', who)
+                # What each node has read first (1.0.248), not two seconds and the old row.
+                end0 = time.time() + 30
+                while time.time() < end0 and not all(
+                        float(n.get('at') or 0) >= t0 for n in osu_view(store)['nodes'] if n['alive']):
+                    time.sleep(1)
+                done = osu_ask(store, nodes, do, who, name=name, **f)
+                end, v = time.time() + 60, None
+                while time.time() < end:
+                    v = osu_view(store)
+                    if not any(n['pending'] for n in v['nodes'] if n['name'] in done):
+                        break
+                    time.sleep(1)
+                lines, bad = [], False
+                for n in (v or {}).get('nodes') or []:
+                    last = [x for x in n.get('said') or [] if x.get('name') == name][-1:]
+                    if n['name'] in done:
+                        ok_ = bool(last and last[0].get('ok'))
+                        bad = bad or not ok_
+                        lines.append('%s: %s%s' % (n['name'], 'done' if ok_ else 'refused' if last else
+                                                   'not done yet', (' - ' + last[0]['said'])
+                                                   if last and last[0].get('said') else ''))
+                return {'lines': lines, 'bad': bad}
+            got = console_in_child(job, 150)
+            if got.get('error'):
+                self.note('Local users', 'refused: %s' % got['error'], 'bad')
                 return
-            self.working('working…  on %s' % ', '.join(done))
-            end, v = time.time() + 60, None
-            while time.time() < end:
-                v = osu_view(store)
-                if not any(n['pending'] for n in v['nodes'] if n['name'] in done):
-                    break
-                time.sleep(1)
-            lines, bad = [], False
-            for n in (v or {}).get('nodes') or []:
-                last = [x for x in n.get('said') or [] if x.get('name') == name][-1:]
-                if n['name'] in done:
-                    ok_ = bool(last and last[0].get('ok'))
-                    bad = bad or not ok_
-                    lines.append('%s: %s%s' % (n['name'], 'done' if ok_ else 'refused' if last else
-                                               'not done yet', (' - ' + last[0]['said'])
-                                               if last and last[0].get('said') else ''))
-            self.note('Local users', '\n'.join(lines) or 'asked', 'bad' if bad else 'ok')
+            self.note('Local users', '\n'.join(got.get('lines') or []) or 'asked',
+                      'bad' if got.get('bad') else 'ok')
 
         def osu_pick(title):
             got = self.form(title, [{'key': 'name', 'label': 'the user', 'need': True,
@@ -2883,7 +2896,11 @@ class Console(object):
                 osu_do('password', got['name'].strip(), password=got['pw'], must_change=got.get('must') == 'yes')
 
         def pwp_set():
-            c = pwp_conf(cli_store())
+            got0 = console_in_child(lambda: pwp_conf(cli_store()), 60)   # the console stays root (1.0.248)
+            if got0.get('error'):
+                self.note('Password policy', 'refused: %s' % got0['error'], 'bad')
+                return
+            c = dict(PWP_DEFAULT, **got0)
             got = self.form('The password policy of local users (every node)', [
                 {'key': 'managed', 'label': 'set by otp', 'kind': 'choice', 'value': 'yes' if c['managed'] else 'no',
                  'options': [('yes', 'yes - on every node'), ('no', "no - each system's own")]},
@@ -3402,6 +3419,65 @@ def console_login_tick(daemon):
         if now.get('on') != on or 'on' not in now or (now.get('users') or []) != users:
             store.set_meta('console:now:' + me, json.dumps(dict(now, on=on, users=users,
                                                                 at=time.time())))
+
+
+def console_in_child(fn, timeout=120):
+    """fn() run by a child process, its answer (JSON) back through a pipe: a child may become the
+    otp account to open the database (cli_store) - the console itself stays who it is (1.0.248).
+    {'error': ...} when it failed."""
+    rd, wr = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        code = 0
+        try:
+            os.close(rd)
+            try:
+                out = fn()
+                if not isinstance(out, dict):
+                    out = {'value': out}
+            except (ValueError, OSError, SystemExit) as e:
+                out = {'error': str(e)[:500] or e.__class__.__name__}
+            except Exception as e:                      # noqa: BLE001
+                out = {'error': '%s: %s' % (e.__class__.__name__, str(e)[:400])}
+            data = json.dumps(out, default=str).encode('utf-8')
+            view = memoryview(data)
+            while view:
+                view = view[os.write(wr, view):]
+        except BaseException:                           # noqa: BLE001
+            code = 1
+        finally:
+            os._exit(code)
+    os.close(wr)
+    chunks = []
+    end = time.time() + timeout
+    try:
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                return {'error': 'no answer in %d s' % timeout}
+            ready, _w, _x = select.select([rd], [], [], min(left, 1.0))
+            if ready:
+                b = os.read(rd, 65536)
+                if not b:
+                    break
+                chunks.append(b)
+    finally:
+        os.close(rd)
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    try:
+        got = json.loads(b''.join(chunks).decode('utf-8') or '{}')
+    except ValueError:
+        return {'error': 'the answer did not read'}
+    if 'value' in got and len(got) == 1 and not isinstance(got['value'], dict):
+        return got
+    return got if isinstance(got, dict) else {'error': 'the answer did not read'}
 
 
 def console_main(pal):

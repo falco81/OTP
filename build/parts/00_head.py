@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.247'
+__version__ = '1.0.248'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2842,6 +2842,10 @@ def password_ok(password, stored):
     try:
         kind, rounds, salt, want = str(stored or '').split('$')
         if kind != 'pbkdf2_sha256':
+            return False
+        # The rounds a hash says, kept to a sane span (1.0.248): two thousand million put in by an
+        # import or a writer of the database had every try at that name burn minutes of CPU.
+        if not 1000 <= int(rounds) <= 5000000:
             return False
         got = hashlib.pbkdf2_hmac('sha256', str(password).encode('utf-8'),
                                   base64.b64decode(salt), int(rounds))

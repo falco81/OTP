@@ -212,6 +212,9 @@ def node_name_taken(store, want):
     return None
 
 
+HB_SEEN = {}
+
+
 def ha_nodes(store):
     out = []
     try:
@@ -226,9 +229,18 @@ def ha_nodes(store):
             continue
         name = r['k'][5:]
         # With clock_beat (1.0.222) judged by the measured difference of the clocks.
-        age = clock_beat_age(store, name, float(beat.get('at') or 0), now)
-        beat.update(name=name, age=age, me=name == node_name(),
-                    alive=age < HEARTBEAT_S * 3)
+        at = float(beat.get('at') or 0)
+        age = clock_beat_age(store, name, at, now)
+        alive = age < HEARTBEAT_S * 3
+        if age < -2 * HEARTBEAT_S and name != node_name():
+            # A heartbeat from ahead of this clock (1.0.248): a dead node whose clock ran ahead
+            # read as alive for as long as it was ahead - and stayed the lead. Judged by when
+            # this node last saw it change.
+            was = HB_SEEN.get(name)
+            if not was or was[0] != at:
+                was = HB_SEEN[name] = (at, time.monotonic())
+            alive = time.monotonic() - was[1] < HEARTBEAT_S * 3
+        beat.update(name=name, age=age, me=name == node_name(), alive=alive)
         out.append(beat)
     out.sort(key=lambda b: (not b['me'], b['name']))
     return out
@@ -659,10 +671,39 @@ def ha_mark_shared(peer=''):
             pass
     if peer:
         ha_joining_set([peer], 'bundle', 'the second node')
+    daemon_hup()
+
+
+def daemon_pid():
+    """The running daemon's process, as otp.lock says - only when it is one (1.0.248): the file is
+    the otp account's, and root sent its signal to whatever number was in it (-1: every process)."""
     try:
-        os.kill(int((STATE_DIR / 'otp.lock').read_text().strip() or 0), signal.SIGHUP)
+        fd = os.open(str(STATE_DIR / 'otp.lock'), os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0))
+        with os.fdopen(fd) as f:
+            pid = int((f.read(32) or '0').strip() or 0)
     except (OSError, ValueError):
-        pass
+        return 0
+    if pid <= 1:
+        return 0
+    try:
+        with open('/proc/%d/cmdline' % pid, 'rb') as f:
+            cmd = f.read(4096).split(b'\0')
+        if not any(c.endswith(b'otp.py') or c.endswith(b'/otp') for c in cmd):
+            return 0
+    except OSError:
+        return 0
+    return pid
+
+
+def daemon_hup():
+    pid = daemon_pid()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGHUP)
+            return True
+        except OSError:
+            pass
+    return False
 
 
 def ha_join(data, name='', even_if_data=False, by=''):
@@ -717,7 +758,21 @@ def ha_join(data, name='', even_if_data=False, by=''):
         if peer:
             changes['ha_peer'] = peer
             ha_joining_set([peer], by or 'join', 'the node this one joined')
+    # The guard of root's actions as the cluster has it (1.0.248): only the replicated join took
+    # it - a node joining a shared database acted as root on rows nobody signed.
+    if data.get('db_guard'):
+        changes['db_guard'] = 1
     write_file_settings(changes)
+    if data.get('db_guard'):
+        # The counts of before are of another database (1.0.248). The guard itself from the file,
+        # at the start: the running service still has the database it joins away from.
+        try:
+            dbguard_forget_seen('joined a cluster of one shared database')
+            if os.geteuid() == 0 and DBGUARD_FILE.exists():
+                chown_to_service(DBGUARD_FILE, 0o600)
+        except Exception:                               # noqa: BLE001
+            pass
+    keep_mark_putback('join')   # what the cluster kept of this node's machine, put back at the start
     return {'where': db_where(db), 'rows': got.get('rows'), 'peer': data.get('peer') or {},
             'message': 'this node joins the cluster: it starts again on %s' % db_where(db)}
 

@@ -583,12 +583,20 @@ def parse_handler_yaml(text):
     return got
 
 
-def bind_tokens(store):
+def bind_tokens(store, trusted=False):
     """Every token's secrets sealed again tied to its name (1.0.33), where
     they were sealed the old way, without it; then the old way is no longer
-    taken for a token at all. Run at start and after a restore."""
+    taken for a token at all. Run at start and after a restore (`trusted`: a copy, an import put
+    in here by otp itself)."""
     cols = ('secret', 'pending_secret', 'scratch_sealed', 'pending_scratch')
     done = left = 0
+    # With the guard on, once only (1.0.248): at every start a key written into a token's row by
+    # somebody without secrets.key was sealed - and from then on it opened the door. Sealed at the
+    # first start with the guard on (what was there before it); after that, refused.
+    _dbguard_load()
+    hold = dbguard_on() and not trusted and ('tokens' in (DBGUARD.get('adopted') or []) or
+                                             not DBGUARD.get('had_file'))
+    held = []
     try:
         # ...and one never sealed at all (1.0.101): sealed now, so that from
         # here on a value not sealed is taken for no token - a row written
@@ -605,6 +613,9 @@ def bind_tokens(store):
         fields = {}
         for c in cols:
             v = r.get(c)
+            if hold and isinstance(v, str) and v and not v.startswith(SEALED2):
+                held.append(r['name'])
+                continue
             if isinstance(v, str) and v.startswith(SEALED):
                 plain = unseal_secret(v)
                 if plain is None:
@@ -622,6 +633,20 @@ def bind_tokens(store):
             done += 1
     if done:
         log('%d token(s) sealed again, tied to their names' % done)
+    if held:
+        names = sorted(set(held))
+        log_sparing('bind-held', 'tokens with a key in their row that otp did not seal - not taken '
+                    '(the guard of root\'s actions is on): %s' % ', '.join(names)[:600], 'error', every=3600)
+        try:
+            store.add_event('security', 'token(s) whose key in the database was not sealed by otp - '
+                            'not taken: %s' % ', '.join(names)[:600], 'bad')
+        except Exception:                               # noqa: BLE001
+            pass
+    if dbguard_on() and 'tokens' not in (DBGUARD.get('adopted') or []):
+        with DBGUARD['lock']:
+            DBGUARD['adopted'] = sorted(set(DBGUARD.get('adopted') or []) | {'tokens'})
+            DBGUARD['dirty'] = time.time()
+        dbguard_flush(force=True)
     if not left:
         BIND_STRICT['tokens'] = True
     else:
@@ -1644,6 +1669,11 @@ class Daemon(object):
             log('the floor for going back could not be written: %s' % e, 'warn')
         stale_work_away()
         try:
+            if dbguard_adopt(self.store):           # rows signed only since this version (1.0.248)
+                load_config(saved=dbguard_settings(self.store.settings_saved(), self.store))
+        except Exception as e:                      # noqa: BLE001
+            log('the rows signed only since this version: %s' % e, 'warn')
+        try:
             names_letters_kept(self)
         except Exception as e:                      # noqa: BLE001
             log('the letters names take could not be looked at: %s' % e, 'warn')
@@ -1860,9 +1890,13 @@ class Daemon(object):
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
                     osu_tick(self)              # the local users of the machines (1.0.243)
-                    keep_tick(self)             # what of the machine a backup carries (1.0.247)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osu-tick', 'the local users: %s' % e, 'warn', every=600)
+                try:
+                    keep_tick(self)             # what of the machine a backup carries (1.0.247)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('keep-tick', 'what a backup carries of the machine: %s' % e, 'warn',
+                                every=600)
                 try:
                     osup_sched_tick(self)       # updates and restarts on a schedule (1.0.164)
                 except Exception as e:          # noqa: BLE001

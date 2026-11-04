@@ -75,10 +75,24 @@ def vip_auth():
 VIP_MOVE_S = 60          # a move asked for by hand, in 'stays' mode, is wanted this long
 
 
+VIP_MOVE_SEEN = {'key': None, 'mono': 0.0}
+
+
 def vip_moving(conf):
-    """The node a move by hand is going to, while it is still under way."""
+    """The node a move by hand is going to, while it is still under way - for a minute from when
+    this node first saw it (1.0.248): by the clock of the node whose page asked, a node whose
+    clock was a minute ahead never saw the move, one behind preferred itself for longer. A move
+    of more than five minutes ago by that clock (a row left from before a restart) is none."""
     to = str(conf.get('move_to') or '')
-    if to and time.time() - float(conf.get('move_at') or 0) < VIP_MOVE_S:
+    try:
+        at = float(conf.get('move_at') or 0)
+    except (TypeError, ValueError):
+        at = 0.0
+    if not to or abs(time.time() - at) > VIP_MOVE_S + 300:
+        return ''
+    if VIP_MOVE_SEEN['key'] != (to, at):
+        VIP_MOVE_SEEN.update(key=(to, at), mono=time.monotonic())
+    if time.monotonic() - VIP_MOVE_SEEN['mono'] < VIP_MOVE_S:
         return to
     return ''
 
@@ -1253,8 +1267,18 @@ def node_carry(store, old, new, by='the daemon'):
     if changed:
         store.set_meta('web:vip', json.dumps(v))
         said.append('its place in the VIP address')
+    # The preferred node of a split by its new name (1.0.248): left on the old one, neither node
+    # was preferred - and with the other one away, nobody answered RADIUS.
+    for k in ('split_prefer', 'split_prefer@*'):
+        raw = store.db.value('SELECT v FROM settings WHERE k = ?', (k,))
+        try:
+            if raw is not None and str(json.loads(raw) or '').strip() == old:
+                store.save_setting(k, new, by)
+                said.append('its place as the preferred node of a split')
+        except (TypeError, ValueError):
+            pass
     for k in ('node:', 'maint:', 'upgrade:node:', 'web:tls:', 'web:retry:', 'db_job:', 'fw:now:',
-              'db_sizes:', 'hatls:node:'):
+              'db_sizes:', 'hatls:node:', 'split:state:', 'clock:state:'):
         store.db.run('DELETE FROM meta WHERE k = ?', (k + old,))
     store.add_event('settings', 'the node %s is called %s now; carried over: %s' % (
         old, new, ', '.join(said) or 'nothing (it had nothing of its own)'), 'warn', who=by)
@@ -1432,6 +1456,18 @@ def fw_auto(store, node):
             for n in (a.get(k) or {}).get('from') or []:
                 if n not in srcs:
                     srcs.append(n)
+        # The balancers in front (1.0.248): nginx checks its lists against the client's address
+        # they forward, but the firewall sees theirs - the pages were dropped behind them.
+        lb = []
+        try:
+            lb = list((realip_desired(store) or {}).get('from') or [])
+        except Exception:                               # noqa: BLE001
+            lb = []
+        if CONFIG.get('portal_sso'):
+            lb += [str(n) for n in sso_nets()]
+        for n in lb:
+            if n not in srcs:
+                srcs.append(n)
     web = []
     for s in srcs:
         for f in ((4, 6) if not s else (_fam(s),)):

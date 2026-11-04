@@ -202,6 +202,11 @@ class Authenticator(object):
             return ''
         if '\\' in said:
             said = said.split('\\', 1)[1]
+            if '\\' in said:
+                # A\B\novak (1.0.248): B\novak@realm was left - the form refused above. The
+                # directory found novak by the last backslash, the token was another one, made
+                # by whoever had the password before novak enrolled. Not a name.
+                return ''
         if '@' in said:
             who, _, where = said.rpartition('@')
             where = where.strip().rstrip('.')
@@ -239,7 +244,7 @@ class Authenticator(object):
         return d.refuse('LDAP server(s) have gone away')
 
     @staticmethod
-    def alias_clash(ad, typed, tname, entry):
+    def alias_clash(ad, typed, tname, entry, raise_gone=False):
         """Words when the token `tname` - the typed name under the realm's main suffix
         (1.0.117) - is another account's userPrincipalName than the one signing in, else ''
         (1.0.224): xavier@corpnet.example (Yvonne's UPN) took the token xavier@corpnet.cz,
@@ -249,8 +254,14 @@ class Authenticator(object):
         try:
             # Kept under the bare name: that is an account name to a realm of plain names.
             other = ad.find_user(tname, 'upn' if '@' in str(tname) else 'sam')
-        except LdapError:
-            return ''
+        except LdapError as e:
+            # Not known is no "no clash" (1.0.248): with the directory away or busy for this one
+            # look, another account's token was taken as the person's own. Away or busy here is
+            # said as the directory gone, where the caller handles that (the other node asked).
+            if raise_gone and (isinstance(e, LdapUnreachable) or getattr(e, 'held', False)):
+                raise
+            return 'the directory could not say whether %s is another account (%s)' % (
+                tname, str(e)[:120])
         if other and not other.get('many') and \
                 str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
             return ('%s is another account in the directory than %s - a suffix of the realm '
@@ -575,7 +586,10 @@ class Authenticator(object):
                 return d.refuse('more than one account in %s answers to %s'
                                 % (ad.name, d.user))
             d.step('found %s' % entry['dn'], True, entry.get('display') or '', t)
-            clash = self.alias_clash(ad, d.user, d.token_name, entry)
+            try:
+                clash = self.alias_clash(ad, d.user, d.token_name, entry, raise_gone=True)
+            except LdapError as e:
+                return self.ldap_gone(d, e)
             if clash:
                 d.step('the token %s' % d.token_name, False, clash)
                 return d.refuse('the token server: ' + clash)
@@ -1406,7 +1420,7 @@ class RadiusServer(object):
         # bytes); a password in another encoding than UTF-8 (cp1250, say)
         # does not, and is refused as before - not left unanswered.
         unreadable = pkt.get(2) is not None and (
-            password is None or re.search(r'[\x01-\x1f\x7f]', password) is not None)
+            password is None or re.search(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', password) is not None)
         # Refused all the same, but written down once a minute a client
         # (1.0.186): unsigned, with no password to read (none, CHAP) or one that
         # decodes to U+FFFD - anyone can send such from a NAS's address, and each
