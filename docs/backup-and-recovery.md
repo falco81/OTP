@@ -675,3 +675,15 @@ And by hand:
 On the pages: *Settings → The database* (copies, dumps, restore, download),
 *Settings → Export and import* (the configuration), *Settings → High
 availability* (the cluster, rebuild).
+
+
+## What comes back by itself (1.0.247)
+
+A backup put back on a machine installed anew (`otp --restore-bundle`), and a second machine joined
+to it: everything of the database - and, when the service starts, each node puts in again what it
+puts in on its machine (the pages, the VIP address, the firewall, the SSH server and otp's gate for
+SSH, the time servers, the console at login, the password policy) and puts back what the backup
+kept of its machine: the local users (UID, password, aging, sudo), the SSH keys of root and of them,
+SELinux's booleans - only what is missing. The guard of root's actions is on again where it was.
+`otp --machine-kept` lists what is kept of each node. By hand still: SELinux's mode, and the
+encryption to a database on another machine.

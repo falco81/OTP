@@ -3376,6 +3376,11 @@ def lu_do(r):
     said = ''
     if do == 'list':
         return dict(lu_list(), said='')
+    if do == 'keep':
+        return dict(keep_read(), said='')
+    if do == 'putback':
+        said = keep_putback(r.get('keep') or {})
+        return dict(lu_list(), said='; '.join(said))
     if do == 'policy':
         # The password policy (1.0.245): for every local user, not one.
         said = pwp_apply(r.get('conf') or {})
@@ -3819,10 +3824,141 @@ def pwp_apply(c):
             n, ' (%d with no password - a key only - left without)' % skipped if skipped else ''))
     return said
 
+# ---- what of the machine is kept for a backup (1.0.247) ---------------------------------
+# The machine's own, which no row of the database holds: the local users (their UID, full name,
+# shell, password's hash, aging, sudo), the SSH keys root and each of them sign in with, and the
+# booleans of SELinux otp needs. Read here ("keep") and sealed into the database by the daemon, so
+# that a backup carries it; put back ("putback") on a machine installed anew - users made where
+# they are missing, keys added where missing, nothing taken away.
+SEL_BOOLS = ('httpd_can_network_connect', 'authlogin_radius')
+
+
+def keep_read():
+    import pwd
+    import grp
+    lo, hi = uid_range()
+    sh = {}
+    try:
+        with open(SHADOW, encoding='utf-8', errors='replace') as f:
+            for ln in f:
+                p = ln.rstrip('\n').split(':')
+                if len(p) >= 8:
+                    sh[p[0]] = p
+    except OSError:
+        pass
+    admin = lu_admin_group()
+    users, keys = [], {}
+    for p in pwd.getpwall():
+        if not (lo <= p.pw_uid <= hi) or p.pw_uid == 65534 or p.pw_name in KEEP_NAMES or \
+                not USER_NAME_RE.match(p.pw_name):
+            continue
+        s = sh.get(p.pw_name) or [''] * 9
+        groups = sorted(g.gr_name for g in grp.getgrall() if p.pw_name in g.gr_mem)
+        users.append({'name': p.pw_name, 'uid': p.pw_uid, 'gecos': p.pw_gecos, 'shell': p.pw_shell,
+                      'hash': s[1], 'lastchg': s[2], 'min': s[3], 'max': s[4], 'warn': s[5],
+                      'inactive': s[6], 'expire': s[7], 'sudo': bool(admin) and admin in groups})
+        try:
+            lines = user_auth_read(p)
+            if lines:
+                keys[p.pw_name] = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith('#')][:200]
+        except Exception:                               # noqa: BLE001
+            pass
+    try:
+        root = [ln for ln in auth_lines() if ln.strip() and not ln.lstrip().startswith('#')][:200]
+    except Exception:                                   # noqa: BLE001
+        root = []
+    sel = {}
+    if shutil.which('getsebool'):
+        for b in SEL_BOOLS:
+            got = subprocess.run(['getsebool', b], capture_output=True, text=True)
+            if got.returncode == 0:
+                sel[b] = got.stdout.strip().endswith('on')
+    return {'users': users[:500], 'keys': keys, 'root_keys': root, 'selinux': sel,
+            'admin_group': admin, 'at': time.time()}
+
+
+def keep_putback(k):
+    """What a backup kept of this machine, put back: only what is missing - never a user, key or
+    setting of the machine as it is now taken away or changed."""
+    import pwd
+    if not isinstance(k, dict):
+        raise Refused('nothing to put back')
+    lo, hi = uid_range()
+    said, made, keys_n = [], 0, 0
+    for u in k.get('users') or []:
+        name = str(u.get('name') or '')
+        if not USER_NAME_RE.match(name) or name in KEEP_NAMES:
+            continue
+        try:
+            uid = int(u.get('uid'))
+        except (TypeError, ValueError):
+            continue
+        if not lo <= uid <= hi:
+            continue
+        try:
+            p = pwd.getpwnam(name)
+        except KeyError:
+            p = None
+        if p is None:
+            try:
+                other = pwd.getpwuid(uid).pw_name
+            except KeyError:
+                other = ''
+            shell = str(u.get('shell') or '/bin/bash')
+            if shell not in lu_shells() and not os.path.exists(shell):
+                shell = '/bin/bash'
+            argv = ['useradd', '-m', '-s', shell, '-c', str(u.get('gecos') or '')[:120].replace(':', ' '), '-U']
+            if not other:
+                argv += ['-u', str(uid)]
+            lu_run(argv + ['--', name])
+            h = str(u.get('hash') or '')
+            if PW_HASH_RE.match(h.lstrip('!')):
+                lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, h.lstrip('!')))
+                if h.startswith('!'):
+                    lu_run(['usermod', '-L', name])
+            # The aging as it was - the day of the last change, the days, the account's end.
+            args = ['chage']
+            for opt, key in (('-d', 'lastchg'), ('-m', 'min'), ('-M', 'max'), ('-W', 'warn'),
+                             ('-I', 'inactive'), ('-E', 'expire')):
+                v = str(u.get(key) or '')
+                args += [opt, v if re.match(r'^-?\d{1,6}\Z', v) else '-1']
+            lu_run(args + [name])
+            if u.get('sudo'):
+                try:
+                    lu_sudo(name, True)
+                except Refused:
+                    pass
+            made += 1
+            said.append('%s made again%s' % (name, '' if not other else ' (UID %d was %s\'s here)' % (uid, other)))
+            p = pwd.getpwnam(name)
+        lines = [str(x) for x in (k.get('keys') or {}).get(name) or []]
+        if lines:
+            have = user_auth_read(p)
+            add = [ln for ln in lines if ln not in have]
+            if add:
+                user_auth_write(p, [ln for ln in have if ln.strip()] + add)
+                keys_n += len(add)
+    root = [str(x) for x in k.get('root_keys') or []]
+    if root:
+        have = auth_lines()
+        add = [ln for ln in root if ln not in have]
+        if add:
+            auth_write([ln for ln in have if ln.strip()] + add)
+            keys_n += len(add)
+            said.append('%d key(s) of root put back' % len(add))
+    for b, on in (k.get('selinux') or {}).items():
+        if b in SEL_BOOLS and on and shutil.which('setsebool'):
+            got = subprocess.run(['getsebool', b], capture_output=True, text=True)
+            if got.returncode == 0 and not got.stdout.strip().endswith('on'):
+                subprocess.run(['setsebool', '-P', b, 'on'], capture_output=True, text=True, timeout=300)
+                said.append('SELinux: %s on' % b)
+    said.insert(0, '%d user(s) made again, %d SSH key(s) put back' % (made, keys_n))
+    return said
+
 def users_part():
     d = web_fd()
     try:
-        raw = read_req(USERS_ASK, 65536)
+        raw = read_req(USERS_ASK, 4 * 1024 * 1024)
     except FileNotFoundError:
         return
     except (Refused, OSError):
