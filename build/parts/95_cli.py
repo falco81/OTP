@@ -634,6 +634,9 @@ def build_parser():
                    help='what the directory says about one person, groups and all')
     g = p.add_argument_group('THE SETTINGS AND THE ACCOUNTS')
     g.add_argument('--settings', action='store_true', help='every setting, as it stands')
+    g.add_argument('--get', nargs='+', metavar='KEY', help='the value of these settings, as --set '
+                   'takes them: one key - the value alone (for a script); more - KEY=VALUE a line '
+                   '(with --json an object); a secret only "set" or "not set"')
     g.add_argument('--set', action='append', metavar='KEY=VALUE', help='change one (again for '
                    'more); a secret (a password, a token) as KEY=-: asked for, or one line of '
                    'stdin, or OTP_VALUE_KEY - never written out here')
@@ -3265,6 +3268,9 @@ def cli_main(argv=None):
         print('  groups:   %s' % ', '.join(sorted(cn for _, cn in groups)))
         return 0
 
+    if args.get:
+        return cli_get(store, args)
+
     if args.settings:
         d = Daemon(store, serve=False)
         rows = d.settings_state(True)
@@ -4249,6 +4255,46 @@ def cli_who():
     if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
         return 'command line (sudo %s)' % by
     return 'command line'
+
+
+def cli_get(store, args):
+    """otp --get KEY... (1.0.244): the settings as they are in effect on this node - the counterpart
+    of --set. A secret is never shown, only whether it is set."""
+    bad = [k for k in args.get if k not in DEFAULTS]
+    if bad:
+        import difflib
+        near = []
+        for b in bad:
+            near += [k for k in difflib.get_close_matches(b.lower(), list(DEFAULTS), 3, 0.6)
+                     if k not in near]
+            near += sorted(k for k in DEFAULTS if b.lower() in k and k not in near)[:5]
+        print('otp: no such setting: %s%s' % (', '.join(bad), (' - did you mean: ' + ', '.join(near))
+                                              if near else ' (otp --settings lists them)'),
+              file=sys.stderr)
+        return 2
+    Daemon(store, serve=False)              # the settings saved on the pages read in, as --settings
+    got = {}
+    for k in args.get:
+        v = CONFIG.get(k)
+        got[k] = ('set' if v else 'not set') if k in SECRET_KEYS else v
+    if args.json:
+        print(json.dumps(got, ensure_ascii=False, default=str))
+        return 0
+
+    def plain(v):
+        if isinstance(v, bool):
+            return '1' if v else '0'
+        if v is None:
+            return ''
+        if isinstance(v, (list, dict)):
+            return json.dumps(v, ensure_ascii=False, default=str)
+        return str(v)
+    if len(args.get) == 1:
+        print(plain(got[args.get[0]]))
+    else:
+        for k in args.get:
+            print('%s=%s' % (k, plain(got[k])))
+    return 0
 
 
 def cli_osusers(args, pal):

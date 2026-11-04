@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.243'
+__version__ = '1.0.244'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -23235,7 +23235,13 @@ def heartbeat(store, daemon=None):
             'own_file': sorted(k for k in NODE_KEYS if k in (FILE_KEYS or ())),
             # The guard against writes to the database (1.0.234): a going back below it
             # refused while it is on on any node.
-            'db_guard': bool(CONFIG.get('db_guard'))}
+            'db_guard': bool(CONFIG.get('db_guard')),
+            # High security as in effect here (1.0.244): its card shows each node's.
+            'high_security': bool(CONFIG.get('high_security'))}
+    try:
+        beat['guard_refused'] = len(dbguard_view().get('refused') or [])
+    except Exception:                                   # noqa: BLE001
+        pass
     try:
         beat['software'] = software_info(store)  # for the other node's About (1.0.99)
     except Exception:                                   # noqa: BLE001
@@ -26637,7 +26643,31 @@ def hisec_sshd(c):
 
 def hisec_view(store):
     got = hisec_findings(store)
-    return dict(got, on=_hs_on(), guard=dbguard_view())
+    return dict(got, on=_hs_on(), guard=dbguard_view(), nodes=hisec_nodes(store))
+
+
+def hisec_nodes(store):
+    """High security and the guard against writes as in effect on each node (1.0.244): this one
+    as it is now, the others as their last heartbeat says (None: a version that does not say)."""
+    out = [{'name': node_name(), 'me': True, 'alive': True, 'high_security': _hs_on(),
+            'db_guard': dbguard_on(), 'refused': len(dbguard_view().get('refused') or [])}]
+    # The nodes of this cluster only (1.0.244): a node alone shows itself; a row of a node not heard
+    # from for a day (taken out, renamed - otp --ha-forget) is not one; a pair has one other.
+    if not CONFIG.get('ha_mode'):
+        return out
+    try:
+        others = [n for n in ha_nodes(store) if not n.get('me') and n['name'] != node_name() and
+                  float(n.get('age') or 0) < 86400]
+        others.sort(key=lambda n: float(n.get('age') or 0))
+        if CONFIG.get('ha_mode') == 'replicated':
+            others = others[:1]
+        for n in others:
+            out.append({'name': n['name'], 'me': False, 'alive': bool(n.get('alive')),
+                        'high_security': n.get('high_security'), 'db_guard': n.get('db_guard'),
+                        'refused': n.get('guard_refused'), 'version': n.get('version')})
+    except Exception:                                   # noqa: BLE001
+        pass
+    return out
 
 # ---- going back to an older version (1.0.143) ---------------------------------------
 # Never by putting a database back: the tables stay as they are - every column
@@ -47549,6 +47579,13 @@ def osu_tick(daemon):
                     osu_keep(row, got)
                 row.update(done=done[-300:], said=said[-10:])
                 store.set_meta('host:users:now:' + me, json.dumps(row))
+            if changes:
+                # SSH keys' "Whose keys" read again here too (1.0.244): a user just made was not
+                # there until the page was loaded anew and the keys asked again.
+                try:
+                    sshkeys_ask(store, [me], 'list', 'local users')
+                except Exception:                       # noqa: BLE001
+                    pass
             try:
                 osu_keep(row, root_ask('users.ask', 'users.json', {'do': 'list'}, 60))
                 row['error'] = ''
@@ -54254,6 +54291,9 @@ def build_parser():
                    help='what the directory says about one person, groups and all')
     g = p.add_argument_group('THE SETTINGS AND THE ACCOUNTS')
     g.add_argument('--settings', action='store_true', help='every setting, as it stands')
+    g.add_argument('--get', nargs='+', metavar='KEY', help='the value of these settings, as --set '
+                   'takes them: one key - the value alone (for a script); more - KEY=VALUE a line '
+                   '(with --json an object); a secret only "set" or "not set"')
     g.add_argument('--set', action='append', metavar='KEY=VALUE', help='change one (again for '
                    'more); a secret (a password, a token) as KEY=-: asked for, or one line of '
                    'stdin, or OTP_VALUE_KEY - never written out here')
@@ -56885,6 +56925,9 @@ def cli_main(argv=None):
         print('  groups:   %s' % ', '.join(sorted(cn for _, cn in groups)))
         return 0
 
+    if args.get:
+        return cli_get(store, args)
+
     if args.settings:
         d = Daemon(store, serve=False)
         rows = d.settings_state(True)
@@ -57869,6 +57912,46 @@ def cli_who():
     if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
         return 'command line (sudo %s)' % by
     return 'command line'
+
+
+def cli_get(store, args):
+    """otp --get KEY... (1.0.244): the settings as they are in effect on this node - the counterpart
+    of --set. A secret is never shown, only whether it is set."""
+    bad = [k for k in args.get if k not in DEFAULTS]
+    if bad:
+        import difflib
+        near = []
+        for b in bad:
+            near += [k for k in difflib.get_close_matches(b.lower(), list(DEFAULTS), 3, 0.6)
+                     if k not in near]
+            near += sorted(k for k in DEFAULTS if b.lower() in k and k not in near)[:5]
+        print('otp: no such setting: %s%s' % (', '.join(bad), (' - did you mean: ' + ', '.join(near))
+                                              if near else ' (otp --settings lists them)'),
+              file=sys.stderr)
+        return 2
+    Daemon(store, serve=False)              # the settings saved on the pages read in, as --settings
+    got = {}
+    for k in args.get:
+        v = CONFIG.get(k)
+        got[k] = ('set' if v else 'not set') if k in SECRET_KEYS else v
+    if args.json:
+        print(json.dumps(got, ensure_ascii=False, default=str))
+        return 0
+
+    def plain(v):
+        if isinstance(v, bool):
+            return '1' if v else '0'
+        if v is None:
+            return ''
+        if isinstance(v, (list, dict)):
+            return json.dumps(v, ensure_ascii=False, default=str)
+        return str(v)
+    if len(args.get) == 1:
+        print(plain(got[args.get[0]]))
+    else:
+        for k in args.get:
+            print('%s=%s' % (k, plain(got[k])))
+    return 0
 
 
 def cli_osusers(args, pal):

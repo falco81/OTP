@@ -52,8 +52,10 @@ function gone() { try { execSync('userdel -r otpl_ui 2>/dev/null'); } catch (e) 
         await pw[1].type('Ui-Pass-243-long');
         const shown = await pw[0].inputValue();
         ok(tag + 'the password typed shows dots only', !/Ui-Pass/.test(shown), shown);
-        const chks = await p.$$('#modal-body label.osu-chk input');
-        await chks[1].check();
+        const sws = await p.$$('#modal-body .osu-chk .sw');
+        ok(tag + 'on/off switches, no boxes to tick', sws.length >= 2 && (await p.$$('#modal-body label.chk input[type=checkbox]')).length === 0);
+        await sws[1].click();
+        ok(tag + '...a switch turned: sudo on', (await p.$$eval('#modal-body .osu-chk input', x => x.map(i => i.checked)))[1] === true);
         await p.screenshot({ path: '/tmp/claude-0/osuui/add-' + lang + '-' + width + '.png' });
         await p.click('#modal-foot button.primary');
         await p.waitForFunction(() => /otpl_ui/.test(document.querySelector('.osu-table') ? document.querySelector('.osu-table').textContent : ''), null, { timeout: 60000 }).catch(() => {});
@@ -62,6 +64,12 @@ function gone() { try { execSync('userdel -r otpl_ui 2>/dev/null'); } catch (e) 
         let sys = '';
         try { sys = execSync('getent passwd otpl_ui').toString(); } catch (e) { }
         ok(tag + '...a user of the machine', /otpl_ui:x:\d+:\d+:UI Test/.test(sys), sys);
+        // SSH keys knows it without a reload of the page (1.0.244)
+        await p.click('[data-pane="sshkeys"]');
+        await p.waitForFunction(() => [...document.querySelectorAll('.sk-who select option')].some(o => o.value === 'otpl_ui'), null, { timeout: 40000 }).catch(() => {});
+        ok(tag + '...in SSH keys\' "Whose keys" without F5', await p.$$eval('.sk-who select option', x => x.some(o => o.value === 'otpl_ui')));
+        await p.click('[data-pane="osusers"]');
+        await p.waitForSelector('.osu-table tbody tr', { timeout: 20000 }).catch(() => {});
       }
       const has = await p.$$eval('.osu-table tbody tr', x => x.some(r => /otpl_ui/.test(r.textContent)));
       if (has) {
@@ -110,7 +118,7 @@ function gone() { try { execSync('userdel -r otpl_ui 2>/dev/null'); } catch (e) 
       if (/otpl_ui/.test(await r.textContent())) { await (await r.$('.osu-act button')).click(); break; }
     }
     await p.waitForSelector('#modal:not([hidden]) .osu-fact');
-    await p.check('#modal-body .osu-sect:last-child input[type=checkbox]');
+    await p.click('#modal-body .osu-sect:last-child .sw');
     await p.click('#modal-foot button.danger');
     await p.click('.sure-strip button.danger');
     await p.waitForFunction(() => !/otpl_ui/.test((document.querySelector('.osu-table') || {}).textContent || 'otpl_ui'), null, { timeout: 60000 }).catch(() => {});

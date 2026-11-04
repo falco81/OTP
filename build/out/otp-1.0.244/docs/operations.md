@@ -82,6 +82,8 @@ otp --mail-test a@b.cz      # a test mail, every step said;  --sms-test +420...
 otp --ssh-tokens            # SSH tokens;  --ssh-token-add NAME [--by mail|sms --to ...]  /  --ssh-token-del NAME
 otp --lockouts              # who is locked out, on every node;  --lockouts-clear all|KIND:WHO
 otp --set smtp_password=-   # a secret: asked for (or one line of stdin, or OTP_VALUE_SMTP_PASSWORD)
+otp --get db_guard          # one setting's value alone, for a script: 0
+otp --get logs_keep smtp_password --json   # several: KEY=VALUE a line, or an object; a secret: set / not set
 otp --set backup_at=02:30 --node otp2      # a node's own setting for another node ('*': the cluster's)
 otp --siem-test / --proxy-test / --snmp-test / --snmp-trap / --isemon-test   # from every node (1.0.188)
 otp --db-tls ; otp --db-tls-probe verify-full ; otp --db-tls-apply server|connect --yes

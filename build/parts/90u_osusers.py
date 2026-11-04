@@ -260,6 +260,13 @@ def osu_tick(daemon):
                     osu_keep(row, got)
                 row.update(done=done[-300:], said=said[-10:])
                 store.set_meta('host:users:now:' + me, json.dumps(row))
+            if changes:
+                # SSH keys' "Whose keys" read again here too (1.0.244): a user just made was not
+                # there until the page was loaded anew and the keys asked again.
+                try:
+                    sshkeys_ask(store, [me], 'list', 'local users')
+                except Exception:                       # noqa: BLE001
+                    pass
             try:
                 osu_keep(row, root_ask('users.ask', 'users.json', {'do': 'list'}, 60))
                 row['error'] = ''

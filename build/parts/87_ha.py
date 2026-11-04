@@ -106,7 +106,13 @@ def heartbeat(store, daemon=None):
             'own_file': sorted(k for k in NODE_KEYS if k in (FILE_KEYS or ())),
             # The guard against writes to the database (1.0.234): a going back below it
             # refused while it is on on any node.
-            'db_guard': bool(CONFIG.get('db_guard'))}
+            'db_guard': bool(CONFIG.get('db_guard')),
+            # High security as in effect here (1.0.244): its card shows each node's.
+            'high_security': bool(CONFIG.get('high_security'))}
+    try:
+        beat['guard_refused'] = len(dbguard_view().get('refused') or [])
+    except Exception:                                   # noqa: BLE001
+        pass
     try:
         beat['software'] = software_info(store)  # for the other node's About (1.0.99)
     except Exception:                                   # noqa: BLE001

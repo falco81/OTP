@@ -15305,9 +15305,10 @@ function loadSshKeys() {
     /* Read afresh on every node when the pane is opened. */
     if (Date.now() - SK.asked > 20000) {
       SK.asked = Date.now();
+      SK.until = Date.now() + 15000;   /* a read asked: watched until it can have come (1.0.244) */
       api('sshkeys', {action: 'refresh', nodes: skNodes(true)}).then(function () { skPoll(true); }).catch(function () {});
     }
-    skPoll(skPending());
+    skPoll(skPending() || Date.now() < (SK.until || 0));
   }).catch(oops);
 }
 function skNodes(aliveOnly) {
@@ -15318,7 +15319,7 @@ function skPoll(on) {
   if (on && !SK.poll) {
     SK.poll = setInterval(function () {
       if (TAB !== 'settings' || PANE !== 'sshkeys') { skPoll(false); return; }
-      api('sshkeys').then(function (d) { SK.d = d; drawSshKeys(true); if (!skPending()) skPoll(false); }).catch(function () {});
+      api('sshkeys').then(function (d) { SK.d = d; drawSshKeys(true); if (!skPending() && Date.now() >= (SK.until || 0)) skPoll(false); }).catch(function () {});
     }, 2000);
   }
   if (!on && SK.poll) { clearInterval(SK.poll); SK.poll = null; }
@@ -15711,7 +15712,7 @@ function osuNodes(aliveOnly) {
 }
 function osuPending() { return ((OSU.d && OSU.d.nodes) || []).some(function (n) { return n.pending; }); }
 function osuPoll(on) {
-  if (on) OSU.ask = Date.now();
+  if (on) { OSU.ask = Date.now(); if (typeof SK !== 'undefined') SK.asked = 0; }
   if (on && !OSU.poll) {
     OSU.poll = setInterval(function () {
       if (TAB !== 'settings' || PANE !== 'osusers') { osuPoll(false); return; }
@@ -15863,12 +15864,15 @@ function osuNodePicker(body, name, making) {
     box.appendChild(el('div', 'k small muted', making ? 'Made on the nodes' : 'On the nodes'));
     nodes.forEach(function (n) {
       var there = making || (n.users || []).some(function (u) { return u.name === name; });
-      var lab = el('label', 'chk');
-      var c = el('input'); c.type = 'checkbox'; c.value = n.name;
-      c.checked = n.alive && there; c.disabled = !n.alive || !there;
-      lab.appendChild(c);
-      lab.appendChild(noI18n(el('span', '', ' ' + n.name + (!n.alive ? ' (not answering)' : !there ? ' (not there)' : ''))));
-      box.appendChild(lab);
+      var one = el('div', 'osu-sw osu-node');
+      var sw = switchBox(n.alive && there);
+      var c = sw._input; c.value = n.name; c.disabled = !n.alive || !there;
+      if (c.disabled) one.classList.add('off');
+      one.appendChild(sw);
+      var nm = noI18n(el('span', 'osu-sw-w', n.name + (!n.alive ? ' (not answering)' : !there ? ' (not there)' : '')));
+      nm.onclick = function () { if (!c.disabled) c.click(); };
+      one.appendChild(nm);
+      box.appendChild(one);
       boxes.push(c);
     });
     body.appendChild(box);
@@ -15900,12 +15904,19 @@ function osuPwPair(body, need) {
     return {ok: true, value: a.value};
   };
 }
+/* An on/off switch with its words (1.0.244: switches, not boxes to tick). */
 function osuCheck(words, on, says) {
-  var lab = el('label', 'chk osu-chk');
-  var c = el('input'); c.type = 'checkbox'; c.checked = !!on;
-  lab.appendChild(c); lab.appendChild(el('span', '', ' ' + words));
-  if (says) lab.appendChild(el('span', 'muted small osu-says', says));
-  return {box: lab, input: c};
+  var row = el('div', 'osu-chk osu-sw');
+  var sw = switchBox(on);
+  row.appendChild(sw);
+  var txt = el('span', 'osu-sw-t');
+  var w = el('span', 'osu-sw-w', words);
+  txt.appendChild(w);
+  if (says) txt.appendChild(el('span', 'muted small osu-says', says));
+  row.appendChild(txt);
+  /* A click on the words turns it too. */
+  w.onclick = function () { if (!sw._input.disabled) sw._input.click(); };
+  return {box: row, input: sw._input};
 }
 function osuAdd(name) {
   var nameI, gecos, shell, pw, sudo, must, pick;
@@ -17211,11 +17222,46 @@ function drawLogs() {
 }
 
 /* Settings → High security (1.0.168): what stands against it now, and what is advised. */
+var HS_NODES = [];
 function loadHisec() {
   api('hisec').then(function (d) { drawHisec(d); }).catch(oops);
   loadSelinux();
 }
+/* How High security and the guard against writes stand on each node (1.0.244): a light a
+   node under each of the two switches - green on, grey off, dim when the node does not say. */
+function hsLights(nodes) {
+  [['high_security', 'high_security'], ['db_guard', 'db_guard']].forEach(function (p) {
+    var item = document.querySelector('.set-item[data-key="' + p[0] + '"]');
+    if (!item) return;
+    var old = item.querySelector('.hs-lights');
+    if (old) old.remove();
+    if (!nodes || !nodes.length) return;
+    var box = el('div', 'hs-lights');
+    nodes.forEach(function (n) {
+      var v = n[p[1]], known = v !== null && v !== undefined;
+      var state = !n.alive ? 'gone' : !known ? 'unknown' : v ? 'on' : 'off';
+      var row = el('div', 'hs-light ' + state);
+      row.appendChild(el('span', 'dot'));
+      var nm = el('span', 'hs-light-n');
+      nm.appendChild(noI18n(el('span', '', n.name)));
+      if (n.me) nm.appendChild(el('span', 'tag info', 'this node'));
+      row.appendChild(nm);
+      var words = !n.alive ? 'not answering' : !known ? 'does not say' : v ? 'on' : 'off';
+      if (p[0] === 'db_guard' && v && n.alive && n.refused) words = 'on – ' + n.refused + ' refused';
+      row.appendChild(el('span', 'hs-light-v', words));
+      explain(row, n.name + (n.me ? ' (this node)' : '') + ': ' + (!n.alive ? 'not heard from - what it said last'
+        : !known ? 'its version does not say' : (v ? 'on' : 'off') + (n.me ? ' now' : ', as its last heartbeat says')));
+      box.appendChild(row);
+    });
+    /* Under the switch, before its words - as the other nodes' values of a setting are. */
+    var tail = item.querySelector('.set-tail');
+    if (tail) tail.insertBefore(box, tail.firstChild);
+    else item.appendChild(box);
+  });
+}
 function drawHisec(d) {
+  HS_NODES = d.nodes || [];
+  setTimeout(function () { hsLights(HS_NODES); }, 0);
   var host = $('hs-host');
   if (!host) return;
   clear(host);

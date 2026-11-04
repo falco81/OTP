@@ -429,4 +429,28 @@ def hisec_sshd(c):
 
 def hisec_view(store):
     got = hisec_findings(store)
-    return dict(got, on=_hs_on(), guard=dbguard_view())
+    return dict(got, on=_hs_on(), guard=dbguard_view(), nodes=hisec_nodes(store))
+
+
+def hisec_nodes(store):
+    """High security and the guard against writes as in effect on each node (1.0.244): this one
+    as it is now, the others as their last heartbeat says (None: a version that does not say)."""
+    out = [{'name': node_name(), 'me': True, 'alive': True, 'high_security': _hs_on(),
+            'db_guard': dbguard_on(), 'refused': len(dbguard_view().get('refused') or [])}]
+    # The nodes of this cluster only (1.0.244): a node alone shows itself; a row of a node not heard
+    # from for a day (taken out, renamed - otp --ha-forget) is not one; a pair has one other.
+    if not CONFIG.get('ha_mode'):
+        return out
+    try:
+        others = [n for n in ha_nodes(store) if not n.get('me') and n['name'] != node_name() and
+                  float(n.get('age') or 0) < 86400]
+        others.sort(key=lambda n: float(n.get('age') or 0))
+        if CONFIG.get('ha_mode') == 'replicated':
+            others = others[:1]
+        for n in others:
+            out.append({'name': n['name'], 'me': False, 'alive': bool(n.get('alive')),
+                        'high_security': n.get('high_security'), 'db_guard': n.get('db_guard'),
+                        'refused': n.get('guard_refused'), 'version': n.get('version')})
+    except Exception:                                   # noqa: BLE001
+        pass
+    return out
