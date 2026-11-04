@@ -68,3 +68,27 @@ P250.update({
  "Not in use while {0} is off - no cap is applied to any directory. What is set here is kept for when it is on.":
   "Nepoužívá se, dokud je vypnuto {0} – na žádný adresář se nepoužije žádný strop. Co je tu nastaveno, zůstane pro chvíli, kdy se zapne.",
 })
+S250.update({
+ "reading the users of the nodes…": "načítám uživatele uzlů…",
+ "pick an account…": "vyberte účet…",
+ "every account has an SSH token already": "každý účet už SSH token má",
+ "(the nodes did not say their users - only root)": "(uzly své uživatele neřekly – jen root)",
+ "root, or a user who may sign in on the nodes (a login shell, UID 1000 and up). One SSH token each - one that has it is not offered.":
+  "root, nebo uživatel, který se smí přihlásit na uzly (přihlašovací shell, UID od 1000). Každý jen jeden SSH token – kdo ho už má, se nenabízí.",
+ "pick an account first": "nejdřív vyberte účet",
+})
+P250.update({
+ "{0} is not an account of the nodes - pick one of the list (root, or a user who may sign in there)":
+  "{0} není účet uzlů – vyberte ze seznamu (root, nebo uživatel, který se tam smí přihlásit)",
+})
+S250.update({
+ "Everybody": "Všichni",
+ "Everybody but root (unless Root too)": "Všichni kromě roota (pokud není zapnuto I root)",
+ "The accounts that may sign in over SSH (AllowUsers) - or everybody.": "Účty, které se smí přihlásit přes SSH (AllowUsers) – nebo všichni.",
+ "The accounts asked for a code - or everybody but root (root: Root too).": "Účty, po kterých se chce kód – nebo všichni kromě roota (root: I root).",
+ "not listed by the nodes": "uzly ho neuvádí",
+ "The nodes list no user who may sign in.": "Uzly neuvádí žádného uživatele, který se smí přihlásit.",
+ "find an account": "najít účet",
+ "Take it away": "Odebrat",
+})
+S250.update({"Nobody": "Nikdo", "Every normal user": "Všichni běžní uživatelé"})

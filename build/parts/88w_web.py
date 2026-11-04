@@ -751,8 +751,17 @@ def web_desired(store):
                             'this node' if not vip['own'] else 'the other node'), 'warn',
                         every=3600)
             vip = {'on': False}
-    tls = {'node': tls_resolved(tls_profile(store, me)),
-           'vip': tls_resolved(tls_profile(store, 'vip')) if vip['on'] else None}
+    vip_tls = tls_profile(store, 'vip') if vip['on'] else None
+    if vip_tls and vip_tls.get('cert') and not vip['fqdn']:
+        # A certificate of the VIP address's own, its name taken away since (1.0.242): root
+        # refused the whole request for it, and no change of nginx, keepalived or the
+        # firewall reached this node again - the VIP address stayed away. The node's
+        # certificate serves the address until a name is given again.
+        log_sparing('vip-noname', 'the VIP address has a certificate of its own but no name: '
+                    'the node\'s certificate serves it until the name is given again (Settings - '
+                    'TLS and the VIP address)', 'warn', every=3600)
+        vip_tls = None
+    tls = {'node': tls_resolved(tls_profile(store, me)), 'vip': tls_resolved(vip_tls)}
     out = {'node': me, 'vip': vip, 'tls': tls}
     # Asked only once set on the pages (1.0.52): a request from before had
     # neither, and its hash stays what it was.

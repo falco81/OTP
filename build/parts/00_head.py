@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.241'
+__version__ = '1.0.242'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -331,6 +331,20 @@ DEFAULTS = {
     'alerts_dir': 1,
     'alerts_sms': 1,
     'alerts_guard': 0,
+    # Everything the nodes see, mailed (1.0.242).
+    'alerts_shipping': 1,
+    'alerts_snmp': 1,
+    'alerts_acme': 1,
+    'alerts_upgrade': 1,
+    'alerts_trial': 1,
+    'alerts_dbguard': 1,
+    'alerts_mailq': 1,
+    'alerts_split': 1,
+    'alerts_clock': 1,
+    'alerts_repl_behind_mb': 0,
+    'alerts_selinux': 0,
+    'alerts_hisec': 0,
+    'alerts_sso': 0,
     'alerts_url': '',
     'alerts_lang': '',
     'report_lang': '',
@@ -542,6 +556,7 @@ TUNABLE = {
     'alerts_db': (0, 1), 'alerts_vrrp': (0, 1),
     'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
     'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
+    'alerts_shipping': (0, 1), 'alerts_snmp': (0, 1), 'alerts_acme': (0, 1), 'alerts_upgrade': (0, 1), 'alerts_trial': (0, 1), 'alerts_dbguard': (0, 1), 'alerts_mailq': (0, 1), 'alerts_split': (0, 1), 'alerts_clock': (0, 1), 'alerts_repl_behind_mb': (0, 100000), 'alerts_selinux': (0, 1), 'alerts_hisec': (0, 1), 'alerts_sso': (0, 1),
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
     'report_day': ('1', '2', '3', '4', '5', '6', '7'),
     'alerts_lang': ('', 'cs', 'en'), 'report_lang': ('', 'cs', 'en'),
@@ -842,7 +857,7 @@ NAMES = {
     'alerts_delay_min': 'Only once it has lasted (min)',
     'alerts_repeat_h': 'Remind every (hours)',
     'alerts_resolved': 'Say when it is over',
-    'alerts_nodes': 'A node, RADIUS, the replication or the database down',
+    'alerts_nodes': 'A node or RADIUS down, or the tokens\' key missing',
     'alerts_db': 'The database and its replication',
     'alerts_vrrp': 'The VIP address (VRRP)',
     'alerts_backup': 'A backup that failed or did not come',
@@ -853,6 +868,19 @@ NAMES = {
     'alerts_dir': 'Active Directory out of reach',
     'alerts_sms': 'The SMS gateway failing',
     'alerts_guard': 'A source blocked for guessing',
+    'alerts_shipping': 'Logs not reaching isemon or the syslog servers',
+    'alerts_snmp': 'The SNMP agent not listening',
+    'alerts_acme': 'A certificate the CA did not renew',
+    'alerts_upgrade': 'An upgrade of otp that failed',
+    'alerts_trial': 'A change on trial that went back',
+    'alerts_dbguard': 'Rows of the database not written by otp',
+    'alerts_mailq': 'Mails that do not go',
+    'alerts_split': 'The nodes apart',
+    'alerts_clock': 'The clock guard',
+    'alerts_repl_behind_mb': 'Replication behind by more than (MB)',
+    'alerts_selinux': 'SELinux refusing',
+    'alerts_hisec': 'The security check finding something',
+    'alerts_sso': 'Sign-ins by the load balancer refused',
     'alerts_url': 'The administration’s address in the mails',
     'alerts_lang': 'Language of the alerts',
     'report_lang': 'Language of the report',
@@ -1436,8 +1464,10 @@ SAYS = {
                         'update is back in a few minutes. 0: at once.',
     'alerts_repeat_h': 'While it lasts, said again this often. 0: once only.',
     'alerts_resolved': 'A mail when what was mailed is over.',
-    'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS, the '
-                    'replication stopped, the database in trouble, the nodes on different versions.',
+    'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS or in trouble '
+                    'with it, the key that opens the tokens missing, two nodes under one name, the '
+                    'nodes on different versions. (The replication and the database: their own, '
+                    'below.)',
     'alerts_db': 'The replication stopped, or the database of a node in trouble. Not while a node '
                  'is in maintenance, being upgraded, updated or restarted, nor 10 min after - '
                  'the same outside of them is mailed.',
@@ -1456,6 +1486,19 @@ SAYS = {
     'alerts_dir': 'None of the servers of a directory answers a node.',
     'alerts_sms': 'Three SMS in a row that did not go.',
     'alerts_guard': 'Each source Sign-in protection blocks, as it is blocked.',
+    'alerts_shipping': 'Sending to isemon or to the syslog servers (SIEM) failing on a node - not reached, refused, or lines dropped.',
+    'alerts_snmp': 'SNMPv3 switched on and its agent on a node not listening (the port taken, refused), or its traps not going out.',
+    'alerts_acme': 'ACME ordered a certificate and none came - said at once, not only once it is about to run out.',
+    'alerts_upgrade': 'An upgrade of otp (Settings → Upgrades) that failed on a node, or one left stuck.',
+    'alerts_trial': 'A change of the network, the firewall or the SSH server on trial that was not kept and went back by itself - whoever made it may have lost the way in.',
+    'alerts_dbguard': 'With the guard against writes to the database on: rows that reach root not as otp wrote them, refused - somebody may be writing to the database.',
+    'alerts_mailq': 'Codes or tokens by mail that failed or ran out in the outgoing queue (Settings → Outgoing mail).',
+    'alerts_split': 'A node that cannot reach the other one, or stepped aside, and codes let in on both while they were apart - with What the nodes do when they lose each other set to report it.',
+    'alerts_clock': 'What the clock guard (Settings → Time) sees: a node stepped aside, no reference time server, a clock off, two clocks apart, the directory out of reach.',
+    'alerts_repl_behind_mb': 'The replication running, but the other node this many MB behind - or apply or sync errors. 0: never (only a replication that stopped is mailed).',
+    'alerts_selinux': 'A node where the SELinux card finds something not as otp needs it - a refusal, a label, a boolean, the module.',
+    'alerts_hisec': 'What Settings → High security finds less safe than it could be - said once a day while it stays so.',
+    'alerts_sso': 'Each sign-in by the load balancer or WAF the enrolment pages refuse, as it is refused - wrong key, not from a balancer, a name the directory does not know.',
     'alerts_url': 'Where the links in the mails lead, <code>https://otp.example.cz/admin/</code>. '
                   'Empty: this machine’s name.',
     'report': 'A report of the period by mail: the sign-ins by day, who was refused and why, '
@@ -1682,6 +1725,7 @@ PANES = {
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_db', 'alerts_vrrp', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
+               'alerts_shipping', 'alerts_snmp', 'alerts_acme', 'alerts_upgrade', 'alerts_trial', 'alerts_dbguard', 'alerts_mailq', 'alerts_split', 'alerts_clock', 'alerts_repl_behind_mb', 'alerts_selinux', 'alerts_hisec', 'alerts_sso',
                'alerts_lang', 'alerts_url', 'report', 'report_to', 'report_lang', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
               'code_send_window_min', 'code_lang', 'code_mail_fmt', 'sms_mode', 'sms_url', 'sms_method',
@@ -1745,6 +1789,7 @@ ONLY_WHEN = {
     'alerts_cert_days': ['alerts', '1'], 'alerts_disk_pct': ['alerts', '1'],
     'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
+    'alerts_shipping': ['alerts', '1'], 'alerts_snmp': ['alerts', '1'], 'alerts_acme': ['alerts', '1'], 'alerts_upgrade': ['alerts', '1'], 'alerts_trial': ['alerts', '1'], 'alerts_dbguard': ['alerts', '1'], 'alerts_mailq': ['alerts', '1'], 'alerts_split': ['alerts', '1'], 'alerts_clock': ['alerts', '1'], 'alerts_repl_behind_mb': ['alerts', '1'], 'alerts_selinux': ['alerts', '1'], 'alerts_hisec': ['alerts', '1'], 'alerts_sso': ['alerts', '1'],
     'report_to': ['report', '1'], 'report_every': ['report', '1'],
     'alerts_lang': ['alerts', '1'], 'report_lang': ['report', '1'],
     'osup_check_at': ['osup_check', '1'], 'osup_auto_what': ['osup_auto', '1'],

@@ -262,6 +262,17 @@ c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': K1, 'nodes': ['no
 ok('"../root": refused at once (%s)' % c, c == 400, x)
 ev = json.dumps(call('node1', '/api/events?limit=60', None, S)[1])
 ok('the events say for whom', 'for otpt_alice on node1, node2' in ev, ev[:300])
+# SSH tokens (1.0.242): only an account of the nodes, one each
+c, x = call('node1', '/api/sshd', {'action': 'sshotp_add', 'name': 'otpt_nosuch', 'kind': 'app'}, S)
+ok('an SSH token for a name that is no account of the nodes: refused (%s)' % c, c == 400 and 'not an account of the nodes' in str(x.get('error')), x)
+c, x = call('node1', '/api/sshd', {'action': 'sshotp_add', 'name': 'otpt_svcx', 'kind': 'app'}, S)
+ok('...nor for one with nologin (%s)' % c, c == 400, x)
+c, x = call('node1', '/api/sshd', {'action': 'sshotp_add', 'name': 'otpt_bob', 'kind': 'app'}, S)
+ok('...for bob, a user of the nodes: made (%s)' % c, c == 200 and (x.get('made') or {}).get('name') == 'otpt_bob', x)
+c, x = call('node1', '/api/sshd', {'action': 'sshotp_add', 'name': 'otpt_bob', 'kind': 'app'}, S)
+ok('...a second one for bob: refused - one each (%s)' % c, c == 400 and 'already' in str(x.get('error')), x)
+c, x = call('node1', '/api/sshd', {'action': 'sshotp_add', 'name': 'otpt_bob', 'kind': 'app', 'replace': True}, S)
+ok('...a new one in its place: made (%s)' % c, c == 200, x)
 # the console's users from the pages
 c, x = call('node1', '/api/console-login', {'node': 'node2', 'on': True, 'users': ['otpt_alice']}, S)
 ok('the console at login for alice on node2: asked (%s)' % c, c == 200, x)

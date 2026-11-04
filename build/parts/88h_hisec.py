@@ -243,11 +243,21 @@ def hisec_rules(store, conf=None):
     a = (access_conf(store) or {}).get('admin') or {'any': True}
     if a.get('any', True):
         hit['fw:admin'].append('everybody')
+    # What otp's code asks through (1.0.242): keyboard-interactive is the code from otp, not a
+    # password, where otp sets sshd to ask for it with no system password to fall back on - and
+    # PermitRootLogin yes then lets root in with a key and the code, never with a password.
+    try:
+        sc = sshd_conf(store) or {}
+    except Exception:                                   # noqa: BLE001
+        sc = {}
+    code_only = bool(sc.get('manage') and sc.get('radius') and not sc.get('radius_fallback'))
     for n in host_nodes(store):
         v = (sshd_now(store, n) or {}).get('values') or {}
-        if v.get('passwordauthentication') == 'yes' or v.get('kbdinteractiveauthentication') == 'yes':
+        pw = v.get('passwordauthentication') == 'yes' or \
+            (v.get('kbdinteractiveauthentication') == 'yes' and not code_only)
+        if pw:
             hit['sshd:password'].append(n)
-        if v.get('permitrootlogin') == 'yes':
+        if v.get('permitrootlogin') == 'yes' and pw:
             hit['sshd:root'].append(n)
         try:
             if v and int(v.get('maxauthtries') or 6) > 4:

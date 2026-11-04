@@ -4,10 +4,10 @@
 # of one node is acted on by both; replication runs on. Switched on and off by the pages of each node.
 # Usage (root): python3 t_ha_dbguard.py VERSION [keep]     keep: leave the guard on (for the other HA tests)
 import os, sys, time, json, secrets, hashlib
+KEEP = 'keep' in sys.argv[2:]      # before halib, which sets sys.argv of its own
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from halib import *  # noqa: F401,F403,E402
 import halib  # noqa: E402
-KEEP = 'keep' in sys.argv[2:]
 helpers_on()
 for n in 'ab':
     if not running(n):

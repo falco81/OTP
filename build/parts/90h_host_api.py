@@ -1,6 +1,21 @@
 
 
 # ---- root's SSH keys and the updates of the system on the pages (1.0.158) ------------
+def sshotp_accounts(store):
+    """root and the users who may sign in on the nodes, as they said (1.0.242); None while no node
+    said yet (an older one): then the name is taken as until now."""
+    out, said = {'root'}, False
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'host:sshkeys:now:%'"):
+        try:
+            row = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get('users'), list):
+            said = True
+            out.update(str(u.get('name')) for u in row['users'] if isinstance(u, dict) and u.get('name'))
+    return out if said else None
+
+
 @route('GET', '/api/sshkeys')
 def _sshkeys(h):
     h.me('fulladmin')
@@ -156,6 +171,14 @@ def _sshd_do(h):
             return sshd_view(h.store)
         # SSH tokens of their own (1.0.181): the app's QR shown once, when made.
         if act == 'sshotp_add':
+            # Only an account of the nodes (1.0.242): root, or a user who may sign in there, as the
+            # nodes said - never a name typed that is nobody's. A new one in its place: as it is.
+            if not b.get('replace'):
+                known = sshotp_accounts(h.store)
+                if known is not None and str(b.get('name') or '').strip() not in known:
+                    raise ValueError('%s is not an account of the nodes - pick one of the list '
+                                     '(root, or a user who may sign in there)'
+                                     % str(b.get('name') or '')[:40])
             got = sshotp_make(h.store, b.get('name'), s['name'], b.get('note') or '',
                               replace=bool(b.get('replace')), kind=str(b.get('kind') or 'app'),
                               dest=str(b.get('dest') or ''), lang=str(b.get('lang') or ''))
