@@ -339,3 +339,11 @@ leaving the cluster): [operations.md](operations.md).
   `otp --maintenance on` and `install.sh --upgrade` on each node in turn.
   [upgrades.md](upgrades.md) says how, and how to upgrade the operating
   system. The node list shows any mismatch.
+
+
+## Is what is saved in effect on both nodes? (1.0.246)
+
+Every card of *Settings* shows a small pill at the right of its heading: a dot for each node - green
+when it has read in what is saved, amber while not yet (a node reads a change within 5 s), red when
+it is not heard from, grey for a version that does not say. Pointed at, it says so a node a line; its
+refresh icon asks both nodes again at once. Only in a cluster.

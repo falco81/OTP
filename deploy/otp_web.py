@@ -3418,6 +3418,11 @@ def lu_do(r):
         p = pwd.getpwnam(name)
         if r.get('hash'):
             lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, lu_hash_checked(r['hash'])))
+        elif said.endswith('made'):
+            # No password - a key (and otp's code) only (1.0.246): no password aging for it, or
+            # once its days from login.defs ran out sshd would ask, at every sign-in by a key or
+            # a code too, for a new password the user never had - and let nobody in.
+            lu_run(['chage', '-M', '-1', '-I', '-1', name])
         if r.get('must_change'):
             lu_run(['chage', '-d', '0', name])
         if r.get('sudo') is not None:
@@ -3429,6 +3434,11 @@ def lu_do(r):
         raise Refused('there is no user %s here' % name)
     if do == 'password':
         lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, lu_hash_checked(r.get('hash'))))
+        ag = r.get('policy_aging')
+        if isinstance(ag, dict):
+            # A password now (1.0.246): the policy's aging on it - a user of a key only had none.
+            lu_run(['chage', '-M', str(pwp_int(ag.get('max_days'), 99999)), '-m', str(pwp_int(ag.get('min_days'), 0)),
+                    '-W', str(pwp_int(ag.get('warn_days'), 7)), name])
         lu_run(['chage', '-d', '0' if r.get('must_change') else str(int(time.time() // 86400)), name])
         said = 'the password of %s set' % name
     elif do == 'lock':
@@ -3794,14 +3804,19 @@ def pwp_apply(c):
         pwp_orig_write(orig)
     if c['existing']:
         lo, hi = uid_range()
-        n = 0
+        n = skipped = 0
+        sh = lu_shadow()
         for p in pwd.getpwall():
             if lo <= p.pw_uid <= hi and p.pw_uid != 65534 and p.pw_name not in KEEP_NAMES and \
                     USER_NAME_RE.match(p.pw_name):
+                if not sh.get(p.pw_name, ('',))[0].lstrip('!').startswith('$'):
+                    skipped += 1        # no password: a key only - never asked for a new one
+                    continue
                 lu_run(['chage', '-M', str(c['max_days']), '-m', str(c['min_days']),
                         '-W', str(c['warn_days']), p.pw_name])
                 n += 1
-        said.append('the aging put on %d user(s) of this node too' % n)
+        said.append('the aging put on %d user(s) of this node too%s' % (
+            n, ' (%d with no password - a key only - left without)' % skipped if skipped else ''))
     return said
 
 def users_part():
