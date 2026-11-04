@@ -1092,6 +1092,10 @@ class Daemon(object):
         self.api = None
         self.serial = 0
         self.conf_serial = store.get_meta('conf_serial', '0')
+        # When the settings were read in, and the last "say it now" seen (1.0.246): each card of
+        # Settings shows whether every node has in what is saved.
+        self.conf_loaded_at = time.time()
+        self.beat_asked_seen = store.get_meta('beat_asked', '')
         self.login_fails = collections.defaultdict(list)
         # What each count is (1.0.112): its limit, how long it lasts, and the
         # names tried from an address / the addresses a name was tried from -
@@ -1231,6 +1235,7 @@ class Daemon(object):
         if self.radius:
             self.radius.open_sockets()
         self.conf_serial = serial
+        self.conf_loaded_at = time.time()
         if why:
             log('read the configuration again (%s)' % why)
 
@@ -1243,6 +1248,7 @@ class Daemon(object):
             mark = '%.6f:%s' % (time.time(), node_name())
             self.store.set_meta('conf_serial', mark)
             self.conf_serial = mark
+            self.conf_loaded_at = time.time()
         except Exception:
             pass
         self.store._clients = None
@@ -1770,8 +1776,20 @@ class Daemon(object):
                     log_sparing('heartbeat-tick', 'the heartbeat: %s\n%s' % (
                         e, traceback.format_exc()), 'error', every=600)
                 try:
+                    beat_now = False
                     if self.store.get_meta('conf_serial', '0') != self.conf_serial:
                         self.reload_all('changed elsewhere')
+                        beat_now = True     # said at once (1.0.246): the cards of Settings wait for it
+                    if self.conf_serial != getattr(self, 'conf_beaten', None):
+                        beat_now = True     # saved here: the other node's pages wait for it too
+                    asked = self.store.get_meta('beat_asked', '')
+                    if asked != self.beat_asked_seen:
+                        # Asked from a card of Settings (its refresh): what this node has, now.
+                        self.beat_asked_seen = asked
+                        beat_now = True
+                    if beat_now and CONFIG.get('ha_mode'):
+                        last_beat = time.monotonic()
+                        heartbeat(self.store, self)
                 except DbError:
                     raise
                 except Exception as e:                  # noqa: BLE001

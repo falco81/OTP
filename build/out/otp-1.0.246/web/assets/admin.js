@@ -2505,6 +2505,8 @@ function showPane(name) {
     b.classList.toggle('on', b.dataset.pane === name);
   });
   document.querySelectorAll('.ctl-pane').forEach(function (p) { p.hidden = p.id !== 'pane-' + name; });
+  /* Each card's pill: in effect on every node? (1.0.246) */
+  if (SN.d) snPills(); else snLoad();
   writeHash();
   if (name === 'clients') loadClients();
   if (name === 'guard') { loadLockouts(); loadDirCaps(); }
@@ -2928,6 +2930,75 @@ function smsCaBlock() {
   return box;
 }
 
+/* ---- Settings in a cluster: in effect on every node? (1.0.246) -------------------
+   A thin pill at the right of every card's heading of Settings: a dot a node (green: it has in
+   what is saved; amber: not yet; red: not heard from; grey: a version that does not say), a
+   thin line, and a refresh icon - asked of both nodes again at once. Pointed at, the dots say
+   it a node a line. Only in a cluster; looked at again every 15 s while Settings is open,
+   every 3 s while a node has not caught up. */
+var SN = {d: null, poll: null, fast: 0, busy: false};
+function snTr(s) { return (typeof i18nText === 'function' && i18nText(s)) || s; }
+function snState(n) {
+  if (!n.alive) return ['bad', snTr('not heard from') + ' · ' + snTr(ago(Date.now() / 1000 - (n.age || 0)))];
+  if (!n.known) return ['off', snTr('does not say - an older version')];
+  if (n.seen) return ['ok', snTr('in effect') + ' · ' + snTr('read in') + ' ' + snTr(ago(n.seen_at))];
+  return ['warn', snTr('not yet · it reads it within seconds')];
+}
+function snPopup(d) {
+  var col = {ok: 'var(--ok,#3fb950)', warn: 'var(--warn,#d29922)', bad: 'var(--crit,#f85149)', off: 'var(--tx-mut)'};
+  return '<table class="sn-pop">' + d.nodes.map(function (n) {
+    var st = snState(n);
+    return '<tr><td><span class="dot ' + st[0] + '"></span></td><td class="sn-n">' + richText(n.name) + '</td><td>' +
+      (n.me ? '<span class="tag info">' + richText(snTr('this node')) + '</span>' : '') + '</td>' +
+      '<td style="color:' + col[st[0]] + '">' + richText(st[1]) + '</td></tr>';
+  }).join('') + '</table>';
+}
+function snPills() {
+  var d = SN.d;
+  document.querySelectorAll('.sn-pill').forEach(function (x) { x.remove(); });
+  if (!d || !d.cluster || TAB !== 'settings') return;
+  var pane = $('pane-' + PANE);
+  if (!pane) return;
+  var all = d.nodes.every(function (n) { return n.alive && n.known && n.seen; });
+  var words = all ? 'What is saved on this card is in effect on both nodes.'
+                  : 'Not every node has in what is saved yet.';
+  pane.querySelectorAll('.card').forEach(function (card) {
+    if (!card.querySelector('[id^="sect-"]')) return;          /* the cards of the settings only */
+    var pill = el('span', 'sn-pill' + (all ? '' : ' diff'));
+    var dots = el('span', 'sn-dots');
+    d.nodes.forEach(function (n) { dots.appendChild(el('span', 'dot ' + snState(n)[0])); });
+    explain(dots, words, snPopup(d));
+    pill.appendChild(dots);
+    pill.appendChild(el('span', 'sn-sep'));
+    var re = el('button', 'sn-re' + (SN.busy ? ' spin' : ''));
+    re.type = 'button';
+    re.innerHTML = iconMarkup('refresh', 12);
+    explain(re, 'Look again on both nodes', '<div class="muted small" style="margin-top:4px">' +
+      richText(snTr('Looked at') + ' ' + snTr(ago(d.at)) + ' · ' + snTr('by itself every 15 s')) + '</div>');
+    re.onclick = function (e) { e.stopPropagation(); snAgain(); };
+    pill.appendChild(re);
+    var h = card.querySelector(':scope > h2');
+    if (h) h.appendChild(pill);
+    else { pill.classList.add('sn-corner'); card.classList.add('sn-has-corner'); card.insertBefore(pill, card.firstChild); }
+  });
+}
+function snLoad() {
+  return api('settings-nodes').then(function (d) { SN.d = d; snPills(); snPace(); }).catch(function () {});
+}
+function snAgain() {
+  SN.busy = true; snPills();
+  api('settings-nodes', {action: 'again'}).then(function (d) {
+    SN.d = d; SN.fast = 6;
+    setTimeout(function () { SN.busy = false; snLoad(); }, 1500);
+  }).catch(function (e) { SN.busy = false; snPills(); oops(e); });
+}
+function snPace() {
+  clearTimeout(SN.poll);
+  if (TAB !== 'settings' || !SN.d || !SN.d.cluster) return;
+  var behind = SN.d.nodes.some(function (n) { return n.alive && n.known && !n.seen; });
+  if (behind || SN.fast > 0) SN.fast = Math.max(0, SN.fast - 1);
+  SN.poll = setTimeout(snLoad, behind || SN.fast > 0 ? 3000 : 15000);
+}
 function drawSettings() {
   DRAWN_NODE = SETTINGS.node || '';
   var shown = {};
@@ -2957,6 +3028,7 @@ function drawSettings() {
     host.appendChild(g);
   }
   applyOnlyWhen();
+  SN.fast = 6; if (SN.d) snPills(); snLoad();
   if (typeof AC !== 'undefined' && AC.d) acmeNamesInSettings(AC.d);
   explainWhatWasDrawn($('tab-settings'));
   if (typeof PANE !== 'undefined' && PANE === 'db') dbLinkNote();   /* drawn again (1.0.107) */
@@ -15901,6 +15973,13 @@ function pwpCard(d) {
   card.appendChild(h);
   if (d.policy_refused) card.appendChild(el('p', 'note bad', 'The row of the policy in the database is not as otp wrote it - the guard of root\'s actions refused it: every node keeps the policy it has put in, and changes nothing. Save the policy here again.'));
   card.appendChild(el('p', 'muted small', 'For every local user, however the password is changed - passwd, a password run out at sign-in, these pages. Put into each node\'s own files: pam_pwquality, pam_pwhistory, pam_faillock and login.defs (with authselect, the features that put the modules in). Not set here, each node keeps what its system has, and nothing is written.'));
+  var how = el('details', 'pwp-how');
+  how.appendChild(el('summary', '', 'With SSH keys, otp\'s codes and sudo'));
+  [ 'A password that runs out is asked to be changed at the next sign-in - over SSH with a key or with otp\'s code too (sshd asks PAM\'s account step). A user with no password (a key only) is given no aging, so is never asked for one.',
+    'otp\'s code for SSH is no password: it never counts as a wrong password for the lockout, and the lockout does not keep a key or a code out - it keeps out the password (at the console, for sudo).',
+    'sudo - otp --console of a normal user too - asks for the user\'s own password: the policy is the one for it; a user locked by wrong passwords cannot use sudo until the lock ends.',
+    'root is never locked, and never given aging here.' ].forEach(function (t) { how.appendChild(el('p', 'small muted', t)); });
+  card.appendChild(how);
   var on = osuCheck('Set by otp on every node', e.managed, e.managed ? '' : 'Off: as each node\'s system has it - what otp wrote before is taken out again.');
   on.input.onchange = function () { e.managed = on.input.checked; drawOsUsers(); };
   card.appendChild(on.box);
@@ -16082,6 +16161,8 @@ function osuAdd(name) {
     var n = nameI.value.trim(), p = pw(), nodes = pick();
     if (!/^[a-z_][a-z0-9_.-]{0,31}$/.test(n)) { toast('a name is small letters, digits, _ . and -, starting with a letter', 'warn'); return; }
     if (!p.ok) { toast(p.said, 'warn'); return; }
+    /* sudo asks for the user's own password (1.0.246): with a key only there is none to give. */
+    if (sudo.input.checked && !p.value) { toast('sudo asks for the user\'s own password - give them one, or they cannot use sudo', 'warn'); return; }
     if (!nodes.length) { toast('pick a node', 'warn'); return; }
     if (!name && osuRows().by[n]) { toast(n + ' is there already', 'warn'); return; }
     api('osusers', {action: 'add', name: n, gecos: gecos.value.trim(), shell: shell.value, password: p.value,
@@ -16179,6 +16260,8 @@ function osuEdit(name) {
     /* sudo and sign-in. */
     var s3 = el('div', 'osu-sect');
     s3.appendChild(el('h3', '', 'What they may do'));
+    if (u.sudo && !u.password)
+      s3.appendChild(el('p', 'note warn', 'May use sudo, but has no password: sudo asks for their own password, so they cannot use it (nor otp --console through it) until they have one - set it above.'));
     var anyLocked = Object.keys(on).some(function (k) { return on[k].locked; });
     var anySudo = Object.keys(on).some(function (k) { return on[k].sudo; });
     var r3 = el('div', 'btnrow');
@@ -17413,8 +17496,8 @@ function hsLights(nodes) {
   });
 }
 function drawHisec(d) {
+  /* Each node's light under the two switches (1.0.244) gave way to the pill of the card (1.0.246). */
   HS_NODES = d.nodes || [];
-  setTimeout(function () { hsLights(HS_NODES); }, 0);
   var host = $('hs-host');
   if (!host) return;
   clear(host);

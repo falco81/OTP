@@ -61,6 +61,16 @@ users there is left as it is.
 A password typed on these pages is checked against the policy before it goes anywhere: by `pwscore`
 (the system's own rules and dictionary) where it is installed, by the rules above where not.
 
+**With SSH keys, otp's codes and sudo.** A password that runs out is asked to be changed at the next
+sign-in over SSH too, with a key or with otp's code (sshd runs PAM's account step for every sign-in).
+So a user with **no password** (a key only) gets **no aging**: made from the pages without a password,
+`chage -M -1`; *Also for the users there now* leaves them out; given a password later, they get the
+policy's aging then. otp's code is no password: its PAM lines (`[success=done … default=die]`) end the
+auth step before pam_faillock, so a wrong code is never counted, and a lock by wrong passwords keeps
+out a password only - never a key or a code. **sudo** (and so a normal user's `otp --console`) asks for
+the user's own password: a user with sudo needs one, and the policy is the one for it; one locked by
+wrong passwords cannot use sudo until the lock ends. root is never locked and never given aging.
+
 Each user's own aging (*Password aging* in their popup): good for, warned before, the least days
 between two changes - `chage`, on the nodes chosen; when the password runs out is shown.
 

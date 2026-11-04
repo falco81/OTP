@@ -108,7 +108,14 @@ def heartbeat(store, daemon=None):
             # refused while it is on on any node.
             'db_guard': bool(CONFIG.get('db_guard')),
             # High security as in effect here (1.0.244): its card shows each node's.
-            'high_security': bool(CONFIG.get('high_security'))}
+            'high_security': bool(CONFIG.get('high_security')),
+            # The mark of the settings this node has read in, and when (1.0.246).
+            'conf_seen': getattr(daemon, 'conf_serial', None) if daemon else None,
+            'conf_seen_at': getattr(daemon, 'conf_loaded_at', None) if daemon else None}
+    if not daemon:
+        beat.pop('conf_seen'); beat.pop('conf_seen_at')
+    else:
+        daemon.conf_beaten = daemon.conf_serial
     try:
         beat['guard_refused'] = len(dbguard_view().get('refused') or [])
     except Exception:                                   # noqa: BLE001

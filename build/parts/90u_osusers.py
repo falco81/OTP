@@ -239,6 +239,9 @@ def osu_ask(store, nodes, do, by, **f):
     elif do == 'password':
         ask['hash'] = seal_secret(osu_hash(f.get('password'), store, name), 'osuser:' + name)
         ask['must_change'] = bool(f.get('must_change'))
+        pol = pwp_conf(store)
+        if pol['managed'] and not pwp_refused(store):
+            ask['policy_aging'] = {k: pol[k] for k in ('max_days', 'min_days', 'warn_days')}
     elif do == 'sudo':
         ask['on'] = bool(f.get('on'))
     elif do == 'drop':
@@ -315,7 +318,7 @@ def osu_one(a):
     """One change done by the root helper: its answer, or what went wrong (words)."""
     q = {k: v for k, v in a.items() if k in ('do', 'name', 'uid', 'gecos', 'shell', 'sudo',
                                               'must_change', 'on', 'home', 'max_days', 'min_days',
-                                              'warn_days')}
+                                              'warn_days', 'policy_aging')}
     if a.get('hash'):
         h = unseal_secret(a['hash'], 'osuser:' + str(a.get('name') or ''))
         if not str(a['hash']).startswith(SEALED2) or not h:
@@ -451,3 +454,40 @@ def _osusers_do(h):
     if act == 'list':
         return {'message': 'asked again', 'nodes': done}
     return {'message': 'done on %s within a few seconds' % ', '.join(done), 'nodes': done}
+
+
+# ---- Settings in a cluster: in effect on every node? (1.0.246) ----------------------------
+def settings_in_effect(store, ask=False, daemon=None):
+    """Whether every node has in what is saved: the mark of the last change of the settings, and
+    the one each node said it read. Asked again: this node says it at once, the other within five
+    seconds."""
+    if ask:
+        store.set_meta('beat_asked', '%.6f:%s' % (time.time(), node_name()))
+    serial = store.get_meta('conf_serial', '0')
+    out = []
+    for b in ha_nodes(store):
+        known = 'conf_seen' in b
+        if b.get('me') and daemon is not None:
+            # This node as it is, not as its last heartbeat said.
+            b = dict(b, conf_seen=daemon.conf_serial, conf_seen_at=daemon.conf_loaded_at)
+            known = True
+        out.append({'name': b['name'], 'me': bool(b.get('me')), 'alive': bool(b.get('alive')),
+                    'age': round(float(b.get('age') or 0), 1), 'version': b.get('version') or '',
+                    'known': known, 'seen': known and b.get('conf_seen') == serial,
+                    'seen_at': b.get('conf_seen_at')})
+    return {'serial': serial, 'cluster': bool(CONFIG.get('ha_mode')) and len(out) > 1,
+            'nodes': out, 'at': time.time()}
+
+
+@route('GET', '/api/settings/nodes')
+def _settings_nodes(h):
+    h.me()
+    return settings_in_effect(h.store, daemon=h.d)
+
+
+@route('POST', '/api/settings/nodes')
+def _settings_nodes_again(h):
+    h.me()
+    if CONFIG.get('ha_mode'):
+        heartbeat(h.store, h.d)                 # this node's, now
+    return settings_in_effect(h.store, ask=True, daemon=h.d)

@@ -116,9 +116,20 @@ sp = [ln.split(':') for ln in open('/etc/shadow') if ln.startswith('otpp_ann:')]
 ok('a user\'s own aging (chage)', sp[3] == '2' and sp[4] == '45' and sp[5] == '5', sp[:6])
 u = [x for x in W.lu_list()['users'] if x['name'] == 'otpp_ann'][0]
 ok('...listed: 45 days, warned 5 before', u['max_days'] == 45 and u['warn_days'] == 5 and u['min_days'] == 2, u)
+HASH = sh('openssl', 'passwd', '-6', '-stdin', input='Ann-Pass-246-long\n').stdout.strip()
+W.lu_do({'do': 'password', 'name': 'otpp_ann', 'hash': HASH})
+W.lu_do({'do': 'add', 'name': 'otpp_key', 'shell': '/bin/bash'})
+sk = [ln.split(':') for ln in open('/etc/shadow') if ln.startswith('otpp_key:')][0]
+ok('a user made with no password (a key only): no aging - never asked for a password it does not have', sk[4] == '' and sk[6] == '', sk[:7])
 W.pwp_apply(dict(C, existing=True, max_days=60))
 sp = [ln.split(':') for ln in open('/etc/shadow') if ln.startswith('otpp_ann:')][0]
 ok('the policy "also for the users there now": their aging set', sp[4] == '60' and sp[5] == '10', sp[:6])
+sk = [ln.split(':') for ln in open('/etc/shadow') if ln.startswith('otpp_key:')][0]
+ok('...not on the user with no password', sk[4] == '', sk[:6])
+W.lu_do({'do': 'password', 'name': 'otpp_key', 'hash': HASH, 'policy_aging': {'max_days': 60, 'min_days': 1, 'warn_days': 10}})
+sk = [ln.split(':') for ln in open('/etc/shadow') if ln.startswith('otpp_key:')][0]
+ok('...given a password: the policy\'s aging on it now', sk[4] == '60' and sk[5] == '10', sk[:6])
+sh('userdel', '-r', 'otpp_key')
 ok('...root\'s not', [ln.split(':') for ln in open('/etc/shadow') if ln.startswith('root:')][0][4] != '60')
 W.pwp_apply(dict(C, managed=False))
 ok('given back after all that: login.defs as it was', open(DEFS).read() == ORIG_DEFS)

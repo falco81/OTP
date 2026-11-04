@@ -4,6 +4,32 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.246 — 4 November 2026
+
+**Settings in a cluster: in effect on every node?** At the right of each card's heading of
+*Settings* a thin pill: a dot a node - green, it has in what is saved; amber, not yet (the pill's
+edge amber too); red, not heard from; grey, a version that does not say - a thin line, and a refresh
+icon. Pointed at, the dots say it a node a line (*in effect · read in 9 s ago*, *not yet · it reads it
+within seconds*, *not heard from · 2 min ago*); the icon asks both nodes again at once (it spins).
+Looked at again every 15 s while Settings is open, every 3 s while a node has not caught up and for
+18 s after a save. Only in a cluster - a node alone shows nothing. The heartbeat carries the mark of
+the settings each node read in, and a node says it at once when it read a change - its own or the
+other's - or is asked. `GET/POST /api/settings/nodes`. (As acme 1.0.42 has it.)
+
+**The password policy with SSH keys, otp's codes and sudo** (found in acme). A password that runs
+out is asked to be changed at the next sign-in also over SSH with a key or with otp's code - sshd asks
+PAM's account step. A user with no password (a key only) has none to change, and would have been let
+in by nobody once login.defs' days ran out: such a user is now made with no password aging, and *Also
+for the users there now* leaves them out; given a password later, it gets the policy's aging then.
+otp's code for SSH never counts as a wrong password for the lockout (its PAM lines end the step before
+pam_faillock), and the lockout keeps a password out, never a key or a code. sudo - and a normal user's
+`otp --console` through it - asks for the user's own password: a user made with sudo and no password is
+refused on the page (*give them one*), and a user's popup says when one may use sudo but has no
+password. The card says all of it (*With SSH keys, otp's codes and sudo*).
+
+**The lights a node under *High security* and *Guard against writes to the database*** (1.0.244) are
+gone - the pill of the card says it now.
+
 ## 1.0.245 — 4 November 2026
 
 **A password policy for the local users** (*Settings → Local users → Password policy*; not set by

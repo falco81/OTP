@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.245'
+__version__ = '1.0.246'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -16101,6 +16101,10 @@ class Daemon(object):
         self.api = None
         self.serial = 0
         self.conf_serial = store.get_meta('conf_serial', '0')
+        # When the settings were read in, and the last "say it now" seen (1.0.246): each card of
+        # Settings shows whether every node has in what is saved.
+        self.conf_loaded_at = time.time()
+        self.beat_asked_seen = store.get_meta('beat_asked', '')
         self.login_fails = collections.defaultdict(list)
         # What each count is (1.0.112): its limit, how long it lasts, and the
         # names tried from an address / the addresses a name was tried from -
@@ -16240,6 +16244,7 @@ class Daemon(object):
         if self.radius:
             self.radius.open_sockets()
         self.conf_serial = serial
+        self.conf_loaded_at = time.time()
         if why:
             log('read the configuration again (%s)' % why)
 
@@ -16252,6 +16257,7 @@ class Daemon(object):
             mark = '%.6f:%s' % (time.time(), node_name())
             self.store.set_meta('conf_serial', mark)
             self.conf_serial = mark
+            self.conf_loaded_at = time.time()
         except Exception:
             pass
         self.store._clients = None
@@ -16779,8 +16785,20 @@ class Daemon(object):
                     log_sparing('heartbeat-tick', 'the heartbeat: %s\n%s' % (
                         e, traceback.format_exc()), 'error', every=600)
                 try:
+                    beat_now = False
                     if self.store.get_meta('conf_serial', '0') != self.conf_serial:
                         self.reload_all('changed elsewhere')
+                        beat_now = True     # said at once (1.0.246): the cards of Settings wait for it
+                    if self.conf_serial != getattr(self, 'conf_beaten', None):
+                        beat_now = True     # saved here: the other node's pages wait for it too
+                    asked = self.store.get_meta('beat_asked', '')
+                    if asked != self.beat_asked_seen:
+                        # Asked from a card of Settings (its refresh): what this node has, now.
+                        self.beat_asked_seen = asked
+                        beat_now = True
+                    if beat_now and CONFIG.get('ha_mode'):
+                        last_beat = time.monotonic()
+                        heartbeat(self.store, self)
                 except DbError:
                     raise
                 except Exception as e:                  # noqa: BLE001
@@ -23240,7 +23258,14 @@ def heartbeat(store, daemon=None):
             # refused while it is on on any node.
             'db_guard': bool(CONFIG.get('db_guard')),
             # High security as in effect here (1.0.244): its card shows each node's.
-            'high_security': bool(CONFIG.get('high_security'))}
+            'high_security': bool(CONFIG.get('high_security')),
+            # The mark of the settings this node has read in, and when (1.0.246).
+            'conf_seen': getattr(daemon, 'conf_serial', None) if daemon else None,
+            'conf_seen_at': getattr(daemon, 'conf_loaded_at', None) if daemon else None}
+    if not daemon:
+        beat.pop('conf_seen'); beat.pop('conf_seen_at')
+    else:
+        daemon.conf_beaten = daemon.conf_serial
     try:
         beat['guard_refused'] = len(dbguard_view().get('refused') or [])
     except Exception:                                   # noqa: BLE001
@@ -47561,6 +47586,9 @@ def osu_ask(store, nodes, do, by, **f):
     elif do == 'password':
         ask['hash'] = seal_secret(osu_hash(f.get('password'), store, name), 'osuser:' + name)
         ask['must_change'] = bool(f.get('must_change'))
+        pol = pwp_conf(store)
+        if pol['managed'] and not pwp_refused(store):
+            ask['policy_aging'] = {k: pol[k] for k in ('max_days', 'min_days', 'warn_days')}
     elif do == 'sudo':
         ask['on'] = bool(f.get('on'))
     elif do == 'drop':
@@ -47637,7 +47665,7 @@ def osu_one(a):
     """One change done by the root helper: its answer, or what went wrong (words)."""
     q = {k: v for k, v in a.items() if k in ('do', 'name', 'uid', 'gecos', 'shell', 'sudo',
                                               'must_change', 'on', 'home', 'max_days', 'min_days',
-                                              'warn_days')}
+                                              'warn_days', 'policy_aging')}
     if a.get('hash'):
         h = unseal_secret(a['hash'], 'osuser:' + str(a.get('name') or ''))
         if not str(a['hash']).startswith(SEALED2) or not h:
@@ -47773,6 +47801,43 @@ def _osusers_do(h):
     if act == 'list':
         return {'message': 'asked again', 'nodes': done}
     return {'message': 'done on %s within a few seconds' % ', '.join(done), 'nodes': done}
+
+
+# ---- Settings in a cluster: in effect on every node? (1.0.246) ----------------------------
+def settings_in_effect(store, ask=False, daemon=None):
+    """Whether every node has in what is saved: the mark of the last change of the settings, and
+    the one each node said it read. Asked again: this node says it at once, the other within five
+    seconds."""
+    if ask:
+        store.set_meta('beat_asked', '%.6f:%s' % (time.time(), node_name()))
+    serial = store.get_meta('conf_serial', '0')
+    out = []
+    for b in ha_nodes(store):
+        known = 'conf_seen' in b
+        if b.get('me') and daemon is not None:
+            # This node as it is, not as its last heartbeat said.
+            b = dict(b, conf_seen=daemon.conf_serial, conf_seen_at=daemon.conf_loaded_at)
+            known = True
+        out.append({'name': b['name'], 'me': bool(b.get('me')), 'alive': bool(b.get('alive')),
+                    'age': round(float(b.get('age') or 0), 1), 'version': b.get('version') or '',
+                    'known': known, 'seen': known and b.get('conf_seen') == serial,
+                    'seen_at': b.get('conf_seen_at')})
+    return {'serial': serial, 'cluster': bool(CONFIG.get('ha_mode')) and len(out) > 1,
+            'nodes': out, 'at': time.time()}
+
+
+@route('GET', '/api/settings/nodes')
+def _settings_nodes(h):
+    h.me()
+    return settings_in_effect(h.store, daemon=h.d)
+
+
+@route('POST', '/api/settings/nodes')
+def _settings_nodes_again(h):
+    h.me()
+    if CONFIG.get('ha_mode'):
+        heartbeat(h.store, h.d)                 # this node's, now
+    return settings_in_effect(h.store, ask=True, daemon=h.d)
 
 
 # ---- alerts and the report on the pages (1.0.162) --------------------------------------
