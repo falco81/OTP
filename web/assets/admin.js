@@ -18464,14 +18464,14 @@ function isemonTlsWizard(was) {
    A token made here and shown once; what prometheus.yml says to ask every
    node; what this node answers now. */
 /* ---- SNMPv3 (1.0.182): each node's agent, its engine ID, its own test ---------- */
-var SN = {d: null, said: {}};
+var SNMPV = {d: null, said: {}};   // not SN: the pill of Settings has that one (1.0.248)
 function loadSnmp() {
-  api('snmp').then(function (d) { SN.d = d; drawSnmp(); }).catch(function () {});
+  api('snmp').then(function (d) { SNMPV.d = d; drawSnmp(); }).catch(function () {});
 }
 function drawSnmp() {
   var host = $('snmp-host');
-  if (!host || !SN.d) return;
-  var d = SN.d;
+  if (!host || !SNMPV.d) return;
+  var d = SNMPV.d;
   host.innerHTML = '';
   var card = el('div', 'card full');
   card.appendChild(el('h2', '', 'SNMPv3'));
@@ -18495,7 +18495,7 @@ function drawSnmp() {
     ]));
     if (a.error) c.appendChild(noI18n(el('p', 'note bad small', a.error)));
     if (a.trap_error) c.appendChild(noI18n(el('p', 'note warn small', 'Last trap: ' + a.trap_error)));
-    var said = SN.said[n.node];
+    var said = SNMPV.said[n.node];
     if (said) c.appendChild(nodeSaid(said, said.sent ? 'The test trap went to ' + Object.keys(said.sent).join(', ') : 'It answered itself in ' + said.ms + ' ms: ' + ((said.said || {})['1.3.6.1.2.1.1.1.0'] || '')));
     if (ME.role === 'fulladmin') {
       var row = el('div', 'btnrow');
@@ -18504,7 +18504,7 @@ function drawSnmp() {
       t.disabled = !d.on || !d.ready || !fresh;
       t.onclick = function () {
         busy(t, true);
-        askNodes('snmp', {action: 'test', node: n.node}, function (node, got) { SN.said[node] = got; },
+        askNodes('snmp', {action: 'test', node: n.node}, function (node, got) { SNMPV.said[node] = got; },
           function () { busy(t, false); drawSnmp(); }).catch(function (e) { busy(t, false); oops(e); });
       };
       var tr = cmdButton('Send a test trap', 'bell', 'small');
@@ -18512,7 +18512,7 @@ function drawSnmp() {
       tr.disabled = !d.on || !d.ready || !fresh || !(d.trap_to || []).length;
       tr.onclick = function () {
         busy(tr, true);
-        askNodes('snmp', {action: 'trap', node: n.node}, function (node, got) { SN.said[node] = got; },
+        askNodes('snmp', {action: 'trap', node: n.node}, function (node, got) { SNMPV.said[node] = got; },
           function () { busy(tr, false); drawSnmp(); }).catch(function (e) { busy(tr, false); oops(e); });
       };
       row.appendChild(t); row.appendChild(tr);

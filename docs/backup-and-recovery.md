@@ -684,6 +684,8 @@ to it: everything of the database - and, when the service starts, each node puts
 puts in on its machine (the pages, the VIP address, the firewall, the SSH server and otp's gate for
 SSH, the time servers, the console at login, the password policy) and puts back what the backup
 kept of its machine: the local users (UID, password, aging, sudo), the SSH keys of root and of them,
-SELinux's booleans - only what is missing. The guard of root's actions is on again where it was.
+SELinux's booleans - only what is missing, and only on a machine installed anew (one with no tokens
+of its own: on a machine in use, its users and keys stay as they are - a key taken away since the
+backup does not come back). The guard of root's actions is on again where it was.
 `otp --machine-kept` lists what is kept of each node. By hand still: SELinux's mode, and the
 encryption to a database on another machine.

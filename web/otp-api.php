@@ -77,7 +77,7 @@ function otp_token(): ?string
 function otp_session(): string
 {
     $got = (string) ($_COOKIE[OTP_COOKIE] ?? '');
-    return preg_match('/^[A-Za-z0-9_-]{16,128}$/', $got) === 1 ? $got : '';
+    return preg_match('/^[A-Za-z0-9_-]{16,128}\z/', $got) === 1 ? $got : '';
 }
 
 /** Start one. Same-site and HttpOnly, and Secure whenever the page is on TLS. */
@@ -115,7 +115,7 @@ function otp_call(string $path, string $method = 'GET', array|object|null $paylo
        one line each, nothing that could start another header. */
     foreach ($extra as $line) {
         $line = (string) $line;
-        if (preg_match('/^X-Otp-[A-Za-z-]{1,40}: [\x21-\x7e]{1,300}$/', $line)) {
+        if (preg_match('/^X-Otp-[A-Za-z-]{1,40}: [\x21-\x7e]{1,300}\z/', $line)) {
             $headers[] = $line;
         }
     }
@@ -124,7 +124,7 @@ function otp_call(string $path, string $method = 'GET', array|object|null $paylo
     // The name the pages were reached by, for the link in a token's mail
     // (1.0.33) - built by the daemon from this, never taken from the page.
     $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
-    if (preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])(:[0-9]{1,5})?$/', $host)) {
+    if (preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])(:[0-9]{1,5})?\z/', $host)) {
         $headers[] = 'X-Otp-Host: ' . $host;
     }
     $session = otp_session();
