@@ -6937,55 +6937,36 @@ function drawConsoleLogin(host) {
       clear(list);
       var waiting = false;
       (d.nodes || []).forEach(function (n) {
-        var row = el('div', 'kv-row');
-        row.style.cssText = 'display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap';
+        var row = el('div', 'kv-row con-row');
         var sw = switchBox(!!n.on);
         sw._input.disabled = n.on === null || n.on === undefined || n.pending;
         var name = noI18n(el('b', '', n.name));
         row.appendChild(sw);
-        row.appendChild(name);
-        if (n.me) row.appendChild(el('span', 'tag info', 'this one'));
+        /* The node in a column of its own (1.0.242): the pickers one under another. */
+        var whoC = el('div', 'con-who');
+        whoC.appendChild(name);
+        if (n.me) whoC.appendChild(el('span', 'tag info', 'this one'));
+        row.appendChild(whoC);
         /* The switch says on or off itself (1.0.148): words only when it cannot. */
         var said = n.pending ? 'being switched…' : (n.on === null || n.on === undefined) ? 'not said yet - the node says within a minute' : '';
-        if (said) row.appendChild(el('span', 'muted small', said));
-        if (n.error) row.appendChild(el('p', 'note bad', n.error));
+        if (said) whoC.appendChild(el('span', 'muted small', said));
+        if (n.error) row.appendChild(el('p', 'note bad con-err', n.error));
         if (n.pending) waiting = true;
         /* The switch only says what it will be; the save bar at the bottom
            does it (1.0.147), as with every other setting. */
         var key = 'console-login:' + n.name;
-        /* The normal users it opens for too (1.0.240): nobody, every one, or these. */
-        var hasU = n.users === '*' ? 'all' : ((n.users || []).length ? 'these' : 'none');
-        var uwrap = el('span', 'con-users');
-        uwrap.appendChild(el('span', 'muted small', 'normal users:'));
-        var sel = el('select', 'small');
-        [['none', 'nobody'], ['all', 'every one'], ['these', 'these…']].forEach(function (o) {
-          var op = el('option', '', o[1]); op.value = o[0]; sel.appendChild(op);
-        });
-        sel.value = hasU;
-        sel.disabled = sw._input.disabled;
-        var names = textBox(Array.isArray(n.users) ? n.users.join(' ') : '', 'alice bob', 'mono small');
-        names.spellcheck = false;
-        names.hidden = hasU !== 'these';
-        names.disabled = sw._input.disabled;
-        uwrap.appendChild(sel);
-        uwrap.appendChild(names);
-        row.appendChild(uwrap);
-        var usersNow = function () {
-          return sel.value === 'all' ? '*' : sel.value === 'none' ? [] :
-            names.value.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
-        };
+        /* The normal users it opens for too (1.0.240; picked, not typed, since 1.0.242): nobody,
+           every normal user, or these. */
+        var hasU = n.users === '*' ? '*' : (n.users || []);
+        var want = PENDING[key] && !sw._input.disabled ? PENDING[key].users : hasU;
         var same = function (a, b) { return JSON.stringify(a === '*' ? '*' : (a || [])) === JSON.stringify(b === '*' ? '*' : (b || [])); };
         if (PENDING[key] && !sw._input.disabled) {      /* drawn again, still not saved */
           sw._input.checked = PENDING[key].on;
-          var pu = PENDING[key].users;
-          sel.value = pu === '*' ? 'all' : (pu && pu.length ? 'these' : 'none');
-          if (Array.isArray(pu)) names.value = pu.join(' ');
-          names.hidden = sel.value !== 'these';
           row.classList.add('changed');
         }
+        var usersNow = want;
         var changed = function () {
-          var on = sw._input.checked, users = usersNow();
-          names.hidden = sel.value !== 'these';
+          var on = sw._input.checked, users = usersNow;
           var diff = on !== !!n.on || !same(users, n.users);
           row.classList.toggle('changed', diff);
           if (!diff) { delete PENDING[key]; markDirtyCount(); return; }
@@ -6994,15 +6975,14 @@ function drawConsoleLogin(host) {
               toast(r.message, 'good'); tries = 0; setTimeout(load, 2000);
               return true;
             });
-          }, reset: function () {
-            sw._input.checked = !!n.on; sel.value = hasU;
-            names.value = Array.isArray(n.users) ? n.users.join(' ') : ''; names.hidden = hasU !== 'these';
-            row.classList.remove('changed');
-          }});
+          }, reset: function () { load(); }});
         };
+        var uwrap = el('div', 'con-users');
+        uwrap.appendChild(el('span', 'muted small', 'normal users:'));
+        uwrap.appendChild(accountPicker(want, {none: 'Nobody', every: 'Every normal user', root: false,
+          disabled: sw._input.disabled, change: function (v) { usersNow = v; changed(); }}));
+        row.appendChild(uwrap);
         sw._input.onchange = changed;
-        sel.onchange = changed;
-        names.oninput = changed;
         list.appendChild(row);
       });
       if (waiting && tries++ < 30) setTimeout(load, 2000);
@@ -16158,6 +16138,149 @@ function sdAct(action, b) {
 function sdAct2(body) {
   return api('sshd', body).then(function (r) { toast(r.message, 'good'); SD.d = r; drawSshd(); return r; }).catch(oops);
 }
+/* The accounts of the nodes (1.0.242): root and the users who may sign in there, as SSH keys
+   reads them - asked of the nodes when they have not said yet. */
+var SD_ACCTS = {at: 0, names: null, waiting: []};
+function sdAccounts(cb) {
+  if (SD_ACCTS.names && Date.now() - SD_ACCTS.at < 60000) { cb(SD_ACCTS.names); return; }
+  SD_ACCTS.waiting.push(cb);
+  if (SD_ACCTS.waiting.length > 1) return;
+  var tries = 0;
+  var done = function (names) {
+    SD_ACCTS.names = names; SD_ACCTS.at = Date.now();
+    var w = SD_ACCTS.waiting; SD_ACCTS.waiting = [];
+    w.forEach(function (f) { try { f(names); } catch (e) { /* one picker gone */ } });
+  };
+  var ask = function () {
+    api('sshkeys').then(function (d) {
+      var told = false, seen = {}, names = [];
+      ((d && d.nodes) || []).forEach(function (n) {
+        if (Array.isArray(n.users)) told = true;
+        (n.users || []).forEach(function (u) { if (!seen[u.name]) { seen[u.name] = true; names.push(u.name); } });
+      });
+      if (told || tries >= 15) { done(names.sort()); return; }
+      if (!tries) api('sshkeys', {action: 'refresh', nodes: ((d && d.nodes) || []).filter(function (n) { return n.alive; }).map(function (n) { return n.name; })}).catch(function () {});
+      tries++;
+      setTimeout(ask, 2000);
+    }).catch(function () { done([]); });
+  };
+  ask();
+}
+/* Several accounts picked from a list, or everybody - never typed (1.0.242). An account set
+   before that the nodes do not list (a pattern of sshd's, one of the directory) stays, said so. */
+function accountPicker(cur, o) {
+  /* o.none (the console at login, 1.0.242): nobody ([]), every normal user ('*') or these. */
+  var star = cur === '*';
+  cur = star ? [] : (cur || []).slice();
+  var value = function () { return star ? '*' : cur.slice(); };
+  var box = el('details', 'acct-pick');
+  var sum = el('summary', '');
+  box.appendChild(sum);
+  var panel = el('div', 'acct-panel');
+  box.appendChild(panel);
+  if (o.disabled) box.classList.add('off');
+  var redraw = null;
+  var said = function () {
+    clear(sum);
+    if (!cur.length) {
+      var ev0 = el('span', 'acct-every' + (o.none && !star ? ' nobody' : ''));
+      ev0.innerHTML = iconMarkup('people', 14);
+      ev0.appendChild(el('span', '', o.none && !star ? o.none : o.every));
+      sum.appendChild(ev0);
+      return;
+    }
+    cur.forEach(function (n) {
+      var chip = el('span', 'acct-chip');
+      chip.appendChild(noI18n(el('span', 'mono', n)));
+      if (!o.disabled) {
+        var x = el('button', 'acct-x', '×');
+        x.type = 'button';
+        x.title = 'Take it away';
+        x.onclick = function (e) {
+          e.preventDefault(); e.stopPropagation();
+          cur = cur.filter(function (m) { return m !== n; });
+          said(); if (redraw) redraw(); if (o.change) o.change(value());
+        };
+        chip.appendChild(x);
+      }
+      sum.appendChild(chip);
+    });
+  };
+  var lastNames = [];
+  var draw = function (names) {
+    lastNames = names;
+    clear(panel);
+    var all = (o.root ? ['root'] : []).concat(names.filter(function (n) { return n !== 'root'; }));
+    cur.forEach(function (n) { if (all.indexOf(n) < 0) all.push(n); });
+    var nob = null;
+    if (o.none) {
+      nob = el('label', 'acct-row acct-row-every');
+      var nbc = el('input'); nbc.type = 'checkbox'; nbc.checked = !star && !cur.length; nbc.disabled = !!o.disabled;
+      var nbi = el('span', 'acct-ava'); nbi.textContent = '–';
+      nob.appendChild(nbc); nob.appendChild(nbi); nob.appendChild(el('span', 'acct-name', o.none));
+      nob._c = nbc;
+    }
+    /* A search over the list when it is long - it narrows the list, it is never a name itself. */
+    var find = null;
+    if (all.length > 7) {
+      find = el('input', 'acct-find');
+      find.type = 'search'; find.placeholder = 'find an account'; find.spellcheck = false; find.autocomplete = 'off';
+      panel.appendChild(find);
+    }
+    if (nob) panel.appendChild(nob);
+    var ev = el('label', 'acct-row acct-row-every');
+    var evc = el('input'); evc.type = 'checkbox'; evc.checked = o.none ? star : !cur.length; evc.disabled = !!o.disabled;
+    var evi = el('span', 'acct-ava every'); evi.innerHTML = iconMarkup('people', 14);
+    ev.appendChild(evc); ev.appendChild(evi); ev.appendChild(el('span', 'acct-name', o.every));
+    panel.appendChild(ev);
+    var boxes = [], rows = [];
+    all.forEach(function (n) {
+      var r = el('label', 'acct-row');
+      var c = el('input'); c.type = 'checkbox'; c.value = n; c.checked = cur.indexOf(n) >= 0; c.disabled = !!o.disabled;
+      r.appendChild(c);
+      r.appendChild(noI18n(el('span', 'acct-ava' + (n === 'root' ? ' root' : ''), n.slice(0, 2).toUpperCase())));
+      r.appendChild(noI18n(el('span', 'acct-name mono', n)));
+      if (n !== 'root' && names.indexOf(n) < 0) r.appendChild(el('span', 'tag dim', 'not listed by the nodes'));
+      panel.appendChild(r);
+      boxes.push(c); rows.push([n, r]);
+    });
+    if (find) find.oninput = function () {
+      var q = find.value.trim().toLowerCase();
+      rows.forEach(function (x) { x[1].hidden = q && x[0].toLowerCase().indexOf(q) < 0; });
+    };
+    redraw = function () { boxes.forEach(function (c) { c.checked = cur.indexOf(c.value) >= 0; }); tops(); };
+    if (!all.length) panel.appendChild(el('p', 'muted small', 'The nodes list no user who may sign in.'));
+    var changed = function () { said(); if (o.change) o.change(value()); };
+    var tops = function () {
+      if (o.none) { nob._c.checked = !star && !cur.length; evc.checked = star; }
+      else evc.checked = !cur.length;
+    };
+    evc.onchange = function () {
+      if (o.none) {
+        star = evc.checked; if (star) { cur = []; boxes.forEach(function (c) { c.checked = false; }); }
+      } else if (evc.checked) { cur = []; boxes.forEach(function (c) { c.checked = false; }); }
+      else if (!cur.length) { evc.checked = true; return; }       /* nobody at all is not a choice */
+      tops(); changed();
+    };
+    if (nob) nob._c.onchange = function () {
+      star = false; cur = []; boxes.forEach(function (c) { c.checked = false; }); tops(); changed();
+    };
+    boxes.forEach(function (c) {
+      c.onchange = function () {
+        star = false;
+        cur = boxes.filter(function (x) { return x.checked; }).map(function (x) { return x.value; });
+        tops(); changed();
+      };
+    });
+  };
+  said();
+  panel.appendChild(el('p', 'muted small', 'reading the users of the nodes…'));
+  sdAccounts(draw);
+  /* Closed by a click elsewhere, as a dropdown is. */
+  document.addEventListener('click', function (e) { if (box.open && !box.contains(e.target)) box.open = false; });
+  if (o.disabled) sum.onclick = function (e) { e.preventDefault(); };
+  return box;
+}
 function sdTokenAsk(was) {
   var who, note, kind = (was && was.kind) || 'app', dest, destF, langS, langF;
   var ch = (SD.d && SD.d.channels) || [];
@@ -16165,41 +16288,52 @@ function sdTokenAsk(was) {
     body.appendChild(el('p', 'note', 'A token of its own for signing in over SSH - not a VPN token. From an app (the QR code shown once, right after: have the app at hand), or codes sent by mail or SMS where sending is set up.'));
     if (was) body.appendChild(el('p', 'note warn', 'The SSH token ' + was.name + ' has now stops working the moment this one is made - an app\'s secret is made anew.'));
     var g = el('div', 'formgrid');
-    who = noI18n(textBox(was ? was.name : '', 'jan', 'mono'));
-    if (was) who.disabled = true;
-    g.appendChild(formField('The account', who, 'Its name on the nodes - the name typed at ssh.'));
-    /* The names offered from the nodes themselves (1.0.241): root and every user who may sign
-       in there - as SSH keys lists them; one with a token already said so. Typed, any name. */
+    /* The account (1.0.242): a list of the accounts of the nodes - root and every user who may
+       sign in there, as SSH keys lists them - one without an SSH token only; never a name typed.
+       A new token in the place of one: that account, as it is. */
+    if (was) {
+      who = noI18n(textBox(was.name, '', 'mono'));
+      who.disabled = true;
+    } else {
+      who = el('select', 'mono sd-who');
+      var wait = el('option', '', 'reading the users of the nodes…');
+      wait.value = '';
+      who.appendChild(wait);
+      who.disabled = true;
+    }
+    g.appendChild(formField('The account', who, was ? 'Its name on the nodes - the name typed at ssh.'
+      : 'root, or a user who may sign in on the nodes (a login shell, UID 1000 and up). One SSH token each - one that has it is not offered.'));
     if (!was) {
-      var dl = el('datalist');
-      dl.id = 'sd-who-list';
-      who.setAttribute('list', dl.id);
-      who.autocomplete = 'off';
-      g.appendChild(dl);
       var has = {};
       ((SD.d && SD.d.sshotp) || []).forEach(function (x) { has[x.name] = true; });
+      var tries = 0;
       var fill = function (d) {
-        clear(dl);
-        var seen = {}, names = ['root'];
+        var seen = {}, names = ['root'], told = false;
         ((d && d.nodes) || []).forEach(function (n) {
+          if (Array.isArray(n.users)) told = true;
           (n.users || []).forEach(function (u) { if (!seen[u.name]) { seen[u.name] = true; names.push(u.name); } });
         });
-        names.sort(function (a, b) { return (has[a] ? 1 : 0) - (has[b] ? 1 : 0) || (a === 'root' ? -1 : b === 'root' ? 1 : a < b ? -1 : 1); });
-        names.forEach(function (nm) {
-          var o = el('option');
-          o.value = nm;
-          if (has[nm]) o.label = nm + ' - ' + ((typeof i18nText === 'function' && i18nText('has a token')) || 'has a token');
-          dl.appendChild(o);
-        });
-        return names.length > 1;
+        if (!told && tries < 15) return false;
+        clear(who);
+        var free = names.filter(function (nm) { return !has[nm]; });
+        free.sort(function (a, b) { return a === 'root' ? -1 : b === 'root' ? 1 : a < b ? -1 : 1; });
+        var first = el('option', '', free.length ? 'pick an account…' : 'every account has an SSH token already');
+        first.value = '';
+        who.appendChild(first);
+        free.forEach(function (nm) { var o = noI18n(el('option', '', nm)); o.value = nm; who.appendChild(o); });
+        who.disabled = !free.length;
+        if (!told) who.appendChild(el('option', '', '(the nodes did not say their users - only root)')).disabled = true;
+        return true;
       };
-      api('sshkeys').then(function (d) {
-        if (!fill(d)) {
-          /* Not read from the nodes yet: asked, and offered as soon as they say. */
-          api('sshkeys', {action: 'refresh', nodes: ((d && d.nodes) || []).filter(function (n) { return n.alive; }).map(function (n) { return n.name; })})
-            .then(function () { setTimeout(function () { api('sshkeys').then(fill).catch(function () {}); }, 4000); }).catch(function () {});
-        }
-      }).catch(function () {});
+      var ask = function () {
+        api('sshkeys').then(function (d) {
+          if (fill(d)) return;
+          if (!tries) api('sshkeys', {action: 'refresh', nodes: ((d && d.nodes) || []).filter(function (n) { return n.alive; }).map(function (n) { return n.name; })}).catch(function () {});
+          tries++;
+          setTimeout(ask, 2000);
+        }).catch(function () { tries = 99; fill(null); });
+      };
+      ask();
     }
     note = textBox(was ? was.note || '' : '', 'Jan Novák, admin', '');
     g.appendChild(formField('Note', note, 'Whose it is - for you, nothing else.'));
@@ -16236,6 +16370,7 @@ function sdTokenAsk(was) {
     body.appendChild(g2);
     setTimeout(function () { (was ? note : who).focus(); }, 60);
   }, [{words: 'Close', close: true}, {words: was ? 'Make a new one' : 'Make it', cls: 'primary', icon: 'add', go: function (b) {
+    if (!was && !who.value) { toast('pick an account first', 'bad'); who.focus(); return; }
     busy(b, true);
     sdTokenMake(who.value.trim(), note.value.trim(), !!was, b, kind, dest.value.trim(), langS.value);
   }}], 'medium');
@@ -16338,10 +16473,10 @@ function drawSshd(live) {
     tries.disabled = !dr.manage;
     tries.oninput = function () { dr.tries = parseInt(tries.value, 10) || 4; sdDirty(); };
     g.appendChild(formField('Tries a connection', tries, 'Wrong passwords or keys before sshd closes it (MaxAuthTries).'));
-    var au = textBox((dr.allow_users || []).join(' '), 'root admin', 'mono');
-    au.disabled = !dr.manage;
-    au.oninput = function () { dr.allow_users = au.value.split(/[\s,]+/).filter(Boolean); sdDirty(); };
-    g.appendChild(formField('Who may sign in', au, 'The accounts, separated by spaces (AllowUsers). Empty: everybody.'));
+    /* Picked, not typed (1.0.242): the accounts of the nodes, several, or everybody. */
+    var au = accountPicker(dr.allow_users || [], {every: 'Everybody', root: true, disabled: !dr.manage,
+      change: function (v) { dr.allow_users = v; sdDirty(); }});
+    g.appendChild(formField('Who may sign in', au, 'The accounts that may sign in over SSH (AllowUsers) - or everybody.'));
     var tm = textBox(String(dr.trial_min === undefined ? 5 : dr.trial_min), '5', 'mono');
     tm.disabled = !dr.manage;
     tm.oninput = function () { dr.trial_min = Math.max(0, parseInt(tm.value, 10) || 0); sdDirty(); };
@@ -16362,10 +16497,9 @@ function drawSshd(live) {
     rs._input.onchange = function () { dr.radius = !!rs._get(); sdDirty(); drawSshd(); };
     rc.appendChild(formField('Ask for a code from otp', rs, dr.manage ? (dr.radius_with_key ? 'A key and then the code - as set below.' : 'A key alone still lets in - sshd asks for the code only where it asks for a password. For a key and the code: below.') : 'Needs otp to set the SSH server, above.'));
     var rg = el('div', 'formgrid sd-grid' + (dr.manage && dr.radius ? '' : ' off'));
-    var ru = textBox((dr.radius_users || []).join(' '), 'everybody', 'mono');
-    ru.disabled = !dr.manage || !dr.radius;
-    ru.oninput = function () { dr.radius_users = ru.value.split(/[\s,]+/).filter(Boolean); sdDirty(); };
-    rg.appendChild(formField('Only these accounts', ru, 'Separated by spaces. Empty: everybody but root, unless root is asked too.'));
+    var ru = accountPicker(dr.radius_users || [], {every: 'Everybody but root (unless Root too)', root: false,
+      disabled: !dr.manage || !dr.radius, change: function (v) { dr.radius_users = v; sdDirty(); }});
+    rg.appendChild(formField('Only these accounts', ru, 'The accounts asked for a code - or everybody but root (root: Root too).'));
     var rr = switchBox(dr.radius_root);
     rr._input.disabled = !dr.manage || !dr.radius;
     rr._input.onchange = function () { dr.radius_root = !!rr._get(); sdDirty(); };

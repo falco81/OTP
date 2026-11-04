@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.241'
+__version__ = '1.0.242'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -331,6 +331,20 @@ DEFAULTS = {
     'alerts_dir': 1,
     'alerts_sms': 1,
     'alerts_guard': 0,
+    # Everything the nodes see, mailed (1.0.242).
+    'alerts_shipping': 1,
+    'alerts_snmp': 1,
+    'alerts_acme': 1,
+    'alerts_upgrade': 1,
+    'alerts_trial': 1,
+    'alerts_dbguard': 1,
+    'alerts_mailq': 1,
+    'alerts_split': 1,
+    'alerts_clock': 1,
+    'alerts_repl_behind_mb': 0,
+    'alerts_selinux': 0,
+    'alerts_hisec': 0,
+    'alerts_sso': 0,
     'alerts_url': '',
     'alerts_lang': '',
     'report_lang': '',
@@ -542,6 +556,7 @@ TUNABLE = {
     'alerts_db': (0, 1), 'alerts_vrrp': (0, 1),
     'alerts_cert_days': (0, 120), 'alerts_disk_pct': (0, 99), 'alerts_time': (0, 1),
     'alerts_updates': (0, 1), 'alerts_dir': (0, 1), 'alerts_sms': (0, 1), 'alerts_guard': (0, 1),
+    'alerts_shipping': (0, 1), 'alerts_snmp': (0, 1), 'alerts_acme': (0, 1), 'alerts_upgrade': (0, 1), 'alerts_trial': (0, 1), 'alerts_dbguard': (0, 1), 'alerts_mailq': (0, 1), 'alerts_split': (0, 1), 'alerts_clock': (0, 1), 'alerts_repl_behind_mb': (0, 100000), 'alerts_selinux': (0, 1), 'alerts_hisec': (0, 1), 'alerts_sso': (0, 1),
     'report': (0, 1), 'report_every': ('daily', 'weekly', 'monthly'),
     'report_day': ('1', '2', '3', '4', '5', '6', '7'),
     'alerts_lang': ('', 'cs', 'en'), 'report_lang': ('', 'cs', 'en'),
@@ -842,7 +857,7 @@ NAMES = {
     'alerts_delay_min': 'Only once it has lasted (min)',
     'alerts_repeat_h': 'Remind every (hours)',
     'alerts_resolved': 'Say when it is over',
-    'alerts_nodes': 'A node, RADIUS, the replication or the database down',
+    'alerts_nodes': 'A node or RADIUS down, or the tokens\' key missing',
     'alerts_db': 'The database and its replication',
     'alerts_vrrp': 'The VIP address (VRRP)',
     'alerts_backup': 'A backup that failed or did not come',
@@ -853,6 +868,19 @@ NAMES = {
     'alerts_dir': 'Active Directory out of reach',
     'alerts_sms': 'The SMS gateway failing',
     'alerts_guard': 'A source blocked for guessing',
+    'alerts_shipping': 'Logs not reaching isemon or the syslog servers',
+    'alerts_snmp': 'The SNMP agent not listening',
+    'alerts_acme': 'A certificate the CA did not renew',
+    'alerts_upgrade': 'An upgrade of otp that failed',
+    'alerts_trial': 'A change on trial that went back',
+    'alerts_dbguard': 'Rows of the database not written by otp',
+    'alerts_mailq': 'Mails that do not go',
+    'alerts_split': 'The nodes apart',
+    'alerts_clock': 'The clock guard',
+    'alerts_repl_behind_mb': 'Replication behind by more than (MB)',
+    'alerts_selinux': 'SELinux refusing',
+    'alerts_hisec': 'The security check finding something',
+    'alerts_sso': 'Sign-ins by the load balancer refused',
     'alerts_url': 'The administration’s address in the mails',
     'alerts_lang': 'Language of the alerts',
     'report_lang': 'Language of the report',
@@ -1436,8 +1464,10 @@ SAYS = {
                         'update is back in a few minutes. 0: at once.',
     'alerts_repeat_h': 'While it lasts, said again this often. 0: once only.',
     'alerts_resolved': 'A mail when what was mailed is over.',
-    'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS, the '
-                    'replication stopped, the database in trouble, the nodes on different versions.',
+    'alerts_nodes': 'The other node not heard from, a node not listening for RADIUS or in trouble '
+                    'with it, the key that opens the tokens missing, two nodes under one name, the '
+                    'nodes on different versions. (The replication and the database: their own, '
+                    'below.)',
     'alerts_db': 'The replication stopped, or the database of a node in trouble. Not while a node '
                  'is in maintenance, being upgraded, updated or restarted, nor 10 min after - '
                  'the same outside of them is mailed.',
@@ -1456,6 +1486,19 @@ SAYS = {
     'alerts_dir': 'None of the servers of a directory answers a node.',
     'alerts_sms': 'Three SMS in a row that did not go.',
     'alerts_guard': 'Each source Sign-in protection blocks, as it is blocked.',
+    'alerts_shipping': 'Sending to isemon or to the syslog servers (SIEM) failing on a node - not reached, refused, or lines dropped.',
+    'alerts_snmp': 'SNMPv3 switched on and its agent on a node not listening (the port taken, refused), or its traps not going out.',
+    'alerts_acme': 'ACME ordered a certificate and none came - said at once, not only once it is about to run out.',
+    'alerts_upgrade': 'An upgrade of otp (Settings → Upgrades) that failed on a node, or one left stuck.',
+    'alerts_trial': 'A change of the network, the firewall or the SSH server on trial that was not kept and went back by itself - whoever made it may have lost the way in.',
+    'alerts_dbguard': 'With the guard against writes to the database on: rows that reach root not as otp wrote them, refused - somebody may be writing to the database.',
+    'alerts_mailq': 'Codes or tokens by mail that failed or ran out in the outgoing queue (Settings → Outgoing mail).',
+    'alerts_split': 'A node that cannot reach the other one, or stepped aside, and codes let in on both while they were apart - with What the nodes do when they lose each other set to report it.',
+    'alerts_clock': 'What the clock guard (Settings → Time) sees: a node stepped aside, no reference time server, a clock off, two clocks apart, the directory out of reach.',
+    'alerts_repl_behind_mb': 'The replication running, but the other node this many MB behind - or apply or sync errors. 0: never (only a replication that stopped is mailed).',
+    'alerts_selinux': 'A node where the SELinux card finds something not as otp needs it - a refusal, a label, a boolean, the module.',
+    'alerts_hisec': 'What Settings → High security finds less safe than it could be - said once a day while it stays so.',
+    'alerts_sso': 'Each sign-in by the load balancer or WAF the enrolment pages refuse, as it is refused - wrong key, not from a balancer, a name the directory does not know.',
     'alerts_url': 'Where the links in the mails lead, <code>https://otp.example.cz/admin/</code>. '
                   'Empty: this machine’s name.',
     'report': 'A report of the period by mail: the sign-ins by day, who was refused and why, '
@@ -1682,6 +1725,7 @@ PANES = {
     'alerts': ['alerts', 'alerts_to', 'alerts_delay_min', 'alerts_repeat_h', 'alerts_resolved',
                'alerts_nodes', 'alerts_db', 'alerts_vrrp', 'alerts_backup', 'alerts_cert_days', 'alerts_disk_pct',
                'alerts_time', 'alerts_updates', 'alerts_dir', 'alerts_sms', 'alerts_guard',
+               'alerts_shipping', 'alerts_snmp', 'alerts_acme', 'alerts_upgrade', 'alerts_trial', 'alerts_dbguard', 'alerts_mailq', 'alerts_split', 'alerts_clock', 'alerts_repl_behind_mb', 'alerts_selinux', 'alerts_hisec', 'alerts_sso',
                'alerts_lang', 'alerts_url', 'report', 'report_to', 'report_lang', 'report_every', 'report_day', 'report_at'],
     'codes': ['code_digits', 'code_ttl_s', 'code_tries', 'code_send_max',
               'code_send_window_min', 'code_lang', 'code_mail_fmt', 'sms_mode', 'sms_url', 'sms_method',
@@ -1745,6 +1789,7 @@ ONLY_WHEN = {
     'alerts_cert_days': ['alerts', '1'], 'alerts_disk_pct': ['alerts', '1'],
     'alerts_time': ['alerts', '1'], 'alerts_updates': ['alerts', '1'],
     'alerts_dir': ['alerts', '1'], 'alerts_sms': ['alerts', '1'], 'alerts_guard': ['alerts', '1'],
+    'alerts_shipping': ['alerts', '1'], 'alerts_snmp': ['alerts', '1'], 'alerts_acme': ['alerts', '1'], 'alerts_upgrade': ['alerts', '1'], 'alerts_trial': ['alerts', '1'], 'alerts_dbguard': ['alerts', '1'], 'alerts_mailq': ['alerts', '1'], 'alerts_split': ['alerts', '1'], 'alerts_clock': ['alerts', '1'], 'alerts_repl_behind_mb': ['alerts', '1'], 'alerts_selinux': ['alerts', '1'], 'alerts_hisec': ['alerts', '1'], 'alerts_sso': ['alerts', '1'],
     'report_to': ['report', '1'], 'report_every': ['report', '1'],
     'alerts_lang': ['alerts', '1'], 'report_lang': ['report', '1'],
     'osup_check_at': ['osup_check', '1'], 'osup_auto_what': ['osup_auto', '1'],
@@ -26401,11 +26446,21 @@ def hisec_rules(store, conf=None):
     a = (access_conf(store) or {}).get('admin') or {'any': True}
     if a.get('any', True):
         hit['fw:admin'].append('everybody')
+    # What otp's code asks through (1.0.242): keyboard-interactive is the code from otp, not a
+    # password, where otp sets sshd to ask for it with no system password to fall back on - and
+    # PermitRootLogin yes then lets root in with a key and the code, never with a password.
+    try:
+        sc = sshd_conf(store) or {}
+    except Exception:                                   # noqa: BLE001
+        sc = {}
+    code_only = bool(sc.get('manage') and sc.get('radius') and not sc.get('radius_fallback'))
     for n in host_nodes(store):
         v = (sshd_now(store, n) or {}).get('values') or {}
-        if v.get('passwordauthentication') == 'yes' or v.get('kbdinteractiveauthentication') == 'yes':
+        pw = v.get('passwordauthentication') == 'yes' or \
+            (v.get('kbdinteractiveauthentication') == 'yes' and not code_only)
+        if pw:
             hit['sshd:password'].append(n)
-        if v.get('permitrootlogin') == 'yes':
+        if v.get('permitrootlogin') == 'yes' and pw:
             hit['sshd:root'].append(n)
         try:
             if v and int(v.get('maxauthtries') or 6) > 4:
@@ -27609,8 +27664,17 @@ def web_desired(store):
                             'this node' if not vip['own'] else 'the other node'), 'warn',
                         every=3600)
             vip = {'on': False}
-    tls = {'node': tls_resolved(tls_profile(store, me)),
-           'vip': tls_resolved(tls_profile(store, 'vip')) if vip['on'] else None}
+    vip_tls = tls_profile(store, 'vip') if vip['on'] else None
+    if vip_tls and vip_tls.get('cert') and not vip['fqdn']:
+        # A certificate of the VIP address's own, its name taken away since (1.0.242): root
+        # refused the whole request for it, and no change of nginx, keepalived or the
+        # firewall reached this node again - the VIP address stayed away. The node's
+        # certificate serves the address until a name is given again.
+        log_sparing('vip-noname', 'the VIP address has a certificate of its own but no name: '
+                    'the node\'s certificate serves it until the name is given again (Settings - '
+                    'TLS and the VIP address)', 'warn', every=3600)
+        vip_tls = None
+    tls = {'node': tls_resolved(tls_profile(store, me)), 'vip': tls_resolved(vip_tls)}
     out = {'node': me, 'vip': vip, 'tls': tls}
     # Asked only once set on the pages (1.0.52): a request from before had
     # neither, and its hash stays what it was.
@@ -32500,6 +32564,8 @@ def net_go_back(daemon, job, why):
     if not back:
         _job_put(store, job, 'not kept (%s), and it cannot go back by itself: %s' % (
             why, job.get('back_why') or '?'), job.get('pct'), ok=False, state='failed')
+        store.add_event('settings', 'the old network of %s could not be put back: not kept (%s), and '
+                        'it cannot go back by itself' % (me, why), 'bad')      # mailed (1.0.242)
         return
     # The network as it is now read first: going back is planned from what
     # the node has (the new address), so the other node is told the old one.
@@ -32510,6 +32576,10 @@ def net_go_back(daemon, job, why):
     _job_put(store, job, 'not kept: %s - the old network (%s) comes back' % (
         why, (back.get('ipv4') or {}).get('addr')), job.get('pct'), ok=False,
         state='going back')
+    # In the events too (1.0.242): mailed, as the firewall's and the SSH server's are.
+    store.add_event('settings', '%s went back to the network it had before (%s): %s'
+                    % (me, (back.get('ipv4') or {}).get('addr') or '?', why), 'warn')
+
     try:
         net_ask(store, me, back, 'otp (%s)' % why, rollback=True, maint=bool(job.get('maint')),
                 snap=job.get('snap') or '')
@@ -37297,6 +37367,21 @@ def health_publish(daemon):
            'db_trouble': DB_TROUBLE_SEEN['said'] if now - DB_TROUBLE_SEEN['at'] < 300 else '',
            'last_backup': last, 'radius': list(getattr(getattr(daemon, 'radius', None),
                                                        'bound', []) or [])}
+    # What only this node can tell (1.0.242): the alerts are sent by one node for all.
+    def said(fn):
+        try:
+            return fn()
+        except Exception:                               # noqa: BLE001
+            return None
+    row['radius_trouble'] = str(getattr(getattr(daemon, 'radius', None), 'trouble', '') or '')[:300]
+    row['key_lost'] = bool(said(lambda: int(daemon.store.db.value('SELECT COUNT(*) AS n FROM tokens',
+                                                                  (), 0) or 0) and not sealing_key()))
+    row['name_clash'] = str(said(name_clash_words) or '')[:300]
+    row['ntp_problem'] = str(said(ntp_problem) or '')[:300]
+    if dbguard_on():
+        refused = sorted((DBGUARD.get('refused') or {}).values(), key=lambda r: -float(r.get('at') or 0))
+        row['dbguard_refused'] = [{'what': r.get('what'), 'why': r.get('why'), 'at': r.get('at')}
+                                  for r in refused if now - float(r.get('at') or 0) < 3600][:5]
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
     return row
 
@@ -37416,6 +37501,25 @@ def alert_problems(store, lang='en'):
                     _al(lang, 'Server nemá otevřený port RADIUS - přihlášení přes tento uzel '
                               'neprojdou.', 'The server holds no RADIUS port - sign-ins through '
                               'this node do not pass.'), 'radius')
+        # What only the node itself sees (1.0.242): its health row.
+        for n in names:
+            h = health.get(n) or {}
+            if h.get('key_lost'):
+                add('key:' + n, 'bad', n,
+                    _al(lang, 'Na %s chybí klíč, který otevírá tokeny' % n,
+                        'The key that opens the tokens is missing on %s' % n),
+                    _al(lang, 'Žádný kód tam nelze ověřit - přihlášení přes tento uzel neprojdou. '
+                              'Vraťte soubor secrets.key ze zálohy.',
+                        'No code can be checked there - sign-ins through this node do not pass. '
+                        'Put secrets.key back from a backup.'), 'db')
+            if h.get('name_clash'):
+                add('clash:' + n, 'bad', n,
+                    _al(lang, 'Dva uzly pod jedním jménem', 'Two nodes under one name'),
+                    str(h['name_clash'])[:300], 'ha')
+            if h.get('radius_trouble') and (h.get('radius') or (beats.get(n) or {}).get('radius')):
+                add('radius:trouble:' + n, 'warn', n,
+                    _al(lang, 'RADIUS na %s má potíže' % n, 'RADIUS on %s is in trouble' % n),
+                    str(h['radius_trouble'])[:300], 'radius')
         vers = sorted({str(b.get('version')) for b in beats.values()
                        if b.get('version') and b.get('alive', True)})
         if len(vers) > 1:
@@ -37450,7 +37554,7 @@ def alert_problems(store, lang='en'):
                         'RADIUS on %s could not use the database: %s') % (n, str(trouble)[:300]),
                     'db')
     # The nodes apart (1.0.218): each node's own word, and the report of the time apart.
-    if CONFIG.get('split_report') and split_engaged():
+    if CONFIG.get('split_report') and CONFIG.get('alerts_split', 1) and split_engaged():
         for n in names:
             st = split_state_of(store, n)
             if st.get('apart') and now - float(st.get('at') or 0) < 90:
@@ -37474,7 +37578,7 @@ def alert_problems(store, lang='en'):
                     rep['twice_n'], ', '.join('%s (%s)' % (x.get('name'), x.get('kind'))
                                               for x in (rep.get('twice') or [])[:10])), 'ha')
     # The clocks and the health of the nodes (1.0.222): each node's own word.
-    if clock_engaged():
+    if CONFIG.get('alerts_clock', 1) and clock_engaged():
         warn_s = float(CONFIG.get('clock_warn_s') or 2)
         aside_s = float(CONFIG.get('clock_aside_s') or 20)
         for n in names:
@@ -37634,6 +37738,12 @@ def alert_problems(store, lang='en'):
             data = ((_meta_json(store, 'ntp:now:' + n) or {}).get('data') or {})
             tr = data.get('tracking') or {}
             if not data.get('chrony') or not tr:
+                # Without chrony (1.0.242): what timedatectl says, as the node told it.
+                np_ = (health.get(n) or {}).get('ntp_problem')
+                if np_:
+                    add('time:' + n, 'bad', n,
+                        _al(lang, 'Hodiny na %s nejdou přesně' % n, 'The clock of %s is off' % n),
+                        str(np_)[:300], 'time')
                 continue
             off = abs(float(tr.get('offset') or 0))
             unsynced = str(tr.get('leap') or '').lower().startswith('not')
@@ -37673,6 +37783,7 @@ def alert_problems(store, lang='en'):
                     _al(lang, 'Z uzlu %s neodpovídá žádný její server - přihlášení přes ni '
                               'neprojdou.' % n, 'None of its servers answers %s - sign-ins '
                               'through it do not pass.' % n), 'dir')
+    alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, now)
     if CONFIG.get('alerts_sms', 1) and (CONFIG.get('sms_mode') or 'off') != 'off':
         for n in names:
             s = (health.get(n) or {}).get('sms') or {}
@@ -37684,6 +37795,188 @@ def alert_problems(store, lang='en'):
                                                               s.get('said') or '?'), 'codes')
     return out
 
+
+# Said as it happens, from the events (1.0.242): (switch, kind, words in it, title cs, en, pane, level).
+ALERT_EVENTS = [
+    ('alerts_guard', 'radius', (' is blocked for ',), 'Zablokovaný zdroj', 'A source blocked', 'guard', 'info'),
+    ('alerts_trial', 'settings', ('the firewall and access went back to what they were',
+                                  'the change of the SSH server went back',
+                                  'went back to the network it had before', ' could not be put back'),
+     'Změna na zkoušku se vrátila', 'A change on trial went back', 'network', 'warn'),
+    ('alerts_sso', 'enrolment', ('a sign-in by the load balancer was refused',),
+     'Přihlášení přes load balancer odmítnuto', 'A sign-in by the load balancer refused', 'portal', 'info'),
+]
+
+def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, now):
+    """What the nodes see and was not mailed (1.0.242): logs not shipped, SNMP, a certificate the
+    CA did not renew, the internal certificates, a failed update or upgrade, rows of the database
+    not written by otp, mails that do not go, the replication behind, SELinux, the security
+    check. Each its own switch; the noisy ones off by default."""
+    def h_of(n):
+        return health.get(n) or {}
+    # Logs not reaching isemon or the syslog servers.
+    if CONFIG.get('alerts_shipping', 1):
+        for n in names:
+            for what, words in (('isemon', 'isemon'), ('siem', _al(lang, 'syslog (SIEM)', 'syslog (SIEM)'))):
+                st = h_of(n).get(what) or {}
+                if st.get('on', True) and st.get('trouble'):
+                    add('ship:%s:%s' % (what, n), 'warn', n,
+                        _al(lang, 'Logy z %s nedochází do %s' % (n, words),
+                            'The logs of %s do not reach %s' % (n, words)),
+                        '; '.join('%s: %s' % kv for kv in sorted((st.get('trouble') or {}).items()))[:300]
+                        + (_al(lang, ' (zahozeno %d řádků)', ' (%d lines dropped)') % int(st['dropped'])
+                           if int(st.get('dropped') or 0) else ''), 'siem' if what == 'siem' else 'isemon')
+    # The SNMP agent.
+    if CONFIG.get('alerts_snmp', 1) and CONFIG.get('snmp'):
+        for n in names:
+            sn = h_of(n).get('snmp')
+            if isinstance(sn, dict) and sn and not sn.get('listening'):
+                add('snmp:' + n, 'warn', n,
+                    _al(lang, 'SNMP agent na %s neposlouchá' % n, 'The SNMP agent on %s is not listening' % n),
+                    str(sn.get('error') or '')[:300] or _al(lang, 'Port se nepodařilo otevřít.',
+                                                            'Its port could not be opened.'), 'monitor')
+            elif isinstance(sn, dict) and sn.get('trap_error'):
+                add('snmp:trap:' + n, 'warn', n,
+                    _al(lang, 'Trapy SNMP z %s neodchází' % n, 'SNMP traps from %s do not go' % n),
+                    str(sn.get('trap_error'))[:300], 'monitor')
+    # A certificate the CA did not renew - said at once, not when it is about to run out.
+    if CONFIG.get('alerts_acme', 1) and CONFIG.get('acme'):
+        try:
+            rows = store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'acme:state:%'")
+        except Exception:                               # noqa: BLE001
+            rows = []
+        for r in rows:
+            try:
+                st = json.loads(r['v'] or '{}')
+            except ValueError:
+                continue
+            target = r['k'][len('acme:state:'):]
+            if not isinstance(st, dict) or st.get('ok') is not False:
+                continue
+            if now - float(st.get('failed_at') or 0) > 14 * 86400:
+                continue
+            try:
+                if not acme_care(store, target):
+                    continue
+            except Exception:                           # noqa: BLE001
+                pass
+            who = _al(lang, 'VIP adresy', 'the VIP address') if target == 'vip' else target
+            add('acme:' + target, 'warn', '' if target == 'vip' else target,
+                _al(lang, 'Certifikát %s se od CA neobnovil' % who, 'The CA did not renew the certificate of %s' % who),
+                str(st.get('said') or '')[:300], 'acme')
+    # The internal certificates: PostgreSQL's TLS and the link between the nodes.
+    days = int(CONFIG.get('alerts_cert_days') or 0)
+    if days:
+        for n in names:
+            for what, key, words in (('pg', 'dbtls:server:', _al(lang, 'PostgreSQL (TLS)', 'PostgreSQL (TLS)')),
+                                     ('link', 'hatls:node:', _al(lang, 'spojení uzlů (TLS)', 'the link between the nodes (TLS)'))):
+                row = _meta_json(store, key + n) or {}
+                end = float(row.get('cert_end') or 0)
+                if not end:
+                    continue
+                left = (end - now) / 86400
+                if left < days:
+                    add('cert:%s:%s' % (what, n), 'bad' if left < 7 else 'warn', n,
+                        _al(lang, 'Certifikát %s na %s %s' % (words, n, 'vypršel' if left < 0 else 'brzy vyprší'),
+                            'The certificate of %s on %s %s' % (words, n, 'ran out' if left < 0 else 'runs out soon')),
+                        _al(lang, 'Platí do %s (%d dní) - obnovuje se sám; když ne, Nastavení → %s.',
+                            'Good until %s (%d days) - it renews itself; when it does not, Settings → %s.')
+                        % (_al_when(end), int(left), _al(lang, 'Databáze', 'The database') if what == 'pg'
+                           else _al(lang, 'Vysoká dostupnost', 'High availability')), 'db' if what == 'pg' else 'ha')
+    # The update of the system that failed, or could not even look.
+    if CONFIG.get('alerts_updates', 1):
+        plan = _meta_json(store, 'host:osup:plan') or {}
+        if plan.get('state') == 'failed' and now - float(plan.get('ended') or 0) < 3 * 86400:
+            n = plan.get('failed_on') or ''
+            add('osup:failed', 'bad', n,
+                _al(lang, 'Aktualizace systému se nepovedla%s' % (' na ' + n if n else ''),
+                    'The update of the system failed%s' % (' on ' + n if n else '')),
+                str(((_meta_json(store, 'host:osup:node:' + n) or {}).get('said') if n else '') or '')[:300], 'osup')
+        for n in names:
+            ck = _meta_json(store, 'host:osup:check:' + n) or {}
+            if ck.get('state') == 'failed' and now - float(ck.get('at') or 0) < 3 * 86400:
+                add('osup:check:' + n, 'warn', n,
+                    _al(lang, '%s se nemůže podívat po aktualizacích' % n, '%s cannot look for updates' % n),
+                    str(ck.get('error') or '')[:300], 'osup')
+    # An upgrade of otp that failed.
+    if CONFIG.get('alerts_upgrade', 1):
+        try:
+            up = upgrade_plan(store) or {}
+        except Exception:                               # noqa: BLE001
+            up = {}
+        if up.get('state') == 'failed':
+            bad = [x for x in up.get('steps') or [] if x.get('state') == 'failed']
+            add('upgrade:' + str(up.get('id') or ''), 'bad', (bad[0].get('name') if bad else ''),
+                _al(lang, 'Upgrade otp na %s se nepovedl' % up.get('version'),
+                    'The upgrade of otp to %s failed' % up.get('version')),
+                '; '.join('%s: %s' % (x.get('name'), x.get('said')) for x in bad)[:300], 'upgrade')
+    # Rows of the database not written by otp.
+    if CONFIG.get('alerts_dbguard', 1):
+        for n in names:
+            ref = h_of(n).get('dbguard_refused') or []
+            if ref:
+                add('dbguard:' + n, 'bad', n,
+                    _al(lang, '%s odmítl řádky databáze, které nezapsal otp' % n,
+                        '%s refused rows of the database not written by otp' % n),
+                    '; '.join('%s (%s)' % (r.get('what'), r.get('why')) for r in ref)[:300], 'hisec')
+    # Mails that do not go: codes and tokens.
+    if CONFIG.get('alerts_mailq', 1):
+        try:
+            bad = 0
+            last = ''
+            # Only the rows that failed or ran out read whole (the queue holds the sent ones too).
+            for r in store.db.rows("SELECT v FROM meta WHERE k LIKE 'mailq:%' AND "
+                                   "(v LIKE '%\"state\": \"failed\"%' OR v LIKE '%\"state\": \"expired\"%')"):
+                try:
+                    m = json.loads(r['v'] or '{}')
+                except ValueError:
+                    continue
+                if m.get('state') in ('failed', 'expired') and m.get('kind') in ('code', 'token', 'verify') \
+                        and now - float(m.get('last_try') or m.get('created') or 0) < 86400:
+                    bad += 1
+                    last = str(m.get('said') or '')
+            if bad:
+                add('mailq', 'warn', '',
+                    _al(lang, '%d mail(ů) s kódem nebo tokenem neodešlo' % bad, '%d mail(s) with a code or a token did not go' % bad),
+                    last[:300], 'mailq')
+        except Exception:                               # noqa: BLE001
+            pass
+    # The replication behind (off by default).
+    mb = int(CONFIG.get('alerts_repl_behind_mb') or 0)
+    if mb and CONFIG.get('ha_mode') == 'replicated' and not quiet:
+        try:
+            rs = ha_repl_state(store) or {}
+        except Exception:                               # noqa: BLE001
+            rs = {}
+        behind = float(rs.get('behind') or 0)
+        if rs.get('healthy', True) and behind > mb * 1048576:
+            add('repl:behind', 'warn', '',
+                _al(lang, 'Replikace zaostává o %s' % human_bytes(behind), 'The replication is %s behind' % human_bytes(behind)),
+                str(rs.get('last_msg') or '')[:300], 'ha')
+    # SELinux (off by default).
+    if CONFIG.get('alerts_selinux'):
+        for n in names:
+            try:
+                probs = [p for p in selinux_problems(store, n) if 'ready for enforcing' not in p]
+            except Exception:                           # noqa: BLE001
+                probs = []
+            if probs:
+                add('selinux:' + n, 'warn', n,
+                    _al(lang, 'SELinux na %s: něco není, jak otp potřebuje' % n, 'SELinux on %s: something is not as otp needs it' % n),
+                    '; '.join(probs)[:300], 'hisec')
+    # The security check (off by default).
+    if CONFIG.get('alerts_hisec'):
+        try:
+            f = hisec_findings(store) or {}
+        except Exception:                               # noqa: BLE001
+            f = {}
+        items = [x.get('what') for x in (f.get('block') or []) if x.get('what')] if CONFIG.get('high_security') else []
+        items += [x.get('what') if isinstance(x, dict) else str(x) for x in (f.get('warn') or [])]
+        items = [x for x in items if x]
+        if items:
+            add('hisec', 'warn', '',
+                _al(lang, 'Kontrola zabezpečení: %d věc(í)' % len(items), 'The security check: %d thing(s)' % len(items)),
+                '; '.join(items)[:400], 'hisec')
 
 def _alerts_to(key='alerts_to'):
     raw = str(CONFIG.get(key) or '')
@@ -37923,15 +38216,18 @@ def alerts_evaluate(store, force=False):
                 gone.append(p)
     # Events: a source blocked for guessing, as it happens.
     events = []
-    if CONFIG.get('alerts_guard'):
+    # What is said as it happens (1.0.242: a table of them; the blocked sources since 1.0.162).
+    rules = [r for r in ALERT_EVENTS if CONFIG.get(r[0], DEFAULTS.get(r[0]))]
+    if rules:
         last = int(st.get('event_id') or 0)
         try:
-            rows = store.db.rows("SELECT id, ts, words, node FROM events WHERE id > ? AND "
-                                 "kind = 'radius' AND words LIKE '% is blocked for %' "
-                                 "ORDER BY id LIMIT 20", (last,))
+            rows = store.db.rows("SELECT id, ts, kind, words, node FROM events WHERE id > ? "
+                                 "ORDER BY id LIMIT 200", (last,))
         except Exception:                               # noqa: BLE001
             rows = []
-        if not last:
+        # Where they begin, once (1.0.242: by its being there - with no event yet it stayed 0,
+        # and every turn began again, so nothing was ever said).
+        if 'event_id' not in st:
             try:
                 st['event_id'] = int(store.db.value('SELECT MAX(id) FROM events', (), 0) or 0)
             except Exception:                           # noqa: BLE001
@@ -37939,10 +38235,15 @@ def alerts_evaluate(store, force=False):
             rows = []
         for r in rows:
             st['event_id'] = max(int(st.get('event_id') or 0), int(r['id']))
-            events.append({'level': 'info', 'node': r.get('node') or '',
-                           'title': _al(lang, 'Zablokovaný zdroj', 'A source blocked'),
-                           'said': str(r.get('words') or '')[:300], 'pane': 'guard',
-                           'since': r.get('ts')})
+            words = str(r.get('words') or '')
+            for _key, kind, bits, cs, en, pane, level in rules:
+                if r.get('kind') == kind and any(b in words for b in bits):
+                    events.append({'level': level, 'node': r.get('node') or '',
+                                   'title': _al(lang, cs, en), 'said': words[:300], 'pane': pane,
+                                   'since': r.get('ts')})
+                    break
+            if len(events) >= 20:
+                break
     st['problems'] = known
     st['checked'] = now
     store.set_meta('alerts:state', json.dumps(st))
@@ -46790,6 +47091,21 @@ def _selinux_do(h):
 
 
 # ---- root's SSH keys and the updates of the system on the pages (1.0.158) ------------
+def sshotp_accounts(store):
+    """root and the users who may sign in on the nodes, as they said (1.0.242); None while no node
+    said yet (an older one): then the name is taken as until now."""
+    out, said = {'root'}, False
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'host:sshkeys:now:%'"):
+        try:
+            row = json.loads(r['v'] or '{}')
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get('users'), list):
+            said = True
+            out.update(str(u.get('name')) for u in row['users'] if isinstance(u, dict) and u.get('name'))
+    return out if said else None
+
+
 @route('GET', '/api/sshkeys')
 def _sshkeys(h):
     h.me('fulladmin')
@@ -46945,6 +47261,14 @@ def _sshd_do(h):
             return sshd_view(h.store)
         # SSH tokens of their own (1.0.181): the app's QR shown once, when made.
         if act == 'sshotp_add':
+            # Only an account of the nodes (1.0.242): root, or a user who may sign in there, as the
+            # nodes said - never a name typed that is nobody's. A new one in its place: as it is.
+            if not b.get('replace'):
+                known = sshotp_accounts(h.store)
+                if known is not None and str(b.get('name') or '').strip() not in known:
+                    raise ValueError('%s is not an account of the nodes - pick one of the list '
+                                     '(root, or a user who may sign in there)'
+                                     % str(b.get('name') or '')[:40])
             got = sshotp_make(h.store, b.get('name'), s['name'], b.get('note') or '',
                               replace=bool(b.get('replace')), kind=str(b.get('kind') or 'app'),
                               dest=str(b.get('dest') or ''), lang=str(b.get('lang') or ''))

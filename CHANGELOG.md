@@ -4,6 +4,45 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.242 — 3 November 2026
+
+**Alerts for what the nodes already saw** (*Alerts and reports*). Mailed now, each with a switch of
+its own, on by default - they are failures: **the key that opens the tokens missing** on a node, two
+nodes under one name, RADIUS in trouble while it listens (under *A node or RADIUS down*); **logs not
+reaching isemon or the syslog servers** (with the lines dropped); **the SNMP agent not listening** or
+its traps not going; **a certificate the CA did not renew** - at once, not only once it is about to run
+out; the certificates of **PostgreSQL's TLS and the link between the nodes** running out (with *A
+certificate running out within*); **the update of the system failed**, or a node that cannot look for
+updates; **an upgrade of otp that failed**; **a change on trial that went back** (the network, the
+firewall, the SSH server - whoever made it may have lost the way in; the network's going back is now in
+Events too); **rows of the database not written by otp** refused (the guard against writes);
+**mails with a code or a token that do not go**; a clock out of sync on a node without chrony. Off by
+default, for who wants them: the replication behind by more than N MB, SELinux, the security check,
+each sign-in by the load balancer refused. *The nodes apart* and *the clock guard* have switches of
+their own too (on, as they were). Fixed on the way: with no event at all when the alerts first looked,
+what happened later was never mailed.
+
+**High security: the code from otp over SSH is no password.** With *Ask for a code from otp* and no
+system password to fall back on, otp sets sshd to keyboard-interactive (the code) and root to a key
+and the code - the check took both for passwords: *SSH lets people in with a password* and *root may
+sign in over SSH with a password* stood against switching high security on. Said now only where a
+password really lets in.
+
+**Accounts picked, not typed** (*SSH server and notices*, *About*): *Who may sign in*, *Only these
+accounts* and the console at login's *normal users* are lists of the accounts of the nodes - root and
+every user who may sign in there - several at once, or everybody (nobody / every normal user for the
+console); chips to take one away, a search when the list is long. One set before that the nodes do not
+list (a pattern of sshd's) stays, said so. *Add an SSH token* is a list too: only an account of the
+nodes, one without an SSH token - the server refuses any other name, and a second token for one
+account.
+
+**The VIP address no longer lost for good when its name was taken away.** With a certificate of the
+VIP address's own kept and its name (*FQDN*) emptied afterwards, each node's root helper refused the
+whole request ("a certificate of its own needs the name it is for") - and no change of nginx,
+keepalived or the firewall reached the node again: once keepalived stopped, the VIP address stayed
+away. The node's certificate now serves the address until a name is given again (said in the log);
+given a name, its own certificate is back on it.
+
 ## 1.0.241 — 3 November 2026
 
 **SSH tokens: the account names offered from the nodes** (*SSH server and notices → Add an SSH
