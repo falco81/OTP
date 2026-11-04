@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.242'
+__version__ = '1.0.243'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -8753,7 +8753,8 @@ DBGUARD_META_PREFIXES = (
     'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
     'host:sshkeys:want:', 'host:rootkey:', 'host:osup:checkwant:', 'sshotp:u:', 'sshotp:port:',
-    'console:want:', 'acme_push:key:', 'adm2fa:', 'host:selinux:want:')
+    'console:want:', 'acme_push:key:', 'adm2fa:', 'host:selinux:want:',
+    'host:users:want:')
 # Settings whose word reaches root, or who may sign in to these pages.
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
@@ -16841,6 +16842,10 @@ class Daemon(object):
                     sshkeys_tick(self)          # root's SSH keys (1.0.158)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
+                try:
+                    osu_tick(self)              # the local users of the machines (1.0.243)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('osu-tick', 'the local users: %s' % e, 'warn', every=600)
                 try:
                     osup_sched_tick(self)       # updates and restarts on a schedule (1.0.164)
                 except Exception as e:          # noqa: BLE001
@@ -47283,6 +47288,312 @@ def _sshd_do(h):
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
 
+# ---- the local users of the machines (1.0.243) -----------------------------------------
+# Settings -> Local users: the users of each node (root and those of the normal range), made and
+# looked after on every node of a cluster at once or on one - by each node's root helper
+# (otp_web.py, users.ask), asked through the database as root's SSH keys are: what is asked of a
+# node is in a row of the asking node's own ('host:users:want:NODE@@ASKER', signed when the guard
+# of root's actions is on), and the node answers in a row of its own ('host:users:now:NODE').
+# root is shown, never changed. A password is typed on one node and never leaves it as itself:
+# its hash (SHA-512 crypt, made by openssl from standard input) is what is asked, sealed with
+# the cluster's key, taken out of the asking row once the node said it is done.
+OSU_WORK = {'busy': False, 'since': 0.0, 'seen': 0.0}
+OSU_KEEP = ('root', 'otp', 'otp-web', 'postgres', 'nginx', 'apache', 'nobody', 'keepalived',
+            'chrony', 'sshd', 'polkitd', 'dbus', 'systemd-network', 'tss')
+OSU_DOS = ('list', 'add', 'password', 'lock', 'unlock', 'sudo', 'set', 'drop')
+OSU_PW_MIN = 8
+
+
+def osu_now(store, n):
+    return _meta_json(store, 'host:users:now:' + n) or {}
+
+
+def osu_asks(store, n):
+    out = []
+    for r in node_key_rows(store, 'host:users:want', n):
+        try:
+            asks = json.loads(r['v'] or '[]')
+        except ValueError:
+            continue
+        for a in asks if isinstance(asks, list) else [asks]:
+            if isinstance(a, dict) and a.get('id'):
+                out.append(a)
+    return out
+
+
+def osu_view(store):
+    alive = host_alive(store)
+    nodes = []
+    for n in host_nodes(store):
+        now = osu_now(store, n)
+        done = set(now.get('done') or [])
+        pending = late = 0
+        for a in osu_asks(store, n):
+            if a['id'] in done or a.get('do') == 'list':
+                continue
+            age = time.time() - float(a.get('at') or 0)
+            if age < 300:
+                pending += 1
+            elif age < 3600:
+                late += 1
+        nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
+                      'users': now.get('users') or [], 'at': now.get('at'),
+                      'admin_group': now.get('admin_group') or '', 'shells': now.get('shells') or [],
+                      'uid_min': now.get('uid_min'), 'uid_max': now.get('uid_max'),
+                      'today': now.get('today'), 'said': now.get('said') or [],
+                      'error': now.get('error') or ('%d change(s) asked of it more than five minutes '
+                                                    'ago are not done - is otp-web.path running '
+                                                    'there?' % late if late else ''),
+                      'pending': pending})
+    return {'nodes': nodes, 'cluster': len(nodes) > 1, 'pw_min': OSU_PW_MIN,
+            'openssl': bool(shutil.which('openssl'))}
+
+
+def osu_hash(password):
+    """The SHA-512 crypt hash of a password, by openssl from its standard input."""
+    pw = str(password or '')
+    if len(pw) < OSU_PW_MIN:
+        raise ValueError('the password is %d characters at least' % OSU_PW_MIN)
+    if len(pw) > 256 or re.search(r'[\x00-\x1f\x7f]', pw):
+        raise ValueError('the password is 256 characters at most, with no line breaks')
+    exe = shutil.which('openssl')
+    if not exe:
+        raise ValueError('openssl is not on this node - it makes the password\'s hash')
+    got = subprocess.run([exe, 'passwd', '-6', '-stdin'], input=pw + '\n', capture_output=True,
+                         text=True, timeout=30)
+    h = (got.stdout or '').strip()
+    if got.returncode != 0 or not h.startswith('$6$'):
+        raise ValueError('openssl did not make the password\'s hash: %s'
+                         % ((got.stderr or '').strip()[:200] or 'no answer'))
+    return h
+
+
+def osu_free_uid(store, nodes, name):
+    """One UID for the new user on every node: the one it has where it is there already, or the
+    lowest of the normal range none of the nodes uses."""
+    lo, hi, used = 1000, 60000, set()
+    for n in nodes:
+        now = osu_now(store, n)
+        if not now.get('at'):
+            raise ValueError('%s has not said who its users are yet - wait a few seconds' % n)
+        lo = max(lo, int(now.get('uid_min') or 1000))
+        hi = min(hi, int(now.get('uid_max') or 60000))
+        used.update(int(u) for u in now.get('used') or [] if str(u).isdigit())
+        for u in now.get('users') or []:
+            if u.get('name') == name:
+                return int(u['uid'])
+    for uid in range(lo, hi + 1):
+        if uid not in used:
+            return uid
+    raise ValueError('no UID of the normal range is free on %s' % ', '.join(nodes))
+
+
+def osu_ask(store, nodes, do, by, **f):
+    """One change asked of the nodes named - checked here, done by each node's root helper."""
+    known = host_nodes(store)
+    nodes = [n for n in known if n in (nodes or [])]
+    if not nodes:
+        raise ValueError('which node?')
+    if do not in OSU_DOS:
+        raise ValueError('no such thing to do with a user')
+    name = str(f.get('name') or '')
+    ask = {'do': do, 'by': by, 'at': time.time()}
+    if do != 'list':
+        if name == 'root':
+            raise ValueError('root is shown here, never changed - on the machine itself only')
+        if not SSH_USER_RE.match(name) or name in OSU_KEEP or name.lower() != name:
+            raise ValueError('a user\'s name is small letters, digits, _ . and -, 32 at most, '
+                             'starting with a letter - and not one of the system\'s')
+        ask['name'] = name
+        if do != 'add':
+            # Only a user of the normal range the node said it has.
+            for n in nodes:
+                now = osu_now(store, n)
+                if now.get('at') and not any(u.get('name') == name and not u.get('root')
+                                             for u in now.get('users') or []):
+                    if do != 'drop':
+                        raise ValueError('%s has no user %s' % (n, name))
+    if do in ('add', 'set'):
+        if 'gecos' in f:
+            g = str(f.get('gecos') or '').strip()
+            if len(g) > 120 or re.search(r'[:\x00-\x1f\x7f]', g):
+                raise ValueError('the full name is 120 characters at most, without a colon')
+            ask['gecos'] = g
+        if 'shell' in f:
+            s = str(f.get('shell') or '')
+            if not re.match(r'^/[A-Za-z0-9_./-]{1,80}\Z', s):
+                raise ValueError('that is not a shell')
+            ask['shell'] = s
+    if do == 'add':
+        ask['uid'] = osu_free_uid(store, nodes, name)
+        ask['sudo'] = bool(f.get('sudo'))
+        ask['must_change'] = bool(f.get('must_change'))
+        if f.get('password'):
+            ask['hash'] = seal_secret(osu_hash(f['password']), 'osuser:' + name)
+    elif do == 'password':
+        ask['hash'] = seal_secret(osu_hash(f.get('password')), 'osuser:' + name)
+        ask['must_change'] = bool(f.get('must_change'))
+    elif do == 'sudo':
+        ask['on'] = bool(f.get('on'))
+    elif do == 'drop':
+        ask['home'] = bool(f.get('home'))
+    for n in nodes:
+        k = node_key('host:users:want', n)
+        try:
+            had = json.loads(store.get_meta(k) or '[]')
+        except ValueError:
+            had = []
+        had = [x for x in (had if isinstance(had, list) else [had])
+               if isinstance(x, dict) and time.time() - float(x.get('at') or 0) < 3600]
+        had.append(dict(ask, id=secrets.token_hex(6)))
+        store.set_meta(k, json.dumps(had[-20:]))
+    if do != 'list':
+        words = {'add': 'made the local user %s' % name,
+                 'password': 'set a new password for the local user %s' % name,
+                 'lock': 'locked the local user %s' % name,
+                 'unlock': 'unlocked the local user %s' % name,
+                 'sudo': '%s the local user %s sudo' % ('gave' if ask.get('on') else 'took from', name),
+                 'set': 'changed the local user %s' % name,
+                 'drop': 'took away the local user %s%s' % (name, ' and the home folder'
+                                                             if ask.get('home') else '')}[do]
+        if do == 'add':
+            words += ' (UID %d%s%s)' % (ask['uid'], ', sudo' if ask['sudo'] else '',
+                                        ', a password set' if ask.get('hash') else ', no password')
+        store.add_event('settings', '%s %s on %s' % (by, words, ', '.join(nodes)), 'warn', who=by)
+    return nodes
+
+
+def osu_forget_hashes(store):
+    """The hashes this node asked of the others, taken out of its own rows once done."""
+    me = node_name()
+    for n in host_nodes(store):
+        k = node_key('host:users:want', n)
+        try:
+            had = json.loads(store.get_meta(k) or '[]')
+        except ValueError:
+            continue
+        if not isinstance(had, list) or not any(isinstance(a, dict) and a.get('hash') for a in had):
+            continue
+        done = set(osu_now(store, n).get('done') or [])
+        changed = False
+        for a in had:
+            if isinstance(a, dict) and a.get('hash') and (
+                    a.get('id') in done or time.time() - float(a.get('at') or 0) > 900):
+                a.pop('hash', None)
+                a['hash_gone'] = True
+                changed = True
+        if changed:
+            store.set_meta(k, json.dumps(had))
+
+
+def osu_keep(row, got):
+    row.update({k: got.get(k) for k in ('users', 'uid_min', 'uid_max', 'used', 'admin_group',
+                                        'shells', 'today')})
+    row['at'] = time.time()
+
+
+def osu_one(a):
+    """One change done by the root helper: its answer, or what went wrong (words)."""
+    q = {k: v for k, v in a.items() if k in ('do', 'name', 'uid', 'gecos', 'shell', 'sudo',
+                                              'must_change', 'on', 'home')}
+    if a.get('hash'):
+        h = unseal_secret(a['hash'], 'osuser:' + str(a.get('name') or ''))
+        if not str(a['hash']).startswith(SEALED2) or not h:
+            return ('the password for %s could not be opened here - is the key that opens the '
+                    'tokens the same on this node?' % a.get('name'))
+        q['hash'] = h
+    elif a.get('hash_gone'):
+        return 'it came too late: the password for %s is no longer kept' % a.get('name')
+    try:
+        return root_ask('users.ask', 'users.json', q, 120)
+    except Exception as e:                              # noqa: BLE001
+        err = str(e)[:300] or e.__class__.__name__
+        log('the local user %s: %s' % (a.get('name') or '?', err), 'warn')
+        return err
+
+
+def osu_tick(daemon):
+    store = daemon.store
+    me = node_name()
+    try:
+        osu_forget_hashes(store)
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('osu-forget', 'the local users: %s' % e, 'warn', every=600)
+    if OSU_WORK['busy'] and time.time() - OSU_WORK['since'] < 900:
+        return
+    now = osu_now(store, me)
+    done = list(now.get('done') or [])
+    todo = [a for a in osu_asks(store, me) if a['id'] not in done and
+            time.time() - float(a.get('at') or 0) < 3600]
+    todo.sort(key=lambda a: float(a.get('at') or 0))
+    stale = time.time() - OSU_WORK['seen'] > 300 or not now
+    if not todo and not stale:
+        return
+    changes = [a for a in todo if a.get('do') != 'list']
+    lists = [a for a in todo if a.get('do') == 'list']
+    OSU_WORK.update(busy=True, since=time.time())
+
+    def go():
+        row = dict(now)
+        said = list(row.get('said') or [])[-10:]
+        try:
+            for a in changes:
+                err, got = osu_one(a), None
+                if isinstance(err, dict):
+                    got, err = err, ''
+                done.append(a['id'])
+                said.append({'at': time.time(), 'id': a['id'], 'do': a.get('do'),
+                             'name': a.get('name') or '', 'by': a.get('by') or '',
+                             'ok': not err, 'said': err or (got or {}).get('said') or ''})
+                if got:
+                    osu_keep(row, got)
+                row.update(done=done[-300:], said=said[-10:])
+                store.set_meta('host:users:now:' + me, json.dumps(row))
+            try:
+                osu_keep(row, root_ask('users.ask', 'users.json', {'do': 'list'}, 60))
+                row['error'] = ''
+            except Exception as e:                      # noqa: BLE001
+                row['error'] = 'its users could not be read: %s' % (str(e)[:300] or
+                                                                   e.__class__.__name__)
+            done.extend(x['id'] for x in lists)
+            row.update(done=done[-300:], said=said[-10:])
+            store.set_meta('host:users:now:' + me, json.dumps(row))
+            OSU_WORK['seen'] = time.time()
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('osu', 'the local users: %s' % e)
+        finally:
+            OSU_WORK['busy'] = False
+    threading.Thread(target=go, name='otp-osusers', daemon=True).start()
+
+
+@route('GET', '/api/osusers')
+def _osusers(h):
+    h.me('fulladmin')
+    return osu_view(h.store)
+
+
+@route('POST', '/api/osusers')
+def _osusers_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    nodes = b.get('nodes') or host_nodes(h.store)
+    if not isinstance(nodes, list):
+        raise ApiError(400, 'nodes is a list')
+    if act == 'refresh':
+        act = 'list'
+    if act not in OSU_DOS:
+        raise ApiError(400, 'no such thing to do with a user')
+    f = {k: b[k] for k in ('name', 'gecos', 'shell', 'sudo', 'must_change', 'password', 'on', 'home')
+         if k in b}
+    try:
+        done = osu_ask(h.store, nodes, act, s['name'], **f)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    if act == 'list':
+        return {'message': 'asked again', 'nodes': done}
+    return {'message': 'done on %s within a few seconds' % ', '.join(done), 'nodes': done}
+
 
 # ---- alerts and the report on the pages (1.0.162) --------------------------------------
 def _report_span(which):
@@ -52735,6 +53046,91 @@ class Console(object):
             if which is not None:
                 self.act('--lockouts-clear', which)
 
+        # The local users of the machines (1.0.243): as Settings -> Local users. Asked in-process:
+        # a password typed here goes nowhere as itself, never onto a command line.
+        def osu_do(do, name, **f):
+            try:
+                store = cli_store()
+                nodes = host_nodes(store)
+                osu_ask(store, nodes, 'list', cli_who())
+                time.sleep(2)
+                done = osu_ask(store, nodes, do, cli_who(), name=name, **f)
+            except (ValueError, OSError) as e:
+                self.note('Local users', 'refused: %s' % e, 'bad')
+                return
+            self.working('working…  on %s' % ', '.join(done))
+            end, v = time.time() + 60, None
+            while time.time() < end:
+                v = osu_view(store)
+                if not any(n['pending'] for n in v['nodes'] if n['name'] in done):
+                    break
+                time.sleep(1)
+            lines, bad = [], False
+            for n in (v or {}).get('nodes') or []:
+                last = [x for x in n.get('said') or [] if x.get('name') == name][-1:]
+                if n['name'] in done:
+                    ok_ = bool(last and last[0].get('ok'))
+                    bad = bad or not ok_
+                    lines.append('%s: %s%s' % (n['name'], 'done' if ok_ else 'refused' if last else
+                                               'not done yet', (' - ' + last[0]['said'])
+                                               if last and last[0].get('said') else ''))
+            self.note('Local users', '\n'.join(lines) or 'asked', 'bad' if bad else 'ok')
+
+        def osu_pick(title):
+            got = self.form(title, [{'key': 'name', 'label': 'the user', 'need': True,
+                                     'help': 'A local user of the nodes - never root.'}])
+            return got and got['name'].strip()
+
+        def osu_add():
+            got = self.form('A local user', [
+                {'key': 'name', 'label': 'the name', 'need': True,
+                 'help': 'Small letters, digits, _ . and -; it is made on every node, the same UID.'},
+                {'key': 'gecos', 'label': 'the full name'},
+                {'key': 'pw', 'label': 'the password', 'kind': 'secret',
+                 'help': 'Empty: none - the user signs in with a key only.'},
+                {'key': 'pw2', 'label': 'again', 'kind': 'secret'},
+                {'key': 'sudo', 'label': 'sudo', 'kind': 'choice', 'value': 'no',
+                 'options': [('no', 'no'), ('yes', 'may become root with sudo')]},
+                {'key': 'must', 'label': 'at the first sign-in', 'kind': 'choice', 'value': 'yes',
+                 'options': [('yes', 'the password to be changed'), ('no', 'kept')]}],
+                check=lambda v: 'the two passwords are not the same' if v.get('pw') != v.get('pw2') else None)
+            if got:
+                osu_do('add', got['name'].strip(), gecos=got.get('gecos') or '', shell='/bin/bash',
+                       password=got.get('pw') or '', sudo=got.get('sudo') == 'yes',
+                       must_change=bool(got.get('pw')) and got.get('must') == 'yes')
+
+        def osu_pw():
+            got = self.form('A new password', [
+                {'key': 'name', 'label': 'the user', 'need': True},
+                {'key': 'pw', 'label': 'the password', 'kind': 'secret', 'need': True},
+                {'key': 'pw2', 'label': 'again', 'kind': 'secret', 'need': True},
+                {'key': 'must', 'label': 'at the next sign-in', 'kind': 'choice', 'value': 'no',
+                 'options': [('no', 'kept'), ('yes', 'to be changed')]}],
+                check=lambda v: 'the two passwords are not the same' if v.get('pw') != v.get('pw2') else None)
+            if got:
+                osu_do('password', got['name'].strip(), password=got['pw'], must_change=got.get('must') == 'yes')
+
+        def osu_change():
+            name = osu_pick('Change a local user')
+            if not name:
+                return
+            r = self.choose('Change %s on every node' % name, [
+                ('lock', 'Lock - may not sign in at all, nor with a key'), ('unlock', 'Unlock'),
+                ('sudo-on', 'Give sudo'), ('sudo-off', 'Take sudo away'),
+                ('drop', 'Take the user away (the home folder kept)'),
+                ('drop-home', 'Take the user away with the home folder')])
+            if not r:
+                return
+            if r.startswith('drop') and not self.confirm('Take %s away' % name, 'On every node%s.' % (
+                    ', with the home folder and everything in it' if r == 'drop-home' else ''),
+                    'Take it away', danger=True):
+                return
+            if r.startswith('sudo'):
+                osu_do('sudo', name, on=r == 'sudo-on')
+            elif r.startswith('drop'):
+                osu_do('drop', name, home=r == 'drop-home')
+            else:
+                osu_do(r, name)
         return self.sub('Certificates, updates, restarts, tests', [
             ('1', 'Certificates by ACME: how they stand', lambda: self.act('--acme')),
             ('2', 'Order a certificate by ACME now', acme_order),
@@ -52751,6 +53147,10 @@ class Console(object):
             ('13', 'Take an SSH token away', ssh_del),
             ('14', 'Lockouts: who is locked out now', lambda: self.act('--lockouts')),
             ('15', 'Forget a lockout', lockout_clear),
+            ('16', 'Local users of the nodes', lambda: self.act('--local-users')),
+            ('17', 'Add a local user', osu_add),
+            ('18', 'A new password for a local user', osu_pw),
+            ('19', 'Lock, unlock, sudo or take away a local user', osu_change),
         ])
 
     def m_more(self):
@@ -53903,6 +54303,20 @@ def build_parser():
     g.add_argument('--sso-key', action='store_true',
                    help='make a new key for the balancer to send in X-Otp-Sso-Key, shown once '
                         '(the one before is no longer taken)')
+    g.add_argument('--local-users', action='store_true',
+                   help='the local users of each node\'s system (root and UID 1000 and up): who is '
+                        'there, sudo, locked, the password')
+    g.add_argument('--local-user', nargs=2, metavar=('WHAT', 'NAME'),
+                   help='change a local user on the nodes (never root): add, password, lock, unlock, '
+                        'sudo-on, sudo-off, drop or drop-home - a password is asked, never given on '
+                        'the command line')
+    g.add_argument('--local-nodes', metavar='NODES', default='',
+                   help='with --local-user: only these nodes (separated by commas); every node if not given')
+    g.add_argument('--local-full-name', metavar='TEXT', default=None, help='with --local-user add: the full name')
+    g.add_argument('--local-shell', metavar='PATH', default=None,
+                   help='with --local-user add: the shell (/bin/bash if not given)')
+    g.add_argument('--local-must-change', action='store_true',
+                   help='with --local-user add or password: to be changed at the next sign-in')
     g.add_argument('--console-users', metavar='USERS',
                    help='the console at login for normal users too, through sudo: * (every one), '
                         'none, or names separated by spaces or commas')
@@ -55426,6 +55840,8 @@ def cli_main(argv=None):
         return cli_dir_guard(args, pal)
     if args.sso_status or args.sso_key:
         return cli_sso(args, pal)
+    if args.local_users or args.local_user:
+        return cli_osusers(args, pal)
     if args.console_at_login or args.console_users is not None:
         try:
             users = (console_users_parse(args.console_users) if args.console_users is not None
@@ -57453,6 +57869,113 @@ def cli_who():
     if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
         return 'command line (sudo %s)' % by
     return 'command line'
+
+
+def cli_osusers(args, pal):
+    """otp --local-users, --local-user WHAT NAME (1.0.243): Settings -> Local users. The change is
+    asked as from the pages - each node's daemon has its root helper do it."""
+    import getpass
+    store = cli_store()
+    who = cli_who()
+    every = host_nodes(store)
+    nodes = [n.strip() for n in str(args.local_nodes or '').split(',') if n.strip()] or every
+    bad = [n for n in nodes if n not in every]
+    if bad:
+        print('no such node: %s (the nodes: %s)' % (', '.join(bad), ', '.join(every)))
+        return 2
+
+    def settle(secs=60):
+        end = time.time() + secs
+        while time.time() < end:
+            v = osu_view(store)
+            if not any(n['pending'] for n in v['nodes'] if n['name'] in nodes):
+                return v
+            time.sleep(1)
+        return osu_view(store)
+
+    if args.local_user:
+        what, name = args.local_user
+        f = {'name': name}
+        do = {'add': 'add', 'password': 'password', 'lock': 'lock', 'unlock': 'unlock',
+              'sudo-on': 'sudo', 'sudo-off': 'sudo', 'drop': 'drop', 'drop-home': 'drop'}.get(what)
+        if not do:
+            print('add, password, lock, unlock, sudo-on, sudo-off, drop or drop-home')
+            return 2
+        if do in ('add', 'password'):
+            if not sys.stdin.isatty():
+                print('the password is asked at a terminal only - never given on the command line')
+                return 2
+            one = getpass.getpass('the password for %s%s: ' % (name, ' (empty: none - a key only)'
+                                                               if do == 'add' else ''))
+            if one or do == 'password':
+                if getpass.getpass('again: ') != one:
+                    print('the two passwords are not the same - nothing done')
+                    return 1
+            f['password'] = one
+            f['must_change'] = bool(args.local_must_change)
+        if do == 'add':
+            if args.local_full_name is not None:
+                f['gecos'] = args.local_full_name
+            f['shell'] = args.local_shell or '/bin/bash'
+        if do == 'sudo':
+            f['on'] = what == 'sudo-on'
+        if do == 'drop':
+            f['home'] = what == 'drop-home'
+            if sys.stdin.isatty() and input('take %s away on %s%s? type yes: ' % (
+                    name, ', '.join(nodes), ' with the home folder' if f['home'] else '')).strip() != 'yes':
+                print('nothing done')
+                return 1
+        try:
+            osu_ask(store, nodes, 'list', who)
+            settle(30)                      # what each node has, read first (the UID)
+            done = osu_ask(store, nodes, do, who, **f)
+        except ValueError as e:
+            print(pal.bad('refused: %s' % e) if hasattr(pal, 'bad') else 'refused: %s' % e)
+            return 1
+        print('asked of %s - waiting for each node...' % ', '.join(done))
+        v = settle()
+        rc = 0
+        for n in v['nodes']:
+            if n['name'] not in done:
+                continue
+            last = [x for x in n.get('said') or [] if x.get('name') == name][-1:]
+            if n['pending']:
+                print('  %s: not done yet (is otp running there?)' % n['name'])
+                rc = 1
+            elif last:
+                print('  %s: %s%s' % (n['name'], 'done' if last[0]['ok'] else 'refused',
+                                      (' - ' + last[0]['said']) if last[0].get('said') else ''))
+                rc = rc or (0 if last[0]['ok'] else 1)
+        return rc
+    osu_ask(store, nodes, 'list', who)
+    v = settle(30)
+    for n in v['nodes']:
+        if n['name'] not in nodes:
+            continue
+        print('%s%s%s' % (n['name'], '' if n['alive'] else ' (not answering)',
+                          (' - ' + n['error']) if n.get('error') else ''))
+        if not n.get('at'):
+            print('  not read yet')
+            continue
+        for u in n['users']:
+            if not u.get('login') and not u.get('root'):
+                continue
+            tags = []
+            if u.get('root'):
+                tags.append('view only')
+            if u.get('sudo') and not u.get('root'):
+                tags.append('sudo')
+            if u.get('locked'):
+                tags.append('locked')
+            tags.append('password: ' + ('none' if not u.get('password') else 'to change at sign-in'
+                                        if u.get('must_change') else 'set'))
+            print('  %-20s UID %-6s %-16s %s%s' % (u['name'], u['uid'], u.get('shell') or '-',
+                                                   ', '.join(tags),
+                                                   ('  (' + u['gecos'] + ')') if u.get('gecos') else ''))
+        others = sum(1 for u in n['users'] if not u.get('login') and not u.get('root'))
+        if others:
+            print('  and %d account(s) with no shell' % others)
+    return 0
 
 
 def cli_sso(args, pal):
