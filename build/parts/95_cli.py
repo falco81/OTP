@@ -683,6 +683,20 @@ def build_parser():
     g.add_argument('--sso-key', action='store_true',
                    help='make a new key for the balancer to send in X-Otp-Sso-Key, shown once '
                         '(the one before is no longer taken)')
+    g.add_argument('--local-users', action='store_true',
+                   help='the local users of each node\'s system (root and UID 1000 and up): who is '
+                        'there, sudo, locked, the password')
+    g.add_argument('--local-user', nargs=2, metavar=('WHAT', 'NAME'),
+                   help='change a local user on the nodes (never root): add, password, lock, unlock, '
+                        'sudo-on, sudo-off, drop or drop-home - a password is asked, never given on '
+                        'the command line')
+    g.add_argument('--local-nodes', metavar='NODES', default='',
+                   help='with --local-user: only these nodes (separated by commas); every node if not given')
+    g.add_argument('--local-full-name', metavar='TEXT', default=None, help='with --local-user add: the full name')
+    g.add_argument('--local-shell', metavar='PATH', default=None,
+                   help='with --local-user add: the shell (/bin/bash if not given)')
+    g.add_argument('--local-must-change', action='store_true',
+                   help='with --local-user add or password: to be changed at the next sign-in')
     g.add_argument('--console-users', metavar='USERS',
                    help='the console at login for normal users too, through sudo: * (every one), '
                         'none, or names separated by spaces or commas')
@@ -2206,6 +2220,8 @@ def cli_main(argv=None):
         return cli_dir_guard(args, pal)
     if args.sso_status or args.sso_key:
         return cli_sso(args, pal)
+    if args.local_users or args.local_user:
+        return cli_osusers(args, pal)
     if args.console_at_login or args.console_users is not None:
         try:
             users = (console_users_parse(args.console_users) if args.console_users is not None
@@ -4233,6 +4249,113 @@ def cli_who():
     if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
         return 'command line (sudo %s)' % by
     return 'command line'
+
+
+def cli_osusers(args, pal):
+    """otp --local-users, --local-user WHAT NAME (1.0.243): Settings -> Local users. The change is
+    asked as from the pages - each node's daemon has its root helper do it."""
+    import getpass
+    store = cli_store()
+    who = cli_who()
+    every = host_nodes(store)
+    nodes = [n.strip() for n in str(args.local_nodes or '').split(',') if n.strip()] or every
+    bad = [n for n in nodes if n not in every]
+    if bad:
+        print('no such node: %s (the nodes: %s)' % (', '.join(bad), ', '.join(every)))
+        return 2
+
+    def settle(secs=60):
+        end = time.time() + secs
+        while time.time() < end:
+            v = osu_view(store)
+            if not any(n['pending'] for n in v['nodes'] if n['name'] in nodes):
+                return v
+            time.sleep(1)
+        return osu_view(store)
+
+    if args.local_user:
+        what, name = args.local_user
+        f = {'name': name}
+        do = {'add': 'add', 'password': 'password', 'lock': 'lock', 'unlock': 'unlock',
+              'sudo-on': 'sudo', 'sudo-off': 'sudo', 'drop': 'drop', 'drop-home': 'drop'}.get(what)
+        if not do:
+            print('add, password, lock, unlock, sudo-on, sudo-off, drop or drop-home')
+            return 2
+        if do in ('add', 'password'):
+            if not sys.stdin.isatty():
+                print('the password is asked at a terminal only - never given on the command line')
+                return 2
+            one = getpass.getpass('the password for %s%s: ' % (name, ' (empty: none - a key only)'
+                                                               if do == 'add' else ''))
+            if one or do == 'password':
+                if getpass.getpass('again: ') != one:
+                    print('the two passwords are not the same - nothing done')
+                    return 1
+            f['password'] = one
+            f['must_change'] = bool(args.local_must_change)
+        if do == 'add':
+            if args.local_full_name is not None:
+                f['gecos'] = args.local_full_name
+            f['shell'] = args.local_shell or '/bin/bash'
+        if do == 'sudo':
+            f['on'] = what == 'sudo-on'
+        if do == 'drop':
+            f['home'] = what == 'drop-home'
+            if sys.stdin.isatty() and input('take %s away on %s%s? type yes: ' % (
+                    name, ', '.join(nodes), ' with the home folder' if f['home'] else '')).strip() != 'yes':
+                print('nothing done')
+                return 1
+        try:
+            osu_ask(store, nodes, 'list', who)
+            settle(30)                      # what each node has, read first (the UID)
+            done = osu_ask(store, nodes, do, who, **f)
+        except ValueError as e:
+            print(pal.bad('refused: %s' % e) if hasattr(pal, 'bad') else 'refused: %s' % e)
+            return 1
+        print('asked of %s - waiting for each node...' % ', '.join(done))
+        v = settle()
+        rc = 0
+        for n in v['nodes']:
+            if n['name'] not in done:
+                continue
+            last = [x for x in n.get('said') or [] if x.get('name') == name][-1:]
+            if n['pending']:
+                print('  %s: not done yet (is otp running there?)' % n['name'])
+                rc = 1
+            elif last:
+                print('  %s: %s%s' % (n['name'], 'done' if last[0]['ok'] else 'refused',
+                                      (' - ' + last[0]['said']) if last[0].get('said') else ''))
+                rc = rc or (0 if last[0]['ok'] else 1)
+        return rc
+    osu_ask(store, nodes, 'list', who)
+    v = settle(30)
+    for n in v['nodes']:
+        if n['name'] not in nodes:
+            continue
+        print('%s%s%s' % (n['name'], '' if n['alive'] else ' (not answering)',
+                          (' - ' + n['error']) if n.get('error') else ''))
+        if not n.get('at'):
+            print('  not read yet')
+            continue
+        for u in n['users']:
+            if not u.get('login') and not u.get('root'):
+                continue
+            tags = []
+            if u.get('root'):
+                tags.append('view only')
+            if u.get('sudo') and not u.get('root'):
+                tags.append('sudo')
+            if u.get('locked'):
+                tags.append('locked')
+            tags.append('password: ' + ('none' if not u.get('password') else 'to change at sign-in'
+                                        if u.get('must_change') else 'set'))
+            print('  %-20s UID %-6s %-16s %s%s' % (u['name'], u['uid'], u.get('shell') or '-',
+                                                   ', '.join(tags),
+                                                   ('  (' + u['gecos'] + ')') if u.get('gecos') else ''))
+        others = sum(1 for u in n['users'] if not u.get('login') and not u.get('root'))
+        if others:
+            print('  and %d account(s) with no shell' % others)
+    return 0
 
 
 def cli_sso(args, pal):

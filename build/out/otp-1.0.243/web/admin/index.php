@@ -331,7 +331,7 @@ if (isset($_GET['api'])) {
         'selinux' => '/api/selinux',
         'portal-sso' => '/api/portal-sso',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osusers' => '/api/osusers', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
@@ -351,7 +351,7 @@ if (isset($_GET['api'])) {
         'selinux' => '/api/selinux',
         'portal-sso' => '/api/portal-sso',
         'mfa' => '/api/auth/mfa',
-        'sshkeys' => '/api/sshkeys', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osusers' => '/api/osusers', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
@@ -793,6 +793,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
     <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
     <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in to each node over SSH - as root or as a user who may sign in there: made here, added or taken away.">SSH keys</button>
+    <button type="button" class="fulladmin-only" data-pane="osusers" data-icon="people" title="The users of each node's own system: root shown, the others made, given a password or sudo, locked or taken away - on every node or on one.">Local users</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="network" data-icon="net" title="Each node's address, gateway, DNS servers, host name and IPv6 - put in by the node itself, a cluster kept whole.">Network</button>
     <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy, for what you switch on: the new versions, the system updates, ACME, the SMS gateway.">Proxy</button>
@@ -1435,6 +1436,15 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         to be kept by you, and kept nowhere on the server; one of your own is put on by its public half - on
         every node or on one. Every change is written into Events.</p></div>
     <div id="sk-host"></div>
+  </div>
+  <div class="ctl-pane" id="pane-osusers" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">Local users</h2>
+      <p class="ctl-lede">The users of each node's own system - who may sign in to the machine itself, over SSH
+        or at its console; not the accounts of these pages. root is shown and never changed here; the others
+        (UID 1000 and up) are made, given a password or sudo, locked or taken away on every node at once or on
+        one, by each node's root helper. A password typed here goes to the nodes as its hash only and is kept
+        nowhere. Every change is written into Events.</p></div>
+    <div id="osu-host"></div>
   </div>
   <div class="ctl-pane" id="pane-backup" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Backups</h2>

@@ -2505,6 +2505,7 @@ function showPane(name) {
   if (name === 'network') loadNet();
   if (name === 'power') loadPower();
   if (name === 'sshkeys') loadSshKeys(); else skPoll(false);
+  if (name === 'osusers') loadOsUsers(); else osuPoll(false);
   if (name === 'alerts') loadAlerts();
   if (name === 'siem') loadSiem();
   if (name === 'acme') loadAcme(); else acPoll(false);
@@ -15687,6 +15688,358 @@ function skDrop(row) {
     'Take it away', function () {
       api('sshkeys', {action: 'drop', fp: row.k.fp, nodes: nodes, last_ok: !!last.length}).then(function (x) { toast(x.message, 'good'); skPoll(true); }).catch(oops);
     }, true);
+}
+
+/* ---- Settings → Local users (1.0.243) -------------------------------------------
+   The users of each node's own system: root, shown and never changed, and the users of
+   the normal range (UID 1000 and up) - made, given a password, sudo, locked or taken away
+   on every node at once or on one, by each node's root helper. One row a user, a column
+   a node: a user on one node only, or locked on one and not the other, is seen at once. */
+var OSU = {d: null, poll: null, asked: 0, ask: 0, all: false};
+function loadOsUsers() {
+  api('osusers').then(function (d) {
+    OSU.d = d; drawOsUsers();
+    if (Date.now() - OSU.asked > 20000) {
+      OSU.asked = Date.now();
+      api('osusers', {action: 'refresh', nodes: osuNodes(true)}).then(function () { osuPoll(true); }).catch(function () {});
+    }
+    osuPoll(osuPending());
+  }).catch(oops);
+}
+function osuNodes(aliveOnly) {
+  return ((OSU.d && OSU.d.nodes) || []).filter(function (n) { return !aliveOnly || n.alive; }).map(function (n) { return n.name; });
+}
+function osuPending() { return ((OSU.d && OSU.d.nodes) || []).some(function (n) { return n.pending; }); }
+function osuPoll(on) {
+  if (on) OSU.ask = Date.now();
+  if (on && !OSU.poll) {
+    OSU.poll = setInterval(function () {
+      if (TAB !== 'settings' || PANE !== 'osusers') { osuPoll(false); return; }
+      api('osusers').then(function (d) {
+        /* Kept as it is only while something is being typed in it: a button or a box ticked
+           that still has the focus held the list as it was (a user added, not shown). */
+        var a = document.activeElement, host = $('osu-host');
+        var typing = a && host && host.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox';
+        OSU.d = d; drawOsUsers(!!typing);
+        if (!osuPending() && Date.now() - OSU.ask > 6000) osuPoll(false);
+      }).catch(function () {});
+    }, 2000);
+  }
+  if (!on && OSU.poll) { clearInterval(OSU.poll); OSU.poll = null; }
+}
+/* {name: {node: user}} and the order: root first, then by name. */
+function osuRows() {
+  var by = {}, order = [];
+  ((OSU.d && OSU.d.nodes) || []).forEach(function (n) {
+    (n.users || []).forEach(function (u) {
+      if (!by[u.name]) { by[u.name] = {}; order.push(u.name); }
+      by[u.name][n.name] = u;
+    });
+  });
+  /* root, then who may sign in, then the accounts with no shell (often a package's). */
+  var rank = function (n) { var u = osuAny(by[n]); return n === 'root' ? 0 : u.login ? 1 : 2; };
+  order.sort(function (a, b) { return rank(a) - rank(b) || (a < b ? -1 : 1); });
+  var noShell = order.filter(function (n) { return rank(n) === 2; }).length;
+  return {by: by, order: order, shown: order.filter(function (n) { return OSU.all || rank(n) < 2; }), noShell: noShell};
+}
+function osuAny(on) { var k = Object.keys(on); return on[k[0]] || {}; }
+function osuDay(d) {
+  if (d === null || d === undefined) return '';
+  var t = new Date(d * 86400000);
+  return t.toISOString().slice(0, 10);
+}
+function osuShell(s) { return String(s || '').split('/').pop() || '–'; }
+function drawOsUsers(live) {
+  var real = $('osu-host');
+  if (!real || !OSU.d) return;
+  liveLetGo(real);
+  liveFill(real, function (host) {
+    var d = OSU.d, nodes = d.nodes || [];
+    nodes.forEach(function (n) {
+      if (n.error) host.appendChild(el('p', 'note bad', n.name + ': ' + n.error));
+      if (!n.alive && nodes.length > 1) host.appendChild(el('p', 'note warn', n.name + ' is not answering: what it shows is what it said last, and a change asked of it waits until it is back.'));
+    });
+    var rows = osuRows();
+    var card = el('div', 'card full osu-card');
+    var h = el('h2', '', 'Users of the nodes');
+    var tools = el('span', 'right');
+    var add = cmdButton('Add a user', 'add', 'small primary');
+    explain(add, 'A new user of the system, on every node or on the ones you choose - the same UID on each.');
+    var again = iconButton('refresh', 'Read the users again on every node');
+    tools.appendChild(add); tools.appendChild(again);
+    h.appendChild(tools);
+    card.appendChild(h);
+    add.onclick = function () { osuAdd(); };
+    again.onclick = function () {
+      api('osusers', {action: 'refresh', nodes: osuNodes(true)}).then(function () { osuPoll(true); toast('asked again'); }).catch(oops);
+    };
+    var read = nodes.some(function (n) { return n.at; });
+    if (!read) {
+      card.appendChild(el('p', 'note', 'Reading the users of each node…'));
+    } else {
+      var heads = ['User', 'UID', 'Shell', 'Password'].concat(nodes.length > 1 ? nodes.map(function (n) { return n.name; }) : ['Here']).concat(['']);
+      if (rows.noShell) {
+        var sa = osuCheck('Also the ' + rows.noShell + ' accounts with no shell (they may not sign in)', OSU.all);
+        sa.box.classList.add('osu-all');
+        sa.input.onchange = function () { OSU.all = sa.input.checked; drawOsUsers(); };
+        card.appendChild(sa.box);
+      }
+      card.appendChild(listTable(heads, rows.shown, function (name) {
+        var on = rows.by[name], u = osuAny(on), tr = el('tr', u.root ? 'osu-root' : '');
+        var who = el('td', 'osu-who');
+        who.appendChild(noI18n(el('span', 'acct-ava' + (u.root ? ' root' : ''), name.slice(0, 2).toUpperCase())));
+        var nm = el('span', 'osu-nm');
+        nm.appendChild(noI18n(el('span', 'mono osu-name', name)));
+        if (u.gecos) nm.appendChild(noI18n(el('span', 'muted small', u.gecos)));
+        who.appendChild(nm);
+        var tags = el('span', 'osu-tags');
+        if (u.root) tags.appendChild(el('span', 'tag dim', 'view only'));
+        if (!u.root && u.sudo) tags.appendChild(el('span', 'tag warn', 'sudo'));
+        if (!u.login) tags.appendChild(el('span', 'tag dim', 'no shell'));
+        who.appendChild(tags);
+        tr.appendChild(who);
+        tr.appendChild(noI18n(el('td', 'mono small', String(u.uid))));
+        tr.appendChild(noI18n(el('td', 'mono small', osuShell(u.shell))));
+        var pw = el('td', 'small');
+        if (!u.password) pw.appendChild(el('span', 'tag dim', 'none'));
+        else if (u.must_change) pw.appendChild(el('span', 'tag info', 'to change at sign-in'));
+        else pw.appendChild(noI18n(el('span', 'muted', u.changed ? osuDay(u.changed) : 'set')));
+        tr.appendChild(pw);
+        nodes.forEach(function (n) {
+          var c = el('td'), x = on[n.name];
+          if (!x) c.appendChild(el('span', 'tag dim', '–'));
+          else if (x.locked) c.appendChild(el('span', 'tag bad', 'locked'));
+          else if (!u.root && x.uid !== u.uid) c.appendChild(noI18n(el('span', 'tag warn', 'UID ' + x.uid)));
+          else c.appendChild(el('span', 'tag good', 'yes'));
+          tr.appendChild(c);
+        });
+        var act = el('td', 'right osu-act');
+        if (u.root) {
+          var see = iconButton('eye', 'root is shown only - it is changed on the machine itself, never from these pages');
+          see.onclick = function () { osuEdit(name); };
+          act.appendChild(see);
+        } else {
+          var ed = iconButton('edit', 'Change ' + name + ': the password, sudo, locked, the shell - or take the user away');
+          ed.onclick = function () { osuEdit(name); };
+          act.appendChild(ed);
+        }
+        tr.appendChild(act);
+        return tr;
+      }, 'osu-table'));
+      if (rows.order.filter(function (n) { return osuAny(rows.by[n]).login; }).length <= 1)
+        card.appendChild(el('p', 'note', 'Only root is on ' + (nodes.length > 1 ? 'the nodes' : 'this node') + ' - Add a user makes one, on ' + (nodes.length > 1 ? 'every node at once.' : 'this node.')));
+    }
+    host.appendChild(card);
+    /* What was done last, on each node, with what it said. */
+    var said = [];
+    nodes.forEach(function (n) { (n.said || []).forEach(function (s) { said.push({n: n.name, s: s}); }); });
+    said.sort(function (a, b) { return (b.s.at || 0) - (a.s.at || 0); });
+    if (said.length) {
+      var lc = el('div', 'card full');
+      lc.appendChild(el('h2', '', 'Done last'));
+      lc.appendChild(listTable(['When', 'Node', 'User', 'Who', 'What came of it'], said.slice(0, 8), function (r) {
+        var tr = el('tr');
+        tr.appendChild(noI18n(el('td', 'small mono', stamp(r.s.at))));
+        tr.appendChild(noI18n(el('td', 'small', r.n)));
+        tr.appendChild(noI18n(el('td', 'small mono', r.s.name || '–')));
+        tr.appendChild(noI18n(el('td', 'small', r.s.by || '–')));
+        var w = el('td', 'small');
+        w.appendChild(el('span', 'tag ' + (r.s.ok ? 'good' : 'bad'), r.s.ok ? 'done' : 'refused'));
+        if (r.s.said) w.appendChild(noI18n(el('span', 'muted', ' ' + r.s.said)));
+        tr.appendChild(w);
+        return tr;
+      }));
+      host.appendChild(lc);
+    }
+    var pend = nodes.filter(function (n) { return n.pending; });
+    if (pend.length) host.appendChild(el('p', 'note info', 'Being done on ' + pend.map(function (n) { return n.name; }).join(', ') + '…'));
+  }, live);
+}
+/* The nodes a change goes to: those the user is on (or every one, to make it), alive. */
+function osuNodePicker(body, name, making) {
+  var nodes = (OSU.d && OSU.d.nodes) || [];
+  var box = el('div', 'sk-nodes osu-nodes'), boxes = [];
+  if (nodes.length > 1) {
+    box.appendChild(el('div', 'k small muted', making ? 'Made on the nodes' : 'On the nodes'));
+    nodes.forEach(function (n) {
+      var there = making || (n.users || []).some(function (u) { return u.name === name; });
+      var lab = el('label', 'chk');
+      var c = el('input'); c.type = 'checkbox'; c.value = n.name;
+      c.checked = n.alive && there; c.disabled = !n.alive || !there;
+      lab.appendChild(c);
+      lab.appendChild(noI18n(el('span', '', ' ' + n.name + (!n.alive ? ' (not answering)' : !there ? ' (not there)' : ''))));
+      box.appendChild(lab);
+      boxes.push(c);
+    });
+    body.appendChild(box);
+  }
+  return function () {
+    if (!boxes.length) return [nodes.length ? nodes[0].name : ''];
+    return boxes.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+  };
+}
+function osuShellSelect(cur) {
+  var all = [];
+  ((OSU.d && OSU.d.nodes) || []).forEach(function (n) { (n.shells || []).forEach(function (s) { if (all.indexOf(s) < 0) all.push(s); }); });
+  if (!all.length) all = ['/bin/bash'];
+  if (cur && all.indexOf(cur) < 0) all.unshift(cur);
+  var sel = el('select', 'mono');
+  all.forEach(function (s) { var o = noI18n(el('option', '', s + (/nologin$/.test(s) ? '  (may not sign in)' : ''))); o.value = s; sel.appendChild(o); });
+  sel.value = cur || (all.indexOf('/bin/bash') >= 0 ? '/bin/bash' : all[0]);
+  return sel;
+}
+function osuPwPair(body, need) {
+  var a = maskBox('', '', 'mono'), b = maskBox('', '', 'mono');
+  var min = (OSU.d && OSU.d.pw_min) || 8;
+  body.appendChild(formField(need ? 'The new password' : 'Password (empty: none - the user signs in with a key only)', a, min + ' characters at least. It goes to the nodes as its hash only and is kept nowhere.'));
+  body.appendChild(formField('The password again', b));
+  return function () {
+    if (!a.value && !need) return {ok: true, value: ''};
+    if (a.value.length < min) return {ok: false, said: 'the password is ' + min + ' characters at least'};
+    if (a.value !== b.value) return {ok: false, said: 'the two passwords are not the same'};
+    return {ok: true, value: a.value};
+  };
+}
+function osuCheck(words, on, says) {
+  var lab = el('label', 'chk osu-chk');
+  var c = el('input'); c.type = 'checkbox'; c.checked = !!on;
+  lab.appendChild(c); lab.appendChild(el('span', '', ' ' + words));
+  if (says) lab.appendChild(el('span', 'muted small osu-says', says));
+  return {box: lab, input: c};
+}
+function osuAdd(name) {
+  var nameI, gecos, shell, pw, sudo, must, pick;
+  var admin = ((OSU.d && OSU.d.nodes) || []).map(function (n) { return n.admin_group; }).filter(Boolean)[0] || 'wheel';
+  modal(name ? 'Make ' + name + ' on more nodes' : 'Add a user', function (body) {
+    body.appendChild(el('p', 'note', 'A user of the system - not of these pages. The same name and UID on each node chosen; a home folder of its own. SSH keys for it are put on in SSH keys, once it is there.'));
+    nameI = noI18n(textBox(name || '', 'e.g. jnovak', 'mono'));
+    nameI.autocomplete = 'off'; nameI.spellcheck = false;
+    if (name) nameI.disabled = true;
+    body.appendChild(formField('Name', nameI, 'Small letters, digits, _ . and -; 32 at most, starting with a letter.'));
+    gecos = textBox(name ? osuAny(osuRows().by[name] || {}).gecos || '' : '', 'e.g. Jan Novák');
+    body.appendChild(formField('Full name', gecos));
+    shell = osuShellSelect(name ? osuAny(osuRows().by[name] || {}).shell : '');
+    body.appendChild(formField('Shell', shell));
+    pw = osuPwPair(body, false);
+    must = osuCheck('To be changed at the first sign-in', true, 'The user chooses their own at once.');
+    body.appendChild(must.box);
+    sudo = osuCheck('May become root with sudo', name ? osuAny(osuRows().by[name] || {}).sudo : false, 'A member of ' + admin + ' - with their own password.');
+    body.appendChild(sudo.box);
+    pick = osuNodePicker(body, name || '', true);
+    if (name) {
+      /* Only where it is not yet. */
+      var there = osuRows().by[name] || {};
+      body.querySelectorAll('.osu-nodes input').forEach(function (c) { if (there[c.value]) { c.checked = false; c.disabled = true; } });
+    }
+  }, [{words: 'Cancel', close: true}, {words: name ? 'Make it there' : 'Add the user', cls: 'primary', icon: 'add', go: function () {
+    var n = nameI.value.trim(), p = pw(), nodes = pick();
+    if (!/^[a-z_][a-z0-9_.-]{0,31}$/.test(n)) { toast('a name is small letters, digits, _ . and -, starting with a letter', 'warn'); return; }
+    if (!p.ok) { toast(p.said, 'warn'); return; }
+    if (!nodes.length) { toast('pick a node', 'warn'); return; }
+    if (!name && osuRows().by[n]) { toast(n + ' is there already', 'warn'); return; }
+    api('osusers', {action: 'add', name: n, gecos: gecos.value.trim(), shell: shell.value, password: p.value,
+                    must_change: !!(p.value && must.input.checked), sudo: sudo.input.checked, nodes: nodes}).then(function (x) {
+      closeModal(); toast(x.message, 'good'); osuPoll(true);
+    }).catch(oops);
+  }}], 'medium');
+}
+function osuEdit(name) {
+  var rows = osuRows(), on = rows.by[name] || {}, u = osuAny(on);
+  var nodes = (OSU.d && OSU.d.nodes) || [];
+  var gecos, shell, pw, must, pick, home;
+  var missing = nodes.filter(function (n) { return !on[n.name]; });
+  modal(u.root ? 'root' : name, function (body) {
+    /* The facts, node by node. */
+    var facts = el('div', 'osu-facts');
+    nodes.forEach(function (n) {
+      var x = on[n.name], f = el('div', 'osu-fact');
+      f.appendChild(noI18n(el('div', 'osu-fact-h', n.name)));
+      if (!x) { f.appendChild(el('div', 'muted small', 'not on this node')); facts.appendChild(f); return; }
+      var kv = function (k, v, words) { var r = el('div', 'kv-mini'); r.appendChild(el('span', 'k', k)); var e = el('span', 'v' + (words ? '' : ' mono'), v); r.appendChild(words ? e : noI18n(e)); f.appendChild(r); };
+      kv('UID', String(x.uid));
+      kv('Home', x.home + (x.home_there ? '' : ' (not there)'));
+      kv('Shell', x.shell || '–');
+      kv('Groups', (x.groups || []).join(', ') || '–');
+      kv('Password', !x.password ? 'none' : x.must_change ? 'to change at sign-in' : x.changed ? 'set on ' + osuDay(x.changed) : 'set', true);
+      /* An end set by somebody (not the one locking puts in: day 0). */
+      if (x.expires) kv('Expires', osuDay(x.expires));
+      var st = el('div', 'osu-fact-tags');
+      st.appendChild(el('span', 'tag ' + (x.locked ? 'bad' : 'good'), x.locked ? 'locked' : 'may sign in'));
+      if (x.sudo && !x.root) st.appendChild(el('span', 'tag warn', 'sudo'));
+      f.appendChild(st);
+      facts.appendChild(f);
+    });
+    body.appendChild(facts);
+    if (u.root) {
+      body.appendChild(el('p', 'note', 'root is shown here only. Its password, its shell and whether it may sign in are changed on the machine itself - over SSH as root, or at its console - never from these pages. Its SSH keys are in SSH keys; whether it may sign in over SSH, in SSH server and notices.'));
+      return;
+    }
+    if (missing.length) {
+      var mk = cmdButton('Make it on ' + missing.map(function (n) { return n.name; }).join(', ') + ' too', 'add', 'small');
+      mk.onclick = function () { osuAdd(name); };
+      var mr = el('div', 'btnrow'); mr.appendChild(mk);
+      body.appendChild(el('p', 'note warn', name + ' is not on ' + missing.map(function (n) { return n.name; }).join(', ') + '.'));
+      body.appendChild(mr);
+    }
+    pick = osuNodePicker(body, name, false);
+    /* Who they are. */
+    var s1 = el('div', 'osu-sect');
+    s1.appendChild(el('h3', '', 'Name and shell'));
+    gecos = textBox(u.gecos || '', 'e.g. Jan Novák');
+    s1.appendChild(formField('Full name', gecos));
+    shell = osuShellSelect(u.shell);
+    s1.appendChild(formField('Shell', shell));
+    var sv = cmdButton('Save', 'save', 'small');
+    sv.onclick = function () {
+      api('osusers', {action: 'set', name: name, gecos: gecos.value.trim(), shell: shell.value, nodes: pick()}).then(function (x) { toast(x.message, 'good'); osuPoll(true); }).catch(oops);
+    };
+    var r1 = el('div', 'btnrow'); r1.appendChild(sv); s1.appendChild(r1);
+    body.appendChild(s1);
+    /* The password. */
+    var s2 = el('div', 'osu-sect');
+    s2.appendChild(el('h3', '', 'Password'));
+    pw = osuPwPair(s2, true);
+    must = osuCheck('To be changed at the next sign-in', false);
+    s2.appendChild(must.box);
+    var sp = cmdButton('Set the password', 'key', 'small');
+    sp.onclick = function () {
+      var p = pw();
+      if (!p.ok) { toast(p.said, 'warn'); return; }
+      api('osusers', {action: 'password', name: name, password: p.value, must_change: must.input.checked, nodes: pick()}).then(function (x) {
+        toast(x.message, 'good'); osuPoll(true);
+        s2.querySelectorAll('input.masked').forEach(function (i) { i.value = ''; });
+      }).catch(oops);
+    };
+    var r2 = el('div', 'btnrow'); r2.appendChild(sp); s2.appendChild(r2);
+    body.appendChild(s2);
+    /* sudo and sign-in. */
+    var s3 = el('div', 'osu-sect');
+    s3.appendChild(el('h3', '', 'What they may do'));
+    var anyLocked = Object.keys(on).some(function (k) { return on[k].locked; });
+    var anySudo = Object.keys(on).some(function (k) { return on[k].sudo; });
+    var r3 = el('div', 'btnrow');
+    var su = cmdButton(anySudo ? 'Take sudo away' : 'Give sudo', 'shield', 'small');
+    explain(su, 'sudo: may become root with their own password (a member of ' + (nodes.map(function (n) { return n.admin_group; }).filter(Boolean)[0] || 'wheel') + ').');
+    su.onclick = function () {
+      api('osusers', {action: 'sudo', name: name, on: !anySudo, nodes: pick()}).then(function (x) { closeModal(); toast(x.message, 'good'); osuPoll(true); }).catch(oops);
+    };
+    var lk = cmdButton(anyLocked ? 'Unlock' : 'Lock', 'lock', 'small');
+    explain(lk, anyLocked ? 'May sign in again - with the password, or a key.' : 'May not sign in at all - neither with the password nor with an SSH key - until unlocked. Nothing of theirs is taken away.');
+    lk.onclick = function () {
+      api('osusers', {action: anyLocked ? 'unlock' : 'lock', name: name, nodes: pick()}).then(function (x) { closeModal(); toast(x.message, 'good'); osuPoll(true); }).catch(oops);
+    };
+    r3.appendChild(su); r3.appendChild(lk);
+    s3.appendChild(r3);
+    body.appendChild(s3);
+    /* Taken away. */
+    var s4 = el('div', 'osu-sect');
+    s4.appendChild(el('h3', '', 'Take the user away'));
+    home = osuCheck('Its home folder too', false, (u.home || '') + ' - with everything in it, SSH keys among it.');
+    s4.appendChild(home.box);
+    body.appendChild(s4);
+  }, u.root ? [{words: 'Close', close: true}] : [{words: 'Take the user away', cls: 'danger', icon: 'trash', left: true, go: function () {
+    api('osusers', {action: 'drop', name: name, home: home.input.checked, nodes: pick()}).then(function (x) { closeModal(); toast(x.message, 'good'); osuPoll(true); }).catch(oops);
+  }}, {words: 'Close', close: true}], 'medium');
 }
 
 /* ---- Settings → System updates (1.0.158) ----------------------------------------

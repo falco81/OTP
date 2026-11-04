@@ -3693,3 +3693,30 @@ table.split-scen{table-layout:fixed;width:100%;min-width:760px}
   .con-row { grid-template-columns: 52px 1fr; }
   .con-row .con-users { grid-column: 1 / -1; }
 }
+
+/* Settings → Local users (1.0.243) */
+.osu-table td { vertical-align: middle; }
+.osu-who { display: flex; align-items: center; gap: 10px; min-width: 200px; }
+.osu-nm { display: flex; flex-direction: column; line-height: 1.25; }
+.osu-name { font-weight: 600; }
+.osu-tags { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+.osu-root .osu-name { color: var(--warn, #f0b429); }
+.osu-act { white-space: nowrap; }
+.osu-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.osu-fact { border: 1px solid var(--line, rgba(255,255,255,.1)); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.osu-fact-h { font-weight: 600; margin-bottom: 6px; }
+.osu-fact .kv-mini { display: flex; gap: 8px; font-size: 12px; line-height: 1.6; min-width: 0; }
+.osu-fact .kv-mini .k { color: var(--muted, #8a94a6); min-width: 70px; flex: none; }
+.osu-fact .kv-mini .v { overflow-wrap: anywhere; min-width: 0; }
+.osu-fact-tags { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.osu-sect { border-top: 1px solid var(--line, rgba(255,255,255,.1)); padding-top: 12px; margin-top: 12px; }
+.osu-sect h3 { font-size: 13px; margin: 0 0 8px; }
+.osu-sect .btnrow { margin-top: 8px; }
+.osu-chk { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; margin: 8px 0; }
+.osu-says { flex-basis: 100%; margin-left: 22px; }
+.osu-nodes { margin-top: 10px; }
+@media (max-width: 640px) {
+  .osu-who { min-width: 0; flex-wrap: wrap; }
+  .osu-tags { margin-left: 0; }
+}
+.osu-all { margin: 0 0 10px; font-size: 13px; }

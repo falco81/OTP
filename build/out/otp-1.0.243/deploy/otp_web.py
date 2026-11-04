@@ -3223,6 +3223,279 @@ def sshkeys_part():
     write_here(SSHKEYS_FILE, json.dumps(out))
 
 
+# ---- the local users of the machine (1.0.243) ----------------------------------------
+# Made and looked after from Settings -> Local users, on every node of a cluster or on one:
+# only the users of the range login.defs gives normal users (UID_MIN..UID_MAX) - never root,
+# never an account of the system or of a service. root is read, never changed. A password
+# comes as a hash only (made on the node it was typed on), handed to chpasswd -e on its
+# standard input - never on a command line. Each change done is said back with the list.
+USERS_ASK, USERS_FILE = 'users.ask', 'users.json'
+SHADOW = os.environ.get('OTP_SHADOW', '/etc/shadow')
+SHELLS_FILE = os.environ.get('OTP_SHELLS', '/etc/shells')
+PW_HASH_RE = re.compile(r'^\$(?:6|5|y|gy|2b|2y)\$[./A-Za-z0-9$=]{16,300}\Z')
+GECOS_RE = re.compile(r'^[^:\n\x00-\x1f\x7f]{0,120}\Z')
+KEEP_NAMES = ('root', 'otp', 'otp-web', 'postgres', 'nginx', 'apache', 'nobody', 'keepalived',
+              'chrony', 'sshd', 'polkitd', 'dbus', 'systemd-network', 'tss')
+
+
+def lu_run(argv, data=None):
+    """A tool of shadow-utils, its error said back - never with a secret among the words."""
+    got = subprocess.run(argv, input=data, capture_output=True, text=True, timeout=120)
+    if got.returncode != 0:
+        msg = ((got.stderr or got.stdout or '').strip().splitlines() or ['exit %d' % got.returncode])[-1]
+        raise Refused('%s: %s' % (os.path.basename(argv[0]), msg[:300]))
+    return got.stdout
+
+
+def lu_admin_group():
+    """The group whose members may become root with sudo: wheel (RHEL) or sudo (Debian)."""
+    import grp
+    for g in ('wheel', 'sudo'):
+        try:
+            grp.getgrnam(g)
+            return g
+        except KeyError:
+            continue
+    return ''
+
+
+def lu_shells():
+    out = []
+    try:
+        for ln in open(SHELLS_FILE, encoding='utf-8', errors='replace'):
+            ln = ln.strip()
+            if ln.startswith('/') and not ln.startswith('#') and ' ' not in ln and ln not in out and \
+                    os.path.basename(ln) not in NO_SHELLS:
+                out.append(ln)
+    except OSError:
+        pass
+    if not out and os.path.exists('/bin/bash'):
+        out.append('/bin/bash')
+    nl = '/usr/sbin/nologin' if os.path.exists('/usr/sbin/nologin') else '/sbin/nologin'
+    return out[:20] + [nl]
+
+
+def lu_shadow():
+    """{name: (hash field, last change in days, max days, expire day)} - read as root."""
+    out = {}
+    try:
+        with open(SHADOW, encoding='utf-8', errors='replace') as f:
+            for ln in f:
+                p = ln.rstrip('\n').split(':')
+                if len(p) >= 8:
+                    out[p[0]] = (p[1], p[2], p[4], p[7])
+    except OSError:
+        pass
+    return out
+
+
+def lu_one(p, sh, admin, today):
+    import grp
+    h, last, mx, exp = sh.get(p.pw_name, ('', '', '', ''))
+    groups = sorted({g.gr_name for g in grp.getgrall() if p.pw_name in g.gr_mem} |
+                    ({grp.getgrgid(p.pw_gid).gr_name} if _gid_ok(p.pw_gid) else set()))
+    plain = h.lstrip('!')
+    # Locked: a password put out of use (! before a real hash) or the account expired - a user
+    # with no password at all ('!' or '!!' alone) is not, a key lets them in.
+    locked = (h.startswith('!') and plain.startswith('$')) or (exp.isdigit() and int(exp) <= today)
+    return {'name': p.pw_name, 'uid': p.pw_uid, 'gecos': p.pw_gecos.split(',')[0][:120],
+            'home': p.pw_dir, 'shell': p.pw_shell,
+            'login': bool(p.pw_shell) and os.path.basename(p.pw_shell) not in NO_SHELLS,
+            'groups': groups[:40], 'sudo': bool(admin) and admin in groups,
+            'password': bool(plain) and plain not in ('*', '!', 'x') and plain.startswith('$'),
+            'locked': bool(locked), 'must_change': last == '0',
+            'changed': int(last) if last.isdigit() and last != '0' else None,
+            'expires': int(exp) if exp.isdigit() else None,
+            'max_days': int(mx) if mx.isdigit() and int(mx) < 99999 else None,
+            'home_there': os.path.isdir(p.pw_dir)}
+
+
+def _gid_ok(gid):
+    import grp
+    try:
+        grp.getgrgid(gid)
+        return True
+    except KeyError:
+        return False
+
+
+def lu_list():
+    import pwd
+    lo, hi = uid_range()
+    sh, admin, today = lu_shadow(), lu_admin_group(), int(time.time() // 86400)
+    users, used = [], []
+    for p in pwd.getpwall():
+        if lo <= p.pw_uid <= hi:
+            used.append(p.pw_uid)
+        if p.pw_name == 'root' or (lo <= p.pw_uid <= hi and p.pw_uid != 65534 and
+                                   USER_NAME_RE.match(p.pw_name) and p.pw_name not in KEEP_NAMES):
+            u = lu_one(p, sh, admin, today)
+            u['root'] = p.pw_name == 'root'
+            users.append(u)
+    users.sort(key=lambda u: (not u['root'], u['name']))
+    return {'users': users[:500], 'uid_min': lo, 'uid_max': hi, 'used': sorted(set(used))[:5000],
+            'names': sorted(p.pw_name for p in pwd.getpwall())[:5000],
+            'admin_group': admin, 'shells': lu_shells(), 'today': today}
+
+
+def lu_target(name):
+    """The pwd entry of a user this may change - refused for root, the system and services."""
+    import pwd
+    name = str(name or '')
+    if not USER_NAME_RE.match(name) or name in KEEP_NAMES:
+        raise Refused('%s is not a local user this may change' % name[:40])
+    try:
+        p = pwd.getpwnam(name)
+    except KeyError:
+        return None
+    lo, hi = uid_range()
+    if not lo <= p.pw_uid <= hi or p.pw_uid == 65534:
+        raise Refused('%s is an account of the system (UID %d) - not changed here' % (name, p.pw_uid))
+    return p
+
+
+def lu_hash_checked(h):
+    h = str(h or '')
+    if not PW_HASH_RE.match(h):
+        raise Refused('the password does not come as a hash this takes')
+    return h
+
+
+def lu_do(r):
+    do = str(r.get('do') or 'list')
+    name = str(r.get('name') or '')
+    said = ''
+    if do == 'list':
+        return dict(lu_list(), said='')
+    p = lu_target(name)
+    if r.get('hash') or do == 'password':
+        lu_hash_checked(r.get('hash'))          # before anything is done
+    if do == 'add':
+        lo, hi = uid_range()
+        uid = r.get('uid')
+        gecos = str(r.get('gecos') or '')
+        shell = str(r.get('shell') or '/bin/bash')
+        if not GECOS_RE.match(gecos):
+            raise Refused('the full name has letters that cannot be in it (a colon, a line break)')
+        if shell not in lu_shells():
+            raise Refused('%s is not a shell of /etc/shells here' % shell[:60])
+        if p is not None:
+            # There already (both nodes of the sandbox are one machine, or asked again): the
+            # same UID is no fault; another is said.
+            if uid not in (None, '') and int(uid) != p.pw_uid:
+                raise Refused('%s is here already, with UID %d (not %s)' % (name, p.pw_uid, uid))
+            said = '%s was here already' % name
+        else:
+            argv = ['useradd', '-m', '-s', shell, '-c', gecos, '-U']
+            if uid not in (None, ''):
+                uid = int(uid)
+                if not lo <= uid <= hi:
+                    raise Refused('UID %d is not one of a normal user here (%d to %d)' % (uid, lo, hi))
+                import pwd
+                try:
+                    other = pwd.getpwuid(uid).pw_name
+                except KeyError:
+                    other = ''
+                if other:
+                    raise Refused('UID %d is %s\'s here' % (uid, other))
+                argv += ['-u', str(uid)]
+            lu_run(argv + ['--', name])
+            said = '%s made' % name
+        import pwd
+        p = pwd.getpwnam(name)
+        if r.get('hash'):
+            lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, lu_hash_checked(r['hash'])))
+        if r.get('must_change'):
+            lu_run(['chage', '-d', '0', name])
+        if r.get('sudo') is not None:
+            lu_sudo(name, bool(r['sudo']))
+        return dict(lu_list(), said=said)
+    if p is None:
+        if do == 'drop':
+            return dict(lu_list(), said='%s was not here' % name)
+        raise Refused('there is no user %s here' % name)
+    if do == 'password':
+        lu_run(['chpasswd', '-e'], '%s:%s\n' % (name, lu_hash_checked(r.get('hash'))))
+        lu_run(['chage', '-d', '0' if r.get('must_change') else str(int(time.time() // 86400)), name])
+        said = 'the password of %s set' % name
+    elif do == 'lock':
+        # The password and the account: no key lets in either (sshd asks PAM if it has expired).
+        sh = lu_shadow().get(name, ('',))[0]
+        if sh and not sh.startswith('!'):
+            lu_run(['usermod', '-L', name])
+        lu_run(['chage', '-E', '0', name])
+        said = '%s locked' % name
+    elif do == 'unlock':
+        sh = lu_shadow().get(name, ('',))[0]
+        if sh.startswith('!') and len(sh) > 2:
+            lu_run(['usermod', '-U', name])
+        lu_run(['chage', '-E', '-1', name])
+        said = '%s unlocked' % name
+    elif do == 'sudo':
+        lu_sudo(name, bool(r.get('on')))
+        said = '%s %s' % (name, 'may use sudo' if r.get('on') else 'no longer uses sudo')
+    elif do == 'set':
+        argv = ['usermod']
+        if 'gecos' in r:
+            g = str(r.get('gecos') or '')
+            if not GECOS_RE.match(g):
+                raise Refused('the full name has letters that cannot be in it (a colon, a line break)')
+            argv += ['-c', g]
+        if 'shell' in r:
+            s = str(r.get('shell') or '')
+            if s not in lu_shells():
+                raise Refused('%s is not a shell of /etc/shells here' % s[:60])
+            argv += ['-s', s]
+        if len(argv) > 1:
+            lu_run(argv + ['--', name])
+        said = '%s changed' % name
+    elif do == 'drop':
+        busy = subprocess.run(['pgrep', '-u', str(p.pw_uid)], capture_output=True, text=True)
+        if busy.stdout.strip() and not r.get('force'):
+            raise Refused('%s is signed in or runs something here - sign them out first' % name)
+        lu_run(['userdel'] + (['-r'] if r.get('home') else []) + ['--', name])
+        said = '%s taken away%s' % (name, ' with the home folder' if r.get('home') else '')
+    else:
+        raise Refused('list, add, password, lock, unlock, sudo, set or drop')
+    return dict(lu_list(), said=said)
+
+
+def lu_sudo(name, on):
+    g = lu_admin_group()
+    if not g:
+        raise Refused('this machine has no wheel or sudo group')
+    import grp
+    member = name in grp.getgrnam(g).gr_mem
+    if on and not member:
+        lu_run(['gpasswd', '-a', name, g])
+    elif not on and member:
+        lu_run(['gpasswd', '-d', name, g])
+
+
+def users_part():
+    d = web_fd()
+    try:
+        raw = read_req(USERS_ASK, 65536)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(USERS_ASK, d)
+        return
+    drop_ask(USERS_ASK, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict):
+            raise Refused('the request is not an object')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        out['data'] = lu_do(r)
+        out['ok'] = True
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(USERS_FILE, json.dumps(out))
+
 # ---- the SSH server and the notices at sign-in (1.0.163) --------------------------------
 # otp's own drop-in, read before every other (00-otp.conf: the first value
 # sshd reads of a setting is the one it keeps), checked by sshd -t before it
@@ -5055,6 +5328,10 @@ def serve():
         sshkeys_part()
     except Exception as e:                              # noqa: BLE001
         print('otp_web.py: root\'s SSH keys: %s' % e, file=sys.stderr)
+    try:
+        users_part()
+    except Exception as e:                              # noqa: BLE001
+        print('otp_web.py: the local users: %s' % e, file=sys.stderr)
     try:
         osup_part()
     except Exception as e:                              # noqa: BLE001

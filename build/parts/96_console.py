@@ -2818,6 +2818,91 @@ class Console(object):
             if which is not None:
                 self.act('--lockouts-clear', which)
 
+        # The local users of the machines (1.0.243): as Settings -> Local users. Asked in-process:
+        # a password typed here goes nowhere as itself, never onto a command line.
+        def osu_do(do, name, **f):
+            try:
+                store = cli_store()
+                nodes = host_nodes(store)
+                osu_ask(store, nodes, 'list', cli_who())
+                time.sleep(2)
+                done = osu_ask(store, nodes, do, cli_who(), name=name, **f)
+            except (ValueError, OSError) as e:
+                self.note('Local users', 'refused: %s' % e, 'bad')
+                return
+            self.working('working…  on %s' % ', '.join(done))
+            end, v = time.time() + 60, None
+            while time.time() < end:
+                v = osu_view(store)
+                if not any(n['pending'] for n in v['nodes'] if n['name'] in done):
+                    break
+                time.sleep(1)
+            lines, bad = [], False
+            for n in (v or {}).get('nodes') or []:
+                last = [x for x in n.get('said') or [] if x.get('name') == name][-1:]
+                if n['name'] in done:
+                    ok_ = bool(last and last[0].get('ok'))
+                    bad = bad or not ok_
+                    lines.append('%s: %s%s' % (n['name'], 'done' if ok_ else 'refused' if last else
+                                               'not done yet', (' - ' + last[0]['said'])
+                                               if last and last[0].get('said') else ''))
+            self.note('Local users', '\n'.join(lines) or 'asked', 'bad' if bad else 'ok')
+
+        def osu_pick(title):
+            got = self.form(title, [{'key': 'name', 'label': 'the user', 'need': True,
+                                     'help': 'A local user of the nodes - never root.'}])
+            return got and got['name'].strip()
+
+        def osu_add():
+            got = self.form('A local user', [
+                {'key': 'name', 'label': 'the name', 'need': True,
+                 'help': 'Small letters, digits, _ . and -; it is made on every node, the same UID.'},
+                {'key': 'gecos', 'label': 'the full name'},
+                {'key': 'pw', 'label': 'the password', 'kind': 'secret',
+                 'help': 'Empty: none - the user signs in with a key only.'},
+                {'key': 'pw2', 'label': 'again', 'kind': 'secret'},
+                {'key': 'sudo', 'label': 'sudo', 'kind': 'choice', 'value': 'no',
+                 'options': [('no', 'no'), ('yes', 'may become root with sudo')]},
+                {'key': 'must', 'label': 'at the first sign-in', 'kind': 'choice', 'value': 'yes',
+                 'options': [('yes', 'the password to be changed'), ('no', 'kept')]}],
+                check=lambda v: 'the two passwords are not the same' if v.get('pw') != v.get('pw2') else None)
+            if got:
+                osu_do('add', got['name'].strip(), gecos=got.get('gecos') or '', shell='/bin/bash',
+                       password=got.get('pw') or '', sudo=got.get('sudo') == 'yes',
+                       must_change=bool(got.get('pw')) and got.get('must') == 'yes')
+
+        def osu_pw():
+            got = self.form('A new password', [
+                {'key': 'name', 'label': 'the user', 'need': True},
+                {'key': 'pw', 'label': 'the password', 'kind': 'secret', 'need': True},
+                {'key': 'pw2', 'label': 'again', 'kind': 'secret', 'need': True},
+                {'key': 'must', 'label': 'at the next sign-in', 'kind': 'choice', 'value': 'no',
+                 'options': [('no', 'kept'), ('yes', 'to be changed')]}],
+                check=lambda v: 'the two passwords are not the same' if v.get('pw') != v.get('pw2') else None)
+            if got:
+                osu_do('password', got['name'].strip(), password=got['pw'], must_change=got.get('must') == 'yes')
+
+        def osu_change():
+            name = osu_pick('Change a local user')
+            if not name:
+                return
+            r = self.choose('Change %s on every node' % name, [
+                ('lock', 'Lock - may not sign in at all, nor with a key'), ('unlock', 'Unlock'),
+                ('sudo-on', 'Give sudo'), ('sudo-off', 'Take sudo away'),
+                ('drop', 'Take the user away (the home folder kept)'),
+                ('drop-home', 'Take the user away with the home folder')])
+            if not r:
+                return
+            if r.startswith('drop') and not self.confirm('Take %s away' % name, 'On every node%s.' % (
+                    ', with the home folder and everything in it' if r == 'drop-home' else ''),
+                    'Take it away', danger=True):
+                return
+            if r.startswith('sudo'):
+                osu_do('sudo', name, on=r == 'sudo-on')
+            elif r.startswith('drop'):
+                osu_do('drop', name, home=r == 'drop-home')
+            else:
+                osu_do(r, name)
         return self.sub('Certificates, updates, restarts, tests', [
             ('1', 'Certificates by ACME: how they stand', lambda: self.act('--acme')),
             ('2', 'Order a certificate by ACME now', acme_order),
@@ -2834,6 +2919,10 @@ class Console(object):
             ('13', 'Take an SSH token away', ssh_del),
             ('14', 'Lockouts: who is locked out now', lambda: self.act('--lockouts')),
             ('15', 'Forget a lockout', lockout_clear),
+            ('16', 'Local users of the nodes', lambda: self.act('--local-users')),
+            ('17', 'Add a local user', osu_add),
+            ('18', 'A new password for a local user', osu_pw),
+            ('19', 'Lock, unlock, sudo or take away a local user', osu_change),
         ])
 
     def m_more(self):

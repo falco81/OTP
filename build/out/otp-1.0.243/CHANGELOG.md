@@ -4,6 +4,20 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.243 — 4 November 2026
+
+**Local users of the machines** (*Settings → Local users*, full admin). The users of each node's own
+system, one row a user and a column a node: made, given a password, sudo (wheel / sudo), locked
+(the password and the account - no SSH key lets them in either) or unlocked, their full name and shell
+changed, taken away with or without the home folder - on every node of a cluster at once or on the
+ones ticked, the same UID on each; a user on one node only made on the others with a click. **root is
+shown only**, never changed from the pages (the API refuses it); accounts of the system and of the
+services are neither shown nor changed. A password typed on the page goes to the nodes as its sealed
+SHA-512 hash only, to `chpasswd -e` on its standard input, and is taken out of the database once done;
+the rows asking are signed by the guard of root's actions. Also `otp --local-users`, `otp --local-user
+add|password|lock|unlock|sudo-on|sudo-off|drop|drop-home NAME` (a password asked at the terminal) and
+four items in `otp --console`. See docs/local-users.md.
+
 ## 1.0.242 — 3 November 2026
 
 **Alerts for what the nodes already saw** (*Alerts and reports*). Mailed now, each with a switch of
