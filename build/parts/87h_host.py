@@ -144,6 +144,11 @@ def sshkeys_tick(daemon):
                     done.append(a['id'])
                 done.extend(x['id'] for x in lists if x.get('id') and x['id'] not in done)
                 if user != 'root':
+                    if a.get('do') != 'list':
+                        try:
+                            KEEP_WORK['at'] = 0.0   # the machine's keep read again (1.0.247)
+                        except NameError:
+                            pass
                     # A normal user's (1.0.240): kept apart, root's as they are; the last 30 read.
                     of = dict(row.get('keys_of') or {})
                     mine = dict(of.get(user) or {})
@@ -165,6 +170,10 @@ def sshkeys_tick(daemon):
                     row['error'] = err
                 if a.get('do') != 'list':
                     changed_err = err
+                    try:
+                        KEEP_WORK['at'] = 0.0   # a key changed: the machine's keep read again (1.0.247)
+                    except NameError:
+                        pass
                 row.update(at=time.time(), done=done[-200:])
                 if got:
                     row.update(keys=got.get('keys') or [], sshd=got.get('sshd') or {},

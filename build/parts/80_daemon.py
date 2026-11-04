@@ -1699,6 +1699,10 @@ class Daemon(object):
             heartbeat(self.store, self)
         except Exception as e:                          # noqa: BLE001
             log('the heartbeat could not be written: %s' % e, 'warn')
+        try:
+            keep_at_start(self.store)   # a machine new to this node's name (1.0.247)
+        except Exception as e:          # noqa: BLE001
+            log('the machine\'s own after a restore: %s' % e, 'warn')
         last_beat = time.monotonic()    # a clock stepped back stops nothing (1.0.94)
         maintenance_ensure(self.store)
         # Tests the other node's pages ask of this one (1.0.45): looked for
@@ -1856,6 +1860,7 @@ class Daemon(object):
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
                     osu_tick(self)              # the local users of the machines (1.0.243)
+                    keep_tick(self)             # what of the machine a backup carries (1.0.247)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osu-tick', 'the local users: %s' % e, 'warn', every=600)
                 try:

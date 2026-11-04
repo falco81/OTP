@@ -583,6 +583,7 @@ def ha_bundle_data(store, peer_db_host='', with_tls=None):
     elif host in ('', 'localhost', '127.0.0.1', '::1'):
         db['db_host'] = node_address()
     data = {'db': db, 'key': key.hex(), 'cluster': CONFIG.get('site_name') or 'otp',
+            'db_guard': bool(CONFIG.get('db_guard')),
             'peer': {'name': node_name(), 'address': node_address()}}
     if with_tls:
         data['tls'] = with_tls
@@ -602,6 +603,7 @@ def ha_replicated_bundle_data(store):
         raise ValueError('the key that seals the tokens is missing on this node - put it back '
                          'first (it is beside every backup)')
     data = {'mode': 'replicated', 'key': key.hex(),
+            'db_guard': bool(CONFIG.get('db_guard')),   # as this node has it (1.0.247)
             'pg_major': int(store.db.value('SHOW server_version_num')) // 10000,
             'slot': 3 - me,
             'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),

@@ -4,6 +4,32 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.247 — 4 November 2026
+
+**A backup put back on machines installed anew brings everything back - on both nodes of a
+cluster** (checked end to end: a cluster of two backed up to a destination, both machines lost, one
+installed from nothing restored from the backup alone, a second installed from nothing joined).
+
+- **What the nodes had put in on their machines is put in again.** The copy brought back each node's
+  rows saying what it had done there - so the new machine said "done" and never put in the SSH
+  server's file and otp's gate for SSH (PAM, the gate's secret, SELinux's boolean), the time servers,
+  the console at login, the password policy or SELinux's steps. Those rows are the machine's own now:
+  not taken from a backup; a node joining under a name the cluster had forgets its old ones.
+- **The machine's own, which no row held, is kept for the backups**: the local users (UID, full
+  name, shell, password's hash, aging, sudo), the SSH keys root and each of them sign in with, and
+  SELinux's booleans. Each node reads them now and then (and at once after a change on the pages) and
+  keeps them sealed in a row of its own, signed with the guard on - so every backup carries them.
+  Put back by itself when the service starts after a restore or a join under a known name: users
+  made again with their UID, password and sudo, keys added - only what is missing, nothing of the
+  machine as it is taken away. In Events; `otp --machine-kept` says what is kept of each node,
+  `otp --machine-kept putback` puts it back by hand.
+- **The guard of root's actions comes back on** where it was - from the backup's config.json on the
+  restored node, from the first node on the one that joins.
+- One ask of the local users' root helper at a time - two of them at once (the users' and the
+  machine's keep) took each other's place.
+- RESTORE.md says what comes back by itself, and what is still by hand (SELinux's mode, the
+  encryption to a database on another machine).
+
 ## 1.0.246 — 4 November 2026
 
 **Settings in a cluster: in effect on every node?** At the right of each card's heading of

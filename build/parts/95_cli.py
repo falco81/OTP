@@ -699,6 +699,9 @@ def build_parser():
                    help='set the password policy of the local users on every node: managed=1|0, minlen, '
                         'minclass, maxrepeat, difok, dictcheck, usercheck, remember, max_days, min_days, '
                         'warn_days, deny, unlock_time, fail_interval, existing')
+    g.add_argument('--machine-kept', nargs='?', const='show', choices=('show', 'putback'),
+                   help='what a backup carries of each machine (local users, SSH keys, SELinux\'s '
+                        'booleans); putback: put it back on this machine now (only what is missing)')
     g.add_argument('--local-nodes', metavar='NODES', default='',
                    help='with --local-user: only these nodes (separated by commas); every node if not given')
     g.add_argument('--local-full-name', metavar='TEXT', default=None, help='with --local-user add: the full name')
@@ -1380,6 +1383,7 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.
     data = {'mode': 'replicated', 'key': sealing_key_for_write().hex(), 'pg_major': major,
+            'db_guard': bool(CONFIG.get('db_guard')),   # as this node has it (1.0.247)
             'slot': 2,
             'db': {'db_name': name, 'db_user': user, 'db_password': pw},
             'peer': {'name': node_name(), 'address': me, 'port': port, 'slot': 1},
@@ -1471,6 +1475,12 @@ def cli_ha_join_replicated(args, pal, data, ask):
                          'ha_slot': int(data.get('slot') or 2), 'ha_peer': peer['address'],
                          'ha_peer_port': int(peer.get('port') or 5432), 'ha_address': me})
     chown_to_service(CONFIG_FILE, 0o640)
+    # The guard of root's actions as the first node has it (1.0.247), and - a machine new to the
+    # cluster - what it put in under this name forgotten, what was kept of it put back.
+    if data.get('db_guard'):
+        write_file_settings({'db_guard': 1})
+        say('the guard of root\'s actions on, as on %s' % (peer.get('name') or 'the other node'))
+    keep_mark_putback()
     say('every row of %s is here: %d' % (peer.get('name') or 'the other node', got['rows']))
     say('both directions replicate: this node -> %s and %s -> this node'
         % (peer.get('name'), peer.get('name')))
@@ -2235,6 +2245,21 @@ def cli_main(argv=None):
         return cli_dir_guard(args, pal)
     if args.sso_status or args.sso_key:
         return cli_sso(args, pal)
+    if args.machine_kept:
+        store = cli_store()
+        if args.machine_kept == 'putback':
+            if not store.get_meta('host:keep:' + node_name()):
+                print('nothing is kept of %s yet' % node_name())
+                return 1
+            store.set_meta('host:putback:' + node_name(), json.dumps({'at': time.time(), 'by': cli_who()}))
+            print('asked - the service puts it back within a minute (Events say what)')
+            return 0
+        for n in host_nodes(store):
+            v = keep_view(store, n)
+            print('%-12s %s' % (n, 'kept %s: %d user(s), %d SSH key(s)%s' % (
+                time.strftime('%Y-%m-%d %H:%M', time.localtime(v['at'])), v['users'], v['keys'],
+                ' - being put back' if v['pending'] else '') if v['at'] else 'nothing kept yet'))
+        return 0
     if args.local_policy or args.local_policy_set:
         return cli_pwpolicy(args, pal)
     if args.local_users or args.local_user:

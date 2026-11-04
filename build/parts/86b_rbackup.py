@@ -1000,6 +1000,11 @@ def rb_restore_md(m):
         'replaced with the one in the backup, `secrets.key` is put in place and the node keeps',
         'its name (`%s`). The new machine\'s own database connection in config.json stays as' % node,
         'it is - it belongs to the new machine. The other files config.json named are in `files/`.',
+        'When the service starts, the node puts everything in again from the database (the pages,',
+        'the firewall, the SSH server and otp\'s gate for SSH, the time servers, the console at login,',
+        'the password policy) and puts back what the backup kept of its machine: the local users',
+        '(passwords, aging, sudo), the SSH keys of root and of them, SELinux\'s booleans - only what',
+        'is missing is added. The guard of root\'s actions is on again where it was.',
         '',
     ]
     if ha:
@@ -1013,9 +1018,16 @@ def rb_restore_md(m):
             '  one server with everything. Move it to PostgreSQL (step 2), then make it two again:',
             '  `otp --ha-setup --ha-peer ADDRESS-OF-THE-SECOND --node-name %s` on it; on the' % node,
             '  second `./install.sh --with-db postgres --yes` and `otp --ha-join FILE`',
-            '  (docs/high-availability.md, "Building it - replicated"). The VIP address, the',
-            '  firewall, the certificates of the pages and the encrypted link between the',
-            '  databases come back by themselves from the database.',
+            '  (docs/high-availability.md, "Building it - replicated"). On each node, when the',
+            '  service starts, everything comes back by itself from the database: the VIP address,',
+            '  the firewall, the certificates of the pages, the encrypted link between the',
+            '  databases, the SSH server and otp\'s gate for SSH, the time servers, the console at',
+            '  login, the password policy - and what the backup kept of that node\'s machine: its',
+            '  local users (passwords, aging, sudo), the SSH keys of root and of them, SELinux\'s',
+            '  booleans (only what is missing is added; `otp --machine-kept` says what is kept).',
+            '  The guard of root\'s actions is on again where it was. By hand still: SELinux\'s mode',
+            '  (Settings -> High security -> SELinux) and the encryption to a database on another',
+            '  machine (Settings -> The database), if it was used.',
             '- Each node sends its own backups; either node\'s newest is the whole cluster\'s data.',
             '',
         ]
@@ -1546,6 +1558,22 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
                               key_file=os.path.join(top, 'secrets.key'),
                               from_name=os.path.basename(str(path)), need_admin=need_admin)
         said = [got.get('key') or '']
+        # The guard of root's actions as the backup's machine had it (1.0.247): it is a setting of
+        # config.json, which the restore does not take whole - the connection stays this machine's.
+        try:
+            with open(os.path.join(top, 'config.json')) as f:
+                was = json.load(f)
+            if was.get('db_guard') and not CONFIG.get('db_guard') and dbguard_key():
+                write_file_settings({'db_guard': 1})
+                CONFIG['db_guard'] = 1
+                said.append('the guard of root\'s actions on, as it was')
+        except (OSError, ValueError):
+            pass
+        # A machine new to this node: what it put in is put in again, and what the backup kept
+        # of the machine (local users, SSH keys, SELinux's booleans) put back, at the next start.
+        keep_mark_putback()
+        said.append('the local users, SSH keys and SELinux\'s booleans the backup kept are put '
+                    'back at the start')
         old_name = node_name()
         if m.get('node') and not keep_node_name and m['node'] != old_name and \
                 not CONFIG.get('ha_mode'):

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.246'
+__version__ = '1.0.247'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -4675,7 +4675,13 @@ META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:n
                   'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:',
                   # acme push's nonces seen (1.0.217): a copy's older list put back let a
                   # request of the last minutes be sent again once.
-                  'acme_push:nonces')
+                  'acme_push:nonces',
+                  # What a node's root helper has put in on its machine (1.0.247): a copy's put
+                  # back on a machine installed anew said "done" - and the SSH gate, sshd's file,
+                  # the time servers, the console at login, the password policy and SELinux's
+                  # steps were never put in there. Without them each node puts them in again.
+                  'host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
+                  'console:now:', 'host:selinux:now:', 'host:sshkeys:now:')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):
@@ -8754,7 +8760,7 @@ DBGUARD_META_PREFIXES = (
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
     'host:sshkeys:want:', 'host:rootkey:', 'host:osup:checkwant:', 'sshotp:u:', 'sshotp:port:',
     'console:want:', 'acme_push:key:', 'adm2fa:', 'host:selinux:want:',
-    'host:users:want:')
+    'host:users:want:', 'host:keep:', 'host:putback:')
 # Settings whose word reaches root, or who may sign in to these pages.
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
@@ -16708,6 +16714,10 @@ class Daemon(object):
             heartbeat(self.store, self)
         except Exception as e:                          # noqa: BLE001
             log('the heartbeat could not be written: %s' % e, 'warn')
+        try:
+            keep_at_start(self.store)   # a machine new to this node's name (1.0.247)
+        except Exception as e:          # noqa: BLE001
+            log('the machine\'s own after a restore: %s' % e, 'warn')
         last_beat = time.monotonic()    # a clock stepped back stops nothing (1.0.94)
         maintenance_ensure(self.store)
         # Tests the other node's pages ask of this one (1.0.45): looked for
@@ -16865,6 +16875,7 @@ class Daemon(object):
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
                     osu_tick(self)              # the local users of the machines (1.0.243)
+                    keep_tick(self)             # what of the machine a backup carries (1.0.247)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osu-tick', 'the local users: %s' % e, 'warn', every=600)
                 try:
@@ -22261,6 +22272,11 @@ def rb_restore_md(m):
         'replaced with the one in the backup, `secrets.key` is put in place and the node keeps',
         'its name (`%s`). The new machine\'s own database connection in config.json stays as' % node,
         'it is - it belongs to the new machine. The other files config.json named are in `files/`.',
+        'When the service starts, the node puts everything in again from the database (the pages,',
+        'the firewall, the SSH server and otp\'s gate for SSH, the time servers, the console at login,',
+        'the password policy) and puts back what the backup kept of its machine: the local users',
+        '(passwords, aging, sudo), the SSH keys of root and of them, SELinux\'s booleans - only what',
+        'is missing is added. The guard of root\'s actions is on again where it was.',
         '',
     ]
     if ha:
@@ -22274,9 +22290,16 @@ def rb_restore_md(m):
             '  one server with everything. Move it to PostgreSQL (step 2), then make it two again:',
             '  `otp --ha-setup --ha-peer ADDRESS-OF-THE-SECOND --node-name %s` on it; on the' % node,
             '  second `./install.sh --with-db postgres --yes` and `otp --ha-join FILE`',
-            '  (docs/high-availability.md, "Building it - replicated"). The VIP address, the',
-            '  firewall, the certificates of the pages and the encrypted link between the',
-            '  databases come back by themselves from the database.',
+            '  (docs/high-availability.md, "Building it - replicated"). On each node, when the',
+            '  service starts, everything comes back by itself from the database: the VIP address,',
+            '  the firewall, the certificates of the pages, the encrypted link between the',
+            '  databases, the SSH server and otp\'s gate for SSH, the time servers, the console at',
+            '  login, the password policy - and what the backup kept of that node\'s machine: its',
+            '  local users (passwords, aging, sudo), the SSH keys of root and of them, SELinux\'s',
+            '  booleans (only what is missing is added; `otp --machine-kept` says what is kept).',
+            '  The guard of root\'s actions is on again where it was. By hand still: SELinux\'s mode',
+            '  (Settings -> High security -> SELinux) and the encryption to a database on another',
+            '  machine (Settings -> The database), if it was used.',
             '- Each node sends its own backups; either node\'s newest is the whole cluster\'s data.',
             '',
         ]
@@ -22807,6 +22830,22 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
                               key_file=os.path.join(top, 'secrets.key'),
                               from_name=os.path.basename(str(path)), need_admin=need_admin)
         said = [got.get('key') or '']
+        # The guard of root's actions as the backup's machine had it (1.0.247): it is a setting of
+        # config.json, which the restore does not take whole - the connection stays this machine's.
+        try:
+            with open(os.path.join(top, 'config.json')) as f:
+                was = json.load(f)
+            if was.get('db_guard') and not CONFIG.get('db_guard') and dbguard_key():
+                write_file_settings({'db_guard': 1})
+                CONFIG['db_guard'] = 1
+                said.append('the guard of root\'s actions on, as it was')
+        except (OSError, ValueError):
+            pass
+        # A machine new to this node: what it put in is put in again, and what the backup kept
+        # of the machine (local users, SSH keys, SELinux's booleans) put back, at the next start.
+        keep_mark_putback()
+        said.append('the local users, SSH keys and SELinux\'s booleans the backup kept are put '
+                    'back at the start')
         old_name = node_name()
         if m.get('node') and not keep_node_name and m['node'] != old_name and \
                 not CONFIG.get('ha_mode'):
@@ -23733,6 +23772,7 @@ def ha_bundle_data(store, peer_db_host='', with_tls=None):
     elif host in ('', 'localhost', '127.0.0.1', '::1'):
         db['db_host'] = node_address()
     data = {'db': db, 'key': key.hex(), 'cluster': CONFIG.get('site_name') or 'otp',
+            'db_guard': bool(CONFIG.get('db_guard')),
             'peer': {'name': node_name(), 'address': node_address()}}
     if with_tls:
         data['tls'] = with_tls
@@ -23752,6 +23792,7 @@ def ha_replicated_bundle_data(store):
         raise ValueError('the key that seals the tokens is missing on this node - put it back '
                          'first (it is beside every backup)')
     data = {'mode': 'replicated', 'key': key.hex(),
+            'db_guard': bool(CONFIG.get('db_guard')),   # as this node has it (1.0.247)
             'pg_major': int(store.db.value('SHOW server_version_num')) // 10000,
             'slot': 3 - me,
             'db': {'db_name': CONFIG.get('db_name'), 'db_user': CONFIG.get('db_user'),
@@ -33328,6 +33369,11 @@ def sshkeys_tick(daemon):
                     done.append(a['id'])
                 done.extend(x['id'] for x in lists if x.get('id') and x['id'] not in done)
                 if user != 'root':
+                    if a.get('do') != 'list':
+                        try:
+                            KEEP_WORK['at'] = 0.0   # the machine's keep read again (1.0.247)
+                        except NameError:
+                            pass
                     # A normal user's (1.0.240): kept apart, root's as they are; the last 30 read.
                     of = dict(row.get('keys_of') or {})
                     mine = dict(of.get(user) or {})
@@ -33349,6 +33395,10 @@ def sshkeys_tick(daemon):
                     row['error'] = err
                 if a.get('do') != 'list':
                     changed_err = err
+                    try:
+                        KEEP_WORK['at'] = 0.0   # a key changed: the machine's keep read again (1.0.247)
+                    except NameError:
+                        pass
                 row.update(at=time.time(), done=done[-200:])
                 if got:
                     row.update(keys=got.get('keys') or [], sshd=got.get('sshd') or {},
@@ -47448,6 +47498,16 @@ def pwp_password_check(store, password, name):
         raise ValueError('the password policy takes no password with the user\'s name in it')
 
 
+USERS_ASK_LOCK = threading.Lock()
+
+
+def users_ask(data, wait=60):
+    """One ask of users.ask at a time (1.0.247): the local users' tick and the machine's keep both
+    ask it, and the second one written took the first one's place - it waited its whole time."""
+    with USERS_ASK_LOCK:
+        return root_ask('users.ask', 'users.json', data, wait)
+
+
 def osu_now(store, n):
     return _meta_json(store, 'host:users:now:' + n) or {}
 
@@ -47675,7 +47735,7 @@ def osu_one(a):
     elif a.get('hash_gone'):
         return 'it came too late: the password for %s is no longer kept' % a.get('name')
     try:
-        return root_ask('users.ask', 'users.json', q, 120)
+        return users_ask(q, 120)
     except Exception as e:                              # noqa: BLE001
         err = str(e)[:300] or e.__class__.__name__
         log('the local user %s: %s' % (a.get('name') or '?', err), 'warn')
@@ -47729,7 +47789,7 @@ def osu_tick(daemon):
             if policy_due:
                 row.update(policy_tried=want, policy_at=time.time())
                 try:
-                    got = root_ask('users.ask', 'users.json', {'do': 'policy', 'conf': pol}, 120)
+                    got = users_ask({'do': 'policy', 'conf': pol}, 120)
                     osu_keep(row, got)
                     row.update(policy_hash=want, policy_said=got.get('said') or '', policy_error='')
                     log('the password policy of the local users put in: %s' % (got.get('said') or 'done'))
@@ -47738,6 +47798,7 @@ def osu_tick(daemon):
                     log('the password policy of the local users: %s' % row['policy_error'], 'warn')
                 store.set_meta('host:users:now:' + me, json.dumps(row))
             if changes:
+                KEEP_WORK['at'] = 0.0       # what a backup carries of the machine read again (1.0.247)
                 # SSH keys' "Whose keys" read again here too (1.0.244): a user just made was not
                 # there until the page was loaded anew and the keys asked again.
                 try:
@@ -47745,7 +47806,7 @@ def osu_tick(daemon):
                 except Exception:                       # noqa: BLE001
                     pass
             try:
-                osu_keep(row, root_ask('users.ask', 'users.json', {'do': 'list'}, 60))
+                osu_keep(row, users_ask({'do': 'list'}, 60))
                 row['error'] = ''
             except Exception as e:                      # noqa: BLE001
                 row['error'] = 'its users could not be read: %s' % (str(e)[:300] or
@@ -47838,6 +47899,102 @@ def _settings_nodes_again(h):
     if CONFIG.get('ha_mode'):
         heartbeat(h.store, h.d)                 # this node's, now
     return settings_in_effect(h.store, ask=True, daemon=h.d)
+
+
+# ---- what of the machine is kept for a backup (1.0.247) ------------------------------------
+# The local users (with their passwords' hashes, aging and sudo), the SSH keys root and they
+# sign in with, and SELinux's booleans are no rows of the database: a backup put back on a
+# machine installed anew had none of them. Each node reads them now and then through its root
+# helper and keeps them sealed in a row of its own (host:keep:NODE, signed with the guard on),
+# so every backup carries them. After a backup is put back, or a node joins under a name the
+# cluster kept them for, its root helper puts back what is missing - never taking anything away.
+KEEP_EVERY = 3600
+KEEP_WORK = {'at': 0.0, 'busy': False}
+PUTBACK_FILE = STATE_DIR / 'host-putback'
+APPLIED_PREFIXES = ('host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
+                    'console:now:', 'host:selinux:now:', 'host:sshkeys:now:')
+
+
+def keep_mark_putback():
+    """Asked by a restore or a join: at the next start, this node forgets what it had put in (it
+    is a new machine) and puts back what the cluster kept of it."""
+    try:
+        write_replacing(PUTBACK_FILE, '%.0f\n' % time.time(), 0o600)
+    except OSError as e:
+        log('the mark to put the machine\'s own back could not be written: %s' % e, 'warn')
+
+
+def keep_at_start(store):
+    """At the daemon's start: a restore or a join asked for it."""
+    if not PUTBACK_FILE.exists():
+        return
+    me = node_name()
+    for p in APPLIED_PREFIXES:
+        store.db.run('DELETE FROM meta WHERE k = ?', (p + me,))
+    if store.get_meta('host:keep:' + me):
+        store.set_meta('host:putback:' + me, json.dumps({'at': time.time(), 'by': 'restore'}))
+    try:
+        PUTBACK_FILE.unlink()
+    except OSError:
+        pass
+    log('a machine new to this node\'s name: what was put in is put in again, and what the '
+        'cluster kept of it is put back')
+
+
+def keep_view(store, node):
+    raw = _meta_json(store, 'host:keep:' + node) or {}
+    k = keep_open(raw, node) or {}
+    return {'at': raw.get('at'), 'users': len(k.get('users') or []),
+            'keys': sum(len(v) for v in (k.get('keys') or {}).values()) + len(k.get('root_keys') or []),
+            'pending': bool(store.get_meta('host:putback:' + node))}
+
+
+def keep_open(raw, node):
+    try:
+        text = unseal_secret(str(raw.get('sealed') or ''), 'hostkeep:' + node)
+        return json.loads(text) if text else None
+    except (TypeError, ValueError):
+        return None
+
+
+def keep_tick(daemon):
+    store = daemon.store
+    me = node_name()
+    if KEEP_WORK['busy']:
+        return
+    pending = store.get_meta('host:putback:' + me)
+    if not pending and time.time() - KEEP_WORK['at'] < KEEP_EVERY:
+        return
+    KEEP_WORK['busy'] = True
+
+    def go():
+        try:
+            if pending:
+                k = keep_open(_meta_json(store, 'host:keep:' + me) or {}, me)
+                if k is None:
+                    log('what the cluster kept of this machine could not be opened - nothing put back', 'warn')
+                else:
+                    got = users_ask({'do': 'putback', 'keep': k}, 600)
+                    store.add_event('settings', 'put back on %s what the backup kept of the machine: %s'
+                                    % (me, got.get('said') or 'nothing missing'), 'warn')
+                    log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
+                store.db.run('DELETE FROM meta WHERE k = ?', ('host:putback:' + me,))
+            got = users_ask({'do': 'keep'}, 120)
+            got.pop('at', None)
+            text = json.dumps({k: got.get(k) for k in ('users', 'keys', 'root_keys', 'selinux',
+                                                        'admin_group')}, sort_keys=True)
+            mark = hashlib.sha256(text.encode()).hexdigest()[:20]
+            old = _meta_json(store, 'host:keep:' + me) or {}
+            if old.get('mark') != mark:
+                store.set_meta('host:keep:' + me, json.dumps({
+                    'at': time.time(), 'mark': mark, 'sealed': seal_secret(text, 'hostkeep:' + me)}))
+            KEEP_WORK['at'] = time.time()
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('keep', 'what of the machine is kept for a backup: %s' % e, 'warn', every=3600)
+            KEEP_WORK['at'] = time.time() - KEEP_EVERY + 600     # again in ten minutes
+        finally:
+            KEEP_WORK['busy'] = False
+    threading.Thread(target=go, name='otp-keep', daemon=True).start()
 
 
 # ---- alerts and the report on the pages (1.0.162) --------------------------------------
@@ -54582,6 +54739,9 @@ def build_parser():
                    help='set the password policy of the local users on every node: managed=1|0, minlen, '
                         'minclass, maxrepeat, difok, dictcheck, usercheck, remember, max_days, min_days, '
                         'warn_days, deny, unlock_time, fail_interval, existing')
+    g.add_argument('--machine-kept', nargs='?', const='show', choices=('show', 'putback'),
+                   help='what a backup carries of each machine (local users, SSH keys, SELinux\'s '
+                        'booleans); putback: put it back on this machine now (only what is missing)')
     g.add_argument('--local-nodes', metavar='NODES', default='',
                    help='with --local-user: only these nodes (separated by commas); every node if not given')
     g.add_argument('--local-full-name', metavar='TEXT', default=None, help='with --local-user add: the full name')
@@ -55263,6 +55423,7 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.
     data = {'mode': 'replicated', 'key': sealing_key_for_write().hex(), 'pg_major': major,
+            'db_guard': bool(CONFIG.get('db_guard')),   # as this node has it (1.0.247)
             'slot': 2,
             'db': {'db_name': name, 'db_user': user, 'db_password': pw},
             'peer': {'name': node_name(), 'address': me, 'port': port, 'slot': 1},
@@ -55354,6 +55515,12 @@ def cli_ha_join_replicated(args, pal, data, ask):
                          'ha_slot': int(data.get('slot') or 2), 'ha_peer': peer['address'],
                          'ha_peer_port': int(peer.get('port') or 5432), 'ha_address': me})
     chown_to_service(CONFIG_FILE, 0o640)
+    # The guard of root's actions as the first node has it (1.0.247), and - a machine new to the
+    # cluster - what it put in under this name forgotten, what was kept of it put back.
+    if data.get('db_guard'):
+        write_file_settings({'db_guard': 1})
+        say('the guard of root\'s actions on, as on %s' % (peer.get('name') or 'the other node'))
+    keep_mark_putback()
     say('every row of %s is here: %d' % (peer.get('name') or 'the other node', got['rows']))
     say('both directions replicate: this node -> %s and %s -> this node'
         % (peer.get('name'), peer.get('name')))
@@ -56118,6 +56285,21 @@ def cli_main(argv=None):
         return cli_dir_guard(args, pal)
     if args.sso_status or args.sso_key:
         return cli_sso(args, pal)
+    if args.machine_kept:
+        store = cli_store()
+        if args.machine_kept == 'putback':
+            if not store.get_meta('host:keep:' + node_name()):
+                print('nothing is kept of %s yet' % node_name())
+                return 1
+            store.set_meta('host:putback:' + node_name(), json.dumps({'at': time.time(), 'by': cli_who()}))
+            print('asked - the service puts it back within a minute (Events say what)')
+            return 0
+        for n in host_nodes(store):
+            v = keep_view(store, n)
+            print('%-12s %s' % (n, 'kept %s: %d user(s), %d SSH key(s)%s' % (
+                time.strftime('%Y-%m-%d %H:%M', time.localtime(v['at'])), v['users'], v['keys'],
+                ' - being put back' if v['pending'] else '') if v['at'] else 'nothing kept yet'))
+        return 0
     if args.local_policy or args.local_policy_set:
         return cli_pwpolicy(args, pal)
     if args.local_users or args.local_user:

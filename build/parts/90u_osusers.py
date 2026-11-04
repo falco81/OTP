@@ -101,6 +101,16 @@ def pwp_password_check(store, password, name):
         raise ValueError('the password policy takes no password with the user\'s name in it')
 
 
+USERS_ASK_LOCK = threading.Lock()
+
+
+def users_ask(data, wait=60):
+    """One ask of users.ask at a time (1.0.247): the local users' tick and the machine's keep both
+    ask it, and the second one written took the first one's place - it waited its whole time."""
+    with USERS_ASK_LOCK:
+        return root_ask('users.ask', 'users.json', data, wait)
+
+
 def osu_now(store, n):
     return _meta_json(store, 'host:users:now:' + n) or {}
 
@@ -328,7 +338,7 @@ def osu_one(a):
     elif a.get('hash_gone'):
         return 'it came too late: the password for %s is no longer kept' % a.get('name')
     try:
-        return root_ask('users.ask', 'users.json', q, 120)
+        return users_ask(q, 120)
     except Exception as e:                              # noqa: BLE001
         err = str(e)[:300] or e.__class__.__name__
         log('the local user %s: %s' % (a.get('name') or '?', err), 'warn')
@@ -382,7 +392,7 @@ def osu_tick(daemon):
             if policy_due:
                 row.update(policy_tried=want, policy_at=time.time())
                 try:
-                    got = root_ask('users.ask', 'users.json', {'do': 'policy', 'conf': pol}, 120)
+                    got = users_ask({'do': 'policy', 'conf': pol}, 120)
                     osu_keep(row, got)
                     row.update(policy_hash=want, policy_said=got.get('said') or '', policy_error='')
                     log('the password policy of the local users put in: %s' % (got.get('said') or 'done'))
@@ -391,6 +401,7 @@ def osu_tick(daemon):
                     log('the password policy of the local users: %s' % row['policy_error'], 'warn')
                 store.set_meta('host:users:now:' + me, json.dumps(row))
             if changes:
+                KEEP_WORK['at'] = 0.0       # what a backup carries of the machine read again (1.0.247)
                 # SSH keys' "Whose keys" read again here too (1.0.244): a user just made was not
                 # there until the page was loaded anew and the keys asked again.
                 try:
@@ -398,7 +409,7 @@ def osu_tick(daemon):
                 except Exception:                       # noqa: BLE001
                     pass
             try:
-                osu_keep(row, root_ask('users.ask', 'users.json', {'do': 'list'}, 60))
+                osu_keep(row, users_ask({'do': 'list'}, 60))
                 row['error'] = ''
             except Exception as e:                      # noqa: BLE001
                 row['error'] = 'its users could not be read: %s' % (str(e)[:300] or
@@ -491,3 +502,99 @@ def _settings_nodes_again(h):
     if CONFIG.get('ha_mode'):
         heartbeat(h.store, h.d)                 # this node's, now
     return settings_in_effect(h.store, ask=True, daemon=h.d)
+
+
+# ---- what of the machine is kept for a backup (1.0.247) ------------------------------------
+# The local users (with their passwords' hashes, aging and sudo), the SSH keys root and they
+# sign in with, and SELinux's booleans are no rows of the database: a backup put back on a
+# machine installed anew had none of them. Each node reads them now and then through its root
+# helper and keeps them sealed in a row of its own (host:keep:NODE, signed with the guard on),
+# so every backup carries them. After a backup is put back, or a node joins under a name the
+# cluster kept them for, its root helper puts back what is missing - never taking anything away.
+KEEP_EVERY = 3600
+KEEP_WORK = {'at': 0.0, 'busy': False}
+PUTBACK_FILE = STATE_DIR / 'host-putback'
+APPLIED_PREFIXES = ('host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
+                    'console:now:', 'host:selinux:now:', 'host:sshkeys:now:')
+
+
+def keep_mark_putback():
+    """Asked by a restore or a join: at the next start, this node forgets what it had put in (it
+    is a new machine) and puts back what the cluster kept of it."""
+    try:
+        write_replacing(PUTBACK_FILE, '%.0f\n' % time.time(), 0o600)
+    except OSError as e:
+        log('the mark to put the machine\'s own back could not be written: %s' % e, 'warn')
+
+
+def keep_at_start(store):
+    """At the daemon's start: a restore or a join asked for it."""
+    if not PUTBACK_FILE.exists():
+        return
+    me = node_name()
+    for p in APPLIED_PREFIXES:
+        store.db.run('DELETE FROM meta WHERE k = ?', (p + me,))
+    if store.get_meta('host:keep:' + me):
+        store.set_meta('host:putback:' + me, json.dumps({'at': time.time(), 'by': 'restore'}))
+    try:
+        PUTBACK_FILE.unlink()
+    except OSError:
+        pass
+    log('a machine new to this node\'s name: what was put in is put in again, and what the '
+        'cluster kept of it is put back')
+
+
+def keep_view(store, node):
+    raw = _meta_json(store, 'host:keep:' + node) or {}
+    k = keep_open(raw, node) or {}
+    return {'at': raw.get('at'), 'users': len(k.get('users') or []),
+            'keys': sum(len(v) for v in (k.get('keys') or {}).values()) + len(k.get('root_keys') or []),
+            'pending': bool(store.get_meta('host:putback:' + node))}
+
+
+def keep_open(raw, node):
+    try:
+        text = unseal_secret(str(raw.get('sealed') or ''), 'hostkeep:' + node)
+        return json.loads(text) if text else None
+    except (TypeError, ValueError):
+        return None
+
+
+def keep_tick(daemon):
+    store = daemon.store
+    me = node_name()
+    if KEEP_WORK['busy']:
+        return
+    pending = store.get_meta('host:putback:' + me)
+    if not pending and time.time() - KEEP_WORK['at'] < KEEP_EVERY:
+        return
+    KEEP_WORK['busy'] = True
+
+    def go():
+        try:
+            if pending:
+                k = keep_open(_meta_json(store, 'host:keep:' + me) or {}, me)
+                if k is None:
+                    log('what the cluster kept of this machine could not be opened - nothing put back', 'warn')
+                else:
+                    got = users_ask({'do': 'putback', 'keep': k}, 600)
+                    store.add_event('settings', 'put back on %s what the backup kept of the machine: %s'
+                                    % (me, got.get('said') or 'nothing missing'), 'warn')
+                    log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
+                store.db.run('DELETE FROM meta WHERE k = ?', ('host:putback:' + me,))
+            got = users_ask({'do': 'keep'}, 120)
+            got.pop('at', None)
+            text = json.dumps({k: got.get(k) for k in ('users', 'keys', 'root_keys', 'selinux',
+                                                        'admin_group')}, sort_keys=True)
+            mark = hashlib.sha256(text.encode()).hexdigest()[:20]
+            old = _meta_json(store, 'host:keep:' + me) or {}
+            if old.get('mark') != mark:
+                store.set_meta('host:keep:' + me, json.dumps({
+                    'at': time.time(), 'mark': mark, 'sealed': seal_secret(text, 'hostkeep:' + me)}))
+            KEEP_WORK['at'] = time.time()
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('keep', 'what of the machine is kept for a backup: %s' % e, 'warn', every=3600)
+            KEEP_WORK['at'] = time.time() - KEEP_EVERY + 600     # again in ten minutes
+        finally:
+            KEEP_WORK['busy'] = False
+    threading.Thread(target=go, name='otp-keep', daemon=True).start()

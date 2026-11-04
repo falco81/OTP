@@ -1321,7 +1321,13 @@ META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:n
                   'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:',
                   # acme push's nonces seen (1.0.217): a copy's older list put back let a
                   # request of the last minutes be sent again once.
-                  'acme_push:nonces')
+                  'acme_push:nonces',
+                  # What a node's root helper has put in on its machine (1.0.247): a copy's put
+                  # back on a machine installed anew said "done" - and the SSH gate, sshd's file,
+                  # the time servers, the console at login, the password policy and SELinux's
+                  # steps were never put in there. Without them each node puts them in again.
+                  'host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
+                  'console:now:', 'host:selinux:now:', 'host:sshkeys:now:')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):
