@@ -126,7 +126,7 @@ def vip_prefer(store, conf=None):
         if moving:
             return moving
         for n in ha_nodes(store):
-            w = web_state(store) if n['me'] else (n.get('web') or {})
+            w = web_state(store) if n['me'] else odict(n.get('web'))
             if w.get('vip_here'):
                 return n['name']
         return ''
@@ -742,7 +742,7 @@ def web_desired(store):
                'vrid': int(v.get('vrid') or 51), 'auth': vip_auth(),
                'own': vip_plain(CONFIG.get('ha_address') or node_address(), v.get('address')),
                'peer': vip_plain(CONFIG.get('ha_peer') or vip_peer_seen(store), v.get('address')),
-               'iface': (v.get('ifaces') or {}).get(me, '')}
+               'iface': odict(v.get('ifaces')).get(me, '')}
         last = vip_last(v.get('address'))
         if vip['own'] and vip['peer']:
             vip_last_keep(v.get('address'), vip['own'], vip['peer'])
@@ -902,7 +902,7 @@ def web_drift(desired):
     """Why the certificates nginx has are not the ones wanted - '' when they
     are, or when that cannot be told (a file not readable here)."""
     for target in ('node', 'vip'):
-        t = (desired.get('tls') or {}).get(target)
+        t = odict(desired.get('tls')).get(target)
         if not t or not t.get('cert'):
             continue
         path = NGINX_CERT_FILES[target]
@@ -953,7 +953,7 @@ def web_state(store):
             'at': st.get('at'), 'current': bool(st) and st.get('hash') == desired_hash,
             'waiting': (WEB_DIR / 'request.json').exists(),
             'progress': web_progress(),
-            'iface': (st.get('applied') or {}).get('iface') or '',
+            'iface': odict(st.get('applied')).get('iface') or '',
             'vip_here': vip_here(v.get('address')) if v.get('on') else False,
             'role': role, 'health': dict(VIP_HEALTH),
             'fw': dict(st.get('fw') or {}, **fw_now_read()), 'access': st.get('access') or {},
@@ -1194,7 +1194,7 @@ def vip_checked(b, store):
     if not 1 <= vrid <= 255:
         raise ValueError('the VRRP id is 1 to 255 - one no other VRRP on that network uses')
     ifaces = {}
-    for k, val in (b.get('ifaces') or {}).items():
+    for k, val in odict(b.get('ifaces')).items():
         val = str(val or '').strip()
         if val and not re.match(r'^[A-Za-z0-9_.:-]{1,15}\Z', val):
             raise ValueError('%r is not the name of a network interface' % val)

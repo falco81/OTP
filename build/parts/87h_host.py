@@ -150,7 +150,7 @@ def sshkeys_tick(daemon):
                         except NameError:
                             pass
                     # A normal user's (1.0.240): kept apart, root's as they are; the last 30 read.
-                    of = dict(row.get('keys_of') or {})
+                    of = dict(odict(row.get('keys_of')))
                     mine = dict(of.get(user) or {})
                     mine.update(at=time.time(), error=err)
                     if got:
@@ -796,7 +796,7 @@ def sshd_view(store):
                       'now': now, 'keys': keys,
                       'state': ('failed' if now.get('failed') == c.get('hash') and c.get('hash')
                                 else 'back' if now.get('back_hash') == c.get('hash') and c.get('hash')
-                                else 'trial' if (now.get('trial') or {}).get('until')
+                                else 'trial' if odict(now.get('trial')).get('until')
                                 else 'done' if now.get('hash') == c.get('hash') or not c.get('hash')
                                 else 'waiting')})
     return {'conf': c, 'nodes': nodes, 'helper': WEB_DIR.is_dir(), 'sshotp': sshotp_all(store),
@@ -811,8 +811,8 @@ def sshd_ports_open(store):
     ports = {int(c.get('port') or 22) if c.get('manage') else 22}
     for n in host_nodes(store):
         now = sshd_now(store, n)
-        if (now.get('trial') or {}).get('until') or now.get('hash') != c.get('hash'):
-            for p in ((now.get('values') or {}).get('port'), now.get('before_port')):
+        if odict(now.get('trial')).get('until') or now.get('hash') != c.get('hash'):
+            for p in (odict(now.get('values')).get('port'), now.get('before_port')):
                 try:
                     if p:
                         ports.add(int(p))
@@ -842,26 +842,26 @@ def sshd_tick(daemon):
         todo.append(('apply', None))
     # Kept only where it was on trial when Keep was pressed (1.0.211): a node that
     # was away put the change in later and kept it at once - nobody had tried it there.
-    if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
+    if odict(now.get('trial')).get('until') and keep.get('hash') == now.get('hash') and \
             fnum(keep.get('at')) > fnum(now.get('kept_at')) and \
             fnum(keep.get('at')) > fnum(now.get('applied_at')):
         todo.append(('keep', None))
-    if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
+    if back.get('id') and back['id'] != now.get('back_id') and odict(now.get('trial')).get('until'):
         todo.append(('back', back))
     # pam_radius's file with another secret or port than the gate's (1.0.181:
     # the RADIUS client before, or a port changed): only that file is put right.
-    if c.get('manage') and c.get('radius') and (now.get('radius') or {}).get('pam') and \
+    if c.get('manage') and c.get('radius') and odict(now.get('radius')).get('pam') and \
             now.get('hash') == c.get('hash') and not todo and \
-            ((now.get('radius') or {}).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
+            (odict(now.get('radius')).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
                                                                 ssh_gate_port(store)) or
-             (now.get('radius') or {}).get('skip_passwd') is False):
+             odict(now.get('radius')).get('skip_passwd') is False):
         # ... or its PAM block from before 1.0.188: "Password:" asked before the code.
         todo.append(('pamconf', None))
     # The files written anew once after an upgrade that writes them otherwise for
     # the same settings (1.0.191: root's own Match block) - no trial, nothing in
     # them chosen differently.
     if c.get('manage') and c.get('hash') and not todo and now.get('hash') == c.get('hash') and \
-            not (now.get('trial') or {}).get('until') and now.get('failed') != c.get('hash') and \
+            not odict(now.get('trial')).get('until') and now.get('failed') != c.get('hash') and \
             store.get_meta('host:sshd:fmt:' + me) != SSHD_FMT:
         todo.append(('apply', {'refit': True}))
     if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
@@ -899,8 +899,8 @@ def sshd_tick(daemon):
                                    # Changed again while on trial: the helper
                                    # goes back to the first, so its port stays open.
                                    before_port=(row.get('before_port') if
-                                                (row.get('trial') or {}).get('until') else None)
-                                   or (row.get('values') or {}).get('port') or '22')
+                                                odict(row.get('trial')).get('until') else None)
+                                   or odict(row.get('values')).get('port') or '22')
                     elif what == 'pamconf':
                         got = root_ask('sshd.ask', 'sshd.json', {
                             'do': 'pamconf', 'radius_secret': ssh_gate_secret(store),

@@ -949,7 +949,7 @@ def tune_state(store):
             pass
     elif db.engine == 'mariadb' and last and not last.get('undone') \
             and last.get('engine') == 'mariadb':
-        now = tune_current(db, list((last.get('set') or {}).keys()))
-        out['lost'] = [n for n, v in (last.get('set') or {}).items()
+        now = tune_current(db, list(odict(last.get('set')).keys()))
+        out['lost'] = [n for n, v in odict(last.get('set')).items()
                        if not tune_same('mariadb', now.get(n, ''), v)]
     return out

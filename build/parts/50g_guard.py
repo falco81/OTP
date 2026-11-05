@@ -69,6 +69,8 @@ DBGUARD_SINCE = {
                              'acme_dns', 'acme_dns_url', 'acme_dns_key', 'acme_dns_user', 'acme_dns_server',
                              'acme_dns_token', 'acme_dns_tsig_alg', 'acme_dns_tsig_name', 'acme_dns_tsig_secret',
                              'acme_desec_token', 'acme_desec_domain')}}
+# How long a node not heard from is still counted as one of the cluster's (1.0.251).
+DBGUARD_PEER_DAY_S = 86400
 DBGUARD_FILE = STATE_DIR / 'guard.json'
 DBGUARD = {'seen': None, 'good': None, 'seen_h': None, 'dirty': 0.0, 'refused': {}, 'nodes': {},
            'adopted': [], 'behind': set(), 'lock': threading.Lock()}
@@ -149,9 +151,9 @@ def _dbguard_load():
                 got = json.loads(DBGUARD_FILE.read_text())
             except (OSError, ValueError):
                 got = {}
-            DBGUARD['seen'] = dict(got.get('seen') or {}) if isinstance(got, dict) else {}
-            DBGUARD['good'] = dict(got.get('good') or {}) if isinstance(got, dict) else {}
-            DBGUARD['seen_h'] = dict(got.get('seen_h') or {}) if isinstance(got, dict) else {}
+            DBGUARD['seen'] = dict(odict(got.get('seen'))) if isinstance(got, dict) else {}
+            DBGUARD['good'] = dict(odict(got.get('good'))) if isinstance(got, dict) else {}
+            DBGUARD['seen_h'] = dict(odict(got.get('seen_h'))) if isinstance(got, dict) else {}
             DBGUARD['adopted'] = list(got.get('adopted') or []) if isinstance(got, dict) else []
 
 
@@ -490,14 +492,18 @@ def dbguard_resign(store, why=''):
 
 
 def _dbguard_older_nodes(store):
-    """The other nodes alive, by the version their heartbeat - otp's, by its signature - says."""
+    """The other nodes, by the version their heartbeat - otp's, by its signature - says: every
+    one heard from within a day, not only those alive (1.0.251) - a node of a version before
+    restarting, or put back after an upgrade that failed, had no heartbeat of the last seconds;
+    the rows were taken in meanwhile, and what it wrote once back was refused for ever."""
     out = {}
     try:
         nodes = ha_nodes(store) if CONFIG.get('ha_mode') else []
     except Exception:                                   # noqa: BLE001
         nodes = []
     for n in nodes:
-        if n.get('me') or not n.get('alive') or not n.get('version'):
+        if n.get('me') or not n.get('version') or \
+                not (n.get('alive') or fnum(n.get('age'), 1e9) < DBGUARD_PEER_DAY_S):
             continue
         try:
             raw = store.db.value('SELECT v FROM meta WHERE k = ?', ('node:' + n['name'],))
@@ -508,11 +514,39 @@ def _dbguard_older_nodes(store):
     return out
 
 
+def dbguard_refused_tidy(store):
+    """Rows of meta refused and gone since, no longer listed as refused (1.0.251): taken away by
+    the node that wrote them, they stayed lit on the card until the next start. Only rows of
+    meta - an ask, a job: a setting, an account or a directory taken away is itself what the
+    guard is there for, the last good one is held and stays listed."""
+    with DBGUARD['lock']:
+        rows = [(sid, str(e.get('what') or '')) for sid, e in odict(DBGUARD.get('refused')).items()
+                if isinstance(e, dict) and e.get('kind') == 'm']
+    gone = []
+    for sid, k in rows:
+        if not k or len(k) >= 120:
+            continue                                    # its name cut short: not looked for
+        try:
+            there = store.db.value('SELECT 1 FROM meta WHERE k = ?', (k,))
+        except Exception:                               # noqa: BLE001
+            return 0
+        if there is None and sid == 'sig:m:%s:*' % _dbguard_hash(k):
+            gone.append(sid)
+    if gone:
+        with DBGUARD['lock']:
+            for sid in gone:
+                DBGUARD['refused'].pop(sid, None)
+    return len(gone)
+
+
 def dbguard_adopt_tick(store):
     """Once a minute: a version's rows taken in once every node alive runs it - and again taken
     as before it while a node of a version before is back (switched on, or joined, with one
     still there), until it runs it too (1.0.250)."""
-    if not dbguard_on() or not dbguard_key() or not DBGUARD_SINCE:
+    if not dbguard_on() or not dbguard_key():
+        return
+    dbguard_refused_tidy(store)
+    if not DBGUARD_SINCE:
         return
     older = _dbguard_older_nodes(store)
     behind = {ver for ver in DBGUARD_SINCE

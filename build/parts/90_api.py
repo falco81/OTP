@@ -574,7 +574,7 @@ def lockouts_view(d):
                     d.login_fails.pop(key, None)
                     d.login_info.pop(key, None)
                 continue
-            names = [n for n, ts in (info.get('names') or {}).items() if t - ts < span]
+            names = [n for n, ts in odict(info.get('names')).items() if t - ts < span]
             last = max(fails[-1] if fails else 0, fnum(info.get('blocked_at')))
             rows.append({
                 'kind': kind, 'who': who, 'by': 'place', 'what': LOCKOUT_KINDS.get(kind, kind),
@@ -1347,7 +1347,7 @@ def _columns(h):
         raise ApiError(409, 'switch on "Edit the columns" under your name first: the columns '
                        'are not being edited from this sign-in')
     try:
-        kept = h.store.put_user_cols(s['name'], {} if reset else (b.get('cols') or {}))
+        kept = h.store.put_user_cols(s['name'], {} if reset else odict(b.get('cols')))
     except ValueError as e:
         raise ApiError(400, str(e))
     if reset:
@@ -3681,7 +3681,7 @@ def _isemon(h):
     for n in sorted(set(nodes) | {node_name()}):
         row = _meta_json(h.store, 'host:health:' + n) or {}
         st = (h.d.shipper.state() if h.d.shipper else {}) if n == node_name() else \
-            (row.get('isemon') or {})
+            odict(row.get('isemon'))
         out.append(dict(st, node=n, me=n == node_name(),
                         at=time.time() if n == node_name() else row.get('at')))
     return {'nodes': out, 'on': bool(CONFIG.get('isemon')),
@@ -4286,7 +4286,7 @@ def _db_do(h):
                             'set up from here - the other node uses that account too')
     try:
         if act in ('try', 'setup', 'empty', 'move', 'use'):
-            c = engine_asked(b.get('settings') or {})
+            c = engine_asked(odict(b.get('settings')))
             words = ENGINE_WORDS.get(c['db_engine'])
             if act == 'try':
                 got = db_try(c)
@@ -4618,7 +4618,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             raise ApiError(400, '%s is not an object' % part)
     # Every setting checked before anything is saved (1.0.217), as the clients and realms
     # are: a value that was refused stopped the import after the clients were in.
-    for k, v in (conf.get('settings') or {}).items():
+    for k, v in odict(conf.get('settings')).items():
         base = str(k).partition('@')[0]
         if base not in DEFAULTS or base in FILE_ONLY_KEYS:
             continue
@@ -4898,7 +4898,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 want = conf['art']                      # a file from 1.0.71
                 if 'admin' not in logos_in and 'portal' in logos_in:
                     logo_set(store, 'admin', logos_in['portal'], by,
-                             str((conf.get('logo') or {}).get('name') or ''))
+                             str(odict(conf.get('logo')).get('name') or ''))
             if isinstance(want, dict) and want.get('art') in ART_NAMES:
                 try:
                     art_set(store, slot, want['art'])
@@ -4942,7 +4942,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                         store.drop_account(a['name'])
                         said['accounts taken away'] += 1
             if 'settings' in conf:
-                have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
+                have = set(str(k) for k in odict(conf.get('settings'))) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
                     if base in keep_dir_keys:
@@ -4991,7 +4991,7 @@ def portal_me(h, gate_ok=False):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(403, 'enrolling a token here is switched off')
     # Signed in by the balancer, and that switched off meanwhile (1.0.239): it ends.
-    if (s.get('data') or {}).get('sso') and not CONFIG.get('portal_sso'):
+    if odict(s.get('data')).get('sso') and not CONFIG.get('portal_sso'):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(401, 'sign in again')
     # The one-time code before the first token (1.0.228): until it is typed, the sign-in may
@@ -5001,7 +5001,7 @@ def portal_me(h, gate_ok=False):
     # Asked again on every step, not only at the sign-in (1.0.234): signed in while a token was in
     # use, a sign-in kept open went on to enrol a new one - the code never asked - once that
     # token was taken away or made again.
-    if not gate_ok and not (s.get('data') or {}).get('gate_ok') and \
+    if not gate_ok and not odict(s.get('data')).get('gate_ok') and \
             portal_gate_needed(h.store, s['name']):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(401, 'sign in again: a code is sent to you first')
@@ -5010,7 +5010,7 @@ def portal_me(h, gate_ok=False):
 
 def portal_gated(s):
     """Whether this enrolment sign-in still waits for its one-time code (1.0.228)."""
-    return bool((s.get('data') or {}).get('gate_wait'))
+    return bool(odict(s.get('data')).get('gate_wait'))
 
 
 def portal_gate_needed(store, tname):
@@ -5522,7 +5522,7 @@ def portal_may_replace(h, s):
     """Whether this session proved the token there is now - not one an administrator put in
     its place meanwhile (1.0.224: a phone stolen, the token made again by an administrator,
     and the old session went on and replaced it with its own key)."""
-    mark = (s.get('data') or {}).get('may_replace')
+    mark = odict(s.get('data')).get('may_replace')
     if not mark:
         return False
     if mark is True or mark != portal_token_mark(h.store.token(s['name'])):
@@ -5662,7 +5662,7 @@ def portal_state(h, s):
     ver = data.get('verify') or {}
     if ver and fnum(ver.get('exp')) < time.time():
         ver = {}
-    about = dict(data.get('about') or {})
+    about = dict(odict(data.get('about')))
     about.update(login=data.get('login') or '', realm=data.get('realm') or '',
                  mail=data.get('mail') or '', mobile=data.get('mobile') or '')
     return {'name': s['name'], 'display': data.get('display') or '',
@@ -5750,12 +5750,12 @@ def _portal_gate_again(h):
     s = portal_me(h, gate_ok=True)
     if not portal_gated(s):
         return {'me': portal_state(h, s)}
-    w = (s.get('data') or {}).get('gate_wait') or {}
+    w = odict(s.get('data')).get('gate_wait') or {}
     if w.get('kind') not in code_channels():
         raise ApiError(503, 'the code cannot be sent just now - ask the administrator')
-    lang = str(h.body().get('lang') or '') or ((s.get('data') or {}).get('gate') or {}).get('lang') or ''
+    lang = str(h.body().get('lang') or '') or (odict(s.get('data')).get('gate') or {}).get('lang') or ''
     gate = portal_gate_send(h, s['name'], w['kind'], w['dest'],
-                            display=(s.get('data') or {}).get('display') or '', lang=lang)
+                            display=odict(s.get('data')).get('display') or '', lang=lang)
     portal_data_set(h, s, gate=gate)
     return {'gate': portal_gate_view(s)}
 
@@ -5777,7 +5777,7 @@ def portal_data_set(h, s, **changes):
     given, over what the database holds now (1.0.101)."""
     data = h.store.session_merge(s['id'], changes)
     if data is None:
-        data = dict(s.get('data') or {})
+        data = dict(odict(s.get('data')))
         for k, v in changes.items():
             if v is None:
                 data.pop(k, None)
@@ -5807,7 +5807,7 @@ def _portal_enroll(h):
         if tok and tok.get('state') != 'pending' and not may_replace:
             raise ApiError(409, 'there is a token already; it can be replaced with a code '
                                 'from it')
-        ver_was = (s.get('data') or {}).get('verify') or {}
+        ver_was = odict(s.get('data')).get('verify') or {}
         if b.get('again') and not b.get('dest') and ver_was.get('kind') == kind:
             # Sent again to where the check in this session goes (1.0.98):
             # the page reloaded meanwhile knows only that it is masked.
@@ -5875,7 +5875,7 @@ def _portal_enroll(h):
             raise ApiError(409, 'there is a token already; it can be replaced with a code '
                                 'from it')
         got = h.d.tokens.enroll(s['name'], 'self', pending=confirm,
-                                display=(s.get('data') or {}).get('display') or '')
+                                display=odict(s.get('data')).get('display') or '')
         if str(b.get('lang') or '') in ('cs', 'en'):       # its second window's language (1.0.82)
             h.store.token_write(s['name'], {'lang': str(b.get('lang'))})
     h.store.add_event('enrolment', '%s enrolled a token for themselves%s' % (
@@ -5989,7 +5989,7 @@ def _portal_codes(h):
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=30,
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
     code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
-    old = (s.get('data') or {}).get('old') or {}
+    old = odict(s.get('data')).get('old') or {}
     if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'
@@ -6039,11 +6039,11 @@ def _portal_reissue(h):
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=30,
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5),
                      what='wrong passwords or codes')
-    realm = h.store.realm_for((s.get('data') or {}).get('login') or s['name'])
+    realm = h.store.realm_for(odict(s.get('data')).get('login') or s['name'])
     ad = h.d.auth.directory(realm['directory']) if realm else None
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
-    if (s.get('data') or {}).get('sso') and CONFIG.get('portal_sso'):
+    if odict(s.get('data')).get('sso') and CONFIG.get('portal_sso'):
         # Signed in by the balancer (1.0.239): it asked the password - the code of the old
         # token below is still asked.
         pass
@@ -6057,11 +6057,11 @@ def _portal_reissue(h):
 
 def portal_reissue_password(h, s, realm, b, key):
     ad = h.d.auth.directory(realm['directory'])
-    held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'],
+    held = dir_pw_take(h, odict(s.get('data')).get('login') or s['name'],
                        (realm or {}).get('directory') or '',
-                       {'dn': (s.get('data') or {}).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
+                       {'dn': odict(s.get('data')).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
     try:
-        ad.password_ok({'dn': (s.get('data') or {}).get('dn')}, str(b.get('password') or ''))
+        ad.password_ok({'dn': odict(s.get('data')).get('dn')}, str(b.get('password') or ''))
     except LdapUnreachable as e:
         dir_pw_done(h, held, False)
         log('the enrolment pages could not reach the directory: %s' % e, 'warn')
@@ -6077,13 +6077,13 @@ def portal_reissue_password(h, s, realm, b, key):
 
 def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
-    old = (s.get('data') or {}).get('old') or {}
+    old = odict(s.get('data')).get('old') or {}
     if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'               # 1.0.76
         if not h.store.session_take(s['id'], 'old'):         # once (1.0.101)
             ok, said = False, SAY_REUSED
-        s['data'] = dict(s.get('data') or {})
+        s['data'] = dict(odict(s.get('data')))
         s['data'].pop('old', None)
     else:
         ok, said, _f = h.d.tokens.check(s['name'], code, how='portal', src=h.client_ip())
@@ -6109,7 +6109,7 @@ def portal_reissue_rest(h, s, b, key):
 @route('POST', '/api/portal/cancel')
 def _portal_cancel(h):
     s = portal_me(h)
-    if (s.get('data') or {}).get('verify') or (s.get('data') or {}).get('may_replace'):
+    if odict(s.get('data')).get('verify') or odict(s.get('data')).get('may_replace'):
         # An address being checked, or a new way being chosen (1.0.76): given
         # up, and the token there is (if any) stays as it is.
         portal_data_set(h, s, verify=None, may_replace=None, old=None)
@@ -6535,7 +6535,7 @@ def _ha_do(h):
         except ValueError as e:
             raise ApiError(400, str(e))
         h.store.add_event('settings', '%s joined this node to the cluster of %s; it starts '
-                          'again on %s' % (s['name'], (data.get('peer') or {}).get('name', '?'),
+                          'again on %s' % (s['name'], odict(data.get('peer')).get('name', '?'),
                                            got['where']), 'warn', who=s['name'])
         log('joining the cluster: starting again on %s' % got['where'], 'warn')
         threading.Timer(1.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
@@ -6602,13 +6602,13 @@ def _web(h):
     for n in ha_nodes(store):
         one = {k: n.get(k) for k in ('name', 'me', 'alive', 'address', 'version', 'maintenance',
                                      'age', 'host')}
-        one['web'] = web_unmapped(web_state(store) if n['me'] else (n.get('web') or {}), me)
+        one['web'] = web_unmapped(web_state(store) if n['me'] else odict(n.get('web')), me)
         nodes.append(one)
     if not any(x['me'] for x in nodes):
         nodes.insert(0, {'name': node_name(), 'me': True, 'alive': True,
                          'address': node_address(), 'web': web_unmapped(web_state(store), me)})
     v = vip_conf(store)
-    holder = [x['name'] for x in nodes if (x.get('web') or {}).get('vip_here')]
+    holder = [x['name'] for x in nodes if odict(x.get('web')).get('vip_here')]
     return {'node': node_name(), 'cluster': bool(CONFIG.get('ha_mode')), 'nodes': nodes,
             'vip': dict(v, prefer_now=vip_prefer(store, v) if CONFIG.get('ha_mode') else '',
                         holder=holder),
@@ -6749,7 +6749,7 @@ def _web_do(h):
                                       which)
         except ValueError as e:
             raise ApiError(400, str(e))
-        name = (re.sub(r'[^A-Za-z0-9._-]', '_', (prof.get('info') or {}).get('cn') or '') or
+        name = (re.sub(r'[^A-Za-z0-9._-]', '_', odict(prof.get('info')).get('cn') or '') or
                 ('web-address' if target == 'vip' else target)) + \
             {'rsa': '', 'ec': '-ecdsa', 'both': '-rsa-ecdsa'}[which] + ending
         words = words + {'rsa': '', 'ec': ' (the second, ECDSA one)',
@@ -6874,8 +6874,8 @@ def _firewall(h):
                 FW_WAIT.release()
     nodes = []
     for n in ha_nodes(store):
-        w = web_state(store) if n['me'] else (n.get('web') or {})
-        fwv = dict(w.get('fw') or {})
+        w = web_state(store) if n['me'] else odict(n.get('web'))
+        fwv = dict(odict(w.get('fw')))
         if not n['me']:
             try:
                 fwv.update(json_obj(store.get_meta('fw:now:' + n['name'])) or {})

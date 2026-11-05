@@ -518,7 +518,7 @@ def _osusers_do(h):
         raise ApiError(400, 'nodes is a list')
     if act == 'policy':
         try:
-            c = pwp_checked_api(b.get('policy') or {})
+            c = pwp_checked_api(odict(b.get('policy')))
         except ValueError as e:
             raise ApiError(400, str(e))
         h.store.set_meta('host:pwpolicy:conf', json.dumps(dict(c, at=time.time(), by=s['name'])))

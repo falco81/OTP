@@ -233,7 +233,7 @@ class Console(object):
         vip = got.get('vip') or {}
         if not isinstance(vip, dict) or not vip.get('address'):
             return None
-        holders = [n for n, v in sorted((got.get('nodes') or {}).items())
+        holders = [n for n, v in sorted(odict(got.get('nodes')).items())
                    if isinstance(v, dict) and (v.get('vip_here') or v.get('role') == 'MASTER')]
         return {'address': str(vip['address']).split('/')[0], 'on': bool(vip.get('on')),
                 'holders': holders}
@@ -309,7 +309,7 @@ class Console(object):
             else:
                 bits.append('VIP %s on NO node' % vip['address'])
                 vip_bad = True
-        tok = (st.get('tokens') or {}).get('active')
+        tok = odict(st.get('tokens')).get('active')
         if tok is not None:
             bits.append('%s tokens' % tok)
         # Too long for the bar: the tokens give way, then the words get
@@ -332,9 +332,9 @@ class Console(object):
                 vip['address'], ', '.join(vip['holders']) if vip['holders'] else 'no node'),
                 A['bad'])
             y += 1
-        if ((st.get('maintenance') or {}).get('on') if isinstance(st.get('maintenance'), dict)
+        if (odict(st.get('maintenance')).get('on') if isinstance(st.get('maintenance'), dict)
                 else st.get('maintenance') is True):
-            why = (st.get('maintenance') or {}).get('why') or ''
+            why = odict(st.get('maintenance')).get('why') or ''
             self._put(y, 1, 'THIS NODE IS IN MAINTENANCE - it answers no RADIUS request%s' % (
                 (' (%s)' % why) if why else ''), A['warn'])
             y += 1
@@ -1253,7 +1253,7 @@ class Console(object):
                 ('state', lambda u: 'off' if u.get('disabled') else 'on', 5,
                  lambda u: 'dim' if u.get('disabled') else 'ok'),
                 ('from', lambda u: u.get('source') or 'local', 9, None),
-                ('second step', lambda u: (u.get('mfa') or {}).get('kind') or '-'
+                ('second step', lambda u: odict(u.get('mfa')).get('kind') or '-'
                  if isinstance(u.get('mfa'), dict) else (u.get('mfa') or '-'), 11, None),
                 ('last in', lambda u: self._when(u.get('last_in')), 16, None),
                 ('note', lambda u: u.get('note') or '', 40, lambda u: 'dim')]

@@ -254,7 +254,7 @@ def split_arbiter_check(targets=None):
 @node_ask_kind('split_arbiter')
 def _ask_split_arbiter(daemon, args):
     """Try it on the card: each node asks its own arbiter, as written in the form."""
-    mine = (args.get('targets') or {}).get(node_name())
+    mine = odict(args.get('targets')).get(node_name())
     try:
         targets = split_targets(mine if mine is not None else None) if mine is not None else \
             split_targets()

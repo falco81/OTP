@@ -116,7 +116,7 @@ def net_current_ip(now):
     for a in conf.get('ipv4_addresses') or []:
         return str(a)
     dev = d.get('dev')
-    for a in (d.get('live') or {}).get('addrs4') or []:
+    for a in odict(d.get('live')).get('addrs4') or []:
         if not dev or a.get('dev') == dev:
             return str(a.get('addr') or '')
     return ''
@@ -508,7 +508,7 @@ def net_job_run(daemon, ask):
         rb = str(CONFIG.get('radius_bind') or '0.0.0.0')
         if undo:
             # Back to the values it had, as they were.
-            changes = {k: v for k, v in (undo.get('settings') or {}).items()
+            changes = {k: v for k, v in odict(undo.get('settings')).items()
                        if str(CONFIG.get(k) or '') != str(v or '')}
         elif w['ip_changed'] and rb == w['old_ip']:
             changes['radius_bind'] = w['new_ip']
@@ -526,7 +526,7 @@ def net_job_run(daemon, ask):
             _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
                 '%s = %s' % kv for kv in sorted(changes.items())), 35)
         if undo:
-            files = {k: v for k, v in (undo.get('file') or {}).items()
+            files = {k: v for k, v in odict(undo.get('file')).items()
                      if str(FILE_CONFIG.get(k) or '') != str(v or '')}
             if files:
                 write_file_settings(files)

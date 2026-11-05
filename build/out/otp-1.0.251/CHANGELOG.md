@@ -4,6 +4,26 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.251 — 5 November 2026
+
+- **Settings → Local users → Password policy**: every setting has an (i) - what it does, which
+  file or PAM module holds it, its name on the command line (`otp --local-policy-set KEY=…`) and
+  its built-in default; on the switches too, a click on the (i) does not switch them. English and
+  Czech.
+- **A cluster upgraded one node at a time, with the database guard on**: a node of a version before
+  counts while it was heard from within a day, not only while it is alive - one restarting, or put
+  back after an upgrade that failed, had the new version's rows taken in meanwhile, and what it
+  wrote once back was refused for ever. Switching the guard on asks the same.
+- **Asks for nodes no longer of the cluster** (local users, SSH keys, OS updates, Back up now):
+  each node takes away its own asks for a node missing from the list for an hour - the asks of the
+  local users held sealed hashes of passwords, kept in the database for ever.
+- **The guard's list of refused rows**: a row of meta (an ask, a job) refused and taken away since
+  is no longer listed - it stayed lit until the next start. A setting, an account or a directory
+  taken away stays listed: that is itself what the guard is there for.
+- **Values inside a row of another shape** (a string or a list where an object belongs - a key a
+  version before kept as another type): read as nothing in every place (106) instead of raising
+  at `.get()`.
+
 ## 1.0.250 — 5 November 2026
 
 - **A cluster upgraded one node at a time, with the database guard on**: the rows signed only since a

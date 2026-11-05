@@ -886,7 +886,7 @@ def entry_unusable(entry, locked=True):
 
 def computer_account(r):
     """Whether a search result is a computer's account (1.0.101)."""
-    a = {k.lower(): v for k, v in (r.get('attrs') or {}).items()}
+    a = {k.lower(): v for k, v in odict(r.get('attrs')).items()}
     if any(str(x).lower() == 'computer' for x in a.get('objectclass') or []):
         return True
     return str((a.get('samaccountname') or [''])[0]).endswith('$')

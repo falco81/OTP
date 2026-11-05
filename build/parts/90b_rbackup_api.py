@@ -80,7 +80,7 @@ def _rbackup_do(h):
     try:
         if act == 'save':
             t = rb_save(h.store, dict(b.get('target') or {}, id=b.get('id') or
-                                      (b.get('target') or {}).get('id')), by)
+                                      odict(b.get('target')).get('id')), by)
             return {'message': 'saved', 'target': rb_view(t)}
         if act == 'delete':
             rb_delete(h.store, b.get('id'), by)

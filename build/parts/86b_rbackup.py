@@ -1484,13 +1484,61 @@ def rb_now_tidy(store):
             at = 0.0
         if time.time() - at <= RB_NOW_LIVE_S:
             continue
-        if dbguard_meta_signed(k):
-            with store.db.transaction():
-                if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
-                    dbguard_sign(store.db, 'm', k, None)
-                    n += 1
-        elif store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
-            n += 1
+        n += meta_drop_seen(store, k, r['v'])
+    return n
+
+
+def meta_drop_seen(store, k, v):
+    """A row of meta taken away only as it was read - a new one written meanwhile is left; one
+    signed has its taking away signed too. 1 once gone."""
+    if dbguard_meta_signed(k):
+        with store.db.transaction():
+            if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, v)):
+                dbguard_sign(store.db, 'm', k, None)
+                return 1
+        return 0
+    return 1 if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, v)) else 0
+
+
+# The asks one node writes for another, one row a pair: 'PREFIX:TARGET@@ASKER' (1.0.251).
+NODE_ASK_PREFIXES = ('host:users:want', 'host:sshkeys:want', 'host:osup:checkwant', 'rbackup:now')
+NODE_ASK_GONE = {}
+NODE_ASK_GONE_S = 3600
+
+
+def node_asks_of_gone_tidy(store):
+    """This node's own asks of nodes no longer of the cluster, taken away (1.0.251): a node taken
+    out, or renamed, never picked them up - and the asks of the local users held sealed hashes
+    of passwords, kept in the database for ever. Only once the node has been missing from the
+    list for an hour (a heartbeat of another shape, a list read amiss, is not the node gone)."""
+    try:
+        here = {norm_name(x) for x in host_nodes(store)}
+    except Exception:                                   # noqa: BLE001
+        return 0
+    if not here or norm_name(node_name()) not in here:
+        return 0
+    mine = NODE_KEY_SEP + node_name()
+    now = time.monotonic()
+    n = 0
+    seen = set()
+    for prefix in NODE_ASK_PREFIXES:
+        for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?", (prefix + ':%',)):
+            k = str(r['k'])
+            if not k.endswith(mine) or NODE_KEY_SEP not in k[len(prefix) + 1:]:
+                continue
+            if node_key_name(prefix, k) in here:
+                NODE_ASK_GONE.pop(k, None)
+                continue
+            seen.add(k)
+            first = NODE_ASK_GONE.setdefault(k, now)
+            if now - first >= NODE_ASK_GONE_S and meta_drop_seen(store, k, r['v']):
+                NODE_ASK_GONE.pop(k, None)
+                n += 1
+    for k in list(NODE_ASK_GONE):
+        if k not in seen:
+            NODE_ASK_GONE.pop(k, None)
+    if n:
+        log('%d ask(s) of this node for nodes no longer of the cluster taken away' % n)
     return n
 
 
@@ -1509,6 +1557,13 @@ def rb_tick(daemon):
                 rb_now_tidy(store)
             except Exception as e:                      # noqa: BLE001
                 log_sparing('rb-now-tidy', 'old asks to back up now: %s' % e, 'warn', 3600)
+    if time.time() - float(getattr(daemon, '_asks_gone_tidy', 0)) > 600:
+        daemon._asks_gone_tidy = time.time()
+        try:
+            node_asks_of_gone_tidy(store)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('asks-gone-tidy', 'asks for nodes no longer of the cluster: %s'
+                        % e, 'warn', 3600)
     if not RB_JOB['running'] and rb_verify_due(store) and \
             time.time() - float(getattr(daemon, '_rb_verify_at', 0)) > 3600:
         daemon._rb_verify_at = time.time()          # once an hour at most, if it fails to start
@@ -1596,7 +1651,7 @@ def rb_open(path, password, work):
             m = json.load(f)
     except (OSError, ValueError):
         raise RbError('there is no manifest in it')
-    for rel, want in (m.get('files') or {}).items():
+    for rel, want in odict(m.get('files')).items():
         p = os.path.join(top, *rel.split('/'))
         h = hashlib.sha256()
         try:

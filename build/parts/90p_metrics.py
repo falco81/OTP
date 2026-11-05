@@ -58,7 +58,7 @@ def metrics_text(daemon):
           [({}, 1 if r.get('listening') else 0)])
     m.put('otp_radius_requests_total', 'counter',
           'RADIUS packets since the daemon started, by what became of them.',
-          [({'kind': k}, v) for k, v in sorted((r.get('counts') or {}).items())])
+          [({'kind': k}, v) for k, v in sorted(odict(r.get('counts')).items())])
     m.put('otp_radius_queued', 'gauge', 'RADIUS requests waiting for a worker.',
           [({}, r.get('queued') or 0)])
     if not db_ok:
@@ -135,10 +135,10 @@ def metrics_text(daemon):
         if not st.get('on'):
             continue
         m.put('otp_%s_sent_total' % what, 'counter', 'Lines sent since the daemon started.',
-              [({'target': k}, v) for k, v in sorted((st.get('sent') or {}).items())] or
+              [({'target': k}, v) for k, v in sorted(odict(st.get('sent')).items())] or
               [({'target': t}, 0) for t in st.get('targets') or []])
         m.put('otp_%s_trouble' % what, 'gauge', 'Whether a target is in trouble now.',
-              [({'target': t}, 1 if t in (st.get('trouble') or {}) else 0)
+              [({'target': t}, 1 if t in odict(st.get('trouble')) else 0)
                for t in st.get('targets') or []])
         m.put('otp_%s_dropped_total' % what, 'counter', 'Lines dropped, the queue full.',
               [({}, st.get('dropped') or 0)])

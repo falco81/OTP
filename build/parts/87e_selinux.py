@@ -30,7 +30,7 @@ def selinux_want(store):
         pass
     try:
         now = _meta_json(store, 'host:sshd:now:' + node_name()) or {}
-        sp = int((now.get('values') or {}).get('port') or 22)
+        sp = int(odict(now.get('values')).get('port') or 22)
         if sp != 22:
             ports.append({'port': sp, 'proto': 'tcp', 'type': 'ssh_port_t',
                           'why': 'the SSH server listens on it'})
@@ -141,7 +141,7 @@ def selinux_tick(daemon):
     def go():
         try:
             err = ''
-            data = (now.get('data') or {}) if do != 'check' else {}
+            data = odict(now.get('data')) if do != 'check' else {}
             said = []
             try:
                 data = root_ask('selinux.ask', 'selinux.json',
@@ -169,7 +169,7 @@ def selinux_tick(daemon):
                     except OSError:
                         pass
                 store.set_meta('host:selinux:report:' + me, json.dumps(rep))
-                data = (now.get('data') or {})
+                data = odict(now.get('data'))
             if do not in ('check', 'report'):
                 store.add_event('settings', 'SELinux on %s: %s' % (
                     me, err or '; '.join(said) or 'done'), 'bad' if err else 'warn')

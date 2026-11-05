@@ -92,7 +92,7 @@ def rb_verify_file(path, password, work, made_here=True):
               False, str(e))
         return checks, {}
     check('opened with the password of the backups, every file as its manifest says', True,
-          '%d file(s)' % len(m.get('files') or {}))
+          '%d file(s)' % len(odict(m.get('files'))))
     key = None
     try:
         key = bytes.fromhex(open(os.path.join(top, 'secrets.key')).read().strip())

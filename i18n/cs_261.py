@@ -34,4 +34,9 @@ S261 = {
   'Špatná hesla se počítají v rámci tolika sekund (pam_faillock: fail_interval) – starší se do zámku nepočítají.',
  'otp --local-policy-set': 'otp --local-policy-set',
 }
-P261 = {}
+P261 = {
+ '{0} ask(s) of this node for nodes no longer of the cluster taken away':
+  'odebráno {0} žádostí tohoto uzlu pro uzly, které už nejsou v clusteru',
+ 'asks for nodes no longer of the cluster: {0}':
+  'žádosti pro uzly, které už nejsou v clusteru: {0}',
+}

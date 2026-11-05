@@ -129,7 +129,7 @@ def heartbeat(store, daemon=None):
         # The whole firewall goes in a row of its own, when it changed
         # (1.0.67) - not into a heartbeat written every 15 s.
         for k in ('full', 'full_at', 'full_backend'):
-            (beat['web'].get('fw') or {}).pop(k, None)
+            odict(beat['web'].get('fw')).pop(k, None)
         fw_now_publish(store)
     except Exception:                                   # noqa: BLE001
         pass
@@ -758,7 +758,7 @@ def ha_join(data, name='', even_if_data=False, by=''):
     # firewall, nothing asked of the other. The other node's address with it.
     if not CONFIG.get('ha_mode'):
         changes['ha_mode'] = 'shared'
-        peer = str((data.get('peer') or {}).get('address') or '').strip()
+        peer = str(odict(data.get('peer')).get('address') or '').strip()
         if peer:
             changes['ha_peer'] = peer
             ha_joining_set([peer], by or 'join', 'the node this one joined')

@@ -140,7 +140,7 @@ def _mfa_done(h, s, how):
     """The second step given: a sign-in of its own from here on (1.0.149) - the
     one the password alone opened is ended, not made whole: whoever had seen
     its cookie had the pages once the code was given."""
-    data = {k: v for k, v in (s.get('data') or {}).items()
+    data = {k: v for k, v in odict(s.get('data')).items()
             if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent')}
     hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
@@ -155,7 +155,7 @@ def _mfa(h):
     s, acc = _mfa_session(h)
     stage = mfa_pending(s)
     rec = mfa_get(h.store, s['name']) or {}
-    new = (s.get('data') or {}).get('mfa_new') or {}
+    new = odict(s.get('data')).get('mfa_new') or {}
     return {'name': acc['name'], 'display': acc.get('display') or '', 'stage': stage,
             'methods': mfa_methods(), 'kind': rec.get('kind') if stage == 'check' else '',
             'dest': dest_masked(rec.get('kind'), rec.get('dest')) if stage == 'check' else '',

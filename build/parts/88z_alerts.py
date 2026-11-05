@@ -97,7 +97,7 @@ def health_publish(daemon):
     row['name_clash'] = str(said(name_clash_words) or '')[:300]
     row['ntp_problem'] = str(said(ntp_problem) or '')[:300]
     if dbguard_on():
-        refused = sorted((DBGUARD.get('refused') or {}).values(), key=lambda r: -fnum(r.get('at')))
+        refused = sorted(odict(DBGUARD.get('refused')).values(), key=lambda r: -fnum(r.get('at')))
         row['dbguard_refused'] = [{'what': r.get('what'), 'why': r.get('why'), 'at': r.get('at')}
                                   for r in refused if now - fnum(r.get('at')) < 3600][:5]
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -343,7 +343,7 @@ def alert_problems(store, lang='en'):
             vc = {}
         if vc.get('on') and vc.get('address'):
             up = {n: b for n, b in beats.items() if b.get('alive', True) or b.get('me')}
-            webs = {n: (b.get('web') or {}) for n, b in up.items()}
+            webs = {n: odict(b.get('web')) for n, b in up.items()}
             holders = sorted(n for n, w in webs.items() if w.get('vip_here'))
             addr = str(vc.get('address')).split('/')[0]
             if up and not holders:
@@ -359,7 +359,7 @@ def alert_problems(store, lang='en'):
                         'either.') % ', '.join(holders), 'ha')
             for n, w in sorted(webs.items()):
                 role = str(w.get('role') or '')
-                why = str((w.get('health') or {}).get('why') or '')
+                why = str(odict(w.get('health')).get('why') or '')
                 if role == 'FAULT':
                     add('vip:fault:' + n, 'warn', n,
                         _al(lang, '%s nemůže držet VIP adresu' % n, '%s cannot hold the VIP address' % n),
@@ -540,7 +540,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                     add('ship:%s:%s' % (what, n), 'warn', n,
                         _al(lang, 'Logy z %s nedochází do %s' % (n, words),
                             'The logs of %s do not reach %s' % (n, words)),
-                        '; '.join('%s: %s' % kv for kv in sorted((st.get('trouble') or {}).items()))[:300]
+                        '; '.join('%s: %s' % kv for kv in sorted(odict(st.get('trouble')).items()))[:300]
                         + (_al(lang, ' (zahozeno %d řádků)', ' (%d lines dropped)') % int(st['dropped'])
                            if int(st.get('dropped') or 0) else ''), 'siem' if what == 'siem' else 'isemon')
     # The SNMP agent.

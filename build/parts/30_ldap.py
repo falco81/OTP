@@ -337,11 +337,11 @@ def ldap_entry_words(entries, most=6, wide=400):
     out = []
     for one in list(entries)[:max(1, int(most))]:
         said = []
-        for name in sorted((one.get('attrs') or {})):
+        for name in sorted(odict(one.get('attrs'))):
             if name.lower() in LDAP_NEVER_LOG:
                 said.append('%s=(not logged)' % name)
                 continue
-            values = (one.get('attrs') or {}).get(name) or []
+            values = odict(one.get('attrs')).get(name) or []
             said.append('%s=%s' % (name, '|'.join(str(v) for v in values)))
         line = one.get('dn') or '(no dn)'
         if said:

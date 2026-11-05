@@ -137,7 +137,7 @@ def online_look(store, by=''):
         row['newer'] = bool(newest and _ver_tuple(newest['version']) > _ver_tuple(__version__))
         if row['newer']:
             was = _meta_json(store, 'upgrade:online') or {}
-            if ((was.get('newest') or {}).get('version') != newest['version']):
+            if (odict(was.get('newest')).get('version') != newest['version']):
                 store.add_event('starting and stopping', 'otp %s is out (%s) - Settings → '
                                 'Upgrades' % (newest['version'], url), 'info')
     except Exception as e:                              # noqa: BLE001

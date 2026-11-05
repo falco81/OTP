@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.250'
+__version__ = '1.0.251'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2646,6 +2646,13 @@ def json_obj(text, kind=dict):
     return got if isinstance(got, kind) else None
 
 
+def odict(v):
+    """A value of a row's object read as an object - {} for anything else (1.0.251): `x or {}` let
+    a string or a list through (a key a version before kept as another type), and its .get() raised
+    before the row was written again."""
+    return v if isinstance(v, dict) else {}
+
+
 def fnum(x, default=0.0):
     """A number of a row: a time, a count - `default` for anything else (1.0.250)."""
     if isinstance(x, bool):
@@ -5174,11 +5181,11 @@ def ldap_entry_words(entries, most=6, wide=400):
     out = []
     for one in list(entries)[:max(1, int(most))]:
         said = []
-        for name in sorted((one.get('attrs') or {})):
+        for name in sorted(odict(one.get('attrs'))):
             if name.lower() in LDAP_NEVER_LOG:
                 said.append('%s=(not logged)' % name)
                 continue
-            values = (one.get('attrs') or {}).get(name) or []
+            values = odict(one.get('attrs')).get(name) or []
             said.append('%s=%s' % (name, '|'.join(str(v) for v in values)))
         line = one.get('dn') or '(no dn)'
         if said:
@@ -8901,6 +8908,8 @@ DBGUARD_SINCE = {
                              'acme_dns', 'acme_dns_url', 'acme_dns_key', 'acme_dns_user', 'acme_dns_server',
                              'acme_dns_token', 'acme_dns_tsig_alg', 'acme_dns_tsig_name', 'acme_dns_tsig_secret',
                              'acme_desec_token', 'acme_desec_domain')}}
+# How long a node not heard from is still counted as one of the cluster's (1.0.251).
+DBGUARD_PEER_DAY_S = 86400
 DBGUARD_FILE = STATE_DIR / 'guard.json'
 DBGUARD = {'seen': None, 'good': None, 'seen_h': None, 'dirty': 0.0, 'refused': {}, 'nodes': {},
            'adopted': [], 'behind': set(), 'lock': threading.Lock()}
@@ -8981,9 +8990,9 @@ def _dbguard_load():
                 got = json.loads(DBGUARD_FILE.read_text())
             except (OSError, ValueError):
                 got = {}
-            DBGUARD['seen'] = dict(got.get('seen') or {}) if isinstance(got, dict) else {}
-            DBGUARD['good'] = dict(got.get('good') or {}) if isinstance(got, dict) else {}
-            DBGUARD['seen_h'] = dict(got.get('seen_h') or {}) if isinstance(got, dict) else {}
+            DBGUARD['seen'] = dict(odict(got.get('seen'))) if isinstance(got, dict) else {}
+            DBGUARD['good'] = dict(odict(got.get('good'))) if isinstance(got, dict) else {}
+            DBGUARD['seen_h'] = dict(odict(got.get('seen_h'))) if isinstance(got, dict) else {}
             DBGUARD['adopted'] = list(got.get('adopted') or []) if isinstance(got, dict) else []
 
 
@@ -9322,14 +9331,18 @@ def dbguard_resign(store, why=''):
 
 
 def _dbguard_older_nodes(store):
-    """The other nodes alive, by the version their heartbeat - otp's, by its signature - says."""
+    """The other nodes, by the version their heartbeat - otp's, by its signature - says: every
+    one heard from within a day, not only those alive (1.0.251) - a node of a version before
+    restarting, or put back after an upgrade that failed, had no heartbeat of the last seconds;
+    the rows were taken in meanwhile, and what it wrote once back was refused for ever."""
     out = {}
     try:
         nodes = ha_nodes(store) if CONFIG.get('ha_mode') else []
     except Exception:                                   # noqa: BLE001
         nodes = []
     for n in nodes:
-        if n.get('me') or not n.get('alive') or not n.get('version'):
+        if n.get('me') or not n.get('version') or \
+                not (n.get('alive') or fnum(n.get('age'), 1e9) < DBGUARD_PEER_DAY_S):
             continue
         try:
             raw = store.db.value('SELECT v FROM meta WHERE k = ?', ('node:' + n['name'],))
@@ -9340,11 +9353,39 @@ def _dbguard_older_nodes(store):
     return out
 
 
+def dbguard_refused_tidy(store):
+    """Rows of meta refused and gone since, no longer listed as refused (1.0.251): taken away by
+    the node that wrote them, they stayed lit on the card until the next start. Only rows of
+    meta - an ask, a job: a setting, an account or a directory taken away is itself what the
+    guard is there for, the last good one is held and stays listed."""
+    with DBGUARD['lock']:
+        rows = [(sid, str(e.get('what') or '')) for sid, e in odict(DBGUARD.get('refused')).items()
+                if isinstance(e, dict) and e.get('kind') == 'm']
+    gone = []
+    for sid, k in rows:
+        if not k or len(k) >= 120:
+            continue                                    # its name cut short: not looked for
+        try:
+            there = store.db.value('SELECT 1 FROM meta WHERE k = ?', (k,))
+        except Exception:                               # noqa: BLE001
+            return 0
+        if there is None and sid == 'sig:m:%s:*' % _dbguard_hash(k):
+            gone.append(sid)
+    if gone:
+        with DBGUARD['lock']:
+            for sid in gone:
+                DBGUARD['refused'].pop(sid, None)
+    return len(gone)
+
+
 def dbguard_adopt_tick(store):
     """Once a minute: a version's rows taken in once every node alive runs it - and again taken
     as before it while a node of a version before is back (switched on, or joined, with one
     still there), until it runs it too (1.0.250)."""
-    if not dbguard_on() or not dbguard_key() or not DBGUARD_SINCE:
+    if not dbguard_on() or not dbguard_key():
+        return
+    dbguard_refused_tidy(store)
+    if not DBGUARD_SINCE:
         return
     older = _dbguard_older_nodes(store)
     behind = {ver for ver in DBGUARD_SINCE
@@ -10331,7 +10372,7 @@ def entry_unusable(entry, locked=True):
 
 def computer_account(r):
     """Whether a search result is a computer's account (1.0.101)."""
-    a = {k.lower(): v for k, v in (r.get('attrs') or {}).items()}
+    a = {k.lower(): v for k, v in odict(r.get('attrs')).items()}
     if any(str(x).lower() == 'computer' for x in a.get('objectclass') or []):
         return True
     return str((a.get('samaccountname') or [''])[0]).endswith('$')
@@ -15293,7 +15334,7 @@ def guard_count(daemon, src, name):
         # Kept to the limits set (1.0.139): tries up to 10000, names up to 1000.
         daemon.login_fails[key] = fails[-max(1000, tries):]
         info = daemon.login_info.setdefault(key, {'others': []})
-        names = {n: ts for n, ts in (info.get('names') or {}).items() if t - ts < span}
+        names = {n: ts for n, ts in odict(info.get('names')).items() if t - ts < span}
         if name:
             names[name] = t
             cap = max(500, nlimit)
@@ -16550,9 +16591,11 @@ class Daemon(object):
             if not dbguard_key():
                 raise BadSetting('db_guard: this node has no secrets.key to sign with')
             old = [n['name'] for n in ha_nodes(self.store)
-                   if not n.get('me') and n.get('alive') and
+                   if not n.get('me') and (n.get('alive') or fnum(n.get('age'), 1e9) < DBGUARD_PEER_DAY_S) and
                    _ver_tuple(n.get('version') or '0') < (1, 0, 231)]
             if old:
+                # Not only those alive (1.0.251): one restarting, back after a day at most, wrote
+                # unsigned what this node refused from then on.
                 raise BadSetting('db_guard: %s run an older version that does not sign what it '
                                  'writes - upgrade them first' % ', '.join(old))
             # The tokens' secrets sealed as otp seals them first (1.0.249): from now on one found
@@ -18320,7 +18363,7 @@ def tune_plan_for(store, typed, probe=True):
     last = out['last'] or {}
     mine = last.get('engine') == db.engine and not last.get('undone') \
         and last.get('where') == db.where()
-    put = (last.get('set') or {}) if mine else {}
+    put = odict(last.get('set')) if mine else {}
     rows = []
     for n, (v, why_, rs) in plan.items():
         same = tune_same(db.engine, now.get(n, ''), v)
@@ -19539,8 +19582,8 @@ def tune_state(store):
             pass
     elif db.engine == 'mariadb' and last and not last.get('undone') \
             and last.get('engine') == 'mariadb':
-        now = tune_current(db, list((last.get('set') or {}).keys()))
-        out['lost'] = [n for n, v in (last.get('set') or {}).items()
+        now = tune_current(db, list(odict(last.get('set')).keys()))
+        out['lost'] = [n for n, v in odict(last.get('set')).items()
                        if not tune_same('mariadb', now.get(n, ''), v)]
     return out
 # ---- a copy or a dump with the key that opens its tokens (1.0.123) -----------------
@@ -23167,13 +23210,61 @@ def rb_now_tidy(store):
             at = 0.0
         if time.time() - at <= RB_NOW_LIVE_S:
             continue
-        if dbguard_meta_signed(k):
-            with store.db.transaction():
-                if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
-                    dbguard_sign(store.db, 'm', k, None)
-                    n += 1
-        elif store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
-            n += 1
+        n += meta_drop_seen(store, k, r['v'])
+    return n
+
+
+def meta_drop_seen(store, k, v):
+    """A row of meta taken away only as it was read - a new one written meanwhile is left; one
+    signed has its taking away signed too. 1 once gone."""
+    if dbguard_meta_signed(k):
+        with store.db.transaction():
+            if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, v)):
+                dbguard_sign(store.db, 'm', k, None)
+                return 1
+        return 0
+    return 1 if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, v)) else 0
+
+
+# The asks one node writes for another, one row a pair: 'PREFIX:TARGET@@ASKER' (1.0.251).
+NODE_ASK_PREFIXES = ('host:users:want', 'host:sshkeys:want', 'host:osup:checkwant', 'rbackup:now')
+NODE_ASK_GONE = {}
+NODE_ASK_GONE_S = 3600
+
+
+def node_asks_of_gone_tidy(store):
+    """This node's own asks of nodes no longer of the cluster, taken away (1.0.251): a node taken
+    out, or renamed, never picked them up - and the asks of the local users held sealed hashes
+    of passwords, kept in the database for ever. Only once the node has been missing from the
+    list for an hour (a heartbeat of another shape, a list read amiss, is not the node gone)."""
+    try:
+        here = {norm_name(x) for x in host_nodes(store)}
+    except Exception:                                   # noqa: BLE001
+        return 0
+    if not here or norm_name(node_name()) not in here:
+        return 0
+    mine = NODE_KEY_SEP + node_name()
+    now = time.monotonic()
+    n = 0
+    seen = set()
+    for prefix in NODE_ASK_PREFIXES:
+        for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?", (prefix + ':%',)):
+            k = str(r['k'])
+            if not k.endswith(mine) or NODE_KEY_SEP not in k[len(prefix) + 1:]:
+                continue
+            if node_key_name(prefix, k) in here:
+                NODE_ASK_GONE.pop(k, None)
+                continue
+            seen.add(k)
+            first = NODE_ASK_GONE.setdefault(k, now)
+            if now - first >= NODE_ASK_GONE_S and meta_drop_seen(store, k, r['v']):
+                NODE_ASK_GONE.pop(k, None)
+                n += 1
+    for k in list(NODE_ASK_GONE):
+        if k not in seen:
+            NODE_ASK_GONE.pop(k, None)
+    if n:
+        log('%d ask(s) of this node for nodes no longer of the cluster taken away' % n)
     return n
 
 
@@ -23192,6 +23283,13 @@ def rb_tick(daemon):
                 rb_now_tidy(store)
             except Exception as e:                      # noqa: BLE001
                 log_sparing('rb-now-tidy', 'old asks to back up now: %s' % e, 'warn', 3600)
+    if time.time() - float(getattr(daemon, '_asks_gone_tidy', 0)) > 600:
+        daemon._asks_gone_tidy = time.time()
+        try:
+            node_asks_of_gone_tidy(store)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('asks-gone-tidy', 'asks for nodes no longer of the cluster: %s'
+                        % e, 'warn', 3600)
     if not RB_JOB['running'] and rb_verify_due(store) and \
             time.time() - float(getattr(daemon, '_rb_verify_at', 0)) > 3600:
         daemon._rb_verify_at = time.time()          # once an hour at most, if it fails to start
@@ -23279,7 +23377,7 @@ def rb_open(path, password, work):
             m = json.load(f)
     except (OSError, ValueError):
         raise RbError('there is no manifest in it')
-    for rel, want in (m.get('files') or {}).items():
+    for rel, want in odict(m.get('files')).items():
         p = os.path.join(top, *rel.split('/'))
         h = hashlib.sha256()
         try:
@@ -23488,7 +23586,7 @@ def rb_verify_file(path, password, work, made_here=True):
               False, str(e))
         return checks, {}
     check('opened with the password of the backups, every file as its manifest says', True,
-          '%d file(s)' % len(m.get('files') or {}))
+          '%d file(s)' % len(odict(m.get('files'))))
     key = None
     try:
         key = bytes.fromhex(open(os.path.join(top, 'secrets.key')).read().strip())
@@ -23806,7 +23904,7 @@ def heartbeat(store, daemon=None):
         # The whole firewall goes in a row of its own, when it changed
         # (1.0.67) - not into a heartbeat written every 15 s.
         for k in ('full', 'full_at', 'full_backend'):
-            (beat['web'].get('fw') or {}).pop(k, None)
+            odict(beat['web'].get('fw')).pop(k, None)
         fw_now_publish(store)
     except Exception:                                   # noqa: BLE001
         pass
@@ -24435,7 +24533,7 @@ def ha_join(data, name='', even_if_data=False, by=''):
     # firewall, nothing asked of the other. The other node's address with it.
     if not CONFIG.get('ha_mode'):
         changes['ha_mode'] = 'shared'
-        peer = str((data.get('peer') or {}).get('address') or '').strip()
+        peer = str(odict(data.get('peer')).get('address') or '').strip()
         if peer:
             changes['ha_peer'] = peer
             ha_joining_set([peer], by or 'join', 'the node this one joined')
@@ -26325,7 +26423,7 @@ def online_look(store, by=''):
         row['newer'] = bool(newest and _ver_tuple(newest['version']) > _ver_tuple(__version__))
         if row['newer']:
             was = _meta_json(store, 'upgrade:online') or {}
-            if ((was.get('newest') or {}).get('version') != newest['version']):
+            if (odict(was.get('newest')).get('version') != newest['version']):
                 store.add_event('starting and stopping', 'otp %s is out (%s) - Settings → '
                                 'Upgrades' % (newest['version'], url), 'info')
     except Exception as e:                              # noqa: BLE001
@@ -27720,7 +27818,7 @@ def vip_prefer(store, conf=None):
         if moving:
             return moving
         for n in ha_nodes(store):
-            w = web_state(store) if n['me'] else (n.get('web') or {})
+            w = web_state(store) if n['me'] else odict(n.get('web'))
             if w.get('vip_here'):
                 return n['name']
         return ''
@@ -28336,7 +28434,7 @@ def web_desired(store):
                'vrid': int(v.get('vrid') or 51), 'auth': vip_auth(),
                'own': vip_plain(CONFIG.get('ha_address') or node_address(), v.get('address')),
                'peer': vip_plain(CONFIG.get('ha_peer') or vip_peer_seen(store), v.get('address')),
-               'iface': (v.get('ifaces') or {}).get(me, '')}
+               'iface': odict(v.get('ifaces')).get(me, '')}
         last = vip_last(v.get('address'))
         if vip['own'] and vip['peer']:
             vip_last_keep(v.get('address'), vip['own'], vip['peer'])
@@ -28496,7 +28594,7 @@ def web_drift(desired):
     """Why the certificates nginx has are not the ones wanted - '' when they
     are, or when that cannot be told (a file not readable here)."""
     for target in ('node', 'vip'):
-        t = (desired.get('tls') or {}).get(target)
+        t = odict(desired.get('tls')).get(target)
         if not t or not t.get('cert'):
             continue
         path = NGINX_CERT_FILES[target]
@@ -28547,7 +28645,7 @@ def web_state(store):
             'at': st.get('at'), 'current': bool(st) and st.get('hash') == desired_hash,
             'waiting': (WEB_DIR / 'request.json').exists(),
             'progress': web_progress(),
-            'iface': (st.get('applied') or {}).get('iface') or '',
+            'iface': odict(st.get('applied')).get('iface') or '',
             'vip_here': vip_here(v.get('address')) if v.get('on') else False,
             'role': role, 'health': dict(VIP_HEALTH),
             'fw': dict(st.get('fw') or {}, **fw_now_read()), 'access': st.get('access') or {},
@@ -28788,7 +28886,7 @@ def vip_checked(b, store):
     if not 1 <= vrid <= 255:
         raise ValueError('the VRRP id is 1 to 255 - one no other VRRP on that network uses')
     ifaces = {}
-    for k, val in (b.get('ifaces') or {}).items():
+    for k, val in odict(b.get('ifaces')).items():
         val = str(val or '').strip()
         if val and not re.match(r'^[A-Za-z0-9_.:-]{1,15}\Z', val):
             raise ValueError('%r is not the name of a network interface' % val)
@@ -29800,7 +29898,7 @@ class Acme(object):
         # The profile asked for (1.0.196), where the CA offers it - tlsserver,
         # shortlived at Let's Encrypt; a CA without profiles is asked as before.
         prof = str(CONFIG.get('acme_profile') or '')
-        offered = (self.dir.get('meta') or {}).get('profiles') or {}
+        offered = odict(self.dir.get('meta')).get('profiles') or {}
         if prof and prof in offered:
             ask['profile'] = prof
         elif prof:
@@ -30212,7 +30310,7 @@ def acme_ari_refresh(store):
             w = a.renewal_info(cid)
             if not w:
                 continue
-            fp = (prof.get('info') or {}).get('fingerprint') or ''
+            fp = odict(prof.get('info')).get('fingerprint') or ''
             was = _meta_json(store, 'acme:ari:' + t) or {}
             pick = was.get('pick') if (was.get('start'), was.get('end'), was.get('cert')) == \
                 (w['start'], w['end'], fp) else None
@@ -32291,7 +32389,7 @@ def net_current_ip(now):
     for a in conf.get('ipv4_addresses') or []:
         return str(a)
     dev = d.get('dev')
-    for a in (d.get('live') or {}).get('addrs4') or []:
+    for a in odict(d.get('live')).get('addrs4') or []:
         if not dev or a.get('dev') == dev:
             return str(a.get('addr') or '')
     return ''
@@ -32683,7 +32781,7 @@ def net_job_run(daemon, ask):
         rb = str(CONFIG.get('radius_bind') or '0.0.0.0')
         if undo:
             # Back to the values it had, as they were.
-            changes = {k: v for k, v in (undo.get('settings') or {}).items()
+            changes = {k: v for k, v in odict(undo.get('settings')).items()
                        if str(CONFIG.get(k) or '') != str(v or '')}
         elif w['ip_changed'] and rb == w['old_ip']:
             changes['radius_bind'] = w['new_ip']
@@ -32701,7 +32799,7 @@ def net_job_run(daemon, ask):
             _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
                 '%s = %s' % kv for kv in sorted(changes.items())), 35)
         if undo:
-            files = {k: v for k, v in (undo.get('file') or {}).items()
+            files = {k: v for k, v in odict(undo.get('file')).items()
                      if str(FILE_CONFIG.get(k) or '') != str(v or '')}
             if files:
                 write_file_settings(files)
@@ -33372,7 +33470,7 @@ def net_trial_start(store, job, by):
                  n, node_name(), time.strftime('%H:%M', time.localtime(job['trial_until']))),
              99, state='trial')
     store.add_event('settings', 'the new network of %s is on trial: kept within %d min, or it '
-                    'goes back to %s' % (node_name(), n, (job.get('want') or {}).get('old_ip')),
+                    'goes back to %s' % (node_name(), n, odict(job.get('want')).get('old_ip')),
                     'warn', who=by)
 
 
@@ -33395,11 +33493,11 @@ def net_go_back(daemon, job, why):
     except Exception as e:                              # noqa: BLE001
         log('network: read before going back: %s' % e, 'warn')
     _job_put(store, job, 'not kept: %s - the old network (%s) comes back' % (
-        why, (back.get('ipv4') or {}).get('addr')), job.get('pct'), ok=False,
+        why, odict(back.get('ipv4')).get('addr')), job.get('pct'), ok=False,
         state='going back')
     # In the events too (1.0.242): mailed, as the firewall's and the SSH server's are.
     store.add_event('settings', '%s went back to the network it had before (%s): %s'
-                    % (me, (back.get('ipv4') or {}).get('addr') or '?', why), 'warn')
+                    % (me, odict(back.get('ipv4')).get('addr') or '?', why), 'warn')
 
     try:
         net_ask(store, me, back, 'otp (%s)' % why, rollback=True, maint=bool(job.get('maint')),
@@ -34096,7 +34194,7 @@ def sshkeys_tick(daemon):
                         except NameError:
                             pass
                     # A normal user's (1.0.240): kept apart, root's as they are; the last 30 read.
-                    of = dict(row.get('keys_of') or {})
+                    of = dict(odict(row.get('keys_of')))
                     mine = dict(of.get(user) or {})
                     mine.update(at=time.time(), error=err)
                     if got:
@@ -34742,7 +34840,7 @@ def sshd_view(store):
                       'now': now, 'keys': keys,
                       'state': ('failed' if now.get('failed') == c.get('hash') and c.get('hash')
                                 else 'back' if now.get('back_hash') == c.get('hash') and c.get('hash')
-                                else 'trial' if (now.get('trial') or {}).get('until')
+                                else 'trial' if odict(now.get('trial')).get('until')
                                 else 'done' if now.get('hash') == c.get('hash') or not c.get('hash')
                                 else 'waiting')})
     return {'conf': c, 'nodes': nodes, 'helper': WEB_DIR.is_dir(), 'sshotp': sshotp_all(store),
@@ -34757,8 +34855,8 @@ def sshd_ports_open(store):
     ports = {int(c.get('port') or 22) if c.get('manage') else 22}
     for n in host_nodes(store):
         now = sshd_now(store, n)
-        if (now.get('trial') or {}).get('until') or now.get('hash') != c.get('hash'):
-            for p in ((now.get('values') or {}).get('port'), now.get('before_port')):
+        if odict(now.get('trial')).get('until') or now.get('hash') != c.get('hash'):
+            for p in (odict(now.get('values')).get('port'), now.get('before_port')):
                 try:
                     if p:
                         ports.add(int(p))
@@ -34788,26 +34886,26 @@ def sshd_tick(daemon):
         todo.append(('apply', None))
     # Kept only where it was on trial when Keep was pressed (1.0.211): a node that
     # was away put the change in later and kept it at once - nobody had tried it there.
-    if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
+    if odict(now.get('trial')).get('until') and keep.get('hash') == now.get('hash') and \
             fnum(keep.get('at')) > fnum(now.get('kept_at')) and \
             fnum(keep.get('at')) > fnum(now.get('applied_at')):
         todo.append(('keep', None))
-    if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
+    if back.get('id') and back['id'] != now.get('back_id') and odict(now.get('trial')).get('until'):
         todo.append(('back', back))
     # pam_radius's file with another secret or port than the gate's (1.0.181:
     # the RADIUS client before, or a port changed): only that file is put right.
-    if c.get('manage') and c.get('radius') and (now.get('radius') or {}).get('pam') and \
+    if c.get('manage') and c.get('radius') and odict(now.get('radius')).get('pam') and \
             now.get('hash') == c.get('hash') and not todo and \
-            ((now.get('radius') or {}).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
+            (odict(now.get('radius')).get('fp') != ssh_gate_fp(ssh_gate_secret(store, make=True),
                                                                 ssh_gate_port(store)) or
-             (now.get('radius') or {}).get('skip_passwd') is False):
+             odict(now.get('radius')).get('skip_passwd') is False):
         # ... or its PAM block from before 1.0.188: "Password:" asked before the code.
         todo.append(('pamconf', None))
     # The files written anew once after an upgrade that writes them otherwise for
     # the same settings (1.0.191: root's own Match block) - no trial, nothing in
     # them chosen differently.
     if c.get('manage') and c.get('hash') and not todo and now.get('hash') == c.get('hash') and \
-            not (now.get('trial') or {}).get('until') and now.get('failed') != c.get('hash') and \
+            not odict(now.get('trial')).get('until') and now.get('failed') != c.get('hash') and \
             store.get_meta('host:sshd:fmt:' + me) != SSHD_FMT:
         todo.append(('apply', {'refit': True}))
     if not todo and time.time() - HOST_WORK['sshd_read'] < 300 and now:
@@ -34845,8 +34943,8 @@ def sshd_tick(daemon):
                                    # Changed again while on trial: the helper
                                    # goes back to the first, so its port stays open.
                                    before_port=(row.get('before_port') if
-                                                (row.get('trial') or {}).get('until') else None)
-                                   or (row.get('values') or {}).get('port') or '22')
+                                                odict(row.get('trial')).get('until') else None)
+                                   or odict(row.get('values')).get('port') or '22')
                     elif what == 'pamconf':
                         got = root_ask('sshd.ask', 'sshd.json', {
                             'do': 'pamconf', 'radius_secret': ssh_gate_secret(store),
@@ -35660,7 +35758,7 @@ def _node_ask_run(daemon, kind, want):
         # fresh within NODE_ASK_FRESH is offered again, and done again it only
         # writes this node's answer over itself.
         NODE_ASK['done'].clear()
-    only = (want.get('args') or {}).get('only')
+    only = odict(want.get('args')).get('only')
     if only and only != node_name():
         NODE_ASK['done'].add(key)
         return
@@ -36012,7 +36110,7 @@ def split_arbiter_check(targets=None):
 @node_ask_kind('split_arbiter')
 def _ask_split_arbiter(daemon, args):
     """Try it on the card: each node asks its own arbiter, as written in the form."""
-    mine = (args.get('targets') or {}).get(node_name())
+    mine = odict(args.get('targets')).get(node_name())
     try:
         targets = split_targets(mine if mine is not None else None) if mine is not None else \
             split_targets()
@@ -36940,7 +37038,7 @@ def _clock_event(store, level, words):
 def _ask_clock_try(daemon, args):
     """Try it on the card: each node asks its own reference servers (as written in the form),
     the other side's clock and its directory."""
-    mine = (args.get('refs') or {}).get(node_name())
+    mine = odict(args.get('refs')).get(node_name())
     servers = clock_ref_servers(mine, daemon.store) if mine is not None else clock_ref_servers(store=daemon.store)
     got, med = clock_ref_check(servers) if servers else ([], None)
     try:
@@ -37914,7 +38012,7 @@ def selinux_want(store):
         pass
     try:
         now = _meta_json(store, 'host:sshd:now:' + node_name()) or {}
-        sp = int((now.get('values') or {}).get('port') or 22)
+        sp = int(odict(now.get('values')).get('port') or 22)
         if sp != 22:
             ports.append({'port': sp, 'proto': 'tcp', 'type': 'ssh_port_t',
                           'why': 'the SSH server listens on it'})
@@ -38025,7 +38123,7 @@ def selinux_tick(daemon):
     def go():
         try:
             err = ''
-            data = (now.get('data') or {}) if do != 'check' else {}
+            data = odict(now.get('data')) if do != 'check' else {}
             said = []
             try:
                 data = root_ask('selinux.ask', 'selinux.json',
@@ -38053,7 +38151,7 @@ def selinux_tick(daemon):
                     except OSError:
                         pass
                 store.set_meta('host:selinux:report:' + me, json.dumps(rep))
-                data = (now.get('data') or {})
+                data = odict(now.get('data'))
             if do not in ('check', 'report'):
                 store.add_event('settings', 'SELinux on %s: %s' % (
                     me, err or '; '.join(said) or 'done'), 'bad' if err else 'warn')
@@ -38229,7 +38327,7 @@ def health_publish(daemon):
     row['name_clash'] = str(said(name_clash_words) or '')[:300]
     row['ntp_problem'] = str(said(ntp_problem) or '')[:300]
     if dbguard_on():
-        refused = sorted((DBGUARD.get('refused') or {}).values(), key=lambda r: -fnum(r.get('at')))
+        refused = sorted(odict(DBGUARD.get('refused')).values(), key=lambda r: -fnum(r.get('at')))
         row['dbguard_refused'] = [{'what': r.get('what'), 'why': r.get('why'), 'at': r.get('at')}
                                   for r in refused if now - fnum(r.get('at')) < 3600][:5]
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
@@ -38475,7 +38573,7 @@ def alert_problems(store, lang='en'):
             vc = {}
         if vc.get('on') and vc.get('address'):
             up = {n: b for n, b in beats.items() if b.get('alive', True) or b.get('me')}
-            webs = {n: (b.get('web') or {}) for n, b in up.items()}
+            webs = {n: odict(b.get('web')) for n, b in up.items()}
             holders = sorted(n for n, w in webs.items() if w.get('vip_here'))
             addr = str(vc.get('address')).split('/')[0]
             if up and not holders:
@@ -38491,7 +38589,7 @@ def alert_problems(store, lang='en'):
                         'either.') % ', '.join(holders), 'ha')
             for n, w in sorted(webs.items()):
                 role = str(w.get('role') or '')
-                why = str((w.get('health') or {}).get('why') or '')
+                why = str(odict(w.get('health')).get('why') or '')
                 if role == 'FAULT':
                     add('vip:fault:' + n, 'warn', n,
                         _al(lang, '%s nemůže držet VIP adresu' % n, '%s cannot hold the VIP address' % n),
@@ -38672,7 +38770,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                     add('ship:%s:%s' % (what, n), 'warn', n,
                         _al(lang, 'Logy z %s nedochází do %s' % (n, words),
                             'The logs of %s do not reach %s' % (n, words)),
-                        '; '.join('%s: %s' % kv for kv in sorted((st.get('trouble') or {}).items()))[:300]
+                        '; '.join('%s: %s' % kv for kv in sorted(odict(st.get('trouble')).items()))[:300]
                         + (_al(lang, ' (zahozeno %d řádků)', ' (%d lines dropped)') % int(st['dropped'])
                            if int(st.get('dropped') or 0) else ''), 'siem' if what == 'siem' else 'isemon')
     # The SNMP agent.
@@ -40410,7 +40508,7 @@ def lockouts_view(d):
                     d.login_fails.pop(key, None)
                     d.login_info.pop(key, None)
                 continue
-            names = [n for n, ts in (info.get('names') or {}).items() if t - ts < span]
+            names = [n for n, ts in odict(info.get('names')).items() if t - ts < span]
             last = max(fails[-1] if fails else 0, fnum(info.get('blocked_at')))
             rows.append({
                 'kind': kind, 'who': who, 'by': 'place', 'what': LOCKOUT_KINDS.get(kind, kind),
@@ -41183,7 +41281,7 @@ def _columns(h):
         raise ApiError(409, 'switch on "Edit the columns" under your name first: the columns '
                        'are not being edited from this sign-in')
     try:
-        kept = h.store.put_user_cols(s['name'], {} if reset else (b.get('cols') or {}))
+        kept = h.store.put_user_cols(s['name'], {} if reset else odict(b.get('cols')))
     except ValueError as e:
         raise ApiError(400, str(e))
     if reset:
@@ -43517,7 +43615,7 @@ def _isemon(h):
     for n in sorted(set(nodes) | {node_name()}):
         row = _meta_json(h.store, 'host:health:' + n) or {}
         st = (h.d.shipper.state() if h.d.shipper else {}) if n == node_name() else \
-            (row.get('isemon') or {})
+            odict(row.get('isemon'))
         out.append(dict(st, node=n, me=n == node_name(),
                         at=time.time() if n == node_name() else row.get('at')))
     return {'nodes': out, 'on': bool(CONFIG.get('isemon')),
@@ -44122,7 +44220,7 @@ def _db_do(h):
                             'set up from here - the other node uses that account too')
     try:
         if act in ('try', 'setup', 'empty', 'move', 'use'):
-            c = engine_asked(b.get('settings') or {})
+            c = engine_asked(odict(b.get('settings')))
             words = ENGINE_WORDS.get(c['db_engine'])
             if act == 'try':
                 got = db_try(c)
@@ -44454,7 +44552,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             raise ApiError(400, '%s is not an object' % part)
     # Every setting checked before anything is saved (1.0.217), as the clients and realms
     # are: a value that was refused stopped the import after the clients were in.
-    for k, v in (conf.get('settings') or {}).items():
+    for k, v in odict(conf.get('settings')).items():
         base = str(k).partition('@')[0]
         if base not in DEFAULTS or base in FILE_ONLY_KEYS:
             continue
@@ -44734,7 +44832,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 want = conf['art']                      # a file from 1.0.71
                 if 'admin' not in logos_in and 'portal' in logos_in:
                     logo_set(store, 'admin', logos_in['portal'], by,
-                             str((conf.get('logo') or {}).get('name') or ''))
+                             str(odict(conf.get('logo')).get('name') or ''))
             if isinstance(want, dict) and want.get('art') in ART_NAMES:
                 try:
                     art_set(store, slot, want['art'])
@@ -44778,7 +44876,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                         store.drop_account(a['name'])
                         said['accounts taken away'] += 1
             if 'settings' in conf:
-                have = set(str(k) for k in (conf.get('settings') or {})) | imported_keys
+                have = set(str(k) for k in odict(conf.get('settings'))) | imported_keys
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
                     if base in keep_dir_keys:
@@ -44827,7 +44925,7 @@ def portal_me(h, gate_ok=False):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(403, 'enrolling a token here is switched off')
     # Signed in by the balancer, and that switched off meanwhile (1.0.239): it ends.
-    if (s.get('data') or {}).get('sso') and not CONFIG.get('portal_sso'):
+    if odict(s.get('data')).get('sso') and not CONFIG.get('portal_sso'):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(401, 'sign in again')
     # The one-time code before the first token (1.0.228): until it is typed, the sign-in may
@@ -44837,7 +44935,7 @@ def portal_me(h, gate_ok=False):
     # Asked again on every step, not only at the sign-in (1.0.234): signed in while a token was in
     # use, a sign-in kept open went on to enrol a new one - the code never asked - once that
     # token was taken away or made again.
-    if not gate_ok and not (s.get('data') or {}).get('gate_ok') and \
+    if not gate_ok and not odict(s.get('data')).get('gate_ok') and \
             portal_gate_needed(h.store, s['name']):
         h.store.session_end(h.headers.get('X-Otp-Session'))
         raise ApiError(401, 'sign in again: a code is sent to you first')
@@ -44846,7 +44944,7 @@ def portal_me(h, gate_ok=False):
 
 def portal_gated(s):
     """Whether this enrolment sign-in still waits for its one-time code (1.0.228)."""
-    return bool((s.get('data') or {}).get('gate_wait'))
+    return bool(odict(s.get('data')).get('gate_wait'))
 
 
 def portal_gate_needed(store, tname):
@@ -45358,7 +45456,7 @@ def portal_may_replace(h, s):
     """Whether this session proved the token there is now - not one an administrator put in
     its place meanwhile (1.0.224: a phone stolen, the token made again by an administrator,
     and the old session went on and replaced it with its own key)."""
-    mark = (s.get('data') or {}).get('may_replace')
+    mark = odict(s.get('data')).get('may_replace')
     if not mark:
         return False
     if mark is True or mark != portal_token_mark(h.store.token(s['name'])):
@@ -45498,7 +45596,7 @@ def portal_state(h, s):
     ver = data.get('verify') or {}
     if ver and fnum(ver.get('exp')) < time.time():
         ver = {}
-    about = dict(data.get('about') or {})
+    about = dict(odict(data.get('about')))
     about.update(login=data.get('login') or '', realm=data.get('realm') or '',
                  mail=data.get('mail') or '', mobile=data.get('mobile') or '')
     return {'name': s['name'], 'display': data.get('display') or '',
@@ -45586,12 +45684,12 @@ def _portal_gate_again(h):
     s = portal_me(h, gate_ok=True)
     if not portal_gated(s):
         return {'me': portal_state(h, s)}
-    w = (s.get('data') or {}).get('gate_wait') or {}
+    w = odict(s.get('data')).get('gate_wait') or {}
     if w.get('kind') not in code_channels():
         raise ApiError(503, 'the code cannot be sent just now - ask the administrator')
-    lang = str(h.body().get('lang') or '') or ((s.get('data') or {}).get('gate') or {}).get('lang') or ''
+    lang = str(h.body().get('lang') or '') or (odict(s.get('data')).get('gate') or {}).get('lang') or ''
     gate = portal_gate_send(h, s['name'], w['kind'], w['dest'],
-                            display=(s.get('data') or {}).get('display') or '', lang=lang)
+                            display=odict(s.get('data')).get('display') or '', lang=lang)
     portal_data_set(h, s, gate=gate)
     return {'gate': portal_gate_view(s)}
 
@@ -45613,7 +45711,7 @@ def portal_data_set(h, s, **changes):
     given, over what the database holds now (1.0.101)."""
     data = h.store.session_merge(s['id'], changes)
     if data is None:
-        data = dict(s.get('data') or {})
+        data = dict(odict(s.get('data')))
         for k, v in changes.items():
             if v is None:
                 data.pop(k, None)
@@ -45643,7 +45741,7 @@ def _portal_enroll(h):
         if tok and tok.get('state') != 'pending' and not may_replace:
             raise ApiError(409, 'there is a token already; it can be replaced with a code '
                                 'from it')
-        ver_was = (s.get('data') or {}).get('verify') or {}
+        ver_was = odict(s.get('data')).get('verify') or {}
         if b.get('again') and not b.get('dest') and ver_was.get('kind') == kind:
             # Sent again to where the check in this session goes (1.0.98):
             # the page reloaded meanwhile knows only that it is masked.
@@ -45711,7 +45809,7 @@ def _portal_enroll(h):
             raise ApiError(409, 'there is a token already; it can be replaced with a code '
                                 'from it')
         got = h.d.tokens.enroll(s['name'], 'self', pending=confirm,
-                                display=(s.get('data') or {}).get('display') or '')
+                                display=odict(s.get('data')).get('display') or '')
         if str(b.get('lang') or '') in ('cs', 'en'):       # its second window's language (1.0.82)
             h.store.token_write(s['name'], {'lang': str(b.get('lang'))})
     h.store.add_event('enrolment', '%s enrolled a token for themselves%s' % (
@@ -45825,7 +45923,7 @@ def _portal_codes(h):
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=30,
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
     code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
-    old = (s.get('data') or {}).get('old') or {}
+    old = odict(s.get('data')).get('old') or {}
     if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'
@@ -45875,11 +45973,11 @@ def _portal_reissue(h):
                      int(CONFIG.get('portal_wait_min') or 15), name=s['name'], ip_tries=30,
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5),
                      what='wrong passwords or codes')
-    realm = h.store.realm_for((s.get('data') or {}).get('login') or s['name'])
+    realm = h.store.realm_for(odict(s.get('data')).get('login') or s['name'])
     ad = h.d.auth.directory(realm['directory']) if realm else None
     if not ad:
         raise ApiError(503, 'the directory of this realm is not set up')
-    if (s.get('data') or {}).get('sso') and CONFIG.get('portal_sso'):
+    if odict(s.get('data')).get('sso') and CONFIG.get('portal_sso'):
         # Signed in by the balancer (1.0.239): it asked the password - the code of the old
         # token below is still asked.
         pass
@@ -45893,11 +45991,11 @@ def _portal_reissue(h):
 
 def portal_reissue_password(h, s, realm, b, key):
     ad = h.d.auth.directory(realm['directory'])
-    held = dir_pw_take(h, (s.get('data') or {}).get('login') or s['name'],
+    held = dir_pw_take(h, odict(s.get('data')).get('login') or s['name'],
                        (realm or {}).get('directory') or '',
-                       {'dn': (s.get('data') or {}).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
+                       {'dn': odict(s.get('data')).get('dn')})     # 1.0.230, 1.0.232, 1.0.234
     try:
-        ad.password_ok({'dn': (s.get('data') or {}).get('dn')}, str(b.get('password') or ''))
+        ad.password_ok({'dn': odict(s.get('data')).get('dn')}, str(b.get('password') or ''))
     except LdapUnreachable as e:
         dir_pw_done(h, held, False)
         log('the enrolment pages could not reach the directory: %s' % e, 'warn')
@@ -45913,13 +46011,13 @@ def portal_reissue_password(h, s, realm, b, key):
 
 def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
-    old = (s.get('data') or {}).get('old') or {}
+    old = odict(s.get('data')).get('old') or {}
     if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'               # 1.0.76
         if not h.store.session_take(s['id'], 'old'):         # once (1.0.101)
             ok, said = False, SAY_REUSED
-        s['data'] = dict(s.get('data') or {})
+        s['data'] = dict(odict(s.get('data')))
         s['data'].pop('old', None)
     else:
         ok, said, _f = h.d.tokens.check(s['name'], code, how='portal', src=h.client_ip())
@@ -45945,7 +46043,7 @@ def portal_reissue_rest(h, s, b, key):
 @route('POST', '/api/portal/cancel')
 def _portal_cancel(h):
     s = portal_me(h)
-    if (s.get('data') or {}).get('verify') or (s.get('data') or {}).get('may_replace'):
+    if odict(s.get('data')).get('verify') or odict(s.get('data')).get('may_replace'):
         # An address being checked, or a new way being chosen (1.0.76): given
         # up, and the token there is (if any) stays as it is.
         portal_data_set(h, s, verify=None, may_replace=None, old=None)
@@ -46371,7 +46469,7 @@ def _ha_do(h):
         except ValueError as e:
             raise ApiError(400, str(e))
         h.store.add_event('settings', '%s joined this node to the cluster of %s; it starts '
-                          'again on %s' % (s['name'], (data.get('peer') or {}).get('name', '?'),
+                          'again on %s' % (s['name'], odict(data.get('peer')).get('name', '?'),
                                            got['where']), 'warn', who=s['name'])
         log('joining the cluster: starting again on %s' % got['where'], 'warn')
         threading.Timer(1.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
@@ -46438,13 +46536,13 @@ def _web(h):
     for n in ha_nodes(store):
         one = {k: n.get(k) for k in ('name', 'me', 'alive', 'address', 'version', 'maintenance',
                                      'age', 'host')}
-        one['web'] = web_unmapped(web_state(store) if n['me'] else (n.get('web') or {}), me)
+        one['web'] = web_unmapped(web_state(store) if n['me'] else odict(n.get('web')), me)
         nodes.append(one)
     if not any(x['me'] for x in nodes):
         nodes.insert(0, {'name': node_name(), 'me': True, 'alive': True,
                          'address': node_address(), 'web': web_unmapped(web_state(store), me)})
     v = vip_conf(store)
-    holder = [x['name'] for x in nodes if (x.get('web') or {}).get('vip_here')]
+    holder = [x['name'] for x in nodes if odict(x.get('web')).get('vip_here')]
     return {'node': node_name(), 'cluster': bool(CONFIG.get('ha_mode')), 'nodes': nodes,
             'vip': dict(v, prefer_now=vip_prefer(store, v) if CONFIG.get('ha_mode') else '',
                         holder=holder),
@@ -46585,7 +46683,7 @@ def _web_do(h):
                                       which)
         except ValueError as e:
             raise ApiError(400, str(e))
-        name = (re.sub(r'[^A-Za-z0-9._-]', '_', (prof.get('info') or {}).get('cn') or '') or
+        name = (re.sub(r'[^A-Za-z0-9._-]', '_', odict(prof.get('info')).get('cn') or '') or
                 ('web-address' if target == 'vip' else target)) + \
             {'rsa': '', 'ec': '-ecdsa', 'both': '-rsa-ecdsa'}[which] + ending
         words = words + {'rsa': '', 'ec': ' (the second, ECDSA one)',
@@ -46710,8 +46808,8 @@ def _firewall(h):
                 FW_WAIT.release()
     nodes = []
     for n in ha_nodes(store):
-        w = web_state(store) if n['me'] else (n.get('web') or {})
-        fwv = dict(w.get('fw') or {})
+        w = web_state(store) if n['me'] else odict(n.get('web'))
+        fwv = dict(odict(w.get('fw')))
         if not n['me']:
             try:
                 fwv.update(json_obj(store.get_meta('fw:now:' + n['name'])) or {})
@@ -47351,7 +47449,7 @@ def _mfa_done(h, s, how):
     """The second step given: a sign-in of its own from here on (1.0.149) - the
     one the password alone opened is ended, not made whole: whoever had seen
     its cookie had the pages once the code was given."""
-    data = {k: v for k, v in (s.get('data') or {}).items()
+    data = {k: v for k, v in odict(s.get('data')).items()
             if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent')}
     hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
@@ -47366,7 +47464,7 @@ def _mfa(h):
     s, acc = _mfa_session(h)
     stage = mfa_pending(s)
     rec = mfa_get(h.store, s['name']) or {}
-    new = (s.get('data') or {}).get('mfa_new') or {}
+    new = odict(s.get('data')).get('mfa_new') or {}
     return {'name': acc['name'], 'display': acc.get('display') or '', 'stage': stage,
             'methods': mfa_methods(), 'kind': rec.get('kind') if stage == 'check' else '',
             'dest': dest_masked(rec.get('kind'), rec.get('dest')) if stage == 'check' else '',
@@ -47592,7 +47690,7 @@ def _rbackup_do(h):
     try:
         if act == 'save':
             t = rb_save(h.store, dict(b.get('target') or {}, id=b.get('id') or
-                                      (b.get('target') or {}).get('id')), by)
+                                      odict(b.get('target')).get('id')), by)
             return {'message': 'saved', 'target': rb_view(t)}
         if act == 'delete':
             rb_delete(h.store, b.get('id'), by)
@@ -48785,7 +48883,7 @@ def _osusers_do(h):
         raise ApiError(400, 'nodes is a list')
     if act == 'policy':
         try:
-            c = pwp_checked_api(b.get('policy') or {})
+            c = pwp_checked_api(odict(b.get('policy')))
         except ValueError as e:
             raise ApiError(400, str(e))
         h.store.set_meta('host:pwpolicy:conf', json.dumps(dict(c, at=time.time(), by=s['name'])))
@@ -49116,7 +49214,7 @@ def _siem_view(h):
     out = []
     for n in nodes:
         row = _meta_json(h.store, 'host:health:' + n) or {}
-        st = me if n == node_name() else (row.get('siem') or {})
+        st = me if n == node_name() else odict(row.get('siem'))
         out.append(dict(st, node=n, me=n == node_name(), at=time.time() if n == node_name()
                         else row.get('at')))
     return {'nodes': out, 'on': bool(CONFIG.get('siem'))}
@@ -49425,7 +49523,7 @@ def metrics_text(daemon):
           [({}, 1 if r.get('listening') else 0)])
     m.put('otp_radius_requests_total', 'counter',
           'RADIUS packets since the daemon started, by what became of them.',
-          [({'kind': k}, v) for k, v in sorted((r.get('counts') or {}).items())])
+          [({'kind': k}, v) for k, v in sorted(odict(r.get('counts')).items())])
     m.put('otp_radius_queued', 'gauge', 'RADIUS requests waiting for a worker.',
           [({}, r.get('queued') or 0)])
     if not db_ok:
@@ -49502,10 +49600,10 @@ def metrics_text(daemon):
         if not st.get('on'):
             continue
         m.put('otp_%s_sent_total' % what, 'counter', 'Lines sent since the daemon started.',
-              [({'target': k}, v) for k, v in sorted((st.get('sent') or {}).items())] or
+              [({'target': k}, v) for k, v in sorted(odict(st.get('sent')).items())] or
               [({'target': t}, 0) for t in st.get('targets') or []])
         m.put('otp_%s_trouble' % what, 'gauge', 'Whether a target is in trouble now.',
-              [({'target': t}, 1 if t in (st.get('trouble') or {}) else 0)
+              [({'target': t}, 1 if t in odict(st.get('trouble')) else 0)
                for t in st.get('targets') or []])
         m.put('otp_%s_dropped_total' % what, 'counter', 'Lines dropped, the queue full.',
               [({}, st.get('dropped') or 0)])
@@ -51428,7 +51526,7 @@ def push_do_install(store, b, conf, box, key):
     for s in slots:
         cur = s['current'] or {}
         want_alt = str(alt['info'].get('fingerprint') or '').replace(':', '').lower() if alt else ''
-        if cur.get('fingerprint') == fp and ((cur.get('alt') or {}).get('fingerprint') or '') \
+        if cur.get('fingerprint') == fp and (odict(cur.get('alt')).get('fingerprint') or '') \
                 == want_alt and s['managed_by'] == 'acme-push' and not b.get('force'):
             same.append(s)
             continue
@@ -51925,7 +52023,7 @@ class Console(object):
         vip = got.get('vip') or {}
         if not isinstance(vip, dict) or not vip.get('address'):
             return None
-        holders = [n for n, v in sorted((got.get('nodes') or {}).items())
+        holders = [n for n, v in sorted(odict(got.get('nodes')).items())
                    if isinstance(v, dict) and (v.get('vip_here') or v.get('role') == 'MASTER')]
         return {'address': str(vip['address']).split('/')[0], 'on': bool(vip.get('on')),
                 'holders': holders}
@@ -52001,7 +52099,7 @@ class Console(object):
             else:
                 bits.append('VIP %s on NO node' % vip['address'])
                 vip_bad = True
-        tok = (st.get('tokens') or {}).get('active')
+        tok = odict(st.get('tokens')).get('active')
         if tok is not None:
             bits.append('%s tokens' % tok)
         # Too long for the bar: the tokens give way, then the words get
@@ -52024,9 +52122,9 @@ class Console(object):
                 vip['address'], ', '.join(vip['holders']) if vip['holders'] else 'no node'),
                 A['bad'])
             y += 1
-        if ((st.get('maintenance') or {}).get('on') if isinstance(st.get('maintenance'), dict)
+        if (odict(st.get('maintenance')).get('on') if isinstance(st.get('maintenance'), dict)
                 else st.get('maintenance') is True):
-            why = (st.get('maintenance') or {}).get('why') or ''
+            why = odict(st.get('maintenance')).get('why') or ''
             self._put(y, 1, 'THIS NODE IS IN MAINTENANCE - it answers no RADIUS request%s' % (
                 (' (%s)' % why) if why else ''), A['warn'])
             y += 1
@@ -52945,7 +53043,7 @@ class Console(object):
                 ('state', lambda u: 'off' if u.get('disabled') else 'on', 5,
                  lambda u: 'dim' if u.get('disabled') else 'ok'),
                 ('from', lambda u: u.get('source') or 'local', 9, None),
-                ('second step', lambda u: (u.get('mfa') or {}).get('kind') or '-'
+                ('second step', lambda u: odict(u.get('mfa')).get('kind') or '-'
                  if isinstance(u.get('mfa'), dict) else (u.get('mfa') or '-'), 11, None),
                 ('last in', lambda u: self._when(u.get('last_in')), 16, None),
                 ('note', lambda u: u.get('note') or '', 40, lambda u: 'dim')]
@@ -57035,7 +57133,7 @@ def cli_web(args, pal, store):
             raise ValueError('the VIP address is for a cluster: otp --ha-setup first')
     if args.vip_set:
         v = vip_conf(store)
-        ifaces = dict(v.get('ifaces') or {})
+        ifaces = dict(odict(v.get('ifaces')))
         for one in args.vip_iface or []:
             if '=' not in one:
                 raise ValueError('--vip-iface NODE=IFACE')
@@ -57123,7 +57221,7 @@ def cli_web(args, pal, store):
     for t in tls_targets(store):
         prof = tls_profile(store, t)
         b = beats.get(t, {})
-        now = (b.get('web') or {}).get('cert_now') if t != 'vip' else None
+        now = odict(b.get('web')).get('cert_now') if t != 'vip' else None
         if t == me:
             now = web_state(store).get('cert_now')
         i = (prof or {}).get('info') or now or {}
@@ -58892,7 +58990,7 @@ def cli_main(argv=None):
             if said.get('version'):
                 print('  made by otp %s%s' % (said['version'], ', ' + stamp(said['made'])
                                               if said.get('made') else ''))
-            for k, v in sorted((said.get('counts') or {}).items()):
+            for k, v in sorted(odict(said.get('counts')).items()):
                 print('  %-12s %s' % (k, v))
             if m:
                 print('  made on      %s (%s)' % (m.get('node') or '?', m.get('host') or '?'))
@@ -59147,8 +59245,8 @@ def cli_main(argv=None):
             plan.get('how'), ', '.join(plan.get('targets') or []), plan.get('order'),
             plan.get('by') or '-', stamp(plan.get('at'))) if plan else 'none of late')))
         print(table([(n['name'] + (' (this)' if n['me'] else ''), 'up' if n['alive'] else 'not heard',
-                      stamp(n.get('started')) if n.get('started') else '-', (n.get('row') or {}).get('state') or '-',
-                      (n.get('row') or {}).get('said') or '') for n in v['nodes']],
+                      stamp(n.get('started')) if n.get('started') else '-', odict(n.get('row')).get('state') or '-',
+                      odict(n.get('row')).get('said') or '') for n in v['nodes']],
                     ['node', 'state', 'started', 'restart', 'said'], [22, 10, 20, 12, 60]))
         return 0
 
@@ -59333,7 +59431,7 @@ def cli_main(argv=None):
     isemon_src = args.db_tls_ca if args.db_tls_ca in ('otp', 'system', 'given') else 'otp'
     if args.isemon_tls:
         got = api('GET', '/api/isemon')
-        return shown(got.get('tls') or {})
+        return shown(odict(got.get('tls')))
     if args.isemon_tls_probe:
         return asked('isemon_tls', api('POST', '/api/isemon', dict(
             host_port(args.isemon_tls_probe), action='tls_probe', ca_source=isemon_src,
@@ -59702,7 +59800,7 @@ def cli_pwpolicy(args, pal):
             print('  in effect: minlen %s, minclass %s, maxrepeat %s, dictcheck %s; remember %s; good for %s days;'
                   ' faillock deny %s; PAM: pwquality %s, pwhistory %s, faillock %s%s' % (
                       q.get('minlen'), q.get('minclass'), q.get('maxrepeat'), q.get('dictcheck'), p.get('remember'),
-                      (p.get('aging') or {}).get('max_days'), (p.get('faillock') or {}).get('deny'),
+                      odict(p.get('aging')).get('max_days'), odict(p.get('faillock')).get('deny'),
                       'yes' if pam.get('pwquality') else 'no', 'yes' if pam.get('pwhistory') else 'no',
                       'yes' if pam.get('faillock') else 'no',
                       ('; authselect ' + p['authselect']['profile']) if p.get('authselect') else ''))

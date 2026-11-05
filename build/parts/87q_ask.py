@@ -28,7 +28,7 @@ def _node_ask_run(daemon, kind, want):
         # fresh within NODE_ASK_FRESH is offered again, and done again it only
         # writes this node's answer over itself.
         NODE_ASK['done'].clear()
-    only = (want.get('args') or {}).get('only')
+    only = odict(want.get('args')).get('only')
     if only and only != node_name():
         NODE_ASK['done'].add(key)
         return

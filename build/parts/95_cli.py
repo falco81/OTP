@@ -1852,7 +1852,7 @@ def cli_web(args, pal, store):
             raise ValueError('the VIP address is for a cluster: otp --ha-setup first')
     if args.vip_set:
         v = vip_conf(store)
-        ifaces = dict(v.get('ifaces') or {})
+        ifaces = dict(odict(v.get('ifaces')))
         for one in args.vip_iface or []:
             if '=' not in one:
                 raise ValueError('--vip-iface NODE=IFACE')
@@ -1940,7 +1940,7 @@ def cli_web(args, pal, store):
     for t in tls_targets(store):
         prof = tls_profile(store, t)
         b = beats.get(t, {})
-        now = (b.get('web') or {}).get('cert_now') if t != 'vip' else None
+        now = odict(b.get('web')).get('cert_now') if t != 'vip' else None
         if t == me:
             now = web_state(store).get('cert_now')
         i = (prof or {}).get('info') or now or {}
@@ -3709,7 +3709,7 @@ def cli_main(argv=None):
             if said.get('version'):
                 print('  made by otp %s%s' % (said['version'], ', ' + stamp(said['made'])
                                               if said.get('made') else ''))
-            for k, v in sorted((said.get('counts') or {}).items()):
+            for k, v in sorted(odict(said.get('counts')).items()):
                 print('  %-12s %s' % (k, v))
             if m:
                 print('  made on      %s (%s)' % (m.get('node') or '?', m.get('host') or '?'))
@@ -3964,8 +3964,8 @@ def cli_main(argv=None):
             plan.get('how'), ', '.join(plan.get('targets') or []), plan.get('order'),
             plan.get('by') or '-', stamp(plan.get('at'))) if plan else 'none of late')))
         print(table([(n['name'] + (' (this)' if n['me'] else ''), 'up' if n['alive'] else 'not heard',
-                      stamp(n.get('started')) if n.get('started') else '-', (n.get('row') or {}).get('state') or '-',
-                      (n.get('row') or {}).get('said') or '') for n in v['nodes']],
+                      stamp(n.get('started')) if n.get('started') else '-', odict(n.get('row')).get('state') or '-',
+                      odict(n.get('row')).get('said') or '') for n in v['nodes']],
                     ['node', 'state', 'started', 'restart', 'said'], [22, 10, 20, 12, 60]))
         return 0
 
@@ -4150,7 +4150,7 @@ def cli_main(argv=None):
     isemon_src = args.db_tls_ca if args.db_tls_ca in ('otp', 'system', 'given') else 'otp'
     if args.isemon_tls:
         got = api('GET', '/api/isemon')
-        return shown(got.get('tls') or {})
+        return shown(odict(got.get('tls')))
     if args.isemon_tls_probe:
         return asked('isemon_tls', api('POST', '/api/isemon', dict(
             host_port(args.isemon_tls_probe), action='tls_probe', ca_source=isemon_src,
@@ -4519,7 +4519,7 @@ def cli_pwpolicy(args, pal):
             print('  in effect: minlen %s, minclass %s, maxrepeat %s, dictcheck %s; remember %s; good for %s days;'
                   ' faillock deny %s; PAM: pwquality %s, pwhistory %s, faillock %s%s' % (
                       q.get('minlen'), q.get('minclass'), q.get('maxrepeat'), q.get('dictcheck'), p.get('remember'),
-                      (p.get('aging') or {}).get('max_days'), (p.get('faillock') or {}).get('deny'),
+                      odict(p.get('aging')).get('max_days'), odict(p.get('faillock')).get('deny'),
                       'yes' if pam.get('pwquality') else 'no', 'yes' if pam.get('pwhistory') else 'no',
                       'yes' if pam.get('faillock') else 'no',
                       ('; authselect ' + p['authselect']['profile']) if p.get('authselect') else ''))

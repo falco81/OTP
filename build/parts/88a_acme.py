@@ -374,7 +374,7 @@ class Acme(object):
         # The profile asked for (1.0.196), where the CA offers it - tlsserver,
         # shortlived at Let's Encrypt; a CA without profiles is asked as before.
         prof = str(CONFIG.get('acme_profile') or '')
-        offered = (self.dir.get('meta') or {}).get('profiles') or {}
+        offered = odict(self.dir.get('meta')).get('profiles') or {}
         if prof and prof in offered:
             ask['profile'] = prof
         elif prof:
@@ -786,7 +786,7 @@ def acme_ari_refresh(store):
             w = a.renewal_info(cid)
             if not w:
                 continue
-            fp = (prof.get('info') or {}).get('fingerprint') or ''
+            fp = odict(prof.get('info')).get('fingerprint') or ''
             was = _meta_json(store, 'acme:ari:' + t) or {}
             pick = was.get('pick') if (was.get('start'), was.get('end'), was.get('cert')) == \
                 (w['start'], w['end'], fp) else None

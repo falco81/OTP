@@ -62,7 +62,7 @@ def net_trial_start(store, job, by):
                  n, node_name(), time.strftime('%H:%M', time.localtime(job['trial_until']))),
              99, state='trial')
     store.add_event('settings', 'the new network of %s is on trial: kept within %d min, or it '
-                    'goes back to %s' % (node_name(), n, (job.get('want') or {}).get('old_ip')),
+                    'goes back to %s' % (node_name(), n, odict(job.get('want')).get('old_ip')),
                     'warn', who=by)
 
 
@@ -85,11 +85,11 @@ def net_go_back(daemon, job, why):
     except Exception as e:                              # noqa: BLE001
         log('network: read before going back: %s' % e, 'warn')
     _job_put(store, job, 'not kept: %s - the old network (%s) comes back' % (
-        why, (back.get('ipv4') or {}).get('addr')), job.get('pct'), ok=False,
+        why, odict(back.get('ipv4')).get('addr')), job.get('pct'), ok=False,
         state='going back')
     # In the events too (1.0.242): mailed, as the firewall's and the SSH server's are.
     store.add_event('settings', '%s went back to the network it had before (%s): %s'
-                    % (me, (back.get('ipv4') or {}).get('addr') or '?', why), 'warn')
+                    % (me, odict(back.get('ipv4')).get('addr') or '?', why), 'warn')
 
     try:
         net_ask(store, me, back, 'otp (%s)' % why, rollback=True, maint=bool(job.get('maint')),

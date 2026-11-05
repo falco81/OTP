@@ -118,7 +118,7 @@ def guard_count(daemon, src, name):
         # Kept to the limits set (1.0.139): tries up to 10000, names up to 1000.
         daemon.login_fails[key] = fails[-max(1000, tries):]
         info = daemon.login_info.setdefault(key, {'others': []})
-        names = {n: ts for n, ts in (info.get('names') or {}).items() if t - ts < span}
+        names = {n: ts for n, ts in odict(info.get('names')).items() if t - ts < span}
         if name:
             names[name] = t
             cap = max(500, nlimit)

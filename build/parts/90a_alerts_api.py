@@ -76,7 +76,7 @@ def _siem_view(h):
     out = []
     for n in nodes:
         row = _meta_json(h.store, 'host:health:' + n) or {}
-        st = me if n == node_name() else (row.get('siem') or {})
+        st = me if n == node_name() else odict(row.get('siem'))
         out.append(dict(st, node=n, me=n == node_name(), at=time.time() if n == node_name()
                         else row.get('at')))
     return {'nodes': out, 'on': bool(CONFIG.get('siem'))}

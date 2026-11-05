@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.250'
+__version__ = '1.0.251'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2644,6 +2644,13 @@ def json_obj(text, kind=dict):
     except (ValueError, TypeError):
         return None
     return got if isinstance(got, kind) else None
+
+
+def odict(v):
+    """A value of a row's object read as an object - {} for anything else (1.0.251): `x or {}` let
+    a string or a list through (a key a version before kept as another type), and its .get() raised
+    before the row was written again."""
+    return v if isinstance(v, dict) else {}
 
 
 def fnum(x, default=0.0):

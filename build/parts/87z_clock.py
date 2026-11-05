@@ -483,7 +483,7 @@ def _clock_event(store, level, words):
 def _ask_clock_try(daemon, args):
     """Try it on the card: each node asks its own reference servers (as written in the form),
     the other side's clock and its directory."""
-    mine = (args.get('refs') or {}).get(node_name())
+    mine = odict(args.get('refs')).get(node_name())
     servers = clock_ref_servers(mine, daemon.store) if mine is not None else clock_ref_servers(store=daemon.store)
     got, med = clock_ref_check(servers) if servers else ([], None)
     try:

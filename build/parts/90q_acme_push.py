@@ -902,7 +902,7 @@ def push_do_install(store, b, conf, box, key):
     for s in slots:
         cur = s['current'] or {}
         want_alt = str(alt['info'].get('fingerprint') or '').replace(':', '').lower() if alt else ''
-        if cur.get('fingerprint') == fp and ((cur.get('alt') or {}).get('fingerprint') or '') \
+        if cur.get('fingerprint') == fp and (odict(cur.get('alt')).get('fingerprint') or '') \
                 == want_alt and s['managed_by'] == 'acme-push' and not b.get('force'):
             same.append(s)
             continue

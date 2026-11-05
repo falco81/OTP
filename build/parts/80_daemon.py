@@ -1220,9 +1220,11 @@ class Daemon(object):
             if not dbguard_key():
                 raise BadSetting('db_guard: this node has no secrets.key to sign with')
             old = [n['name'] for n in ha_nodes(self.store)
-                   if not n.get('me') and n.get('alive') and
+                   if not n.get('me') and (n.get('alive') or fnum(n.get('age'), 1e9) < DBGUARD_PEER_DAY_S) and
                    _ver_tuple(n.get('version') or '0') < (1, 0, 231)]
             if old:
+                # Not only those alive (1.0.251): one restarting, back after a day at most, wrote
+                # unsigned what this node refused from then on.
                 raise BadSetting('db_guard: %s run an older version that does not sign what it '
                                  'writes - upgrade them first' % ', '.join(old))
             # The tokens' secrets sealed as otp seals them first (1.0.249): from now on one found
@@ -2990,7 +2992,7 @@ def tune_plan_for(store, typed, probe=True):
     last = out['last'] or {}
     mine = last.get('engine') == db.engine and not last.get('undone') \
         and last.get('where') == db.where()
-    put = (last.get('set') or {}) if mine else {}
+    put = odict(last.get('set')) if mine else {}
     rows = []
     for n, (v, why_, rs) in plan.items():
         same = tune_same(db.engine, now.get(n, ''), v)
