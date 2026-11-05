@@ -97,6 +97,13 @@ database), the newest signature it has seen of each row: a row taken from an
 older copy - signature and all - is older, and refused. What is refused is written
 in the log and in Events, and listed in the security check.
 
+**Rows signed only since a version** (since 1.0.248: the backups' destinations and their password,
+a Back up now asked of the other node, the DNS of ACME) are written unsigned by a node still of a
+version before. While such a node is alive - as its signed heartbeat says - they are taken as they
+were before that version; once every node runs it, they are signed once as they are (1.0.250). A
+cluster upgraded one node at a time is so never left refusing what the other node asks. An ask of
+the other node past its time is not looked at, and the node that asked takes it away.
+
 RADIUS, the codes and the tokens are **never** held up by it: a setting RADIUS
 uses keeps its last good value, and nothing of the guard is asked on the RADIUS
 path.
