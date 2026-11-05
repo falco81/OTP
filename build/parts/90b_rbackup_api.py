@@ -113,11 +113,25 @@ def _rbackup_do(h):
                     sorted(x.strip() for x in fresh.splitlines() if x.strip()):
                 raise ValueError('the server shows other host keys now than the ones shown: '
                                  'Try it again')
+            # Another key than the one trusted, with a password saved (1.0.249): whoever answers on
+            # that address now would get it - typed again for the server it is.
+            other = bool(t.get('hostkey')) and sorted(str(t.get('hostkey')).split()) != sorted(fresh.split())
+            if other and t.get('password'):
+                rb_set_fields(h.store, t['id'], by, 'its host key trusted (%s), its saved password '
+                              'taken away' % '; '.join(fps), hostkey=fresh, password='')
+                return {'message': 'trusted - the saved password was taken away with the old key: '
+                                   'type it again', 'fingerprints': fps}
             rb_set_fields(h.store, t['id'], by, 'its host key trusted (%s)' % '; '.join(fps),
                           hostkey=fresh)
             return {'message': 'trusted', 'fingerprints': fps}
         if act == 'hostkey_forget':
             t = _rb_target_for(h, b)
+            # The saved password with it (1.0.249): Try it, then Trust it, sent it to whoever answers
+            # on that address now - typed again for the server it is.
+            if t.get('password') and t.get('hostkey'):
+                rb_set_fields(h.store, t['id'], by, 'its host key forgotten, and its saved password',
+                              hostkey=None, password='')
+                return {'message': 'forgotten - the saved password with it: type it again'}
             rb_set_fields(h.store, t['id'], by, 'its host key forgotten', hostkey=None)
             return {'message': 'forgotten'}
         if act == 'keygen':
@@ -170,6 +184,12 @@ def _rbackup_do(h):
             pin = re.sub(r'[^0-9a-f]', '', str(b.get('pin') or '').lower())
             if len(pin) != 64:
                 raise ValueError('the fingerprint is SHA-256: 64 hex digits')
+            if t.get('password') and t.get('pin') and t['pin'] != pin:
+                # Another certificate trusted, as another host key (1.0.249): the saved password
+                # typed again for the server it is.
+                rb_set_fields(h.store, t['id'], by, 'the server\'s certificate pinned (%s), its '
+                              'saved password taken away' % pin, pin=pin, tls_check='pin', password='')
+                return {'message': 'pinned - the saved password was taken away: type it again'}
             rb_set_fields(h.store, t['id'], by, 'the server\'s certificate pinned (%s)' % pin,
                           pin=pin, tls_check='pin')
             return {'message': 'pinned'}
@@ -263,7 +283,7 @@ def _rb_restore_job(h, b, by):
             raise ValueError('which file?')
         src = RB_UPLOADS / up
         if not src.is_file():
-            raise ValueError('the file sent is not here any more: send it again')
+            raise ValueError(held_words(h.store, up, 'the file sent is not here any more: send it again'))
     else:
         t = rb_target(h.store, b.get('id'))
         name = str(b.get('name') or '')
@@ -320,6 +340,7 @@ def _rbackup_upload(h):
         # Inside the try (1.0.205): one that did not arrive whole, or too big,
         # stayed behind - up to 4 GB until the next upload an hour later.
         h.body_to_file(dst, 4 * 1024 ** 3)        # as nginx takes (1.0.139)
+        held_note(h.store, up)                      # which node it waits on (1.0.249)
         with open(str(dst), 'rb') as f:
             head = f.read(8)
         if not (head.startswith(b'Salted__') or head.startswith(b'\x1f\x8b')):

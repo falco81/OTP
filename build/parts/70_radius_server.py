@@ -262,8 +262,15 @@ class Authenticator(object):
                 raise
             return 'the directory could not say whether %s is another account (%s)' % (
                 tname, str(e)[:120])
-        if other and not other.get('many') and \
-                str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
+        if other and other.get('many') and '@' not in str(tname):
+            return ''       # a plain name many answer to (a forest's base): as before, not refused
+        if other and other.get('many'):
+            # More than one answers to it (1.0.249): not known whose it is - refused, as
+            # same_entry refuses it (a directory with two of one userPrincipalName).
+            return ('more than one account in the directory answers to %s - which one the token '
+                    'is cannot be said' % tname)
+        if other and \
+                str(other.get('dn') or '').lower() != str((entry or {}).get('dn') or '').lower():
             return ('%s is another account in the directory than %s - a suffix of the realm '
                     'that names two people differently' % (tname, typed))
         return ''

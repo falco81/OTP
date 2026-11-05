@@ -1074,7 +1074,7 @@ class Tokens(object):
         self.store.token_write(name, fields)
         self._staged_forget(name)
         try:                            # a new token was never switched off (1.0.61)
-            self.store.db.run('DELETE FROM meta WHERE k = ?', ('disabled_from:' + name,))
+            self.store.drop_meta('disabled_from:' + name)
         except Exception:                               # noqa: BLE001
             pass
         out['scratch'] = codes
@@ -1142,7 +1142,7 @@ class Tokens(object):
 
     def _staged_forget(self, name):
         try:
-            self.store.db.run('DELETE FROM meta WHERE k = ?', ('staged:' + norm_name(name),))
+            self.store.drop_meta('staged:' + norm_name(name))
         except Exception:                               # noqa: BLE001
             pass
 
@@ -1886,6 +1886,13 @@ class Shipper(object):
                 except OSError:
                     pass
                 self.tcp.pop(key, None)
+        # The trouble of a target no longer sent to, gone with it (1.0.249): its alert stayed
+        # until the next restart.
+        keep = {'%s:%d/%s' % t for t in self.targets}
+        for d in (self.trouble, getattr(self, 'down', None) or {}):
+            for k in list(d):
+                if (not str(k).startswith('file:') or not CONFIG.get('ship_files')) and k not in keep:
+                    d.pop(k, None)
 
     def host(self):
         return str(CONFIG.get('isemon_hostname') or '').strip() or short_host()
@@ -1977,6 +1984,8 @@ class Shipper(object):
                 self.files[name] = f
             f.write(line + '\n')
             f.flush()
+            if self.trouble:
+                self.trouble.pop('file:' + name, None)  # written again: no trouble (1.0.249)
         except (OSError, ValueError) as e:
             self.trouble['file:' + name] = str(e)
 

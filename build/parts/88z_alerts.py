@@ -553,7 +553,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                     _al(lang, 'SNMP agent na %s neposlouchá' % n, 'The SNMP agent on %s is not listening' % n),
                     str(sn.get('error') or '')[:300] or _al(lang, 'Port se nepodařilo otevřít.',
                                                             'Its port could not be opened.'), 'monitor')
-            elif isinstance(sn, dict) and sn.get('trap_error'):
+            elif isinstance(sn, dict) and sn.get('trap_error') and CONFIG.get('snmp_traps'):
                 add('snmp:trap:' + n, 'warn', n,
                     _al(lang, 'Trapy SNMP z %s neodchází' % n, 'SNMP traps from %s do not go' % n),
                     str(sn.get('trap_error'))[:300], 'monitor')
@@ -666,7 +666,10 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             rs = ha_repl_state(store) or {}
         except Exception:                               # noqa: BLE001
             rs = {}
-        behind = float(rs.get('behind') or 0)
+        # Its slots' own, the most of them (1.0.249): 'behind' is said per slot, never for the
+        # whole - the alert never came.
+        behind = max([float(x.get('behind') or 0) for x in rs.get('outgoing') or []
+                      if isinstance(x, dict)] + [float(rs.get('behind') or 0)])
         if rs.get('healthy', True) and behind > mb * 1048576:
             add('repl:behind', 'warn', '',
                 _al(lang, 'Replikace zaostává o %s' % human_bytes(behind), 'The replication is %s behind' % human_bytes(behind)),
@@ -894,7 +897,22 @@ def report_lang():
     return CONFIG.get('report_lang') or alerts_lang()
 
 
-def alerts_evaluate(store, force=False):
+ALERTS_EVAL_LOCK = threading.Lock()
+
+
+def alerts_evaluate(store, force=False, wait=True):
+    """One at a time (1.0.249): "Look again" while the tick's mail was on its way sent the same
+    problems twice, and the two wrote over each other's state. Not waited for (`wait` False):
+    None when one is going on."""
+    if not ALERTS_EVAL_LOCK.acquire(timeout=-1 if wait else 0):
+        return None
+    try:
+        return _alerts_evaluate(store, force)
+    finally:
+        ALERTS_EVAL_LOCK.release()
+
+
+def _alerts_evaluate(store, force=False):
     """The alerts' turn: what is wrong compared with what was said, mailed."""
     lang = alerts_lang()
     now = time.time()
@@ -934,6 +952,7 @@ def alerts_evaluate(store, force=False):
                 gone.append(p)
     # Events: a source blocked for guessing, as it happens.
     events = []
+    last_event = st.get('event_id')
     # What is said as it happens (1.0.242: a table of them; the blocked sources since 1.0.162).
     rules = [r for r in ALERT_EVENTS if CONFIG.get(r[0], DEFAULTS.get(r[0]))]
     if rules:
@@ -962,12 +981,21 @@ def alerts_evaluate(store, force=False):
                     break
             if len(events) >= 20:
                 break
+    to = _alerts_to()
+    mailing = bool(to and CONFIG.get('alerts'))
+    held_back = mailing and now - float(st.get('fail_at') or 0) <= 900
+    if held_back and (gone or events):
+        # Not lost while a mail that failed is waited out (1.0.249): the events and the "right
+        # again" notices were taken as said before any mail was tried - they go with the next.
+        for p in gone:
+            known[p['key']] = p
+        if last_event is not None:
+            st['event_id'] = last_event
+        gone, events = [], []
     st['problems'] = known
     st['checked'] = now
     store.set_meta('alerts:state', json.dumps(st))
-    to = _alerts_to()
-    if (new or still or gone or events) and to and CONFIG.get('alerts') and \
-            now - float(st.get('fail_at') or 0) > 900:
+    if (new or still or gone or events) and mailing and not held_back:
         said = {p['key'] for p in new + still}
         # A mail about something new names what else is still wrong too.
         others = [p for p in cur.values() if p['key'] not in said and p['sent']] \
@@ -984,6 +1012,14 @@ def alerts_evaluate(store, force=False):
                     one.update(sent=True, sent_at=now,
                                mailed='bad' if 'bad' in (one.get('mailed'), one.get('level'))
                                else one.get('level'))
+            store.set_meta('alerts:state', json.dumps(st))
+        elif gone or events:
+            # Not sent, not waiting in the queue (1.0.249): kept for the next mail, as above.
+            st = _alert_state(store)
+            for p in gone:
+                st['problems'].setdefault(p['key'], p)
+            if last_event is not None:
+                st['event_id'] = last_event
             store.set_meta('alerts:state', json.dumps(st))
     return {'now': cur, 'new': len(new), 'still': len(still), 'over': len(gone),
             'events': len(events)}
@@ -1098,16 +1134,22 @@ def report_build(store, since, until, lang='cs'):
     days = max(1, int(round((until - since) / 86400)))
     # By day, whatever the period (the overview bars by 6 h over 3 days).
     # Counted by the database, a day a row (never the rows themselves read in).
-    slot = ('CAST((ts - ?) / 86400 AS INTEGER)' if db.engine == 'sqlite'
-            else 'FLOOR((ts - ?) / 86400)')
+    # By the hour, then into local days (1.0.249): days of 86 400 s from the first midnight were
+    # an hour off after a change of summer time - one date twice, the last one missing.
+    slot = ('CAST((ts - ?) / 3600 AS INTEGER)' if db.engine == 'sqlite'
+            else 'FLOOR((ts - ?) / 3600)')
     rows = db.rows("SELECT %s AS d, result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
                    "ts < ? AND packet = 'Access-Request' AND result IN ('accept', 'reject', "
                    "'drop') GROUP BY 1, 2" % slot, (since, since, until)) if days <= 62 else []
     per = collections.OrderedDict()
+    day0 = datetime.fromtimestamp(since).date()
+    starts = [time.mktime(datetime.combine(day0 + timedelta(days=i), datetime.min.time()).timetuple())
+              for i in range(min(days, 62) + 1)]
     for i in range(min(days, 62)):
-        per[i] = {'t': since + i * 86400, 'accept': 0, 'reject': 0}
+        per[i] = {'t': starts[i], 'accept': 0, 'reject': 0}
     for r in rows:
-        i = int(r['d'] or 0)
+        at = since + int(r['d'] or 0) * 3600
+        i = bisect.bisect_right(starts, at) - 1
         if i in per:
             per[i]['accept' if r['result'] == 'accept' else 'reject'] += int(r['n'] or 0)
     acc, rej = int(ov.get('accepted') or 0), int(ov.get('refused') or 0)

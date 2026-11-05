@@ -316,6 +316,11 @@ def hatls_off(store, by, here=True):
     certificates leave both PostgreSQLs (ssl as it was before otp)."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
+    if hisec_enforced('ha:tls', store):
+        # As db:tls is kept (1.0.249): the pages, the API and the command line switched it off
+        # under high security, and replication went in clear.
+        raise ValueError('high security is on: the link between the databases stays encrypted - '
+                         'or make ha:tls an exception there first')
     now = time.time()
     w = {'at': now, 'by': by, 'from': node_name(), 'off': True}
     store.set_meta('hatls:want', json.dumps(w))
@@ -421,7 +426,7 @@ def _hatls_off_tick(store, w, st):
             return
         else:
             # Nothing else keeps it: not renewed by Settings → The database either.
-            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+            store.drop_meta('dbtls:server:' + node_name())
         st.update(cert_end=None, done_at=now)
         hatls_put(store, st)
         store.add_event('ha', 'TLS between the databases is off on %s' % node_name(), 'warn')

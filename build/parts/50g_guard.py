@@ -171,7 +171,13 @@ def dbguard_flush(force=False):
                            'seen_h': DBGUARD['seen_h'] or {}, 'adopted': DBGUARD.get('adopted') or []})
         DBGUARD['dirty'] = 0.0
     try:
-        write_replacing(DBGUARD_FILE, data, 0o600)
+        # The state folder's owner's even when root writes it (1.0.249: a copy put back, a rename from
+        # the command line) - left root's, the service could not read its counts at all.
+        owner = None
+        if os.geteuid() == 0:
+            st = os.stat(str(STATE_DIR))
+            owner = (st.st_uid, st.st_gid)
+        write_replacing(DBGUARD_FILE, data, 0o600, owner=owner)
     except Exception as e:                              # noqa: BLE001
         log_sparing('guard-file', 'the counters of signed rows could not be written to %s: %s'
                     % (DBGUARD_FILE, e), 'warn', every=600)
@@ -407,6 +413,7 @@ def dbguard_forget_seen(why=''):
         DBGUARD['seen'] = {}
         DBGUARD['seen_h'] = {}
         DBGUARD['refused'] = {}
+        DBGUARD['good'] = {}        # the values last found good were of that database (1.0.249)
         DBGUARD['dirty'] = time.time()
     dbguard_flush(force=True)
     if why:
@@ -439,7 +446,11 @@ def dbguard_resign(store, why=''):
         DBGUARD['seen_h'] = {}
         DBGUARD['good'] = {}
         DBGUARD['refused'] = {}
+        # Every row signed as it is now (1.0.249): nothing left for a version's first start to
+        # take as otp's word - switched on while running, the next start signed rows put in since.
+        DBGUARD['adopted'] = sorted(set(DBGUARD.get('adopted') or []) | set(DBGUARD_SINCE) | {'tokens'})
         DBGUARD['dirty'] = time.time()
+    dbguard_flush(force=True)
     if why:
         try:
             store.add_event('security', 'the rows of the database that reach root signed again '

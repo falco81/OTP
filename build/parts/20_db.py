@@ -647,9 +647,27 @@ class Db(object):
                 self.run(RawSql(off))
             except Exception:                           # noqa: BLE001
                 pass
+            # MariaDB's driver waits only so long for an answer (1.0.249): the server's limit taken
+            # away, a statement of minutes still failed at the socket's 130 s.
+            conn = self.conn if self.engine == 'mariadb' else None
+            was_rt = getattr(conn, '_read_timeout', None) if conn is not None else None
+            try:
+                if conn is not None:
+                    conn._read_timeout = None
+                    if getattr(conn, '_sock', None) is not None:
+                        conn._sock.settimeout(None)
+            except Exception:                           # noqa: BLE001
+                conn = None
             try:
                 yield
             finally:
+                if conn is not None:
+                    try:
+                        conn._read_timeout = was_rt
+                        if getattr(conn, '_sock', None) is not None:
+                            conn._sock.settimeout(was_rt)
+                    except Exception:                   # noqa: BLE001
+                        pass
                 try:
                     self.run(RawSql(on))
                 except Exception:                       # noqa: BLE001
@@ -686,9 +704,11 @@ class Db(object):
                 self.run(RawSql({'mariadb': 'START TRANSACTION', 'sqlite': 'BEGIN IMMEDIATE'}.get(
                     self.engine, 'BEGIN')))
                 self.in_tx = True
-                if self.engine == 'postgres' and main:
-                    self.run(RawSql('SET LOCAL idle_in_transaction_session_timeout = 10000'))
                 try:
+                    # Inside (1.0.249): failing here left in_tx set for good, and every later
+                    # transaction of the lane went in one statement at a time.
+                    if self.engine == 'postgres' and main:
+                        self.run(RawSql('SET LOCAL idle_in_transaction_session_timeout = 10000'))
                     yield
                     self.run(RawSql('COMMIT'))
                 except BaseException:
@@ -1327,7 +1347,12 @@ META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:n
                   # the time servers, the console at login, the password policy and SELinux's
                   # steps were never put in there. Without them each node puts them in again.
                   'host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
-                  'console:now:', 'host:selinux:now:', 'host:sshkeys:now:')
+                  'console:now:', 'host:selinux:now:', 'host:sshkeys:now:',
+                  # A putback asked in the copy (1.0.249): put back on a machine in use, its users
+                  # and keys taken away since came back - on one installed anew it is asked anew.
+                  'host:putback:',
+                  # Which node a download or an upload waits on (1.0.249): of that hour only.
+                  'held:')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):

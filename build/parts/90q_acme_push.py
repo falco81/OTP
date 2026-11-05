@@ -507,7 +507,7 @@ def push_conf_save(store, conf):
             store.set_meta('acme_push:key:' + kid, json.dumps(k))
     for kid in before:
         if kid not in now:
-            store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:key:' + kid,))
+            store.drop_meta('acme_push:key:' + kid)
     p0, p1 = was.get('pairing'), conf.get('pairing')
     if p1 and (not p0 or p0.get('id') != p1.get('id') or old_row):
         store.set_meta('acme_push:pairing', json.dumps(dict(p1, tries=0)))
@@ -519,7 +519,7 @@ def push_conf_save(store, conf):
             # The last wrong try: counted, so that the other node closes it too.
             store.set_meta('acme_push:try:%s:%s' % (p0['id'], secrets.token_hex(8)),
                            json.dumps({'at': time.time(), 'node': node_name()}))
-        store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:pairing',))
+        store.drop_meta('acme_push:pairing')
     conf['_was'] = json.loads(json.dumps(dict({k: v for k, v in conf.items() if k != '_was'},
                                               _old=False)))
 

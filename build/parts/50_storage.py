@@ -669,11 +669,11 @@ class Storage(object):
         """A row of meta taken away - with the guard's signature of its going (1.0.248): deleted
         with plain SQL, its last value put back by somebody else read as signed still."""
         if not dbguard_meta_signed(k):
-            self.db.run('DELETE FROM meta WHERE k = ?', (k,))
-            return
+            return self.db.run('DELETE FROM meta WHERE k = ?', (k,))
         with self.db.transaction():
-            self.db.run('DELETE FROM meta WHERE k = ?', (k,))
+            n = self.db.run('DELETE FROM meta WHERE k = ?', (k,))
             dbguard_sign(self.db, 'm', k, None)
+        return n
 
     def drop_setting(self, k):
         if not dbguard_setting_kept(k):
@@ -903,7 +903,7 @@ class Storage(object):
                 raise ValueError(bad)
         # A second step left by an account of this name taken away before
         # (1.0.146) is not this one's: somebody else's phone would answer it.
-        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
+        self.drop_meta('adm2fa:' + name.lower())
         pw = password_hash(password) if password else ''
         with self.db.transaction():                 # with its signature (1.0.234)
             got = self.db.insert('accounts', {
@@ -944,7 +944,7 @@ class Storage(object):
                     ('admin', one['name'].lower()))
         # Its second step with it (1.0.146): a new account of the same name
         # took it over - the old owner's authenticator signing it in.
-        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + one['name'].lower(),))
+        self.drop_meta('adm2fa:' + one['name'].lower())
 
     # ---- how somebody laid out the tables (as on isemon, 1.10.146 on) -------
     COLS_MOST_TABLES = 300
@@ -1350,13 +1350,13 @@ class Storage(object):
         try:
             for r in self.db.rows("SELECT k FROM meta WHERE k LIKE 'clientseen:%'"):
                 if r['k'].rsplit(':', 1)[-1] == str(int(ident)):
-                    self.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+                    self.drop_meta(r['k'])
             # Which of its addresses signed their requests, on every node
             # (1.0.101): maseen:<node>:<client>:<address>.
             for r in self.db.rows("SELECT k FROM meta WHERE k LIKE 'maseen:%'"):
                 parts = r['k'].split(':', 3)
                 if len(parts) == 4 and parts[2] == str(int(ident)):
-                    self.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+                    self.drop_meta(r['k'])
         except Exception:                               # noqa: BLE001
             pass
         self._clients = None
@@ -1430,6 +1430,8 @@ class Storage(object):
         if not re.match(r'^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}\Z', name):
             raise ValueError('a realm needs a name: letters, digits, dots, dashes and spaces')
         suffix = str(data.get('suffix') or '').strip().lstrip('@').lower()
+        if len(suffix) > 253:
+            raise ValueError('a realm is 253 characters at most')    # as a DNS name (1.0.249)
         if suffix and suffix != '*' and not re.match(r'^[a-z0-9][a-z0-9.-]*\Z', suffix):
             raise ValueError('the realm is what comes after the @ - example.cz - or * for '
                              'every name, or nothing for names written without one')
@@ -1777,7 +1779,9 @@ class Storage(object):
         elif old and old.get('bind_pw') and (
                 str(old.get('hosts') or '') != row['hosts'] or int(old.get('port') or 0) != port or
                 str(old.get('tls') or '') != tls or int(old.get('verify') or 0) != row['verify'] or
-                str(old.get('bind_dn') or '') != row['bind_dn']):
+                str(old.get('bind_dn') or '') != row['bind_dn'] or
+                # Old TLS let in where it was not (1.0.249): the check weakened is another server.
+                (row['weak'] and not int(old.get('weak') or 0))):
             # The password kept goes to the server it was given for only (1.0.207):
             # another host typed in, it was sent there - in clear with TLS off -
             # while the page never showed it.
@@ -1959,6 +1963,11 @@ class Storage(object):
         if HA_REBUILDING.is_set():
             return None
         row.setdefault('node', log_node())
+        # As long as RADIUS lets them be (1.0.249): a test of a 100 000-letter name was kept whole,
+        # and the overview took 25 s to lay out every time it was opened.
+        for k, most in (('username', 253), ('reason', 1000)):
+            if isinstance(row.get(k), str) and len(row[k]) > most:
+                row[k] = row[k][:most]
         hook = getattr(self, 'on_radius', None)
         if hook:
             try:
@@ -2146,10 +2155,10 @@ class Storage(object):
                 rej += n
 
         def top(col, where, n=10):
-            return self.db.rows(
+            return [dict(r, said=str(r.get('said') or '')[:300]) for r in self.db.rows(
                 "SELECT %s AS said, COUNT(*) AS n, MAX(ts) AS last FROM radius_log WHERE ts >= ? "
                 "AND ts < ? AND packet = 'Access-Request' AND %s GROUP BY %s ORDER BY n DESC "
-                "LIMIT %d" % (col, where, col, n), (since, until))
+                "LIMIT %d" % (col, where, col, n), (since, until))]
         return {
             'hours': hours, 'step': step, 'since': since, 'until': until, 'series': list(buckets.values()),
             'accepted': acc, 'refused': rej,

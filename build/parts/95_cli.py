@@ -992,6 +992,30 @@ HELP_EXAMPLES = [
 
 
 
+def backup_as_service(db, why):
+    """make_backup by the otp account, never by root (1.0.249): the folder of the copies is the
+    otp account's, which can make it a link - root then left a file of its own wherever it led."""
+    st = os.stat(str(STATE_DIR))
+    if os.geteuid() != 0 or (st.st_uid == 0 and not st.st_mode & 0o022):
+        return make_backup(Storage(db), why)        # nobody but root can change the folder
+
+    def go():
+        # The folder's owner (the otp account; another in a test of its own)
+        import pwd
+        try:
+            name = pwd.getpwuid(st.st_uid).pw_name
+            os.initgroups(name, st.st_gid)
+        except (KeyError, OSError):
+            os.setgroups([st.st_gid])
+        os.setgid(st.st_gid)
+        os.setuid(st.st_uid)
+        return {'path': str(make_backup(Storage(open_db()), why))}
+    got = console_in_child(go, 1800)
+    if got.get('error'):
+        raise OSError(got['error'])
+    return got.get('path')
+
+
 def become_service_user():
     """Run as the daemon's own account when started as root, so that nothing
     the command line writes - the database file and its journal, a copy, the
@@ -1217,7 +1241,7 @@ def cli_ha(args, pal):
     target = Path(args.ha_bundle or '/root/otp-join-%s.json' % node_name())
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for a second node was made on the command line '
-                    '(the database at %s)' % db_host, 'warn', who='command line')
+                    '(the database at %s)' % db_host, 'warn', who=cli_who())
     ha_mark_shared(args.ha_peer or '')
     print('')
     print(pal.ok_line('the bundle for the second node: %s' % target))
@@ -1247,7 +1271,7 @@ def firewall_peer(peer, pal, port=5432):
     except ValueError as e:
         print(pal.bad_line('the firewall: %s is not an address (%s)' % (peer, e)))
         return False
-    ha_joining_set([str(a)], 'command line', 'a cluster made with it')
+    ha_joining_set([str(a)], cli_who(), 'a cluster made with it')
     fam = 'ipv4' if a.version == 4 else 'ipv6'
     ipt = 'iptables' if a.version == 4 else 'ip6tables'
     net = '%s/%d' % (a, 32 if a.version == 4 else 128)
@@ -1319,7 +1343,7 @@ def cli_ha_bundle_again(args, pal, store):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for the other node (slot %d) was made again on the '
                     'command line - it carries the key that opens every token' % data['slot'],
-                    'warn', who='command line')
+                    'warn', who=cli_who())
     print(pal.ok_line('the bundle for the other node (slot %d): %s' % (data['slot'], target)))
     print('  ' + pal.bold('its passphrase, shown only now: ') + pal.info(phrase))
     print('  on the other node: otp --ha-join %s --node-name NAME' % target.name)
@@ -1338,6 +1362,11 @@ def cli_ha_setup_replicated(args, pal, store, ask):
         peer_address(peer)
     except ValueError as e:
         raise SystemExit('otp: %s' % e)
+    if CONFIG.get('ha_mode') == 'replicated' and int(CONFIG.get('ha_slot') or 1) != 1:
+        # The second node made the first again (1.0.249): both slot 1, the same ids made on both,
+        # and replication stopped on them.
+        raise SystemExit('otp: this node is the second of a cluster - --ha-bundle makes the '
+                         'bundle on the first one; to begin again here, --ha-standalone first')
     port = int(CONFIG.get('db_port') or 5432)
     name, user, pw = CONFIG.get('db_name'), CONFIG.get('db_user'), CONFIG.get('db_password')
     try:
@@ -1393,7 +1422,7 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'this node became the first of two, replicating with %s; a '
                     'bundle for the second was made on the command line' % peer, 'warn',
-                    who='command line')
+                    who=cli_who())
     if not os.environ.get('OTP_HA_NO_RESTART'):
         subprocess.run(['systemctl', 'restart', 'otp'], capture_output=True)
     print('')
@@ -1422,8 +1451,33 @@ def cli_ha_join_replicated(args, pal, data, ask):
     print(pal.head('joining %s - a PostgreSQL on each node, replicating both ways'
                    % (peer.get('name') or '?')))
     node = args.node_name or ask('This node\'s name', socket.gethostname().split('.')[0])
+    if str(peer.get('name') or '').lower() == str(node or '').lower():
+        # One name for both (1.0.249): both took themselves for the lead, and replication stopped
+        # on a key written by both.
+        raise SystemExit('otp: %s is the first node\'s name too - give this one another '
+                         '(--node-name)' % node)
     port = int(FILE_CONFIG.get('db_port') or 5432) if FILE_CONFIG.get('db_engine') == 'postgres' \
         else 5432
+    # What this node holds kept first, before anything is changed (1.0.249), as --ha-resync keeps
+    # it: the join empties the tables - a node in use lost its tokens with no copy of them.
+    try:
+        cur = open_db()
+        mine = int(cur.value('SELECT COUNT(*) FROM tokens', (), 0) or 0)
+    except Exception:                                   # noqa: BLE001
+        cur, mine = None, 0
+    if mine:
+        try:
+            kept = backup_as_service(cur, 'before this node joined %s, on the command line'
+                                     % (peer.get('name') or 'a cluster'))
+            say('a copy of what was here (%d tokens): %s' % (mine, kept))
+        except Exception as e:                          # noqa: BLE001
+            raise SystemExit('otp: no copy of what is here (%d tokens) could be made, so nothing '
+                             'was changed: %s' % (mine, e))
+    if cur is not None:
+        try:
+            cur.close()
+        except Exception:                               # noqa: BLE001
+            pass
     try:
         if not pg_local_running(port):
             pg_install_local(int(data.get('pg_major') or 16), say)
@@ -1454,6 +1508,8 @@ def cli_ha_join_replicated(args, pal, data, ask):
                 subprocess.run(['systemctl', 'is-active', '--quiet', 'otp']).returncode == 0:
             subprocess.run(['systemctl', 'stop', 'otp'], capture_output=True)
             say('otp is stopped on this node while the rows come over')
+        # A rebuild that fails leaves the node in maintenance, as the pages' (1.0.249).
+        HA_STORE['store'] = Storage(local)
         got = ha_rebuild(local, remote, int(data.get('slot') or 2), int(peer.get('slot') or 1),
                          me, port, peer['address'], int(peer.get('port') or 5432),
                          name, user, pw, lambda t: print(pal.dim('  ' + t)))
@@ -1547,13 +1603,14 @@ def cli_ha_resync(args, pal):
         # What is here kept first, as the pages do (1.0.47): a rebuild
         # replaces all of it.
         try:
-            kept = make_backup(Storage(local), 'before this node was rebuilt from the other, '
-                               'on the command line')
+            kept = backup_as_service(local, 'before this node was rebuilt from the other, '
+                                     'on the command line')
             print(pal.ok_line('a copy of what was here: %s' % kept))
         except Exception as e:                          # noqa: BLE001
             raise SystemExit('otp: no copy of what is here could be made, so nothing was '
                              'changed: %s' % e)
         remote = ha_peer_db()
+        HA_STORE['store'] = Storage(local)      # a failed one in maintenance (1.0.249)
         got = ha_rebuild(local, remote, int(CONFIG.get('ha_slot') or 2),
                          3 - int(CONFIG.get('ha_slot') or 2),
                          CONFIG.get('ha_address') or node_address(),
@@ -1596,7 +1653,7 @@ def cli_ha_standalone(args, pal):
     mode = CONFIG.get('ha_mode') or ''
     if mode == 'replicated' and store.db.engine == 'postgres':
         try:
-            say(ha_control(store, 'stop', by='command line')['message'])
+            say(ha_control(store, 'stop', by=cli_who())['message'])
         except Exception as e:                          # noqa: BLE001
             print(pal.warn_line('the replication: %s' % str(e).split('\n')[0][:200]))
         # Whatever is left of it here - the other node gone for good, or
@@ -1627,7 +1684,7 @@ def cli_ha_standalone(args, pal):
     say('%s: a single server again (the database, the key and the node\'s name are kept)'
         % CONFIG_FILE)
     store.add_event('settings', '%s left the cluster on the command line and answers alone'
-                    % node_name(), 'warn', who='command line')
+                    % node_name(), 'warn', who=cli_who())
     store.db.close()
     if not os.environ.get('OTP_HA_NO_RESTART'):
         subprocess.run(['systemctl', 'restart', 'otp'], capture_output=True)
@@ -1744,6 +1801,10 @@ def cli_web(args, pal, store):
         # As on the pages (1.0.187): one run out is not put in.
         if got['info'].get('not_after') and got['info']['not_after'] < time.time():
             raise ValueError('this certificate ran out on %s' % stamp(got['info']['not_after']))
+        a2 = (got2 or {}).get('info') or {}
+        if a2.get('not_after') and a2['not_after'] < time.time():
+            raise ValueError('the second certificate (%s) ran out on %s' % (
+                a2.get('key') or 'ECDSA', stamp(a2['not_after'])))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=got['info'],
                     chain_info=got['chain_info'], root_info=got['root_info'],
@@ -2035,9 +2096,10 @@ def cli_stage_files(args):
             args.ca = stage(args.ca)
         if getattr(args, 'export_config', None) and args.export_config != '-':
             mode = 0o600 if getattr(args, 'with_secrets', False) else 0o640
-            fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
-                         os.O_NOFOLLOW, mode)
-            os.fchmod(fd, mode)
+            # Emptied only when written (1.0.249): a passphrase typed twice wrong, a refusal,
+            # left the file there before at 0 bytes.
+            fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, mode)
+            os.fchmod(fd, mode)         # as root: the otp account may not change root's file
             args.export_fd = fd
         # The files of a certificate and of isemon's bundle too (1.0.248): opened after the command
         # line became the otp account, root's /root/x.pfx was refused, and a file there already
@@ -2045,12 +2107,11 @@ def cli_stage_files(args):
         te = getattr(args, 'tls_export', None)
         if te and len(te) == 2 and te[0] in TLS_EXPORT_KINDS:
             mode = 0o600 if TLS_EXPORT_KINDS[te[0]][2] else 0o644
-            fd = os.open(te[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+            fd = os.open(te[1], os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, mode)
             os.fchmod(fd, mode)
             args.tls_export_fd = fd
         if getattr(args, 'isemon_tls_bundle', None):
-            fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                         0o600)
+            fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             os.fchmod(fd, 0o600)
             args.isemon_bundle_fd = fd
     except OSError as e:
@@ -2354,12 +2415,15 @@ def cli_main(argv=None):
             if not args.yes:
                 raise SystemExit('otp: --ha-tls-off switches off what stops somebody between the '
                                  'nodes from reading and writing the rows going over: add --yes')
-            got = hatls_off(store, 'command line', here=False)
+            try:
+                got = hatls_off(store, cli_who(), here=False)
+            except ValueError as e:
+                raise SystemExit('otp: %s' % e)
             print(pal.warn_line(got['message']))
             print('the daemons of both nodes go through the steps; follow them with  otp --ha-tls')
         if args.ha_tls_repair:
             try:
-                got = hatls_start(store, 'command line', here=False)
+                got = hatls_start(store, cli_who(), here=False)
             except ValueError as e:
                 raise SystemExit('otp: %s' % e)
             print(pal.ok_line(got['message']))
@@ -2388,12 +2452,12 @@ def cli_main(argv=None):
             node = args.node or (next((x['node'] for x in trials if x['kind'] == 'net'), None)
                                  or node_name())
             try:
-                said = net_trial_answer(store, node, act, 'command line')
+                said = net_trial_answer(store, node, act, cli_who())
             except ValueError as e:
                 raise SystemExit('otp: %s' % e)
         else:
             try:
-                said = fw_trial_answer(store, act, 'command line')
+                said = fw_trial_answer(store, act, cli_who())
             except ValueError as e:
                 raise SystemExit('otp: %s' % e)
         print(pal.ok_line(said))
@@ -2412,7 +2476,7 @@ def cli_main(argv=None):
             return 0
         try:
             # pg_hba.conf by the root helper (otp-web.path), as for the pages.
-            got = ha_readdress(store, args.ha_address or '', args.ha_peer or '', by='command line')
+            got = ha_readdress(store, args.ha_address or '', args.ha_peer or '', by=cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         for x in got['done']:
@@ -2427,7 +2491,7 @@ def cli_main(argv=None):
                   'restart otp')
         return 0 if not got['left'] else 2
     if args.ha_renamed:
-        said = node_carry(store, args.ha_renamed.strip(), node_name(), by='command line')
+        said = node_carry(store, args.ha_renamed.strip(), node_name(), by=cli_who())
         try:
             NODE_NAME_FILE.write_text(node_name() + '\n')
         except OSError:
@@ -2444,7 +2508,7 @@ def cli_main(argv=None):
         store.db.run('DELETE FROM meta WHERE k IN (?, ?)',
                      ('maint:' + args.ha_forget, 'upgrade:node:' + args.ha_forget))
         store.add_event('settings', '%s was taken off the list of nodes on the command line'
-                        % args.ha_forget, 'warn', who='command line')
+                        % args.ha_forget, 'warn', who=cli_who())
         print(pal.ok_line('%s is off the list (if it still runs, it writes itself back within '
                           'fifteen seconds)' % args.ha_forget))
         return 0
@@ -2477,7 +2541,7 @@ def cli_main(argv=None):
             maintenance_ensure(store)
         try:
             maintenance_set(store, args.maintenance == 'on', args.why or 'on the command line',
-                            'command line', name)
+                            cli_who(), name)
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('%s: %s' % (name, 'in maintenance - RADIUS is not answered and '
@@ -2486,13 +2550,13 @@ def cli_main(argv=None):
         return 0
     if args.upgrade_cancel:
         try:
-            upgrade_cancel(store, 'command line')
+            upgrade_cancel(store, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('the upgrade is stopped; the nodes not begun stay as they are'))
         return 0
     if args.upgrade_check:
-        row = online_look(store, 'command line')
+        row = online_look(store, cli_who())
         if args.json:
             print(json.dumps(row, indent=2, default=str))
             return 0 if not row.get('error') else 1
@@ -2518,7 +2582,7 @@ def cli_main(argv=None):
         plan = upgrade_plan(store)
         if plan and plan['state'] == 'running':
             raise SystemExit('otp: an upgrade is going on - otp --upgrade-follow')
-        row = online_look(store, 'command line')
+        row = online_look(store, cli_who())
         if row.get('error'):
             raise SystemExit('otp: %s: %s' % (row.get('url'), row['error']))
         want = args.upgrade_online
@@ -2545,13 +2609,13 @@ def cli_main(argv=None):
                 return 1
         print(pal.dim('  fetching it and checking its signature…'))
         try:
-            meta = online_fetch(store, pk['version'], 'command line')
+            meta = online_fetch(store, pk['version'], cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('otp %s fetched, signed by %s' % (meta['version'],
                                                              meta.get('signed_by'))))
         try:
-            upgrade_start(store, 'command line')
+            upgrade_start(store, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         return cli_upgrade_follow(store, pal)
@@ -2610,15 +2674,15 @@ def cli_main(argv=None):
             if is_file:
                 if not os.path.isfile(want):
                     raise ValueError('%s is not a file' % want)
-                meta = downgrade_file(store, want, 'command line')
+                meta = downgrade_file(store, want, cli_who())
             else:
-                meta = downgrade_fetch(store, want, 'command line')
+                meta = downgrade_fetch(store, want, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('otp %s checked (signed by %s) - the database can take it'
                           % (meta['version'], meta.get('signed_by'))))
         try:
-            upgrade_start(store, 'command line')
+            upgrade_start(store, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         return cli_upgrade_follow(store, pal)
@@ -2944,6 +3008,11 @@ def cli_main(argv=None):
             args.enroll = main
     if args.enroll:
         had = store.token(args.enroll)
+        bad_name = '' if had else token_name_problem(norm_name(args.enroll))
+        if bad_name:
+            # The pages' rule (1.0.224, here too 1.0.249): CORP\\novak was made, and found by
+            # nobody - RADIUS reads it as novak.
+            raise SystemExit('otp: %s' % bad_name)
         if had and had.get('state') != 'pending':
             # Not silently (1.0.59): the token in use stops working now.
             cli_sure(args, 'the token of %s in use is replaced, and stops working now'
@@ -3019,7 +3088,7 @@ def cli_main(argv=None):
         store.token_drop(args.delete_token)
         # What was kept beside it goes too, as on the pages (1.0.44).
         for k in ('staged:', 'mailed:', 'disabled_from:'):
-            store.db.run('DELETE FROM meta WHERE k = ?', (k + norm_name(args.delete_token),))
+            store.drop_meta(k + norm_name(args.delete_token))
         store.add_event('tokens', 'the token of %s was taken away on the command line'
                         % norm_name(args.delete_token), 'warn', who=who)
         print(pal.ok_line('gone'))
@@ -3041,7 +3110,7 @@ def cli_main(argv=None):
         # Its recovery codes given back too, as on the pages (1.0.103).
         scratch_guard_give_back(store, args.unlock)
         store.add_event('tokens', 'the command line let %s try again at once'
-                        % norm_name(args.unlock), who='command line')
+                        % norm_name(args.unlock), who=cli_who())
         print(pal.ok_line('the wrong codes of %s are forgotten' % norm_name(args.unlock)))
         return 0
 
@@ -3072,7 +3141,7 @@ def cli_main(argv=None):
 
     if args.fill_names:
         print(pal.dim('  the owners\' names, from the directory of each token\'s realm...'))
-        got = Daemon(store, serve=False).fill_names(by='command line')
+        got = Daemon(store, serve=False).fill_names(by=cli_who())
         print(pal.ok_line('%d token(s) given their owner\'s name; %d not found, %d with no '
                           'directory to ask, %d could not be asked'
                           % (got['filled'], got['not_found'], got['no_directory'],
@@ -3195,7 +3264,7 @@ def cli_main(argv=None):
         cli_sure(args, 'the client %s is taken away' % one['name'])
         store.client_drop(one['id'])
         store.add_event('clients', 'command line took away the client %s' % one['name'],
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -3251,7 +3320,7 @@ def cli_main(argv=None):
                           else old.get('aliases') or [],
                           'note': args.note or old.get('note', '')}, who)
         store.add_event('realms', 'command line saved the realm %s' % args.add_realm,
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('the realm %s is saved' % args.add_realm))
         return 0
@@ -3267,7 +3336,7 @@ def cli_main(argv=None):
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         store.add_event('realms', 'command line took away the realm %s' % one['name'],
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -3310,7 +3379,7 @@ def cli_main(argv=None):
             data['ca'] = ca
         store.directory_save(data, who)
         store.add_event('directories', 'command line saved the directory %s'
-                        % args.add_directory, who='command line')
+                        % args.add_directory, who=cli_who())
         bump(store)
         print(pal.ok_line('the directory %s is saved' % args.add_directory))
         return 0
@@ -3325,7 +3394,7 @@ def cli_main(argv=None):
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         store.add_event('directories', 'command line took away the directory %s' % one['name'],
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -3405,9 +3474,11 @@ def cli_main(argv=None):
             if fd is None:
                 fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                              0o600 if args.with_secrets else 0o640)
-            # The mode of a file there already too (1.0.94): O_CREAT's mode is
-            # only a new file's, and secrets went into a 0644 one.
-            os.fchmod(fd, 0o600 if args.with_secrets else 0o640)
+                # The mode of a file there already too (1.0.94): O_CREAT's mode is
+                # only a new file's, and secrets went into a 0644 one. One opened by root
+                # had its mode set then (1.0.249): the otp account may not change it.
+                os.fchmod(fd, 0o600 if args.with_secrets else 0o640)
+            os.ftruncate(fd, 0)
             with os.fdopen(fd, 'w') as f:
                 f.write(text + '\n')
             print(pal.ok_line('%s: the configuration%s' % (
@@ -3681,7 +3752,7 @@ def cli_main(argv=None):
 
     if args.rbackup_now:
         try:
-            run = rb_run(store, 'command line')
+            run = rb_run(store, cli_who())
         except (RbError, ValueError) as e:
             raise SystemExit('otp: %s' % e)
         if run.get('error'):
@@ -3731,7 +3802,7 @@ def cli_main(argv=None):
                                         ' and make this machine node %s' % m.get('node')))
             return 0
         try:
-            got = rb_restore(store, path, password, 'command line',
+            got = rb_restore(store, path, password, cli_who(),
                              keep_node_name=args.keep_node_name, need_admin=False)
         except (RbError, ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
@@ -3756,7 +3827,7 @@ def cli_main(argv=None):
         if not Path(args.restore).is_file():
             raise SystemExit('otp: there is no file %s' % args.restore)
         try:
-            got = db_file_restore(store, args.restore, 'command line',
+            got = db_file_restore(store, args.restore, cli_who(),
                                   key_file=_key_beside(args.restore), need_admin=False)
         except (ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
@@ -4103,7 +4174,8 @@ def cli_main(argv=None):
         fd = getattr(args, 'isemon_bundle_fd', None)
         if fd is None:
             fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        os.fchmod(fd, 0o600)
+            os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
         with os.fdopen(fd, 'wb') as f:
             f.write(base64.b64decode(got['file']))
         print(pal.ok_line('%s: isemon\'s certificate and key, locked with the passphrase given'
@@ -4137,7 +4209,8 @@ def cli_main(argv=None):
         fd = getattr(args, 'tls_export_fd', None)
         if fd is None:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
-        os.fchmod(fd, mode)
+            os.fchmod(fd, mode)
+        os.ftruncate(fd, 0)
         with os.fdopen(fd, 'wb') as f:
             f.write(base64.b64decode(got['file']))
         print(pal.ok_line('%s: %s' % (path, TLS_EXPORT_KINDS[kind][0])))
@@ -4348,11 +4421,15 @@ def cli_selinux(args, pal):
     return got.returncode
 
 
+CLI_STARTED_ROOT = os.geteuid() == 0
+
+
 def cli_who():
     """Who did it, for the events: the command line - and, run through sudo (the console of a
     normal user, 1.0.240), whose sudo it was."""
     by = os.environ.get('SUDO_USER') or ''
-    if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
+    # Root when it was started (1.0.249): most commands become the otp account before they act.
+    if CLI_STARTED_ROOT and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
         return 'command line (sudo %s)' % by
     return 'command line'
 
@@ -4755,6 +4832,10 @@ def run_daemon():
         DAEMON_DB[0] = db
     except Exception as e:
         log('the database %s could not be opened: %s' % (CONFIG.get('db_engine'), e), 'error')
+        try:
+            net_local_trial_lost()      # a network on trial cut it off from it (1.0.249)
+        except Exception:                               # noqa: BLE001
+            pass
         raise SystemExit(1)
     load_config(saved=store.settings_saved())
     log_open()

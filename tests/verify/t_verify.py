@@ -8,7 +8,7 @@ V = '/home/claude/build/out/otp-%s' % VER
 D = tempfile.mkdtemp(prefix='otp-vf-'); os.makedirs(D + '/run'); os.makedirs(D + '/dest')
 APORT = 30491
 env = dict(os.environ, OTP_STATE=D, OTP_CONFIG=D + '/config.json', OTP_LOGDIR=D, OTP_RUN=D + '/run', OTP_STAY_ROOT='1')
-json.dump({'db_engine': 'sqlite', 'radius_bind': '127.0.0.1', 'radius_auth_port': 36110, 'radius_acct_port': 36111,
+json.dump({'backup_at': '00:00', 'db_engine': 'sqlite', 'radius_bind': '127.0.0.1', 'radius_auth_port': 36110, 'radius_acct_port': 36111,
            'api_port': APORT, 'node_name': 'otp1'}, open(D + '/config.json', 'w'))
 os.environ.update(env); sys.path.insert(0, V); sys.argv = ['x']
 import otp

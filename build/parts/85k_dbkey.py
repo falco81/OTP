@@ -153,6 +153,37 @@ def dbkey_upload(up):
     return p
 
 
+def held_note(store, ident):
+    """Which node a file waits on (1.0.249): behind a balancer that sends each request to either
+    node, the next one reached the other node - which said only "not here any more"."""
+    try:
+        now = time.time()
+        for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'held:%'"):
+            try:
+                if now - float(json.loads(r['v']).get('at') or 0) > 7200:
+                    store.drop_meta(r['k'])
+            except (ValueError, TypeError, AttributeError):
+                store.drop_meta(r['k'])
+        store.set_meta('held:' + hashlib.sha256(str(ident).encode()).hexdigest()[:24],
+                       json.dumps({'node': node_name(), 'at': now}))
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def held_words(store, ident, words):
+    """`words`, or which node to ask, where the file waits on another."""
+    try:
+        got = json.loads(store.get_meta('held:' + hashlib.sha256(str(ident).encode()).hexdigest()[:24])
+                         or '{}')
+        if got.get('node') and got['node'] != node_name():
+            return ('it waits on the node %s, and this request reached %s - open the pages of %s '
+                    'itself for it (a balancer in front of both should keep one browser on one '
+                    'node)' % (got['node'], node_name(), got['node']))
+    except Exception:                                   # noqa: BLE001
+        pass
+    return words
+
+
 def dbkey_ticket_put(path, name, who):
     """A file made for a download, waiting ten minutes for the one browser
     that asked for it: its ticket."""

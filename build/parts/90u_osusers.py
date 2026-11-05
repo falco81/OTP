@@ -18,8 +18,12 @@ OSU_PW_MIN = 8
 PWP_DEFAULT = {'managed': False, 'minlen': 12, 'minclass': 3, 'maxrepeat': 3, 'dictcheck': 1,
                'usercheck': 1, 'difok': 5, 'remember': 5, 'max_days': 99999, 'min_days': 0,
                'warn_days': 7, 'deny': 0, 'unlock_time': 900, 'fail_interval': 900, 'existing': False}
+PWP_WORDS = {'minlen': 'the shortest password', 'max_days': 'days a password is good',
+             'min_days': 'the least days between two changes', 'warn_days': 'days of warning before',
+             'remember': 'passwords remembered', 'minclass': 'kinds of characters',
+             'maxrepeat': 'the same character in a row', 'difok': 'characters other than the old'}
 PWP_RANGES = {'minlen': (6, 128), 'minclass': (0, 4), 'maxrepeat': (0, 20), 'difok': (0, 20),
-              'remember': (0, 50), 'max_days': (0, 99999), 'min_days': (0, 365), 'warn_days': (0, 365),
+              'remember': (0, 50), 'max_days': (1, 99999), 'min_days': (0, 365), 'warn_days': (0, 365),
               'deny': (0, 100), 'unlock_time': (0, 86400), 'fail_interval': (60, 86400)}
 
 
@@ -28,6 +32,8 @@ def pwp_conf(store):
     system's own, untouched - until set."""
     c = dict(PWP_DEFAULT)
     c.update({k: v for k, v in (_meta_json(store, 'host:pwpolicy:conf') or {}).items() if k in PWP_DEFAULT})
+    if not c.get('max_days'):
+        c['max_days'] = 99999       # 0 saved before 1.0.249: never runs out, not "at once"
     return c
 
 
@@ -59,7 +65,8 @@ def pwp_checked_api(b):
                 raise ValueError('%s is a number' % k)
             lo, hi = PWP_RANGES[k]
             if not lo <= v <= hi:
-                raise ValueError('%s is %d to %d' % (k, lo, hi))
+                # Said by what the page calls it (1.0.249): "minlen is 6 to 128" named no box.
+                raise ValueError('%s is %d to %d' % (PWP_WORDS.get(k, k), lo, hi))
             c[k] = v
         else:
             # '0' from the command line is no yes (1.0.248): it switched the check on.
@@ -275,6 +282,11 @@ def osu_ask(store, nodes, do, by, **f):
     if do == 'add':
         ask['uid'] = osu_free_uid(store, nodes, name)
         ask['sudo'] = bool(f.get('sudo'))
+        if ask['sudo'] and not f.get('password'):
+            # The pages' rule, for every way in (1.0.249): the console and the API made one in
+            # the admin group with no password - sudo asks for it.
+            raise ValueError('sudo asks for the user\'s own password - give them one, or they '
+                             'cannot use sudo')
         # A new password at the next sign-in only for one who has a password (1.0.248): a user of
         # a key only was asked at every sign-in for one never given - and let in by nothing.
         ask['must_change'] = bool(f.get('must_change')) and bool(f.get('password'))
@@ -298,6 +310,8 @@ def osu_ask(store, nodes, do, by, **f):
                 except (TypeError, ValueError):
                     raise ValueError('%s is a number' % k)
                 lo, hi = PWP_RANGES[k]
+                if k == 'max_days':
+                    lo = 0      # one user's as the system lists it (0 there), as before (1.0.249)
                 if not lo <= v <= hi:
                     raise ValueError('%s is %d to %d' % (k, lo, hi))
                 ask[k] = v
@@ -563,6 +577,26 @@ SN_ASKED = {'at': 0.0}
 # cluster kept them for, its root helper puts back what is missing - never taking anything away.
 KEEP_EVERY = 3600
 KEEP_WORK = {'at': 0.0, 'busy': False, 'putback_at': 0.0, 'putback_tries': 0}
+KEEP_HOLD_FILE = STATE_DIR / 'host-keep-hold'
+
+
+def keep_hold_until():
+    """Until when the kept row stays as the backup had it (1.0.249: in a file - only in memory,
+    a restart of otp within the week read the machine over it at once)."""
+    try:
+        return float(json.loads(KEEP_HOLD_FILE.read_text()).get('until') or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0.0
+
+
+def keep_hold_set(until):
+    try:
+        if until:
+            write_replacing(KEEP_HOLD_FILE, json.dumps({'until': until}), 0o600)
+        elif KEEP_HOLD_FILE.exists():
+            KEEP_HOLD_FILE.unlink()
+    except OSError as e:
+        log('the hold of what was kept of the machine could not be written: %s' % e, 'warn')
 PUTBACK_TRIES = 3
 PUTBACK_FILE = STATE_DIR / 'host-putback'
 APPLIED_PREFIXES = ('host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
@@ -594,7 +628,7 @@ def keep_at_start(store):
     except (ValueError, TypeError, AttributeError):
         done = []
     for p in APPLIED_PREFIXES:
-        store.db.run('DELETE FROM meta WHERE k = ?', (p + me,))
+        store.drop_meta(p + me)
     if done:
         store.set_meta('host:users:now:' + me, json.dumps({'done': done[-300:]}))
     KEEP_WORK.update(putback_at=0.0, putback_tries=0)
@@ -654,7 +688,7 @@ def keep_tick(daemon):
     if pending and time.time() < KEEP_WORK['putback_at']:
         return          # tried and failed: again later - and until then the kept row stays as it is
     if not pending and (time.time() - KEEP_WORK['at'] < KEEP_EVERY or
-                        time.time() < KEEP_WORK.get('hold_until', 0)):
+                        time.time() < keep_hold_until()):
         # What could not be put back is kept as the backup had it for a week (1.0.248): read
         # again at once, the machine as it is now took its place - and nothing was left to put
         # back by hand, nor in the next backup.
@@ -667,6 +701,7 @@ def keep_tick(daemon):
                 k = keep_open(_meta_json(store, 'host:keep:' + me) or {}, me)
                 if k is None:
                     log('what the cluster kept of this machine could not be opened - nothing put back', 'warn')
+                    keep_hold_set(time.time() + 7 * 86400)  # not read over it either (1.0.249)
                 else:
                     try:
                         got = users_ask({'do': 'putback', 'keep': k}, 600)
@@ -686,12 +721,12 @@ def keep_tick(daemon):
                                         'bad' if 'not put back:' in (got.get('said') or '') else 'warn')
                         log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
                     if got is None or 'not put back:' in (got.get('said') or ''):
-                        KEEP_WORK['hold_until'] = time.time() + 7 * 86400
+                        keep_hold_set(time.time() + 7 * 86400)
                     else:
-                        KEEP_WORK['hold_until'] = 0
+                        keep_hold_set(0)
                 KEEP_WORK.update(putback_at=0.0, putback_tries=0)
                 store.drop_meta('host:putback:' + me)       # with its signature (1.0.248)
-                if KEEP_WORK.get('hold_until', 0) > time.time():
+                if keep_hold_until() > time.time():
                     return              # the kept row as the backup had it: not read again now
             got = users_ask({'do': 'keep'}, 120)
             got.pop('at', None)

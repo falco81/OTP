@@ -92,6 +92,11 @@ def selinux_ask(store, node, action, by):
         raise ValueError('there is no node %s' % node)
     if action not in SE_ACTIONS:
         raise ValueError('check, prepare, enforce or permissive')
+    if action == 'permissive' and _hs_on():
+        # A step down, as TLS between the databases switched off (1.0.249): refused while high
+        # security is on - said afterwards only, before.
+        raise ValueError('high security is on: SELinux is not switched to permissive - switch high '
+                         'security off first')
     # A step asked and not done yet is not put aside by a look or a report (1.0.248): its one row
     # was written over, and "enforcing" never happened - said nowhere.
     was = _meta_json(store, 'host:selinux:want:' + node) or {}
@@ -199,7 +204,7 @@ def selinux_report_tidy(store):
     k = 'host:selinux:report:' + node_name()
     rep = _meta_json(store, k) or {}
     if rep and time.time() - float(rep.get('at') or 0) > SE_REPORT_KEEP_S:
-        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+        store.drop_meta(k)
 
 
 def selinux_reports(store):

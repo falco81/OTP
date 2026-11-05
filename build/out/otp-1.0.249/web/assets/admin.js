@@ -3569,9 +3569,11 @@ $('set-save').onclick = function () {
   keys.forEach(function (k) {
     chain = chain.then(function (ok) {
       if (!ok || !PENDING[k]) return ok;
-      return Promise.resolve(PENDING[k].save()).then(function (r) {
+      var p = PENDING[k];
+      return Promise.resolve(p.save()).then(function (r) {
         if (r === false) return false;
-        delete PENDING[k];
+        /* Changed again while it was on its way (1.0.249): that change stays unsaved. */
+        if (PENDING[k] === p) delete PENDING[k];
         return true;
       }).catch(function (e) { oops(e); return false; });
     });
@@ -5374,8 +5376,13 @@ function drawLockoutsIn(v) {
         confirmThen(find ? 'Clear these?' : 'Clear them all?', (find ? 'The ' + num(list.length) + ' shown' : 'Every place and token shown')
           + ' may try again at once. Events keeps a line saying who did it.', 'Clear them', function () {
           Promise.all(list.map(function (r) {
-            return api('lockouts', {action: 'clear', node: r.node, kind: r.kind, who: r.who}).catch(function () { return null; });
-          })).then(function () { toast('cleared: ' + num(list.length), 'good'); loadLockouts(); setTimeout(loadLockouts, 7000); });
+            return api('lockouts', {action: 'clear', node: r.node, kind: r.kind, who: r.who}).catch(function (e) { return {failed: (e && e.message) || 'refused'}; });
+          })).then(function (got) {
+            /* As many as were cleared (1.0.249): every one was said cleared, refused or not. */
+            var bad = got.filter(function (g) { return g && g.failed; });
+            toast('cleared: ' + num(list.length - bad.length) + (bad.length ? ' - not cleared: ' + num(bad.length) + ' (' + bad[0].failed + ')' : ''), bad.length ? 'warn' : 'good');
+            loadLockouts(); setTimeout(loadLockouts, 7000);
+          });
         }, false);
       };
       tools.appendChild(these);
@@ -5546,6 +5553,7 @@ function drawEngine(d) {
   ]));
   Object.keys(d.drivers || {}).forEach(function (name) {
     var one = d.drivers[name];
+    if (!one || typeof one !== 'object') return;
     host.appendChild(el('p', 'btnhelp', engineWord(name) + ': '
       + (one.ready ? 'the driver is installed'
          : (one.says || 'no driver') + ' — install ' + one.package)));
@@ -5656,7 +5664,8 @@ function dbwDraw() {
       b.type = 'button';
       b.appendChild(el('div', 'wiz-choice-k', c[1]));
       b.appendChild(el('div', 'small muted', c[2]));
-      var no = c[0] !== 'sqlite' && d.drivers && d.drivers[c[0]] === false;
+      var dh = d.driver_here || d.drivers || {};
+      var no = c[0] !== 'sqlite' && (dh[c[0]] === false || (dh[c[0]] && dh[c[0]].ready === false));
       if (c[0] === d.engine) b.appendChild(el('span', 'tag info', 'in use now'));
       if (no) {
         b.disabled = true;
@@ -11044,7 +11053,7 @@ function drawFw(d) {
   if (!FW.draft || (!FW.dirty && !liveWorkedIn($('fw-master')) && !liveWorkedIn($('fw-access'))
                     && !liveWorkedIn($('fw-body')))) FW.draft = fwFromServer(d);   /* (1.0.206) */
   var dr = FW.draft;
-  if (FW.dirty) fwPending();
+  if (FW.dirty && !PENDING.fw) fwPending();     /* one, not a new one each refresh (1.0.249) */
   /* What is drawn is the draft; the auto rules follow what is turned off in it. */
   d = Object.assign({}, d, {conf: Object.assign({}, d.conf, {on: dr.on, off: dr.off, rules: dr.rules}), access: dr.access});
   d.nodes = d.nodes.map(function (n) {
@@ -13629,6 +13638,7 @@ function rbEdit(t) {
   t = t || {};
   var isNew = !t.id;
   var cur = {id: t.id};
+  rbEdit.cur = cur;       /* the one Trust it saves into too (1.0.249) */
   modal(isNew ? 'A new destination: ' + (t.kind_words || (RB.kinds.filter(function (k) { return k.kind === t.kind; })[0] || {}).words || t.kind) : t.name, function (body) {
     body.classList.add('rb-ed');
     var f = {};
@@ -13877,8 +13887,13 @@ function rbSshBlock(body, t, f, cur) {
     }
   };
   hf.onclick = function () {
-    rbConfirm('Forget the host key', 'Backups stop going there until it is trusted again.', 'Forget it', function () {
-      api('rbackup', {action: 'hostkey_forget', id: cur.id}).then(function () { paintHost([]); }).catch(oops);
+    rbConfirm('Forget the host key', 'Backups stop going there until it is trusted again - and its saved password is forgotten with it, to be typed again.', 'Forget it', function () {
+      api('rbackup', {action: 'hostkey_forget', id: cur.id}).then(function (x) {
+        paintHost([]);
+        if (x && x.message) toast(x.message, 'good');
+        /* The password gone with it (1.0.249): its dots kept here saved nothing. */
+        if (rbEdit.form && rbEdit.form.password) { rbEdit.form.password.value = ''; rbEdit.form.password.placeholder = '(none)'; }
+      }).catch(oops);
     });
   };
   paintHost(t.hostkey_fp);
@@ -14008,10 +14023,14 @@ function rbTry(t, data, button, inEditor) {
         (x.fingerprints || []).forEach(function (fp) { host.appendChild(noI18n(el('div', 'mono small', fp))); });
         var tb = cmdButton('Trust it', 'check', 'small primary');
         tb.onclick = function () {
-          var save = (inEditor && rbEdit.form) ? rbSaveForm(t.kind, {id: t.id}) : Promise.resolve(t);
+          /* Into the editor's own (1.0.249): into one of its own, and Save then made a second
+             destination of the same name, its host key never trusted. */
+          var save = (inEditor && rbEdit.form) ? rbSaveForm(t.kind, rbEdit.cur || {id: t.id}) : Promise.resolve(t);
           save.then(function (saved) {
             return api('rbackup', {action: 'hostkey_trust', id: saved.id, hostkey: x.hostkey}).then(function (y) {
-              toast('trusted', 'good');
+              toast(y.message || 'trusted', 'good');
+              /* Another key than the one trusted: the saved password went with it (1.0.249). */
+              if (/password/.test(y.message || '') && rbEdit.form && rbEdit.form.password) { rbEdit.form.password.value = ''; rbEdit.form.password.placeholder = '(none)'; }
               if (rbSshBlock.paintHost) rbSshBlock.paintHost(y.fingerprints);
               t.id = saved.id;
               rbTry(saved, inEditor ? rbFormData(t.kind) : null, button, inEditor);
@@ -16725,9 +16744,12 @@ function sdDirty() {
   }});
 }
 function sdSave() {
-  var dr = SD.draft;
+  var dr = SD.draft, sent = JSON.stringify(dr);
   return api('sshd', {action: 'save', conf: dr}).then(function (r) {
-    toast(r.message, 'good'); SD.d = r; SD.draft = JSON.parse(JSON.stringify(r.conf)); drawSshd(); sdPoll(true); return true;
+    toast(r.message, 'good'); SD.d = r;
+    /* Changed again while it was on its way (1.0.249): that change kept, still to be saved. */
+    if (JSON.stringify(SD.draft) === sent) SD.draft = JSON.parse(JSON.stringify(r.conf));
+    drawSshd(); sdPoll(true); return true;
   });
 }
 function sdAct(action, b) {
@@ -16877,7 +16899,13 @@ function accountPicker(cur, o) {
   panel.appendChild(el('p', 'muted small', 'reading the users of the nodes…'));
   sdAccounts(draw);
   /* Closed by a click elsewhere, as a dropdown is. */
-  document.addEventListener('click', function (e) { if (box.open && !box.contains(e.target)) box.open = false; });
+  /* Taken off once the box is gone (1.0.249): every redraw of the card - every 3 s while a
+     trial runs - added two that held the old card for good. */
+  var shut = function (e) {
+    if (!box.isConnected) { document.removeEventListener('click', shut); return; }
+    if (box.open && !box.contains(e.target)) box.open = false;
+  };
+  document.addEventListener('click', shut);
   if (o.disabled) sum.onclick = function (e) { e.preventDefault(); };
   return box;
 }
@@ -17156,7 +17184,10 @@ function drawSshd(live) {
         bd.appendChild(tr);
       });
       tb.appendChild(bd);
-      tl.appendChild(tb);
+      /* In its own scroller (1.0.249): on a phone the whole page scrolled sideways. */
+      var tsc = el('div', 'scroll');
+      tsc.appendChild(tb);
+      tl.appendChild(tsc);
     }
     var add = cmdButton('Add an SSH token…', 'add', 'primary');
     add.onclick = function () { sdTokenAsk(); };
@@ -18761,6 +18792,9 @@ function seNode(n) {
       : d.since ? (d.total ? 'SELinux refused ' + num(d.total) + ' thing(s) since otp\'s needs were put in' : 'Nothing refused since otp\'s needs were put in')
       : d.total ? 'SELinux refused ' + num(d.total) + ' thing(s) since the machine started' : 'Nothing refused since the machine started');
     /* Refused once, allowed by the policy loaded now (1.0.238) - a newer module, a boolean: not counted. */
+    /* Upgraded from before 1.0.248 (1.0.249): the old note of when otp's needs were put in is
+       not read any more - what was refused since the start counts again, put right or not. */
+    if (d.tool && d.since_lost && d.total) list.appendChild(el('p', 'note small', 'After the upgrade these are counted since the machine started again - also what was put right before it: when otp\'s needs were last put in is kept in root\'s folder now, the old note is not read. Not new refusals: they go at the next restart of the machine, or when "Put in what otp needs" changes something.'));
     if (d.tool && d.settled) seRow(list, true, num(d.settled) + ' refused before, allowed now - by a newer otp_server or a boolean put in since; not counted');
     if (s.auditd === false) seRow(list, false, 'auditd does not run - what SELinux refuses is not written down (systemctl enable --now auditd)');
     box.appendChild(list);

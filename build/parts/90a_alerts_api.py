@@ -26,7 +26,7 @@ def _alerts_do(h):
             # Looked at again by the node that sends them only (1.0.211): from the
             # other node's page it could mail them too, beside the lead's own.
             if alerts_lead(h.store):
-                alerts_evaluate(h.store)
+                alerts_evaluate(h.store, wait=False)     # one going on: its result shown
             return alerts_view(h.store)
         if act == 'test':
             to = _alerts_to()
@@ -267,7 +267,7 @@ def _acme_do(h):
                 'will not be put in - the order is given up'), who=s['name'])
             return acme_view(h.store)
         if act == 'forget':
-            h.store.db.run("DELETE FROM meta WHERE k = 'acme:account'")
+            h.store.drop_meta('acme:account')
             h.store.add_event('settings', '%s forgot the account at the ACME CA - a new one is '
                               'made at the next order' % s['name'], 'warn', who=s['name'])
             return acme_view(h.store)

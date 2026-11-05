@@ -721,6 +721,8 @@ class SnmpAgent(object):
             except OSError as e:
                 out[key] = str(e)
                 SNMP_STATE['trap_error'] = '%s: %s' % (key, e)
+        if out and all(v == 'sent' for v in out.values()):
+            SNMP_STATE['trap_error'] = ''       # every one went: the alert over (1.0.249)
         return out
 
 
@@ -798,7 +800,10 @@ def snmp_traps_tick(daemon, cur):
                               ('str', str(p.get('said') or '')[:255]), ('str', node_name())])
             was.update(sent=any(v == 'sent' for v in got.values()), level=p.get('level'))
             changed = True
-    for k in [k for k in known if k not in cur]:
+    # Held while the cluster is worked on, as the mails hold them (1.0.249): a "right again"
+    # sent in the middle of the maintenance the manager watched.
+    quiet = alerts_quiet_until(store) > time.time()
+    for k in [k for k in known if k not in cur and not (quiet and k.startswith(('repl', 'db:', 'vip:')))]:
         p = known.pop(k)
         changed = True
         if p.get('sent'):
@@ -880,7 +885,8 @@ def _ask_snmp(daemon, args):
 def snmp_get(host, port, c, oids, timeout=3.0):
     """A small SNMPv3 manager: discovery, then one authPriv GET - for the
     node's own test. {oid: value as text}."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # IPv6 too (1.0.249): an agent bound to one was tested over IPv4, and failed.
+    s = socket.socket(socket.AF_INET6 if ':' in str(host) else socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(timeout)
     try:
         def ask(msg):

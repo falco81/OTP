@@ -538,7 +538,7 @@ def net_job_run(daemon, ask):
                 if undo['tls']:
                     store.set_meta('web:tls:' + me, undo['tls'])
                 else:
-                    store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + me,))
+                    store.drop_meta('web:tls:' + me)
                 _job_put(store, job, 'this node\'s certificate as it was before', 45)
         else:
             try:
@@ -570,6 +570,7 @@ def net_job_run(daemon, ask):
                 _job_put(store, job, 'what was kept could not be put back (%s) - the old '
                          'addresses are asked for instead' % e, 72, ok=False)
         if got is None:
+            net_local_trial_set(job, ask)
             got = net_root({'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
                             'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
                                      'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'],
@@ -786,11 +787,67 @@ def net_job_give_up(daemon, job):
                     % node_name(), 'bad', who=by)
 
 
+NET_LOCAL_TRIAL = STATE_DIR / 'net-trial.json'
+
+
+def net_local_trial_set(job, ask):
+    """Before the reboot of a change on trial (1.0.249): kept on this machine too, so that the
+    old network comes back when the database cannot be reached after it - on another machine, it
+    may be what the new network cut this node off from, and the job is kept there."""
+    try:
+        if ask.get('rollback') or not job.get('snap') or not int(job.get('trial_min') or 0):
+            return
+        write_replacing(NET_LOCAL_TRIAL, json.dumps({
+            'id': job.get('id'), 'snap': job['snap'],
+            'until': time.time() + NET_REBOOT_GIVE_UP_S + 60 * int(job.get('trial_min') or 0) + 300}),
+            0o600)
+    except Exception as e:                              # noqa: BLE001
+        log('network: the change on trial not kept on this machine: %s' % e, 'warn')
+
+
+def net_local_trial_tick(daemon):
+    """The kept trial: done with once the database says the job is over; acted on when the
+    database cannot be read and its time ran out."""
+    try:
+        t = json.loads(NET_LOCAL_TRIAL.read_text())
+    except (OSError, ValueError):
+        return
+    try:
+        job = _meta_json(daemon.store, 'net:job:' + node_name()) or {}
+        if job.get('id') != t.get('id') or job.get('state') not in ('trial', 'rebooting'):
+            NET_LOCAL_TRIAL.unlink()
+        return
+    except Exception:                                   # noqa: BLE001
+        pass                                            # the database not reached
+    net_local_trial_lost()
+
+
+def net_local_trial_lost():
+    """The database cannot be read (the daemon's loop, or its start): a change on trial kept
+    on this machine whose time ran out is put back by root - no database needed."""
+    try:
+        t = json.loads(NET_LOCAL_TRIAL.read_text())
+    except (OSError, ValueError):
+        return
+    if time.time() < float(t.get('until') or 0) or time.time() - float(t.get('asked') or 0) < 600:
+        return
+    log('network: the change on trial was not kept and the database cannot be reached - the '
+        'network kept before it comes back', 'warn')
+    try:
+        t['asked'] = time.time()        # asked again in ten minutes if root did not do it
+        write_replacing(NET_LOCAL_TRIAL, json.dumps(t), 0o600)
+        net_root({'do': 'restore', 'snapshot': t.get('snap'), 'reboot_in': 8}, 90)
+        NET_LOCAL_TRIAL.unlink()        # only once root put it back (1.0.249)
+    except Exception as e:                              # noqa: BLE001
+        log('network: the network kept before could not be put back: %s' % e, 'error')
+
+
 def net_tick(daemon):
     """Every few seconds: something asked of this node, a job to finish after
     a reboot, the network said again now and then."""
     if HA_REBUILDING.is_set() or not WEB_DIR.is_dir():
         return
+    net_local_trial_tick(daemon)
     store = daemon.store
     me = node_name()
     job = _meta_json(store, 'net:job:' + me)

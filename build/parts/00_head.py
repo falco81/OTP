@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.248'
+__version__ = '1.0.249'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -103,7 +103,10 @@ __version__ = '1.0.248'
 # its own in the database.
 # 1.0.226: 1.0.224 - names of tokens in one form of their letters (an older version finds a
 # name sent decomposed no more), and one person never signed in as another.
-DOWNGRADE_FLOOR = '1.0.224'
+# 1.0.249: 1.0.249 - holes of the root helper fixed in 1.0.248 and 1.0.249 (a report written
+# through a link, PostgreSQL's files read through one, a FIFO): the otp account could have root put
+# a signed older version in, and with it the hole.
+DOWNGRADE_FLOOR = '1.0.249'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -2165,7 +2168,11 @@ SETTING_STRIPPED = frozenset((
     'osup_check_at', 'osup_auto_at', 'power_auto_at', 'acme_email', 'acme_url', 'acme_dns_url',
     'acme_dns_server', 'acme_desec_domain', 'acme_dns_alias', 'acme_dns_zone',
     'acme_dns_tsig_name', 'acme_dns_user', 'acme_dns_subdomain', 'acme_node_name',
-    'siem_hostname', 'isemon_hostname', 'proxy_url'))
+    'siem_hostname', 'isemon_hostname', 'proxy_url',
+    # Checked without their spaces, kept with them (1.0.249): a token pasted with one at the end
+    # was saved, and never matched.
+    'metrics_token', 'portal_sso_key', 'acme_desec_token', 'acme_dns_tsig_secret', 'sms_url',
+    'upgrade_url', 'sms_prefix', 'portal_sso_logout'))
 
 
 CONFIG_LOADED = [False]
@@ -2301,7 +2308,18 @@ def write_file_settings(changes, path=None):
     where = Path(path) if path else CONFIG_FILE
     had = {}
     try:
-        with open(where, encoding='utf-8') as f:
+        # Never through a link, only a plain file (1.0.249): /etc/otp is the otp group's to
+        # write, and root copied a file a link there led to into one handed to otp.
+        try:
+            fd = os.open(str(where), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as e:
+            if e.errno == errno.ELOOP:
+                raise ValueError('it is a link')
+            raise
+        with os.fdopen(fd, encoding='utf-8') as f:
+            import stat as _stat
+            if not _stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise ValueError('it is not a plain file')
             got = json.load(f)
         if not isinstance(got, dict):
             raise ValueError('it is not an object')
@@ -2319,7 +2337,7 @@ def write_file_settings(changes, path=None):
         else:
             had[key] = value
     try:
-        was = os.stat(where)
+        was = os.lstat(where)
         mode = (was.st_mode & 0o770) or 0o640
     except OSError:
         mode = 0o640

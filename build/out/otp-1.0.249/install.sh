@@ -239,7 +239,8 @@ Usage: sudo ./install.sh [options]
                             the VPN concentrators. Without it, anybody may - and
                             otp answers only its clients either way
   --admin-user NAME         the first account of the administration pages (admin)
-  --admin-password PASS     its password (otherwise one is made and printed)
+  --admin-password -        its password, read from the terminal or standard input
+                            (or OTP_ADMIN_PASSWORD; otherwise one is made and printed)
   --cert FILE --key FILE    the TLS certificate and key for nginx
   --import-legacy ROOT      bring an old totpcgi + FreeRADIUS server over: its
                             clients, realms, directory, groups, settings and every
@@ -314,6 +315,27 @@ while [[ $# -gt 0 ]]; do
         *) fail "I do not know the option $1 — try --help";;
     esac
 done
+# The first account's password not on the command line (1.0.249): `ps`, the shell's history and
+# process accounting keep it. "-" reads it from the terminal or standard input, or from
+# OTP_ADMIN_PASSWORD; a value given there still works, said.
+if [[ "$ADMIN_PASSWORD" == "-" ]]; then
+    ADMIN_PASSWORD=""
+    if [[ -t 0 ]]; then
+        IFS= read -r -s -p "The password of the first account: " ADMIN_PASSWORD; echo
+        IFS= read -r -s -p "Again: " _again; echo
+        [[ "$_again" == "$ADMIN_PASSWORD" ]] || fail "--admin-password -: the two were not the same"
+        unset _again
+    else
+        IFS= read -r ADMIN_PASSWORD || true
+    fi
+    [[ -n "$ADMIN_PASSWORD" ]] || fail "--admin-password -: no password was read"
+elif [[ -n "$ADMIN_PASSWORD" ]]; then
+    warn "--admin-password: the password is on the command line (ps, the shell's history) -"
+    warn "  next time give --admin-password - (read from the terminal) or OTP_ADMIN_PASSWORD"
+elif [[ -n "${OTP_ADMIN_PASSWORD:-}" ]]; then
+    ADMIN_PASSWORD="$OTP_ADMIN_PASSWORD"
+fi
+unset OTP_ADMIN_PASSWORD
 # Checked on every path (1.0.61), the upgrade's too: --admin-allow all went
 # through there and opened the administration pages to everybody.
 for v in ADMIN_ALLOW PORTAL_ALLOW RADIUS_FROM; do
@@ -750,6 +772,13 @@ if admin in text and 'client_max_body_size 4g' not in text:
         fastcgi_request_buffering off;""", 1)
     text = re.sub(r'(admin/index\.php;[\s\S]*?fastcgi_read_timeout )120s;', r'\g<1>900s;', text, count=1)
     said.append('a database file may be put back from the page')
+# The port-80 server's ACME location refuses a multipart body too (1.0.249).
+acme_loc = 'location ^~ /.well-known/acme-challenge/ {'
+if acme_loc in text and 'acme-challenge/ {\n        # No multipart' not in text:
+    text = text.replace(acme_loc, acme_loc + '''
+        # No multipart body to PHP here either (1.0.249, php2shell): only the HTTPS server refused it.
+        if ($http_content_type ~* "multipart") { return 403; }''', 1)
+    said.append('port 80 refuses multipart bodies too')
 if 'location = /healthz' not in text and 'location /assets/' in text:
     block = """    # The load balancer's question: does this node answer? (otp 1.0.13)
     location = /healthz {
@@ -927,6 +956,21 @@ selinux_module() {
         fi
     fi
     [[ -d /run/otp ]] && command -v restorecon >/dev/null 2>&1 && run restorecon -R /run/otp 2>/dev/null || true
+    # Upgraded from a version before 1.0.248 (1.0.249): when otp's needs were last put in is
+    # kept in root's folder now, the one in otp's own is not read - said, so that refusals put
+    # right long ago, shown again, are not taken for new ones.
+    # Once, at the upgrade that lost it - with the machine's start then noted, after which what is
+    # counted is new.
+    if [[ -f "$STATE_DIR/web/selinux-applied" && ! -f /var/lib/otp-root/selinux-applied &&
+          ! -f /var/lib/otp-root/selinux-upgrade-boot && -z "$DRY_RUN" ]]; then
+        install -d -m 0700 /var/lib/otp-root 2>/dev/null || true
+        cat /proc/sys/kernel/random/boot_id > /var/lib/otp-root/selinux-upgrade-boot 2>/dev/null || true
+        chmod 0600 /var/lib/otp-root/selinux-upgrade-boot 2>/dev/null || true
+        warn "SELinux: Security check counts again what SELinux refused since the machine started -"
+        warn "  also what was put right before this upgrade (when otp's needs were put in is kept in"
+        warn "  root's folder now; the old note is not read). Not new refusals: they go at the next"
+        warn "  restart of the machine, or when \"Put in what otp needs\" changes something."
+    fi
     # Said when the policy does not label it (1.0.234): the pages could not read the API token
     # under enforcing - Settings - High security - SELinux says what else is missing.
     if command -v matchpathcon >/dev/null 2>&1 && [[ -z "$DRY_RUN" ]]; then
@@ -1789,7 +1833,7 @@ if [[ -z "$ASSUME_YES" ]]; then
         ask ISEMON_HOSTNAME "The name isemon files this server under" "otp"
     fi
     ask ADMIN_USER "The first account of the administration pages"
-    ask_secret ADMIN_PASSWORD "Its password (empty = make one and print it)"
+    [[ -n "$ADMIN_PASSWORD" ]] || ask_secret ADMIN_PASSWORD "Its password (empty = make one and print it)"
 fi
 for v in ADMIN_ALLOW PORTAL_ALLOW RADIUS_FROM; do
     [[ -n "${!v}" ]] && { cidr_list_ok "${!v}" || fail "$v takes addresses and networks, comma separated"; }

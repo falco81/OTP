@@ -87,6 +87,11 @@ class Siem(object):
                 except OSError:
                     pass
                 self.conns.pop(key, None)
+        keep = {'%s:%d/%s' % t for t in self.targets}      # (1.0.249) as isemon's
+        for d in (self.trouble, getattr(self, 'down', None) or {}):
+            for k in list(d):
+                if k != 'frame' and k not in keep:
+                    d.pop(k, None)
 
     def host(self):
         return str(CONFIG.get('siem_hostname') or '').strip() or node_name()

@@ -511,7 +511,7 @@ def text_reset(store, mid, lang, keys=None):
         raise ValueError('no such message or language')
     k = 'texts:%s:%s' % (mid, lang)
     if not keys:
-        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+        store.drop_meta(k)
     else:
         for _round in range(8):
             raw = store.get_meta(k)

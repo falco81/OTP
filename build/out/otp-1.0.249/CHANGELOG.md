@@ -4,6 +4,99 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.249 — 5 November 2026
+
+- **SELinux after the upgrade from a version before 1.0.248 is said**: when otp's needs were last
+  put in is kept in root's folder since 1.0.248, the old note in otp's own is not read - what SELinux
+  refused since the machine started is counted again, also what was put right long ago. The
+  installer says so at the upgrade, and Settings - High security - SELinux and `otp --selinux-check`
+  say it beside the count: not new refusals, gone at the next restart of the machine.
+  Said once: at the next restart of the machine what is counted is new again.
+- **Security - signed rows of the database**: every row the guard signs is taken away with the
+  signature of its going (an SSH token removed, an administrator's second step reset, an acme
+  unpaired, a certificate forgotten - 41 places): with plain SQL its last value put back by somebody
+  with the database was taken as signed still. Switching the guard on while the service runs leaves
+  nothing for the next start to take as otp's word; a node joining a shared database starts its
+  counts again whatever the cluster's guard; the guard's file stays the service's when root writes it.
+- **Security - the root helper**: the certificate files of PostgreSQL read before a change are never
+  read through a link (put back after a change that did not take, a link to /etc/shadow became a
+  file postgres could read); a FIFO in place of the policy's old note no longer holds the helper; a
+  kept user's shell outside /etc/shells only as the exact no-login paths; the console notice put back
+  after a trial keeps its backslashes as they were.
+- **Security - the command line as root**: `otp --ha-resync` makes its copy as the otp account (the
+  folder of the copies is that account's, which could make it a link); config.json is never read
+  through a link; `otp --enroll CORP\novak` refused, as the pages refuse it; a file to export into is
+  emptied only when written; the installer takes `--admin-password -` (from the terminal) or
+  OTP_ADMIN_PASSWORD - a value on its command line still works, said.
+- **Security - sign-in**: `x1\CORP\novak`, `x2\CORP\novak`... counted apart while the directory was
+  asked for novak - now counted as novak; a token's name that more than one account of the directory
+  answers to is refused; an administrator making a token under an alias suffix is refused when the
+  directory cannot say whose the main name is, or when it is somebody else's.
+- **Security - saved passwords**: the check of an FTPS destination switched off or changed, or old
+  TLS allowed for a directory, asks for the password again, as another server does.
+- **Behind a balancer**: a download with its key, or a file sent to be put back, that waits on the
+  other node says which node to open.
+- **Local users**: sudo without a password refused for every way in (the console, the API), as the
+  page refused it; what could not be put back is held for its week across restarts of otp too, and
+  when the kept row cannot be opened; a copy's putback row is never put back.
+- **A ZIP of .totp files not locked** says so beside what was imported.
+- **Security - going back to an older version**: the oldest version this one goes back to is now
+  1.0.249 - the root helper's holes fixed in 1.0.248 and 1.0.249 came back with an older one, and
+  the otp account could ask root for one.
+- **Security - backups**: a backup into a folder is written under a name nobody knows, never through
+  a link (a writer of the share overwrote the token key with it); the retention never takes away the
+  backup just sent, nor counts one stamped ahead of the clock; another host key trusted, a host key
+  forgotten, or another certificate pinned forgets the saved password with it - typed again for the
+  server it is.
+- **Security - the cluster**: the database and account in config.json are never PostgreSQL's own
+  (postgres, template0/1, a superuser) when root sets up or joins a cluster - the otp account could
+  have made root give the superuser a password it chose and let it in from the network; TLS between
+  the databases is not switched off while high security is on (from the command line neither), nor
+  SELinux switched to permissive; a node joining a cluster on the command line keeps a copy of what it
+  held first, refuses the first node's own name, and `otp --ha-setup` is refused on the second node
+  (both became the first, and replication stopped); a rebuild that fails on the command line leaves the
+  node in maintenance, as the pages' does.
+- **Security - the enrolment pages**: after the one-time code a sign-in of its own begins, the one the
+  password opened is ended (a cookie planted before had the person's enrolment) - as the
+  administrators' second step since 1.0.149. Port 80 refuses multipart bodies too.
+- **Security - the root helper**: a user's own child working on their SSH keys has 30 s (a user
+  could stop it and hold every ask of the helper); the replication password is never handed on from
+  PostgreSQL's log; the OS updates' progress written best effort, and the package manager always
+  waited for.
+- **Security - more**: an administrator making a token while the directory cannot say whether the
+  person has one under another name is refused; tokens imported with a step other than 30 s keep
+  their last step; a name ending in a dot after its realm is refused, as RADIUS reads it without; an
+  expired second (ECDSA) certificate is refused on upload and on the put back of the one from before
+  ACME (which now keeps its second one); the console never sends a control sequence of the data to
+  the terminal; settings checked without their spaces are kept so (a metrics token pasted with one
+  never matched).
+- **The network on trial** goes back by itself also when the database is on another machine the new
+  network cut this node off from (a note of it kept on the machine, acted on when the database cannot
+  be read).
+- **Alerts and monitoring**: "Look again" while a mail was on its way no longer mails the same twice;
+  events and "right again" notices are kept while a failed mail is waited out; SNMP traps say no
+  "right again" during maintenance, and "traps do not go" ends once they go again (and only while traps
+  are on); the alert of replication behind works; isemon's and SIEM's trouble of a target taken away
+  ends with it; the report's days follow the local midnights across a change of summer time; the SNMP
+  test works with an IPv6 address.
+- **The database**: MariaDB's driver no longer cuts a statement of minutes at 130 s; a transaction
+  that failed at its start no longer leaves the lane writing one statement at a time; a change made on
+  the other node is no longer lost when one is saved here at the same moment.
+- **Local users and their policy**: a password good for 0 days is refused (an empty box made every
+  password run out at once); the boxes are named in the messages.
+- **The command line**: what a console user does through sudo is in Events as theirs everywhere; the
+  files to export into are no longer refused for root's own folder.
+- **The API**: an id sent as true is refused (`{"id": true}` deleted row 1 - the localhost client); a
+  damaged locked ZIP says so instead of "it broke"; the test of RADIUS with the localhost client's
+  secret goes only to this server's own port; a realm's suffix is 253 characters at most.
+- **The pages**: Trust it in a new backup destination no longer makes a second one; forgetting a host
+  key says the password goes with it; the firewall's "not saved" no longer stays after saving;
+  clearing blocked sources says how many were cleared.
+- **The pages**: a change made while its card was being saved stays unsaved (it was counted as
+  saved); the account pickers of SSH server no longer pile up a listener every redraw; Czech words for
+  what was left English (Database - Move in a cluster, the balancer's note, OS updates, Settings on
+  every node, High security's popup, ACME's certificate before).
+
 ## 1.0.248 — 4 November 2026
 
 **Fixes from a review of the code (security and bugs), three rounds.**

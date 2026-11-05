@@ -612,7 +612,9 @@ class Console(object):
 
     def page(self, title, text):
         p = self.pal
-        lines = [ln.expandtabs(8).replace('\r', '') for ln in text.rstrip('\n').split('\n')] or ['']
+        # Never a control sequence of the data to the terminal (1.0.249): a directory's displayName
+        # with ESC in it reached root's terminal as written.
+        lines = [term_safe(ln.expandtabs(8).replace('\r', '')) for ln in text.rstrip('\n').split('\n')] or ['']
         tty = self._raw() is not None and sys.stdout.isatty()
         if not tty:
             print(text)
@@ -3242,8 +3244,11 @@ class Console(object):
                 return
             try:
                 if r == 'these':
-                    got = console_users_parse(self.ask('The users, separated by spaces',
-                                                       ' '.join(users) if isinstance(users, list) else ''))
+                    typed = self.ask_one('The console at login', 'The users, separated by spaces',
+                                         ' '.join(users) if isinstance(users, list) else '')
+                    if typed is None:
+                        return
+                    got = console_users_parse(typed)
                 else:
                     got = '*' if r == 'all' else []
                 self.note('The console at login', console_at_login_set(console_at_login(), got), 'ok')

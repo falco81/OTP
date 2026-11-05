@@ -1079,7 +1079,7 @@ def mailq_body(store, qid):
 
 
 def mailq_body_drop(store, qid):
-    store.db.run('DELETE FROM meta WHERE k = ?', (MAILB_PREFIX + qid,))
+    store.drop_meta(MAILB_PREFIX + qid)
 
 
 def mailq_delay(rec):
@@ -1377,8 +1377,8 @@ def mailq_retry(store, qids, by=''):
 def mailq_drop(store, qids, by=''):
     n = 0
     for qid in qids:
-        n += int(store.db.run('DELETE FROM meta WHERE k = ?', (MAILQ_PREFIX + qid,)) or 0)
-        store.db.run('DELETE FROM meta WHERE k = ?', (MAILB_PREFIX + qid,))
+        n += int(store.drop_meta(MAILQ_PREFIX + qid) or 0)
+        store.drop_meta(MAILB_PREFIX + qid)
     if n:
         store.add_event('mail', '%s took %d mail(s) out of the outgoing mail' % (
             by or 'somebody', n), 'warn', who=by or None)

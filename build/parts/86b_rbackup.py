@@ -207,6 +207,15 @@ def rb_checked(data, old=None):
             raise ValueError('checked against an authority: give its certificate')
         if check == 'pin' and not t.get('pin'):
             raise ValueError('pinned: the fingerprint is needed - Try it shows the server\'s')
+        # How the server is checked is part of which server it is (1.0.249): with the check
+        # switched off, or another authority or fingerprint given, the saved password went to
+        # whoever answered on that address.
+        if old and old.get('password') and (pw is None or is_masked(pw)) and (
+                (old.get('tls_check') or 'system') != t['tls_check'] or
+                (old.get('ca') or '') != (t.get('ca') or '') or
+                (old.get('pin') or '') != (t.get('pin') or '') or
+                int(old.get('implicit') or 0) != t['implicit']):
+            raise ValueError('how the server is checked changed: type the password again')
     if kind == 'smb':
         t['share'] = rb_clean(data.get('share'), 'the share', 80, r'^[^\\/:*?"<>|;-][^\\/:*?"<>|;]*\Z',
                               empty=False)
@@ -390,13 +399,27 @@ class RbFolder(object):
             raise RbError('the otp account may not write into %s' % self.dir)
 
     def put(self, local, name):
-        part = os.path.join(self.dir, '.%s.part' % name)
-        shutil.copyfile(local, part)
-        os.chmod(part, 0o640)
-        os.replace(part, os.path.join(self.dir, name))
+        # A name nobody knows, made new, never through a link (1.0.249): a writer of the share put
+        # a link at the known .NAME.part, and the copy overwrote the token key it led to.
+        part = os.path.join(self.dir, '.%s.%s.part' % (name, secrets.token_hex(6)))
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+        try:
+            with os.fdopen(fd, 'wb') as out, open(local, 'rb') as src:
+                shutil.copyfileobj(src, out, 1024 * 1024)
+                out.flush()
+                os.fchmod(out.fileno(), 0o640)
+            os.replace(part, os.path.join(self.dir, name))
+        except BaseException:
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+            raise
 
     def get(self, name, local):
-        shutil.copyfile(os.path.join(self.dir, rb_safe_name(name)), local)
+        fd = os.open(os.path.join(self.dir, rb_safe_name(name)), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as src, open(local, 'wb') as out:
+            shutil.copyfileobj(src, out, 1024 * 1024)
 
     def list(self):
         out = []
@@ -1170,9 +1193,10 @@ def rb_companions(name):
     return [name + '.sha256', base + '-RESTORE.md']
 
 
-def rb_retain(tr, keep, days, now=None):
+def rb_retain(tr, keep, days, now=None, just=''):
     """This node's backups at a destination beyond what is kept, taken away -
-    never the newest."""
+    never the newest, never the one `just` sent, and none stamped ahead of now (1.0.249: made with
+    the clock ahead, they were the newest for good and every new one went at once)."""
     now = now or time.time()
     mine = rb_slug(node_name())
     files = tr.list()
@@ -1186,11 +1210,13 @@ def rb_retain(tr, keep, days, now=None):
                 when = datetime.strptime(m.group('stamp'), '%Y%m%d-%H%M%S').timestamp()
             except ValueError:
                 continue
+            if when > now + 86400:
+                continue                    # ahead of the clock: neither counted nor taken away
             ours.append((when, x['name']))
     ours.sort(reverse=True)
     gone = []
     for i, (when, name) in enumerate(ours):
-        if i == 0:
+        if i == 0 or name == just:
             continue
         if (keep and i >= keep) or (days and now - when > days * 86400):
             for n in [name] + [c for c in rb_companions(name) if c in names]:
@@ -1279,7 +1305,8 @@ def rb_run(store, by, only=None, progress=None):
                 one['ok'] = True
                 try:
                     one['taken_away'] = rb_retain(tr, int(CONFIG.get('rbackup_keep') or 0),
-                                                  int(CONFIG.get('rbackup_keep_days') or 0))
+                                                  int(CONFIG.get('rbackup_keep_days') or 0),
+                                                  just=m['file'])
                 except Exception as e:                  # noqa: BLE001
                     one['retain_error'] = str(e)[:200]
             except Exception as e:                      # noqa: BLE001

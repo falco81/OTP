@@ -42,6 +42,9 @@ def api_token(make=False):
 
 def _int_id(v):
     """An id from a request: a whole number, or ValueError said plainly."""
+    # Never true or 1.5 (1.0.249): {"id": true} was row 1 - the localhost client deleted.
+    if isinstance(v, bool) or (isinstance(v, float) and not v.is_integer()):
+        raise ValueError('an id is a number')
     try:
         return int(v or 0)
     except (TypeError, ValueError):
@@ -418,7 +421,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # At the first '>' (1.0.248): an account's name has none, and a1>CORP\\novak,
                 # a2>CORP\\novak... split at the last one were a fresh count each for novak.
                 pre, sep, who = who.partition('>')
-            who = who.split('\\', 1)[-1].rsplit('@', 1)[0].strip()
+            # As the directory reads it (1.0.249): after the last backslash, before the first @ -
+            # x1\\CORP\\novak, x2\\CORP\\novak... were a fresh count each, and the directory
+            # still asked for novak.
+            who = who.rsplit('\\', 1)[-1].split('@', 1)[0].strip()
             keys.append((kind + '-name', (pre + sep + who)[:190]))
         t = time.time()
         span = wait_min * 60
@@ -638,7 +644,7 @@ def lockouts_tick(d):
     key = 'lockouts:ask:' + node_name()
     raw = d.store.get_meta(key)
     if raw:
-        d.store.db.run('DELETE FROM meta WHERE k = ?', (key,))
+        d.store.drop_meta(key)
         try:
             asks = json.loads(raw)
         except ValueError:
@@ -776,7 +782,7 @@ def dir_pw_who(name, entry=None):
     if dn:
         first = re.split(r'(?<!\\),', dn, 1)[0].split('=', 1)[-1].strip()
         return '%s#%s' % (first[:60], hashlib.sha256(dn.encode('utf-8')).hexdigest()[:8])
-    return str(name or '').strip().lower().split('\\', 1)[-1].rsplit('@', 1)[0].strip()[:190]
+    return str(name or '').strip().lower().rsplit('\\', 1)[-1].split('@', 1)[0].strip()[:190]
 
 
 def dir_pw_caps(store):
@@ -1058,7 +1064,9 @@ def admin_name_parts(name):
     """`DOMAIN\\novak`, `novak@example.cz` or `novak`, as the directory is asked."""
     name = name.strip()
     if '\\' in name:
-        name = name.split('\\', 1)[1]
+        # After the last one, as the directory reads it (1.0.249): A\\B\\novak was asked for
+        # novak while counted apart as B\\novak.
+        name = name.rsplit('\\', 1)[1]
     return name, ('upn' if '@' in name else 'sam')
 
 
@@ -1950,7 +1958,7 @@ def mailed_set(store, name, to, lang, codes, by):
 
 
 def mailed_drop(store, name):
-    store.db.run('DELETE FROM meta WHERE k = ?', ('mailed:' + norm_name(name),))
+    store.drop_meta('mailed:' + norm_name(name))
 
 
 @route('GET', '/api/token')
@@ -2000,10 +2008,18 @@ def _token_do(h):
             ad = h.d.auth.directory((r_of or {}).get('directory')) if r_of else None
             if ad is not None:
                 try:
-                    entry = ad.find_user(name, 'upn')
-                except LdapError:
+                    # As RADIUS finds the person (1.0.249): under the realm's other suffixes too -
+                    # novak@dpmo.local whose UPN is novak@dpmo.cz is novak himself.
+                    entry = Authenticator.find_person(ad, name, 'upn', r_of)
+                except LdapError as e:
+                    # Not known is no "no clash" (1.0.249, as RADIUS and the portal since 1.0.248).
+                    raise ApiError(503, 'the directory could not say whether %s is another '
+                                        'account (%s)' % (main, str(e)[:120]))
+                if entry and entry.get('many'):
                     entry = None
-                clash = Authenticator.alias_clash(ad, name, main, entry) if entry else ''
+                # A name the directory does not know under the alias too (1.0.249): made under the
+                # main suffix, the token was that account's when there is one.
+                clash = Authenticator.alias_clash(ad, name, main, entry or {})
                 if clash:
                     raise ApiError(409, clash)
             name = main
@@ -2066,7 +2082,13 @@ def token_same_person(store, name, daemon=None):
     # userPrincipalName in a realm that reads names so - falco@corp.loc was made a working
     # token beside falco@corp.cz in use by a token administrator.
     if daemon is not None and realm.get('directory') and getattr(daemon, 'auth', None):
-        same = daemon.auth.same_person(name, realm)
+        gone = []
+        same = daemon.auth.same_person(name, realm, gone=gone)
+        if gone:
+            # Not known is no "nobody else" (1.0.249): a token administrator made a second
+            # working token for the same person while the directory was away.
+            raise ApiError(503, 'the directory cannot be reached just now - whether %s has a '
+                                'token under another name cannot be said' % name)
         if same and norm_name(same) != norm_name(name):
             t = store.token(same)
             if t and t.get('state') != 'pending':
@@ -2533,6 +2555,11 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                 raise ValueError('more than 50 000 files in it')
             total = 0
             locked_any = any(i.flag_bits & 1 for i in infos)
+            if not locked_any and any(i.filename.endswith('.totp') for i in infos):
+                # Said (1.0.249): an export of otp is always locked - one not locked is a folder of
+                # the old server zipped, or one put in place of the export.
+                out.append({'name': label, 'said': 'not locked: its files imported as they are - an '
+                                                   'export of otp is always locked'})
             for info in infos:
                 base = info.filename.replace('\\', '/').rsplit('/', 1)[-1]
                 if info.is_dir() or not base.endswith('.totp') or base.startswith('.') or \
@@ -2561,8 +2588,12 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                     out.append({'name': base, 'said': 'not imported: too big for a .totp file'})
                     continue
                 got.append({'name': base, 'text': data.decode('utf-8', 'replace')})
-    except (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError) as e:
-        out.append({'name': label, 'said': 'not imported: %s' % e})
+    except (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError, struct.error,
+            zlib.error) as e:
+        # A damaged one said as damaged (1.0.249), not "it broke".
+        out.append({'name': label, 'said': 'not imported: %s' % (
+            e if isinstance(e, (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError))
+            else 'the ZIP is damaged')})
         return []
     if not got:
         out.append({'name': label, 'said': 'not imported: no .totp file in it'})
@@ -3318,6 +3349,10 @@ def radtest_do(store, daemon, by, src, b):
                            'one (the installer makes "localhost"), or give the secret')
         secret = local['_secret']
     port = int(b.get('port') or CONFIG.get('radius_auth_port') or 1812)
+    if not b.get('secret') and port != int(CONFIG.get('radius_auth_port') or 1812):
+        # The localhost client's secret only to this server's own port (1.0.249): sent to any
+        # port of the machine, a listener there could work it out from the answer it made.
+        port = int(CONFIG.get('radius_auth_port') or 1812)
     code, words, took = radius_ask(server, port, secret, user, password,
                                    extra=[('State', '0x' + state)] if state else ())
     got_state = next((v for k, v in words if k == 'State'), '')
@@ -3461,7 +3496,7 @@ def radtest_serve(daemon):
     for r in rows:
         ident = r['k'].rsplit(':', 1)[1]
         # Taken once: the row out first, so a second look does not run it again.
-        store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+        store.drop_meta(r['k'])
         try:
             # Seen and taken (1.0.87): the asking node says so if it waits too long.
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)',
@@ -3982,7 +4017,9 @@ def _db(h):
             # The move to another database is not for a node of a cluster (1.0.214):
             # the page's wizard says so before it starts.
             'cluster': in_cluster(h.store), 'ha_mode': CONFIG.get('ha_mode') or '',
-            'drivers': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
+            # Its own key (1.0.249): in place of 'drivers' the card said "no driver - install
+            # undefined" everywhere.
+            'driver_here': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
             'tuned': bool(json.loads(h.store.get_meta('tune_before:' + node_name()) or '{}')),
             'retain': {k: CONFIG.get(k) for k in ('retain_radius_days', 'retain_otp_days',
                                                     'retain_events_days')}})
@@ -4020,7 +4057,8 @@ def _db_download(h):
     if h.arg('ticket'):
         v = dbkey_ticket_take(h.arg('ticket'), s['name'])
         if not v:
-            raise ApiError(404, 'that download is not waiting any more: ask for it again')
+            raise ApiError(404, held_words(h.store, h.arg('ticket'),
+                                           'that download is not waiting any more: ask for it again'))
         try:
             h.send_file(v['path'], v['name'])
         finally:
@@ -4086,7 +4124,9 @@ def _db_download_ticket(h, s, b):
         raise ApiError(400, str(e))
     h.store.add_event('backups', '%s downloaded %s WITH the key that opens its tokens, locked with '
                       'a passphrase' % (by, out.name), 'warn', who=by)
-    return {'ticket': dbkey_ticket_put(out, out.name, by), 'name': out.name}
+    t = dbkey_ticket_put(out, out.name, by)
+    held_note(h.store, t)
+    return {'ticket': t, 'name': out.name}
 
 
 @route('POST', '/api/db/restore')
@@ -4110,7 +4150,9 @@ def _db_restore(h):
                 shutil.rmtree(str(work), ignore_errors=True)
             if said is None:
                 raise ApiError(400, why)
-            return {'says': said, 'upload': dbkey_keep_upload(tmp), 'locked': True,
+            up = dbkey_keep_upload(tmp)
+            held_note(h.store, up)
+            return {'says': said, 'upload': up, 'locked': True,
                     'file': head.get('file')}
         if h.arg('check'):
             said, why = db_file_peek(tmp, h.store.db.engine)
@@ -4158,7 +4200,7 @@ def _db_do(h):
         try:
             src = dbkey_upload(b.get('upload'))
         except ValueError as e:
-            raise ApiError(400, str(e))
+            raise ApiError(400, held_words(h.store, b.get('upload'), str(e)))
         passphrase = str(b.get('passphrase') or '')
         if b.get('check'):
             work = Path(tempfile.mkdtemp(prefix='otp-peek-', dir=str(STATE_DIR)))
@@ -4803,7 +4845,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     # switched off, until somebody gives it one.
                     fields['disabled'] = 1
                     said['accounts switched off: no password in the file'] += 1
-                store.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
+                store.drop_meta('adm2fa:' + name.lower())
                 store.db.insert('accounts', dict(fields, name=name, pw=pw or '',
                                                  created=time.time(), last_in=None,
                                                  last_from='', prefs=str(a.get('prefs') or '{}')))
@@ -5578,7 +5620,7 @@ def portal_same_person(store, realm, entry):
 def token_meta_forget(store, name):
     """What was kept beside a token that is gone (1.0.61)."""
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('disabled_from:' + norm_name(name),))
+        store.drop_meta('disabled_from:' + norm_name(name))
     except Exception:                                   # noqa: BLE001
         pass
 
@@ -5596,7 +5638,7 @@ def token_switch_state(store, name, on):
         return 'disabled'
     was = store.get_meta('disabled_from:' + name, '') or 'active'
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('disabled_from:' + name,))
+        store.drop_meta('disabled_from:' + name)
     except Exception:                                   # noqa: BLE001
         pass
     return 'pending' if was == 'pending' else 'active'
@@ -5701,11 +5743,18 @@ def _portal_gate(h):
     # Taken once: two requests with the right code at once both read it.
     if not h.store.session_take(s['id'], 'gate'):
         raise ApiError(409, 'that code was taken already')
-    portal_data_set(h, s, gate_wait=None, gate_ok=time.time())
+    data = portal_data_set(h, s, gate_wait=None, gate_ok=time.time())
     h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s, with the one-time '
                       'code by %s' % (s['name'], h.client_ip(),
                                       'mail' if g.get('kind') == 'mail' else 'SMS'), who=s['name'])
-    return {'me': portal_state(h, s)}
+    # A sign-in of its own from here on, as the administrators' second step (1.0.249): a cookie
+    # planted before the code was typed had the person's enrolment once it was.
+    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    token = h.store.session_new('portal', s['name'], s.get('role') or 'portal', h.client_ip(),
+                                hours, data=dict(data or {}))
+    h.store.session_drop(s['id'])
+    s2 = h.store.session_get(token, 'portal', int(CONFIG.get('portal_session_min') or 15) * 60)
+    return {'me': portal_state(h, s2 or s), 'token': token}
 
 
 @route('POST', '/api/portal/gate/again')
@@ -6633,6 +6682,11 @@ def _web_do(h):
         info = got['info']
         if info.get('not_after') and info['not_after'] < time.time():
             raise ApiError(400, 'this certificate ran out on %s' % stamp(info['not_after']))
+        # The second one too (1.0.249): an ECDSA one run out was given to most browsers.
+        a2 = (got2 or {}).get('info') or {}
+        if a2.get('not_after') and a2['not_after'] < time.time():
+            raise ApiError(400, 'the second certificate (%s) ran out on %s' % (
+                a2.get('key') or 'ECDSA', stamp(a2['not_after'])))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
@@ -6689,7 +6743,7 @@ def _web_do(h):
             words, '; making the DH parameters takes a while' if slow else ''),
                 'tls': tls_view(prof)}
     if act == 'tls_forget':
-        store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + target,))
+        store.drop_meta('web:tls:' + target)
         acme_care_set(store, target, False, who, 'otp lets its TLS go')
         store.add_event('settings', '%s: otp no longer looks after the TLS of %s (nginx keeps '
                         'what it has)' % (who, words), 'warn', who=who)

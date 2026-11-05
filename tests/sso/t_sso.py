@@ -197,6 +197,7 @@ c, y = call('/api/portal/sso', {'name': 'jcermak', 'key': KEY}, G, peer=LB)
 ok('...the next page by the balancer: the same session, no second SMS', c == 200 and y.get('same') and sms_code()[0] is None, y)
 c, y = call('/api/portal/gate', {'code': code}, G)
 ok('...the code typed: in (%s)' % c, c == 200 and (y.get('me') or {}).get('methods'), y)
+G = y.get('token') or G       # a sign-in of its own after the code (1.0.249)
 c, y = call('/api/portal/enroll', {'kind': 'totp'}, G)
 ok('...then a token is made (%s)' % c, c == 200 and (y.get('made') or {}).get('uri'), y)
 

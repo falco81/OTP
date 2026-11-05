@@ -518,7 +518,7 @@ def node_key_give_back(store, prefix, name, when=None):
 def node_key_drop(store, prefix, name):
     n = 0
     for r in node_key_rows(store, prefix, name):
-        n += store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],)) or 0
+        n += store.drop_meta(r['k']) or 0
     return n
 
 
@@ -1547,7 +1547,7 @@ def chal_drop(store, state):
     """Done with, whatever it holds now: after a code taken once - the token's
     step, a recovery code, once_take - another answer that only counted a try
     meanwhile no longer refuses the right one (1.0.139)."""
-    store.db.run('DELETE FROM meta WHERE k = ?', (chal_key(state),))
+    store.drop_meta(chal_key(state))
 
 
 def chal_tidy(store):

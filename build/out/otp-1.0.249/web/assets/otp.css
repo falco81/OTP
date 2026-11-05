@@ -3179,7 +3179,15 @@ iframe.al-frame{width:100%;height:70vh;border:1px solid var(--line);border-radiu
 textarea.sd-notice{width:100%}
 .sd-trial .btnrow{margin-top:10px}
 .modal .box.al-report{width:min(1640px,97vw)}
+/* Two columns only where there are two (1.0.249): on a phone the span made a second one of 55 px,
+   and the page scrolled sideways. */
 .sd-grid > .set-item:first-child{grid-column:span 2}
+@media (max-width:760px){.sd-grid > .set-item:first-child{grid-column:1/-1}}
+.sd-grid > .set-item{min-width:0}
+.set-item .says code{overflow-wrap:anywhere}
+/* On a phone the choices wrap (1.0.249): kept on one line, "Not at all" was cut off unseen. */
+@media (max-width:760px){.sd-grid .seg{flex-wrap:wrap;max-width:100%}.sd-grid .seg button{white-space:normal}}
+#up-web .mono, .card p.mono{overflow-wrap:anywhere}
 .sd-grid .seg button{white-space:nowrap}
 #pane-osup > .card, #pane-power > .card{margin-top:16px}
 .card.held.mq-held > .mq-chips, .card.held.mq-held > #mq-said{flex:none}

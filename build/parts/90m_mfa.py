@@ -39,7 +39,7 @@ def mfa_all(store):
 
 def mfa_reset(store, name, by):
     had = mfa_get(store, name)
-    store.db.run('DELETE FROM meta WHERE k = ?', (mfa_key(name),))
+    store.drop_meta(mfa_key(name))
     store.add_event('accounts', '%s reset the second step of signing in of %s%s' % (
         by, name, ' (it was %s)' % MFA_KIND_WORDS.get(had.get('kind'), had.get('kind'))
         if had else ' (none was set up)'), 'warn', who=by)

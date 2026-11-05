@@ -343,7 +343,7 @@ def dbtls_apply(daemon, args):
                                                                             'failed')):
             # The link between the databases uses the certificate (1.0.172):
             # it stays, renewed by the link.
-            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+            store.drop_meta('dbtls:server:' + node_name())
             dbtls_publish(daemon, force=True)
             return dict(base, ok=True, said='the certificate stays: the link between the '
                         'databases uses it and renews it')
@@ -354,7 +354,7 @@ def dbtls_apply(daemon, args):
                              'them off first' % (', '.join(others), 'es' if len(others) == 1
                                                  else ''))
         got = _dbtls_helper({'do': 'server_off'}, store, by)
-        store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+        store.drop_meta('dbtls:server:' + node_name())
         store.add_event('settings', '%s: otp\'s certificate left the PostgreSQL of %s'
                         % (by, node_name()), 'warn', who=by)
         dbtls_publish(daemon, force=True)

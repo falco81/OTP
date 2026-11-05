@@ -699,7 +699,7 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         try:
             for r in store.db.rows('SELECT k FROM meta'):
                 if str(r.get('k') or '').startswith(META_TRANSIENT):
-                    store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+                    store.drop_meta(r['k'])
             for r in live_transient:
                 store.set_meta(r['k'], r['v'])
         except Exception as e:                          # noqa: BLE001

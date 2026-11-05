@@ -97,7 +97,7 @@ def sshotp_remove(store, name, by):
     name = sshotp_name(name)
     if not sshotp_get(store, name):
         raise ValueError('%s has no SSH token' % name)
-    store.db.run('DELETE FROM meta WHERE k = ?', (sshotp_key(name),))
+    store.drop_meta(sshotp_key(name))
     store.add_event('settings', '%s removed the SSH token of %s' % (by, name), 'warn', who=by)
 
 

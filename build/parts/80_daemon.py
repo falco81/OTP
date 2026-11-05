@@ -47,6 +47,11 @@ def token_name_problem(name):
     if not name or len(name) > 180 or not TOKEN_NAME_RE.match(name):
         return ('%r is not a name: a name, or a name@realm - no spaces, commas, semicolons '
                 'or =, 180 characters at most' % str(name)[:60])
+    if '@' in name and name.endswith('.'):
+        # A dot at the end (1.0.249): RADIUS and the pages read the name without it - a token made
+        # under it was found by nobody.
+        return '%r: a name is read without the dot at its end - make the token for %s' % (
+            str(name)[:60], name.rstrip('.')[:60])
     if '\\' in name:
         # DOMAIN\\name (1.0.224): RADIUS and the pages read it as name - a token made under it
         # was found by nobody, and the administrator was told it was made.
@@ -94,7 +99,9 @@ def import_totp(store, name, text, by='import', replace=False):
     try:
         if opts.get('OTP_LAST_STEP'):
             # Not later than now (1.0.234): a step from the future would refuse every code.
-            last_step = max(0, min(int(opts['OTP_LAST_STEP'][0]), int(time.time()) // 30 + 2))
+            # In the file's own steps (1.0.249): by 30 s, a 10 s token's last step was put far back,
+            # and codes used before the export were taken again.
+            last_step = max(0, min(int(opts['OTP_LAST_STEP'][0]), int(time.time()) // period + 2))
     except (TypeError, ValueError):
         last_step = 0
     if opts.get('OTP_STATE') and opts['OTP_STATE'][0] in ('active', 'disabled', 'pending'):
@@ -115,7 +122,7 @@ def import_totp(store, name, text, by='import', replace=False):
         'note': 'brought over from totpcgi' + ('' if 'TOTP_AUTH' in opts else
                                                ' (the file was not marked TOTP_AUTH)')})
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('staged:' + name,))
+        store.drop_meta('staged:' + name)
     except Exception:                                   # noqa: BLE001
         pass
     return 'imported, %d recovery code(s)' % len(codes)
@@ -269,7 +276,7 @@ def token_restore(store, t, by='restore', replace=False):
     if state == 'disabled' and str(t.get('was') or '') in ('pending', 'active'):
         store.set_meta('disabled_from:' + name, str(t['was']))    # (1.0.207)
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('staged:' + name,))
+        store.drop_meta('staged:' + name)
     except Exception:                                   # noqa: BLE001
         pass
     return 'restored (%s, %d recovery code(s) left)' % (
@@ -306,7 +313,7 @@ def seal_fp_check(store):
                         'the key of the other node to %s' % (node_name(), sealing_key_path()), 'bad')
         store.set_meta(k, json.dumps({'at': time.time(), 'here': fp, 'there': there}))
     elif store.get_meta(k):
-        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+        store.drop_meta(k)
 
 
 def names_nfc_kept(store):
@@ -1218,6 +1225,12 @@ class Daemon(object):
             if old:
                 raise BadSetting('db_guard: %s run an older version that does not sign what it '
                                  'writes - upgrade them first' % ', '.join(old))
+            # The tokens' secrets sealed as otp seals them first (1.0.249): from now on one found
+            # plain is held, and those are otp's own of before.
+            try:
+                bind_tokens(self.store, trusted=True)
+            except Exception as e:                      # noqa: BLE001
+                log('db_guard on: the tokens\' secrets not sealed again: %s' % e)
             n = dbguard_resign(self.store, 'switched on by %s: what the database holds now is '
                                          'taken as otp\'s word' % by)
             write_file_settings({'db_guard': 1})
@@ -1271,9 +1284,13 @@ class Daemon(object):
             # same moment would write the same number, and neither would
             # see that the other changed something. (1.0.14)
             mark = '%.6f:%s' % (time.time(), node_name())
+            seen = self.store.get_meta('conf_serial', '0')
             self.store.set_meta('conf_serial', mark)
-            self.conf_serial = mark
-            self.conf_loaded_at = time.time()
+            # Only when nothing else changed since this node read it (1.0.249): the other node's
+            # change of a moment before was taken as read here, and never loaded.
+            if seen == self.conf_serial:
+                self.conf_serial = mark
+                self.conf_loaded_at = time.time()
         except Exception:
             pass
         self.store._clients = None
@@ -1988,6 +2005,10 @@ class Daemon(object):
                 # traceback every 5 seconds (1.0.59).
                 log_sparing('housekeeping-db', 'housekeeping waits for the database: %s'
                             % str(e).split('\n')[0][:200], 'error', every=60)
+                try:
+                    net_local_trial_lost()      # a network on trial cut it off (1.0.249)
+                except Exception:                       # noqa: BLE001
+                    pass
             except Exception as e:
                 log('housekeeping broke: %s\n%s' % (e, traceback.format_exc()), 'error')
         try:

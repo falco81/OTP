@@ -300,6 +300,8 @@ class Acme(object):
                 os.unlink(os.path.join(self.work, 'account.pem'))
             except OSError:
                 pass
+        if pem:
+            ACME_WAIT.pop('since', None)    # each time there is none, its own half hour (1.0.249)
         if not pem and CONFIG.get('ha_mode') == 'replicated' and not ha_lead(self.store) and \
                 time.time() - (ACME_WAIT.setdefault('since', time.time())) < 1800:
             # Half an hour at most: the first node makes it only when it orders a certificate of its
@@ -435,7 +437,7 @@ class Acme(object):
                 self.post_json(ch[0]['url'], {})
                 self._poll(az, ('valid',), 'the CA did not take %s' % name)
             finally:
-                self.store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
+                self.store.drop_meta('acme:chal:' + token)
         key, csr = make_csr(names[0], names[1:], key_kind or (CONFIG.get('acme_key') or 'ec'))
         der = _openssl(['req', '-in', '/dev/stdin', '-outform', 'DER'], data=csr.encode(),
                        what='the request')
@@ -525,11 +527,17 @@ def acme_put_back(store, target, by):
     prof = tls_profile(store, target) or {}
     prof.update({k: got.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
                                          'root_info', 'verify', 'how')})
+    # Its second certificate (ECDSA) with it (1.0.249): lost at the put back, the node served RSA
+    # only. ACME's own taken away where there was none before.
+    if got.get('alt') and float(((got['alt'] or {}).get('info') or {}).get('not_after') or 0) > time.time():
+        prof['alt'] = got['alt']                    # not one run out since (1.0.249)
+    else:
+        prof.pop('alt', None)
     prof.pop('pending_key', None)
     prof.pop('csr', None)
     tls_save(store, target, prof, by)
     store.set_meta('acme:care:' + target, json.dumps({'on': False, 'at': time.time(), 'by': by}))
-    store.db.run('DELETE FROM meta WHERE k = ?', ('acme:before:' + target,))
+    store.drop_meta('acme:before:' + target)
     store.add_event('settings', '%s put the certificate of %s from before ACME back (%s, until %s); '
                     'ACME no longer renews it' % (by, 'the VIP address' if target == 'vip' else
                                                   target, info.get('issuer') or '?',
@@ -700,7 +708,7 @@ def acme_order(store, target, name, by, say=None):
             # back with a click, its key as sealed as it was.
             store.set_meta('acme:before:' + target, json.dumps(
                 {k: prof.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
-                                          'root_info', 'verify', 'how')}
+                                          'root_info', 'verify', 'how', 'alt')}
                 | {'at': time.time()}))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
@@ -886,7 +894,7 @@ def acme_start(store, which, by):
         finally:
             try:
                 if json.loads(store.get_meta(lease) or '{}').get('node') == node_name():
-                    store.db.run('DELETE FROM meta WHERE k = ?', (lease,))
+                    store.drop_meta(lease)
             except Exception:                           # noqa: BLE001
                 pass
             with _ACME_LOCK:
@@ -1009,7 +1017,7 @@ def acme_probe(store, target):
         out['said'] = 'port 80 of %s cannot be reached: %s' % (name, getattr(e, 'reason', e))
     finally:
         scope.__exit__()
-        store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
+        store.drop_meta('acme:chal:' + token)
     out['ms'] = int((time.time() - began) * 1000)
     return out
 

@@ -346,8 +346,8 @@ def in_cluster(store=None):
 def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
-    store.db.run('DELETE FROM meta WHERE k = ?', ('node:' + name,))
-    store.db.run('DELETE FROM meta WHERE k = ?', ('cluster:with:' + name,))
+    store.drop_meta('node:' + name)
+    store.drop_meta('cluster:with:' + name)
     CLUSTER_WITH.discard('cluster:with:' + name)
 
 
@@ -763,9 +763,11 @@ def ha_join(data, name='', even_if_data=False, by=''):
     if data.get('db_guard'):
         changes['db_guard'] = 1
     write_file_settings(changes)
-    if data.get('db_guard'):
-        # The counts of before are of another database (1.0.248). The guard itself from the file,
-        # at the start: the running service still has the database it joins away from.
+    if True:
+        # The counts of before are of another database (1.0.248) - whether the cluster's guard is
+        # on or only this node's (1.0.249: kept, the cluster's rows were refused as older ones).
+        # The guard itself from the file, at the start: the running service still has the
+        # database it joins away from.
         try:
             dbguard_forget_seen('joined a cluster of one shared database')
             if os.geteuid() == 0 and DBGUARD_FILE.exists():
@@ -835,6 +837,7 @@ def pg_open_to(peer, db_name, db_user):
     """PostgreSQL on this machine listening beyond localhost and letting the
     other node's address in for this one database and account. Returns what
     was done, in words."""
+    pg_names_otps(None, db_name, db_user)
     # Both go into pg_hba.conf as root: a name with a space or a new line
     # in config.json wrote a line of its own there (1.0.139).
     for what, v in (('db_name', db_name), ('db_user', db_user)):
@@ -983,11 +986,32 @@ def pg_restart_local(port=5432):
     raise ValueError('PostgreSQL did not come back after its restart')
 
 
+def pg_names_otps(port, name, user):
+    """Refused unless `name` / `user` are otp's own (1.0.249, as the root helper since 1.0.248):
+    config.json is the otp account's to write, and root's --ha-setup gave the role postgres a
+    password it chose and let it in from the network."""
+    for v in (name, user):
+        if str(v or '').lower() in ('all', 'sameuser', 'samerole', 'samegroup', 'replication'):
+            raise ValueError('%s is a word of pg_hba.conf, not otp\'s database or account' % v)
+    if str(name or '').lower() in ('postgres', 'template0', 'template1') or \
+            str(user or '').lower() == 'postgres':
+        raise ValueError('%s / %s is PostgreSQL\'s own, not otp\'s database and account' % (name, user))
+    if port is not None:
+        try:
+            sup = pg_admin("SELECT rolsuper FROM pg_roles WHERE rolname = '%s'"
+                           % str(user).replace("'", "''"), port)
+        except Exception:                               # noqa: BLE001
+            sup = ''
+        if str(sup).strip() == 't':
+            raise ValueError('%s is a superuser of PostgreSQL - not otp\'s account' % user)
+
+
 def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
     """PostgreSQL on this machine ready to replicate with `peer`: logical
     WAL, listening on the network, the peer let in, the account able to
     replicate and to subscribe, the database there. True when it has to be
     restarted for it."""
+    pg_names_otps(port, name, user)
     major = int(pg_admin('SHOW server_version_num', port)) // 10000
     if major < 16:
         raise ValueError('PostgreSQL %d is here; replicating both ways needs 16 or later '
