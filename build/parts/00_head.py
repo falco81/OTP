@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.249'
+__version__ = '1.0.250'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2635,6 +2635,28 @@ _LOG_SPARING = {}
 _LOG_CHECKED = [0.0]
 
 
+def json_obj(text, kind=dict):
+    """JSON of a row (or a file) read as the kind the caller works on, else None (1.0.250): a value
+    of another shape - a version before, somebody's hand - raised at the caller's .get() before
+    the row was written again, the same error at every tick for ever."""
+    try:
+        got = json.loads(text) if text else None
+    except (ValueError, TypeError):
+        return None
+    return got if isinstance(got, kind) else None
+
+
+def fnum(x, default=0.0):
+    """A number of a row: a time, a count - `default` for anything else (1.0.250)."""
+    if isinstance(x, bool):
+        return default
+    try:
+        v = float(x or 0)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return v if v == v and v not in (float('inf'), float('-inf')) else default
+
+
 def log_sparing(key, words, level='warn', every=30):
     """A line that can come thousands of times a second (a database gone,
     a flood): written once per `every` seconds a key, with how many were left
@@ -2648,8 +2670,29 @@ def log_sparing(key, words, level='warn', every=30):
         _LOG_SPARING[key] = (t, 0)
         if len(_LOG_SPARING) > 1000:
             _LOG_SPARING.clear()
-    log(words + (' (and %d more like it in the last %d s)' % (quiet, int(t - at)) if quiet else ''),
-        level)
+    log(words + where_it_broke(words) +
+        (' (and %d more like it in the last %d s)' % (quiet, int(t - at)) if quiet else ''), level)
+
+
+_BROKE_KINDS = (AttributeError, TypeError, KeyError, IndexError, NameError, UnboundLocalError,
+                ZeroDivisionError, RecursionError)
+
+
+def where_it_broke(words=''):
+    """Where in otp a fault of the code itself came from (1.0.250), for a line written while it is
+    handled: 'the local users: 'str' object has no attribute 'get'' said what, never where - the
+    words of an error otp means to say (ValueError, OSError, the database's) are left as they are."""
+    try:
+        e = sys.exc_info()[1]
+        if not isinstance(e, _BROKE_KINDS) or ' [at ' in str(words):
+            return ''
+        tb = traceback.extract_tb(e.__traceback__)
+        if not tb:
+            return ''
+        f = tb[-1]
+        return ' [at %s:%d in %s]' % (os.path.basename(f.filename or '?'), f.lineno or 0, f.name or '?')
+    except Exception:                                   # noqa: BLE001
+        return ''
 
 
 _UNDER_SYSTEMD = bool(os.environ.get('INVOCATION_ID'))

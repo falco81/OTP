@@ -447,10 +447,7 @@ def split_step(store, now=None, peer=None, arbiter=None):
         try:
             for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?",
                                    ('split:took:%s:%%' % node_name(),)):
-                try:
-                    at = float(json.loads(r['v'] or '{}').get('at') or 0)
-                except ValueError:
-                    at = 0
+                at = fnum((json_obj(r['v']) or {}).get('at'))
                 if at < now - 3600:
                     # Its key looked for among the other node's codes first (1.0.226): let in
                     # here unasked in a short outage and used there too, it was never said.
@@ -461,10 +458,7 @@ def split_step(store, now=None, peer=None, arbiter=None):
                     except Exception:                   # noqa: BLE001
                         twice = False
                     if twice:
-                        try:
-                            v = json.loads(r['v'] or '{}')
-                        except ValueError:
-                            v = {}
+                        v = json_obj(r['v']) or {}
                         if not str(v.get('name') or '').startswith('#'):
                             _split_event(store, 'bad', 'a code of %s (%s) was let in on both nodes while '
                                          'the other one\'s database could not be asked'
@@ -525,13 +519,13 @@ def split_preferred_unable(store):
         row = clock_state_of(store, name) or {}
         # Its word from about when the nodes lost each other (1.0.226), not an old one: aside
         # long ago and serving since, both nodes answered while apart.
-        recent = float(row.get('at') or 0) >= (SPLIT['apart_since'] or time.time()) - \
+        recent = fnum(row.get('at')) >= (SPLIT['apart_since'] or time.time()) - \
             max(5, int(CONFIG.get('split_after_s') or 20)) - 30
         # And still fresh, by the measured difference of the clocks (1.0.227): the preferred
         # node, aside for its clock, answers again once this one's row reads stale to it
         # (25 s) - this node gives way a little after, so the two do not both go on.
         sk = clock_skew_of(store, name) or 0.0
-        fresh = time.time() - (float(row.get('at') or 0) - sk) < 32
+        fresh = time.time() - (fnum(row.get('at')) - sk) < 32
         if row.get('role') == 'aside' and recent and fresh:
             return 'the preferred node stepped aside for its clock'
         for n in ha_nodes(store):
@@ -549,7 +543,7 @@ def split_peer_caught_up(store):
         if n.get('me'):
             continue
         st = _meta_json(store, 'split:state:' + n['name']) or {}
-        if st and not st.get('apart') and float(st.get('at') or 0) > SPLIT['together_at']:
+        if st and not st.get('apart') and fnum(st.get('at')) > SPLIT['together_at']:
             return True
     return False
 
@@ -643,17 +637,14 @@ def split_report(store, now=None):
     if not split_me_preferred():
         return None
     by_key, per_node = {}, {}
-    since = float(SPLIT.get('last_apart_since') or 0) - max(5, int(CONFIG.get('split_after_s') or 20)) - 10
+    since = fnum(SPLIT.get('last_apart_since')) - max(5, int(CONFIG.get('split_after_s') or 20)) - 10
     for r in rows:
         parts = r['k'].split(':', 3)
         if len(parts) < 4:
             continue
         node, k = parts[2], parts[3]
-        try:
-            v = json.loads(r['v'] or '{}')
-        except ValueError:
-            v = {}
-        if float(v.get('at') or 0) < since or str(v.get('name') or '').startswith('#'):
+        v = json_obj(r['v']) or {}
+        if fnum(v.get('at')) < since or str(v.get('name') or '').startswith('#'):
             continue        # a short outage before, or the same code by its token's id
         by_key.setdefault(k, {})[node] = v
         per_node[node] = per_node.get(node, 0) + 1
@@ -662,7 +653,7 @@ def split_report(store, now=None):
         if len(nodes) > 1:
             one = list(nodes.values())[0]
             twice.append({'name': one.get('name') or '?', 'kind': one.get('kind') or '?',
-                          'nodes': sorted(nodes), 'at': min(float(v.get('at') or 0)
+                          'nodes': sorted(nodes), 'at': min(fnum(v.get('at'))
                                                            for v in nodes.values())})
     twice.sort(key=lambda x: x['at'])
     rep = {'at': now, 'taken': per_node, 'twice': twice[:200], 'twice_n': len(twice),
@@ -698,7 +689,7 @@ def split_view(store):
                       'state': st, 'arbiter': str(saved.get('split_arbiter@' + n['name'])
                                                   or (CONFIG.get('split_arbiter') if n.get('me') else '')
                                                   or ''),
-                      'fresh': bool(st) and time.time() - float(st.get('at') or 0) < 60})
+                      'fresh': bool(st) and time.time() - fnum(st.get('at')) < 60})
     if not nodes:
         nodes = [{'name': node_name(), 'me': True, 'alive': True, 'state': split_state_here(),
                   'arbiter': str(CONFIG.get('split_arbiter') or ''), 'fresh': True}]

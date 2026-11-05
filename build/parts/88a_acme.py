@@ -511,7 +511,7 @@ def acme_before(store, target):
     info = got.get('info') or {}
     return {'how': got.get('how'), 'subject': info.get('subject'), 'issuer': info.get('issuer'),
             'not_after': info.get('not_after'), 'at': got.get('at'),
-            'ran_out': float(info.get('not_after') or 0) < time.time()}
+            'ran_out': fnum(info.get('not_after')) < time.time()}
 
 
 def acme_put_back(store, target, by):
@@ -521,7 +521,7 @@ def acme_put_back(store, target, by):
     if not got.get('cert'):
         raise ValueError('there is no certificate from before ACME for this one')
     info = got.get('info') or {}
-    if float(info.get('not_after') or 0) < time.time():
+    if fnum(info.get('not_after')) < time.time():
         raise ValueError('the certificate from before ACME ran out on %s - put a new one in on '
                          'Certificates and TLS' % stamp(info.get('not_after')))
     prof = tls_profile(store, target) or {}
@@ -630,14 +630,14 @@ def acme_due(store, target, name):
     # wrong (a CA's mistake, a clock) does not let a certificate run out.
     ari = _meta_json(store, 'acme:ari:' + target) or {}
     if ari.get('pick') and ari.get('cert') == (info.get('fingerprint') or '') and \
-            time.time() - float(ari.get('at') or 0) < 2 * 86400 and time.time() >= float(ari['pick']):
+            time.time() - fnum(ari.get('at')) < 2 * 86400 and time.time() >= float(ari['pick']):
         return 'the CA\'s renewal window (%s - %s)' % (stamp(ari['start']), stamp(ari['end']))
-    left = (float(info.get('not_after') or 0) - time.time()) / 86400
+    left = (fnum(info.get('not_after')) - time.time()) / 86400
     days = float(CONFIG.get('acme_days') or 30)
     # A third of its life at most (1.0.187): a CA giving fewer days than
     # acme_days (short-lived certificates, a test CA) had every new one due
     # at once - ordered again every hour, until its limits refused them all.
-    life = (float(info.get('not_after') or 0) - float(info.get('not_before') or 0)) / 86400
+    life = (fnum(info.get('not_after')) - fnum(info.get('not_before'))) / 86400
     if info.get('not_before') and life > 0:
         days = min(days, life / 3)
     if left < days:
@@ -875,12 +875,11 @@ def acme_start(store, which, by):
             # One node orders a certificate at a time (1.0.209): ordered from the
             # other node's pages while this one renewed it, both spent the CA's
             # limit and the last one saved won. Held half an hour at most.
-            try:
-                held = json.loads(store.get_meta(lease) or '{}')
-            except ValueError:
-                held = {}
+            # A lease of another shape taken as none (1.0.250): it raised here before it was written
+            # again - the certificate was never ordered again, and ran out.
+            held = json_obj(store.get_meta(lease)) or {}
             if held.get('node') and held['node'] != node_name() and \
-                    float(held.get('until') or 0) > time.time():
+                    fnum(held.get('until')) > time.time():
                 log('ACME: %s is being ordered on %s already - not ordered here too'
                     % (n, held['node']), 'warn')
                 return
@@ -893,7 +892,7 @@ def acme_start(store, which, by):
             log('ACME: the order for %s stopped: %s' % (n, e), 'error')
         finally:
             try:
-                if json.loads(store.get_meta(lease) or '{}').get('node') == node_name():
+                if (json_obj(store.get_meta(lease)) or {}).get('node') == node_name():
                     store.drop_meta(lease)
             except Exception:                           # noqa: BLE001
                 pass
@@ -942,7 +941,7 @@ def acme_challenge(store, token):
     if not re.match(r'^[A-Za-z0-9_-]{8,256}\Z', str(token or '')):
         return None
     got = _meta_json(store, 'acme:chal:' + token) or {}
-    if not got.get('auth') or time.time() - float(got.get('at') or 0) > 3600:
+    if not got.get('auth') or time.time() - fnum(got.get('at')) > 3600:
         return None
     return got['auth']
 
@@ -1346,7 +1345,7 @@ def _dns_manual(store, rr, txt, say):
     while True:
         cur = _meta_json(store, 'acme:manual') or {}
         mine = cur.get('node') in (None, node_name())
-        stale = time.time() - float(cur.get('at') or 0) > ACME_MANUAL_WAIT + 60
+        stale = time.time() - fnum(cur.get('at')) > ACME_MANUAL_WAIT + 60
         if not cur or mine or cur.get('done') or stale:
             break
         if time.time() > end:

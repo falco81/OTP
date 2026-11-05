@@ -1051,10 +1051,8 @@ def mailq_read(store, qid):
     raw = store.get_meta(MAILQ_PREFIX + qid)
     if not raw:
         return None, None
-    try:
-        return json.loads(raw), raw
-    except ValueError:
-        return None, None
+    rec = json_obj(raw)                     # an object only (1.0.250)
+    return (rec, raw) if rec is not None else (None, None)
 
 
 def mailq_cas(store, qid, raw, rec):
@@ -1174,8 +1172,8 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
         rec['state'] = 'failed'
         store.add_event('mail', 'the mail to %s (%s) was refused for good: %s' % (
             who, MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'), str(err)[:300]), 'bad')
-    elif now >= float(rec.get('expires') or 0) or (
-            rec.get('kind') in ('code', 'verify') and now >= float(rec.get('expires') or 0) - 30):
+    elif now >= fnum(rec.get('expires')) or (
+            rec.get('kind') in ('code', 'verify') and now >= fnum(rec.get('expires')) - 30):
         # A code's mail no longer tried in its last half minute (1.0.225): delivered then, it
         # brought a code that had run out.
         rec['state'] = 'expired'
@@ -1212,13 +1210,21 @@ def mailq_all(store, open_only=False):
         sql += (" AND (v LIKE '%\"state\": \"waiting\"%' OR v LIKE '%\"state\": \"sending\"%'"
                 " OR v LIKE '%\"state\": \"failed\"%')")
     for r in store.db.rows(sql):
-        try:
-            rec = json.loads(r['v'] or '{}')
-        except ValueError:
+        rec = json_obj(r['v'])
+        if rec is None:
+            # A row of another shape (1.0.250): it raised here - no mail went out at all, a code by
+            # mail neither, and the tick that takes rows away never came to it.
+            if not open_only:
+                store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+                store.db.run('DELETE FROM meta WHERE k = ?', (MAILB_PREFIX + r['k'][len(MAILQ_PREFIX):],))
             continue
+        for t in ('created', 'expires', 'sent_at', 'last_try'):
+            if t in rec and rec[t] is not None and (isinstance(rec[t], bool) or
+                                                   not isinstance(rec[t], (int, float))):
+                rec[t] = fnum(rec[t])
         rec['qid'] = r['k'][len(MAILQ_PREFIX):]
         out.append(rec)
-    out.sort(key=lambda x: -float(x.get('created') or 0))
+    out.sort(key=lambda x: -fnum(x.get('created')))
     return out
 
 
@@ -1257,7 +1263,7 @@ def mailq_tick(store):
                 store.db.run('DELETE FROM meta WHERE k IN (?, ?)',
                              (MAILQ_PREFIX + qid, MAILB_PREFIX + qid))
                 continue
-            if state == 'failed' and now > float(rec.get('expires') or 0):
+            if state == 'failed' and now > fnum(rec.get('expires')):
                 # Refused for good stays "refused for good" (1.0.103), not
                 # "given up": what it held goes, the reason stays.
                 if store.get_meta(MAILB_PREFIX + qid):
@@ -1268,7 +1274,7 @@ def mailq_tick(store):
             # A while past its time (1.0.206): the last try is due at the very time
             # it runs out, and was given up here before it was made - with no word.
             if state in ('waiting', 'sending') and \
-                    now > float(rec.get('expires') or 0) + (120 if state != 'sending' else 600):
+                    now > fnum(rec.get('expires')) + (120 if state != 'sending' else 600):
                 _, raw = mailq_read(store, qid)
                 if raw:
                     rec.pop('qid', None)
@@ -1292,7 +1298,7 @@ def mailq_tick(store):
             # up - taken back sooner, a code went out a second time while the first still did.
             stuck = 600 if rec.get('kind') not in ('code', 'verify') else \
                 4 * int(CONFIG.get('smtp_timeout_s') or 20) + 90
-            if state == 'sending' and now - float(rec.get('last_try') or 0) > stuck and \
+            if state == 'sending' and now - fnum(rec.get('last_try')) > stuck and \
                     (mine or rec.get('node') not in alive):
                 # Left half way by a node that stopped: tried again.
                 _, raw = mailq_read(store, qid)
@@ -1305,9 +1311,9 @@ def mailq_tick(store):
                 continue
             if not mine:
                 # The node it waits on is gone (5 min): this one sends it.
-                if rec.get('node') in alive or now - float(rec.get('last_try') or 0) < 300:
+                if rec.get('node') in alive or now - fnum(rec.get('last_try')) < 300:
                     continue
-            if float(rec.get('next_at') or 0) > now or sent_now >= 25:
+            if fnum(rec.get('next_at')) > now or sent_now >= 25:
                 continue
             sent_now += 1
             try:
@@ -1353,7 +1359,7 @@ def mailq_retry(store, qids, by=''):
         if not store.get_meta(MAILB_PREFIX + qid):
             skipped.append(qid)
             continue
-        if time.time() > float(rec.get('expires') or 0):
+        if time.time() > fnum(rec.get('expires')):
             # Asked by hand: given the time of a new mail again - a code to
             # sign in with is not, it is no good any more.
             if rec.get('kind') in ('code', 'verify'):

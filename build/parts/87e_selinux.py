@@ -102,7 +102,7 @@ def selinux_ask(store, node, action, by):
     was = _meta_json(store, 'host:selinux:want:' + node) or {}
     now = _meta_json(store, 'host:selinux:now:' + node) or {}
     if action in ('check', 'report') and was.get('do') in ('prepare', 'enforce', 'permissive') and \
-            was.get('id') != now.get('done') and time.time() - float(was.get('at') or 0) < 3600:
+            was.get('id') != now.get('done') and time.time() - fnum(was.get('at')) < 3600:
         if action == 'check':
             return          # the step looks again when it is done
         raise ValueError('%s has not done the step asked of it yet (%s) - ask for the report after it'
@@ -203,7 +203,7 @@ def selinux_report_tidy(store):
     """This node's report taken out of the database once it is an hour old (1.0.236)."""
     k = 'host:selinux:report:' + node_name()
     rep = _meta_json(store, k) or {}
-    if rep and time.time() - float(rep.get('at') or 0) > SE_REPORT_KEEP_S:
+    if rep and time.time() - fnum(rep.get('at')) > SE_REPORT_KEEP_S:
         store.drop_meta(k)
 
 
@@ -211,9 +211,8 @@ def selinux_reports(store):
     """Every node's report as the pages show it: {node: {'at', 'bytes', 'error', 'id'}}."""
     out = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'host:selinux:report:%'"):
-        try:
-            rep = json.loads(r['v'] or '{}')
-        except (TypeError, ValueError):
+        rep = json_obj(r['v'])
+        if rep is None:
             continue
         out[r['k'][len('host:selinux:report:'):]] = {k: rep.get(k) for k in ('at', 'bytes', 'error', 'id')}
     return out

@@ -97,9 +97,9 @@ def health_publish(daemon):
     row['name_clash'] = str(said(name_clash_words) or '')[:300]
     row['ntp_problem'] = str(said(ntp_problem) or '')[:300]
     if dbguard_on():
-        refused = sorted((DBGUARD.get('refused') or {}).values(), key=lambda r: -float(r.get('at') or 0))
+        refused = sorted((DBGUARD.get('refused') or {}).values(), key=lambda r: -fnum(r.get('at')))
         row['dbguard_refused'] = [{'what': r.get('what'), 'why': r.get('why'), 'at': r.get('at')}
-                                  for r in refused if now - float(r.get('at') or 0) < 3600][:5]
+                                  for r in refused if now - fnum(r.get('at')) < 3600][:5]
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
     return row
 
@@ -134,11 +134,10 @@ def alerts_quiet_row(store):
     except Exception:                                   # noqa: BLE001
         rows = []
     for r in rows:
-        try:
-            was = json.loads(r['v'] or '{}')
-        except (TypeError, ValueError):
+        was = json_obj(r['v'])
+        if was is None:
             continue
-        if isinstance(was, dict) and float(was.get('until') or 0) > float(best.get('until') or 0):
+        if isinstance(was, dict) and fnum(was.get('until')) > fnum(best.get('until')):
             best = was
     return best
 
@@ -161,7 +160,7 @@ def alerts_quiet(store, names):
         if not why:
             up = upgrade_plan(store) or {}
             if up.get('id') and up.get('state') not in ('done', 'failed') and \
-                    time.time() - float(up.get('at') or 0) < 6 * 3600:
+                    time.time() - fnum(up.get('at')) < 6 * 3600:
                 why = 'an upgrade'
         if not why and (osup_plan(store) or {}).get('state') == 'running':
             why = 'the system\'s updates'
@@ -177,7 +176,7 @@ def alerts_quiet(store, names):
                        json.dumps({'why': why, 'until': now + ALERTS_QUIET_AFTER_S}))
         return why
     best = alerts_quiet_row(store)
-    if float(best.get('until') or 0) > now:
+    if fnum(best.get('until')) > now:
         return '%s (ended - quiet %d s more)' % (best.get('why'), int(float(best['until']) - now))
     return ''
 
@@ -275,7 +274,7 @@ def alert_problems(store, lang='en'):
     if CONFIG.get('split_report') and CONFIG.get('alerts_split', 1) and split_engaged():
         for n in names:
             st = split_state_of(store, n)
-            if st.get('apart') and now - float(st.get('at') or 0) < 90:
+            if st.get('apart') and now - fnum(st.get('at')) < 90:
                 aside = st.get('role') == 'aside'
                 add('split:' + n, 'bad', n,
                     _al(lang, '%s nevidí druhý uzel%s' % (n, ' a ustoupil stranou' if aside else ''),
@@ -288,7 +287,7 @@ def alert_problems(store, lang='en'):
                            'This node does not answer RADIUS.' if aside else
                            'This node answers RADIUS alone.')), 'ha')
         rep = _meta_json(store, 'split:report') or {}
-        if rep.get('twice_n') and now - float(rep.get('at') or 0) < 86400:
+        if rep.get('twice_n') and now - fnum(rep.get('at')) < 86400:
             add('split:twice', 'warn', '',
                 _al(lang, 'Během rozpojení prošly kódy na obou uzlech',
                     'Codes were let in on both nodes while they were apart'),
@@ -301,7 +300,7 @@ def alert_problems(store, lang='en'):
         aside_s = float(CONFIG.get('clock_aside_s') or 20)
         for n in names:
             st = clock_state_of(store, n)
-            if not st or now - float(st.get('at') or 0) > 90:
+            if not st or now - fnum(st.get('at')) > 90:
                 continue
             ref = st.get('ref')
             if st.get('role') == 'aside':
@@ -377,7 +376,7 @@ def alert_problems(store, lang='en'):
                 h = health.get(n) or {}
                 if not h:
                     continue
-                last = float(h.get('last_backup') or 0)
+                last = fnum(h.get('last_backup'))
                 if now - last > 36 * 3600:
                     add('backup:' + n, 'warn', n,
                         _al(lang, 'Noční záloha na %s chybí' % n, 'No nightly copy on %s' % n),
@@ -395,7 +394,7 @@ def alert_problems(store, lang='en'):
                         _al(lang, 'Záloha z %s se nepovedla' % n, 'The backup of %s failed' % n),
                         '; '.join('%s: %s' % (x.get('name'), x.get('error')) for x in bad)
                         or str(mine[0].get('error') or '')[:300], 'backup')
-                elif not any(r.get('ok') and now - float(r.get('at') or 0) < span for r in mine):
+                elif not any(r.get('ok') and now - fnum(r.get('at')) < span for r in mine):
                     ok = [r for r in mine if r.get('ok')]
                     add('rbackup:' + n, 'warn', n,
                         _al(lang, 'Z %s neodešla včas žádná záloha' % n,
@@ -444,7 +443,7 @@ def alert_problems(store, lang='en'):
     if pct:
         for n in names:
             for d in (health.get(n) or {}).get('disks') or []:
-                if float(d.get('pct') or 0) >= pct or float(d.get('inodes') or 0) >= pct:
+                if fnum(d.get('pct')) >= pct or fnum(d.get('inodes')) >= pct:
                     add('disk:%s:%s' % (n, d['path']), 'bad' if d['pct'] >= 95 else 'warn', n,
                         _al(lang, 'Na %s dochází místo (%s)' % (n, d['path']),
                             '%s is running out of room (%s)' % (n, d['path'])),
@@ -463,7 +462,7 @@ def alert_problems(store, lang='en'):
                         _al(lang, 'Hodiny na %s nejdou přesně' % n, 'The clock of %s is off' % n),
                         str(np_)[:300], 'time')
                 continue
-            off = abs(float(tr.get('offset') or 0))
+            off = abs(fnum(tr.get('offset')))
             unsynced = str(tr.get('leap') or '').lower().startswith('not')
             if unsynced or off > 0.5:
                 add('time:' + n, 'bad' if off > 5 or unsynced else 'warn', n,
@@ -505,7 +504,7 @@ def alert_problems(store, lang='en'):
     if CONFIG.get('alerts_sms', 1) and (CONFIG.get('sms_mode') or 'off') != 'off':
         for n in names:
             s = (health.get(n) or {}).get('sms') or {}
-            if int(s.get('fails') or 0) >= 3 and now - float(s.get('fail_at') or 0) < 6 * 3600:
+            if int(s.get('fails') or 0) >= 3 and now - fnum(s.get('fail_at')) < 6 * 3600:
                 add('sms:' + n, 'bad', n,
                     _al(lang, 'SMS brána neposílá', 'The SMS gateway does not send'),
                     _al(lang, '%d SMS z %s za sebou se nepovedlo: %s',
@@ -564,14 +563,13 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
         except Exception:                               # noqa: BLE001
             rows = []
         for r in rows:
-            try:
-                st = json.loads(r['v'] or '{}')
-            except ValueError:
+            st = json_obj(r['v'])
+            if st is None:
                 continue
             target = r['k'][len('acme:state:'):]
             if not isinstance(st, dict) or st.get('ok') is not False:
                 continue
-            if now - float(st.get('failed_at') or 0) > 14 * 86400:
+            if now - fnum(st.get('failed_at')) > 14 * 86400:
                 continue
             try:
                 if not acme_care(store, target):
@@ -589,7 +587,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             for what, key, words in (('pg', 'dbtls:server:', _al(lang, 'PostgreSQL (TLS)', 'PostgreSQL (TLS)')),
                                      ('link', 'hatls:node:', _al(lang, 'spojení uzlů (TLS)', 'the link between the nodes (TLS)'))):
                 row = _meta_json(store, key + n) or {}
-                end = float(row.get('cert_end') or 0)
+                end = fnum(row.get('cert_end'))
                 if not end:
                     continue
                 left = (end - now) / 86400
@@ -604,7 +602,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
     # The update of the system that failed, or could not even look.
     if CONFIG.get('alerts_updates', 1):
         plan = _meta_json(store, 'host:osup:plan') or {}
-        if plan.get('state') == 'failed' and now - float(plan.get('ended') or 0) < 3 * 86400:
+        if plan.get('state') == 'failed' and now - fnum(plan.get('ended')) < 3 * 86400:
             n = plan.get('failed_on') or ''
             add('osup:failed', 'bad', n,
                 _al(lang, 'Aktualizace systému se nepovedla%s' % (' na ' + n if n else ''),
@@ -612,7 +610,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                 str(((_meta_json(store, 'host:osup:node:' + n) or {}).get('said') if n else '') or '')[:300], 'osup')
         for n in names:
             ck = _meta_json(store, 'host:osup:check:' + n) or {}
-            if ck.get('state') == 'failed' and now - float(ck.get('at') or 0) < 3 * 86400:
+            if ck.get('state') == 'failed' and now - fnum(ck.get('at')) < 3 * 86400:
                 add('osup:check:' + n, 'warn', n,
                     _al(lang, '%s se nemůže podívat po aktualizacích' % n, '%s cannot look for updates' % n),
                     str(ck.get('error') or '')[:300], 'osup')
@@ -645,9 +643,8 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             # Only the rows that failed or ran out read whole (the queue holds the sent ones too).
             for r in store.db.rows("SELECT v FROM meta WHERE k LIKE 'mailq:%' AND "
                                    "(v LIKE '%\"state\": \"failed\"%' OR v LIKE '%\"state\": \"expired\"%')"):
-                try:
-                    m = json.loads(r['v'] or '{}')
-                except ValueError:
+                m = json_obj(r['v'])
+                if m is None:
                     continue
                 if m.get('state') in ('failed', 'expired') and m.get('kind') in ('code', 'token', 'verify') \
                         and now - float(m.get('last_try') or m.get('created') or 0) < 86400:
@@ -668,8 +665,8 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             rs = {}
         # Its slots' own, the most of them (1.0.249): 'behind' is said per slot, never for the
         # whole - the alert never came.
-        behind = max([float(x.get('behind') or 0) for x in rs.get('outgoing') or []
-                      if isinstance(x, dict)] + [float(rs.get('behind') or 0)])
+        behind = max([fnum(x.get('behind')) for x in rs.get('outgoing') or []
+                      if isinstance(x, dict)] + [fnum(rs.get('behind'))])
         if rs.get('healthy', True) and behind > mb * 1048576:
             add('repl:behind', 'warn', '',
                 _al(lang, 'Replikace zaostává o %s' % human_bytes(behind), 'The replication is %s behind' % human_bytes(behind)),
@@ -933,7 +930,7 @@ def _alerts_evaluate(store, force=False):
         p['mailed'] = was.get('mailed') or (was.get('level') if was.get('sent') else None)
         if not p['sent'] and now - p['since'] >= delay:
             new.append(p)
-        elif p['sent'] and repeat and now - float(was.get('sent_at') or 0) >= repeat:
+        elif p['sent'] and repeat and now - fnum(was.get('sent_at')) >= repeat:
             still.append(p)
         elif p['sent'] and p['mailed'] == 'warn' and p['level'] == 'bad':
             new.append(p)                               # worse than said
@@ -983,7 +980,7 @@ def _alerts_evaluate(store, force=False):
                 break
     to = _alerts_to()
     mailing = bool(to and CONFIG.get('alerts'))
-    held_back = mailing and now - float(st.get('fail_at') or 0) <= 900
+    held_back = mailing and now - fnum(st.get('fail_at')) <= 900
     if held_back and (gone or events):
         # Not lost while a mail that failed is waited out (1.0.249): the events and the "right
         # again" notices were taken as said before any mail was tried - they go with the next.
@@ -1271,7 +1268,7 @@ def report_build(store, since, until, lang='cs'):
                             '#' + _al(lang, 'Čas', 'Clock'),
                             '#' + _al(lang, 'Aktualizace / bezp.', 'Updates / security'),
                             '#' + _al(lang, 'Noční záloha', 'Nightly copy')], srows))
-    runs = [r for r in rb_history(store) if since <= float(r.get('at') or 0) < until]
+    runs = [r for r in rb_history(store) if since <= fnum(r.get('at')) < until]
     if CONFIG.get('rbackup') or runs:
         ok = len([r for r in runs if r.get('ok')])
         body.append('<p style="margin:8px 0 0;font-size:13.5px;color:#374151">%s</p>' % _h(

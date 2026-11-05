@@ -208,7 +208,7 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
     res['ok'] = bool(res['checks']) and all(c['ok'] for c in res['checks'])
     res['secs'] = round(time.time() - began, 1)
     k = 'rbackup:verified:' + node_name()
-    rows = _meta_json(store, k) or []
+    rows = _meta_json(store, k, list) or []
     if not isinstance(rows, list):
         rows = []
     store.set_meta(k, json.dumps(([res] + rows)[:RB_VERIFY_KEEP]))
@@ -228,7 +228,7 @@ def rb_verified(store):
         except ValueError:
             continue
         out += [x for x in rows if isinstance(x, dict)]
-    out.sort(key=lambda x: -float(x.get('at') or 0))
+    out.sort(key=lambda x: -fnum(x.get('at')))
     return out
 
 
@@ -240,7 +240,7 @@ def rb_verified_forget(store, at=None):
             rows = json.loads(r['v'] or '[]')
         except ValueError:
             rows = []
-        keep = [] if at is None else [x for x in rows if abs(float(x.get('at') or 0) - at) > 0.001]
+        keep = [] if at is None else [x for x in rows if abs(fnum(x.get('at')) - at) > 0.001]
         if len(keep) != len(rows):
             n += len(rows) - len(keep)
             store.set_meta(r['k'], json.dumps(keep))
@@ -276,6 +276,6 @@ def rb_verify_due(store):
     """Weekly: a week since this node last tried one."""
     if (CONFIG.get('rbackup_verify') or 'off') != 'weekly':
         return False
-    rows = _meta_json(store, 'rbackup:verified:' + node_name()) or []
+    rows = _meta_json(store, 'rbackup:verified:' + node_name(), list) or []
     last = float(rows[0].get('at') or 0) if isinstance(rows, list) and rows else 0
     return time.time() - last > 7 * 86400

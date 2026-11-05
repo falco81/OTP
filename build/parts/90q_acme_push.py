@@ -463,13 +463,12 @@ def push_conf(store):
     # Signed ones only, with the guard on (1.0.248): read with plain SQL, a key put in by somebody
     # who can write the database was taken - and what it pushed became nginx's certificate.
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'acme_push:key:%'")):
-        try:
-            k = json.loads(r['v'] or '{}')
-        except ValueError:
+        k = json_obj(r['v'])
+        if k is None:
             continue
         if isinstance(k, dict) and k.get('public') and k.get('id'):
             keys[k['id']] = k
-    keys = sorted(keys.values(), key=lambda k: float(k.get('at') or 0))
+    keys = sorted(keys.values(), key=lambda k: fnum(k.get('at')))
     pairing = _meta_json(store, 'acme_push:pairing')
     if not isinstance(pairing, dict):
         pairing = got.get('pairing') if isinstance(got.get('pairing'), dict) else None
@@ -795,7 +794,7 @@ def push_do_pair(store, raw, headers, conf, box):
     b = push_body(raw)
     pub, comment = push_key_parse(b.get('acme_key'))
     p = conf['pairing'] or {}
-    if not p or float(p.get('until') or 0) < time.time():
+    if not p or fnum(p.get('until')) < time.time():
         raise PushError(403, 'pairing_closed', 'no pairing code is waiting here: make one on '
                                                'Certificates from acme (it lasts 15 minutes)')
     key = {'id': push_key_id(pub), 'public': push_b64(pub)}
@@ -805,7 +804,7 @@ def push_do_pair(store, raw, headers, conf, box):
     with PUSH_LOCK:
         c2 = push_conf(store)
         p = c2.get('pairing') or {}
-        if not p or float(p.get('until') or 0) < time.time() or \
+        if not p or fnum(p.get('until')) < time.time() or \
                 int(p.get('tries') or 0) >= PUSH_CODE_TRIES:
             raise PushError(403, 'pairing_closed', 'no pairing code is waiting here: make one on '
                                                    'Certificates from acme (it lasts 15 minutes)')
@@ -973,7 +972,7 @@ def push_view(store):
     return {'on': conf['on'], 'other_names': conf['other_names'],
             'keys': [{k: x.get(k) for k in ('id', 'name', 'at', 'by')} for x in conf['keys']],
             'pairing': {'until': p.get('until'), 'tries': p.get('tries') or 0}
-            if p and float(p.get('until') or 0) > time.time() else None,
+            if p and fnum(p.get('until')) > time.time() else None,
             'app_id': box['app_id'] if box else '',
             'enc_fp': push_key_id(box['pub']) if box else '', 'last': conf['last'],
             'slots': push_slots(store) if conf['on'] else [],

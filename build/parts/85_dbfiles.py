@@ -786,12 +786,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
 # ---- the disk under it ----------------------------------------------------------
 def note_size(store):
     """The size of the database, once a day, for how fast it grows."""
-    try:
-        sizes = json.loads(store.get_meta('db_sizes:' + node_name()) or '{}')
-    except ValueError:
-        sizes = {}
+    sizes = json_obj(store.get_meta('db_sizes:' + node_name())) or {}
     today = datetime.now().strftime('%Y-%m-%d')
-    if sizes.get('engine') != store.db.engine:
+    if sizes.get('engine') != store.db.engine or not isinstance(sizes.get('days'), dict):
         sizes = {'engine': store.db.engine, 'days': {}}
     if today not in sizes['days']:
         sizes['days'][today] = int(store.db.size() or 0)
@@ -940,7 +937,7 @@ def tune_state(store):
            'restart': {'may': False, 'unit': {'postgres': 'postgresql',
                                               'mariadb': 'mariadb'}.get(db.engine, '')}}
     try:
-        last = json.loads(store.get_meta('tune_last:' + node_name()) or 'null')
+        last = json_obj(store.get_meta('tune_last:' + node_name()))
     except ValueError:
         last = None
     out['last'] = last

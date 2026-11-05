@@ -58,10 +58,7 @@ def rb_slug(text):
 
 # ---- the destinations ---------------------------------------------------------------
 def rb_targets(store):
-    try:
-        got = json.loads(store.get_meta('rbackup:targets') or '[]')
-    except ValueError:
-        got = []
+    got = json_obj(store.get_meta('rbackup:targets'), list) or []     # a list only (1.0.250)
     return [t for t in got if isinstance(t, dict) and t.get('id')]
 
 
@@ -1348,10 +1345,7 @@ def human_bytes(n):
 
 
 def rb_history(store):
-    try:
-        got = json.loads(store.get_meta('rbackup:runs') or '[]')
-    except ValueError:
-        got = []
+    got = json_obj(store.get_meta('rbackup:runs'), list) or []        # a list only (1.0.250)
     return [x for x in got if isinstance(x, dict)]
 
 
@@ -1363,7 +1357,7 @@ def rb_history_forget(store, at=None, file=None):
         if at is None:
             left = []
         else:
-            left = [r for r in runs if not (abs(float(r.get('at') or 0) - float(at)) < 0.001 and
+            left = [r for r in runs if not (abs(fnum(r.get('at')) - float(at)) < 0.001 and
                                            str(r.get('file') or '') == str(file or ''))]
         store.set_meta('rbackup:runs', json.dumps(left, default=str))
         return len(runs) - len(left)
@@ -1452,17 +1446,20 @@ def rb_now_asked(daemon):
     """A Back up now asked of this node by another; started once each."""
     store = daemon.store
     done_k = 'rbackup:nowdone:' + node_name()
-    try:
-        done = set(json.loads(store.get_meta(done_k) or '[]'))
-    except ValueError:
-        done = set()
-    for r in node_key_rows(store, 'rbackup:now', node_name()):
+    done = {x for x in json_obj(store.get_meta(done_k), list) or [] if isinstance(x, str)}
+    for r in node_key_rows(store, 'rbackup:now', node_name(), guard=False):
         try:
             ask = json.loads(r['v'] or '{}')
-        except ValueError:
+            ident = str(ask.get('id') or '')
+            at = fnum(ask.get('at'))
+        except (ValueError, TypeError, AttributeError):
             continue
-        ident = str(ask.get('id') or '')
-        if not ident or ident in done or time.time() - float(ask.get('at') or 0) > RB_NOW_LIVE_S:
+        # Only an ask still live, not done yet, is checked (1.0.250): an ask of a node of a version
+        # before, unsigned, was refused - and refused again at every tick, an error in the log for
+        # as long as the row was there, which nobody took away.
+        if not ident or ident in done or time.time() - at > RB_NOW_LIVE_S:
+            continue
+        if not dbguard_rows(store.db, [r]):
             continue
         if RB_JOB['running']:
             return                      # asked again at the next tick
@@ -1470,6 +1467,31 @@ def rb_now_asked(daemon):
         rb_job_start(store, '%s (Back up now on %s)' % (ask.get('by') or 'otp',
                                                         ask.get('from') or '?'))
         return
+
+
+def rb_now_tidy(store):
+    """This node's own asks of the others, gone once they are over (1.0.250): left there, done or
+    refused, never taken away - only the node that wrote a row takes it away, over the value it
+    read (a new ask written meanwhile is left)."""
+    n = 0
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?", ('rbackup:now:%',)):
+        k = str(r['k'])
+        if not k.endswith(NODE_KEY_SEP + node_name()):
+            continue
+        try:
+            at = float((json.loads(r['v'] or '{}') or {}).get('at') or 0)
+        except (ValueError, TypeError, AttributeError):
+            at = 0.0
+        if time.time() - at <= RB_NOW_LIVE_S:
+            continue
+        if dbguard_meta_signed(k):
+            with store.db.transaction():
+                if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
+                    dbguard_sign(store.db, 'm', k, None)
+                    n += 1
+        elif store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
+            n += 1
+    return n
 
 
 def rb_tick(daemon):
@@ -1481,6 +1503,12 @@ def rb_tick(daemon):
         except Exception as e:                          # noqa: BLE001
             log_sparing('rb-now:' + str(e)[:60], 'Back up now asked by the other node: %s'
                         % e, 'warn', 600)
+        if time.time() - float(getattr(daemon, '_rb_now_tidy', 0)) > 600:
+            daemon._rb_now_tidy = time.time()
+            try:
+                rb_now_tidy(store)
+            except Exception as e:                      # noqa: BLE001
+                log_sparing('rb-now-tidy', 'old asks to back up now: %s' % e, 'warn', 3600)
     if not RB_JOB['running'] and rb_verify_due(store) and \
             time.time() - float(getattr(daemon, '_rb_verify_at', 0)) > 3600:
         daemon._rb_verify_at = time.time()          # once an hour at most, if it fails to start

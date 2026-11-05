@@ -85,7 +85,7 @@ def vip_moving(conf):
     of more than five minutes ago by that clock (a row left from before a restart) is none."""
     to = str(conf.get('move_to') or '')
     try:
-        at = float(conf.get('move_at') or 0)
+        at = fnum(conf.get('move_at'))
     except (TypeError, ValueError):
         at = 0.0
     if not to or abs(time.time() - at) > VIP_MOVE_S + 300:
@@ -847,11 +847,11 @@ def web_tick(store):
         # And every 15 minutes (1.0.187): a failure on something passing - a
         # mirror that did not answer while keepalived was installed - left the
         # VIP address and the certificates as they were until somebody looked.
-        if float(store.get_meta('web:retry:' + node_name()) or 0) <= float(st.get('at') or 0):
+        if float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
             if st.get('state') != 'failed':
                 return
-            rebooted = not WEB_DRIFT.get('boot_retried') and boot_time() > float(st.get('at') or 0)
-            if not rebooted and time.time() - float(st.get('at') or 0) < WEB_RETRY_S:
+            rebooted = not WEB_DRIFT.get('boot_retried') and boot_time() > fnum(st.get('at'))
+            if not rebooted and time.time() - fnum(st.get('at')) < WEB_RETRY_S:
                 return
             if rebooted:
                 WEB_DRIFT['boot_retried'] = True
@@ -862,15 +862,15 @@ def web_tick(store):
     # change applied twice.
     taken = WEB_DIR / 'request.taken'
     if (taken.exists() and time.time() - taken.stat().st_mtime < 600) or (
-            WEB_ASKED.get('hash') == h and time.time() - float(WEB_ASKED.get('at') or 0) < 600
-            and float(st.get('at') or 0) < float(WEB_ASKED.get('at') or 0)):
+            WEB_ASKED.get('hash') == h and time.time() - fnum(WEB_ASKED.get('at')) < 600
+            and fnum(st.get('at')) < fnum(WEB_ASKED.get('at'))):
         return
     req = WEB_DIR / 'request.json'
     if req.exists() and time.time() - req.stat().st_mtime < 600:
         # Waiting for root: left as it is when it asks for this very thing,
         # replaced when what is wanted changed meanwhile.
         try:
-            if json.loads(req.read_text()).get('hash') == h:
+            if (json_obj(req.read_text()) or {}).get('hash') == h:
                 return
         except (OSError, ValueError):
             return
@@ -926,7 +926,7 @@ def web_progress():
             got = json.loads(f.read(65536).decode('utf-8'))
     except (OSError, ValueError):
         return None
-    if not isinstance(got, dict) or time.time() - float(got.get('at') or 0) > 3 * 3600:
+    if not isinstance(got, dict) or time.time() - fnum(got.get('at')) > 3 * 3600:
         return None
     got['now'] = time.time()
     return got
@@ -1523,7 +1523,7 @@ def fw_auto(store, node):
                     'why': ('the node a cluster is being made with (%s): let in for the join, '
                             'until %s at most' % (', '.join(joining.get('addrs') or []),
                                                   time.strftime('%d.%m. %H:%M', time.localtime(
-                                                      float(joining.get('until') or 0)))))
+                                                      fnum(joining.get('until'))))))
                     if joining else 'replication (PostgreSQL), its pages and the health check - '
                     'inside the cluster everything has to work',
                     # Everything from it (1.0.59): its answers to this node's
@@ -1799,17 +1799,17 @@ def repl_errors(store, ask_log=True):
             pass
         while time.time() - t0 < 8:
             got = _pglog_read()
-            if float(got.get('at') or 0) >= t0:
+            if fnum(got.get('at')) >= t0:
                 break
             time.sleep(0.4)
     else:
         got = _pglog_read()
-    since = float(base.get('at') or 0)
-    lines = [e for e in got.get('entries') or [] if float(e.get('ts') or 0) >= since or
+    since = fnum(base.get('at'))
+    lines = [e for e in got.get('entries') or [] if fnum(e.get('ts')) >= since or
              not e.get('ts')]
     return {'subs': subs, 'log': lines[-60:], 'log_at': got.get('at'),
             'log_file': got.get('file') or '', 'log_said': got.get('said') or '',
-            'fresh': float(got.get('at') or 0) >= time.time() - 15}
+            'fresh': fnum(got.get('at')) >= time.time() - 15}
 
 
 def _pglog_read():

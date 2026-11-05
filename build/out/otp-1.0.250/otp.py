@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.249'
+__version__ = '1.0.250'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2635,6 +2635,28 @@ _LOG_SPARING = {}
 _LOG_CHECKED = [0.0]
 
 
+def json_obj(text, kind=dict):
+    """JSON of a row (or a file) read as the kind the caller works on, else None (1.0.250): a value
+    of another shape - a version before, somebody's hand - raised at the caller's .get() before
+    the row was written again, the same error at every tick for ever."""
+    try:
+        got = json.loads(text) if text else None
+    except (ValueError, TypeError):
+        return None
+    return got if isinstance(got, kind) else None
+
+
+def fnum(x, default=0.0):
+    """A number of a row: a time, a count - `default` for anything else (1.0.250)."""
+    if isinstance(x, bool):
+        return default
+    try:
+        v = float(x or 0)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return v if v == v and v not in (float('inf'), float('-inf')) else default
+
+
 def log_sparing(key, words, level='warn', every=30):
     """A line that can come thousands of times a second (a database gone,
     a flood): written once per `every` seconds a key, with how many were left
@@ -2648,8 +2670,29 @@ def log_sparing(key, words, level='warn', every=30):
         _LOG_SPARING[key] = (t, 0)
         if len(_LOG_SPARING) > 1000:
             _LOG_SPARING.clear()
-    log(words + (' (and %d more like it in the last %d s)' % (quiet, int(t - at)) if quiet else ''),
-        level)
+    log(words + where_it_broke(words) +
+        (' (and %d more like it in the last %d s)' % (quiet, int(t - at)) if quiet else ''), level)
+
+
+_BROKE_KINDS = (AttributeError, TypeError, KeyError, IndexError, NameError, UnboundLocalError,
+                ZeroDivisionError, RecursionError)
+
+
+def where_it_broke(words=''):
+    """Where in otp a fault of the code itself came from (1.0.250), for a line written while it is
+    handled: 'the local users: 'str' object has no attribute 'get'' said what, never where - the
+    words of an error otp means to say (ValueError, OSError, the database's) are left as they are."""
+    try:
+        e = sys.exc_info()[1]
+        if not isinstance(e, _BROKE_KINDS) or ' [at ' in str(words):
+            return ''
+        tb = traceback.extract_tb(e.__traceback__)
+        if not tb:
+            return ''
+        f = tb[-1]
+        return ' [at %s:%d in %s]' % (os.path.basename(f.filename or '?'), f.lineno or 0, f.name or '?')
+    except Exception:                                   # noqa: BLE001
+        return ''
 
 
 _UNDER_SYSTEMD = bool(os.environ.get('INVOCATION_ID'))
@@ -7578,7 +7621,7 @@ class Storage(object):
                 kept['s'] = sp
             if kept:
                 try:
-                    kept['t'] = int(float(one.get('t') or 0))
+                    kept['t'] = int(fnum(one.get('t')))
                 except (TypeError, ValueError, OverflowError):
                     kept['t'] = 0
                 out[key] = kept
@@ -7682,11 +7725,8 @@ class Storage(object):
             raw = self.db.value('SELECT data FROM sessions WHERE id = ?', (ident,))
             if raw is None:
                 return False
-            try:
-                data = json.loads(raw or '{}')
-            except ValueError:
-                return False
-            if field not in data:
+            data = json_obj(raw or '{}')
+            if data is None or field not in data:
                 return False
             data.pop(field, None)
             if self.db.run('UPDATE sessions SET data = ? WHERE id = ? AND data = ?',
@@ -7705,10 +7745,7 @@ class Storage(object):
             raw = self.db.value('SELECT data FROM sessions WHERE id = ?', (ident,))
             if raw is None:
                 return None
-            try:
-                data = json.loads(raw or '{}')
-            except ValueError:
-                data = {}
+            data = json_obj(raw) or {}
             # `expect`: written only while these keys still hold what the
             # caller read - else nothing, and False.
             for k, v in (expect or {}).items():
@@ -7814,7 +7851,7 @@ class Storage(object):
         for r in self._client_rows():
             one = {k: v for k, v in r.items() if not k.startswith('_') and k != 'secret'}
             if seen.get(r.get('id')):
-                one['last_seen'] = max(float(one.get('last_seen') or 0), seen[r['id']])
+                one['last_seen'] = max(fnum(one.get('last_seen')), seen[r['id']])
             one['secret_set'] = bool(r['_secret'])
             one['secret_lost'] = r['_secret'] is None
             one['secret'] = r['_secret'] if with_secret else secret_shown(r['_secret'], last)
@@ -8476,7 +8513,7 @@ class Storage(object):
         out['scratch_kept'] = bool(r.get('scratch_sealed'))
         # Until when wrong codes keep it shut (1.0.101): a lock that grows
         # with each round is shown, not guessed at from the count.
-        lu = float(r.get('locked_until') or 0)
+        lu = fnum(r.get('locked_until'))
         out['locked_until'] = lu if lu > time.time() else None
         return out
 
@@ -8866,7 +8903,7 @@ DBGUARD_SINCE = {
                              'acme_desec_token', 'acme_desec_domain')}}
 DBGUARD_FILE = STATE_DIR / 'guard.json'
 DBGUARD = {'seen': None, 'good': None, 'seen_h': None, 'dirty': 0.0, 'refused': {}, 'nodes': {},
-           'adopted': [], 'lock': threading.Lock()}
+           'adopted': [], 'behind': set(), 'lock': threading.Lock()}
 
 
 def dbguard_on():
@@ -9016,9 +9053,38 @@ def dbguard_sign(db, kind, ident, value, far=False):
     return False
 
 
-def dbguard_ok(db, kind, ident, value, quiet=False):
+def _dbguard_ver(v):
+    try:
+        return tuple(int(x) for x in str(v).split('.')[:3])
+    except (TypeError, ValueError):
+        return ()
+
+
+def _dbguard_not_yet(kind, ident):
+    """A row signed only since a version not taken in yet (1.0.250): while a node of a version
+    before it is still in the cluster, it writes such rows unsigned - they were refused, and the
+    same error came at every tick for as long as they were there. Until every node runs it they
+    are taken as they were before it, then signed once as they are (dbguard_adopt_tick)."""
+    k = str(ident or '')
+    if kind == 'm':
+        hit = [v for v, w in DBGUARD_SINCE.items()
+               if k in w.get('meta', ()) or k.startswith(tuple(w.get('meta_prefixes', ())))]
+    elif kind == 's':
+        hit = [v for v, w in DBGUARD_SINCE.items() if k.split('@', 1)[0] in w.get('settings', ())]
+    else:
+        return False
+    if not hit:
+        return False
+    # Only while such a node is seen alive (by its signed heartbeat): with none, checked as before.
+    behind = DBGUARD.get('behind') or ()
+    return any(v in behind for v in hit)
+
+
+def dbguard_ok(db, kind, ident, value, quiet=False, early=True):
     """Whether a row is as otp wrote it: True whenever the guard is off."""
     if not dbguard_on():
+        return True
+    if early and _dbguard_not_yet(kind, ident):
         return True
     key = dbguard_key()
     sid = 'sig:%s:%s:*' % (kind, _dbguard_hash(ident))
@@ -9154,8 +9220,8 @@ SESSION_SIGNED = ('kind', 'name', 'role', 'created', 'expires')
 
 def dbguard_session_text(row):
     return json.dumps([str(row.get('kind') or ''), str(row.get('name') or ''),
-                       str(row.get('role') or ''), '%.3f' % float(row.get('created') or 0),
-                       '%.3f' % float(row.get('expires') or 0)])
+                       str(row.get('role') or ''), '%.3f' % fnum(row.get('created')),
+                       '%.3f' % fnum(row.get('expires'))])
 
 
 def dbguard_node_ok(store, name):
@@ -9255,6 +9321,50 @@ def dbguard_resign(store, why=''):
     return n
 
 
+def _dbguard_older_nodes(store):
+    """The other nodes alive, by the version their heartbeat - otp's, by its signature - says."""
+    out = {}
+    try:
+        nodes = ha_nodes(store) if CONFIG.get('ha_mode') else []
+    except Exception:                                   # noqa: BLE001
+        nodes = []
+    for n in nodes:
+        if n.get('me') or not n.get('alive') or not n.get('version'):
+            continue
+        try:
+            raw = store.db.value('SELECT v FROM meta WHERE k = ?', ('node:' + n['name'],))
+        except Exception:                               # noqa: BLE001
+            continue
+        if raw is not None and dbguard_ok(store.db, 'm', 'node:' + n['name'], raw, quiet=True):
+            out[n['name']] = str(n['version'])
+    return out
+
+
+def dbguard_adopt_tick(store):
+    """Once a minute: a version's rows taken in once every node alive runs it - and again taken
+    as before it while a node of a version before is back (switched on, or joined, with one
+    still there), until it runs it too (1.0.250)."""
+    if not dbguard_on() or not dbguard_key() or not DBGUARD_SINCE:
+        return
+    older = _dbguard_older_nodes(store)
+    behind = {ver for ver in DBGUARD_SINCE
+              if any(_dbguard_ver(v) < _dbguard_ver(ver) for v in older.values())}
+    _dbguard_load()
+    with DBGUARD['lock']:
+        DBGUARD['behind'] = behind
+        had = set(DBGUARD.get('adopted') or [])
+        if had & behind:
+            DBGUARD['adopted'] = sorted(had - behind)
+            DBGUARD['dirty'] = time.time()
+        due = set(DBGUARD_SINCE) - set(DBGUARD['adopted']) - behind
+    if had & behind:
+        dbguard_flush(force=True)
+        log('the rows signed only since %s are taken as before it while %s runs a version before'
+            % (', '.join(sorted(had & behind)), ', '.join(sorted(older))), 'warn')
+    if due:
+        dbguard_adopt(store)
+
+
 def dbguard_adopt(store):
     """At the start: the rows signed only since this version (DBGUARD_SINCE), found without a
     signature that is right, signed once as they are - each version's once, noted in guard.json
@@ -9275,17 +9385,26 @@ def dbguard_adopt(store):
         return []
     db = store.db
     said = []
+    older = _dbguard_older_nodes(store)
+    DBGUARD['behind'] = {ver for ver in DBGUARD_SINCE
+                         if any(_dbguard_ver(v) < _dbguard_ver(ver) for v in older.values())}
     for ver, what in sorted(DBGUARD_SINCE.items()):
         if ver in done:
+            continue
+        # Not while a node of a version before it is alive (1.0.250): it goes on writing these
+        # rows unsigned - signed here now, its next one was refused, for ever.
+        if any(_dbguard_ver(v) < _dbguard_ver(ver) for v in older.values()):
             continue
         for r in db.rows('SELECT k, v FROM meta'):
             k = str(r['k'])
             if (k in what.get('meta', ()) or k.startswith(tuple(what.get('meta_prefixes', ())))) and \
-                    not dbguard_ok(db, 'm', k, r['v'], quiet=True) and dbguard_sign(db, 'm', k, r['v']):
+                    not dbguard_ok(db, 'm', k, r['v'], quiet=True, early=False) and \
+                    dbguard_sign(db, 'm', k, r['v']):
                 said.append(k)
         for r in db.rows('SELECT k, v FROM settings'):
             k = str(r['k'])
-            if k.split('@', 1)[0] in what.get('settings', ()) and not dbguard_ok(db, 's', k, r['v'], quiet=True) and \
+            if k.split('@', 1)[0] in what.get('settings', ()) and \
+                    not dbguard_ok(db, 's', k, r['v'], quiet=True, early=False) and \
                     dbguard_sign(db, 's', k, r['v']):
                 said.append(k)
         with DBGUARD['lock']:
@@ -10453,10 +10572,7 @@ class Tokens(object):
     # token's own columns describe the old key until the new one is
     # confirmed, so the new key's shape is kept beside it.
     def staged_shape(self, name):
-        try:
-            got = json.loads(self.store.get_meta('staged:' + norm_name(name), '') or '{}')
-        except ValueError:
-            got = {}
+        got = json_obj(self.store.get_meta('staged:' + norm_name(name), '')) or {}
         return {'digits': int(got.get('digits') or CONFIG.get('totp_digits') or 6),
                 'period': int(got.get('period') or CONFIG.get('totp_period') or 30),
                 'algorithm': str(got.get('algorithm') or CONFIG.get('totp_algorithm') or 'SHA1'),
@@ -10542,7 +10658,7 @@ class Tokens(object):
             fails = []
         tries = split_limit('rate_limit_tries')
         fails = [x for x in fails if abs(t - x) < int(CONFIG.get('rate_limit_s') or 30)]
-        if float(tok.get('locked_until') or 0) > t:
+        if fnum(tok.get('locked_until')) > t:
             self._said(name, False, SAY_LOCKED + ' (confirming a new token)', how, src, '')
             return False, SAY_LOCKED
         if tries and len(fails) >= tries:
@@ -10734,7 +10850,7 @@ class Tokens(object):
         except Exception:                               # noqa: BLE001
             return False
         return bool(row) and int(row.get('last_step') or 0) == int(step) and \
-            abs(float(row.get('last_used') or 0) - float(t)) < 1e-6
+            abs(fnum(row.get('last_used')) - float(t)) < 1e-6
 
     def _fail_noted(self, tok_id, t, span, mins):
         """The time of a wrong code added to the token's recent ones, and the
@@ -10786,7 +10902,7 @@ class Tokens(object):
         t = clock_now('locks')
         if tok.get('state') == 'disabled':
             return SAY_OFF
-        if float(tok.get('locked_until') or 0) > t:
+        if fnum(tok.get('locked_until')) > t:
             return SAY_LOCKED
         tries = split_limit('rate_limit_tries')
         span = int(CONFIG.get('rate_limit_s') or 30)
@@ -10819,7 +10935,7 @@ class Tokens(object):
         # A lockout after many wrong codes in a row, however slowly they
         # came (1.0.33): the short pause alone let a patient guesser try
         # thousands of codes a day.
-        if float(tok.get('locked_until') or 0) > t:
+        if fnum(tok.get('locked_until')) > t:
             return False, SAY_LOCKED, facts
         if tries and len(fails) >= tries:
             return False, SAY_RATE, facts
@@ -10864,10 +10980,7 @@ class Tokens(object):
             """A recovery code: used once. None when it is not one."""
             if scratch_guarded(self.store, name):
                 return None             # resting after many guesses (1.0.101)
-            try:
-                kept = json.loads(tok.get('scratch') or '[]')
-            except ValueError:
-                kept = []
+            kept = json_obj(tok.get('scratch'), list) or []        # a list only (1.0.250)
             key = sealing_key()
             hit, h = scratch_find(name, code, kept, key)
             if hit and hit != h and dbguard_on():
@@ -10931,7 +11044,7 @@ class Tokens(object):
                         except Exception:               # noqa: BLE001
                             row = None
                         if not row or row.get('scratch') != json.dumps(kept) or \
-                                abs(float(row.get('last_used') or 0) - float(t)) > 1e-6:
+                                abs(fnum(row.get('last_used')) - float(t)) > 1e-6:
                             raise
                         log('the database answered the end of a sign-in late: %s\'s recovery code '
                             'was written and is let in' % name, 'warn')
@@ -12112,10 +12225,11 @@ def node_key(prefix, name):
     return '%s:%s%s%s' % (prefix, norm_name(name), NODE_KEY_SEP, node_name())
 
 
-def node_key_rows(store, prefix, name):
-    """Every node's row for `name` (and one written before 1.0.146)."""
+def node_key_rows(store, prefix, name, guard=True):
+    """Every node's row for `name` (and one written before 1.0.146) - with guard=False all of them,
+    signed or not: for the caller to leave out first what it would not act on anyway (1.0.250)."""
     n = norm_name(name)
-    return dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
+    return (dbguard_rows if guard else (lambda _db, rows: rows))(store.db, store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
                                               ('%s:%s' % (prefix, n),
                                                '%s:%s%s%%' % (prefix, n.replace('!', '!!').replace('%', '!%')
                                                               .replace('_', '!_'), NODE_KEY_SEP))))
@@ -13267,7 +13381,7 @@ def chal_tidy(store):
         except ValueError:
             v = None
         if r['k'].startswith('chal:'):
-            gone = not isinstance(v, dict) or float(v.get('exp') or 0) < t - 60
+            gone = not isinstance(v, dict) or fnum(v.get('exp')) < t - 60
         else:
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
             if r['k'].startswith('adpw:'):              # wrong directory passwords (1.0.230)
@@ -13279,7 +13393,7 @@ def chal_tidy(store):
                 except (ValueError, TypeError, AttributeError):
                     pass
             now = time.time()                           # the counts by the machine's clock
-            gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
+            gone = not isinstance(v, list) or not any(abs(now - fnum(x)) < span for x in v)
         if gone:
             store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
 
@@ -14054,7 +14168,7 @@ class Authenticator(object):
         d.realm = chal.get('realm') or ''
         d.token_name = name = chal.get('name') or ''
         kind = chal.get('kind') or 'totp'
-        if float(chal.get('exp') or 0) < clock_now('locks'):     # both nodes alike (1.0.225)
+        if fnum(chal.get('exp')) < clock_now('locks'):     # both nodes alike (1.0.225)
             chal_take(self.store, state, raw)
             d.step('the question this answers', False, 'it ran out %s' % stamp(chal.get('exp')))
             d.otp = 'The code ran out'
@@ -15147,7 +15261,7 @@ def guard_blocked(daemon, src):
     info = daemon.login_info.get((GUARD_KIND, src))
     if not info:
         return None
-    until = float(info.get('blocked_until') or 0)
+    until = fnum(info.get('blocked_until'))
     if until > time.time():
         return until, info.get('blocked_why') or 'too many wrong sign-ins'
     return None
@@ -15189,7 +15303,7 @@ def guard_count(daemon, src, name):
             info['others'] = (others + [name])[-6:]
         info.update(limit=tries, span=span, what='wrong sign-ins', at=t, names=names,
                     names_limit=nlimit, guard=True)
-        if float(info.get('blocked_until') or 0) <= t:
+        if fnum(info.get('blocked_until')) <= t:
             why = None
             if len(fails) >= tries:
                 why = '%d wrong sign-ins in %d min' % (len(fails), span // 60)
@@ -16886,11 +17000,12 @@ class Daemon(object):
     def _upgrade_summary(self):
         try:
             plan = upgrade_plan(self.store)
-            pkg = json.loads(self.store.get_meta('upgrade:pkg') or 'null')
+            pkg = json_obj(self.store.get_meta('upgrade:pkg')) or {}
+            # Of another shape (1.0.250): the status of every page answered with an error.
+            return {'plan': {'state': plan.get('state'), 'version': plan.get('version')} if plan else None,
+                    'package': pkg.get('version') or None}
         except Exception:                               # noqa: BLE001
             return {}
-        return {'plan': {'state': plan['state'], 'version': plan['version']} if plan else None,
-                'package': pkg['version'] if pkg else None}
 
     # ---- running -------------------------------------------------------------------
     def run(self):
@@ -17070,6 +17185,15 @@ class Daemon(object):
                     web_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
                     log_sparing('tick:web:' + str(e)[:80], 'TLS and the VIP address: %s' % e, 'warn', 3600)
+                if time.monotonic() - getattr(self, '_adopt_at', -1e9) > 60:
+                    self._adopt_at = time.monotonic()
+                    try:
+                        dbguard_adopt_tick(self.store)  # rows of a version, once all run it (1.0.250)
+                    except DbError:
+                        raise
+                    except Exception as e:      # noqa: BLE001
+                        log_sparing('adopt-tick', 'the rows signed only since a version: %s' % e,
+                                    'warn', every=3600)
                 try:
                     rb_tick(self)               # backups to the destinations (1.0.109)
                 except Exception as e:          # noqa: BLE001
@@ -18145,7 +18269,7 @@ def tune_connect(store, admin_user, admin_password):
 
 def tune_last(store):
     try:
-        return json.loads(store.get_meta('tune_last:' + node_name()) or 'null')
+        return json_obj(store.get_meta('tune_last:' + node_name()))    # an object only (1.0.250)
     except ValueError:
         return None
 
@@ -18222,7 +18346,7 @@ def tune_apply(store, typed, admin_user, admin_password, by):
         raise ValueError('say what the machine has first: its memory and its processors')
     db = tune_connect(store, admin_user, admin_password)
     done, later, failed = [], [], []
-    before = json.loads(store.get_meta('tune_before:' + node_name()) or '{}')
+    before = (json_obj(store.get_meta('tune_before:' + node_name())) or {})
     try:
         for r in plan['rows']:
             if not r['change']:
@@ -18333,11 +18457,8 @@ def tune_restart(store, by):
             raise ValueError('the other node is not answering: restarting PostgreSQL here would '
                              'leave nothing to sign people in - bring it back first')
         for n in others:
-            try:
-                other = json.loads(store.get_meta('db_restart:' + n['name']) or '{}')
-            except ValueError:
-                other = {}
-            if time.time() - float(other.get('at') or 0) < 300 and not other.get('done'):
+            other = json_obj(store.get_meta('db_restart:' + n['name'])) or {}
+            if time.time() - fnum(other.get('at')) < 300 and not other.get('done'):
                 raise ValueError('%s is restarting its PostgreSQL now - one at a time' % n['name'])
         store.set_meta('db_restart:' + node_name(), json.dumps({'at': time.time(), 'by': by}))
         rest = True
@@ -18427,7 +18548,7 @@ def _tune_restart_go(store, db, unit, waiting, by):
 
 
 def tune_undo(store, admin_user, admin_password, by):
-    before = json.loads(store.get_meta('tune_before:' + node_name()) or '{}')
+    before = (json_obj(store.get_meta('tune_before:' + node_name())) or {})
     if not before:
         raise ValueError('nothing was changed here, so there is nothing to put back')
     db = tune_connect(store, admin_user, admin_password)
@@ -19255,12 +19376,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
 # ---- the disk under it ----------------------------------------------------------
 def note_size(store):
     """The size of the database, once a day, for how fast it grows."""
-    try:
-        sizes = json.loads(store.get_meta('db_sizes:' + node_name()) or '{}')
-    except ValueError:
-        sizes = {}
+    sizes = json_obj(store.get_meta('db_sizes:' + node_name())) or {}
     today = datetime.now().strftime('%Y-%m-%d')
-    if sizes.get('engine') != store.db.engine:
+    if sizes.get('engine') != store.db.engine or not isinstance(sizes.get('days'), dict):
         sizes = {'engine': store.db.engine, 'days': {}}
     if today not in sizes['days']:
         sizes['days'][today] = int(store.db.size() or 0)
@@ -19409,7 +19527,7 @@ def tune_state(store):
            'restart': {'may': False, 'unit': {'postgres': 'postgresql',
                                               'mariadb': 'mariadb'}.get(db.engine, '')}}
     try:
-        last = json.loads(store.get_meta('tune_last:' + node_name()) or 'null')
+        last = json_obj(store.get_meta('tune_last:' + node_name()))
     except ValueError:
         last = None
     out['last'] = last
@@ -20687,10 +20805,8 @@ def mailq_read(store, qid):
     raw = store.get_meta(MAILQ_PREFIX + qid)
     if not raw:
         return None, None
-    try:
-        return json.loads(raw), raw
-    except ValueError:
-        return None, None
+    rec = json_obj(raw)                     # an object only (1.0.250)
+    return (rec, raw) if rec is not None else (None, None)
 
 
 def mailq_cas(store, qid, raw, rec):
@@ -20810,8 +20926,8 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
         rec['state'] = 'failed'
         store.add_event('mail', 'the mail to %s (%s) was refused for good: %s' % (
             who, MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'), str(err)[:300]), 'bad')
-    elif now >= float(rec.get('expires') or 0) or (
-            rec.get('kind') in ('code', 'verify') and now >= float(rec.get('expires') or 0) - 30):
+    elif now >= fnum(rec.get('expires')) or (
+            rec.get('kind') in ('code', 'verify') and now >= fnum(rec.get('expires')) - 30):
         # A code's mail no longer tried in its last half minute (1.0.225): delivered then, it
         # brought a code that had run out.
         rec['state'] = 'expired'
@@ -20848,13 +20964,21 @@ def mailq_all(store, open_only=False):
         sql += (" AND (v LIKE '%\"state\": \"waiting\"%' OR v LIKE '%\"state\": \"sending\"%'"
                 " OR v LIKE '%\"state\": \"failed\"%')")
     for r in store.db.rows(sql):
-        try:
-            rec = json.loads(r['v'] or '{}')
-        except ValueError:
+        rec = json_obj(r['v'])
+        if rec is None:
+            # A row of another shape (1.0.250): it raised here - no mail went out at all, a code by
+            # mail neither, and the tick that takes rows away never came to it.
+            if not open_only:
+                store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+                store.db.run('DELETE FROM meta WHERE k = ?', (MAILB_PREFIX + r['k'][len(MAILQ_PREFIX):],))
             continue
+        for t in ('created', 'expires', 'sent_at', 'last_try'):
+            if t in rec and rec[t] is not None and (isinstance(rec[t], bool) or
+                                                   not isinstance(rec[t], (int, float))):
+                rec[t] = fnum(rec[t])
         rec['qid'] = r['k'][len(MAILQ_PREFIX):]
         out.append(rec)
-    out.sort(key=lambda x: -float(x.get('created') or 0))
+    out.sort(key=lambda x: -fnum(x.get('created')))
     return out
 
 
@@ -20893,7 +21017,7 @@ def mailq_tick(store):
                 store.db.run('DELETE FROM meta WHERE k IN (?, ?)',
                              (MAILQ_PREFIX + qid, MAILB_PREFIX + qid))
                 continue
-            if state == 'failed' and now > float(rec.get('expires') or 0):
+            if state == 'failed' and now > fnum(rec.get('expires')):
                 # Refused for good stays "refused for good" (1.0.103), not
                 # "given up": what it held goes, the reason stays.
                 if store.get_meta(MAILB_PREFIX + qid):
@@ -20904,7 +21028,7 @@ def mailq_tick(store):
             # A while past its time (1.0.206): the last try is due at the very time
             # it runs out, and was given up here before it was made - with no word.
             if state in ('waiting', 'sending') and \
-                    now > float(rec.get('expires') or 0) + (120 if state != 'sending' else 600):
+                    now > fnum(rec.get('expires')) + (120 if state != 'sending' else 600):
                 _, raw = mailq_read(store, qid)
                 if raw:
                     rec.pop('qid', None)
@@ -20928,7 +21052,7 @@ def mailq_tick(store):
             # up - taken back sooner, a code went out a second time while the first still did.
             stuck = 600 if rec.get('kind') not in ('code', 'verify') else \
                 4 * int(CONFIG.get('smtp_timeout_s') or 20) + 90
-            if state == 'sending' and now - float(rec.get('last_try') or 0) > stuck and \
+            if state == 'sending' and now - fnum(rec.get('last_try')) > stuck and \
                     (mine or rec.get('node') not in alive):
                 # Left half way by a node that stopped: tried again.
                 _, raw = mailq_read(store, qid)
@@ -20941,9 +21065,9 @@ def mailq_tick(store):
                 continue
             if not mine:
                 # The node it waits on is gone (5 min): this one sends it.
-                if rec.get('node') in alive or now - float(rec.get('last_try') or 0) < 300:
+                if rec.get('node') in alive or now - fnum(rec.get('last_try')) < 300:
                     continue
-            if float(rec.get('next_at') or 0) > now or sent_now >= 25:
+            if fnum(rec.get('next_at')) > now or sent_now >= 25:
                 continue
             sent_now += 1
             try:
@@ -20989,7 +21113,7 @@ def mailq_retry(store, qids, by=''):
         if not store.get_meta(MAILB_PREFIX + qid):
             skipped.append(qid)
             continue
-        if time.time() > float(rec.get('expires') or 0):
+        if time.time() > fnum(rec.get('expires')):
             # Asked by hand: given the time of a new mail again - a code to
             # sign in with is not, it is no good any more.
             if rec.get('kind') in ('code', 'verify'):
@@ -21617,10 +21741,7 @@ def rb_slug(text):
 
 # ---- the destinations ---------------------------------------------------------------
 def rb_targets(store):
-    try:
-        got = json.loads(store.get_meta('rbackup:targets') or '[]')
-    except ValueError:
-        got = []
+    got = json_obj(store.get_meta('rbackup:targets'), list) or []     # a list only (1.0.250)
     return [t for t in got if isinstance(t, dict) and t.get('id')]
 
 
@@ -22907,10 +23028,7 @@ def human_bytes(n):
 
 
 def rb_history(store):
-    try:
-        got = json.loads(store.get_meta('rbackup:runs') or '[]')
-    except ValueError:
-        got = []
+    got = json_obj(store.get_meta('rbackup:runs'), list) or []        # a list only (1.0.250)
     return [x for x in got if isinstance(x, dict)]
 
 
@@ -22922,7 +23040,7 @@ def rb_history_forget(store, at=None, file=None):
         if at is None:
             left = []
         else:
-            left = [r for r in runs if not (abs(float(r.get('at') or 0) - float(at)) < 0.001 and
+            left = [r for r in runs if not (abs(fnum(r.get('at')) - float(at)) < 0.001 and
                                            str(r.get('file') or '') == str(file or ''))]
         store.set_meta('rbackup:runs', json.dumps(left, default=str))
         return len(runs) - len(left)
@@ -23011,17 +23129,20 @@ def rb_now_asked(daemon):
     """A Back up now asked of this node by another; started once each."""
     store = daemon.store
     done_k = 'rbackup:nowdone:' + node_name()
-    try:
-        done = set(json.loads(store.get_meta(done_k) or '[]'))
-    except ValueError:
-        done = set()
-    for r in node_key_rows(store, 'rbackup:now', node_name()):
+    done = {x for x in json_obj(store.get_meta(done_k), list) or [] if isinstance(x, str)}
+    for r in node_key_rows(store, 'rbackup:now', node_name(), guard=False):
         try:
             ask = json.loads(r['v'] or '{}')
-        except ValueError:
+            ident = str(ask.get('id') or '')
+            at = fnum(ask.get('at'))
+        except (ValueError, TypeError, AttributeError):
             continue
-        ident = str(ask.get('id') or '')
-        if not ident or ident in done or time.time() - float(ask.get('at') or 0) > RB_NOW_LIVE_S:
+        # Only an ask still live, not done yet, is checked (1.0.250): an ask of a node of a version
+        # before, unsigned, was refused - and refused again at every tick, an error in the log for
+        # as long as the row was there, which nobody took away.
+        if not ident or ident in done or time.time() - at > RB_NOW_LIVE_S:
+            continue
+        if not dbguard_rows(store.db, [r]):
             continue
         if RB_JOB['running']:
             return                      # asked again at the next tick
@@ -23029,6 +23150,31 @@ def rb_now_asked(daemon):
         rb_job_start(store, '%s (Back up now on %s)' % (ask.get('by') or 'otp',
                                                         ask.get('from') or '?'))
         return
+
+
+def rb_now_tidy(store):
+    """This node's own asks of the others, gone once they are over (1.0.250): left there, done or
+    refused, never taken away - only the node that wrote a row takes it away, over the value it
+    read (a new ask written meanwhile is left)."""
+    n = 0
+    for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?", ('rbackup:now:%',)):
+        k = str(r['k'])
+        if not k.endswith(NODE_KEY_SEP + node_name()):
+            continue
+        try:
+            at = float((json.loads(r['v'] or '{}') or {}).get('at') or 0)
+        except (ValueError, TypeError, AttributeError):
+            at = 0.0
+        if time.time() - at <= RB_NOW_LIVE_S:
+            continue
+        if dbguard_meta_signed(k):
+            with store.db.transaction():
+                if store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
+                    dbguard_sign(store.db, 'm', k, None)
+                    n += 1
+        elif store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (k, r['v'])):
+            n += 1
+    return n
 
 
 def rb_tick(daemon):
@@ -23040,6 +23186,12 @@ def rb_tick(daemon):
         except Exception as e:                          # noqa: BLE001
             log_sparing('rb-now:' + str(e)[:60], 'Back up now asked by the other node: %s'
                         % e, 'warn', 600)
+        if time.time() - float(getattr(daemon, '_rb_now_tidy', 0)) > 600:
+            daemon._rb_now_tidy = time.time()
+            try:
+                rb_now_tidy(store)
+            except Exception as e:                      # noqa: BLE001
+                log_sparing('rb-now-tidy', 'old asks to back up now: %s' % e, 'warn', 3600)
     if not RB_JOB['running'] and rb_verify_due(store) and \
             time.time() - float(getattr(daemon, '_rb_verify_at', 0)) > 3600:
         daemon._rb_verify_at = time.time()          # once an hour at most, if it fails to start
@@ -23452,7 +23604,7 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
     res['ok'] = bool(res['checks']) and all(c['ok'] for c in res['checks'])
     res['secs'] = round(time.time() - began, 1)
     k = 'rbackup:verified:' + node_name()
-    rows = _meta_json(store, k) or []
+    rows = _meta_json(store, k, list) or []
     if not isinstance(rows, list):
         rows = []
     store.set_meta(k, json.dumps(([res] + rows)[:RB_VERIFY_KEEP]))
@@ -23472,7 +23624,7 @@ def rb_verified(store):
         except ValueError:
             continue
         out += [x for x in rows if isinstance(x, dict)]
-    out.sort(key=lambda x: -float(x.get('at') or 0))
+    out.sort(key=lambda x: -fnum(x.get('at')))
     return out
 
 
@@ -23484,7 +23636,7 @@ def rb_verified_forget(store, at=None):
             rows = json.loads(r['v'] or '[]')
         except ValueError:
             rows = []
-        keep = [] if at is None else [x for x in rows if abs(float(x.get('at') or 0) - at) > 0.001]
+        keep = [] if at is None else [x for x in rows if abs(fnum(x.get('at')) - at) > 0.001]
         if len(keep) != len(rows):
             n += len(rows) - len(keep)
             store.set_meta(r['k'], json.dumps(keep))
@@ -23520,7 +23672,7 @@ def rb_verify_due(store):
     """Weekly: a week since this node last tried one."""
     if (CONFIG.get('rbackup_verify') or 'off') != 'weekly':
         return False
-    rows = _meta_json(store, 'rbackup:verified:' + node_name()) or []
+    rows = _meta_json(store, 'rbackup:verified:' + node_name(), list) or []
     last = float(rows[0].get('at') or 0) if isinstance(rows, list) and rows else 0
     return time.time() - last > 7 * 86400
 
@@ -23689,13 +23841,12 @@ def machine_id():
 
 
 def name_clash_check(store, beat):
-    try:
-        was = json.loads(store.get_meta('node:' + node_name()) or '{}')
-    except ValueError:
-        was = {}
+    # Its own row of another shape taken as none (1.0.250): it raised here, before the beat was
+    # written - the node beat no more, for good, and the other took it for gone.
+    was = json_obj(store.get_meta('node:' + node_name())) or {}
     now = time.time()
     other = was.get('mid')
-    if other and other != beat['mid'] and now - float(was.get('at') or 0) < HEARTBEAT_S * 3:
+    if other and other != beat['mid'] and now - fnum(was.get('at')) < HEARTBEAT_S * 3:
         # Seen twice before it is said: once is this machine's own row from
         # before a new host name, overwritten by the beat after this one.
         NAME_CLASH_SEEN.append(now)
@@ -23750,11 +23901,16 @@ def ha_nodes(store):
     for r in rows:
         try:
             beat = json.loads(r['v'] or '{}')
-        except ValueError:
+            # A heartbeat of another shape left out (1.0.250): its .get() raised here, and with it
+            # every page and tick that asks for the nodes - until the row was written again.
+            if not isinstance(beat, dict) or isinstance(beat.get('at'), bool) or \
+                    not isinstance(beat.get('at') or 0, (int, float)):
+                continue
+            at = fnum(beat.get('at'))
+        except (ValueError, TypeError):
             continue
         name = r['k'][5:]
         # With clock_beat (1.0.222) judged by the measured difference of the clocks.
-        at = float(beat.get('at') or 0)
         age = clock_beat_age(store, name, at, now)
         alive = age < HEARTBEAT_S * 3
         if age < -2 * HEARTBEAT_S and name != node_name():
@@ -23784,7 +23940,7 @@ def ha_joining():
         got = json.loads(HA_JOINING_FILE.read_text())
     except (OSError, ValueError):
         return []
-    if float(got.get('until') or 0) < time.time():
+    if fnum(got.get('until')) < time.time():
         return []
     out = []
     for a in got.get('addrs') or []:
@@ -23800,7 +23956,7 @@ def ha_joining_info():
         got = json.loads(HA_JOINING_FILE.read_text())
     except (OSError, ValueError):
         return {}
-    if float(got.get('until') or 0) < time.time():
+    if fnum(got.get('until')) < time.time():
         return {}
     return got
 
@@ -23998,15 +24154,15 @@ def job_read():
                 if one and one.get('running') and (
                         time.time() - float(one.get('at') or one.get('began') or 0) > 300 or
                         (one.get('node') == node_name() and not DB_JOB.get('running'))):
-                    one = dict(one, running=False, ended=float(one.get('at') or 0),
+                    one = dict(one, running=False, ended=fnum(one.get('at')),
                                error=one.get('error') or 'it stopped with the service that '
                                'ran it (restarted, or the database was changed)')
-                if one and (not there or float(one.get('began') or 0) >
-                            float(there.get('began') or 0)):
+                if one and (not there or fnum(one.get('began')) >
+                            fnum(there.get('began'))):
                     there = one
         except Exception:                               # noqa: BLE001
             there = None
-    if here and (not there or float(here.get('began') or 0) >= float(there.get('began') or 0)):
+    if here and (not there or fnum(here.get('began')) >= fnum(there.get('began'))):
         return here
     return there or dict(DB_JOB)
 
@@ -24915,7 +25071,7 @@ def ha_repl_state(store):
                 "pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS behind "
                 "FROM pg_replication_slots WHERE slot_name LIKE 'o__!_from!_%' ESCAPE '!' "
                 "AND database = current_database()"):
-            r['behind'] = int(float(r.get('behind') or 0))
+            r['behind'] = int(fnum(r.get('behind')))
             out['outgoing'].append(r)
     except Exception as e:                              # noqa: BLE001
         out['trouble'] = str(e).split('\n')[0][:300]
@@ -25381,12 +25537,17 @@ RESTORE_RUNNING = threading.Event()
 RESTORE_WHY = ['']
 
 
-def _meta_json(store, k):
+def _meta_json(store, k, kind=dict):
+    """A row of meta read as JSON - None unless it is of the kind the caller works on (1.0.250):
+    a row of another shape (a version before, a reply of the root helper that was no object,
+    somebody's hand) raised at the caller's .get() before it wrote the row again - the same
+    error at every tick, the row never put right."""
     try:
         got = store.get_meta(k)
-        return json.loads(got) if got else None
+        got = json.loads(got) if got else None
     except (ValueError, TypeError):
         return None
+    return got if isinstance(got, kind) else None
 
 
 def _peer_update(k, v):
@@ -25456,7 +25617,7 @@ def node_stepped_aside(store, name):
         sk = 0.0
     for k in ('clock:state:', 'split:state:'):
         row = _meta_json(store, k + name) or {}
-        if row.get('role') == 'aside' and now - (float(row.get('at') or 0) - sk) < 40:
+        if row.get('role') == 'aside' and now - (fnum(row.get('at')) - sk) < 40:
             return True
     return False
 
@@ -25630,6 +25791,9 @@ def upgrade_checks(store, meta, pages=False):
     why = []
     if not meta:
         return False, ['no package has been sent yet']
+    if not isinstance(meta, dict) or not isinstance(meta.get('version'), str) or \
+            not re.match(r'^\d+\.\d+\.\d+$', meta['version']):
+        return False, ['the package\'s row is not as otp writes it - send the package again']
     down = bool(meta.get('downgrade'))
     if down:
         why += downgrade_why_not(store, meta['version'])
@@ -25806,7 +25970,7 @@ def upgrade_tick(daemon):
         state = 'draining'
         turn = _meta_json(store, 'upgrade:node:' + me)
     if state == 'draining':
-        if len(steps) > 1 and now - float(turn.get('at') or 0) < UPGRADE_DRAIN_S:
+        if len(steps) > 1 and now - fnum(turn.get('at')) < UPGRADE_DRAIN_S:
             return
         meta = _meta_json(store, 'upgrade:pkg') or {}
         try:
@@ -25835,7 +25999,7 @@ def upgrade_tick(daemon):
         return
     if state == 'installing':
         if __version__ == plan['version'] and float(daemon.started or 0) > \
-                float(turn.get('asked') or 0):
+                fnum(turn.get('asked')):
             _my_step(store, plan, state='checking', said='restarted as %s' % __version__)
             state = 'checking'
             turn = _meta_json(store, 'upgrade:node:' + me)
@@ -26181,7 +26345,7 @@ def online_tick(daemon):
     last = _meta_json(store, 'upgrade:online') or {}
     # Asked again once the address changed, or a day after the last look.
     if last.get('url') == online_url() and \
-            time.time() - float(last.get('at') or 0) < ONLINE_EVERY_S:
+            time.time() - fnum(last.get('at')) < ONLINE_EVERY_S:
         return
     with ONLINE_LOCK:
         if ONLINE_WORK['busy']:
@@ -26828,7 +26992,7 @@ def hisec_waived(store=None):
     if store is None:
         return _HS_WAIVE['v']
     if time.time() - _HS_WAIVE['at'] > 2:
-        got = _meta_json(store, 'hisec:waive') or []
+        got = _meta_json(store, 'hisec:waive', list) or []
         _HS_WAIVE.update(at=time.time(), v=frozenset(x for x in got if isinstance(x, str)))
         _HS_WAIVE['store'][0] = store
     return _HS_WAIVE['v']
@@ -26931,9 +27095,8 @@ def hisec_rules(store, conf=None):
         elif t.get('kind') == 'smb' and not t.get('smb_encrypt', 1):
             hit['backup:smb'].append(t.get('name'))
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'web:tls:%'"):
-        try:
-            prof = json.loads(r['v'] or '{}')
-        except ValueError:
+        prof = json_obj(r['v'])
+        if prof is None:
             continue
         if isinstance(prof, dict) and prof.get('cert') and \
                 (prof.get('preset') or 'standard') not in ('standard', 'modern'):
@@ -27028,7 +27191,7 @@ def hisec_waive(store, rule, on, by):
     kept, while high security is on: it would stand against it at once."""
     if rule not in HISEC_SETTINGS and rule not in HISEC_RULE:
         raise ValueError('there is no such rule: %s' % rule)
-    w = set(_meta_json(store, 'hisec:waive') or [])
+    w = set(_meta_json(store, 'hisec:waive', list) or [])
     if not on and rule in w and _hs_on():
         now = [r for r in hisec_rules(store) if r['rule'] == rule]
         if now and now[0]['bad']:
@@ -27141,8 +27304,8 @@ def hisec_nodes(store):
         return out
     try:
         others = [n for n in ha_nodes(store) if not n.get('me') and n['name'] != node_name() and
-                  float(n.get('age') or 0) < 86400]
-        others.sort(key=lambda n: float(n.get('age') or 0))
+                  fnum(n.get('age')) < 86400]
+        others.sort(key=lambda n: fnum(n.get('age')))
         if CONFIG.get('ha_mode') == 'replicated':
             others = others[:1]
         for n in others:
@@ -27187,9 +27350,8 @@ def downgrade_db_floor(store):
     database, on any node."""
     best, by = DOWNGRADE_FLOOR, '%s (%s)' % (__version__, node_name())
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'downgrade:floor:%'"):
-        try:
-            got = json.loads(r['v'] or '{}')
-        except ValueError:
+        got = json_obj(r['v'])
+        if got is None:
             continue
         if isinstance(got, dict) and _ver_tuple(got.get('floor')) > _ver_tuple(best):
             best, by = str(got['floor']), '%s (%s)' % (got.get('version'),
@@ -27517,7 +27679,7 @@ def vip_moving(conf):
     of more than five minutes ago by that clock (a row left from before a restart) is none."""
     to = str(conf.get('move_to') or '')
     try:
-        at = float(conf.get('move_at') or 0)
+        at = fnum(conf.get('move_at'))
     except (TypeError, ValueError):
         at = 0.0
     if not to or abs(time.time() - at) > VIP_MOVE_S + 300:
@@ -28279,11 +28441,11 @@ def web_tick(store):
         # And every 15 minutes (1.0.187): a failure on something passing - a
         # mirror that did not answer while keepalived was installed - left the
         # VIP address and the certificates as they were until somebody looked.
-        if float(store.get_meta('web:retry:' + node_name()) or 0) <= float(st.get('at') or 0):
+        if float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
             if st.get('state') != 'failed':
                 return
-            rebooted = not WEB_DRIFT.get('boot_retried') and boot_time() > float(st.get('at') or 0)
-            if not rebooted and time.time() - float(st.get('at') or 0) < WEB_RETRY_S:
+            rebooted = not WEB_DRIFT.get('boot_retried') and boot_time() > fnum(st.get('at'))
+            if not rebooted and time.time() - fnum(st.get('at')) < WEB_RETRY_S:
                 return
             if rebooted:
                 WEB_DRIFT['boot_retried'] = True
@@ -28294,15 +28456,15 @@ def web_tick(store):
     # change applied twice.
     taken = WEB_DIR / 'request.taken'
     if (taken.exists() and time.time() - taken.stat().st_mtime < 600) or (
-            WEB_ASKED.get('hash') == h and time.time() - float(WEB_ASKED.get('at') or 0) < 600
-            and float(st.get('at') or 0) < float(WEB_ASKED.get('at') or 0)):
+            WEB_ASKED.get('hash') == h and time.time() - fnum(WEB_ASKED.get('at')) < 600
+            and fnum(st.get('at')) < fnum(WEB_ASKED.get('at'))):
         return
     req = WEB_DIR / 'request.json'
     if req.exists() and time.time() - req.stat().st_mtime < 600:
         # Waiting for root: left as it is when it asks for this very thing,
         # replaced when what is wanted changed meanwhile.
         try:
-            if json.loads(req.read_text()).get('hash') == h:
+            if (json_obj(req.read_text()) or {}).get('hash') == h:
                 return
         except (OSError, ValueError):
             return
@@ -28358,7 +28520,7 @@ def web_progress():
             got = json.loads(f.read(65536).decode('utf-8'))
     except (OSError, ValueError):
         return None
-    if not isinstance(got, dict) or time.time() - float(got.get('at') or 0) > 3 * 3600:
+    if not isinstance(got, dict) or time.time() - fnum(got.get('at')) > 3 * 3600:
         return None
     got['now'] = time.time()
     return got
@@ -28955,7 +29117,7 @@ def fw_auto(store, node):
                     'why': ('the node a cluster is being made with (%s): let in for the join, '
                             'until %s at most' % (', '.join(joining.get('addrs') or []),
                                                   time.strftime('%d.%m. %H:%M', time.localtime(
-                                                      float(joining.get('until') or 0)))))
+                                                      fnum(joining.get('until'))))))
                     if joining else 'replication (PostgreSQL), its pages and the health check - '
                     'inside the cluster everything has to work',
                     # Everything from it (1.0.59): its answers to this node's
@@ -29231,17 +29393,17 @@ def repl_errors(store, ask_log=True):
             pass
         while time.time() - t0 < 8:
             got = _pglog_read()
-            if float(got.get('at') or 0) >= t0:
+            if fnum(got.get('at')) >= t0:
                 break
             time.sleep(0.4)
     else:
         got = _pglog_read()
-    since = float(base.get('at') or 0)
-    lines = [e for e in got.get('entries') or [] if float(e.get('ts') or 0) >= since or
+    since = fnum(base.get('at'))
+    lines = [e for e in got.get('entries') or [] if fnum(e.get('ts')) >= since or
              not e.get('ts')]
     return {'subs': subs, 'log': lines[-60:], 'log_at': got.get('at'),
             'log_file': got.get('file') or '', 'log_said': got.get('said') or '',
-            'fresh': float(got.get('at') or 0) >= time.time() - 15}
+            'fresh': fnum(got.get('at')) >= time.time() - 15}
 
 
 def _pglog_read():
@@ -29775,7 +29937,7 @@ def acme_before(store, target):
     info = got.get('info') or {}
     return {'how': got.get('how'), 'subject': info.get('subject'), 'issuer': info.get('issuer'),
             'not_after': info.get('not_after'), 'at': got.get('at'),
-            'ran_out': float(info.get('not_after') or 0) < time.time()}
+            'ran_out': fnum(info.get('not_after')) < time.time()}
 
 
 def acme_put_back(store, target, by):
@@ -29785,7 +29947,7 @@ def acme_put_back(store, target, by):
     if not got.get('cert'):
         raise ValueError('there is no certificate from before ACME for this one')
     info = got.get('info') or {}
-    if float(info.get('not_after') or 0) < time.time():
+    if fnum(info.get('not_after')) < time.time():
         raise ValueError('the certificate from before ACME ran out on %s - put a new one in on '
                          'Certificates and TLS' % stamp(info.get('not_after')))
     prof = tls_profile(store, target) or {}
@@ -29894,14 +30056,14 @@ def acme_due(store, target, name):
     # wrong (a CA's mistake, a clock) does not let a certificate run out.
     ari = _meta_json(store, 'acme:ari:' + target) or {}
     if ari.get('pick') and ari.get('cert') == (info.get('fingerprint') or '') and \
-            time.time() - float(ari.get('at') or 0) < 2 * 86400 and time.time() >= float(ari['pick']):
+            time.time() - fnum(ari.get('at')) < 2 * 86400 and time.time() >= float(ari['pick']):
         return 'the CA\'s renewal window (%s - %s)' % (stamp(ari['start']), stamp(ari['end']))
-    left = (float(info.get('not_after') or 0) - time.time()) / 86400
+    left = (fnum(info.get('not_after')) - time.time()) / 86400
     days = float(CONFIG.get('acme_days') or 30)
     # A third of its life at most (1.0.187): a CA giving fewer days than
     # acme_days (short-lived certificates, a test CA) had every new one due
     # at once - ordered again every hour, until its limits refused them all.
-    life = (float(info.get('not_after') or 0) - float(info.get('not_before') or 0)) / 86400
+    life = (fnum(info.get('not_after')) - fnum(info.get('not_before'))) / 86400
     if info.get('not_before') and life > 0:
         days = min(days, life / 3)
     if left < days:
@@ -30139,12 +30301,11 @@ def acme_start(store, which, by):
             # One node orders a certificate at a time (1.0.209): ordered from the
             # other node's pages while this one renewed it, both spent the CA's
             # limit and the last one saved won. Held half an hour at most.
-            try:
-                held = json.loads(store.get_meta(lease) or '{}')
-            except ValueError:
-                held = {}
+            # A lease of another shape taken as none (1.0.250): it raised here before it was written
+            # again - the certificate was never ordered again, and ran out.
+            held = json_obj(store.get_meta(lease)) or {}
             if held.get('node') and held['node'] != node_name() and \
-                    float(held.get('until') or 0) > time.time():
+                    fnum(held.get('until')) > time.time():
                 log('ACME: %s is being ordered on %s already - not ordered here too'
                     % (n, held['node']), 'warn')
                 return
@@ -30157,7 +30318,7 @@ def acme_start(store, which, by):
             log('ACME: the order for %s stopped: %s' % (n, e), 'error')
         finally:
             try:
-                if json.loads(store.get_meta(lease) or '{}').get('node') == node_name():
+                if (json_obj(store.get_meta(lease)) or {}).get('node') == node_name():
                     store.drop_meta(lease)
             except Exception:                           # noqa: BLE001
                 pass
@@ -30206,7 +30367,7 @@ def acme_challenge(store, token):
     if not re.match(r'^[A-Za-z0-9_-]{8,256}\Z', str(token or '')):
         return None
     got = _meta_json(store, 'acme:chal:' + token) or {}
-    if not got.get('auth') or time.time() - float(got.get('at') or 0) > 3600:
+    if not got.get('auth') or time.time() - fnum(got.get('at')) > 3600:
         return None
     return got['auth']
 
@@ -30610,7 +30771,7 @@ def _dns_manual(store, rr, txt, say):
     while True:
         cur = _meta_json(store, 'acme:manual') or {}
         mine = cur.get('node') in (None, node_name())
-        stale = time.time() - float(cur.get('at') or 0) > ACME_MANUAL_WAIT + 60
+        stale = time.time() - fnum(cur.get('at')) > ACME_MANUAL_WAIT + 60
         if not cur or mine or cur.get('done') or stale:
             break
         if time.time() > end:
@@ -30951,11 +31112,14 @@ def _cert_end(pem):
 
 
 def hatls_ca(store):
-    try:
-        got = json.loads(store.get_meta('hatls:ca') or 'null')
-    except ValueError:
-        got = None
-    return got if isinstance(got, dict) and got.get('cas') else {'cas': []}
+    got = json_obj(store.get_meta('hatls:ca')) or {}
+    # Each authority an object with its certificate (1.0.250): one of another shape raised at every
+    # tick, and a new one could not be made - it read the old ones first.
+    cas = got.get('cas') if isinstance(got.get('cas'), list) else []
+    cas = [x for x in cas if isinstance(x, dict) and isinstance(x.get('cert'), str) and x.get('cert')]
+    for x in cas:
+        x['end'] = fnum(x.get('end'))
+    return dict(got, cas=cas) if cas else {'cas': []}
 
 
 def hatls_ca_make(store, by):
@@ -30978,7 +31142,7 @@ def hatls_ca_make(store, by):
     now = time.time()
     cas = [{'cert': crt, 'key': seal_secret(key, bind='hatls:ca'), 'end': _cert_end(crt),
             'at': now, 'by': by}]
-    cas += [x for x in ca['cas'] if float(x.get('end') or 0) > now][:3]
+    cas += [x for x in ca['cas'] if fnum(x.get('end')) > now][:3]
     store.set_meta('hatls:ca', json.dumps({'cas': cas}))
     return cas[0]
 
@@ -30986,7 +31150,7 @@ def hatls_ca_make(store, by):
 def hatls_trust(ca):
     """Every authority still good, the newest first - one file."""
     now = time.time()
-    return ''.join(x['cert'].strip() + '\n' for x in ca['cas'] if float(x.get('end') or 0) > now)
+    return ''.join(x['cert'].strip() + '\n' for x in ca['cas'] if fnum(x.get('end')) > now)
 
 
 def hatls_names(peer_host=''):
@@ -31107,9 +31271,8 @@ def hatls_view(store):
     ca = hatls_ca(store)
     nodes = []
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'hatls:node:%'")):
-        try:
-            one = json.loads(r['v'] or '{}')
-        except ValueError:
+        one = json_obj(r['v'])
+        if one is None:
             continue
         one['name'] = r['k'][len('hatls:node:'):]
         one['me'] = one['name'] == node_name()
@@ -31119,7 +31282,7 @@ def hatls_view(store):
     w = hatls_want(store)
     return {'mode': mode, 'ca_file': ca_file, 'own': bool(CONFIG.get('ha_tls')),
             'want': w, 'nodes': nodes,
-            'authority_end': [float(x.get('end') or 0) for x in ca['cas']],
+            'authority_end': [fnum(x.get('end')) for x in ca['cas']],
             'off': bool(w and w.get('off')),
             'running': bool(w) and any(x.get('for') == w.get('at') and x.get('step') not in
                                        ('done', 'failed', 'off_done') for x in nodes)}
@@ -31410,13 +31573,13 @@ def hatls_check(store):
     stuck = st.get('step') == 'link' and now - float(st.get('link_since') or now) > 120
     if st.get('step') not in (None, 'done', 'failed') and not stuck:
         return                          # on its way
-    if st.get('step') == 'failed' and now - float(st.get('at') or 0) < 3600:
+    if st.get('step') == 'failed' and now - fnum(st.get('at')) < 3600:
         # Tried again an hour later - or at once when the other node has put
         # its side right since (1.0.105), or this node's own certificate is
         # what is wrong (looked at below, as for one stuck on the link).
         pn = hatls_peer_name(store)
         peer = hatls_state(store, pn) if pn else {}
-        if float(peer.get('at') or 0) > float(st.get('at') or 0) and \
+        if fnum(peer.get('at')) > fnum(st.get('at')) and \
                 peer.get('step') in ('link', 'hba', 'done'):
             st2 = {'for': st.get('for') or now, 'step': 'names', 'renew': True, 'began': now,
                    'peer_host': str(CONFIG.get('ha_peer') or ''), 'cert_end': st.get('cert_end'),
@@ -31551,7 +31714,7 @@ def _hatls_tick(store):
             w = {'at': now, 'by': 'otp (renewed)', 'from': node_name()}
             store.set_meta('hatls:want', json.dumps(w))
             st = {}
-        elif st.get('step') == 'done' and float(st.get('cert_end') or 0) - now < \
+        elif st.get('step') == 'done' and fnum(st.get('cert_end')) - now < \
                 HATLS_RENEW_DAYS * 86400:
             ends = float(st.get('cert_end') or now)
             st = {'for': w.get('at') if w else now, 'step': 'names', 'renew': True,
@@ -31636,7 +31799,7 @@ def _hatls_tick(store):
                 peer_name or 'the other node')
             hatls_put(store, st)
             return
-        if now < float(st.get('retry_at') or 0):
+        if now < fnum(st.get('retry_at')):
             return
         try:
             far = db_open(ha_peer_conf(timeout=5, tls=('verify-full', str(HA_CA_FILE))))
@@ -32085,8 +32248,12 @@ def net_root(data, wait=60):
                 got = None
             if isinstance(got, dict) and got.get('id') == ask_id:
                 if not got.get('ok'):
-                    raise ValueError(got.get('said') or 'the root helper said no')
-                return got.get('data') or {}
+                    raise ValueError(str(got.get('said') or 'the root helper said no'))
+                data = got.get('data') or {}
+                if not isinstance(data, dict):      # kept as the node's network (1.0.250)
+                    raise ValueError('the root helper of this node answered with no object (%s) - '
+                                     'is it of the same version as otp?' % type(data).__name__)
+                return data
             time.sleep(0.4)
     raise ValueError('the root helper of this node did not answer in %d s - is otp-web.path '
                      'running?  systemctl status otp-web.path' % wait)
@@ -32498,7 +32665,7 @@ def net_job_run(daemon, ask):
                 a = _meta_json(store, 'readdress:ask') or {}
                 # This job's request, not one answered before (1.0.146).
                 if a.get('from') == me and a.get('done') and \
-                        float(a.get('at') or 0) >= asked_at - 1:
+                        fnum(a.get('at')) >= asked_at - 1:
                     done = a
                     break
                 time.sleep(2)
@@ -32824,6 +32991,12 @@ def net_local_trial_tick(daemon):
         t = json.loads(NET_LOCAL_TRIAL.read_text())
     except (OSError, ValueError):
         return
+    if not isinstance(t, dict):         # of another shape: gone (1.0.250)
+        try:
+            NET_LOCAL_TRIAL.unlink()
+        except OSError:
+            pass
+        return
     try:
         job = _meta_json(daemon.store, 'net:job:' + node_name()) or {}
         if job.get('id') != t.get('id') or job.get('state') not in ('trial', 'rebooting'):
@@ -32841,7 +33014,13 @@ def net_local_trial_lost():
         t = json.loads(NET_LOCAL_TRIAL.read_text())
     except (OSError, ValueError):
         return
-    if time.time() < float(t.get('until') or 0) or time.time() - float(t.get('asked') or 0) < 600:
+    if not isinstance(t, dict):         # of another shape: gone (1.0.250)
+        try:
+            NET_LOCAL_TRIAL.unlink()
+        except OSError:
+            pass
+        return
+    if time.time() < fnum(t.get('until')) or time.time() - fnum(t.get('asked')) < 600:
         return
     log('network: the change on trial was not kept and the database cannot be reached - the '
         'network kept before it comes back', 'warn')
@@ -32869,7 +33048,7 @@ def net_tick(daemon):
         return
     if job and job.get('state') == 'rebooting':
         late = time.time() - float(job.get('wait_from') or job.get('moved') or 0)
-        if boot_time() > float(job.get('boot') or 0) + 1:
+        if boot_time() > fnum(job.get('boot')) + 1:
             _net_thread(net_job_after, daemon, job)
         elif late > NET_REBOOT_GIVE_UP_S:
             # Not for ever (1.0.147): no restart in an hour, and nothing else
@@ -32884,11 +33063,11 @@ def net_tick(daemon):
                      job.get('pct'), ok=False)
         return
     if ask and ask.get('node') == me and (not job or job.get('id') != ask.get('id')) and \
-            time.time() - float(ask.get('at') or 0) < 600:
+            time.time() - fnum(ask.get('at')) < 600:
         _net_thread(net_job_run, daemon, ask)
         return
     if job and job.get('state') == 'running' and not NET_WORK['busy'] and \
-            time.time() - float(job.get('moved') or 0) > 300:
+            time.time() - fnum(job.get('moved')) > 300:
         by = '%s (network)' % (job.get('by') or 'otp')
         if job.get('down_at'):
             # Root was asked already: it may restart with the new network - then
@@ -32919,7 +33098,7 @@ def power_plan(store):
 
 def power_busy(store):
     p = power_plan(store)
-    if not p or time.time() - float(p.get('at') or 0) > POWER_LIVE_S:
+    if not p or time.time() - fnum(p.get('at')) > POWER_LIVE_S:
         return False
     for n in p.get('targets') or []:
         row = _meta_json(store, 'power:node:' + n) or {}
@@ -33031,15 +33210,15 @@ def power_tick(daemon):
     plan = power_plan(store)
     row = _meta_json(store, 'power:node:' + me) or {}
     if row.get('state') == 'going' and row.get('how') == 'reboot':
-        if boot_time() > float(row.get('boot') or 0) + 1:
+        if boot_time() > fnum(row.get('boot')) + 1:
             _net_thread(power_back, daemon, row)
             return True
-        if time.time() - float(row.get('moved') or 0) > 900:
+        if time.time() - fnum(row.get('moved')) > 900:
             _power_put(store, row, 'failed', 'it did not restart in 15 minutes')
         return False
     if not plan or me not in (plan.get('targets') or []) or row.get('id') == plan.get('id'):
         return False
-    if time.time() - float(plan.get('at') or 0) > POWER_LIVE_S:
+    if time.time() - fnum(plan.get('at')) > POWER_LIVE_S:
         return False
     if plan.get('order') == 'rolling':
         for t in plan['targets']:
@@ -33076,7 +33255,7 @@ def power_view(store):
                       'row': row if row.get('id') == plan.get('id') else {}})
     # Hidden from the page by whoever pressed Hide this (1.0.123).
     seen = store.get_meta('power:seen') == str(plan.get('id') or '')
-    return {'plan': plan if plan and not seen and time.time() - float(plan.get('at') or 0) < POWER_LIVE_S
+    return {'plan': plan if plan and not seen and time.time() - fnum(plan.get('at')) < POWER_LIVE_S
             else {}, 'nodes': nodes, 'now': time.time(), 'cluster': len(nodes) > 1,
             'busy': power_busy(store)}
 
@@ -33092,11 +33271,11 @@ def net_vip_again(store, wait=120):
     end = time.time() + wait
     while time.time() < end:
         st = web_status()
-        if st.get('hash') == h and float(st.get('at') or 0) > 0 and \
+        if st.get('hash') == h and fnum(st.get('at')) > 0 and \
                 st.get('state') in ('done', 'failed'):
             if st.get('state') == 'done':
                 return True, 'in place'
-            if float(store.get_meta('web:retry:' + node_name()) or 0) <= float(st.get('at') or 0):
+            if float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
                 said = st.get('said') or ['failed']
                 return False, ('; '.join(said) if isinstance(said, list) else str(said))[:300]
         time.sleep(3)
@@ -33120,7 +33299,7 @@ def net_view(store):
         out.append({'name': n, 'me': n == node_name(),
                     'alive': True if n == node_name() else bool(b.get('alive')),
                     'address': b.get('address') or '', 'now': net_node_now(store, n),
-                    'job': job if job and time.time() - float(job.get('moved') or 0) < 86400
+                    'job': job if job and time.time() - fnum(job.get('moved')) < 86400
                     else {}})
     v = vip_conf(store)
     return {'nodes': out, 'cluster': len(out) > 1, 'now': time.time(),
@@ -33253,7 +33432,7 @@ def net_trial_tick(daemon, job):
     if back.get('id') == job.get('id'):
         net_go_back(daemon, job, 'put back by %s' % back.get('by'))
         return
-    if time.time() > float(job.get('trial_until') or 0):
+    if time.time() > fnum(job.get('trial_until')):
         net_go_back(daemon, job, 'not kept within %d min' % int(job.get('trial_min') or 0))
 
 
@@ -33272,9 +33451,8 @@ def readdress_dropold_tick(store):
     """The other node's new address kept: its old one no longer let in."""
     me = node_name()
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'readdress:dropold:%'")):
-        try:
-            ask = json.loads(r['v'] or '{}')
-        except ValueError:
+        ask = json_obj(r['v'])
+        if ask is None:
             continue
         if not isinstance(ask, dict) or ask.get('from') in (me, None):
             continue
@@ -33372,7 +33550,7 @@ def fw_put_back(store, trial, why):
 
 def fw_trial_tick(store):
     trial = _meta_json(store, 'fw:trial') or {}
-    if not trial or trial.get('done') or time.time() <= float(trial.get('until') or 0):
+    if not trial or trial.get('done') or time.time() <= fnum(trial.get('until')):
         return
     # One node puts it back (both would write the same rows at once).
     if claim_once(store, 'fw_trial_back', trial.get('id')):
@@ -33384,20 +33562,19 @@ def trials_view(store):
     out = []
     t = time.time()
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'net:job:%'")):
-        try:
-            job = json.loads(r['v'] or '{}')
-        except ValueError:
+        job = json_obj(r['v'])
+        if job is None:
             continue
         if isinstance(job, dict) and job.get('state') == 'trial':
-            w = job.get('want') or {}
+            w = job.get('want') if isinstance(job.get('want'), dict) else {}
             out.append({'kind': 'net', 'node': job.get('node') or r['k'][8:],
-                        'until': float(job.get('trial_until') or 0), 'by': job.get('by'),
+                        'until': fnum(job.get('trial_until')), 'by': job.get('by'),
                         'words': 'the new network of %s (%s)' % (
                             job.get('node') or r['k'][8:], w.get('new_ip') or '?'),
                         'back': (w.get('old_ip') or '')})
     trial = _meta_json(store, 'fw:trial') or {}
-    if trial and not trial.get('done') and float(trial.get('until') or 0) > t - 60:
-        out.append({'kind': 'fw', 'node': '', 'until': float(trial.get('until') or 0),
+    if trial and not trial.get('done') and fnum(trial.get('until')) > t - 60:
+        out.append({'kind': 'fw', 'node': '', 'until': fnum(trial.get('until')),
                     'by': trial.get('last_by') or trial.get('by'),
                     'words': 'the change of the firewall and access', 'back': ''})
     return out
@@ -33438,8 +33615,14 @@ def root_ask(ask_name, answer_name, data, wait=60):
             got = None
         if isinstance(got, dict) and got.get('id') == ask_id:
             if not got.get('ok'):
-                raise ValueError(got.get('said') or 'the root helper said no')
-            return got.get('data') or {}
+                raise ValueError(str(got.get('said') or 'the root helper said no'))
+            data = got.get('data') or {}
+            if not isinstance(data, dict):
+                # An answer of another shape (1.0.250) - a helper of another version: taken as
+                # done, it was kept as the node's state, and .get() raised at every tick after.
+                raise ValueError('the root helper of this node answered %s with no object (%s) - is '
+                                 'it of the same version as otp?' % (ask_name, type(data).__name__))
+            return data
         time.sleep(0.4)
     raise ValueError('the root helper of this node did not answer in %d s - is otp-web.path '
                      'running?  systemctl status otp-web.path' % wait)
@@ -33604,13 +33787,13 @@ def ntp_tick(daemon):
         done = _meta_json(store, 'ntp:applied:' + me) or {}
         # Tried again when it failed (1.0.207), every ten minutes: written down under
         # the hash wanted, a failure was never tried again once the helper was back.
-        if (done.get('hash') != h and time.time() - float(done.get('at') or 0) > 30) or \
+        if (done.get('hash') != h and time.time() - fnum(done.get('at')) > 30) or \
                 (done.get('hash') == h and done.get('ok') is False and
-                 time.time() - float(done.get('at') or 0) > 600):
+                 time.time() - fnum(done.get('at')) > 600):
             _ntp_thread(ntp_apply, store)
             return
     sync_at = float(store.get_meta('ntp:sync:' + me) or 0)
-    if sync_at > float(NTP_WORK.get('synced') or 0) and time.time() - sync_at < 300:
+    if sync_at > fnum(NTP_WORK.get('synced')) and time.time() - sync_at < 300:
         NTP_WORK['synced'] = sync_at
         _ntp_thread(ntp_sync, store)
         return
@@ -33624,14 +33807,14 @@ def ntp_problem():
     """Words for the status when this node's clock is not to be trusted."""
     now = NTP_WORK.get('last') or {}
     d = now.get('data') or {}
-    if not d or time.time() - float(now.get('at') or 0) > 600:
+    if not d or time.time() - fnum(now.get('at')) > 600:
         return ''
     t = d.get('tracking') or {}
     if d.get('chrony') and t:
         if t.get('leap') == 'Not synchronised' or not t.get('stratum'):
             return ('the clock is not synchronised to a time server (chrony) - codes from the '
                     'app are worked out from it: Settings → Time')
-        if abs(float(t.get('offset') or 0)) > 1.0:
+        if abs(fnum(t.get('offset'))) > 1.0:
             return ('the clock is %.1f s off the time servers - codes from the app are worked '
                     'out from it: Settings → Time' % abs(float(t['offset'])))
     elif d.get('ntpsynchronized') == 'no':
@@ -33727,7 +33910,7 @@ def _logs_tick(daemon, force):
     again = store.get_meta('host:logs:again') or ''
     k = 'host:logs:' + node_name()
     row = _meta_json(store, k) or {}
-    age = time.time() - float(row.get('at') or 0)
+    age = time.time() - fnum(row.get('at'))
     if force or again != LOGS_WORK['again'] or row.get('hash') != h:
         pass
     elif age < (LOGS_EVERY if row.get('ok') else 600):
@@ -33802,10 +33985,10 @@ def sshkeys_view(store):
                 # A change still to be written - a read again is no change,
                 # and one not done in five minutes is not still coming (1.0.159).
                 if isinstance(a, dict) and a.get('id') and a['id'] not in done and \
-                        a.get('do') in ('add', 'drop') and time.time() - float(a.get('at') or 0) < 300:
+                        a.get('do') in ('add', 'drop') and time.time() - fnum(a.get('at')) < 300:
                     pending += 1
                 elif isinstance(a, dict) and a.get('id') and a['id'] not in done and \
-                        a.get('do') in ('add', 'drop') and time.time() - float(a.get('at') or 0) < 3600:
+                        a.get('do') in ('add', 'drop') and time.time() - fnum(a.get('at')) < 3600:
                     late += 1
         nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
                       'keys': now.get('keys') or [], 'sshd': now.get('sshd') or {},
@@ -33846,7 +34029,7 @@ def sshkeys_ask(store, nodes, do, by, line='', fp='', last_ok=False, user='root'
             had = []
         if isinstance(had, dict):
             had = [had]
-        had = [x for x in had if isinstance(x, dict) and time.time() - float(x.get('at') or 0) < 3600]
+        had = [x for x in had if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
         had.append({'id': secrets.token_hex(6), 'do': do, 'line': line, 'fp': str(fp or '')[:80],
                     'last_ok': bool(last_ok), 'by': by, 'at': time.time(), 'user': user})
         store.set_meta(k, json.dumps(had[-10:]))
@@ -33873,9 +34056,9 @@ def sshkeys_tick(daemon):
             continue
         for a in asks if isinstance(asks, list) else [asks]:
             if isinstance(a, dict) and a.get('id') and a['id'] not in done and \
-                    time.time() - float(a.get('at') or 0) < 3600:
+                    time.time() - fnum(a.get('at')) < 3600:
                 todo.append(a)
-    todo.sort(key=lambda a: float(a.get('at') or 0))
+    todo.sort(key=lambda a: fnum(a.get('at')))
     stale = time.time() - HOST_WORK['ssh_seen'] > 300 or not now
     if not todo and not stale:
         return
@@ -33887,7 +34070,7 @@ def sshkeys_tick(daemon):
     for a in lists:
         last_list[str(a.get('user') or 'root')] = a
     todo = [a for a in todo if a.get('do') != 'list'] + sorted(
-        last_list.values(), key=lambda a: float(a.get('at') or 0))
+        last_list.values(), key=lambda a: fnum(a.get('at')))
 
     def go():
         row = dict(now)
@@ -33920,7 +34103,7 @@ def sshkeys_tick(daemon):
                         mine.update(keys=got.get('keys') or [], file=got.get('file') or '')
                     of[user] = mine
                     if len(of) > 30:
-                        for k in sorted(of, key=lambda k: float(of[k].get('at') or 0))[:len(of) - 30]:
+                        for k in sorted(of, key=lambda k: fnum(of[k].get('at')))[:len(of) - 30]:
                             of.pop(k, None)
                     row.update(keys_of=of, at=time.time(), done=done[-200:])
                     if got:
@@ -34242,19 +34425,18 @@ def osup_tick(daemon):
     # It said a restart was waiting and the node has restarted since: looked
     # at again, not left saying so (1.0.159).
     if chk.get('reboot_now') and chk.get('state') == 'done' and not chk.get('relook') and \
-            boot_time() > float(chk.get('checked') or 0) + 1:
+            boot_time() > fnum(chk.get('checked')) + 1:
         chk['relook'] = True
         store.set_meta('host:osup:check:' + me, json.dumps(chk))
         store.set_meta(node_key('host:osup:checkwant', me),
                        json.dumps({'id': secrets.token_hex(6), 'by': 'otp (system update)',
                                    'at': time.time()}))
     for r in node_key_rows(store, 'host:osup:checkwant', me):
-        try:
-            a = json.loads(r['v'] or '{}')
-        except ValueError:
+        a = json_obj(r['v'])
+        if a is None:
             continue
         if a.get('id') and a['id'] not in (chk.get('asked') or []) and \
-                time.time() - float(a.get('at') or 0) < 900:
+                time.time() - fnum(a.get('at')) < 900:
             _osup_go(daemon, 'check', a)
             return
     if chk.get('state') == 'running':
@@ -34280,7 +34462,7 @@ def osup_tick(daemon):
             _osup_go(daemon, 'upgrade', {'plan': plan, 'row': row})
         return
     if st == 'draining':
-        if time.time() - float(row.get('drain_at') or 0) >= 15:
+        if time.time() - fnum(row.get('drain_at')) >= 15:
             _osup_go(daemon, 'upgrade-now', {'plan': plan, 'row': row})
         return
     if st == 'updating':
@@ -34334,14 +34516,14 @@ def _osup_go(daemon, what, ctx):
 def _osup_follow_check(store, chk):
     me = node_name()
     got = _osup_read()
-    if not got or got.get('kind') != 'check' or float(got.get('began') or 0) < \
-            float(chk.get('began') or 0) - 5:
-        if time.time() - float(chk.get('began') or 0) > 1800:
+    if not got or got.get('kind') != 'check' or fnum(got.get('began')) < \
+            fnum(chk.get('began')) - 5:
+        if time.time() - fnum(chk.get('began')) > 1800:
             store.set_meta('host:osup:check:' + me, json.dumps(
                 dict(chk, state='failed', error='the helper did not say anything', at=time.time())))
         return
     if got.get('state') == 'running':
-        if time.time() - float(chk.get('at') or 0) > 3:
+        if time.time() - fnum(chk.get('at')) > 3:
             store.set_meta('host:osup:check:' + me, json.dumps(
                 dict(chk, at=time.time(), lines=(got.get('lines') or [])[-40:])))
         return
@@ -34358,8 +34540,8 @@ def _osup_follow(daemon, plan, row):
     store = daemon.store
     got = _osup_read()
     if not got or got.get('kind') != 'upgrade' or \
-            float(got.get('began') or 0) < float(row.get('began') or 0) - 5:
-        if time.time() - float(row.get('began') or 0) > 600:
+            fnum(got.get('began')) < fnum(row.get('began')) - 5:
+        if time.time() - fnum(row.get('began')) > 600:
             _osup_end(store, plan, row, False, 'the helper did not start the update')
         return
     if got.get('state') == 'running':
@@ -34599,7 +34781,7 @@ def sshd_tick(daemon):
     except (OSError, ValueError):
         gone = {}
     todo = []
-    if gone.get('at') and float(gone['at']) > float(now.get('back_at') or 0):
+    if gone.get('at') and float(gone['at']) > fnum(now.get('back_at')):
         todo.append(('went-back', gone))
     if c.get('hash') and c['hash'] != now.get('hash') and c['hash'] != now.get('failed') and \
             c['hash'] != now.get('back_hash'):
@@ -34607,8 +34789,8 @@ def sshd_tick(daemon):
     # Kept only where it was on trial when Keep was pressed (1.0.211): a node that
     # was away put the change in later and kept it at once - nobody had tried it there.
     if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
-            float(keep.get('at') or 0) > float(now.get('kept_at') or 0) and \
-            float(keep.get('at') or 0) > float(now.get('applied_at') or 0):
+            fnum(keep.get('at')) > fnum(now.get('kept_at')) and \
+            fnum(keep.get('at')) > fnum(now.get('applied_at')):
         todo.append(('keep', None))
     if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
         todo.append(('back', back))
@@ -34733,12 +34915,11 @@ def osup_settling(store):
         if chk.get('state') == 'running':
             return True
         for r in node_key_rows(store, 'host:osup:checkwant', n):
-            try:
-                a = json.loads(r['v'] or '{}')
-            except ValueError:
+            a = json_obj(r['v'])
+            if a is None:
                 continue
             if a.get('id') and a['id'] not in (chk.get('asked') or []) and \
-                    time.time() - float(a.get('at') or 0) < 900:
+                    time.time() - fnum(a.get('at')) < 900:
                 return True
     return False
 
@@ -34829,11 +35010,10 @@ def sshotp_get(store, name):
 def sshotp_all(store):
     out = []
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'sshotp:u:%'"):
-        try:
-            v = json.loads(r['v'] or '{}')
-        except ValueError:
+        v = json_obj(r['v'])
+        if v is None:
             continue
-        out.append({'name': v.get('name') or r['k'][len('sshotp:u:'):], 'at': v.get('at'),
+        out.append({'name': str(v.get('name') or r['k'][len('sshotp:u:'):]), 'at': v.get('at'),
                     'kind': v.get('kind') or 'app', 'lang': v.get('lang') or '',
                     'dest': dest_masked(v.get('kind'), v.get('dest')) if v.get('dest') else '',
                     'by': v.get('by') or '', 'note': v.get('note') or '',
@@ -35215,10 +35395,7 @@ def ssh_gate_port(store=None):
 
 
 def ssh_gate_secret(store, make=False):
-    try:
-        rec = json.loads(store.get_meta('sshotp:gate') or '{}')
-    except ValueError:
-        rec = {}
+    rec = json_obj(store.get_meta('sshotp:gate')) or {}   # of another shape: made anew (1.0.250)
     got = unseal_secret(rec.get('secret'), 'sshotp:gate') if rec.get('secret') else ''
     if not got and make:
         got = secrets.token_urlsafe(32)
@@ -35518,7 +35695,7 @@ def node_ask_tick(daemon):
     NODE_ASK['daemon'][0] = daemon
     for kind in list(NODE_ASK['do']):
         want = _meta_json(daemon.store, 'ask:want:' + kind) or {}
-        if want.get('id') and time.time() - float(want.get('at') or 0) < NODE_ASK_FRESH:
+        if want.get('id') and time.time() - fnum(want.get('at')) < NODE_ASK_FRESH:
             _node_ask_run(daemon, kind, want)
 
 
@@ -36028,10 +36205,7 @@ def split_step(store, now=None, peer=None, arbiter=None):
         try:
             for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?",
                                    ('split:took:%s:%%' % node_name(),)):
-                try:
-                    at = float(json.loads(r['v'] or '{}').get('at') or 0)
-                except ValueError:
-                    at = 0
+                at = fnum((json_obj(r['v']) or {}).get('at'))
                 if at < now - 3600:
                     # Its key looked for among the other node's codes first (1.0.226): let in
                     # here unasked in a short outage and used there too, it was never said.
@@ -36042,10 +36216,7 @@ def split_step(store, now=None, peer=None, arbiter=None):
                     except Exception:                   # noqa: BLE001
                         twice = False
                     if twice:
-                        try:
-                            v = json.loads(r['v'] or '{}')
-                        except ValueError:
-                            v = {}
+                        v = json_obj(r['v']) or {}
                         if not str(v.get('name') or '').startswith('#'):
                             _split_event(store, 'bad', 'a code of %s (%s) was let in on both nodes while '
                                          'the other one\'s database could not be asked'
@@ -36106,13 +36277,13 @@ def split_preferred_unable(store):
         row = clock_state_of(store, name) or {}
         # Its word from about when the nodes lost each other (1.0.226), not an old one: aside
         # long ago and serving since, both nodes answered while apart.
-        recent = float(row.get('at') or 0) >= (SPLIT['apart_since'] or time.time()) - \
+        recent = fnum(row.get('at')) >= (SPLIT['apart_since'] or time.time()) - \
             max(5, int(CONFIG.get('split_after_s') or 20)) - 30
         # And still fresh, by the measured difference of the clocks (1.0.227): the preferred
         # node, aside for its clock, answers again once this one's row reads stale to it
         # (25 s) - this node gives way a little after, so the two do not both go on.
         sk = clock_skew_of(store, name) or 0.0
-        fresh = time.time() - (float(row.get('at') or 0) - sk) < 32
+        fresh = time.time() - (fnum(row.get('at')) - sk) < 32
         if row.get('role') == 'aside' and recent and fresh:
             return 'the preferred node stepped aside for its clock'
         for n in ha_nodes(store):
@@ -36130,7 +36301,7 @@ def split_peer_caught_up(store):
         if n.get('me'):
             continue
         st = _meta_json(store, 'split:state:' + n['name']) or {}
-        if st and not st.get('apart') and float(st.get('at') or 0) > SPLIT['together_at']:
+        if st and not st.get('apart') and fnum(st.get('at')) > SPLIT['together_at']:
             return True
     return False
 
@@ -36224,17 +36395,14 @@ def split_report(store, now=None):
     if not split_me_preferred():
         return None
     by_key, per_node = {}, {}
-    since = float(SPLIT.get('last_apart_since') or 0) - max(5, int(CONFIG.get('split_after_s') or 20)) - 10
+    since = fnum(SPLIT.get('last_apart_since')) - max(5, int(CONFIG.get('split_after_s') or 20)) - 10
     for r in rows:
         parts = r['k'].split(':', 3)
         if len(parts) < 4:
             continue
         node, k = parts[2], parts[3]
-        try:
-            v = json.loads(r['v'] or '{}')
-        except ValueError:
-            v = {}
-        if float(v.get('at') or 0) < since or str(v.get('name') or '').startswith('#'):
+        v = json_obj(r['v']) or {}
+        if fnum(v.get('at')) < since or str(v.get('name') or '').startswith('#'):
             continue        # a short outage before, or the same code by its token's id
         by_key.setdefault(k, {})[node] = v
         per_node[node] = per_node.get(node, 0) + 1
@@ -36243,7 +36411,7 @@ def split_report(store, now=None):
         if len(nodes) > 1:
             one = list(nodes.values())[0]
             twice.append({'name': one.get('name') or '?', 'kind': one.get('kind') or '?',
-                          'nodes': sorted(nodes), 'at': min(float(v.get('at') or 0)
+                          'nodes': sorted(nodes), 'at': min(fnum(v.get('at'))
                                                            for v in nodes.values())})
     twice.sort(key=lambda x: x['at'])
     rep = {'at': now, 'taken': per_node, 'twice': twice[:200], 'twice_n': len(twice),
@@ -36279,7 +36447,7 @@ def split_view(store):
                       'state': st, 'arbiter': str(saved.get('split_arbiter@' + n['name'])
                                                   or (CONFIG.get('split_arbiter') if n.get('me') else '')
                                                   or ''),
-                      'fresh': bool(st) and time.time() - float(st.get('at') or 0) < 60})
+                      'fresh': bool(st) and time.time() - fnum(st.get('at')) < 60})
     if not nodes:
         nodes = [{'name': node_name(), 'me': True, 'alive': True, 'state': split_state_here(),
                   'arbiter': str(CONFIG.get('split_arbiter') or ''), 'fresh': True}]
@@ -36590,7 +36758,7 @@ def clock_skew_of(store, name):
         if CLOCK['skew'] is not None and time.time() - CLOCK['skew_at'] < CLOCK_FRESH_S:
             return CLOCK['skew_of'], CLOCK['skew']
         row = _meta_json(store, 'clock:state:' + node_name()) or {}
-        if row.get('skew') is not None and time.time() - float(row.get('at') or 0) < CLOCK_FRESH_S:
+        if row.get('skew') is not None and time.time() - fnum(row.get('at')) < CLOCK_FRESH_S:
             return row.get('skew_of'), float(row['skew'])
         return None, None
     of, sk = mine()
@@ -36649,7 +36817,7 @@ def clock_peer_row(store, now=None):
         if not row:
             return None
         sk = clock_skew_of(store, n['name'])
-        at = float(row.get('at') or 0) - (sk or 0.0)
+        at = fnum(row.get('at')) - (sk or 0.0)
         # Its row is written every 10 s (1.0.224: 60 s, and a node aside for its clock stayed
         # silent a minute after the other died), and its heartbeat alive.
         row['fresh'] = now - at < 25 and bool(n.get('alive'))
@@ -36805,7 +36973,7 @@ def clock_view(store):
         nodes.append({'name': n['name'], 'me': bool(n.get('me')), 'alive': bool(n.get('alive')),
                       'state': st, 'ref': str(saved.get('clock_ref@' + n['name'])
                                               or (CONFIG.get('clock_ref') if n.get('me') else '') or ''),
-                      'fresh': bool(st) and time.time() - float(st.get('at') or 0) < 60})
+                      'fresh': bool(st) and time.time() - fnum(st.get('at')) < 60})
     if not nodes:
         nodes = [{'name': node_name(), 'me': True, 'alive': True, 'state': clock_state_here(),
                   'ref': str(CONFIG.get('clock_ref') or ''), 'fresh': True}]
@@ -37108,7 +37276,7 @@ def dbtls_apply(daemon, args):
                 'socket': 'it reaches its database over a Unix socket'}.get(kind, ''))
         srv = _meta_json(store, 'dbtls:server:' + node_name()) or {}
         if srv and not args.get('renew') and \
-                float(srv.get('cert_end') or 0) - time.time() > DBTLS_RENEW_DAYS * 86400 and \
+                fnum(srv.get('cert_end')) - time.time() > DBTLS_RENEW_DAYS * 86400 and \
                 set(srv.get('names') or []) == set(hatls_names()) and HA_CA_FILE.exists():
             p = dbtls_probe('verify-full', str(HA_CA_FILE))
             if p['ok']:
@@ -37301,9 +37469,9 @@ def dbtls_tick(daemon):
     t = DBTLS_WORK.get('renew')
     if t is not None and t.is_alive():
         return
-    old = float(srv.get('cert_end') or 0) - time.time() < DBTLS_RENEW_DAYS * 86400
+    old = fnum(srv.get('cert_end')) - time.time() < DBTLS_RENEW_DAYS * 86400
     moved = set(srv.get('names') or []) != set(hatls_names())
-    if not (old or moved) or time.time() - float(srv.get('tried') or 0) < 6 * 3600:
+    if not (old or moved) or time.time() - fnum(srv.get('tried')) < 6 * 3600:
         return
     srv['tried'] = time.time()
     daemon.store.set_meta('dbtls:server:' + node_name(), json.dumps(srv))
@@ -37444,7 +37612,7 @@ def isemon_client_cert(store, force=False):
     as two files only otp reads. Returns its end."""
     k = 'isemon:client:' + node_name()
     got = _meta_json(store, k) or {}
-    end = float(got.get('end') or 0)
+    end = fnum(got.get('end'))
     fresh = end - time.time() > ISEMON_CLIENT_RENEW_DAYS * 86400
     if not force and fresh and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists() and \
             _isemon_pair_ok():
@@ -37503,7 +37671,7 @@ def isemon_tls_tick(daemon):
                 except (OSError, KeyError):
                     pass
     srv = _meta_json(store, 'isemon:server') or {}
-    left = (float(srv.get('end') or 0) - now) / 86400 if srv else None
+    left = (fnum(srv.get('end')) - now) / 86400 if srv else None
     if left is not None and left < 60 and now - ISEMON_TLS_WORK['said'] > 86400 and \
             alerts_lead(store):
         ISEMON_TLS_WORK['said'] = now
@@ -37818,7 +37986,7 @@ def selinux_ask(store, node, action, by):
     was = _meta_json(store, 'host:selinux:want:' + node) or {}
     now = _meta_json(store, 'host:selinux:now:' + node) or {}
     if action in ('check', 'report') and was.get('do') in ('prepare', 'enforce', 'permissive') and \
-            was.get('id') != now.get('done') and time.time() - float(was.get('at') or 0) < 3600:
+            was.get('id') != now.get('done') and time.time() - fnum(was.get('at')) < 3600:
         if action == 'check':
             return          # the step looks again when it is done
         raise ValueError('%s has not done the step asked of it yet (%s) - ask for the report after it'
@@ -37919,7 +38087,7 @@ def selinux_report_tidy(store):
     """This node's report taken out of the database once it is an hour old (1.0.236)."""
     k = 'host:selinux:report:' + node_name()
     rep = _meta_json(store, k) or {}
-    if rep and time.time() - float(rep.get('at') or 0) > SE_REPORT_KEEP_S:
+    if rep and time.time() - fnum(rep.get('at')) > SE_REPORT_KEEP_S:
         store.drop_meta(k)
 
 
@@ -37927,9 +38095,8 @@ def selinux_reports(store):
     """Every node's report as the pages show it: {node: {'at', 'bytes', 'error', 'id'}}."""
     out = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'host:selinux:report:%'"):
-        try:
-            rep = json.loads(r['v'] or '{}')
-        except (TypeError, ValueError):
+        rep = json_obj(r['v'])
+        if rep is None:
             continue
         out[r['k'][len('host:selinux:report:'):]] = {k: rep.get(k) for k in ('at', 'bytes', 'error', 'id')}
     return out
@@ -38062,9 +38229,9 @@ def health_publish(daemon):
     row['name_clash'] = str(said(name_clash_words) or '')[:300]
     row['ntp_problem'] = str(said(ntp_problem) or '')[:300]
     if dbguard_on():
-        refused = sorted((DBGUARD.get('refused') or {}).values(), key=lambda r: -float(r.get('at') or 0))
+        refused = sorted((DBGUARD.get('refused') or {}).values(), key=lambda r: -fnum(r.get('at')))
         row['dbguard_refused'] = [{'what': r.get('what'), 'why': r.get('why'), 'at': r.get('at')}
-                                  for r in refused if now - float(r.get('at') or 0) < 3600][:5]
+                                  for r in refused if now - fnum(r.get('at')) < 3600][:5]
     daemon.store.set_meta('host:health:' + node_name(), json.dumps(row))
     return row
 
@@ -38099,11 +38266,10 @@ def alerts_quiet_row(store):
     except Exception:                                   # noqa: BLE001
         rows = []
     for r in rows:
-        try:
-            was = json.loads(r['v'] or '{}')
-        except (TypeError, ValueError):
+        was = json_obj(r['v'])
+        if was is None:
             continue
-        if isinstance(was, dict) and float(was.get('until') or 0) > float(best.get('until') or 0):
+        if isinstance(was, dict) and fnum(was.get('until')) > fnum(best.get('until')):
             best = was
     return best
 
@@ -38126,7 +38292,7 @@ def alerts_quiet(store, names):
         if not why:
             up = upgrade_plan(store) or {}
             if up.get('id') and up.get('state') not in ('done', 'failed') and \
-                    time.time() - float(up.get('at') or 0) < 6 * 3600:
+                    time.time() - fnum(up.get('at')) < 6 * 3600:
                 why = 'an upgrade'
         if not why and (osup_plan(store) or {}).get('state') == 'running':
             why = 'the system\'s updates'
@@ -38142,7 +38308,7 @@ def alerts_quiet(store, names):
                        json.dumps({'why': why, 'until': now + ALERTS_QUIET_AFTER_S}))
         return why
     best = alerts_quiet_row(store)
-    if float(best.get('until') or 0) > now:
+    if fnum(best.get('until')) > now:
         return '%s (ended - quiet %d s more)' % (best.get('why'), int(float(best['until']) - now))
     return ''
 
@@ -38240,7 +38406,7 @@ def alert_problems(store, lang='en'):
     if CONFIG.get('split_report') and CONFIG.get('alerts_split', 1) and split_engaged():
         for n in names:
             st = split_state_of(store, n)
-            if st.get('apart') and now - float(st.get('at') or 0) < 90:
+            if st.get('apart') and now - fnum(st.get('at')) < 90:
                 aside = st.get('role') == 'aside'
                 add('split:' + n, 'bad', n,
                     _al(lang, '%s nevidí druhý uzel%s' % (n, ' a ustoupil stranou' if aside else ''),
@@ -38253,7 +38419,7 @@ def alert_problems(store, lang='en'):
                            'This node does not answer RADIUS.' if aside else
                            'This node answers RADIUS alone.')), 'ha')
         rep = _meta_json(store, 'split:report') or {}
-        if rep.get('twice_n') and now - float(rep.get('at') or 0) < 86400:
+        if rep.get('twice_n') and now - fnum(rep.get('at')) < 86400:
             add('split:twice', 'warn', '',
                 _al(lang, 'Během rozpojení prošly kódy na obou uzlech',
                     'Codes were let in on both nodes while they were apart'),
@@ -38266,7 +38432,7 @@ def alert_problems(store, lang='en'):
         aside_s = float(CONFIG.get('clock_aside_s') or 20)
         for n in names:
             st = clock_state_of(store, n)
-            if not st or now - float(st.get('at') or 0) > 90:
+            if not st or now - fnum(st.get('at')) > 90:
                 continue
             ref = st.get('ref')
             if st.get('role') == 'aside':
@@ -38342,7 +38508,7 @@ def alert_problems(store, lang='en'):
                 h = health.get(n) or {}
                 if not h:
                     continue
-                last = float(h.get('last_backup') or 0)
+                last = fnum(h.get('last_backup'))
                 if now - last > 36 * 3600:
                     add('backup:' + n, 'warn', n,
                         _al(lang, 'Noční záloha na %s chybí' % n, 'No nightly copy on %s' % n),
@@ -38360,7 +38526,7 @@ def alert_problems(store, lang='en'):
                         _al(lang, 'Záloha z %s se nepovedla' % n, 'The backup of %s failed' % n),
                         '; '.join('%s: %s' % (x.get('name'), x.get('error')) for x in bad)
                         or str(mine[0].get('error') or '')[:300], 'backup')
-                elif not any(r.get('ok') and now - float(r.get('at') or 0) < span for r in mine):
+                elif not any(r.get('ok') and now - fnum(r.get('at')) < span for r in mine):
                     ok = [r for r in mine if r.get('ok')]
                     add('rbackup:' + n, 'warn', n,
                         _al(lang, 'Z %s neodešla včas žádná záloha' % n,
@@ -38409,7 +38575,7 @@ def alert_problems(store, lang='en'):
     if pct:
         for n in names:
             for d in (health.get(n) or {}).get('disks') or []:
-                if float(d.get('pct') or 0) >= pct or float(d.get('inodes') or 0) >= pct:
+                if fnum(d.get('pct')) >= pct or fnum(d.get('inodes')) >= pct:
                     add('disk:%s:%s' % (n, d['path']), 'bad' if d['pct'] >= 95 else 'warn', n,
                         _al(lang, 'Na %s dochází místo (%s)' % (n, d['path']),
                             '%s is running out of room (%s)' % (n, d['path'])),
@@ -38428,7 +38594,7 @@ def alert_problems(store, lang='en'):
                         _al(lang, 'Hodiny na %s nejdou přesně' % n, 'The clock of %s is off' % n),
                         str(np_)[:300], 'time')
                 continue
-            off = abs(float(tr.get('offset') or 0))
+            off = abs(fnum(tr.get('offset')))
             unsynced = str(tr.get('leap') or '').lower().startswith('not')
             if unsynced or off > 0.5:
                 add('time:' + n, 'bad' if off > 5 or unsynced else 'warn', n,
@@ -38470,7 +38636,7 @@ def alert_problems(store, lang='en'):
     if CONFIG.get('alerts_sms', 1) and (CONFIG.get('sms_mode') or 'off') != 'off':
         for n in names:
             s = (health.get(n) or {}).get('sms') or {}
-            if int(s.get('fails') or 0) >= 3 and now - float(s.get('fail_at') or 0) < 6 * 3600:
+            if int(s.get('fails') or 0) >= 3 and now - fnum(s.get('fail_at')) < 6 * 3600:
                 add('sms:' + n, 'bad', n,
                     _al(lang, 'SMS brána neposílá', 'The SMS gateway does not send'),
                     _al(lang, '%d SMS z %s za sebou se nepovedlo: %s',
@@ -38529,14 +38695,13 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
         except Exception:                               # noqa: BLE001
             rows = []
         for r in rows:
-            try:
-                st = json.loads(r['v'] or '{}')
-            except ValueError:
+            st = json_obj(r['v'])
+            if st is None:
                 continue
             target = r['k'][len('acme:state:'):]
             if not isinstance(st, dict) or st.get('ok') is not False:
                 continue
-            if now - float(st.get('failed_at') or 0) > 14 * 86400:
+            if now - fnum(st.get('failed_at')) > 14 * 86400:
                 continue
             try:
                 if not acme_care(store, target):
@@ -38554,7 +38719,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             for what, key, words in (('pg', 'dbtls:server:', _al(lang, 'PostgreSQL (TLS)', 'PostgreSQL (TLS)')),
                                      ('link', 'hatls:node:', _al(lang, 'spojení uzlů (TLS)', 'the link between the nodes (TLS)'))):
                 row = _meta_json(store, key + n) or {}
-                end = float(row.get('cert_end') or 0)
+                end = fnum(row.get('cert_end'))
                 if not end:
                     continue
                 left = (end - now) / 86400
@@ -38569,7 +38734,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
     # The update of the system that failed, or could not even look.
     if CONFIG.get('alerts_updates', 1):
         plan = _meta_json(store, 'host:osup:plan') or {}
-        if plan.get('state') == 'failed' and now - float(plan.get('ended') or 0) < 3 * 86400:
+        if plan.get('state') == 'failed' and now - fnum(plan.get('ended')) < 3 * 86400:
             n = plan.get('failed_on') or ''
             add('osup:failed', 'bad', n,
                 _al(lang, 'Aktualizace systému se nepovedla%s' % (' na ' + n if n else ''),
@@ -38577,7 +38742,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                 str(((_meta_json(store, 'host:osup:node:' + n) or {}).get('said') if n else '') or '')[:300], 'osup')
         for n in names:
             ck = _meta_json(store, 'host:osup:check:' + n) or {}
-            if ck.get('state') == 'failed' and now - float(ck.get('at') or 0) < 3 * 86400:
+            if ck.get('state') == 'failed' and now - fnum(ck.get('at')) < 3 * 86400:
                 add('osup:check:' + n, 'warn', n,
                     _al(lang, '%s se nemůže podívat po aktualizacích' % n, '%s cannot look for updates' % n),
                     str(ck.get('error') or '')[:300], 'osup')
@@ -38610,9 +38775,8 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             # Only the rows that failed or ran out read whole (the queue holds the sent ones too).
             for r in store.db.rows("SELECT v FROM meta WHERE k LIKE 'mailq:%' AND "
                                    "(v LIKE '%\"state\": \"failed\"%' OR v LIKE '%\"state\": \"expired\"%')"):
-                try:
-                    m = json.loads(r['v'] or '{}')
-                except ValueError:
+                m = json_obj(r['v'])
+                if m is None:
                     continue
                 if m.get('state') in ('failed', 'expired') and m.get('kind') in ('code', 'token', 'verify') \
                         and now - float(m.get('last_try') or m.get('created') or 0) < 86400:
@@ -38633,8 +38797,8 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             rs = {}
         # Its slots' own, the most of them (1.0.249): 'behind' is said per slot, never for the
         # whole - the alert never came.
-        behind = max([float(x.get('behind') or 0) for x in rs.get('outgoing') or []
-                      if isinstance(x, dict)] + [float(rs.get('behind') or 0)])
+        behind = max([fnum(x.get('behind')) for x in rs.get('outgoing') or []
+                      if isinstance(x, dict)] + [fnum(rs.get('behind'))])
         if rs.get('healthy', True) and behind > mb * 1048576:
             add('repl:behind', 'warn', '',
                 _al(lang, 'Replikace zaostává o %s' % human_bytes(behind), 'The replication is %s behind' % human_bytes(behind)),
@@ -38898,7 +39062,7 @@ def _alerts_evaluate(store, force=False):
         p['mailed'] = was.get('mailed') or (was.get('level') if was.get('sent') else None)
         if not p['sent'] and now - p['since'] >= delay:
             new.append(p)
-        elif p['sent'] and repeat and now - float(was.get('sent_at') or 0) >= repeat:
+        elif p['sent'] and repeat and now - fnum(was.get('sent_at')) >= repeat:
             still.append(p)
         elif p['sent'] and p['mailed'] == 'warn' and p['level'] == 'bad':
             new.append(p)                               # worse than said
@@ -38948,7 +39112,7 @@ def _alerts_evaluate(store, force=False):
                 break
     to = _alerts_to()
     mailing = bool(to and CONFIG.get('alerts'))
-    held_back = mailing and now - float(st.get('fail_at') or 0) <= 900
+    held_back = mailing and now - fnum(st.get('fail_at')) <= 900
     if held_back and (gone or events):
         # Not lost while a mail that failed is waited out (1.0.249): the events and the "right
         # again" notices were taken as said before any mail was tried - they go with the next.
@@ -39236,7 +39400,7 @@ def report_build(store, since, until, lang='cs'):
                             '#' + _al(lang, 'Čas', 'Clock'),
                             '#' + _al(lang, 'Aktualizace / bezp.', 'Updates / security'),
                             '#' + _al(lang, 'Noční záloha', 'Nightly copy')], srows))
-    runs = [r for r in rb_history(store) if since <= float(r.get('at') or 0) < until]
+    runs = [r for r in rb_history(store) if since <= fnum(r.get('at')) < until]
     if CONFIG.get('rbackup') or runs:
         ok = len([r for r in runs if r.get('ok')])
         body.append('<p style="margin:8px 0 0;font-size:13.5px;color:#374151">%s</p>' % _h(
@@ -40228,7 +40392,7 @@ def lockouts_view(d):
     rows = []
     for key, fails in list(d.login_fails.items()):
         info = d.login_info.get(key) or {}
-        span = float(info.get('span') or 0)
+        span = fnum(info.get('span'))
         if not span:
             continue
         fails = [x for x in fails if t - x < span]
@@ -40236,18 +40400,18 @@ def lockouts_view(d):
         if info.get('guard'):
             # A place counted by the sign-in protection (1.0.137): blocked
             # for its own time, by its refusals or by its names.
-            until = float(info.get('blocked_until') or 0)
+            until = fnum(info.get('blocked_until'))
             blocked = until > t
             if not fails and not blocked:
                 # Forgotten once nothing of it counts (1.0.149): every new
                 # place stayed for good - 50 000 /64s were 45 MB, and the
                 # list published every few seconds 18 MB.
-                if t - float(info.get('at') or 0) > span and t - until > span:
+                if t - fnum(info.get('at')) > span and t - until > span:
                     d.login_fails.pop(key, None)
                     d.login_info.pop(key, None)
                 continue
             names = [n for n, ts in (info.get('names') or {}).items() if t - ts < span]
-            last = max(fails[-1] if fails else 0, float(info.get('blocked_at') or 0))
+            last = max(fails[-1] if fails else 0, fnum(info.get('blocked_at')))
             rows.append({
                 'kind': kind, 'who': who, 'by': 'place', 'what': LOCKOUT_KINDS.get(kind, kind),
                 'base': kind, 'words': info.get('what') or 'wrong sign-ins',
@@ -40460,10 +40624,7 @@ def dir_pw_who(name, entry=None):
 def dir_pw_caps(store):
     """Each directory's own cap (1.0.232): {name in small letters: {'tries': n, 'window_min': m}}
     - a directory not in it, or with tries None, follows the setting."""
-    try:
-        got = json.loads(store.get_meta('dirpw:conf') or '{}')
-    except (ValueError, TypeError):
-        got = {}
+    got = json_obj(store.get_meta('dirpw:conf')) or {}
     return got if isinstance(got, dict) else {}
 
 
@@ -40613,15 +40774,12 @@ def _lockouts(h):
     for n in h.d.cluster_nodes():
         if n == me:
             continue
-        try:
-            got = json.loads(h.store.get_meta('lockouts:' + n) or '{}')
-        except ValueError:
-            got = {}
-        rows = [r for r in (got.get('rows') or []) if float(r.get('forgets') or 0) > now]
+        got = json_obj(h.store.get_meta('lockouts:' + n)) or {}
+        rows = [r for r in (got.get('rows') or []) if fnum(r.get('forgets')) > now]
         for r in rows:
-            if r.get('locked') and float(r.get('until') or 0) <= now:
+            if r.get('locked') and fnum(r.get('until')) <= now:
                 r['locked'] = False
-        out.append({'node': n, 'me': False, 'fresh': now - float(got.get('at') or 0) < 120,
+        out.append({'node': n, 'me': False, 'fresh': now - fnum(got.get('at')) < 120,
                     'at': got.get('at'), 'rows': rows})
     out.append({'node': '*', 'me': False, 'fresh': True, 'shared': True,
                 'rows': lockouts_shared(h.store)})
@@ -41089,10 +41247,7 @@ def _whoami(h):
         # is (a database or a package sent) refuse it.
         return {'who': {'name': acc['name'], 'role': '', 'display': acc.get('display') or '',
                         'mfa': mfa_pending(s)}}
-    try:
-        prefs = json.loads(acc.get('prefs') or '{}')
-    except ValueError:
-        prefs = {}
+    prefs = json_obj(acc.get('prefs')) or {}
     # The page is drawn with the person's own layout of the tables from the
     # first frame, rather than as it comes and then again.
     return {'idle_min': int(CONFIG.get('session_idle_min') or 120),
@@ -41139,10 +41294,7 @@ def _password(h):
 def _prefs(h):
     s = h.me()
     acc = s['account']
-    try:
-        prefs = json.loads(acc.get('prefs') or '{}')
-    except ValueError:
-        prefs = {}
+    prefs = json_obj(acc.get('prefs')) or {}
     b = h.body()
     if 'lang' in b:
         if str(b['lang']) not in ('cs', 'en'):
@@ -43177,7 +43329,7 @@ def radtest_serve(daemon):
             pass
         try:
             ask = json.loads(r['v'] or '{}')
-            if time.time() - float(ask.get('at') or 0) > RADTEST_WAIT_S:
+            if time.time() - fnum(ask.get('at')) > RADTEST_WAIT_S:
                 continue
             ask['password'] = unseal_secret(ask.get('password') or '', 'radtest:' + ident)
             out = radtest_do(store, daemon, '%s on %s' % (ask.get('by'), ask.get('from')),
@@ -44242,9 +44394,8 @@ def config_export(store, whole):
         accounts.append(a)
     tls = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'web:tls:%'"):
-        try:
-            prof = json.loads(r['v'] or '{}')
-        except ValueError:
+        prof = json_obj(r['v'])
+        if prof is None:
             continue
         for kk in ('key', 'pending_key'):
             if prof.get(kk):
@@ -44762,7 +44913,7 @@ def portal_gate_view(s):
     w = data.get('gate_wait') or {}
     kind = g.get('kind') or w.get('kind')
     return {'kind': kind, 'dest': dest_masked(kind, g.get('dest') or w.get('dest')),
-            'live': bool(g) and float(g.get('exp') or 0) > time.time(),
+            'live': bool(g) and fnum(g.get('exp')) > time.time(),
             'digits': int(CONFIG.get('code_digits') or 6),
             'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60),
             'sso': bool(data.get('sso'))}           # signed in by the balancer (1.0.239)
@@ -45345,7 +45496,7 @@ def portal_state(h, s):
         shown = {k: shown.get(k) for k in PORTAL_TOKEN_KEYS}
     data = s.get('data') or {}
     ver = data.get('verify') or {}
-    if ver and float(ver.get('exp') or 0) < time.time():
+    if ver and fnum(ver.get('exp')) < time.time():
         ver = {}
     about = dict(data.get('about') or {})
     about.update(login=data.get('login') or '', realm=data.get('realm') or '',
@@ -45395,7 +45546,7 @@ def _portal_gate(h):
     if not portal_gated(s):
         return {'me': portal_state(h, s)}
     g = data.get('gate') or {}
-    if not g or float(g.get('exp') or 0) < time.time():
+    if not g or fnum(g.get('exp')) < time.time():
         portal_data_set(h, s, gate=None)
         raise ApiError(410, 'the code ran out - ask for a new one')
     key = h.throttle('portal-gate', int(CONFIG.get('code_tries') or 3) + 2,
@@ -45421,7 +45572,7 @@ def _portal_gate(h):
                                       'mail' if g.get('kind') == 'mail' else 'SMS'), who=s['name'])
     # A sign-in of its own from here on, as the administrators' second step (1.0.249): a cookie
     # planted before the code was typed had the person's enrolment once it was.
-    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('portal', s['name'], s.get('role') or 'portal', h.client_ip(),
                                 hours, data=dict(data or {}))
     h.store.session_drop(s['id'])
@@ -45575,7 +45726,7 @@ def _portal_verify(h):
     s = portal_me(h)
     data = s.get('data') or {}
     ver = data.get('verify') or {}
-    if not ver or float(ver.get('exp') or 0) < time.time():
+    if not ver or fnum(ver.get('exp')) < time.time():
         portal_data_set(h, s, verify=None)
         raise ApiError(410, 'the code ran out - ask for a new one')
     # Counted where many requests at once cannot each see "no tries yet"
@@ -45675,7 +45826,7 @@ def _portal_codes(h):
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
     code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     old = (s.get('data') or {}).get('old') or {}
-    if old and float(old.get('exp') or 0) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'
         if not h.store.session_take(s['id'], 'old'):
@@ -45763,7 +45914,7 @@ def portal_reissue_password(h, s, realm, b, key):
 def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
     old = (s.get('data') or {}).get('old') or {}
-    if old and float(old.get('exp') or 0) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'               # 1.0.76
         if not h.store.session_take(s['id'], 'old'):         # once (1.0.101)
@@ -45883,7 +46034,7 @@ class ApiServer(object):
 def _upgrade_view(h):
     meta = None
     try:
-        meta = json.loads(h.store.get_meta('upgrade:pkg') or 'null')
+        meta = json_obj(h.store.get_meta('upgrade:pkg'))       # an object only (1.0.250)
     except ValueError:
         meta = None
     nodes = []
@@ -46537,7 +46688,7 @@ def _firewall(h):
         # for - its daemon looks every 5 s, root reads it, the row comes back.
         t0 = time.time()
         try:
-            had = float(json.loads(store.get_meta('fw:now:' + fresh) or '{}').get('full_at') or 0)
+            had = fnum((json_obj(store.get_meta('fw:now:' + fresh)) or {}).get('full_at'))
         except (ValueError, AttributeError, TypeError):
             had = 0
         store.set_meta('fw:ask:' + fresh, str(t0))
@@ -46563,7 +46714,7 @@ def _firewall(h):
         fwv = dict(w.get('fw') or {})
         if not n['me']:
             try:
-                fwv.update(json.loads(store.get_meta('fw:now:' + n['name']) or '{}'))
+                fwv.update(json_obj(store.get_meta('fw:now:' + n['name'])) or {})
             except ValueError:
                 pass
         nodes.append({'name': n['name'], 'me': n['me'], 'alive': n.get('alive'),
@@ -47025,7 +47176,7 @@ def sso_view(store):
         if isinstance(rec, dict):
             last.append({k: rec.get(k) for k in ('at', 'ok', 'why', 'peer', 'name', 'client',
                                                  'node')})
-    last.sort(key=lambda x: -float(x.get('at') or 0))
+    last.sort(key=lambda x: -fnum(x.get('at')))
     return {'on': bool(CONFIG.get('portal_sso')), 'portal': bool(CONFIG.get('portal')),
             'key_set': bool(unseal_secret(str(CONFIG.get('portal_sso_key') or ''))),
             'from': [str(n) for n in sso_nets()],
@@ -47088,9 +47239,8 @@ def mfa_get(store, name):
 def mfa_all(store):
     out = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'adm2fa:%'"):
-        try:
-            v = json.loads(r['v'] or '{}')
-        except ValueError:
+        v = json_obj(r['v'])
+        if v is None:
             continue
         out[r['k'][len('adm2fa:'):]] = {'kind': v.get('kind'), 'at': v.get('at'),
                                         'dest': dest_masked(v.get('kind'), v.get('dest'))}
@@ -47162,7 +47312,7 @@ def _mfa_session(h):
 
 
 def _mfa_code_ok(saved, code):
-    if not saved or time.time() > float(saved.get('exp') or 0):
+    if not saved or time.time() > fnum(saved.get('exp')):
         return False
     return hmac.compare_digest(code_hash(saved.get('salt') or '', str(code or '').strip()),
                                str(saved.get('hash') or ''))
@@ -47171,7 +47321,7 @@ def _mfa_code_ok(saved, code):
 def _mfa_send(h, s, kind, dest, field):
     data = s.get('data') or {}
     t = time.time()
-    if t - float(data.get('mfa_sent_at') or 0) < MFA_SEND_GAP_S:
+    if t - fnum(data.get('mfa_sent_at')) < MFA_SEND_GAP_S:
         raise ApiError(429, 'a code went a moment ago - wait half a minute for another')
     n = int(data.get('mfa_sent') or 0)
     if n >= MFA_SEND_MOST:
@@ -47203,7 +47353,7 @@ def _mfa_done(h, s, how):
     its cookie had the pages once the code was given."""
     data = {k: v for k, v in (s.get('data') or {}).items()
             if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent')}
-    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
     h.store.session_drop(s['id'])
     h.store.add_event('sign-ins', '%s gave the second step (%s) from %s' % (
@@ -47930,9 +48080,8 @@ def sshotp_accounts(store):
     said yet (an older one): then the name is taken as until now."""
     out, said = {'root'}, False
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'host:sshkeys:now:%'"):
-        try:
-            row = json.loads(r['v'] or '{}')
-        except ValueError:
+        row = json_obj(r['v'])
+        if row is None:
             continue
         if isinstance(row, dict) and isinstance(row.get('users'), list):
             said = True
@@ -48202,7 +48351,7 @@ def pwp_password_check(store, password, name):
     c = pwp_conf(store)
     if pwp_refused(store):
         # Its row not otp's: checked by what this node has put in, as its files say.
-        q = ((osu_now(store, node_name()).get('policy') or {}).get('pwquality') or {})
+        q = _osu_d(_osu_d(osu_now(store, node_name()).get('policy')).get('pwquality'))
         c = dict(c, managed=True, minlen=int(q.get('minlen') or 8), minclass=int(q.get('minclass') or 0),
                  maxrepeat=int(q.get('maxrepeat') or 0), usercheck=int(q.get('usercheck') or 0))
     exe = shutil.which('pwscore')
@@ -48239,8 +48388,27 @@ def users_ask(data, wait=60):
         return root_ask('users.ask', 'users.json', data, wait)
 
 
+def _osu_d(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _osu_l(v):
+    return v if isinstance(v, list) else []
+
+
 def osu_now(store, n):
-    return _meta_json(store, 'host:users:now:' + n) or {}
+    """A node's row of its users: an object, its parts of the kinds they are written as (1.0.250) -
+    a row of another shape raised at the tick before it was written again, for ever."""
+    now = _meta_json(store, 'host:users:now:' + n) or {}
+    for k in ('users', 'done', 'said', 'shells', 'used'):
+        if k in now and not isinstance(now[k], list):
+            now[k] = []
+    if 'policy' in now and not isinstance(now['policy'], dict):
+        now['policy'] = {}
+    now['done'] = [x for x in now.get('done') or [] if isinstance(x, str)]
+    now['said'] = [x for x in now.get('said') or [] if isinstance(x, dict)]
+    now['users'] = [x for x in now.get('users') or [] if isinstance(x, dict)]
+    return now
 
 
 def osu_asks(store, n):
@@ -48251,7 +48419,8 @@ def osu_asks(store, n):
         except ValueError:
             continue
         for a in asks if isinstance(asks, list) else [asks]:
-            if isinstance(a, dict) and a.get('id'):
+            if isinstance(a, dict) and a.get('id') and isinstance(a['id'], str) and \
+                    isinstance(a.get('at', 0), (int, float)) and not isinstance(a.get('at', 0), bool):
                 out.append(a)
     return out
 
@@ -48266,7 +48435,7 @@ def osu_view(store):
         for a in osu_asks(store, n):
             if a['id'] in done or a.get('do') == 'list':
                 continue
-            age = time.time() - float(a.get('at') or 0)
+            age = time.time() - fnum(a.get('at'))
             if age < 300:
                 pending += 1
             elif age < 3600:
@@ -48341,7 +48510,7 @@ def osu_free_uid(store, nodes, name):
         done = set(now.get('done') or [])
         for a in osu_asks(store, n):
             if a.get('do') == 'add' and a['id'] not in done and str(a.get('uid', '')).isdigit() and \
-                    time.time() - float(a.get('at') or 0) < 3600:
+                    time.time() - fnum(a.get('at')) < 3600:
                 if a.get('name') == name and have is None:
                     have = int(a['uid'])
                 elif a.get('name') != name:
@@ -48440,7 +48609,7 @@ def osu_ask(store, nodes, do, by, **f):
         except ValueError:
             had = []
         had = [x for x in (had if isinstance(had, list) else [had])
-               if isinstance(x, dict) and time.time() - float(x.get('at') or 0) < 3600]
+               if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
         had.append(dict(ask, id=secrets.token_hex(6)))
         store.set_meta(k, json.dumps(had[-20:]))
     if do != 'list':
@@ -48476,7 +48645,7 @@ def osu_forget_hashes(store):
         changed = False
         for a in had:
             if isinstance(a, dict) and a.get('hash') and (
-                    a.get('id') in done or time.time() - float(a.get('at') or 0) > 900):
+                    a.get('id') in done or time.time() - fnum(a.get('at')) > 900):
                 a.pop('hash', None)
                 a['hash_gone'] = True
                 changed = True
@@ -48485,6 +48654,11 @@ def osu_forget_hashes(store):
 
 
 def osu_keep(row, got):
+    """What the root helper said kept in the row - only an answer of the shape asked (1.0.250): an
+    error's words, or a helper of another version, kept as the node's state stayed so."""
+    if not isinstance(got, dict) or not isinstance(got.get('users', []), list) or \
+            not isinstance(got.get('policy', {}), dict):
+        raise ValueError('the root helper said no list of users (%s)' % type(got).__name__)
     row.update({k: got.get(k) for k in ('users', 'uid_min', 'uid_max', 'used', 'admin_group',
                                         'shells', 'today', 'policy')})
     row['at'] = time.time()
@@ -48526,15 +48700,15 @@ def osu_tick(daemon):
     now = osu_now(store, me)
     done = list(now.get('done') or [])
     todo = [a for a in osu_asks(store, me) if a['id'] not in done and
-            time.time() - float(a.get('at') or 0) < 3600]
-    todo.sort(key=lambda a: float(a.get('at') or 0))
+            time.time() - fnum(a.get('at')) < 3600]
+    todo.sort(key=lambda a: fnum(a.get('at')))
     stale = time.time() - OSU_WORK['seen'] > 300 or not now
     # The password policy (1.0.245): put in when it is not what this node has done last - tried
     # again in ten minutes when the helper refused it.
     pol = pwp_conf(store)
     want = pwp_hash(pol)
     policy_due = now.get('policy_hash') != want and (
-        now.get('policy_tried') != want or time.time() - float(now.get('policy_at') or 0) > 600) and \
+        now.get('policy_tried') != want or time.time() - fnum(now.get('policy_at')) > 600) and \
         not pwp_refused(store)
     if not todo and not stale and not policy_due:
         return
@@ -48649,7 +48823,7 @@ def settings_in_effect(store, ask=False, daemon=None):
     for b in ha_nodes(store):
         # A node not heard from for a day is no node of this cluster (1.0.248), as under High
         # security: one taken out and not forgotten showed red on every card for ever.
-        if not b.get('me') and float(b.get('age') or 0) >= 86400:
+        if not b.get('me') and fnum(b.get('age')) >= 86400:
             continue
         known = 'conf_seen' in b
         if b.get('me') and daemon is not None:
@@ -48657,7 +48831,7 @@ def settings_in_effect(store, ask=False, daemon=None):
             b = dict(b, conf_seen=daemon.conf_serial, conf_seen_at=daemon.conf_loaded_at)
             known = True
         out.append({'name': b['name'], 'me': bool(b.get('me')), 'alive': bool(b.get('alive')),
-                    'age': round(float(b.get('age') or 0), 1), 'version': b.get('version') or '',
+                    'age': round(fnum(b.get('age')), 1), 'version': b.get('version') or '',
                     'known': known, 'seen': known and b.get('conf_seen') == serial,
                     'seen_at': b.get('conf_seen_at')})
     return {'serial': serial, 'cluster': in_cluster(store) and len(out) > 1,
@@ -48772,8 +48946,9 @@ def keep_mark_now():
 def keep_view(store, node):
     raw = _meta_json(store, 'host:keep:' + node) or {}
     k = keep_open(raw, node) or {}
-    return {'at': raw.get('at'), 'users': len(k.get('users') or []),
-            'keys': sum(len(v) for v in (k.get('keys') or {}).values()) + len(k.get('root_keys') or []),
+    return {'at': raw.get('at'), 'users': len(_osu_l(k.get('users'))),
+            'keys': sum(len(v) for v in _osu_d(k.get('keys')).values() if isinstance(v, list)) +
+            len(_osu_l(k.get('root_keys'))),
             'pending': bool(store.get_meta('host:putback:' + node))}
 
 
@@ -48783,8 +48958,9 @@ def keep_open(raw, node):
         if not sealed.startswith(SEALED2):
             return None         # never sealed: written by somebody without the key (1.0.248)
         text = unseal_secret(sealed, 'hostkeep:' + node)
-        return json.loads(text) if text else None
-    except (TypeError, ValueError):
+        got = json.loads(text) if text else None
+        return got if isinstance(got, dict) else None
+    except (TypeError, ValueError, AttributeError):
         return None
 
 
@@ -48836,9 +49012,9 @@ def keep_tick(daemon):
                     if got is not None:
                         store.add_event('settings', 'put back on %s what the backup kept of the machine: %s'
                                         % (me, got.get('said') or 'nothing missing'),
-                                        'bad' if 'not put back:' in (got.get('said') or '') else 'warn')
+                                        'bad' if 'not put back:' in str(got.get('said') or '') else 'warn')
                         log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
-                    if got is None or 'not put back:' in (got.get('said') or ''):
+                    if got is None or 'not put back:' in str(got.get('said') or ''):
                         keep_hold_set(time.time() + 7 * 86400)
                     else:
                         keep_hold_set(0)
@@ -49284,7 +49460,7 @@ def metrics_text(daemon):
             m.put('otp_ha_node_up', 'gauge', 'Whether each node was heard from lately.',
                   [({'node': n['name']}, 1 if n.get('alive') else 0) for n in nodes])
             m.put('otp_ha_heartbeat_age_seconds', 'gauge', 'Since each node was last heard from.',
-                  [({'node': n['name']}, round(float(n.get('age') or 0), 1)) for n in nodes])
+                  [({'node': n['name']}, round(fnum(n.get('age')), 1)) for n in nodes])
             rep = ha_repl_state(store)
             m.put('otp_ha_replication_running', 'gauge',
                   'Whether this node takes the other\'s rows (each subscription).',
@@ -49757,7 +49933,7 @@ def snmp_mib(daemon, agent):
             for i, n in enumerate(ha_nodes(store), 1):
                 rows += [(B + (7, 1, 1, 1, i), 'int', i), (B + (7, 1, 1, 2, i), 'str', n['name']),
                          (B + (7, 1, 1, 3, i), 'int', 1 if n.get('alive') else 0),
-                         (B + (7, 1, 1, 4, i), 'gauge', int(float(n.get('age') or 0)))]
+                         (B + (7, 1, 1, 4, i), 'gauge', int(fnum(n.get('age'))))]
         except Exception:                               # noqa: BLE001
             pass
     # Every sample Prometheus gets, as a table (name, labels, value) - nothing
@@ -50185,16 +50361,16 @@ def snmp_traps_tick(daemon, cur):
             not snmp_trap_targets(CONFIG.get('snmp_trap_to')):
         return
     store = daemon.store
-    try:
-        known = json.loads(store.get_meta('snmp:trapped') or '{}')
-    except ValueError:
-        known = {}
+    # Of another shape taken as none, each entry an object (1.0.250): it raised here before it was
+    # written again - no trap went out any more.
+    known = {k: v for k, v in (json_obj(store.get_meta('snmp:trapped')) or {}).items()
+             if isinstance(v, dict)}
     delay = 60 * int(CONFIG.get('alerts_delay_min') or 0)
     now = time.time()
     changed = False
     for k, p in cur.items():
         was = known.get(k)
-        since = float((was or {}).get('since') or now)
+        since = fnum((was or {}).get('since'), now) or now
         if not was:
             known[k] = {'since': now, 'sent': False, 'level': p.get('level')}
             changed = True
@@ -50813,13 +50989,12 @@ def push_conf(store):
     # Signed ones only, with the guard on (1.0.248): read with plain SQL, a key put in by somebody
     # who can write the database was taken - and what it pushed became nginx's certificate.
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'acme_push:key:%'")):
-        try:
-            k = json.loads(r['v'] or '{}')
-        except ValueError:
+        k = json_obj(r['v'])
+        if k is None:
             continue
         if isinstance(k, dict) and k.get('public') and k.get('id'):
             keys[k['id']] = k
-    keys = sorted(keys.values(), key=lambda k: float(k.get('at') or 0))
+    keys = sorted(keys.values(), key=lambda k: fnum(k.get('at')))
     pairing = _meta_json(store, 'acme_push:pairing')
     if not isinstance(pairing, dict):
         pairing = got.get('pairing') if isinstance(got.get('pairing'), dict) else None
@@ -51145,7 +51320,7 @@ def push_do_pair(store, raw, headers, conf, box):
     b = push_body(raw)
     pub, comment = push_key_parse(b.get('acme_key'))
     p = conf['pairing'] or {}
-    if not p or float(p.get('until') or 0) < time.time():
+    if not p or fnum(p.get('until')) < time.time():
         raise PushError(403, 'pairing_closed', 'no pairing code is waiting here: make one on '
                                                'Certificates from acme (it lasts 15 minutes)')
     key = {'id': push_key_id(pub), 'public': push_b64(pub)}
@@ -51155,7 +51330,7 @@ def push_do_pair(store, raw, headers, conf, box):
     with PUSH_LOCK:
         c2 = push_conf(store)
         p = c2.get('pairing') or {}
-        if not p or float(p.get('until') or 0) < time.time() or \
+        if not p or fnum(p.get('until')) < time.time() or \
                 int(p.get('tries') or 0) >= PUSH_CODE_TRIES:
             raise PushError(403, 'pairing_closed', 'no pairing code is waiting here: make one on '
                                                    'Certificates from acme (it lasts 15 minutes)')
@@ -51323,7 +51498,7 @@ def push_view(store):
     return {'on': conf['on'], 'other_names': conf['other_names'],
             'keys': [{k: x.get(k) for k in ('id', 'name', 'at', 'by')} for x in conf['keys']],
             'pairing': {'until': p.get('until'), 'tries': p.get('tries') or 0}
-            if p and float(p.get('until') or 0) > time.time() else None,
+            if p and fnum(p.get('until')) > time.time() else None,
             'app_id': box['app_id'] if box else '',
             'enc_fp': push_key_id(box['pub']) if box else '', 'last': conf['last'],
             'slots': push_slots(store) if conf['on'] else [],
@@ -51860,7 +52035,7 @@ class Console(object):
             self._put(y, 1, 'in maintenance: %s' % ', '.join(str(n) for n in others), A['warn'])
             y += 1
         for t in st.get('trials') or []:
-            left = max(0, int(float(t.get('until') or 0) - time.time()))
+            left = max(0, int(fnum(t.get('until')) - time.time()))
             self._put(y, 1, '%s waits to be kept: %d:%02d left (Cluster > Keep or put back)' % (
                 'the new network of %s' % t.get('node') if t.get('kind') == 'net'
                 else 'the change of the firewall', left // 60, left % 60), A['warn'])
@@ -54354,7 +54529,7 @@ class Console(object):
                 # What each node has read first (1.0.248), not two seconds and the old row.
                 end0 = time.time() + 30
                 while time.time() < end0 and not all(
-                        float(n.get('at') or 0) >= t0 for n in osu_view(store)['nodes'] if n['alive']):
+                        fnum(n.get('at')) >= t0 for n in osu_view(store)['nodes'] if n['alive']):
                     time.sleep(1)
                 done = osu_ask(store, nodes, do, who, name=name, **f)
                 end, v = time.time() + 60, None
@@ -57190,7 +57365,7 @@ def upgrade_percent(st, plan):
         return round(3 + 17 * min(1, since / max(1, float(plan.get('drain_s') or 20))))
     if state == 'installing':
         asked = now - float(st.get('asked') or st.get('at') or now)
-        return round(min(82, 20 + 60 * min(0.95, float(st.get('part') or 0) / 6)
+        return round(min(82, 20 + 60 * min(0.95, fnum(st.get('part')) / 6)
                          + min(6, asked / 15)))
     if state == 'checking':
         return round(85 + min(10, since / 3))
@@ -57541,7 +57716,7 @@ def cli_main(argv=None):
                 print(json.dumps(dict(row, node=name), default=str))
             else:
                 print(('%s: in maintenance since %s%s' % (
-                    name, datetime.fromtimestamp(float(row.get('at') or 0)).strftime(
+                    name, datetime.fromtimestamp(fnum(row.get('at'))).strftime(
                         '%d-%m-%Y %H:%M:%S'), (' - ' + row['why']) if row.get('why') else ''))
                       if row.get('on') else '%s: in service' % name)
             return 0 if not row.get('on') else 3
@@ -57854,7 +58029,7 @@ def cli_main(argv=None):
             copies = backups()
             try:                        # the nightly dumps as well (1.0.59)
                 copies = sorted(copies + kept_dumps(CONFIG.get('db_engine') or 'sqlite'),
-                                key=lambda c: -float(c.get('at') or 0))
+                                key=lambda c: -fnum(c.get('at')))
             except Exception:                           # noqa: BLE001
                 pass
             if copies:
@@ -59054,13 +59229,10 @@ def cli_main(argv=None):
         now = time.time()
         per = []
         for n in [node_name()] + [x['name'] for x in ha_nodes(store) if x['name'] != node_name()]:
-            try:
-                got = json.loads(store.get_meta('lockouts:' + n) or '{}')
-            except ValueError:
-                got = {}
-            rows = [dict(r, node=n) for r in (got.get('rows') or []) if float(r.get('forgets') or 0) > now]
+            got = json_obj(store.get_meta('lockouts:' + n)) or {}
+            rows = [dict(r, node=n) for r in (got.get('rows') or []) if fnum(r.get('forgets')) > now]
             for r in rows:
-                if r.get('locked') and float(r.get('until') or 0) <= now:
+                if r.get('locked') and fnum(r.get('until')) <= now:
                     r['locked'] = False
             per.append((n, got.get('at'), rows))
         shared = [dict(r, node='*') for r in lockouts_shared(store)]
@@ -59558,7 +59730,7 @@ def cli_osusers(args, pal):
             v = osu_view(store)
             mine = [n for n in v['nodes'] if n['name'] in nodes]
             if not any(n['pending'] for n in mine) and (
-                    since is None or all(float(n.get('at') or 0) >= since for n in mine if n['alive'])):
+                    since is None or all(fnum(n.get('at')) >= since for n in mine if n['alive'])):
                 return v
             time.sleep(1)
         return osu_view(store)
@@ -59698,7 +59870,7 @@ def cli_sso(args, pal):
               'address (otp --set web_proxy_from=ADDR --set web_proxy=1)')
     for x in v['last']:
         print('  last on %-10s %s  %-9s %s <- %s%s' % (
-            x.get('node') or '?', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(x.get('at') or 0))),
+            x.get('node') or '?', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(fnum(x.get('at')))),
             'signed in' if x.get('ok') else 'REFUSED', x.get('name') or '?', x.get('peer') or '?',
             ('  (%s)' % x['why']) if x.get('why') else ''))
     if not v['last']:

@@ -157,7 +157,7 @@ def online_tick(daemon):
     last = _meta_json(store, 'upgrade:online') or {}
     # Asked again once the address changed, or a day after the last look.
     if last.get('url') == online_url() and \
-            time.time() - float(last.get('at') or 0) < ONLINE_EVERY_S:
+            time.time() - fnum(last.get('at')) < ONLINE_EVERY_S:
         return
     with ONLINE_LOCK:
         if ONLINE_WORK['busy']:

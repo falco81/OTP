@@ -84,7 +84,7 @@ def pwp_password_check(store, password, name):
     c = pwp_conf(store)
     if pwp_refused(store):
         # Its row not otp's: checked by what this node has put in, as its files say.
-        q = ((osu_now(store, node_name()).get('policy') or {}).get('pwquality') or {})
+        q = _osu_d(_osu_d(osu_now(store, node_name()).get('policy')).get('pwquality'))
         c = dict(c, managed=True, minlen=int(q.get('minlen') or 8), minclass=int(q.get('minclass') or 0),
                  maxrepeat=int(q.get('maxrepeat') or 0), usercheck=int(q.get('usercheck') or 0))
     exe = shutil.which('pwscore')
@@ -121,8 +121,27 @@ def users_ask(data, wait=60):
         return root_ask('users.ask', 'users.json', data, wait)
 
 
+def _osu_d(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _osu_l(v):
+    return v if isinstance(v, list) else []
+
+
 def osu_now(store, n):
-    return _meta_json(store, 'host:users:now:' + n) or {}
+    """A node's row of its users: an object, its parts of the kinds they are written as (1.0.250) -
+    a row of another shape raised at the tick before it was written again, for ever."""
+    now = _meta_json(store, 'host:users:now:' + n) or {}
+    for k in ('users', 'done', 'said', 'shells', 'used'):
+        if k in now and not isinstance(now[k], list):
+            now[k] = []
+    if 'policy' in now and not isinstance(now['policy'], dict):
+        now['policy'] = {}
+    now['done'] = [x for x in now.get('done') or [] if isinstance(x, str)]
+    now['said'] = [x for x in now.get('said') or [] if isinstance(x, dict)]
+    now['users'] = [x for x in now.get('users') or [] if isinstance(x, dict)]
+    return now
 
 
 def osu_asks(store, n):
@@ -133,7 +152,8 @@ def osu_asks(store, n):
         except ValueError:
             continue
         for a in asks if isinstance(asks, list) else [asks]:
-            if isinstance(a, dict) and a.get('id'):
+            if isinstance(a, dict) and a.get('id') and isinstance(a['id'], str) and \
+                    isinstance(a.get('at', 0), (int, float)) and not isinstance(a.get('at', 0), bool):
                 out.append(a)
     return out
 
@@ -148,7 +168,7 @@ def osu_view(store):
         for a in osu_asks(store, n):
             if a['id'] in done or a.get('do') == 'list':
                 continue
-            age = time.time() - float(a.get('at') or 0)
+            age = time.time() - fnum(a.get('at'))
             if age < 300:
                 pending += 1
             elif age < 3600:
@@ -223,7 +243,7 @@ def osu_free_uid(store, nodes, name):
         done = set(now.get('done') or [])
         for a in osu_asks(store, n):
             if a.get('do') == 'add' and a['id'] not in done and str(a.get('uid', '')).isdigit() and \
-                    time.time() - float(a.get('at') or 0) < 3600:
+                    time.time() - fnum(a.get('at')) < 3600:
                 if a.get('name') == name and have is None:
                     have = int(a['uid'])
                 elif a.get('name') != name:
@@ -322,7 +342,7 @@ def osu_ask(store, nodes, do, by, **f):
         except ValueError:
             had = []
         had = [x for x in (had if isinstance(had, list) else [had])
-               if isinstance(x, dict) and time.time() - float(x.get('at') or 0) < 3600]
+               if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
         had.append(dict(ask, id=secrets.token_hex(6)))
         store.set_meta(k, json.dumps(had[-20:]))
     if do != 'list':
@@ -358,7 +378,7 @@ def osu_forget_hashes(store):
         changed = False
         for a in had:
             if isinstance(a, dict) and a.get('hash') and (
-                    a.get('id') in done or time.time() - float(a.get('at') or 0) > 900):
+                    a.get('id') in done or time.time() - fnum(a.get('at')) > 900):
                 a.pop('hash', None)
                 a['hash_gone'] = True
                 changed = True
@@ -367,6 +387,11 @@ def osu_forget_hashes(store):
 
 
 def osu_keep(row, got):
+    """What the root helper said kept in the row - only an answer of the shape asked (1.0.250): an
+    error's words, or a helper of another version, kept as the node's state stayed so."""
+    if not isinstance(got, dict) or not isinstance(got.get('users', []), list) or \
+            not isinstance(got.get('policy', {}), dict):
+        raise ValueError('the root helper said no list of users (%s)' % type(got).__name__)
     row.update({k: got.get(k) for k in ('users', 'uid_min', 'uid_max', 'used', 'admin_group',
                                         'shells', 'today', 'policy')})
     row['at'] = time.time()
@@ -408,15 +433,15 @@ def osu_tick(daemon):
     now = osu_now(store, me)
     done = list(now.get('done') or [])
     todo = [a for a in osu_asks(store, me) if a['id'] not in done and
-            time.time() - float(a.get('at') or 0) < 3600]
-    todo.sort(key=lambda a: float(a.get('at') or 0))
+            time.time() - fnum(a.get('at')) < 3600]
+    todo.sort(key=lambda a: fnum(a.get('at')))
     stale = time.time() - OSU_WORK['seen'] > 300 or not now
     # The password policy (1.0.245): put in when it is not what this node has done last - tried
     # again in ten minutes when the helper refused it.
     pol = pwp_conf(store)
     want = pwp_hash(pol)
     policy_due = now.get('policy_hash') != want and (
-        now.get('policy_tried') != want or time.time() - float(now.get('policy_at') or 0) > 600) and \
+        now.get('policy_tried') != want or time.time() - fnum(now.get('policy_at')) > 600) and \
         not pwp_refused(store)
     if not todo and not stale and not policy_due:
         return
@@ -531,7 +556,7 @@ def settings_in_effect(store, ask=False, daemon=None):
     for b in ha_nodes(store):
         # A node not heard from for a day is no node of this cluster (1.0.248), as under High
         # security: one taken out and not forgotten showed red on every card for ever.
-        if not b.get('me') and float(b.get('age') or 0) >= 86400:
+        if not b.get('me') and fnum(b.get('age')) >= 86400:
             continue
         known = 'conf_seen' in b
         if b.get('me') and daemon is not None:
@@ -539,7 +564,7 @@ def settings_in_effect(store, ask=False, daemon=None):
             b = dict(b, conf_seen=daemon.conf_serial, conf_seen_at=daemon.conf_loaded_at)
             known = True
         out.append({'name': b['name'], 'me': bool(b.get('me')), 'alive': bool(b.get('alive')),
-                    'age': round(float(b.get('age') or 0), 1), 'version': b.get('version') or '',
+                    'age': round(fnum(b.get('age')), 1), 'version': b.get('version') or '',
                     'known': known, 'seen': known and b.get('conf_seen') == serial,
                     'seen_at': b.get('conf_seen_at')})
     return {'serial': serial, 'cluster': in_cluster(store) and len(out) > 1,
@@ -654,8 +679,9 @@ def keep_mark_now():
 def keep_view(store, node):
     raw = _meta_json(store, 'host:keep:' + node) or {}
     k = keep_open(raw, node) or {}
-    return {'at': raw.get('at'), 'users': len(k.get('users') or []),
-            'keys': sum(len(v) for v in (k.get('keys') or {}).values()) + len(k.get('root_keys') or []),
+    return {'at': raw.get('at'), 'users': len(_osu_l(k.get('users'))),
+            'keys': sum(len(v) for v in _osu_d(k.get('keys')).values() if isinstance(v, list)) +
+            len(_osu_l(k.get('root_keys'))),
             'pending': bool(store.get_meta('host:putback:' + node))}
 
 
@@ -665,8 +691,9 @@ def keep_open(raw, node):
         if not sealed.startswith(SEALED2):
             return None         # never sealed: written by somebody without the key (1.0.248)
         text = unseal_secret(sealed, 'hostkeep:' + node)
-        return json.loads(text) if text else None
-    except (TypeError, ValueError):
+        got = json.loads(text) if text else None
+        return got if isinstance(got, dict) else None
+    except (TypeError, ValueError, AttributeError):
         return None
 
 
@@ -718,9 +745,9 @@ def keep_tick(daemon):
                     if got is not None:
                         store.add_event('settings', 'put back on %s what the backup kept of the machine: %s'
                                         % (me, got.get('said') or 'nothing missing'),
-                                        'bad' if 'not put back:' in (got.get('said') or '') else 'warn')
+                                        'bad' if 'not put back:' in str(got.get('said') or '') else 'warn')
                         log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
-                    if got is None or 'not put back:' in (got.get('said') or ''):
+                    if got is None or 'not put back:' in str(got.get('said') or ''):
                         keep_hold_set(time.time() + 7 * 86400)
                     else:
                         keep_hold_set(0)

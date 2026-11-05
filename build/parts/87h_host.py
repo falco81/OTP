@@ -39,10 +39,10 @@ def sshkeys_view(store):
                 # A change still to be written - a read again is no change,
                 # and one not done in five minutes is not still coming (1.0.159).
                 if isinstance(a, dict) and a.get('id') and a['id'] not in done and \
-                        a.get('do') in ('add', 'drop') and time.time() - float(a.get('at') or 0) < 300:
+                        a.get('do') in ('add', 'drop') and time.time() - fnum(a.get('at')) < 300:
                     pending += 1
                 elif isinstance(a, dict) and a.get('id') and a['id'] not in done and \
-                        a.get('do') in ('add', 'drop') and time.time() - float(a.get('at') or 0) < 3600:
+                        a.get('do') in ('add', 'drop') and time.time() - fnum(a.get('at')) < 3600:
                     late += 1
         nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
                       'keys': now.get('keys') or [], 'sshd': now.get('sshd') or {},
@@ -83,7 +83,7 @@ def sshkeys_ask(store, nodes, do, by, line='', fp='', last_ok=False, user='root'
             had = []
         if isinstance(had, dict):
             had = [had]
-        had = [x for x in had if isinstance(x, dict) and time.time() - float(x.get('at') or 0) < 3600]
+        had = [x for x in had if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
         had.append({'id': secrets.token_hex(6), 'do': do, 'line': line, 'fp': str(fp or '')[:80],
                     'last_ok': bool(last_ok), 'by': by, 'at': time.time(), 'user': user})
         store.set_meta(k, json.dumps(had[-10:]))
@@ -110,9 +110,9 @@ def sshkeys_tick(daemon):
             continue
         for a in asks if isinstance(asks, list) else [asks]:
             if isinstance(a, dict) and a.get('id') and a['id'] not in done and \
-                    time.time() - float(a.get('at') or 0) < 3600:
+                    time.time() - fnum(a.get('at')) < 3600:
                 todo.append(a)
-    todo.sort(key=lambda a: float(a.get('at') or 0))
+    todo.sort(key=lambda a: fnum(a.get('at')))
     stale = time.time() - HOST_WORK['ssh_seen'] > 300 or not now
     if not todo and not stale:
         return
@@ -124,7 +124,7 @@ def sshkeys_tick(daemon):
     for a in lists:
         last_list[str(a.get('user') or 'root')] = a
     todo = [a for a in todo if a.get('do') != 'list'] + sorted(
-        last_list.values(), key=lambda a: float(a.get('at') or 0))
+        last_list.values(), key=lambda a: fnum(a.get('at')))
 
     def go():
         row = dict(now)
@@ -157,7 +157,7 @@ def sshkeys_tick(daemon):
                         mine.update(keys=got.get('keys') or [], file=got.get('file') or '')
                     of[user] = mine
                     if len(of) > 30:
-                        for k in sorted(of, key=lambda k: float(of[k].get('at') or 0))[:len(of) - 30]:
+                        for k in sorted(of, key=lambda k: fnum(of[k].get('at')))[:len(of) - 30]:
                             of.pop(k, None)
                     row.update(keys_of=of, at=time.time(), done=done[-200:])
                     if got:
@@ -479,19 +479,18 @@ def osup_tick(daemon):
     # It said a restart was waiting and the node has restarted since: looked
     # at again, not left saying so (1.0.159).
     if chk.get('reboot_now') and chk.get('state') == 'done' and not chk.get('relook') and \
-            boot_time() > float(chk.get('checked') or 0) + 1:
+            boot_time() > fnum(chk.get('checked')) + 1:
         chk['relook'] = True
         store.set_meta('host:osup:check:' + me, json.dumps(chk))
         store.set_meta(node_key('host:osup:checkwant', me),
                        json.dumps({'id': secrets.token_hex(6), 'by': 'otp (system update)',
                                    'at': time.time()}))
     for r in node_key_rows(store, 'host:osup:checkwant', me):
-        try:
-            a = json.loads(r['v'] or '{}')
-        except ValueError:
+        a = json_obj(r['v'])
+        if a is None:
             continue
         if a.get('id') and a['id'] not in (chk.get('asked') or []) and \
-                time.time() - float(a.get('at') or 0) < 900:
+                time.time() - fnum(a.get('at')) < 900:
             _osup_go(daemon, 'check', a)
             return
     if chk.get('state') == 'running':
@@ -517,7 +516,7 @@ def osup_tick(daemon):
             _osup_go(daemon, 'upgrade', {'plan': plan, 'row': row})
         return
     if st == 'draining':
-        if time.time() - float(row.get('drain_at') or 0) >= 15:
+        if time.time() - fnum(row.get('drain_at')) >= 15:
             _osup_go(daemon, 'upgrade-now', {'plan': plan, 'row': row})
         return
     if st == 'updating':
@@ -571,14 +570,14 @@ def _osup_go(daemon, what, ctx):
 def _osup_follow_check(store, chk):
     me = node_name()
     got = _osup_read()
-    if not got or got.get('kind') != 'check' or float(got.get('began') or 0) < \
-            float(chk.get('began') or 0) - 5:
-        if time.time() - float(chk.get('began') or 0) > 1800:
+    if not got or got.get('kind') != 'check' or fnum(got.get('began')) < \
+            fnum(chk.get('began')) - 5:
+        if time.time() - fnum(chk.get('began')) > 1800:
             store.set_meta('host:osup:check:' + me, json.dumps(
                 dict(chk, state='failed', error='the helper did not say anything', at=time.time())))
         return
     if got.get('state') == 'running':
-        if time.time() - float(chk.get('at') or 0) > 3:
+        if time.time() - fnum(chk.get('at')) > 3:
             store.set_meta('host:osup:check:' + me, json.dumps(
                 dict(chk, at=time.time(), lines=(got.get('lines') or [])[-40:])))
         return
@@ -595,8 +594,8 @@ def _osup_follow(daemon, plan, row):
     store = daemon.store
     got = _osup_read()
     if not got or got.get('kind') != 'upgrade' or \
-            float(got.get('began') or 0) < float(row.get('began') or 0) - 5:
-        if time.time() - float(row.get('began') or 0) > 600:
+            fnum(got.get('began')) < fnum(row.get('began')) - 5:
+        if time.time() - fnum(row.get('began')) > 600:
             _osup_end(store, plan, row, False, 'the helper did not start the update')
         return
     if got.get('state') == 'running':
@@ -836,7 +835,7 @@ def sshd_tick(daemon):
     except (OSError, ValueError):
         gone = {}
     todo = []
-    if gone.get('at') and float(gone['at']) > float(now.get('back_at') or 0):
+    if gone.get('at') and float(gone['at']) > fnum(now.get('back_at')):
         todo.append(('went-back', gone))
     if c.get('hash') and c['hash'] != now.get('hash') and c['hash'] != now.get('failed') and \
             c['hash'] != now.get('back_hash'):
@@ -844,8 +843,8 @@ def sshd_tick(daemon):
     # Kept only where it was on trial when Keep was pressed (1.0.211): a node that
     # was away put the change in later and kept it at once - nobody had tried it there.
     if (now.get('trial') or {}).get('until') and keep.get('hash') == now.get('hash') and \
-            float(keep.get('at') or 0) > float(now.get('kept_at') or 0) and \
-            float(keep.get('at') or 0) > float(now.get('applied_at') or 0):
+            fnum(keep.get('at')) > fnum(now.get('kept_at')) and \
+            fnum(keep.get('at')) > fnum(now.get('applied_at')):
         todo.append(('keep', None))
     if back.get('id') and back['id'] != now.get('back_id') and (now.get('trial') or {}).get('until'):
         todo.append(('back', back))
@@ -970,12 +969,11 @@ def osup_settling(store):
         if chk.get('state') == 'running':
             return True
         for r in node_key_rows(store, 'host:osup:checkwant', n):
-            try:
-                a = json.loads(r['v'] or '{}')
-            except ValueError:
+            a = json_obj(r['v'])
+            if a is None:
                 continue
             if a.get('id') and a['id'] not in (chk.get('asked') or []) and \
-                    time.time() - float(a.get('at') or 0) < 900:
+                    time.time() - fnum(a.get('at')) < 900:
                 return True
     return False
 

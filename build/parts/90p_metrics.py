@@ -93,7 +93,7 @@ def metrics_text(daemon):
             m.put('otp_ha_node_up', 'gauge', 'Whether each node was heard from lately.',
                   [({'node': n['name']}, 1 if n.get('alive') else 0) for n in nodes])
             m.put('otp_ha_heartbeat_age_seconds', 'gauge', 'Since each node was last heard from.',
-                  [({'node': n['name']}, round(float(n.get('age') or 0), 1)) for n in nodes])
+                  [({'node': n['name']}, round(fnum(n.get('age')), 1)) for n in nodes])
             rep = ha_repl_state(store)
             m.put('otp_ha_replication_running', 'gauge',
                   'Whether this node takes the other\'s rows (each subscription).',

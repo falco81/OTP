@@ -128,7 +128,7 @@ ok('a copy sealed with another key refused in every kind of cluster',
 ok('erasing a log in batches', "gone[t] = store.delete_older(t, time.time() + 100 * 365 * 86400)" in src)
 ok('the alerts looked at again by the node that sends them only', "if alerts_lead(h.store):\n                alerts_evaluate"
    in src)
-ok('SSH: Keep keeps only where it was on trial when pressed', "> float(now.get('applied_at') or 0)" in src)
+ok('SSH: Keep keeps only where it was on trial when pressed', ("> float(now.get('applied_at') or 0)" in src or "> fnum(now.get('applied_at'))" in src))
 ok('replication paused half way said, not a bare error', src.count("its side as it was") == 2)
 ok('the firewall lets the other node in, in a cluster of one shared database too',
    'if peers and (in_cluster(store)' in src)

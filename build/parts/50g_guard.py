@@ -71,7 +71,7 @@ DBGUARD_SINCE = {
                              'acme_desec_token', 'acme_desec_domain')}}
 DBGUARD_FILE = STATE_DIR / 'guard.json'
 DBGUARD = {'seen': None, 'good': None, 'seen_h': None, 'dirty': 0.0, 'refused': {}, 'nodes': {},
-           'adopted': [], 'lock': threading.Lock()}
+           'adopted': [], 'behind': set(), 'lock': threading.Lock()}
 
 
 def dbguard_on():
@@ -221,9 +221,38 @@ def dbguard_sign(db, kind, ident, value, far=False):
     return False
 
 
-def dbguard_ok(db, kind, ident, value, quiet=False):
+def _dbguard_ver(v):
+    try:
+        return tuple(int(x) for x in str(v).split('.')[:3])
+    except (TypeError, ValueError):
+        return ()
+
+
+def _dbguard_not_yet(kind, ident):
+    """A row signed only since a version not taken in yet (1.0.250): while a node of a version
+    before it is still in the cluster, it writes such rows unsigned - they were refused, and the
+    same error came at every tick for as long as they were there. Until every node runs it they
+    are taken as they were before it, then signed once as they are (dbguard_adopt_tick)."""
+    k = str(ident or '')
+    if kind == 'm':
+        hit = [v for v, w in DBGUARD_SINCE.items()
+               if k in w.get('meta', ()) or k.startswith(tuple(w.get('meta_prefixes', ())))]
+    elif kind == 's':
+        hit = [v for v, w in DBGUARD_SINCE.items() if k.split('@', 1)[0] in w.get('settings', ())]
+    else:
+        return False
+    if not hit:
+        return False
+    # Only while such a node is seen alive (by its signed heartbeat): with none, checked as before.
+    behind = DBGUARD.get('behind') or ()
+    return any(v in behind for v in hit)
+
+
+def dbguard_ok(db, kind, ident, value, quiet=False, early=True):
     """Whether a row is as otp wrote it: True whenever the guard is off."""
     if not dbguard_on():
+        return True
+    if early and _dbguard_not_yet(kind, ident):
         return True
     key = dbguard_key()
     sid = 'sig:%s:%s:*' % (kind, _dbguard_hash(ident))
@@ -359,8 +388,8 @@ SESSION_SIGNED = ('kind', 'name', 'role', 'created', 'expires')
 
 def dbguard_session_text(row):
     return json.dumps([str(row.get('kind') or ''), str(row.get('name') or ''),
-                       str(row.get('role') or ''), '%.3f' % float(row.get('created') or 0),
-                       '%.3f' % float(row.get('expires') or 0)])
+                       str(row.get('role') or ''), '%.3f' % fnum(row.get('created')),
+                       '%.3f' % fnum(row.get('expires'))])
 
 
 def dbguard_node_ok(store, name):
@@ -460,6 +489,50 @@ def dbguard_resign(store, why=''):
     return n
 
 
+def _dbguard_older_nodes(store):
+    """The other nodes alive, by the version their heartbeat - otp's, by its signature - says."""
+    out = {}
+    try:
+        nodes = ha_nodes(store) if CONFIG.get('ha_mode') else []
+    except Exception:                                   # noqa: BLE001
+        nodes = []
+    for n in nodes:
+        if n.get('me') or not n.get('alive') or not n.get('version'):
+            continue
+        try:
+            raw = store.db.value('SELECT v FROM meta WHERE k = ?', ('node:' + n['name'],))
+        except Exception:                               # noqa: BLE001
+            continue
+        if raw is not None and dbguard_ok(store.db, 'm', 'node:' + n['name'], raw, quiet=True):
+            out[n['name']] = str(n['version'])
+    return out
+
+
+def dbguard_adopt_tick(store):
+    """Once a minute: a version's rows taken in once every node alive runs it - and again taken
+    as before it while a node of a version before is back (switched on, or joined, with one
+    still there), until it runs it too (1.0.250)."""
+    if not dbguard_on() or not dbguard_key() or not DBGUARD_SINCE:
+        return
+    older = _dbguard_older_nodes(store)
+    behind = {ver for ver in DBGUARD_SINCE
+              if any(_dbguard_ver(v) < _dbguard_ver(ver) for v in older.values())}
+    _dbguard_load()
+    with DBGUARD['lock']:
+        DBGUARD['behind'] = behind
+        had = set(DBGUARD.get('adopted') or [])
+        if had & behind:
+            DBGUARD['adopted'] = sorted(had - behind)
+            DBGUARD['dirty'] = time.time()
+        due = set(DBGUARD_SINCE) - set(DBGUARD['adopted']) - behind
+    if had & behind:
+        dbguard_flush(force=True)
+        log('the rows signed only since %s are taken as before it while %s runs a version before'
+            % (', '.join(sorted(had & behind)), ', '.join(sorted(older))), 'warn')
+    if due:
+        dbguard_adopt(store)
+
+
 def dbguard_adopt(store):
     """At the start: the rows signed only since this version (DBGUARD_SINCE), found without a
     signature that is right, signed once as they are - each version's once, noted in guard.json
@@ -480,17 +553,26 @@ def dbguard_adopt(store):
         return []
     db = store.db
     said = []
+    older = _dbguard_older_nodes(store)
+    DBGUARD['behind'] = {ver for ver in DBGUARD_SINCE
+                         if any(_dbguard_ver(v) < _dbguard_ver(ver) for v in older.values())}
     for ver, what in sorted(DBGUARD_SINCE.items()):
         if ver in done:
+            continue
+        # Not while a node of a version before it is alive (1.0.250): it goes on writing these
+        # rows unsigned - signed here now, its next one was refused, for ever.
+        if any(_dbguard_ver(v) < _dbguard_ver(ver) for v in older.values()):
             continue
         for r in db.rows('SELECT k, v FROM meta'):
             k = str(r['k'])
             if (k in what.get('meta', ()) or k.startswith(tuple(what.get('meta_prefixes', ())))) and \
-                    not dbguard_ok(db, 'm', k, r['v'], quiet=True) and dbguard_sign(db, 'm', k, r['v']):
+                    not dbguard_ok(db, 'm', k, r['v'], quiet=True, early=False) and \
+                    dbguard_sign(db, 'm', k, r['v']):
                 said.append(k)
         for r in db.rows('SELECT k, v FROM settings'):
             k = str(r['k'])
-            if k.split('@', 1)[0] in what.get('settings', ()) and not dbguard_ok(db, 's', k, r['v'], quiet=True) and \
+            if k.split('@', 1)[0] in what.get('settings', ()) and \
+                    not dbguard_ok(db, 's', k, r['v'], quiet=True, early=False) and \
                     dbguard_sign(db, 's', k, r['v']):
                 said.append(k)
         with DBGUARD['lock']:

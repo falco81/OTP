@@ -28,8 +28,14 @@ def root_ask(ask_name, answer_name, data, wait=60):
             got = None
         if isinstance(got, dict) and got.get('id') == ask_id:
             if not got.get('ok'):
-                raise ValueError(got.get('said') or 'the root helper said no')
-            return got.get('data') or {}
+                raise ValueError(str(got.get('said') or 'the root helper said no'))
+            data = got.get('data') or {}
+            if not isinstance(data, dict):
+                # An answer of another shape (1.0.250) - a helper of another version: taken as
+                # done, it was kept as the node's state, and .get() raised at every tick after.
+                raise ValueError('the root helper of this node answered %s with no object (%s) - is '
+                                 'it of the same version as otp?' % (ask_name, type(data).__name__))
+            return data
         time.sleep(0.4)
     raise ValueError('the root helper of this node did not answer in %d s - is otp-web.path '
                      'running?  systemctl status otp-web.path' % wait)
@@ -194,13 +200,13 @@ def ntp_tick(daemon):
         done = _meta_json(store, 'ntp:applied:' + me) or {}
         # Tried again when it failed (1.0.207), every ten minutes: written down under
         # the hash wanted, a failure was never tried again once the helper was back.
-        if (done.get('hash') != h and time.time() - float(done.get('at') or 0) > 30) or \
+        if (done.get('hash') != h and time.time() - fnum(done.get('at')) > 30) or \
                 (done.get('hash') == h and done.get('ok') is False and
-                 time.time() - float(done.get('at') or 0) > 600):
+                 time.time() - fnum(done.get('at')) > 600):
             _ntp_thread(ntp_apply, store)
             return
     sync_at = float(store.get_meta('ntp:sync:' + me) or 0)
-    if sync_at > float(NTP_WORK.get('synced') or 0) and time.time() - sync_at < 300:
+    if sync_at > fnum(NTP_WORK.get('synced')) and time.time() - sync_at < 300:
         NTP_WORK['synced'] = sync_at
         _ntp_thread(ntp_sync, store)
         return
@@ -214,14 +220,14 @@ def ntp_problem():
     """Words for the status when this node's clock is not to be trusted."""
     now = NTP_WORK.get('last') or {}
     d = now.get('data') or {}
-    if not d or time.time() - float(now.get('at') or 0) > 600:
+    if not d or time.time() - fnum(now.get('at')) > 600:
         return ''
     t = d.get('tracking') or {}
     if d.get('chrony') and t:
         if t.get('leap') == 'Not synchronised' or not t.get('stratum'):
             return ('the clock is not synchronised to a time server (chrony) - codes from the '
                     'app are worked out from it: Settings → Time')
-        if abs(float(t.get('offset') or 0)) > 1.0:
+        if abs(fnum(t.get('offset'))) > 1.0:
             return ('the clock is %.1f s off the time servers - codes from the app are worked '
                     'out from it: Settings → Time' % abs(float(t['offset'])))
     elif d.get('ntpsynchronized') == 'no':

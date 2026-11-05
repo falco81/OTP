@@ -122,7 +122,7 @@ def net_trial_tick(daemon, job):
     if back.get('id') == job.get('id'):
         net_go_back(daemon, job, 'put back by %s' % back.get('by'))
         return
-    if time.time() > float(job.get('trial_until') or 0):
+    if time.time() > fnum(job.get('trial_until')):
         net_go_back(daemon, job, 'not kept within %d min' % int(job.get('trial_min') or 0))
 
 
@@ -141,9 +141,8 @@ def readdress_dropold_tick(store):
     """The other node's new address kept: its old one no longer let in."""
     me = node_name()
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'readdress:dropold:%'")):
-        try:
-            ask = json.loads(r['v'] or '{}')
-        except ValueError:
+        ask = json_obj(r['v'])
+        if ask is None:
             continue
         if not isinstance(ask, dict) or ask.get('from') in (me, None):
             continue
@@ -241,7 +240,7 @@ def fw_put_back(store, trial, why):
 
 def fw_trial_tick(store):
     trial = _meta_json(store, 'fw:trial') or {}
-    if not trial or trial.get('done') or time.time() <= float(trial.get('until') or 0):
+    if not trial or trial.get('done') or time.time() <= fnum(trial.get('until')):
         return
     # One node puts it back (both would write the same rows at once).
     if claim_once(store, 'fw_trial_back', trial.get('id')):
@@ -253,20 +252,19 @@ def trials_view(store):
     out = []
     t = time.time()
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'net:job:%'")):
-        try:
-            job = json.loads(r['v'] or '{}')
-        except ValueError:
+        job = json_obj(r['v'])
+        if job is None:
             continue
         if isinstance(job, dict) and job.get('state') == 'trial':
-            w = job.get('want') or {}
+            w = job.get('want') if isinstance(job.get('want'), dict) else {}
             out.append({'kind': 'net', 'node': job.get('node') or r['k'][8:],
-                        'until': float(job.get('trial_until') or 0), 'by': job.get('by'),
+                        'until': fnum(job.get('trial_until')), 'by': job.get('by'),
                         'words': 'the new network of %s (%s)' % (
                             job.get('node') or r['k'][8:], w.get('new_ip') or '?'),
                         'back': (w.get('old_ip') or '')})
     trial = _meta_json(store, 'fw:trial') or {}
-    if trial and not trial.get('done') and float(trial.get('until') or 0) > t - 60:
-        out.append({'kind': 'fw', 'node': '', 'until': float(trial.get('until') or 0),
+    if trial and not trial.get('done') and fnum(trial.get('until')) > t - 60:
+        out.append({'kind': 'fw', 'node': '', 'until': fnum(trial.get('until')),
                     'by': trial.get('last_by') or trial.get('by'),
                     'words': 'the change of the firewall and access', 'back': ''})
     return out

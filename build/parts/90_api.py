@@ -556,7 +556,7 @@ def lockouts_view(d):
     rows = []
     for key, fails in list(d.login_fails.items()):
         info = d.login_info.get(key) or {}
-        span = float(info.get('span') or 0)
+        span = fnum(info.get('span'))
         if not span:
             continue
         fails = [x for x in fails if t - x < span]
@@ -564,18 +564,18 @@ def lockouts_view(d):
         if info.get('guard'):
             # A place counted by the sign-in protection (1.0.137): blocked
             # for its own time, by its refusals or by its names.
-            until = float(info.get('blocked_until') or 0)
+            until = fnum(info.get('blocked_until'))
             blocked = until > t
             if not fails and not blocked:
                 # Forgotten once nothing of it counts (1.0.149): every new
                 # place stayed for good - 50 000 /64s were 45 MB, and the
                 # list published every few seconds 18 MB.
-                if t - float(info.get('at') or 0) > span and t - until > span:
+                if t - fnum(info.get('at')) > span and t - until > span:
                     d.login_fails.pop(key, None)
                     d.login_info.pop(key, None)
                 continue
             names = [n for n, ts in (info.get('names') or {}).items() if t - ts < span]
-            last = max(fails[-1] if fails else 0, float(info.get('blocked_at') or 0))
+            last = max(fails[-1] if fails else 0, fnum(info.get('blocked_at')))
             rows.append({
                 'kind': kind, 'who': who, 'by': 'place', 'what': LOCKOUT_KINDS.get(kind, kind),
                 'base': kind, 'words': info.get('what') or 'wrong sign-ins',
@@ -788,10 +788,7 @@ def dir_pw_who(name, entry=None):
 def dir_pw_caps(store):
     """Each directory's own cap (1.0.232): {name in small letters: {'tries': n, 'window_min': m}}
     - a directory not in it, or with tries None, follows the setting."""
-    try:
-        got = json.loads(store.get_meta('dirpw:conf') or '{}')
-    except (ValueError, TypeError):
-        got = {}
+    got = json_obj(store.get_meta('dirpw:conf')) or {}
     return got if isinstance(got, dict) else {}
 
 
@@ -941,15 +938,12 @@ def _lockouts(h):
     for n in h.d.cluster_nodes():
         if n == me:
             continue
-        try:
-            got = json.loads(h.store.get_meta('lockouts:' + n) or '{}')
-        except ValueError:
-            got = {}
-        rows = [r for r in (got.get('rows') or []) if float(r.get('forgets') or 0) > now]
+        got = json_obj(h.store.get_meta('lockouts:' + n)) or {}
+        rows = [r for r in (got.get('rows') or []) if fnum(r.get('forgets')) > now]
         for r in rows:
-            if r.get('locked') and float(r.get('until') or 0) <= now:
+            if r.get('locked') and fnum(r.get('until')) <= now:
                 r['locked'] = False
-        out.append({'node': n, 'me': False, 'fresh': now - float(got.get('at') or 0) < 120,
+        out.append({'node': n, 'me': False, 'fresh': now - fnum(got.get('at')) < 120,
                     'at': got.get('at'), 'rows': rows})
     out.append({'node': '*', 'me': False, 'fresh': True, 'shared': True,
                 'rows': lockouts_shared(h.store)})
@@ -1417,10 +1411,7 @@ def _whoami(h):
         # is (a database or a package sent) refuse it.
         return {'who': {'name': acc['name'], 'role': '', 'display': acc.get('display') or '',
                         'mfa': mfa_pending(s)}}
-    try:
-        prefs = json.loads(acc.get('prefs') or '{}')
-    except ValueError:
-        prefs = {}
+    prefs = json_obj(acc.get('prefs')) or {}
     # The page is drawn with the person's own layout of the tables from the
     # first frame, rather than as it comes and then again.
     return {'idle_min': int(CONFIG.get('session_idle_min') or 120),
@@ -1467,10 +1458,7 @@ def _password(h):
 def _prefs(h):
     s = h.me()
     acc = s['account']
-    try:
-        prefs = json.loads(acc.get('prefs') or '{}')
-    except ValueError:
-        prefs = {}
+    prefs = json_obj(acc.get('prefs')) or {}
     b = h.body()
     if 'lang' in b:
         if str(b['lang']) not in ('cs', 'en'):
@@ -3505,7 +3493,7 @@ def radtest_serve(daemon):
             pass
         try:
             ask = json.loads(r['v'] or '{}')
-            if time.time() - float(ask.get('at') or 0) > RADTEST_WAIT_S:
+            if time.time() - fnum(ask.get('at')) > RADTEST_WAIT_S:
                 continue
             ask['password'] = unseal_secret(ask.get('password') or '', 'radtest:' + ident)
             out = radtest_do(store, daemon, '%s on %s' % (ask.get('by'), ask.get('from')),
@@ -4570,9 +4558,8 @@ def config_export(store, whole):
         accounts.append(a)
     tls = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'web:tls:%'"):
-        try:
-            prof = json.loads(r['v'] or '{}')
-        except ValueError:
+        prof = json_obj(r['v'])
+        if prof is None:
             continue
         for kk in ('key', 'pending_key'):
             if prof.get(kk):
@@ -5090,7 +5077,7 @@ def portal_gate_view(s):
     w = data.get('gate_wait') or {}
     kind = g.get('kind') or w.get('kind')
     return {'kind': kind, 'dest': dest_masked(kind, g.get('dest') or w.get('dest')),
-            'live': bool(g) and float(g.get('exp') or 0) > time.time(),
+            'live': bool(g) and fnum(g.get('exp')) > time.time(),
             'digits': int(CONFIG.get('code_digits') or 6),
             'minutes': max(1, int(CONFIG.get('code_ttl_s') or 300) // 60),
             'sso': bool(data.get('sso'))}           # signed in by the balancer (1.0.239)
@@ -5673,7 +5660,7 @@ def portal_state(h, s):
         shown = {k: shown.get(k) for k in PORTAL_TOKEN_KEYS}
     data = s.get('data') or {}
     ver = data.get('verify') or {}
-    if ver and float(ver.get('exp') or 0) < time.time():
+    if ver and fnum(ver.get('exp')) < time.time():
         ver = {}
     about = dict(data.get('about') or {})
     about.update(login=data.get('login') or '', realm=data.get('realm') or '',
@@ -5723,7 +5710,7 @@ def _portal_gate(h):
     if not portal_gated(s):
         return {'me': portal_state(h, s)}
     g = data.get('gate') or {}
-    if not g or float(g.get('exp') or 0) < time.time():
+    if not g or fnum(g.get('exp')) < time.time():
         portal_data_set(h, s, gate=None)
         raise ApiError(410, 'the code ran out - ask for a new one')
     key = h.throttle('portal-gate', int(CONFIG.get('code_tries') or 3) + 2,
@@ -5749,7 +5736,7 @@ def _portal_gate(h):
                                       'mail' if g.get('kind') == 'mail' else 'SMS'), who=s['name'])
     # A sign-in of its own from here on, as the administrators' second step (1.0.249): a cookie
     # planted before the code was typed had the person's enrolment once it was.
-    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('portal', s['name'], s.get('role') or 'portal', h.client_ip(),
                                 hours, data=dict(data or {}))
     h.store.session_drop(s['id'])
@@ -5903,7 +5890,7 @@ def _portal_verify(h):
     s = portal_me(h)
     data = s.get('data') or {}
     ver = data.get('verify') or {}
-    if not ver or float(ver.get('exp') or 0) < time.time():
+    if not ver or fnum(ver.get('exp')) < time.time():
         portal_data_set(h, s, verify=None)
         raise ApiError(410, 'the code ran out - ask for a new one')
     # Counted where many requests at once cannot each see "no tries yet"
@@ -6003,7 +5990,7 @@ def _portal_codes(h):
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
     code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     old = (s.get('data') or {}).get('old') or {}
-    if old and float(old.get('exp') or 0) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'
         if not h.store.session_take(s['id'], 'old'):
@@ -6091,7 +6078,7 @@ def portal_reissue_password(h, s, realm, b, key):
 def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
     old = (s.get('data') or {}).get('old') or {}
-    if old and float(old.get('exp') or 0) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'               # 1.0.76
         if not h.store.session_take(s['id'], 'old'):         # once (1.0.101)
@@ -6211,7 +6198,7 @@ class ApiServer(object):
 def _upgrade_view(h):
     meta = None
     try:
-        meta = json.loads(h.store.get_meta('upgrade:pkg') or 'null')
+        meta = json_obj(h.store.get_meta('upgrade:pkg'))       # an object only (1.0.250)
     except ValueError:
         meta = None
     nodes = []
@@ -6865,7 +6852,7 @@ def _firewall(h):
         # for - its daemon looks every 5 s, root reads it, the row comes back.
         t0 = time.time()
         try:
-            had = float(json.loads(store.get_meta('fw:now:' + fresh) or '{}').get('full_at') or 0)
+            had = fnum((json_obj(store.get_meta('fw:now:' + fresh)) or {}).get('full_at'))
         except (ValueError, AttributeError, TypeError):
             had = 0
         store.set_meta('fw:ask:' + fresh, str(t0))
@@ -6891,7 +6878,7 @@ def _firewall(h):
         fwv = dict(w.get('fw') or {})
         if not n['me']:
             try:
-                fwv.update(json.loads(store.get_meta('fw:now:' + n['name']) or '{}'))
+                fwv.update(json_obj(store.get_meta('fw:now:' + n['name'])) or {})
             except ValueError:
                 pass
         nodes.append({'name': n['name'], 'me': n['me'], 'alive': n.get('alive'),

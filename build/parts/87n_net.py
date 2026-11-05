@@ -73,8 +73,12 @@ def net_root(data, wait=60):
                 got = None
             if isinstance(got, dict) and got.get('id') == ask_id:
                 if not got.get('ok'):
-                    raise ValueError(got.get('said') or 'the root helper said no')
-                return got.get('data') or {}
+                    raise ValueError(str(got.get('said') or 'the root helper said no'))
+                data = got.get('data') or {}
+                if not isinstance(data, dict):      # kept as the node's network (1.0.250)
+                    raise ValueError('the root helper of this node answered with no object (%s) - '
+                                     'is it of the same version as otp?' % type(data).__name__)
+                return data
             time.sleep(0.4)
     raise ValueError('the root helper of this node did not answer in %d s - is otp-web.path '
                      'running?  systemctl status otp-web.path' % wait)
@@ -486,7 +490,7 @@ def net_job_run(daemon, ask):
                 a = _meta_json(store, 'readdress:ask') or {}
                 # This job's request, not one answered before (1.0.146).
                 if a.get('from') == me and a.get('done') and \
-                        float(a.get('at') or 0) >= asked_at - 1:
+                        fnum(a.get('at')) >= asked_at - 1:
                     done = a
                     break
                 time.sleep(2)
@@ -812,6 +816,12 @@ def net_local_trial_tick(daemon):
         t = json.loads(NET_LOCAL_TRIAL.read_text())
     except (OSError, ValueError):
         return
+    if not isinstance(t, dict):         # of another shape: gone (1.0.250)
+        try:
+            NET_LOCAL_TRIAL.unlink()
+        except OSError:
+            pass
+        return
     try:
         job = _meta_json(daemon.store, 'net:job:' + node_name()) or {}
         if job.get('id') != t.get('id') or job.get('state') not in ('trial', 'rebooting'):
@@ -829,7 +839,13 @@ def net_local_trial_lost():
         t = json.loads(NET_LOCAL_TRIAL.read_text())
     except (OSError, ValueError):
         return
-    if time.time() < float(t.get('until') or 0) or time.time() - float(t.get('asked') or 0) < 600:
+    if not isinstance(t, dict):         # of another shape: gone (1.0.250)
+        try:
+            NET_LOCAL_TRIAL.unlink()
+        except OSError:
+            pass
+        return
+    if time.time() < fnum(t.get('until')) or time.time() - fnum(t.get('asked')) < 600:
         return
     log('network: the change on trial was not kept and the database cannot be reached - the '
         'network kept before it comes back', 'warn')
@@ -857,7 +873,7 @@ def net_tick(daemon):
         return
     if job and job.get('state') == 'rebooting':
         late = time.time() - float(job.get('wait_from') or job.get('moved') or 0)
-        if boot_time() > float(job.get('boot') or 0) + 1:
+        if boot_time() > fnum(job.get('boot')) + 1:
             _net_thread(net_job_after, daemon, job)
         elif late > NET_REBOOT_GIVE_UP_S:
             # Not for ever (1.0.147): no restart in an hour, and nothing else
@@ -872,11 +888,11 @@ def net_tick(daemon):
                      job.get('pct'), ok=False)
         return
     if ask and ask.get('node') == me and (not job or job.get('id') != ask.get('id')) and \
-            time.time() - float(ask.get('at') or 0) < 600:
+            time.time() - fnum(ask.get('at')) < 600:
         _net_thread(net_job_run, daemon, ask)
         return
     if job and job.get('state') == 'running' and not NET_WORK['busy'] and \
-            time.time() - float(job.get('moved') or 0) > 300:
+            time.time() - fnum(job.get('moved')) > 300:
         by = '%s (network)' % (job.get('by') or 'otp')
         if job.get('down_at'):
             # Root was asked already: it may restart with the new network - then
@@ -907,7 +923,7 @@ def power_plan(store):
 
 def power_busy(store):
     p = power_plan(store)
-    if not p or time.time() - float(p.get('at') or 0) > POWER_LIVE_S:
+    if not p or time.time() - fnum(p.get('at')) > POWER_LIVE_S:
         return False
     for n in p.get('targets') or []:
         row = _meta_json(store, 'power:node:' + n) or {}
@@ -1019,15 +1035,15 @@ def power_tick(daemon):
     plan = power_plan(store)
     row = _meta_json(store, 'power:node:' + me) or {}
     if row.get('state') == 'going' and row.get('how') == 'reboot':
-        if boot_time() > float(row.get('boot') or 0) + 1:
+        if boot_time() > fnum(row.get('boot')) + 1:
             _net_thread(power_back, daemon, row)
             return True
-        if time.time() - float(row.get('moved') or 0) > 900:
+        if time.time() - fnum(row.get('moved')) > 900:
             _power_put(store, row, 'failed', 'it did not restart in 15 minutes')
         return False
     if not plan or me not in (plan.get('targets') or []) or row.get('id') == plan.get('id'):
         return False
-    if time.time() - float(plan.get('at') or 0) > POWER_LIVE_S:
+    if time.time() - fnum(plan.get('at')) > POWER_LIVE_S:
         return False
     if plan.get('order') == 'rolling':
         for t in plan['targets']:
@@ -1064,7 +1080,7 @@ def power_view(store):
                       'row': row if row.get('id') == plan.get('id') else {}})
     # Hidden from the page by whoever pressed Hide this (1.0.123).
     seen = store.get_meta('power:seen') == str(plan.get('id') or '')
-    return {'plan': plan if plan and not seen and time.time() - float(plan.get('at') or 0) < POWER_LIVE_S
+    return {'plan': plan if plan and not seen and time.time() - fnum(plan.get('at')) < POWER_LIVE_S
             else {}, 'nodes': nodes, 'now': time.time(), 'cluster': len(nodes) > 1,
             'busy': power_busy(store)}
 
@@ -1080,11 +1096,11 @@ def net_vip_again(store, wait=120):
     end = time.time() + wait
     while time.time() < end:
         st = web_status()
-        if st.get('hash') == h and float(st.get('at') or 0) > 0 and \
+        if st.get('hash') == h and fnum(st.get('at')) > 0 and \
                 st.get('state') in ('done', 'failed'):
             if st.get('state') == 'done':
                 return True, 'in place'
-            if float(store.get_meta('web:retry:' + node_name()) or 0) <= float(st.get('at') or 0):
+            if float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
                 said = st.get('said') or ['failed']
                 return False, ('; '.join(said) if isinstance(said, list) else str(said))[:300]
         time.sleep(3)
@@ -1108,7 +1124,7 @@ def net_view(store):
         out.append({'name': n, 'me': n == node_name(),
                     'alive': True if n == node_name() else bool(b.get('alive')),
                     'address': b.get('address') or '', 'now': net_node_now(store, n),
-                    'job': job if job and time.time() - float(job.get('moved') or 0) < 86400
+                    'job': job if job and time.time() - fnum(job.get('moved')) < 86400
                     else {}})
     v = vip_conf(store)
     return {'nodes': out, 'cluster': len(out) > 1, 'now': time.time(),

@@ -343,7 +343,7 @@ class Console(object):
             self._put(y, 1, 'in maintenance: %s' % ', '.join(str(n) for n in others), A['warn'])
             y += 1
         for t in st.get('trials') or []:
-            left = max(0, int(float(t.get('until') or 0) - time.time()))
+            left = max(0, int(fnum(t.get('until')) - time.time()))
             self._put(y, 1, '%s waits to be kept: %d:%02d left (Cluster > Keep or put back)' % (
                 'the new network of %s' % t.get('node') if t.get('kind') == 'net'
                 else 'the change of the firewall', left // 60, left % 60), A['warn'])
@@ -2837,7 +2837,7 @@ class Console(object):
                 # What each node has read first (1.0.248), not two seconds and the old row.
                 end0 = time.time() + 30
                 while time.time() < end0 and not all(
-                        float(n.get('at') or 0) >= t0 for n in osu_view(store)['nodes'] if n['alive']):
+                        fnum(n.get('at')) >= t0 for n in osu_view(store)['nodes'] if n['alive']):
                     time.sleep(1)
                 done = osu_ask(store, nodes, do, who, name=name, **f)
                 end, v = time.time() + 60, None

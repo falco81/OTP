@@ -1127,10 +1127,7 @@ class Tokens(object):
     # token's own columns describe the old key until the new one is
     # confirmed, so the new key's shape is kept beside it.
     def staged_shape(self, name):
-        try:
-            got = json.loads(self.store.get_meta('staged:' + norm_name(name), '') or '{}')
-        except ValueError:
-            got = {}
+        got = json_obj(self.store.get_meta('staged:' + norm_name(name), '')) or {}
         return {'digits': int(got.get('digits') or CONFIG.get('totp_digits') or 6),
                 'period': int(got.get('period') or CONFIG.get('totp_period') or 30),
                 'algorithm': str(got.get('algorithm') or CONFIG.get('totp_algorithm') or 'SHA1'),
@@ -1216,7 +1213,7 @@ class Tokens(object):
             fails = []
         tries = split_limit('rate_limit_tries')
         fails = [x for x in fails if abs(t - x) < int(CONFIG.get('rate_limit_s') or 30)]
-        if float(tok.get('locked_until') or 0) > t:
+        if fnum(tok.get('locked_until')) > t:
             self._said(name, False, SAY_LOCKED + ' (confirming a new token)', how, src, '')
             return False, SAY_LOCKED
         if tries and len(fails) >= tries:
@@ -1408,7 +1405,7 @@ class Tokens(object):
         except Exception:                               # noqa: BLE001
             return False
         return bool(row) and int(row.get('last_step') or 0) == int(step) and \
-            abs(float(row.get('last_used') or 0) - float(t)) < 1e-6
+            abs(fnum(row.get('last_used')) - float(t)) < 1e-6
 
     def _fail_noted(self, tok_id, t, span, mins):
         """The time of a wrong code added to the token's recent ones, and the
@@ -1460,7 +1457,7 @@ class Tokens(object):
         t = clock_now('locks')
         if tok.get('state') == 'disabled':
             return SAY_OFF
-        if float(tok.get('locked_until') or 0) > t:
+        if fnum(tok.get('locked_until')) > t:
             return SAY_LOCKED
         tries = split_limit('rate_limit_tries')
         span = int(CONFIG.get('rate_limit_s') or 30)
@@ -1493,7 +1490,7 @@ class Tokens(object):
         # A lockout after many wrong codes in a row, however slowly they
         # came (1.0.33): the short pause alone let a patient guesser try
         # thousands of codes a day.
-        if float(tok.get('locked_until') or 0) > t:
+        if fnum(tok.get('locked_until')) > t:
             return False, SAY_LOCKED, facts
         if tries and len(fails) >= tries:
             return False, SAY_RATE, facts
@@ -1538,10 +1535,7 @@ class Tokens(object):
             """A recovery code: used once. None when it is not one."""
             if scratch_guarded(self.store, name):
                 return None             # resting after many guesses (1.0.101)
-            try:
-                kept = json.loads(tok.get('scratch') or '[]')
-            except ValueError:
-                kept = []
+            kept = json_obj(tok.get('scratch'), list) or []        # a list only (1.0.250)
             key = sealing_key()
             hit, h = scratch_find(name, code, kept, key)
             if hit and hit != h and dbguard_on():
@@ -1605,7 +1599,7 @@ class Tokens(object):
                         except Exception:               # noqa: BLE001
                             row = None
                         if not row or row.get('scratch') != json.dumps(kept) or \
-                                abs(float(row.get('last_used') or 0) - float(t)) > 1e-6:
+                                abs(fnum(row.get('last_used')) - float(t)) > 1e-6:
                             raise
                         log('the database answered the end of a sign-in late: %s\'s recovery code '
                             'was written and is let in' % name, 'warn')

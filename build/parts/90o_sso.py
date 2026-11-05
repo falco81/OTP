@@ -161,7 +161,7 @@ def sso_view(store):
         if isinstance(rec, dict):
             last.append({k: rec.get(k) for k in ('at', 'ok', 'why', 'peer', 'name', 'client',
                                                  'node')})
-    last.sort(key=lambda x: -float(x.get('at') or 0))
+    last.sort(key=lambda x: -fnum(x.get('at')))
     return {'on': bool(CONFIG.get('portal_sso')), 'portal': bool(CONFIG.get('portal')),
             'key_set': bool(unseal_secret(str(CONFIG.get('portal_sso_key') or ''))),
             'from': [str(n) for n in sso_nets()],

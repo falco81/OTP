@@ -63,7 +63,7 @@ def node_ask_tick(daemon):
     NODE_ASK['daemon'][0] = daemon
     for kind in list(NODE_ASK['do']):
         want = _meta_json(daemon.store, 'ask:want:' + kind) or {}
-        if want.get('id') and time.time() - float(want.get('at') or 0) < NODE_ASK_FRESH:
+        if want.get('id') and time.time() - fnum(want.get('at')) < NODE_ASK_FRESH:
             _node_ask_run(daemon, kind, want)
 
 

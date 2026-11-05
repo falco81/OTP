@@ -4,6 +4,32 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.250 — 5 November 2026
+
+- **A cluster upgraded one node at a time, with the database guard on**: the rows signed only since a
+  version (the backups' destinations and their password, a Back up now asked of the other node, the
+  DNS of ACME) are taken as before it while a node of a version before is seen alive by its signed
+  heartbeat - it writes them unsigned - and signed once as they are when every node runs it. Until
+  now they were signed at the node's first start, and what the other node wrote after was refused
+  for good.
+- **A Back up now asked by the other node** and refused, done or never fetched no longer stays: an
+  ask past its time is not looked at (it was refused again at every tick, an error in the log every
+  ten minutes for as long as it was there), and the node that asked takes its own old asks away.
+- **Rows of another shape are put right, not raised at every tick**: a row of the database or an
+  answer of the root helper that is not of the shape otp writes (written by a version before, an
+  error's words, somebody's hand) is taken as none - read again and written right at the next tick.
+  Before, many a tick raised before it wrote its row again, the same warning for ever: the local
+  users and the password policy of a node, its own heartbeat (it beat no more, and the other took
+  it for gone), the outgoing mail (no mail went out at all, a code by mail neither), the SSH gate,
+  an ACME order's lease (the certificate was never renewed), the cluster's authority, the SNMP
+  traps, the backups' destinations and history, SSH keys' and updates' asks, the size of the
+  database, the tuning of the database. The status of the pages and the page of upgrades no longer
+  answer with an error for a package's row of another shape.
+- **The root helper's answer is taken only as an object**: an answer of another shape (a helper of
+  another version during an upgrade) is an error that says so, never kept as the node's state.
+- **A warning of a periodic task says where it broke** when the fault is in otp's own code
+  (`[at otp.py:LINE in FUNCTION]`) - the words of an error otp means to say are left as they are.
+
 ## 1.0.249 — 5 November 2026
 
 - **SELinux after the upgrade from a version before 1.0.248 is said**: when otp's needs were last

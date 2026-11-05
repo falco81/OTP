@@ -1002,7 +1002,7 @@ class Storage(object):
                 kept['s'] = sp
             if kept:
                 try:
-                    kept['t'] = int(float(one.get('t') or 0))
+                    kept['t'] = int(fnum(one.get('t')))
                 except (TypeError, ValueError, OverflowError):
                     kept['t'] = 0
                 out[key] = kept
@@ -1106,11 +1106,8 @@ class Storage(object):
             raw = self.db.value('SELECT data FROM sessions WHERE id = ?', (ident,))
             if raw is None:
                 return False
-            try:
-                data = json.loads(raw or '{}')
-            except ValueError:
-                return False
-            if field not in data:
+            data = json_obj(raw or '{}')
+            if data is None or field not in data:
                 return False
             data.pop(field, None)
             if self.db.run('UPDATE sessions SET data = ? WHERE id = ? AND data = ?',
@@ -1129,10 +1126,7 @@ class Storage(object):
             raw = self.db.value('SELECT data FROM sessions WHERE id = ?', (ident,))
             if raw is None:
                 return None
-            try:
-                data = json.loads(raw or '{}')
-            except ValueError:
-                data = {}
+            data = json_obj(raw) or {}
             # `expect`: written only while these keys still hold what the
             # caller read - else nothing, and False.
             for k, v in (expect or {}).items():
@@ -1238,7 +1232,7 @@ class Storage(object):
         for r in self._client_rows():
             one = {k: v for k, v in r.items() if not k.startswith('_') and k != 'secret'}
             if seen.get(r.get('id')):
-                one['last_seen'] = max(float(one.get('last_seen') or 0), seen[r['id']])
+                one['last_seen'] = max(fnum(one.get('last_seen')), seen[r['id']])
             one['secret_set'] = bool(r['_secret'])
             one['secret_lost'] = r['_secret'] is None
             one['secret'] = r['_secret'] if with_secret else secret_shown(r['_secret'], last)
@@ -1900,7 +1894,7 @@ class Storage(object):
         out['scratch_kept'] = bool(r.get('scratch_sealed'))
         # Until when wrong codes keep it shut (1.0.101): a lock that grows
         # with each round is shown, not guessed at from the count.
-        lu = float(r.get('locked_until') or 0)
+        lu = fnum(r.get('locked_until'))
         out['locked_until'] = lu if lu > time.time() else None
         return out
 

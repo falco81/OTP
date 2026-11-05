@@ -52,7 +52,7 @@ def isemon_client_cert(store, force=False):
     as two files only otp reads. Returns its end."""
     k = 'isemon:client:' + node_name()
     got = _meta_json(store, k) or {}
-    end = float(got.get('end') or 0)
+    end = fnum(got.get('end'))
     fresh = end - time.time() > ISEMON_CLIENT_RENEW_DAYS * 86400
     if not force and fresh and ISEMON_CLIENT_CRT.exists() and ISEMON_CLIENT_KEY.exists() and \
             _isemon_pair_ok():
@@ -111,7 +111,7 @@ def isemon_tls_tick(daemon):
                 except (OSError, KeyError):
                     pass
     srv = _meta_json(store, 'isemon:server') or {}
-    left = (float(srv.get('end') or 0) - now) / 86400 if srv else None
+    left = (fnum(srv.get('end')) - now) / 86400 if srv else None
     if left is not None and left < 60 and now - ISEMON_TLS_WORK['said'] > 86400 and \
             alerts_lead(store):
         ISEMON_TLS_WORK['said'] = now

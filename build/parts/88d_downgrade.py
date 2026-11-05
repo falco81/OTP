@@ -33,9 +33,8 @@ def downgrade_db_floor(store):
     database, on any node."""
     best, by = DOWNGRADE_FLOOR, '%s (%s)' % (__version__, node_name())
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'downgrade:floor:%'"):
-        try:
-            got = json.loads(r['v'] or '{}')
-        except ValueError:
+        got = json_obj(r['v'])
+        if got is None:
             continue
         if isinstance(got, dict) and _ver_tuple(got.get('floor')) > _ver_tuple(best):
             best, by = str(got['floor']), '%s (%s)' % (got.get('version'),

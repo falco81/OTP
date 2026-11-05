@@ -770,7 +770,7 @@ class Authenticator(object):
         d.realm = chal.get('realm') or ''
         d.token_name = name = chal.get('name') or ''
         kind = chal.get('kind') or 'totp'
-        if float(chal.get('exp') or 0) < clock_now('locks'):     # both nodes alike (1.0.225)
+        if fnum(chal.get('exp')) < clock_now('locks'):     # both nodes alike (1.0.225)
             chal_take(self.store, state, raw)
             d.step('the question this answers', False, 'it ran out %s' % stamp(chal.get('exp')))
             d.otp = 'The code ran out'

@@ -2182,7 +2182,7 @@ def upgrade_percent(st, plan):
         return round(3 + 17 * min(1, since / max(1, float(plan.get('drain_s') or 20))))
     if state == 'installing':
         asked = now - float(st.get('asked') or st.get('at') or now)
-        return round(min(82, 20 + 60 * min(0.95, float(st.get('part') or 0) / 6)
+        return round(min(82, 20 + 60 * min(0.95, fnum(st.get('part')) / 6)
                          + min(6, asked / 15)))
     if state == 'checking':
         return round(85 + min(10, since / 3))
@@ -2533,7 +2533,7 @@ def cli_main(argv=None):
                 print(json.dumps(dict(row, node=name), default=str))
             else:
                 print(('%s: in maintenance since %s%s' % (
-                    name, datetime.fromtimestamp(float(row.get('at') or 0)).strftime(
+                    name, datetime.fromtimestamp(fnum(row.get('at'))).strftime(
                         '%d-%m-%Y %H:%M:%S'), (' - ' + row['why']) if row.get('why') else ''))
                       if row.get('on') else '%s: in service' % name)
             return 0 if not row.get('on') else 3
@@ -2846,7 +2846,7 @@ def cli_main(argv=None):
             copies = backups()
             try:                        # the nightly dumps as well (1.0.59)
                 copies = sorted(copies + kept_dumps(CONFIG.get('db_engine') or 'sqlite'),
-                                key=lambda c: -float(c.get('at') or 0))
+                                key=lambda c: -fnum(c.get('at')))
             except Exception:                           # noqa: BLE001
                 pass
             if copies:
@@ -4046,13 +4046,10 @@ def cli_main(argv=None):
         now = time.time()
         per = []
         for n in [node_name()] + [x['name'] for x in ha_nodes(store) if x['name'] != node_name()]:
-            try:
-                got = json.loads(store.get_meta('lockouts:' + n) or '{}')
-            except ValueError:
-                got = {}
-            rows = [dict(r, node=n) for r in (got.get('rows') or []) if float(r.get('forgets') or 0) > now]
+            got = json_obj(store.get_meta('lockouts:' + n)) or {}
+            rows = [dict(r, node=n) for r in (got.get('rows') or []) if fnum(r.get('forgets')) > now]
             for r in rows:
-                if r.get('locked') and float(r.get('until') or 0) <= now:
+                if r.get('locked') and fnum(r.get('until')) <= now:
                     r['locked'] = False
             per.append((n, got.get('at'), rows))
         shared = [dict(r, node='*') for r in lockouts_shared(store)]
@@ -4550,7 +4547,7 @@ def cli_osusers(args, pal):
             v = osu_view(store)
             mine = [n for n in v['nodes'] if n['name'] in nodes]
             if not any(n['pending'] for n in mine) and (
-                    since is None or all(float(n.get('at') or 0) >= since for n in mine if n['alive'])):
+                    since is None or all(fnum(n.get('at')) >= since for n in mine if n['alive'])):
                 return v
             time.sleep(1)
         return osu_view(store)
@@ -4690,7 +4687,7 @@ def cli_sso(args, pal):
               'address (otp --set web_proxy_from=ADDR --set web_proxy=1)')
     for x in v['last']:
         print('  last on %-10s %s  %-9s %s <- %s%s' % (
-            x.get('node') or '?', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(x.get('at') or 0))),
+            x.get('node') or '?', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(fnum(x.get('at')))),
             'signed in' if x.get('ok') else 'REFUSED', x.get('name') or '?', x.get('peer') or '?',
             ('  (%s)' % x['why']) if x.get('why') else ''))
     if not v['last']:

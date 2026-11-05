@@ -86,7 +86,7 @@ def guard_blocked(daemon, src):
     info = daemon.login_info.get((GUARD_KIND, src))
     if not info:
         return None
-    until = float(info.get('blocked_until') or 0)
+    until = fnum(info.get('blocked_until'))
     if until > time.time():
         return until, info.get('blocked_why') or 'too many wrong sign-ins'
     return None
@@ -128,7 +128,7 @@ def guard_count(daemon, src, name):
             info['others'] = (others + [name])[-6:]
         info.update(limit=tries, span=span, what='wrong sign-ins', at=t, names=names,
                     names_limit=nlimit, guard=True)
-        if float(info.get('blocked_until') or 0) <= t:
+        if fnum(info.get('blocked_until')) <= t:
             why = None
             if len(fails) >= tries:
                 why = '%d wrong sign-ins in %d min' % (len(fails), span // 60)

@@ -405,10 +405,11 @@ def node_key(prefix, name):
     return '%s:%s%s%s' % (prefix, norm_name(name), NODE_KEY_SEP, node_name())
 
 
-def node_key_rows(store, prefix, name):
-    """Every node's row for `name` (and one written before 1.0.146)."""
+def node_key_rows(store, prefix, name, guard=True):
+    """Every node's row for `name` (and one written before 1.0.146) - with guard=False all of them,
+    signed or not: for the caller to leave out first what it would not act on anyway (1.0.250)."""
     n = norm_name(name)
-    return dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
+    return (dbguard_rows if guard else (lambda _db, rows: rows))(store.db, store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ? ESCAPE '!'",
                                               ('%s:%s' % (prefix, n),
                                                '%s:%s%s%%' % (prefix, n.replace('!', '!!').replace('%', '!%')
                                                               .replace('_', '!_'), NODE_KEY_SEP))))
@@ -1560,7 +1561,7 @@ def chal_tidy(store):
         except ValueError:
             v = None
         if r['k'].startswith('chal:'):
-            gone = not isinstance(v, dict) or float(v.get('exp') or 0) < t - 60
+            gone = not isinstance(v, dict) or fnum(v.get('exp')) < t - 60
         else:
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
             if r['k'].startswith('adpw:'):              # wrong directory passwords (1.0.230)
@@ -1572,6 +1573,6 @@ def chal_tidy(store):
                 except (ValueError, TypeError, AttributeError):
                     pass
             now = time.time()                           # the counts by the machine's clock
-            gone = not isinstance(v, list) or not any(abs(now - float(x)) < span for x in v)
+            gone = not isinstance(v, list) or not any(abs(now - fnum(x)) < span for x in v)
         if gone:
             store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))

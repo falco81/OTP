@@ -289,7 +289,7 @@ def dbtls_apply(daemon, args):
                 'socket': 'it reaches its database over a Unix socket'}.get(kind, ''))
         srv = _meta_json(store, 'dbtls:server:' + node_name()) or {}
         if srv and not args.get('renew') and \
-                float(srv.get('cert_end') or 0) - time.time() > DBTLS_RENEW_DAYS * 86400 and \
+                fnum(srv.get('cert_end')) - time.time() > DBTLS_RENEW_DAYS * 86400 and \
                 set(srv.get('names') or []) == set(hatls_names()) and HA_CA_FILE.exists():
             p = dbtls_probe('verify-full', str(HA_CA_FILE))
             if p['ok']:
@@ -482,9 +482,9 @@ def dbtls_tick(daemon):
     t = DBTLS_WORK.get('renew')
     if t is not None and t.is_alive():
         return
-    old = float(srv.get('cert_end') or 0) - time.time() < DBTLS_RENEW_DAYS * 86400
+    old = fnum(srv.get('cert_end')) - time.time() < DBTLS_RENEW_DAYS * 86400
     moved = set(srv.get('names') or []) != set(hatls_names())
-    if not (old or moved) or time.time() - float(srv.get('tried') or 0) < 6 * 3600:
+    if not (old or moved) or time.time() - fnum(srv.get('tried')) < 6 * 3600:
         return
     srv['tried'] = time.time()
     daemon.store.set_meta('dbtls:server:' + node_name(), json.dumps(srv))

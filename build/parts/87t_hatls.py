@@ -73,11 +73,14 @@ def _cert_end(pem):
 
 
 def hatls_ca(store):
-    try:
-        got = json.loads(store.get_meta('hatls:ca') or 'null')
-    except ValueError:
-        got = None
-    return got if isinstance(got, dict) and got.get('cas') else {'cas': []}
+    got = json_obj(store.get_meta('hatls:ca')) or {}
+    # Each authority an object with its certificate (1.0.250): one of another shape raised at every
+    # tick, and a new one could not be made - it read the old ones first.
+    cas = got.get('cas') if isinstance(got.get('cas'), list) else []
+    cas = [x for x in cas if isinstance(x, dict) and isinstance(x.get('cert'), str) and x.get('cert')]
+    for x in cas:
+        x['end'] = fnum(x.get('end'))
+    return dict(got, cas=cas) if cas else {'cas': []}
 
 
 def hatls_ca_make(store, by):
@@ -100,7 +103,7 @@ def hatls_ca_make(store, by):
     now = time.time()
     cas = [{'cert': crt, 'key': seal_secret(key, bind='hatls:ca'), 'end': _cert_end(crt),
             'at': now, 'by': by}]
-    cas += [x for x in ca['cas'] if float(x.get('end') or 0) > now][:3]
+    cas += [x for x in ca['cas'] if fnum(x.get('end')) > now][:3]
     store.set_meta('hatls:ca', json.dumps({'cas': cas}))
     return cas[0]
 
@@ -108,7 +111,7 @@ def hatls_ca_make(store, by):
 def hatls_trust(ca):
     """Every authority still good, the newest first - one file."""
     now = time.time()
-    return ''.join(x['cert'].strip() + '\n' for x in ca['cas'] if float(x.get('end') or 0) > now)
+    return ''.join(x['cert'].strip() + '\n' for x in ca['cas'] if fnum(x.get('end')) > now)
 
 
 def hatls_names(peer_host=''):
@@ -229,9 +232,8 @@ def hatls_view(store):
     ca = hatls_ca(store)
     nodes = []
     for r in dbguard_rows(store.db, store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'hatls:node:%'")):
-        try:
-            one = json.loads(r['v'] or '{}')
-        except ValueError:
+        one = json_obj(r['v'])
+        if one is None:
             continue
         one['name'] = r['k'][len('hatls:node:'):]
         one['me'] = one['name'] == node_name()
@@ -241,7 +243,7 @@ def hatls_view(store):
     w = hatls_want(store)
     return {'mode': mode, 'ca_file': ca_file, 'own': bool(CONFIG.get('ha_tls')),
             'want': w, 'nodes': nodes,
-            'authority_end': [float(x.get('end') or 0) for x in ca['cas']],
+            'authority_end': [fnum(x.get('end')) for x in ca['cas']],
             'off': bool(w and w.get('off')),
             'running': bool(w) and any(x.get('for') == w.get('at') and x.get('step') not in
                                        ('done', 'failed', 'off_done') for x in nodes)}
@@ -532,13 +534,13 @@ def hatls_check(store):
     stuck = st.get('step') == 'link' and now - float(st.get('link_since') or now) > 120
     if st.get('step') not in (None, 'done', 'failed') and not stuck:
         return                          # on its way
-    if st.get('step') == 'failed' and now - float(st.get('at') or 0) < 3600:
+    if st.get('step') == 'failed' and now - fnum(st.get('at')) < 3600:
         # Tried again an hour later - or at once when the other node has put
         # its side right since (1.0.105), or this node's own certificate is
         # what is wrong (looked at below, as for one stuck on the link).
         pn = hatls_peer_name(store)
         peer = hatls_state(store, pn) if pn else {}
-        if float(peer.get('at') or 0) > float(st.get('at') or 0) and \
+        if fnum(peer.get('at')) > fnum(st.get('at')) and \
                 peer.get('step') in ('link', 'hba', 'done'):
             st2 = {'for': st.get('for') or now, 'step': 'names', 'renew': True, 'began': now,
                    'peer_host': str(CONFIG.get('ha_peer') or ''), 'cert_end': st.get('cert_end'),
@@ -673,7 +675,7 @@ def _hatls_tick(store):
             w = {'at': now, 'by': 'otp (renewed)', 'from': node_name()}
             store.set_meta('hatls:want', json.dumps(w))
             st = {}
-        elif st.get('step') == 'done' and float(st.get('cert_end') or 0) - now < \
+        elif st.get('step') == 'done' and fnum(st.get('cert_end')) - now < \
                 HATLS_RENEW_DAYS * 86400:
             ends = float(st.get('cert_end') or now)
             st = {'for': w.get('at') if w else now, 'step': 'names', 'renew': True,
@@ -758,7 +760,7 @@ def _hatls_tick(store):
                 peer_name or 'the other node')
             hatls_put(store, st)
             return
-        if now < float(st.get('retry_at') or 0):
+        if now < fnum(st.get('retry_at')):
             return
         try:
             far = db_open(ha_peer_conf(timeout=5, tls=('verify-full', str(HA_CA_FILE))))

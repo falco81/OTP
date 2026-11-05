@@ -39,11 +39,10 @@ def sshotp_get(store, name):
 def sshotp_all(store):
     out = []
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'sshotp:u:%'"):
-        try:
-            v = json.loads(r['v'] or '{}')
-        except ValueError:
+        v = json_obj(r['v'])
+        if v is None:
             continue
-        out.append({'name': v.get('name') or r['k'][len('sshotp:u:'):], 'at': v.get('at'),
+        out.append({'name': str(v.get('name') or r['k'][len('sshotp:u:'):]), 'at': v.get('at'),
                     'kind': v.get('kind') or 'app', 'lang': v.get('lang') or '',
                     'dest': dest_masked(v.get('kind'), v.get('dest')) if v.get('dest') else '',
                     'by': v.get('by') or '', 'note': v.get('note') or '',
@@ -425,10 +424,7 @@ def ssh_gate_port(store=None):
 
 
 def ssh_gate_secret(store, make=False):
-    try:
-        rec = json.loads(store.get_meta('sshotp:gate') or '{}')
-    except ValueError:
-        rec = {}
+    rec = json_obj(store.get_meta('sshotp:gate')) or {}   # of another shape: made anew (1.0.250)
     got = unseal_secret(rec.get('secret'), 'sshotp:gate') if rec.get('secret') else ''
     if not got and make:
         got = secrets.token_urlsafe(32)

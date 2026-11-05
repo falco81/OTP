@@ -130,7 +130,7 @@ def hisec_waived(store=None):
     if store is None:
         return _HS_WAIVE['v']
     if time.time() - _HS_WAIVE['at'] > 2:
-        got = _meta_json(store, 'hisec:waive') or []
+        got = _meta_json(store, 'hisec:waive', list) or []
         _HS_WAIVE.update(at=time.time(), v=frozenset(x for x in got if isinstance(x, str)))
         _HS_WAIVE['store'][0] = store
     return _HS_WAIVE['v']
@@ -233,9 +233,8 @@ def hisec_rules(store, conf=None):
         elif t.get('kind') == 'smb' and not t.get('smb_encrypt', 1):
             hit['backup:smb'].append(t.get('name'))
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'web:tls:%'"):
-        try:
-            prof = json.loads(r['v'] or '{}')
-        except ValueError:
+        prof = json_obj(r['v'])
+        if prof is None:
             continue
         if isinstance(prof, dict) and prof.get('cert') and \
                 (prof.get('preset') or 'standard') not in ('standard', 'modern'):
@@ -330,7 +329,7 @@ def hisec_waive(store, rule, on, by):
     kept, while high security is on: it would stand against it at once."""
     if rule not in HISEC_SETTINGS and rule not in HISEC_RULE:
         raise ValueError('there is no such rule: %s' % rule)
-    w = set(_meta_json(store, 'hisec:waive') or [])
+    w = set(_meta_json(store, 'hisec:waive', list) or [])
     if not on and rule in w and _hs_on():
         now = [r for r in hisec_rules(store) if r['rule'] == rule]
         if now and now[0]['bad']:
@@ -443,8 +442,8 @@ def hisec_nodes(store):
         return out
     try:
         others = [n for n in ha_nodes(store) if not n.get('me') and n['name'] != node_name() and
-                  float(n.get('age') or 0) < 86400]
-        others.sort(key=lambda n: float(n.get('age') or 0))
+                  fnum(n.get('age')) < 86400]
+        others.sort(key=lambda n: fnum(n.get('age')))
         if CONFIG.get('ha_mode') == 'replicated':
             others = others[:1]
         for n in others:

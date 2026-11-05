@@ -28,9 +28,8 @@ def mfa_get(store, name):
 def mfa_all(store):
     out = {}
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'adm2fa:%'"):
-        try:
-            v = json.loads(r['v'] or '{}')
-        except ValueError:
+        v = json_obj(r['v'])
+        if v is None:
             continue
         out[r['k'][len('adm2fa:'):]] = {'kind': v.get('kind'), 'at': v.get('at'),
                                         'dest': dest_masked(v.get('kind'), v.get('dest'))}
@@ -102,7 +101,7 @@ def _mfa_session(h):
 
 
 def _mfa_code_ok(saved, code):
-    if not saved or time.time() > float(saved.get('exp') or 0):
+    if not saved or time.time() > fnum(saved.get('exp')):
         return False
     return hmac.compare_digest(code_hash(saved.get('salt') or '', str(code or '').strip()),
                                str(saved.get('hash') or ''))
@@ -111,7 +110,7 @@ def _mfa_code_ok(saved, code):
 def _mfa_send(h, s, kind, dest, field):
     data = s.get('data') or {}
     t = time.time()
-    if t - float(data.get('mfa_sent_at') or 0) < MFA_SEND_GAP_S:
+    if t - fnum(data.get('mfa_sent_at')) < MFA_SEND_GAP_S:
         raise ApiError(429, 'a code went a moment ago - wait half a minute for another')
     n = int(data.get('mfa_sent') or 0)
     if n >= MFA_SEND_MOST:
@@ -143,7 +142,7 @@ def _mfa_done(h, s, how):
     its cookie had the pages once the code was given."""
     data = {k: v for k, v in (s.get('data') or {}).items()
             if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent')}
-    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
     h.store.session_drop(s['id'])
     h.store.add_event('sign-ins', '%s gave the second step (%s) from %s' % (

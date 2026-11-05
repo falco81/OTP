@@ -6,9 +6,8 @@ def sshotp_accounts(store):
     said yet (an older one): then the name is taken as until now."""
     out, said = {'root'}, False
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'host:sshkeys:now:%'"):
-        try:
-            row = json.loads(r['v'] or '{}')
-        except ValueError:
+        row = json_obj(r['v'])
+        if row is None:
             continue
         if isinstance(row, dict) and isinstance(row.get('users'), list):
             said = True

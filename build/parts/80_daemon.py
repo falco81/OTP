@@ -1670,11 +1670,12 @@ class Daemon(object):
     def _upgrade_summary(self):
         try:
             plan = upgrade_plan(self.store)
-            pkg = json.loads(self.store.get_meta('upgrade:pkg') or 'null')
+            pkg = json_obj(self.store.get_meta('upgrade:pkg')) or {}
+            # Of another shape (1.0.250): the status of every page answered with an error.
+            return {'plan': {'state': plan.get('state'), 'version': plan.get('version')} if plan else None,
+                    'package': pkg.get('version') or None}
         except Exception:                               # noqa: BLE001
             return {}
-        return {'plan': {'state': plan['state'], 'version': plan['version']} if plan else None,
-                'package': pkg['version'] if pkg else None}
 
     # ---- running -------------------------------------------------------------------
     def run(self):
@@ -1854,6 +1855,15 @@ class Daemon(object):
                     web_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
                     log_sparing('tick:web:' + str(e)[:80], 'TLS and the VIP address: %s' % e, 'warn', 3600)
+                if time.monotonic() - getattr(self, '_adopt_at', -1e9) > 60:
+                    self._adopt_at = time.monotonic()
+                    try:
+                        dbguard_adopt_tick(self.store)  # rows of a version, once all run it (1.0.250)
+                    except DbError:
+                        raise
+                    except Exception as e:      # noqa: BLE001
+                        log_sparing('adopt-tick', 'the rows signed only since a version: %s' % e,
+                                    'warn', every=3600)
                 try:
                     rb_tick(self)               # backups to the destinations (1.0.109)
                 except Exception as e:          # noqa: BLE001
@@ -2929,7 +2939,7 @@ def tune_connect(store, admin_user, admin_password):
 
 def tune_last(store):
     try:
-        return json.loads(store.get_meta('tune_last:' + node_name()) or 'null')
+        return json_obj(store.get_meta('tune_last:' + node_name()))    # an object only (1.0.250)
     except ValueError:
         return None
 
@@ -3006,7 +3016,7 @@ def tune_apply(store, typed, admin_user, admin_password, by):
         raise ValueError('say what the machine has first: its memory and its processors')
     db = tune_connect(store, admin_user, admin_password)
     done, later, failed = [], [], []
-    before = json.loads(store.get_meta('tune_before:' + node_name()) or '{}')
+    before = (json_obj(store.get_meta('tune_before:' + node_name())) or {})
     try:
         for r in plan['rows']:
             if not r['change']:
@@ -3117,11 +3127,8 @@ def tune_restart(store, by):
             raise ValueError('the other node is not answering: restarting PostgreSQL here would '
                              'leave nothing to sign people in - bring it back first')
         for n in others:
-            try:
-                other = json.loads(store.get_meta('db_restart:' + n['name']) or '{}')
-            except ValueError:
-                other = {}
-            if time.time() - float(other.get('at') or 0) < 300 and not other.get('done'):
+            other = json_obj(store.get_meta('db_restart:' + n['name'])) or {}
+            if time.time() - fnum(other.get('at')) < 300 and not other.get('done'):
                 raise ValueError('%s is restarting its PostgreSQL now - one at a time' % n['name'])
         store.set_meta('db_restart:' + node_name(), json.dumps({'at': time.time(), 'by': by}))
         rest = True
@@ -3211,7 +3218,7 @@ def _tune_restart_go(store, db, unit, waiting, by):
 
 
 def tune_undo(store, admin_user, admin_password, by):
-    before = json.loads(store.get_meta('tune_before:' + node_name()) or '{}')
+    before = (json_obj(store.get_meta('tune_before:' + node_name())) or {})
     if not before:
         raise ValueError('nothing was changed here, so there is nothing to put back')
     db = tune_connect(store, admin_user, admin_password)

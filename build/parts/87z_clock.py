@@ -301,7 +301,7 @@ def clock_skew_of(store, name):
         if CLOCK['skew'] is not None and time.time() - CLOCK['skew_at'] < CLOCK_FRESH_S:
             return CLOCK['skew_of'], CLOCK['skew']
         row = _meta_json(store, 'clock:state:' + node_name()) or {}
-        if row.get('skew') is not None and time.time() - float(row.get('at') or 0) < CLOCK_FRESH_S:
+        if row.get('skew') is not None and time.time() - fnum(row.get('at')) < CLOCK_FRESH_S:
             return row.get('skew_of'), float(row['skew'])
         return None, None
     of, sk = mine()
@@ -360,7 +360,7 @@ def clock_peer_row(store, now=None):
         if not row:
             return None
         sk = clock_skew_of(store, n['name'])
-        at = float(row.get('at') or 0) - (sk or 0.0)
+        at = fnum(row.get('at')) - (sk or 0.0)
         # Its row is written every 10 s (1.0.224: 60 s, and a node aside for its clock stayed
         # silent a minute after the other died), and its heartbeat alive.
         row['fresh'] = now - at < 25 and bool(n.get('alive'))
@@ -516,7 +516,7 @@ def clock_view(store):
         nodes.append({'name': n['name'], 'me': bool(n.get('me')), 'alive': bool(n.get('alive')),
                       'state': st, 'ref': str(saved.get('clock_ref@' + n['name'])
                                               or (CONFIG.get('clock_ref') if n.get('me') else '') or ''),
-                      'fresh': bool(st) and time.time() - float(st.get('at') or 0) < 60})
+                      'fresh': bool(st) and time.time() - fnum(st.get('at')) < 60})
     if not nodes:
         nodes = [{'name': node_name(), 'me': True, 'alive': True, 'state': clock_state_here(),
                   'ref': str(CONFIG.get('clock_ref') or ''), 'fresh': True}]

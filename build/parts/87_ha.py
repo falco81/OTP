@@ -164,13 +164,12 @@ def machine_id():
 
 
 def name_clash_check(store, beat):
-    try:
-        was = json.loads(store.get_meta('node:' + node_name()) or '{}')
-    except ValueError:
-        was = {}
+    # Its own row of another shape taken as none (1.0.250): it raised here, before the beat was
+    # written - the node beat no more, for good, and the other took it for gone.
+    was = json_obj(store.get_meta('node:' + node_name())) or {}
     now = time.time()
     other = was.get('mid')
-    if other and other != beat['mid'] and now - float(was.get('at') or 0) < HEARTBEAT_S * 3:
+    if other and other != beat['mid'] and now - fnum(was.get('at')) < HEARTBEAT_S * 3:
         # Seen twice before it is said: once is this machine's own row from
         # before a new host name, overwritten by the beat after this one.
         NAME_CLASH_SEEN.append(now)
@@ -225,11 +224,16 @@ def ha_nodes(store):
     for r in rows:
         try:
             beat = json.loads(r['v'] or '{}')
-        except ValueError:
+            # A heartbeat of another shape left out (1.0.250): its .get() raised here, and with it
+            # every page and tick that asks for the nodes - until the row was written again.
+            if not isinstance(beat, dict) or isinstance(beat.get('at'), bool) or \
+                    not isinstance(beat.get('at') or 0, (int, float)):
+                continue
+            at = fnum(beat.get('at'))
+        except (ValueError, TypeError):
             continue
         name = r['k'][5:]
         # With clock_beat (1.0.222) judged by the measured difference of the clocks.
-        at = float(beat.get('at') or 0)
         age = clock_beat_age(store, name, at, now)
         alive = age < HEARTBEAT_S * 3
         if age < -2 * HEARTBEAT_S and name != node_name():
@@ -259,7 +263,7 @@ def ha_joining():
         got = json.loads(HA_JOINING_FILE.read_text())
     except (OSError, ValueError):
         return []
-    if float(got.get('until') or 0) < time.time():
+    if fnum(got.get('until')) < time.time():
         return []
     out = []
     for a in got.get('addrs') or []:
@@ -275,7 +279,7 @@ def ha_joining_info():
         got = json.loads(HA_JOINING_FILE.read_text())
     except (OSError, ValueError):
         return {}
-    if float(got.get('until') or 0) < time.time():
+    if fnum(got.get('until')) < time.time():
         return {}
     return got
 
@@ -473,15 +477,15 @@ def job_read():
                 if one and one.get('running') and (
                         time.time() - float(one.get('at') or one.get('began') or 0) > 300 or
                         (one.get('node') == node_name() and not DB_JOB.get('running'))):
-                    one = dict(one, running=False, ended=float(one.get('at') or 0),
+                    one = dict(one, running=False, ended=fnum(one.get('at')),
                                error=one.get('error') or 'it stopped with the service that '
                                'ran it (restarted, or the database was changed)')
-                if one and (not there or float(one.get('began') or 0) >
-                            float(there.get('began') or 0)):
+                if one and (not there or fnum(one.get('began')) >
+                            fnum(there.get('began'))):
                     there = one
         except Exception:                               # noqa: BLE001
             there = None
-    if here and (not there or float(here.get('began') or 0) >= float(there.get('began') or 0)):
+    if here and (not there or fnum(here.get('began')) >= fnum(there.get('began'))):
         return here
     return there or dict(DB_JOB)
 
@@ -1390,7 +1394,7 @@ def ha_repl_state(store):
                 "pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS behind "
                 "FROM pg_replication_slots WHERE slot_name LIKE 'o__!_from!_%' ESCAPE '!' "
                 "AND database = current_database()"):
-            r['behind'] = int(float(r.get('behind') or 0))
+            r['behind'] = int(fnum(r.get('behind')))
             out['outgoing'].append(r)
     except Exception as e:                              # noqa: BLE001
         out['trouble'] = str(e).split('\n')[0][:300]

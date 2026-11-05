@@ -34,12 +34,17 @@ RESTORE_RUNNING = threading.Event()
 RESTORE_WHY = ['']
 
 
-def _meta_json(store, k):
+def _meta_json(store, k, kind=dict):
+    """A row of meta read as JSON - None unless it is of the kind the caller works on (1.0.250):
+    a row of another shape (a version before, a reply of the root helper that was no object,
+    somebody's hand) raised at the caller's .get() before it wrote the row again - the same
+    error at every tick, the row never put right."""
     try:
         got = store.get_meta(k)
-        return json.loads(got) if got else None
+        got = json.loads(got) if got else None
     except (ValueError, TypeError):
         return None
+    return got if isinstance(got, kind) else None
 
 
 def _peer_update(k, v):
@@ -109,7 +114,7 @@ def node_stepped_aside(store, name):
         sk = 0.0
     for k in ('clock:state:', 'split:state:'):
         row = _meta_json(store, k + name) or {}
-        if row.get('role') == 'aside' and now - (float(row.get('at') or 0) - sk) < 40:
+        if row.get('role') == 'aside' and now - (fnum(row.get('at')) - sk) < 40:
             return True
     return False
 
@@ -283,6 +288,9 @@ def upgrade_checks(store, meta, pages=False):
     why = []
     if not meta:
         return False, ['no package has been sent yet']
+    if not isinstance(meta, dict) or not isinstance(meta.get('version'), str) or \
+            not re.match(r'^\d+\.\d+\.\d+$', meta['version']):
+        return False, ['the package\'s row is not as otp writes it - send the package again']
     down = bool(meta.get('downgrade'))
     if down:
         why += downgrade_why_not(store, meta['version'])
@@ -459,7 +467,7 @@ def upgrade_tick(daemon):
         state = 'draining'
         turn = _meta_json(store, 'upgrade:node:' + me)
     if state == 'draining':
-        if len(steps) > 1 and now - float(turn.get('at') or 0) < UPGRADE_DRAIN_S:
+        if len(steps) > 1 and now - fnum(turn.get('at')) < UPGRADE_DRAIN_S:
             return
         meta = _meta_json(store, 'upgrade:pkg') or {}
         try:
@@ -488,7 +496,7 @@ def upgrade_tick(daemon):
         return
     if state == 'installing':
         if __version__ == plan['version'] and float(daemon.started or 0) > \
-                float(turn.get('asked') or 0):
+                fnum(turn.get('asked')):
             _my_step(store, plan, state='checking', said='restarted as %s' % __version__)
             state = 'checking'
             turn = _meta_json(store, 'upgrade:node:' + me)

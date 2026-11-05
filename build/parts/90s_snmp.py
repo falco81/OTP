@@ -351,7 +351,7 @@ def snmp_mib(daemon, agent):
             for i, n in enumerate(ha_nodes(store), 1):
                 rows += [(B + (7, 1, 1, 1, i), 'int', i), (B + (7, 1, 1, 2, i), 'str', n['name']),
                          (B + (7, 1, 1, 3, i), 'int', 1 if n.get('alive') else 0),
-                         (B + (7, 1, 1, 4, i), 'gauge', int(float(n.get('age') or 0)))]
+                         (B + (7, 1, 1, 4, i), 'gauge', int(fnum(n.get('age'))))]
         except Exception:                               # noqa: BLE001
             pass
     # Every sample Prometheus gets, as a table (name, labels, value) - nothing
@@ -779,16 +779,16 @@ def snmp_traps_tick(daemon, cur):
             not snmp_trap_targets(CONFIG.get('snmp_trap_to')):
         return
     store = daemon.store
-    try:
-        known = json.loads(store.get_meta('snmp:trapped') or '{}')
-    except ValueError:
-        known = {}
+    # Of another shape taken as none, each entry an object (1.0.250): it raised here before it was
+    # written again - no trap went out any more.
+    known = {k: v for k, v in (json_obj(store.get_meta('snmp:trapped')) or {}).items()
+             if isinstance(v, dict)}
     delay = 60 * int(CONFIG.get('alerts_delay_min') or 0)
     now = time.time()
     changed = False
     for k, p in cur.items():
         was = known.get(k)
-        since = float((was or {}).get('since') or now)
+        since = fnum((was or {}).get('since'), now) or now
         if not was:
             known[k] = {'since': now, 'sent': False, 'level': p.get('level')}
             changed = True

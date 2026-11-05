@@ -68,7 +68,7 @@ def _logs_tick(daemon, force):
     again = store.get_meta('host:logs:again') or ''
     k = 'host:logs:' + node_name()
     row = _meta_json(store, k) or {}
-    age = time.time() - float(row.get('at') or 0)
+    age = time.time() - fnum(row.get('at'))
     if force or again != LOGS_WORK['again'] or row.get('hash') != h:
         pass
     elif age < (LOGS_EVERY if row.get('ok') else 600):
