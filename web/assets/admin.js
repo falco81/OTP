@@ -5312,7 +5312,8 @@ function loadLockouts() {
 }
 function loTick() {
   var seen = LO_VIEWS.some(function (v) { var c = $(v.card); return c && c.offsetParent; });
-  if (!seen || document.hidden) { clearInterval(LO.timer); LO.timer = null; return; }
+  if (!seen) { clearInterval(LO.timer); LO.timer = null; return; }
+  if (document.hidden) return;     /* skipped, not stopped (1.0.252): it never came back */
   if (Date.now() - LO.fetched > 10000) { LO.fetched = Date.now(); loadLockouts(); return; }
   drawLockouts();
 }
@@ -7035,6 +7036,7 @@ function drawConsoleLogin(host) {
         sw._input.disabled = n.on === null || n.on === undefined || n.pending;
         var name = noI18n(el('b', '', n.name));
         row.appendChild(sw);
+        swNamedBy(sw, name);
         /* The node in a column of its own (1.0.242): the pickers one under another. */
         var whoC = el('div', 'con-who');
         whoC.appendChild(name);
@@ -7959,7 +7961,7 @@ function searchButtons(input, go, selects, times) {
     });
     (times || []).forEach(function (id) {
       var tp = $(id);
-      if (tp && tp._set) { tp._quiet = true; tp._set({k: 'rel', s: 86400}); tp._quiet = false; }
+      if (tp && tp._set) { tp._quiet = true; tp._set(tp._start || {k: 'rel', s: 86400});   /* each its own default (1.0.252): Events all time */ tp._quiet = false; }
     });
     if (input._qs) input._qs.said('');
     go();
@@ -8296,7 +8298,9 @@ function loadSplit(ha) {
   if (!cluster) return;
   api('split').then(function (v) {
     SPLITC.view = v;
-    if (!SPLITC.draft) SPLITC.draft = splitFresh(v);
+    /* Taken again while nothing waits to be saved (1.0.252): changed elsewhere, the old draft was
+       saved whole over it at the next change here. */
+    if (!SPLITC.draft || !PENDING.split) SPLITC.draft = splitFresh(v);
     drawSplit();
   }).catch(function () { /* the card stays as it was */ });
 }
@@ -8591,7 +8595,9 @@ function drawSplitIn() {
     sw._input.onchange = function () { d[o.k] = !!sw._get(); splitTouched(); };
     var ic = el('span', 'split-ic'); ic.innerHTML = iconMarkup(o.icon, 18);
     var txt = el('div', 'split-opt-txt');
-    txt.appendChild(el('div', 'split-opt-k', o.t));
+    var optK = el('div', 'split-opt-k', o.t);
+    txt.appendChild(optK);
+    swNamedBy(sw, optK);
     txt.appendChild(el('div', 'split-opt-s', o.s));
     item.appendChild(ic); item.appendChild(txt); item.appendChild(sw);
     if (!!Number((v.conf || {})[o.k] === undefined ? (o.k === 'split_report' ? 1 : 0) : (v.conf || {})[o.k]) !== d[o.k]) item.classList.add('changed');
@@ -9046,7 +9052,7 @@ function drawSso() {
     row.appendChild(mk);
   }
   var chk = cmdButton('Look again', 'refresh', 'small');
-  chk.onclick = function () { busy(chk, true); api('portal-sso').then(function (x) { SSO.d = x; drawSso(); }).catch(oops); };
+  chk.onclick = function () { busy(chk, true); api('portal-sso').then(function (x) { SSO.d = x; drawSso(); }).catch(function (e) { busy(chk, false); oops(e); }); };
   row.appendChild(chk);
   host.appendChild(row);
   /* Words about what else it needs. */
@@ -11267,6 +11273,7 @@ function drawFwBody(d) {
       top.appendChild(el('span', 'tag ok', 'always'));
     } else {
       var sw = switchBox(item.on);
+      swNamedBy(sw, t);
       sw._input.disabled = !d.may;
       sw._input.onchange = function () {
         var off = FW.draft.off.filter(function (k) { return k !== item.key; });
@@ -15080,7 +15087,9 @@ function drawClockIn() {
     sw._input.onchange = function () { d[o.k] = !!sw._get(); clockTouched(); };
     var ic = el('span', 'split-ic'); ic.innerHTML = iconMarkup(o.icon, 18);
     var txt = el('div', 'split-opt-txt');
-    txt.appendChild(el('div', 'split-opt-k', o.t));
+    var optK = el('div', 'split-opt-k', o.t);
+    txt.appendChild(optK);
+    swNamedBy(sw, optK);
     txt.appendChild(el('div', 'split-opt-s', o.s));
     item.appendChild(ic); item.appendChild(txt); item.appendChild(sw);
     if (!!Number((v.conf || {})[o.k] || 0) !== d[o.k]) item.classList.add('changed');
@@ -15963,7 +15972,7 @@ function drawOsUsers(live) {
    One policy for every local user of the cluster, put in by each node into its system's own
    files - so that it holds however a password is changed. Not set by otp: each node as its
    system has it, nothing written. Under it, what each node has in effect. */
-var PWP_EDIT = null;
+var PWP_EDIT = null, PWP_BASE = null;
 function pwpNum(v, min, max) {
   var i = el('input', 'mono pwp-num'); i.type = 'number'; i.min = min; i.max = max; i.value = v; return i;
 }
@@ -16001,14 +16010,21 @@ function pwpInfo(key, also) {
   /* A click on it is no click on the switch beside it. */
   i.addEventListener('click', function (ev) { ev.stopPropagation(); ev.preventDefault(); });
   explain(i, words, story);
-  (also || []).forEach(function (x) { explain(x, words, story); });
+  /* The words beside it explained on hover too - but named still by what they say (1.0.252):
+     the box was read out as the whole help, its own label not in it. */
+  (also || []).forEach(function (x) { explain(x, words, story); x.removeAttribute('aria-label'); });
   return i;
 }
 function pwpInfoOn(box, key) {
   /* The (i) after a switch's words, the words explained too. */
   var w = box.querySelector('.osu-sw-w');
   var i = pwpInfo(key, w ? [w] : []);
-  if (i && w) { w.appendChild(document.createTextNode(' ')); w.appendChild(i); }
+  if (i && w) {
+    /* Named by its words alone (1.0.252): the (i) inside them gave it the whole help. */
+    var inp = box.querySelector('input');
+    if (inp) { inp.removeAttribute('aria-labelledby'); inp.setAttribute('aria-label', w.textContent); }
+    w.appendChild(document.createTextNode(' ')); w.appendChild(i);
+  }
   return box;
 }
 function pwpField(label, input, says, key) {
@@ -16016,13 +16032,23 @@ function pwpField(label, input, says, key) {
   f.classList.add('pwp-f');
   var l = f.querySelector('label');
   var i = key && pwpInfo(key, l ? [l] : []);
-  if (i && l) l.appendChild(i);
+  if (i && l) {
+    if (input && input.setAttribute) input.setAttribute('aria-label', l.textContent);
+    l.appendChild(i);
+  }
   return f;
 }
 function pwpCard(d) {
   var c = d.policy || {}, nodes = d.nodes || [];
-  if (!PWP_EDIT) PWP_EDIT = JSON.parse(JSON.stringify(c));
+  /* The draft taken again from what is saved while nothing in it was changed (1.0.252): saved
+     elsewhere meanwhile (another administrator, otp --local-policy-set), the old one went back
+     whole at the next Save. One changed and not saved is said so. */
+  if (!PWP_EDIT || JSON.stringify(PWP_EDIT) === JSON.stringify(PWP_BASE)) {
+    PWP_EDIT = JSON.parse(JSON.stringify(c));
+    PWP_BASE = JSON.parse(JSON.stringify(c));
+  }
   var e = PWP_EDIT;
+  var unsaved = JSON.stringify(e) !== JSON.stringify(c);
   var card = el('div', 'card full pwp-card');
   var h = el('h2', '', 'Password policy');
   var st = el('span', 'right pwp-state');
@@ -16037,6 +16063,9 @@ function pwpCard(d) {
   });
   h.appendChild(st);
   card.appendChild(h);
+  if (unsaved) card.appendChild(el('p', 'note warn', JSON.stringify(PWP_BASE) !== JSON.stringify(c) ?
+    'Changed here and not saved - and saved meanwhile elsewhere: Save puts this whole draft in, As it is saved shows what is saved now.' :
+    'Changed here and not saved yet.'));
   if (d.policy_refused) card.appendChild(el('p', 'note bad', 'The row of the policy in the database is not as otp wrote it - the guard of root\'s actions refused it: every node keeps the policy it has put in, and changes nothing. Save the policy here again.'));
   card.appendChild(el('p', 'muted small', 'For every local user, however the password is changed - passwd, a password run out at sign-in, these pages. Put into each node\'s own files: pam_pwquality, pam_pwhistory, pam_faillock and login.defs (with authselect, the features that put the modules in). Not set here, each node keeps what its system has, and nothing is written.'));
   var how = el('details', 'pwp-how');
@@ -16088,10 +16117,10 @@ function pwpCard(d) {
   var row = el('div', 'btnrow');
   var save = cmdButton('Save the policy', 'save', 'small primary');
   save.onclick = function () {
-    api('osusers', {action: 'policy', policy: e}).then(function (x) { toast(x.message, 'good'); PWP_EDIT = null; osuPoll(true); }).catch(oops);
+    api('osusers', {action: 'policy', policy: e}).then(function (x) { toast(x.message, 'good'); PWP_EDIT = null; PWP_BASE = null; osuPoll(true); }).catch(oops);
   };
   var back = cmdButton('As it is saved', 'undo', 'small');
-  back.onclick = function () { PWP_EDIT = null; drawOsUsers(); };
+  back.onclick = function () { PWP_EDIT = null; PWP_BASE = null; drawOsUsers(); };
   row.appendChild(save); row.appendChild(back);
   card.appendChild(row);
   /* What each node has in effect, read from its files. */
@@ -16153,6 +16182,7 @@ function osuNodePicker(body, name, making) {
       var nm = noI18n(el('span', 'osu-sw-w', n.name + (!n.alive ? ' (not answering)' : !there ? ' (not there)' : '')));
       nm.onclick = function () { if (!c.disabled) c.click(); };
       one.appendChild(nm);
+      swNamedBy(sw, nm);
       box.appendChild(one);
       boxes.push(c);
     });
@@ -16193,6 +16223,7 @@ function osuCheck(words, on, says) {
   var txt = el('span', 'osu-sw-t');
   var w = el('span', 'osu-sw-w', words);
   txt.appendChild(w);
+  swNamedBy(sw, w);
   if (says) txt.appendChild(el('span', 'muted small osu-says', says));
   row.appendChild(txt);
   /* A click on the words turns it too. */
@@ -16770,7 +16801,7 @@ var SD_STATE = {done: ['as wished', 'good'], trial: ['on trial', 'warn'], waitin
 function loadSshd() {
   api('sshd').then(function (d) {
     SD.d = d;
-    if (!SD.draft) SD.draft = JSON.parse(JSON.stringify(d.conf));
+    if (!SD.draft || !PENDING.sshd) SD.draft = JSON.parse(JSON.stringify(d.conf));   /* 1.0.252, as above */
     drawSshd();
     sdPoll(sdBusy(d));
   }).catch(oops);
@@ -18690,18 +18721,22 @@ function loadSelinux() {
   });
 }
 function seReport(btn) {
-  var asked = Date.now() / 1000 - 5, end = Date.now() + 180000;
+  /* A report new since the ask, by each node's own clock (1.0.252): the browser's against the
+     node's, a PC a few seconds fast waited the whole 3 minutes - and for a node not asked too. */
+  var end = Date.now() + 180000, before = {}, skip = [];
+  Object.keys((SE.d && SE.d.reports) || {}).forEach(function (n) { before[n] = Number((SE.d.reports[n] || {}).at) || 0; });
   busy(btn, true);
   SE.rep = {words: 'asking every node for its report…'};
   drawSelinux();
-  api('selinux', {action: 'report', node: '*'}).then(function () {
+  api('selinux', {action: 'report', node: '*'}).then(function (r) {
+    skip = (r && r.busy) || [];
     return new Promise(function (done) {
       (function tick() {
         api('selinux').then(function (d) {
           SE.d = d;
-          var nodes = (d.nodes || []).map(function (n) { return n.name; });
+          var nodes = (d.nodes || []).map(function (n) { return n.name; }).filter(function (n) { return skip.indexOf(n) < 0; });
           var reps = d.reports || {};
-          var ready = nodes.filter(function (n) { return reps[n] && reps[n].at >= asked; });
+          var ready = nodes.filter(function (n) { return reps[n] && Number(reps[n].at) > (before[n] || 0); });
           SE.rep = {words: 'reports made: ' + ready.length + ' of ' + nodes.length + (ready.length < nodes.length ? ' - waiting for ' + nodes.filter(function (n) { return ready.indexOf(n) < 0; }).join(', ') : '')};
           drawSelinux();
           if (ready.length >= nodes.length || Date.now() > end) return done();

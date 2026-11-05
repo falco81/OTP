@@ -665,7 +665,8 @@ install_pages() {
     step "The pages"
     run install -d -m 0755 "$WEB_DIR" "$WEB_DIR/admin" "$WEB_DIR/assets" "$WEB_DIR/lang"
     run install -m 0644 "$SOURCE_DIR/web/index.php" "$SOURCE_DIR/web/otp-api.php" "$SOURCE_DIR/web/healthz.php" \
-        "$SOURCE_DIR/web/otp-page.php" "$SOURCE_DIR/web/otp-art.php" "$SOURCE_DIR/web/.user.ini" "$WEB_DIR/"
+        "$SOURCE_DIR/web/otp-page.php" "$SOURCE_DIR/web/otp-art.php" "$SOURCE_DIR/web/acme.php" \
+        "$SOURCE_DIR/web/metrics.php" "$SOURCE_DIR/web/.user.ini" "$WEB_DIR/"
     run install -m 0644 "$SOURCE_DIR/web/admin/index.php" "$WEB_DIR/admin/"
     run install -m 0644 "$SOURCE_DIR"/web/assets/* "$WEB_DIR/assets/"
     run install -m 0644 "$SOURCE_DIR"/web/lang/*.json "$WEB_DIR/lang/"
