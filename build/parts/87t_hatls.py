@@ -629,7 +629,9 @@ def hatls_tick(store):
                 log('looking at the link between the databases: %s' % e, 'warn')
         _hatls_tick(store)
     except Exception as e:                              # noqa: BLE001
-        log('encrypting the link between the databases: %s' % e, 'warn')
+        # Spared (1.0.252): a step that fails the same way fails again at every pass of the loop.
+        log_sparing('hatls:' + str(e)[:60], 'encrypting the link between the databases: %s' % e,
+                    'warn', every=600)
     finally:
         HATLS_LOCK.release()
 

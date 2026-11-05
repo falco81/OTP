@@ -916,6 +916,7 @@ ACME_LOCATION = '''    # A certificate by ACME (1.0.169): the CA's HTTP-01 chall
     # the CA reaches gives it. Everything else goes to HTTPS.
     location ^~ /.well-known/acme-challenge/ {
         limit_req     zone=otp_all burst=20 nodelay;
+        if ($http_content_type ~* "multipart") { return 403; }
         fastcgi_pass  unix:/run/php-fpm/otp.sock;
         fastcgi_param SCRIPT_FILENAME /var/www/otp/acme.php;
         include       fastcgi_params;
@@ -954,8 +955,12 @@ def acme_into(main, names):
     block = main[where[0]:where[1]]
     new = block
     if 'acme-challenge' not in new:
+        # The pool's socket as the file's own server blocks have it (1.0.252): Debian's is
+        # /run/php/otp.sock, and the location put in answered 502 there.
+        sock = re.search(r'(?m)^\s*fastcgi_pass\s+(unix:[^;\s]+);', main)
+        loc = ACME_LOCATION.replace('unix:/run/php-fpm/otp.sock', sock.group(1)) if sock else ACME_LOCATION
         new = re.sub(r'(?m)^[ \t]*return[ \t]+301[ \t]+https://\$host\$request_uri;[ \t]*$',
-                     lambda m: ACME_LOCATION, new, count=1)
+                     lambda m: loc, new, count=1)
     m = re.search(r'(?m)^(\s*server_name\s+)([^;#]*);', new)
     if m and names:
         have = m.group(2).split()
@@ -1882,6 +1887,22 @@ def pgtls_server(r):
             'cert_end': float(_ssl.cert_time_to_seconds(end.strip().split('=', 1)[-1]))}
 
 
+def pg_hba_file(port):
+    """pg_hba.conf as PostgreSQL names it - only a file of postgres's own, not a link (1.0.252):
+    whatever answered on PostgreSQL's socket said which file root rewrote, /etc/shadow as well."""
+    hba = pg_sql(port, 'SHOW hba_file')
+    if not hba.startswith('/') or not os.path.isfile(hba):
+        raise Refused('pg_hba.conf was not found (%s)' % hba[:100])
+    try:
+        st = os.lstat(hba)
+    except OSError as e:
+        raise Refused('pg_hba.conf cannot be read: %s' % e)
+    owner = pg_owner()
+    if not stat.S_ISREG(st.st_mode) or owner is None or st.st_uid != owner:
+        raise Refused('%s is not a file of the account postgres - not changed' % hba[:100])
+    return hba
+
+
 def pgtls_hba(r):
     if not r['peer']:
         raise Refused('the other node\'s address is not known here')
@@ -1889,9 +1910,7 @@ def pgtls_hba(r):
     if net.startswith('127.') or net == '::1/128':
         return {'said': 'the other node is on this machine (%s): its line in pg_hba.conf is '
                         'this node\'s own, left as it is' % r['peer']}
-    hba = pg_sql(r['port'], 'SHOW hba_file')
-    if not hba.startswith('/') or not os.path.isfile(hba):
-        raise Refused('pg_hba.conf was not found (%s)' % hba[:100])
+    hba = pg_hba_file(r['port'])
     text = pg_file_read(hba)        # not through a link (1.0.149)
     lines, changed, have_ssl = text.split('\n'), 0, False
     for i, line in enumerate(lines):
@@ -1929,9 +1948,7 @@ def pgtls_peer(r):
     host line put in front. The file as it was is kept beside it."""
     net = pg_peer_net(r['peer'])
     old = pg_peer_net(r['old_peer']) if r.get('old_peer') else ''
-    hba = pg_sql(r['port'], 'SHOW hba_file')
-    if not hba.startswith('/') or not os.path.isfile(hba):
-        raise Refused('pg_hba.conf was not found (%s)' % hba[:100])
+    hba = pg_hba_file(r['port'])
     text = pg_file_read(hba)        # not through a link (1.0.149)
     lines, moved, there = text.split('\n'), 0, False
 
@@ -1994,9 +2011,7 @@ def pgtls_hba_off(r):
     net = pg_peer_net(r['peer'])
     if net.startswith('127.') or net == '::1/128':
         return {'said': 'the other node is on this machine: nothing changed'}
-    hba = pg_sql(r['port'], 'SHOW hba_file')
-    if not hba.startswith('/') or not os.path.isfile(hba):
-        raise Refused('pg_hba.conf was not found (%s)' % hba[:100])
+    hba = pg_hba_file(r['port'])
     text = pg_file_read(hba)        # not through a link (1.0.149)
     lines, changed = text.split('\n'), 0
     for i, line in enumerate(lines):
@@ -2918,7 +2933,9 @@ def key_facts(line):
     """(bits, SHA256:..., type) of one public key line, read by ssh-keygen."""
     got = subprocess.run(['ssh-keygen', '-l', '-E', 'sha256', '-f', '-'], input=line + '\n',
                          capture_output=True, text=True, timeout=20)
-    m = re.match(r'^(\d+) (SHA256:[A-Za-z0-9+/=]+) .*\((\w+)\)\s*$', got.stdout.strip())
+    # ED25519-SK, ECDSA-SK too (1.0.252): \w took no '-', and a security key was never read -
+    # refused when added, never dropped, not counted as root's key.
+    m = re.match(r'^(\d+) (SHA256:[A-Za-z0-9+/=]+) .*\(([\w-]+)\)\s*$', got.stdout.strip())
     if got.returncode != 0 or not m:
         return None
     return int(m.group(1)), m.group(2), m.group(3)
@@ -4011,11 +4028,13 @@ def keep_read():
         try:
             lines = user_auth_read(p)
             if lines:
-                keys[p.pw_name] = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith('#')][:200]
+                # Only the lines put back (1.0.252): junk lines of a user's own made the keep too
+                # big to be read back, and nobody's users or keys were put back.
+                keys[p.pw_name] = keep_lines_short(lines)
         except Exception:                               # noqa: BLE001
             pass
     try:
-        root = [ln for ln in auth_lines() if ln.strip() and not ln.lstrip().startswith('#')][:200]
+        root = keep_lines_short(auth_lines())
     except Exception:                                   # noqa: BLE001
         root = []
     sel = {}
@@ -4026,6 +4045,21 @@ def keep_read():
                 sel[b] = got.stdout.strip().endswith('on')
     return {'users': users[:500], 'keys': keys, 'root_keys': root, 'selinux': sel,
             'admin_group': admin, 'at': time.time()}
+
+
+def keep_lines_short(lines):
+    """The lines of an authorized_keys kept, 200 at most, none longer than a key can be (1.0.252):
+    a user's own junk lines made the keep too big to be read back, and nobody's users or keys
+    were put back. Lines with options stay kept - counted, when put back, as not put back."""
+    out, size = [], 0
+    for ln in lines:
+        if not ln.strip() or ln.lstrip().startswith('#') or len(ln) > 16500:
+            continue
+        size += len(ln)
+        if len(out) >= 200 or size > 256 * 1024:
+            break
+        out.append(ln)
+    return out
 
 
 def keep_key_lines(lines):
@@ -4164,7 +4198,8 @@ def keep_putback(k):
 def users_part():
     d = web_fd()
     try:
-        raw = read_req(USERS_ASK, 4 * 1024 * 1024)
+        # 16 MB (1.0.252): a machine's keep put back - its users and their keys - can be more than 4.
+        raw = read_req(USERS_ASK, 16 * 1024 * 1024)
     except FileNotFoundError:
         return
     except (Refused, OSError):
@@ -6234,6 +6269,26 @@ def main(argv):
         if t:
             sshd_disarm(t)
             _drop(SSHD_STATE)
+        # Passwords kept off (1.0.252): with otp's code they came through keyboard-interactive,
+        # which otp's PAM block ended in pam_deny - the block gone, the system's PAM let the Unix
+        # password alone in over it.
+        drop = os.path.join(SSH_DIR, SSHD_DROPIN)
+        text = _read_or(drop)
+        # Not where a key and then the code is asked (AuthenticationMethods ...keyboard-interactive):
+        # switched off, those users - root too - could no longer sign in at all, and with the line
+        # for everybody sshd did not start again. There it stays as before: a key, then the system's
+        # PAM.
+        if text and re.search(r'(?mi)^\s*PasswordAuthentication\s+no\b', text) and \
+                re.search(r'(?mi)^\s*KbdInteractiveAuthentication\s+yes\b', text) and \
+                not re.search(r'(?mi)^\s*AuthenticationMethods\b.*keyboard-interactive', text):
+            new = re.sub(r'(?mi)^(\s*)KbdInteractiveAuthentication\s+yes\b',
+                         r'\1KbdInteractiveAuthentication no', text)
+            _put_file(drop, new, 0o600)
+            try:
+                sshd_reload()
+                said = (said + '; ' if said else '') + 'keyboard-interactive off again, as passwords are'
+            except Refused as e:
+                said = (said + '; ' if said else '') + str(e)
         print(said or 'sshd\'s PAM had nothing of otp in it')
         return 0
     if argv[:1] == ['--os-job'] and len(argv) >= 3 and argv[2] in ('check', 'upgrade'):

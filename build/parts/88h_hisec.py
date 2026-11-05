@@ -358,6 +358,19 @@ def hisec_guard_settings(store, checked):
     after = dict(CONFIG)
     after.update(checked)
     if checked.get('high_security') and not CONFIG.get('high_security'):
+        # Not with a change on trial (1.0.252): looked at as it is on trial, it passed - and what
+        # came back by itself (the administration open to all, SSH with passwords) was never
+        # looked at.
+        waiting = [t.get('words') for t in trials_view(store)]
+        try:
+            for n in host_nodes(store):
+                if fnum(odict(sshd_now(store, n).get('trial')).get('until')) > time.time() - 60:
+                    waiting.append('the change of the SSH server on %s' % n)
+        except Exception:                               # noqa: BLE001
+            pass
+        if waiting:
+            raise BadSetting('high security: keep or put back what is on trial first - %s'
+                             % '; '.join(w for w in waiting if w))
         got = hisec_findings(store, after)
         if got['block']:
             raise HiSecConflict(got)

@@ -601,7 +601,11 @@ class Storage(object):
         except Exception:                               # noqa: BLE001
             pass
         try:
-            self.db.upsert('meta', 'k', {'k': mark, 'v': __version__})
+            # Not while a column is missing (1.0.252), by the daemon: it tries again while it runs,
+            # and writes it then. A quick one (the command line) writes it - it does not try every
+            # 20 s the tables' locks again.
+            if quick or not getattr(self.db, 'columns_missing', False):
+                self.db.upsert('meta', 'k', {'k': mark, 'v': __version__})
         except Exception:                               # noqa: BLE001
             pass
         if CONFIG.get('ha_mode') == 'replicated' and db.engine == 'postgres':
@@ -1182,6 +1186,26 @@ class Storage(object):
             args.append(kind)
         return self.db.rows(sql + ' ORDER BY last DESC', args)
 
+    def session_bump(self, ident, field):
+        """A count in a session's data one higher, as the database holds it now (1.0.252). The new
+        count; 0 once the session is gone."""
+        for _round in range(16):
+            raw = self.db.value('SELECT data FROM sessions WHERE id = ?', (ident,))
+            if raw is None:
+                return 0
+            try:
+                data = json.loads(raw or '{}')
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            n = int(fnum(data.get(field))) + 1
+            data[field] = n
+            if self.db.run('UPDATE sessions SET data = ? WHERE id = ? AND data = ?',
+                           (json.dumps(data), ident, raw)):
+                return n
+        return 0
+
     def session_drop(self, ident):
         self.db.run('DELETE FROM sessions WHERE id = ?', (int(ident),))
 
@@ -1424,8 +1448,10 @@ class Storage(object):
         if not re.match(r'^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}\Z', name):
             raise ValueError('a realm needs a name: letters, digits, dots, dashes and spaces')
         suffix = str(data.get('suffix') or '').strip().lstrip('@').lower()
-        if len(suffix) > 253:
-            raise ValueError('a realm is 253 characters at most')    # as a DNS name (1.0.249)
+        # 190 on MariaDB (1.0.252): its column is VARCHAR(190) - a longer one refused there, or cut.
+        most = 190 if self.db.engine == 'mariadb' else 253
+        if len(suffix) > most:
+            raise ValueError('a realm is %d characters at most' % most)    # as a DNS name (1.0.249)
         if suffix and suffix != '*' and not re.match(r'^[a-z0-9][a-z0-9.-]*\Z', suffix):
             raise ValueError('the realm is what comes after the @ - example.cz - or * for '
                              'every name, or nothing for names written without one')

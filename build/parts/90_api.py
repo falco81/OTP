@@ -2783,7 +2783,7 @@ def _clients_do(h):
     if act == 'secret':
         h.me('fulladmin')
         one = next((c for c in h.store.clients(with_secret=True)
-                    if c['id'] == int(b.get('id') or 0)), None)
+                    if c['id'] == _int_id(b.get('id'))), None)
         if not one:
             raise ApiError(404, 'no such client')
         h.store.add_event('clients', '%s looked at the shared secret of %s' % (
@@ -3030,7 +3030,7 @@ def _dirs_do(h):
         return {'people': out, 'realm': realm['name']}
     if act == 'ca':
         s = h.me('fulladmin')
-        one = next((x for x in h.store.directories() if x['id'] == int(b.get('id') or 0)), None)
+        one = next((x for x in h.store.directories() if x['id'] == _int_id(b.get('id'))), None)
         if not one:
             raise ApiError(404, 'there is no such directory')
         pem = str(b.get('ca') or '').strip()
@@ -3774,7 +3774,7 @@ def _sessions(h):
 @route('POST', '/api/sessions')
 def _sessions_do(h):
     s = h.me('fulladmin')
-    ident = int(h.body().get('id') or 0)
+    ident = _int_id(h.body().get('id'))
     row = h.store.db.row('SELECT kind, name, ip FROM sessions WHERE id = ?', (ident,))
     if not row:
         # Gone already (1.0.61): not written down as "ended the sign-in of ?".
@@ -5045,12 +5045,25 @@ def portal_gate_where(entry):
     return None, None, '; '.join(tried) or 'nothing to send it to'
 
 
+def portal_sends_back(store, *names):
+    """Counted as sent, nothing went (1.0.252, as code_send_later since 1.0.225): the same count
+    RADIUS uses - a few tries on the enrolment pages in a mail outage shut the person's codes out."""
+    for n in names:
+        try:
+            node_key_give_back(store, 'codesent', n)
+        except Exception:                               # noqa: BLE001
+            pass
+
+
 def portal_gate_send(h, name, kind, dest, display='', lang=''):
     """A one-time code sent for the enrolment sign-in: the gate to keep in the session."""
     key = h.throttle('portal-send', 10 * int(CONFIG.get('code_send_max') or 5),
                      int(CONFIG.get('code_send_window_min') or 15), name=name, what='codes sent')
-    if not code_send_allowed(h.store, name) or \
-            not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
+    if not code_send_allowed(h.store, name):
+        raise ApiError(429, 'too many codes were sent - wait %d min and try again'
+                       % code_send_wait_min(h.store, name))
+    if not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
+        portal_sends_back(h.store, name)
         raise ApiError(429, 'too many codes were sent - wait %d min and try again'
                        % code_send_wait_min(h.store, 'to:%s:%s' % (kind, dest.lower())))
     h.failed(key)       # a code that goes holds its place
@@ -5059,6 +5072,7 @@ def portal_gate_send(h, name, kind, dest, display='', lang=''):
     try:
         code_send(h.store, kind, dest, code, 'portal', name=name, lang=lang, display=display or '')
     except (MailError, SmsError) as e:
+        portal_sends_back(h.store, name, 'to:%s:%s' % (kind, dest.lower()))
         h.store.add_event('enrolment', 'the one-time code for %s to sign in to the enrolment pages '
                           'could not be sent to %s: %s' % (name, dest, e), 'warn', who=name)
         # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
@@ -5518,6 +5532,11 @@ def portal_token_mark(tok):
                                                      .encode('utf-8')).hexdigest()[:24])
 
 
+def portal_old_same(h, s, old):
+    """Whether the code sent to the old token is for the token there now (1.0.252)."""
+    return not old.get('mark') or old.get('mark') == portal_token_mark(h.store.token(s['name']))
+
+
 def portal_may_replace(h, s):
     """Whether this session proved the token there is now - not one an administrator put in
     its place meanwhile (1.0.224: a phone stolen, the token made again by an administrator,
@@ -5828,9 +5847,12 @@ def _portal_enroll(h):
         key = h.throttle('portal-send', 10 * int(CONFIG.get('code_send_max') or 5),
                          int(CONFIG.get('code_send_window_min') or 15), name=s['name'],
                          what='codes sent')
-        if not code_send_allowed(h.store, s['name']) or \
-                not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
-            # Nothing sent: the address's place given back (1.0.103).
+        if not code_send_allowed(h.store, s['name']):
+            raise ApiError(429, 'too many codes were sent - wait %d min and try again'
+                           % code_send_wait_min(h.store, s['name']))
+        if not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
+            # Nothing sent: the address's place given back (1.0.103), the name's too (1.0.252).
+            portal_sends_back(h.store, s['name'])
             raise ApiError(429, 'too many codes were sent - wait %d min and try again'
                            % code_send_wait_min(h.store, 'to:%s:%s' % (kind, dest.lower())))
         h.failed(key)       # a code that goes holds its place
@@ -5844,6 +5866,7 @@ def _portal_enroll(h):
             code_send(h.store, kind, dest, code, 'verify', name=s['name'],
                       lang=page_lang or None, fmt=fmt or None)
         except (MailError, SmsError) as e:
+            portal_sends_back(h.store, s['name'], 'to:%s:%s' % (kind, dest.lower()))
             h.store.add_event('enrolment', 'the code to check %s for %s could not be sent: %s'
                               % (dest, s['name'], e), 'warn', who=s['name'])
             # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
@@ -5962,11 +5985,14 @@ def _portal_sendold(h):
         code_send(h.store, kind, tok.get('dest') or '', code, 'signin', name=s['name'],
                   lang=page_lang if page_lang in ('cs', 'en') else None)
     except (MailError, SmsError) as e:
+        portal_sends_back(h.store, s['name'])
         h.store.add_event('enrolment', 'the code for %s to replace the token could not be sent: %s'
                           % (s['name'], e), 'warn', who=s['name'])
         # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
         raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
-    portal_data_set(h, s, old={'code': code_hash(s['name'], code),
+    # The token it was sent for, beside it (1.0.252): replaced or sent elsewhere meanwhile by an
+    # administrator, the code of the old phone was still proof - and took over the new token.
+    portal_data_set(h, s, old={'code': code_hash(s['name'], code), 'mark': portal_token_mark(tok),
                                'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300)})
     return {'sent_to': dest_masked(kind, tok.get('dest'))}
 
@@ -5990,7 +6016,7 @@ def _portal_codes(h):
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
     code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     old = odict(s.get('data')).get('old') or {}
-    if old and fnum(old.get('exp')) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and portal_old_same(h, s, old) and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'
         if not h.store.session_take(s['id'], 'old'):
@@ -6078,7 +6104,7 @@ def portal_reissue_password(h, s, realm, b, key):
 def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
     old = odict(s.get('data')).get('old') or {}
-    if old and fnum(old.get('exp')) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and portal_old_same(h, s, old) and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'               # 1.0.76
         if not h.store.session_take(s['id'], 'old'):         # once (1.0.101)
@@ -6567,6 +6593,8 @@ def _ha_do(h):
         except ValueError as e:
             raise ApiError(400, str(e))
     if act == 'forget':
+        if h.store.db.value('SELECT 1 FROM meta WHERE k = ?', ('node:' + str(b.get('name') or ''),)) is None:
+            raise ApiError(404, 'there is no node called %s in the list' % str(b.get('name') or '')[:60])
         try:
             ha_forget(h.store, str(b.get('name') or ''))
         except ValueError as e:

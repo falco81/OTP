@@ -110,6 +110,9 @@ function i18nPattern(source, text, rich) {
 function i18nWordy(m, depth) {
   for (var i = 1; i < m.length; i++) {
     if (!/[A-Za-z]{2,}[^A-Za-z]+[A-Za-z]{2,}/.test(m[i] || '')) continue;
+    /* No space in it: one name (1.0.252) - an address, a host - not several words: "A mail to
+       novak@corpnet.cz" stayed English. */
+    if (!/\S\s+\S/.test(m[i] || '')) continue;
     /* Several words are still a slot's worth when they are a text of the
        page's own: "Started {0}." around "2 min ago". */
     if ((depth || 0) < I18N_DEEP && i18nWork(m[i], (depth || 0) + 1) !== null) continue;

@@ -629,7 +629,10 @@ class Db(object):
         """No time limit on this connection's statements meanwhile: the
         tables made and the columns added at start - an index made on a
         large log may take minutes."""
-        if self.engine == 'sqlite' or not self.statement_s:
+        # MariaDB's driver's wait for an answer taken away with no limit of the server's too
+        # (1.0.252): OPTIMIZE and CHECK TABLE of a connection of its own (statement_s 0) were cut
+        # at its 300 s.
+        if self.engine == 'sqlite' or (not self.statement_s and self.engine != 'mariadb'):
             yield
             return
         off, on = (('SET statement_timeout = 0', 'SET statement_timeout = %d' % (
@@ -644,7 +647,8 @@ class Db(object):
             except Exception:                           # noqa: BLE001
                 pass
             try:
-                self.run(RawSql(off))
+                if self.statement_s:
+                    self.run(RawSql(off))
             except Exception:                           # noqa: BLE001
                 pass
             # MariaDB's driver waits only so long for an answer (1.0.249): the server's limit taken
@@ -669,7 +673,8 @@ class Db(object):
                     except Exception:                   # noqa: BLE001
                         pass
                 try:
-                    self.run(RawSql(on))
+                    if self.statement_s:
+                        self.run(RawSql(on))
                 except Exception:                       # noqa: BLE001
                     pass
 
@@ -1130,6 +1135,19 @@ END $f$""")
         with self.unlimited():
             return self._add_missing_columns()
 
+    def add_columns_again(self):
+        """A column that could not be added at the start (another node's pg_dump holding the table,
+        1.0.252) tried again: True once none is missing."""
+        if not getattr(self, 'columns_missing', False):
+            return True
+        self.columns_missing = False
+        try:
+            with self.unlimited():
+                self._add_missing_columns()
+        except Exception:                               # noqa: BLE001
+            self.columns_missing = True
+        return not self.columns_missing
+
     def _add_missing_columns(self):
         """A column added in a later version, added to a database made by an
         earlier one. Read off the CREATE statements above, so there is one
@@ -1148,6 +1166,9 @@ END $f$""")
                 try:
                     self.run('ALTER TABLE %s ADD COLUMN %s %s' % (name, col, kind))
                 except Exception as e:
+                    # Remembered (1.0.252): the version's mark was written anyway, and the column
+                    # was missing until the daemon started anew - it tries again (add_columns_again).
+                    self.columns_missing = True
                     log('could not add the column %s.%s: %s' % (name, col, e), 'warn')
 
     def size(self):

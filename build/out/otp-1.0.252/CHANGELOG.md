@@ -4,6 +4,79 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.252 — 5 November 2026
+
+Three rounds of looking for bugs and security holes, in HA, standalone, the root helper, the pages
+and the installer.
+
+Security
+- **Uninstall and installer**: `install.sh` never put `acme.php` and `metrics.php` in: every ACME
+  HTTP-01 order and every Prometheus scrape got 404. Both are put in now. An uninstall with SSH
+  passwords off no longer lets the Unix password in through keyboard-interactive (otp's PAM block
+  is gone); where a key and then the code is asked, it is left as it was.
+- **The root helper**: `pg_hba.conf` is changed only when it is a file of the account postgres -
+  whatever answered on PostgreSQL's socket named the file root rewrote. The machine's keep of
+  `authorized_keys` is capped (too big, nobody's users or keys were put back after a restore).
+  Security keys (`sk-ssh-ed25519`, `sk-ecdsa`) are read: they were refused, never dropped and not
+  counted as root's keys.
+- **The administrators' second step**: five wrong codes end the sign-in, the password is asked
+  again (only the throttle held in memory counted). Switching the second step on ends the other
+  sign-ins again - it ended none since the settings were read after the check.
+- **The enrolment pages**: a code sent to the old token is proof only for that token - replaced by
+  an administrator meanwhile, it took over the new one. Codes counted as sent when nothing went
+  (the mail or SMS server away) are given back.
+- **High security** is not switched on while a change is on trial (the firewall, SSH) - what came
+  back by itself was never looked at. `otp --selinux permissive` is refused under high security,
+  as on the pages. The database guard reads the settings through it at the start and on the
+  command line too: unsigned rows were taken until the first change of a setting.
+- **Backups**: the first pin of an FTPS certificate over another check asks for the saved password
+  again; a download or an upload looks for room on the disk first.
+- `DOWNGRADE_FLOOR` is 1.0.252.
+
+HA and standalone
+- A **Back up now** of the other node was started again and again (its done list was cut by sorted
+  order, not by age).
+- **Database guard**: guard.json counted as there once written (a warning a minute, and the
+  version's rows never taken in); an older node counted in a cluster with no `ha_mode`; otp's own
+  `fw_trial_back` claimed signed (it raised a tamper alert at every firewall trial run out).
+- **A cluster of one shared database** made from the pages or the command line makes each node's
+  own settings `key@node` (RADIUS address and ports, mail HELO...): the second node bound the
+  first one's address. A second bundle with another address of the other node puts it in; a join
+  under the first node's own name is refused; a node alone again can change its own settings (its
+  row of the cluster before hid every save).
+- `--ha-renamed` refuses a node answering now; a node forgotten on the pages drops its maintenance
+  and upgrade rows when it does not answer; the joining address is let in only until the node has
+  joined.
+- Asks written by a node renamed or taken out are taken away too.
+- **Updates of the system**: stopped while a node was out of service, it comes back; a restart
+  after an update that failed later ends the update (the node stayed "restarting" in maintenance,
+  everything else refused) and is said as a bad event; a maintenance set by hand is kept.
+- **Upgrades of otp**: a maintenance left by an upgrade that failed is no hand maintenance (sent
+  again, it ended "back in service" with the node still out); not started beside an update of the
+  system, a network change or a restart.
+- **Time**: "Set this node's clock now" of the other node is an ask by its value, not a time set
+  against that node's clock (a clock 5 minutes ahead never took it).
+- **Database**: a column that could not be added at the start (another node's pg_dump holding the
+  table) is tried again while the daemon runs; MariaDB's OPTIMIZE and CHECK TABLE are no longer cut
+  at 300 s; a realm is 190 characters at most on MariaDB (its column).
+- Logs: the encryption of the link between the databases, and housekeeping errors that are not the
+  database's, spared (a line every 5 s); SIGHUP takes config.json as read only once read; work
+  folders left by a restart (the verify's, uploads, restores, the MariaDB dump) taken away.
+- Alerts: scheduled updates and restarts that did not start, an SSH change refused, a restart after
+  an update that failed.
+
+Pages
+- Settings → SSH server and the split card take the saved wish again while nothing waits to be
+  saved; the password policy says a draft is not saved, and takes the saved one again when
+  untouched. Clear puts each time picker to its own default (Events: all time). The lockouts'
+  countdown goes on after the browser tab was hidden. The SELinux report is waited for by each
+  node's own clock.
+- The Overview's "Refused, last 24 h" counts sign-ins only, as the line under it.
+- Accessibility: switches named by their words; the password policy's boxes named by their labels;
+  Czech help with markup read out in Czech.
+- Czech: e-mail addresses and host names in a text no longer keep it English ("A mail to…"); the
+  RADIUS reasons and every new text.
+
 ## 1.0.251 — 5 November 2026
 
 - **Settings → Local users → Password policy**: every setting has an (i) - what it does, which

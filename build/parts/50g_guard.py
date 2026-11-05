@@ -180,6 +180,10 @@ def dbguard_flush(force=False):
             st = os.stat(str(STATE_DIR))
             owner = (st.st_uid, st.st_gid)
         write_replacing(DBGUARD_FILE, data, 0o600, owner=owner)
+        # The file is there from now on (1.0.252): still taken as missing, every flush put the
+        # versions held back for a node of a version before into 'adopted' again - a warning a
+        # minute, and its rows never taken in once it ran the new version.
+        DBGUARD['had_file'] = True
     except Exception as e:                              # noqa: BLE001
         log_sparing('guard-file', 'the counters of signed rows could not be written to %s: %s'
                     % (DBGUARD_FILE, e), 'warn', every=600)
@@ -498,7 +502,9 @@ def _dbguard_older_nodes(store):
     the rows were taken in meanwhile, and what it wrote once back was refused for ever."""
     out = {}
     try:
-        nodes = ha_nodes(store) if CONFIG.get('ha_mode') else []
+        # Whatever the mode says (1.0.252): a cluster on one database made before ha_mode, or by
+        # hand, has none - and a node alone lists only itself.
+        nodes = ha_nodes(store)
     except Exception:                                   # noqa: BLE001
         nodes = []
     for n in nodes:
@@ -635,6 +641,16 @@ def dbguard_tidy(store):
                 except (ValueError, TypeError, AttributeError):
                     pass
                 store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+        # Their counts too (1.0.252): two for every sign-in to the pages, in memory and guard.json,
+        # kept for ever.
+        pre = {k.rsplit(':', 1)[0] for k in have}
+        _dbguard_load()
+        with DBGUARD['lock']:
+            for m in ('seen', 'seen_h'):
+                d = DBGUARD.get(m) or {}
+                for k in [k for k in d if k.startswith('sig:x:') and k.rsplit(':', 1)[0] not in pre]:
+                    d.pop(k, None)
+                    DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
     except Exception:                                   # noqa: BLE001
         pass
     dbguard_flush()

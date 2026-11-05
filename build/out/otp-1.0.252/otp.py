@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.251'
+__version__ = '1.0.252'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -106,7 +106,9 @@ __version__ = '1.0.251'
 # 1.0.249: 1.0.249 - holes of the root helper fixed in 1.0.248 and 1.0.249 (a report written
 # through a link, PostgreSQL's files read through one, a FIFO): the otp account could have root put
 # a signed older version in, and with it the hole.
-DOWNGRADE_FLOOR = '1.0.249'
+# 1.0.252: 1.0.252 - holes of the root helper fixed in 1.0.252 (pg_hba.conf as whatever answered on
+# PostgreSQL's socket named it - /etc/shadow too) and the admin's second step guessed without end.
+DOWNGRADE_FLOOR = '1.0.252'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -4055,7 +4057,10 @@ class Db(object):
         """No time limit on this connection's statements meanwhile: the
         tables made and the columns added at start - an index made on a
         large log may take minutes."""
-        if self.engine == 'sqlite' or not self.statement_s:
+        # MariaDB's driver's wait for an answer taken away with no limit of the server's too
+        # (1.0.252): OPTIMIZE and CHECK TABLE of a connection of its own (statement_s 0) were cut
+        # at its 300 s.
+        if self.engine == 'sqlite' or (not self.statement_s and self.engine != 'mariadb'):
             yield
             return
         off, on = (('SET statement_timeout = 0', 'SET statement_timeout = %d' % (
@@ -4070,7 +4075,8 @@ class Db(object):
             except Exception:                           # noqa: BLE001
                 pass
             try:
-                self.run(RawSql(off))
+                if self.statement_s:
+                    self.run(RawSql(off))
             except Exception:                           # noqa: BLE001
                 pass
             # MariaDB's driver waits only so long for an answer (1.0.249): the server's limit taken
@@ -4095,7 +4101,8 @@ class Db(object):
                     except Exception:                   # noqa: BLE001
                         pass
                 try:
-                    self.run(RawSql(on))
+                    if self.statement_s:
+                        self.run(RawSql(on))
                 except Exception:                       # noqa: BLE001
                     pass
 
@@ -4556,6 +4563,19 @@ END $f$""")
         with self.unlimited():
             return self._add_missing_columns()
 
+    def add_columns_again(self):
+        """A column that could not be added at the start (another node's pg_dump holding the table,
+        1.0.252) tried again: True once none is missing."""
+        if not getattr(self, 'columns_missing', False):
+            return True
+        self.columns_missing = False
+        try:
+            with self.unlimited():
+                self._add_missing_columns()
+        except Exception:                               # noqa: BLE001
+            self.columns_missing = True
+        return not self.columns_missing
+
     def _add_missing_columns(self):
         """A column added in a later version, added to a database made by an
         earlier one. Read off the CREATE statements above, so there is one
@@ -4574,6 +4594,9 @@ END $f$""")
                 try:
                     self.run('ALTER TABLE %s ADD COLUMN %s %s' % (name, col, kind))
                 except Exception as e:
+                    # Remembered (1.0.252): the version's mark was written anyway, and the column
+                    # was missing until the daemon started anew - it tries again (add_columns_again).
+                    self.columns_missing = True
                     log('could not add the column %s.%s: %s' % (name, col, e), 'warn')
 
     def size(self):
@@ -7227,7 +7250,11 @@ class Storage(object):
         except Exception:                               # noqa: BLE001
             pass
         try:
-            self.db.upsert('meta', 'k', {'k': mark, 'v': __version__})
+            # Not while a column is missing (1.0.252), by the daemon: it tries again while it runs,
+            # and writes it then. A quick one (the command line) writes it - it does not try every
+            # 20 s the tables' locks again.
+            if quick or not getattr(self.db, 'columns_missing', False):
+                self.db.upsert('meta', 'k', {'k': mark, 'v': __version__})
         except Exception:                               # noqa: BLE001
             pass
         if CONFIG.get('ha_mode') == 'replicated' and db.engine == 'postgres':
@@ -7808,6 +7835,26 @@ class Storage(object):
             args.append(kind)
         return self.db.rows(sql + ' ORDER BY last DESC', args)
 
+    def session_bump(self, ident, field):
+        """A count in a session's data one higher, as the database holds it now (1.0.252). The new
+        count; 0 once the session is gone."""
+        for _round in range(16):
+            raw = self.db.value('SELECT data FROM sessions WHERE id = ?', (ident,))
+            if raw is None:
+                return 0
+            try:
+                data = json.loads(raw or '{}')
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            n = int(fnum(data.get(field))) + 1
+            data[field] = n
+            if self.db.run('UPDATE sessions SET data = ? WHERE id = ? AND data = ?',
+                           (json.dumps(data), ident, raw)):
+                return n
+        return 0
+
     def session_drop(self, ident):
         self.db.run('DELETE FROM sessions WHERE id = ?', (int(ident),))
 
@@ -8050,8 +8097,10 @@ class Storage(object):
         if not re.match(r'^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}\Z', name):
             raise ValueError('a realm needs a name: letters, digits, dots, dashes and spaces')
         suffix = str(data.get('suffix') or '').strip().lstrip('@').lower()
-        if len(suffix) > 253:
-            raise ValueError('a realm is 253 characters at most')    # as a DNS name (1.0.249)
+        # 190 on MariaDB (1.0.252): its column is VARCHAR(190) - a longer one refused there, or cut.
+        most = 190 if self.db.engine == 'mariadb' else 253
+        if len(suffix) > most:
+            raise ValueError('a realm is %d characters at most' % most)    # as a DNS name (1.0.249)
         if suffix and suffix != '*' and not re.match(r'^[a-z0-9][a-z0-9.-]*\Z', suffix):
             raise ValueError('the realm is what comes after the @ - example.cz - or * for '
                              'every name, or nothing for names written without one')
@@ -9019,6 +9068,10 @@ def dbguard_flush(force=False):
             st = os.stat(str(STATE_DIR))
             owner = (st.st_uid, st.st_gid)
         write_replacing(DBGUARD_FILE, data, 0o600, owner=owner)
+        # The file is there from now on (1.0.252): still taken as missing, every flush put the
+        # versions held back for a node of a version before into 'adopted' again - a warning a
+        # minute, and its rows never taken in once it ran the new version.
+        DBGUARD['had_file'] = True
     except Exception as e:                              # noqa: BLE001
         log_sparing('guard-file', 'the counters of signed rows could not be written to %s: %s'
                     % (DBGUARD_FILE, e), 'warn', every=600)
@@ -9337,7 +9390,9 @@ def _dbguard_older_nodes(store):
     the rows were taken in meanwhile, and what it wrote once back was refused for ever."""
     out = {}
     try:
-        nodes = ha_nodes(store) if CONFIG.get('ha_mode') else []
+        # Whatever the mode says (1.0.252): a cluster on one database made before ha_mode, or by
+        # hand, has none - and a node alone lists only itself.
+        nodes = ha_nodes(store)
     except Exception:                                   # noqa: BLE001
         nodes = []
     for n in nodes:
@@ -9474,6 +9529,16 @@ def dbguard_tidy(store):
                 except (ValueError, TypeError, AttributeError):
                     pass
                 store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+        # Their counts too (1.0.252): two for every sign-in to the pages, in memory and guard.json,
+        # kept for ever.
+        pre = {k.rsplit(':', 1)[0] for k in have}
+        _dbguard_load()
+        with DBGUARD['lock']:
+            for m in ('seen', 'seen_h'):
+                d = DBGUARD.get(m) or {}
+                for k in [k for k in d if k.startswith('sig:x:') and k.rsplit(':', 1)[0] not in pre]:
+                    d.pop(k, None)
+                    DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
     except Exception:                                   # noqa: BLE001
         pass
     dbguard_flush()
@@ -15806,8 +15871,11 @@ def names_letters_kept(daemon):
     store.set_meta(key, '1')
 
 
+# 1.0.252: the verify's (a backup opened, its key in it), uploads, restores, the MariaDB dump, ACME's,
+# the command line's - left by a restart in the middle of them, for good.
 STALE_WORK = ('otp-rbackup-', 'otp-putback-', 'otp-download-', 'otp-dl-', 'otp-peek-',
-              'otp-fetch-')
+              'otp-fetch-', 'otp-verify-', 'otp-upload-', 'otp-restore-', 'otp-sql-', 'otp-acme-',
+              'otp-dns-', '.otp-cli-')
 
 
 def stale_work_away(older=6 * 3600):
@@ -16818,6 +16886,10 @@ class Daemon(object):
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)
+            # A node alone again with its own row of a cluster before (1.0.252): read over the
+            # plain one, it kept the old value - every save said "saved", and changed nothing.
+            if k in NODE_KEYS and not many and (k + '@' + node_name()) in saved_now:
+                self.store.drop_setting(k + '@' + node_name())
         SAVED_KEYS['at'] = 0.0          # read again by the web state (1.0.239)
         said = []
         if 'db_guard' in file_side:
@@ -16855,6 +16927,10 @@ class Daemon(object):
                              else '',
                          '***' if k in SECRET_KEYS else json.dumps(v, ensure_ascii=False))
                 for k, v in sorted(checked.items())), who=by)
+        self.changed('settings')
+        self.reload_all()
+        # After the settings are read again (1.0.252): before it, CONFIG still had the old value
+        # and no sign-in was ever ended.
         if not was_2fa and CONFIG.get('admin_2fa'):
             # The second step for those signed in already too (1.0.149): their
             # sessions, opened with the password alone, stayed whole for hours.
@@ -16869,8 +16945,6 @@ class Daemon(object):
                                          'sign-in(s) to the pages ended' % gone, 'warn', who=by)
             except Exception as e:                      # noqa: BLE001
                 log('the sign-ins to the pages could not be ended: %s' % e, 'warn')
-        self.changed('settings')
-        self.reload_all()
         return {'message': ' '.join(['%d setting(s) saved.' % len(checked)] + said),
                 'saved': sorted(checked)}
 
@@ -16929,10 +17003,14 @@ class Daemon(object):
         last = self.store.db.row("SELECT ts, result, username FROM radius_log WHERE packet = "
                                  "'Access-Request' ORDER BY ts DESC LIMIT 1")
         day = time.time() - 86400
+        # Sign-ins only, as the Overview's chart counts them (1.0.252): a packet of a stranger or of
+        # another kind dropped made the card say one more than the line under it.
         acc = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "result = 'accept'", (day,), 0) or 0)
+                                      "packet = 'Access-Request' AND result = 'accept'",
+                                      (day,), 0) or 0)
         rej = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "result IN ('reject', 'drop')", (day,), 0) or 0)
+                                      "packet = 'Access-Request' AND result IN ('reject', 'drop')",
+                                      (day,), 0) or 0)
         serial = self.store.db.value('SELECT MAX(id) AS n FROM radius_log', (), 0) or 0
         ev = self.store.db.value('SELECT MAX(id) AS n FROM events', (), 0) or 0
         r = self.radius.state() if self.radius else {}
@@ -17355,6 +17433,15 @@ class Daemon(object):
                     ha_watch_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
                     log_sparing('tick:ha_watch:' + str(e)[:80], 'the cluster\'s history: %s' % e, 'warn', 3600)
+                if getattr(self.store.db, 'columns_missing', False) and \
+                        time.monotonic() - getattr(self, '_cols_again', 0) > 600:
+                    # A column missing at the start, tried again (1.0.252): every write that used
+                    # it failed until the next restart.
+                    self._cols_again = time.monotonic()
+                    if self.store.db.add_columns_again():
+                        self.store.db.upsert('meta', 'k', {'k': 'schema:%s' % node_name(),
+                                                           'v': __version__})
+                        log('the columns missing at the start are there now')
                 if time.monotonic() - last_tidy > 3600:
                     last_tidy = time.monotonic()
                     # In a thread of its own (1.0.57): long directory lookups
@@ -17393,7 +17480,12 @@ class Daemon(object):
                 except Exception:                       # noqa: BLE001
                     pass
             except Exception as e:
-                log('housekeeping broke: %s\n%s' % (e, traceback.format_exc()), 'error')
+                # Spared too, with where it broke (1.0.252): the driver's own errors (a disk full,
+                # a server read-only, a file locked) are no DbError - a traceback every 5 s, onto
+                # the disk that was full.
+                log_sparing('housekeeping:' + type(e).__name__ + str(e)[:40],
+                            'housekeeping broke: %s\n%s' % (e, traceback.format_exc()),
+                            'error', every=300)
         try:
             self.store.add_event('starting and stopping', 'otp stopped on %s' % node_name())
         except Exception:                               # noqa: BLE001
@@ -17533,9 +17625,11 @@ class Daemon(object):
         if sig is not None and sig == getattr(self, 'conf_sig', None):
             log('the logs opened again (SIGHUP; config.json as it was)')
             return
-        self.conf_sig = sig
         try:
             self.reload_all('SIGHUP')
+            # Only once read (1.0.252): taken as read when it failed, every SIGHUP after it saw
+            # the same file and only opened the logs again.
+            self.conf_sig = sig
         except Exception as e:
             log('reading the configuration again failed: %s' % e, 'error')
 
@@ -18004,7 +18098,9 @@ def db_check(db):
     if db.engine == 'mariadb':
         ok = True
         for t in TABLES:
-            for r in db.rows('CHECK TABLE %s' % t):
+            with db.unlimited():                # minutes on a large log (1.0.252)
+                got = db.rows('CHECK TABLE %s' % t)
+            for r in got:
                 v = {k.lower(): x for k, x in r.items()}
                 if str(v.get('msg_type')).lower() in ('error', 'warning') or \
                         str(v.get('msg_text')).lower() not in ('ok', 'table is already up to date'):
@@ -18067,7 +18163,8 @@ def _db_give_back(db, progress):
         for i, t in enumerate(TABLES):
             progress(i, len(TABLES), t)
             if db.engine == 'mariadb':
-                db.rows('OPTIMIZE TABLE %s' % t)
+                with db.unlimited():            # minutes on a large log (1.0.252)
+                    db.rows('OPTIMIZE TABLE %s' % t)
             else:
                 db.run('VACUUM (FULL, ANALYZE) %s' % t)
     after = db.size()
@@ -23038,9 +23135,14 @@ def rb_run(store, by, only=None, progress=None):
                 tr.close()
             one['secs'] = round(time.time() - t0, 1)
             run['targets'].append(one)
-            rb_set_fields(store, t['id'], '', '', last={
-                'at': time.time(), 'ok': one['ok'], 'error': one.get('error') or '',
-                'file': m['file'], 'bytes': m['bytes']})
+            try:
+                rb_set_fields(store, t['id'], '', '', last={
+                    'at': time.time(), 'ok': one['ok'], 'error': one.get('error') or '',
+                    'file': m['file'], 'bytes': m['bytes']})
+            except ValueError:
+                # Taken away while the backup went to it (1.0.252): the destinations after it
+                # were never tried.
+                pass
         run['ok'] = all(x['ok'] for x in run['targets'])
     except (RbError, OSError, ValueError, subprocess.SubprocessError) as e:
         run['error'] = scrub_secret(str(e))[:400]
@@ -23172,7 +23274,8 @@ def rb_now_asked(daemon):
     """A Back up now asked of this node by another; started once each."""
     store = daemon.store
     done_k = 'rbackup:nowdone:' + node_name()
-    done = {x for x in json_obj(store.get_meta(done_k), list) or [] if isinstance(x, str)}
+    done_list = [x for x in json_obj(store.get_meta(done_k), list) or [] if isinstance(x, str)]
+    done = set(done_list)
     for r in node_key_rows(store, 'rbackup:now', node_name(), guard=False):
         try:
             ask = json.loads(r['v'] or '{}')
@@ -23189,7 +23292,9 @@ def rb_now_asked(daemon):
             continue
         if RB_JOB['running']:
             return                      # asked again at the next tick
-        store.set_meta(done_k, json.dumps(sorted(done | {ident})[-20:]))
+        # The last 20 in the order done (1.0.252): sorted, an id smaller than the 20 kept was
+        # cut at once and the same ask started again at the next tick, for as long as it was live.
+        store.set_meta(done_k, json.dumps((done_list + [ident])[-20:]))
         rb_job_start(store, '%s (Back up now on %s)' % (ask.get('by') or 'otp',
                                                         ask.get('from') or '?'))
         return
@@ -23250,9 +23355,14 @@ def node_asks_of_gone_tidy(store):
     for prefix in NODE_ASK_PREFIXES:
         for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?", (prefix + ':%',)):
             k = str(r['k'])
-            if not k.endswith(mine) or NODE_KEY_SEP not in k[len(prefix) + 1:]:
+            if NODE_KEY_SEP not in k[len(prefix) + 1:]:
                 continue
-            if node_key_name(prefix, k) in here:
+            # Also an ask written by a node no longer of the cluster (1.0.252): renamed or taken
+            # out before its ask was over, it never took it away - nor anybody else.
+            asker_gone = norm_name(k.rsplit(NODE_KEY_SEP, 1)[1]) not in here
+            if not asker_gone and not k.endswith(mine):
+                continue
+            if not asker_gone and node_key_name(prefix, k) in here:
                 NODE_ASK_GONE.pop(k, None)
                 continue
             seen.add(k)
@@ -23264,7 +23374,7 @@ def node_asks_of_gone_tidy(store):
         if k not in seen:
             NODE_ASK_GONE.pop(k, None)
     if n:
-        log('%d ask(s) of this node for nodes no longer of the cluster taken away' % n)
+        log('%d ask(s) of or by nodes no longer of the cluster taken away' % n)
     return n
 
 
@@ -24125,8 +24235,18 @@ def in_cluster(store=None):
 def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
+    try:
+        alive = any(n['name'] == name and n.get('alive') for n in ha_nodes(store))
+    except Exception:                                   # noqa: BLE001
+        alive = True
     store.drop_meta('node:' + name)
     store.drop_meta('cluster:with:' + name)
+    # Its maintenance and its upgrade too, from the pages as on the command line (1.0.252): put in
+    # again later under the name, it started in maintenance - RADIUS silent, the VIP never there.
+    # Not of a node answering (it writes itself back): its maintenance is its own.
+    if not alive:
+        store.drop_meta('maint:' + name)
+        store.drop_meta('upgrade:node:' + name)
     CLUSTER_WITH.discard('cluster:with:' + name)
 
 
@@ -24189,11 +24309,27 @@ def claim_once(store, key, value):
     if CONFIG.get('ha_mode') == 'replicated' and not key.endswith(':' + node_name()) and \
             not ha_lead(store):
         return False
+    signed = dbguard_meta_signed(key)
     if store.get_meta(key) is None:
         try:
-            store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
+            if signed:
+                with store.db.transaction():
+                    store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
+                    dbguard_sign(store.db, 'm', key, '')
+            else:
+                store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
         except Exception:                               # noqa: BLE001
             pass
+    if signed:
+        # Signed with what it now holds (1.0.252): a row of the guard (fw_trial_back) claimed with
+        # a bare UPDATE was otp's own row refused at its next read - a tamper alert at every
+        # firewall trial run out.
+        with store.db.transaction():
+            won = bool(store.db.run('UPDATE meta SET v = ? WHERE k = ? AND (v IS NULL OR v <> ?)',
+                                    (str(value), key, str(value))))
+            if won:
+                dbguard_sign(store.db, 'm', key, str(value))
+        return won
     return bool(store.db.run('UPDATE meta SET v = ? WHERE k = ? AND (v IS NULL OR v <> ?)',
                              (str(value), key, str(value))))
 
@@ -24433,12 +24569,42 @@ def pg_reach_why(said, host='', port=5432):
     return t
 
 
-def ha_mark_shared(peer=''):
+def ha_own_node_keys(store, me=None, by='otp (cluster made)'):
+    """A node's own settings saved while it was alone (NODE_KEYS) made its own when it becomes
+    the first of a cluster (1.0.206; for one shared database too since 1.0.252): kept as the plain
+    key, they became the cluster's - the second node bound RADIUS to the first one's address
+    and greeted mail servers by its name."""
+    me = me or node_name()
+    held = store.settings_saved()
+    moved = 0
+    for k in NODE_KEYS:
+        if k in held and (k + '@' + me) not in held:
+            store.save_setting(k + '@' + me, held[k], by)
+            store.drop_setting(k)
+            moved += 1
+    return moved
+
+
+def ha_mark_shared(peer='', store=None, me=None):
     """This node the first of a cluster of one shared database (1.0.213): ha_mode
     'shared' written, and the other node's address when it is known - let in by the
     firewall at once, for the join."""
+    if CONFIG.get('ha_mode') == 'shared' and peer and str(peer).strip() != CONFIG.get('ha_peer'):
+        # The other node's address said again, another one (1.0.252): a second bundle after a
+        # typo let the right address in, and keepalived and the firewall went on with the old.
+        write_file_settings({'ha_peer': str(peer).strip()})
+        if os.geteuid() == 0:
+            try:
+                chown_to_service(CONFIG_FILE, 0o640)
+            except Exception:                           # noqa: BLE001
+                pass
+        ha_joining_set([peer], 'bundle', 'the second node')
+        daemon_hup()
+        return
     if CONFIG.get('ha_mode'):
         return
+    if store is not None:
+        ha_own_node_keys(store, me)
     changes = {'ha_mode': 'shared', 'ha_address': CONFIG.get('ha_address') or node_address()}
     if peer:
         changes['ha_peer'] = str(peer).strip()
@@ -24502,6 +24668,12 @@ def ha_join(data, name='', even_if_data=False, by=''):
     key_hex = str(data.get('key') or '')
     if not re.match(r'^[0-9a-f]{64}\Z', key_hex):
         raise ValueError('the bundle holds no key')
+    first = str(odict(data.get('peer')).get('name') or '').strip()
+    if first and (name or node_name()).lower() == first.lower():
+        # Not under the first node's own name (1.0.252; the replicated join since 1.0.249): one
+        # heartbeat, one maintenance, its own settings - RADIUS bound to the first one's address.
+        raise ValueError('this node would be called %s, as the first node is - give it a name of '
+                         'its own' % first)
     got = db_try(db)
     if not got.get('reached'):
         raise ValueError('the database in the bundle cannot be reached from here: %s'
@@ -25919,6 +26091,11 @@ def upgrade_checks(store, meta, pages=False):
     plan = upgrade_plan(store)
     if plan and plan['state'] == 'running':
         why.append('an upgrade is going on already')
+    # Nor beside an update of the system, a new network or a restart (1.0.252): install.sh ran
+    # beside dnf, and the end of the update put the node back in service in the middle of it.
+    busy = cluster_busy(store, skip=('upgrade',))
+    if busy:
+        why.append('%s - wait for it to end' % busy)
     return not why, why
 
 
@@ -26060,7 +26237,11 @@ def upgrade_tick(daemon):
         was = maintenance_row(store)
         alone = len(steps) == 1
         maintenance_set(store, True, 'upgrade to %s' % plan['version'], plan.get('by') or '')
-        _my_step(store, plan, state='draining', was_maint=bool(was.get('on')),
+        # A maintenance an upgrade left (a failed one, kept out on the version that failed its
+        # checks) is no maintenance set by hand (1.0.252): taken as one, the upgrade sent again
+        # ended "back in service" with the node still out - alone, RADIUS answered nobody.
+        _my_step(store, plan, state='draining',
+                 was_maint=bool(was.get('on')) and not str(was.get('why') or '').startswith('upgrade to '),
                  began=now, said='in maintenance; the balancer and the VPN go to the other '
                  'node' if not alone else 'in maintenance')
         if not alone:
@@ -27318,6 +27499,19 @@ def hisec_guard_settings(store, checked):
     after = dict(CONFIG)
     after.update(checked)
     if checked.get('high_security') and not CONFIG.get('high_security'):
+        # Not with a change on trial (1.0.252): looked at as it is on trial, it passed - and what
+        # came back by itself (the administration open to all, SSH with passwords) was never
+        # looked at.
+        waiting = [t.get('words') for t in trials_view(store)]
+        try:
+            for n in host_nodes(store):
+                if fnum(odict(sshd_now(store, n).get('trial')).get('until')) > time.time() - 60:
+                    waiting.append('the change of the SSH server on %s' % n)
+        except Exception:                               # noqa: BLE001
+            pass
+        if waiting:
+            raise BadSetting('high security: keep or put back what is on trial first - %s'
+                             % '; '.join(w for w in waiting if w))
         got = hisec_findings(store, after)
         if got['block']:
             raise HiSecConflict(got)
@@ -29054,7 +29248,17 @@ def cluster_addresses(store, node):
     if node == me:
         # The node a cluster is being made with (1.0.213): let in before the join -
         # replication goes both ways from its first row.
-        out.update(ha_joining())
+        joining = ha_joining()
+        # Until it has joined (1.0.252): once it answers as a node of the cluster, its address
+        # is let in as one - a mistyped one beside it stayed let in for the rest of the day.
+        try:
+            if joining and any(n.get('alive') and not n.get('me') and n.get('address') in joining
+                               for n in ha_nodes(store)):
+                ha_joining_done()
+                joining = []
+        except Exception:                               # noqa: BLE001
+            pass
+        out.update(joining)
     good = set()
     for a in out:
         try:
@@ -31766,7 +31970,9 @@ def hatls_tick(store):
                 log('looking at the link between the databases: %s' % e, 'warn')
         _hatls_tick(store)
     except Exception as e:                              # noqa: BLE001
-        log('encrypting the link between the databases: %s' % e, 'warn')
+        # Spared (1.0.252): a step that fails the same way fails again at every pass of the loop.
+        log_sparing('hatls:' + str(e)[:60], 'encrypting the link between the databases: %s' % e,
+                    'warn', every=600)
     finally:
         HATLS_LOCK.release()
 
@@ -32051,7 +32257,7 @@ def ha_bundle_prepare(store, peer, listen=False, by=''):
         steps.append({'ok': bool(let), 'what': 'this node\'s firewall lets %s in for the join '
                                                '(a day at most; for good once it has joined)'
                                                % ', '.join(let or [peer])})
-    ha_mark_shared(peer)
+    ha_mark_shared(peer, store)
     steps.append({'ok': True, 'what': 'this node is the first of a cluster of one shared database '
                                       '(ha_mode = shared)'})
     return steps
@@ -33890,15 +34096,26 @@ def ntp_tick(daemon):
                  time.time() - fnum(done.get('at')) > 600):
             _ntp_thread(ntp_apply, store)
             return
-    sync_at = float(store.get_meta('ntp:sync:' + me) or 0)
-    if sync_at > fnum(NTP_WORK.get('synced')) and time.time() - sync_at < 300:
-        NTP_WORK['synced'] = sync_at
-        _ntp_thread(ntp_sync, store)
-        return
-    wanted = float(store.get_meta('ntp:read:' + me) or 0)
-    if time.time() - NTP_WORK['read_at'] > NTP_READ_S or wanted > NTP_WORK['read_at']:
-        _ntp_thread(ntp_publish, store, wanted > NTP_WORK['read_at'] or
-                    not store.get_meta('ntp:zones'))
+    # An ask is a value new since the last one seen (1.0.252), not a time of the node that asked
+    # set against this node's clock: a clock 5 minutes ahead - the one to step - never took a
+    # Set it now of the other node, and one behind read chrony again at every tick. At the
+    # start only one asked in the last 5 minutes is done (as before).
+    sync_raw = str(store.get_meta('ntp:sync:' + me) or '')
+    if sync_raw != NTP_WORK.get('sync_raw', None):
+        first = 'sync_raw' not in NTP_WORK
+        NTP_WORK['sync_raw'] = sync_raw
+        if sync_raw and (not first or abs(time.time() - fnum(sync_raw)) < 300):
+            NTP_WORK['synced'] = fnum(sync_raw)
+            _ntp_thread(ntp_sync, store)
+            return
+    read_raw = str(store.get_meta('ntp:read:' + me) or '')
+    asked = read_raw != NTP_WORK.get('read_raw', None)
+    if asked:
+        first = 'read_raw' not in NTP_WORK
+        NTP_WORK['read_raw'] = read_raw
+        asked = bool(read_raw) and (not first or abs(time.time() - fnum(read_raw)) < 300)
+    if time.time() - NTP_WORK['read_at'] > NTP_READ_S or asked:
+        _ntp_thread(ntp_publish, store, asked or not store.get_meta('ntp:zones'))
 
 
 def ntp_problem():
@@ -34518,6 +34735,18 @@ def osup_tick(daemon):
                     pass
                 row['maint'] = False
         osup_put(store, row)
+    elif row.get('state') == 'rebooting' and row.get('reboot') and not row.get('rebooted'):
+        lost = _osup_restart_lost(store, row)
+        if lost:
+            plan = osup_plan(store)
+            row['reboot'] = True
+            _osup_end(store, plan if row.get('plan') == plan.get('id') else {}, row, True)
+            osup_put(store, row, said='updated; the restart failed: %s - restart it by hand'
+                     % lost[:200], rebooted=True)
+            store.add_event('settings', 'the restart after the update of the system failed on %s: '
+                            '%s - it still needs a restart' % (node_name(), lost[:200]), 'bad',
+                            who='otp (system update)')
+            return
     # A look for updates, asked.
     chk = _meta_json(store, 'host:osup:check:' + me) or {}
     # It said a restart was waiting and the node has restarted since: looked
@@ -34541,6 +34770,19 @@ def osup_tick(daemon):
         _osup_follow_check(store, chk)
         return
     plan = osup_plan(store)
+    if plan.get('state') == 'cancelled' and me in (plan.get('order') or []):
+        # Stopped (1.0.252): a node updating finishes, one only out of service yet comes back -
+        # left, it stayed in maintenance for good, RADIUS not answered there.
+        row = osup_row(store, me)
+        if row.get('plan') == plan.get('id'):
+            if row.get('state') == 'updating':
+                _osup_follow(daemon, plan, row)
+            elif row.get('state') == 'draining':
+                if row.get('maint'):
+                    maintenance_set(store, False, '', 'otp (system update)')
+                osup_put(store, row, state='skipped', maint=False,
+                         said='the update was stopped before it began here')
+        return
     if plan.get('state') != 'running' or me not in (plan.get('order') or []):
         return
     row = osup_row(store, me)
@@ -34593,8 +34835,12 @@ def _osup_go(daemon, what, ctx):
                 # the VIP address moves to it, RADIUS is answered there.
                 many = bool(others_in_service(store))
                 if many:
-                    maintenance_set(store, True, 'the system is being updated', by)
-                    osup_put(store, row, state='draining', drain_at=time.time(), maint=True,
+                    # Out of a maintenance set by hand only by hand (1.0.252): taken as the
+                    # update's own, the node was put back in service after it.
+                    had = bool((maintenance_row(store) or {}).get('on'))
+                    if not had:
+                        maintenance_set(store, True, 'the system is being updated', by)
+                    osup_put(store, row, state='draining', drain_at=time.time(), maint=not had,
                              said='out of service - the other node answers', pct=0, lines=[])
                     return
                 row['maint'] = False
@@ -34672,15 +34918,18 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
             maintenance_set(store, False, '', by)
             row['maint'] = False
             osup_put(store, row)
-        plan.update(state='failed', ended=time.time(), failed_on=me)
-        store.set_meta('host:osup:plan', json.dumps(plan))
+        if plan.get('state') == 'running':
+            plan.update(state='failed', ended=time.time(), failed_on=me)
+            store.set_meta('host:osup:plan', json.dumps(plan))
         store.add_event('settings', 'the update of the system failed on %s: %s' % (me, said),
                         'bad', who=by)
         return
     if reboot and plan.get('reboot') == 'auto':
         osup_put(store, row, state='rebooting', said='updated - restarting, as it needs')
         try:
-            power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
+            pw = power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
+            # Its restart's id kept (1.0.252): one that failed later, in its turn, is seen.
+            osup_put(store, row, power_id=str((pw or {}).get('id') or ''))
             return
         except ValueError as e:
             # Not restarted, ended as an update without a restart is (1.0.217): it was left
@@ -34699,9 +34948,24 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
     store.add_event('settings', 'the system of %s is updated%s' % (
         me, ' - it needs a restart' if reboot else ''), 'warn' if reboot else 'info', who=by)
     order = plan.get('order') or []
-    if order and order[-1] == me:
+    if order and order[-1] == me and plan.get('state') == 'running':
         plan.update(state='done', ended=time.time())
         store.set_meta('host:osup:plan', json.dumps(plan))
+
+
+def _osup_restart_lost(store, row):
+    """Why the restart an update asked for did not happen, or '' (1.0.252): power_go failing in its
+    turn (no other node answering, the VIP not moved, no restart in 15 minutes) only said so in its
+    own row - the node stayed "restarting" in maintenance, the plan running, for ever."""
+    pid = str(row.get('power_id') or '')
+    pw = _meta_json(store, 'power:node:' + node_name()) or {}
+    if pid and pw.get('id') == pid:
+        if pw.get('state') == 'failed':
+            return str(pw.get('said') or 'it failed')
+        return ''
+    if time.time() - fnum(row.get('done_at') or row.get('at')) > POWER_LIVE_S + 900:
+        return 'the restart never began'
+    return ''
 
 
 # -- the SSH server and the notices at sign-in (1.0.163) --------------------------------------
@@ -38750,6 +39014,10 @@ ALERT_EVENTS = [
                                   'the change of the SSH server went back',
                                   'went back to the network it had before', ' could not be put back'),
      'Změna na zkoušku se vrátila', 'A change on trial went back', 'network', 'warn'),
+    # A scheduled update or restart that never began, an SSH change refused (1.0.252): only events.
+    ('alerts_updates', 'settings', ('on a schedule did not start', 'the SSH server was not changed on ',
+                                    'the restart after the update of the system failed'),
+     'Plánovaná práce se nespustila', 'Work on a schedule did not start', 'osup', 'bad'),
     ('alerts_sso', 'enrolment', ('a sign-in by the load balancer was refused',),
      'Přihlášení přes load balancer odmítnuto', 'A sign-in by the load balancer refused', 'portal', 'info'),
 ]
@@ -42717,7 +42985,7 @@ def _clients_do(h):
     if act == 'secret':
         h.me('fulladmin')
         one = next((c for c in h.store.clients(with_secret=True)
-                    if c['id'] == int(b.get('id') or 0)), None)
+                    if c['id'] == _int_id(b.get('id'))), None)
         if not one:
             raise ApiError(404, 'no such client')
         h.store.add_event('clients', '%s looked at the shared secret of %s' % (
@@ -42964,7 +43232,7 @@ def _dirs_do(h):
         return {'people': out, 'realm': realm['name']}
     if act == 'ca':
         s = h.me('fulladmin')
-        one = next((x for x in h.store.directories() if x['id'] == int(b.get('id') or 0)), None)
+        one = next((x for x in h.store.directories() if x['id'] == _int_id(b.get('id'))), None)
         if not one:
             raise ApiError(404, 'there is no such directory')
         pem = str(b.get('ca') or '').strip()
@@ -43708,7 +43976,7 @@ def _sessions(h):
 @route('POST', '/api/sessions')
 def _sessions_do(h):
     s = h.me('fulladmin')
-    ident = int(h.body().get('id') or 0)
+    ident = _int_id(h.body().get('id'))
     row = h.store.db.row('SELECT kind, name, ip FROM sessions WHERE id = ?', (ident,))
     if not row:
         # Gone already (1.0.61): not written down as "ended the sign-in of ?".
@@ -44979,12 +45247,25 @@ def portal_gate_where(entry):
     return None, None, '; '.join(tried) or 'nothing to send it to'
 
 
+def portal_sends_back(store, *names):
+    """Counted as sent, nothing went (1.0.252, as code_send_later since 1.0.225): the same count
+    RADIUS uses - a few tries on the enrolment pages in a mail outage shut the person's codes out."""
+    for n in names:
+        try:
+            node_key_give_back(store, 'codesent', n)
+        except Exception:                               # noqa: BLE001
+            pass
+
+
 def portal_gate_send(h, name, kind, dest, display='', lang=''):
     """A one-time code sent for the enrolment sign-in: the gate to keep in the session."""
     key = h.throttle('portal-send', 10 * int(CONFIG.get('code_send_max') or 5),
                      int(CONFIG.get('code_send_window_min') or 15), name=name, what='codes sent')
-    if not code_send_allowed(h.store, name) or \
-            not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
+    if not code_send_allowed(h.store, name):
+        raise ApiError(429, 'too many codes were sent - wait %d min and try again'
+                       % code_send_wait_min(h.store, name))
+    if not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
+        portal_sends_back(h.store, name)
         raise ApiError(429, 'too many codes were sent - wait %d min and try again'
                        % code_send_wait_min(h.store, 'to:%s:%s' % (kind, dest.lower())))
     h.failed(key)       # a code that goes holds its place
@@ -44993,6 +45274,7 @@ def portal_gate_send(h, name, kind, dest, display='', lang=''):
     try:
         code_send(h.store, kind, dest, code, 'portal', name=name, lang=lang, display=display or '')
     except (MailError, SmsError) as e:
+        portal_sends_back(h.store, name, 'to:%s:%s' % (kind, dest.lower()))
         h.store.add_event('enrolment', 'the one-time code for %s to sign in to the enrolment pages '
                           'could not be sent to %s: %s' % (name, dest, e), 'warn', who=name)
         # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
@@ -45452,6 +45734,11 @@ def portal_token_mark(tok):
                                                      .encode('utf-8')).hexdigest()[:24])
 
 
+def portal_old_same(h, s, old):
+    """Whether the code sent to the old token is for the token there now (1.0.252)."""
+    return not old.get('mark') or old.get('mark') == portal_token_mark(h.store.token(s['name']))
+
+
 def portal_may_replace(h, s):
     """Whether this session proved the token there is now - not one an administrator put in
     its place meanwhile (1.0.224: a phone stolen, the token made again by an administrator,
@@ -45762,9 +46049,12 @@ def _portal_enroll(h):
         key = h.throttle('portal-send', 10 * int(CONFIG.get('code_send_max') or 5),
                          int(CONFIG.get('code_send_window_min') or 15), name=s['name'],
                          what='codes sent')
-        if not code_send_allowed(h.store, s['name']) or \
-                not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
-            # Nothing sent: the address's place given back (1.0.103).
+        if not code_send_allowed(h.store, s['name']):
+            raise ApiError(429, 'too many codes were sent - wait %d min and try again'
+                           % code_send_wait_min(h.store, s['name']))
+        if not code_send_allowed(h.store, 'to:%s:%s' % (kind, dest.lower())):
+            # Nothing sent: the address's place given back (1.0.103), the name's too (1.0.252).
+            portal_sends_back(h.store, s['name'])
             raise ApiError(429, 'too many codes were sent - wait %d min and try again'
                            % code_send_wait_min(h.store, 'to:%s:%s' % (kind, dest.lower())))
         h.failed(key)       # a code that goes holds its place
@@ -45778,6 +46068,7 @@ def _portal_enroll(h):
             code_send(h.store, kind, dest, code, 'verify', name=s['name'],
                       lang=page_lang or None, fmt=fmt or None)
         except (MailError, SmsError) as e:
+            portal_sends_back(h.store, s['name'], 'to:%s:%s' % (kind, dest.lower()))
             h.store.add_event('enrolment', 'the code to check %s for %s could not be sent: %s'
                               % (dest, s['name'], e), 'warn', who=s['name'])
             # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
@@ -45896,11 +46187,14 @@ def _portal_sendold(h):
         code_send(h.store, kind, tok.get('dest') or '', code, 'signin', name=s['name'],
                   lang=page_lang if page_lang in ('cs', 'en') else None)
     except (MailError, SmsError) as e:
+        portal_sends_back(h.store, s['name'])
         h.store.add_event('enrolment', 'the code for %s to replace the token could not be sent: %s'
                           % (s['name'], e), 'warn', who=s['name'])
         # The mail or SMS server's own words in Events only (1.0.234), not on the enrolment pages.
         raise ApiError(502, 'the code could not be sent - try again later, or ask the administrator')
-    portal_data_set(h, s, old={'code': code_hash(s['name'], code),
+    # The token it was sent for, beside it (1.0.252): replaced or sent elsewhere meanwhile by an
+    # administrator, the code of the old phone was still proof - and took over the new token.
+    portal_data_set(h, s, old={'code': code_hash(s['name'], code), 'mark': portal_token_mark(tok),
                                'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300)})
     return {'sent_to': dest_masked(kind, tok.get('dest'))}
 
@@ -45924,7 +46218,7 @@ def _portal_codes(h):
                      name_tries=2 * int(CONFIG.get('portal_tries') or 5), what='wrong codes')
     code = code_typed(h.body().get('code') or '')     # as the mail shows it, too (1.0.225)
     old = odict(s.get('data')).get('old') or {}
-    if old and fnum(old.get('exp')) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and portal_old_same(h, s, old) and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'
         if not h.store.session_take(s['id'], 'old'):
@@ -46012,7 +46306,7 @@ def portal_reissue_password(h, s, realm, b, key):
 def portal_reissue_rest(h, s, b, key):
     code = code_typed(b.get('code') or '')
     old = odict(s.get('data')).get('old') or {}
-    if old and fnum(old.get('exp')) >= time.time() and \
+    if old and fnum(old.get('exp')) >= time.time() and portal_old_same(h, s, old) and \
             hmac.compare_digest(code_hash(s['name'], code), str(old.get('code') or '')):
         ok, said = True, 'Code sent accepted'               # 1.0.76
         if not h.store.session_take(s['id'], 'old'):         # once (1.0.101)
@@ -46501,6 +46795,8 @@ def _ha_do(h):
         except ValueError as e:
             raise ApiError(400, str(e))
     if act == 'forget':
+        if h.store.db.value('SELECT 1 FROM meta WHERE k = ?', ('node:' + str(b.get('name') or ''),)) is None:
+            raise ApiError(404, 'there is no node called %s in the list' % str(b.get('name') or '')[:60])
         try:
             ha_forget(h.store, str(b.get('name') or ''))
         except ValueError as e:
@@ -47319,6 +47615,7 @@ def _portal_sso_do(h):
 MFA_ALLOWED = ('/api/auth/mfa', '/api/auth/logout', '/api/auth/whoami')
 MFA_SEND_GAP_S = 30
 MFA_SEND_MOST = 5
+MFA_WRONG_MOST = 5          # wrong second-step codes of one sign-in, then the password again (1.0.252)
 MFA_LOCK = threading.Lock()
 
 
@@ -47414,6 +47711,21 @@ def _mfa_code_ok(saved, code):
         return False
     return hmac.compare_digest(code_hash(saved.get('salt') or '', str(code or '').strip()),
                                str(saved.get('hash') or ''))
+
+
+def _mfa_wrong(h, s, key, words):
+    """A wrong second-step code (1.0.252): counted on the address and the name as before, and on
+    this sign-in - at the fifth its password is asked again. Only the throttle held in memory
+    counted: a sign-in with the password could go on guessing, on each node."""
+    h.failed(key)
+    n = h.store.session_bump(s['id'], 'mfa_wrong')
+    if not n or n >= MFA_WRONG_MOST:
+        h.store.session_drop(s['id'])
+        h.store.add_event('accounts', '%s: %d wrong codes of the second step - the sign-in was '
+                          'ended, the password is asked again' % (s['name'], MFA_WRONG_MOST),
+                          'warn', who=s['name'])
+        raise ApiError(401, 'too many wrong codes - sign in again')
+    raise ApiError(400, words)
 
 
 def _mfa_send(h, s, kind, dest, field):
@@ -47578,12 +47890,10 @@ def _mfa_do(h):
                 # here from being used there too.
                 if step is not None and step > int(rec.get('step') or 0) and \
                         not once_take(h.store, 'step', 'adm2fa:' + name, step):
-                    h.failed(key)
-                    raise ApiError(400, 'that code was used already - wait for the next one')
+                    _mfa_wrong(h, s, key, 'that code was used already - wait for the next one')
                 if step is None or step <= int(rec.get('step') or 0):
-                    h.failed(key)
-                    raise ApiError(400, 'that code is not right' if step is None else
-                                   'that code was used already - wait for the next one')
+                    _mfa_wrong(h, s, key, 'that code is not right' if step is None else
+                               'that code was used already - wait for the next one')
                 rec['step'] = step
                 h.store.set_meta(mfa_key(name), json.dumps(rec))
         else:
@@ -47593,8 +47903,7 @@ def _mfa_do(h):
                     not once_take(h.store, 'chal', 'adm2fa:' + name.lower(),
                                   str(saved.get('hash') or '')):
                 # Once across the nodes too (1.0.226), as the app's code is.
-                h.failed(key)
-                raise ApiError(400, 'that code is not right, or no longer good - send another')
+                _mfa_wrong(h, s, key, 'that code is not right, or no longer good - send another')
         token = _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
         return {'message': 'signed in', 'done': True, 'token': token}
     raise ApiError(400, 'no such thing to do')
@@ -47794,9 +48103,10 @@ def _rbackup_do(h):
             pin = re.sub(r'[^0-9a-f]', '', str(b.get('pin') or '').lower())
             if len(pin) != 64:
                 raise ValueError('the fingerprint is SHA-256: 64 hex digits')
-            if t.get('password') and t.get('pin') and t['pin'] != pin:
+            if t.get('password') and (t.get('tls_check') != 'pin' or t.get('pin') != pin):
                 # Another certificate trusted, as another host key (1.0.249): the saved password
-                # typed again for the server it is.
+                # typed again for the server it is - also the first pin over a check by the
+                # system's or a given authority (1.0.252), as Save refuses it.
                 rb_set_fields(h.store, t['id'], by, 'the server\'s certificate pinned (%s), its '
                               'saved password taken away' % pin, pin=pin, tls_check='pin', password='')
                 return {'message': 'pinned - the saved password was taken away: type it again'}
@@ -47949,6 +48259,17 @@ def _rbackup_upload(h):
     try:
         # Inside the try (1.0.205): one that did not arrive whole, or too big,
         # stayed behind - up to 4 GB until the next upload an hour later.
+        # Room for the file and its opening, as for a backup made (1.0.252): sent from the page,
+        # up to 4 GB went beside the live database with no look at the disk.
+        want = int(h.headers.get('Content-Length') or 0)
+        try:
+            free = shutil.disk_usage(str(STATE_DIR)).free
+        except OSError:
+            free = None
+        if free is not None and want > 0 and free < 2 * want + BACKUP_ROOM_MIN:
+            raise ApiError(507, 'there is no room for it in %s: %d MB free, %d MB needed so that '
+                                'the disk is not filled under the database'
+                           % (STATE_DIR, free >> 20, (2 * want + BACKUP_ROOM_MIN) >> 20))
         h.body_to_file(dst, 4 * 1024 ** 3)        # as nginx takes (1.0.139)
         held_note(h.store, up)                      # which node it waits on (1.0.249)
         with open(str(dst), 'rb') as f:
@@ -47983,6 +48304,8 @@ def _rbackup_download(h):
     work = Path(tempfile.mkdtemp(prefix='otp-dl-', dir=str(STATE_DIR)))
     os.chmod(str(work), 0o700)
     try:
+        # Room first, as every other backup made or fetched here (1.0.252).
+        rb_room(h.store)
         if tid and name:
             rb_fetch(h.store, tid, name, str(work / name))
             h.store.add_event('backups', '%s downloaded the backup %s' % (s['name'], name),
@@ -48160,7 +48483,8 @@ def _selinux_do(h):
                 except ValueError:
                     busy.append(n)      # a step asked of it not done yet (1.0.248): the others asked
             return {'message': 'asked: every node makes its report within a minute' if not busy else
-                    'asked - not %s: a step asked of it is not done yet' % ', '.join(busy)}
+                    'asked - not %s: a step asked of it is not done yet' % ', '.join(busy),
+                    'busy': busy}
         selinux_ask(h.store, node, action, s['name'])
     except ValueError as e:
         raise ApiError(400, str(e))
@@ -48386,7 +48710,10 @@ PWP_DEFAULT = {'managed': False, 'minlen': 12, 'minclass': 3, 'maxrepeat': 3, 'd
 PWP_WORDS = {'minlen': 'the shortest password', 'max_days': 'days a password is good',
              'min_days': 'the least days between two changes', 'warn_days': 'days of warning before',
              'remember': 'passwords remembered', 'minclass': 'kinds of characters',
-             'maxrepeat': 'the same character in a row', 'difok': 'characters other than the old'}
+             'maxrepeat': 'the same character in a row', 'difok': 'characters other than the old',
+             # 1.0.252: these three were said by their keys ("fail_interval is 60 to 86400").
+             'deny': 'wrong passwords before the lock', 'unlock_time': 'seconds locked',
+             'fail_interval': 'seconds wrong passwords are counted within'}
 PWP_RANGES = {'minlen': (6, 128), 'minclass': (0, 4), 'maxrepeat': (0, 20), 'difok': (0, 20),
               'remember': (0, 50), 'max_days': (1, 99999), 'min_days': (0, 365), 'warn_days': (0, 365),
               'deny': (0, 100), 'unlock_time': (0, 86400), 'fail_interval': (60, 86400)}
@@ -56462,7 +56789,7 @@ def cli_ha(args, pal):
         return cli_ha_standalone(args, pal)
     # --ha-setup and --ha-bundle: the first node.
     store = Storage(open_db())
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     HA_STORE['store'] = store
     host0 = str(CONFIG.get('db_host') or '')
     if store.db.engine == 'postgres' and host0 in ('', 'localhost', '127.0.0.1', '::1') \
@@ -56523,7 +56850,8 @@ def cli_ha(args, pal):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for a second node was made on the command line '
                     '(the database at %s)' % db_host, 'warn', who=cli_who())
-    ha_mark_shared(args.ha_peer or '')
+    # Under the name the running daemon holds (1.0.252): carried to a new one at its restart.
+    ha_mark_shared(args.ha_peer or '', store)
     print('')
     print(pal.ok_line('the bundle for the second node: %s' % target))
     print('  ' + pal.bold('its passphrase, shown only now: ') + pal.info(phrase))
@@ -56679,17 +57007,12 @@ def cli_ha_setup_replicated(args, pal, store, ask):
         changes['node_name'] = args.node_name
     write_file_settings(changes)
     chown_to_service(CONFIG_FILE, 0o640)
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     # A node's own settings saved while it was alone made its own now (1.0.206):
     # kept as the plain key, they became the cluster's - the second node bound
     # RADIUS to the first one's address and greeted mail servers by its name.
-    me_now = node_name()
-    held = store.settings_saved()
-    for k in NODE_KEYS:
-        if k in held and (k + '@' + me_now) not in held:
-            store.save_setting(k + '@' + me_now, held[k], 'otp (cluster made)')
-            store.drop_setting(k)
-    load_config(saved=store.settings_saved())
+    ha_own_node_keys(store)
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.
     data = {'mode': 'replicated', 'key': sealing_key_for_write().hex(), 'pg_major': major,
@@ -56929,7 +57252,7 @@ def cli_ha_standalone(args, pal):
         store = Storage(open_db())
     except DbError as e:
         raise SystemExit('otp: %s' % e)
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     HA_STORE['store'] = store
     mode = CONFIG.get('ha_mode') or ''
     if mode == 'replicated' and store.db.engine == 'postgres':
@@ -57408,7 +57731,7 @@ def cli_store():
         raise SystemExit('otp: %s%s' % (e, half_joined_words(e)))
     store = Storage(db, quick=True)
     _cli_name_held()
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     return store
 
 
@@ -57632,7 +57955,13 @@ def cli_main(argv=None):
             raise SystemExit('otp: %s' % e)
     if args.selinux_want:
         # What otp needs of SELinux here, for --selinux-check (1.0.233): read as the service.
-        print(json.dumps(selinux_want(cli_store())))
+        st = cli_store()
+        got = selinux_want(st)
+        try:
+            got['high_security'] = bool(st.settings_saved().get('high_security'))
+        except Exception:                               # noqa: BLE001
+            pass
+        print(json.dumps(got))
         return 0
     if args.selinux_check or args.selinux or args.selinux_report is not None:
         return cli_selinux(args, pal)
@@ -57772,7 +58101,17 @@ def cli_main(argv=None):
                   'restart otp')
         return 0 if not got['left'] else 2
     if args.ha_renamed:
-        said = node_carry(store, args.ha_renamed.strip(), node_name(), by=cli_who())
+        old = args.ha_renamed.strip()
+        # Not this node, nor another one answering now (1.0.252, as at the start since 1.0.110):
+        # a name mistyped took a live node's own settings, its certificate and its VIP preference.
+        if old.lower() == node_name().lower():
+            raise SystemExit('otp: that is this node\'s own name')
+        live = [n for n in ha_nodes(store) if n['name'].lower() == old.lower() and n.get('alive')
+                and not n.get('me') and (not n.get('mid') or n['mid'] != machine_id())]
+        if live:
+            raise SystemExit('otp: %s is another node, answering now (%s) - nothing carried over'
+                             % (old, live[0].get('address') or '?'))
+        said = node_carry(store, old, node_name(), by=cli_who())
         try:
             NODE_NAME_FILE.write_text(node_name() + '\n')
         except OSError:
@@ -58282,8 +58621,33 @@ def cli_main(argv=None):
         # Under its realm's own suffix, as the pages make it (1.0.187): made for
         # novak@dpmo.local it was a second token beside novak@dpmo.cz, the one
         # RADIUS looks up first - the QR code just shown never let anyone in.
-        main = norm_name(realm_main_name(args.enroll, store.realm_for(args.enroll)))
+        r_of = store.realm_for(args.enroll)
+        main = norm_name(realm_main_name(args.enroll, r_of))
         if main != norm_name(args.enroll):
+            # Not when the name under the main suffix is another account's (1.0.252, as the pages
+            # since 1.0.224/1.0.249): the token made, and its QR code shown, were that other's.
+            ad = Daemon(store, serve=False).auth.directory((r_of or {}).get('directory')) \
+                if r_of else None
+            if ad is not None:
+                try:
+                    entry = Authenticator.find_person(ad, norm_name(args.enroll), 'upn', r_of)
+                except LdapError as e:
+                    # Said, not refused, here (root at the terminal sees whom it makes it for): as
+                    # before 1.0.252 when the directory cannot be asked.
+                    entry = False
+                    print('  the directory could not say whether %s is another account (%s) - '
+                          'made as asked' % (main, str(e)[:120]), file=sys.stderr)
+                if entry is not False:
+                    if entry and entry.get('many'):
+                        entry = None
+                    try:
+                        clash = Authenticator.alias_clash(ad, norm_name(args.enroll), main, entry or {})
+                    except LdapError as e:
+                        clash = ''
+                        print('  the directory could not say whether %s is another account (%s) - '
+                              'made as asked' % (main, str(e)[:120]), file=sys.stderr)
+                    if clash:
+                        raise SystemExit('otp: %s' % clash)
             print('  %s is %s - another suffix of its realm' % (args.enroll, main),
                   file=sys.stderr if args.json else sys.stdout)
             args.enroll = main
@@ -58874,7 +59238,8 @@ def cli_main(argv=None):
         if on and left:
             print('set up at their next sign-in: %s' % ', '.join(left))
         if args.admin_2fa != 'status':
-            print('the running service takes it within seconds; sign-ins already open stay open')
+            print('the running service takes it within seconds%s' % (
+                '; sign-ins to the pages open before it was switched on are ended' if on else ''))
         return 0
 
     if args.users:
@@ -59681,6 +60046,16 @@ def cli_selinux(args, pal):
         got = _selinux_helper(['--selinux-check', '--want-stdin'] + (['--json'] if args.json else []),
                               want)
     else:
+        if step == 'permissive':
+            # Refused under high security from here too (1.0.252), as on the pages since 1.0.249:
+            # the service's own reading of it, given with what otp needs.
+            try:
+                hs = bool(json.loads(want or '{}').get('high_security'))
+            except ValueError:
+                hs = False
+            if hs or _hs_on():
+                raise SystemExit('otp: high security is on: SELinux is not switched to permissive - '
+                                 'switch high security off first')
         words = {'prepare': 'SELinux permissive at the next start of this machine, every file '
                             'labelled then (the machine is not restarted now)',
                  'apply': 'otp\'s module, the labels of its files, the booleans and ports it needs '
@@ -60115,7 +60490,7 @@ def run_daemon():
         except Exception:                               # noqa: BLE001
             pass
         raise SystemExit(1)
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     log_open()
     made = False
     if not store.accounts():

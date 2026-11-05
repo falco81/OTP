@@ -829,6 +829,16 @@ function explain(over, words, extra) {
     if (typeof i18nText === 'function') {
       var tr = i18nText(String(words));
       if (tr && tr !== String(words)) spoken = String(tr).replace(/<[^>]*>/g, '');
+      /* A help with tags in it is one of the rich texts (1.0.252): read out in English on a
+         Czech page. */
+      else if (typeof i18nRichKey === 'function' && typeof I18N === 'object' && I18N.on && I18N.rich) {
+        try {
+          var box = document.createElement('template');        /* inert: nothing in it runs */
+          box.innerHTML = String(words);
+          var rk = i18nRichKey(box.content), rt = rk ? I18N.rich.get(rk) : undefined;
+          if (rt) spoken = String(rt).replace(/<[^>]*>/g, '');
+        } catch (e) { /* as it was */ }
+      }
     }
     over.setAttribute('aria-label', spoken.slice(0, 300));
   }
@@ -1509,6 +1519,14 @@ function switchBox(on) {
   return wrap;
 }
 
+/** A switch named by words beside it (1.0.252): read out as a box with no name before. */
+var SW_NAMED = 0;
+function swNamedBy(sw, words) {
+  if (!sw || !sw._input || !words) return;
+  if (!words.id) words.id = 'swn-' + (++SW_NAMED);
+  sw._input.setAttribute('aria-labelledby', words.id);
+}
+
 /** The language picker: the person's own choice, kept where the page says. */
 function langWords(code) {
   var one = (window.OTP_LANGS || []).filter(function (l) { return l.code === code; })[0];
@@ -2113,6 +2131,7 @@ function timePicker(id, opts) {
   };
   wrap._range = function () { var r = tpRange(st); return {from: Math.floor(r.from), to: Math.ceil(r.to), words: tpWords(st)}; };
   wrap._set = function (s) { st = s; fire(); };
+  wrap._start = (opts && opts.start) || {k: 'rel', s: 86400};      /* its own default (1.0.252) */
   Object.defineProperty(wrap, 'value', {get: function () {
     var r = tpRange(st);
     if (st.k === 'all') return '0';

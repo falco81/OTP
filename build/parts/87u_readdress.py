@@ -88,7 +88,7 @@ def ha_bundle_prepare(store, peer, listen=False, by=''):
         steps.append({'ok': bool(let), 'what': 'this node\'s firewall lets %s in for the join '
                                                '(a day at most; for good once it has joined)'
                                                % ', '.join(let or [peer])})
-    ha_mark_shared(peer)
+    ha_mark_shared(peer, store)
     steps.append({'ok': True, 'what': 'this node is the first of a cluster of one shared database '
                                       '(ha_mode = shared)'})
     return steps

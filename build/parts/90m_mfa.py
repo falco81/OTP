@@ -10,6 +10,7 @@
 MFA_ALLOWED = ('/api/auth/mfa', '/api/auth/logout', '/api/auth/whoami')
 MFA_SEND_GAP_S = 30
 MFA_SEND_MOST = 5
+MFA_WRONG_MOST = 5          # wrong second-step codes of one sign-in, then the password again (1.0.252)
 MFA_LOCK = threading.Lock()
 
 
@@ -105,6 +106,21 @@ def _mfa_code_ok(saved, code):
         return False
     return hmac.compare_digest(code_hash(saved.get('salt') or '', str(code or '').strip()),
                                str(saved.get('hash') or ''))
+
+
+def _mfa_wrong(h, s, key, words):
+    """A wrong second-step code (1.0.252): counted on the address and the name as before, and on
+    this sign-in - at the fifth its password is asked again. Only the throttle held in memory
+    counted: a sign-in with the password could go on guessing, on each node."""
+    h.failed(key)
+    n = h.store.session_bump(s['id'], 'mfa_wrong')
+    if not n or n >= MFA_WRONG_MOST:
+        h.store.session_drop(s['id'])
+        h.store.add_event('accounts', '%s: %d wrong codes of the second step - the sign-in was '
+                          'ended, the password is asked again' % (s['name'], MFA_WRONG_MOST),
+                          'warn', who=s['name'])
+        raise ApiError(401, 'too many wrong codes - sign in again')
+    raise ApiError(400, words)
 
 
 def _mfa_send(h, s, kind, dest, field):
@@ -269,12 +285,10 @@ def _mfa_do(h):
                 # here from being used there too.
                 if step is not None and step > int(rec.get('step') or 0) and \
                         not once_take(h.store, 'step', 'adm2fa:' + name, step):
-                    h.failed(key)
-                    raise ApiError(400, 'that code was used already - wait for the next one')
+                    _mfa_wrong(h, s, key, 'that code was used already - wait for the next one')
                 if step is None or step <= int(rec.get('step') or 0):
-                    h.failed(key)
-                    raise ApiError(400, 'that code is not right' if step is None else
-                                   'that code was used already - wait for the next one')
+                    _mfa_wrong(h, s, key, 'that code is not right' if step is None else
+                               'that code was used already - wait for the next one')
                 rec['step'] = step
                 h.store.set_meta(mfa_key(name), json.dumps(rec))
         else:
@@ -284,8 +298,7 @@ def _mfa_do(h):
                     not once_take(h.store, 'chal', 'adm2fa:' + name.lower(),
                                   str(saved.get('hash') or '')):
                 # Once across the nodes too (1.0.226), as the app's code is.
-                h.failed(key)
-                raise ApiError(400, 'that code is not right, or no longer good - send another')
+                _mfa_wrong(h, s, key, 'that code is not right, or no longer good - send another')
         token = _mfa_done(h, s, MFA_KIND_WORDS.get(rec.get('kind')))
         return {'message': 'signed in', 'done': True, 'token': token}
     raise ApiError(400, 'no such thing to do')

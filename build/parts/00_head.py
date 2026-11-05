@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.251'
+__version__ = '1.0.252'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -106,7 +106,9 @@ __version__ = '1.0.251'
 # 1.0.249: 1.0.249 - holes of the root helper fixed in 1.0.248 and 1.0.249 (a report written
 # through a link, PostgreSQL's files read through one, a FIFO): the otp account could have root put
 # a signed older version in, and with it the hole.
-DOWNGRADE_FLOOR = '1.0.249'
+# 1.0.252: 1.0.252 - holes of the root helper fixed in 1.0.252 (pg_hba.conf as whatever answered on
+# PostgreSQL's socket named it - /etc/shadow too) and the admin's second step guessed without end.
+DOWNGRADE_FLOOR = '1.0.252'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults

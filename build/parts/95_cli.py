@@ -1181,7 +1181,7 @@ def cli_ha(args, pal):
         return cli_ha_standalone(args, pal)
     # --ha-setup and --ha-bundle: the first node.
     store = Storage(open_db())
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     HA_STORE['store'] = store
     host0 = str(CONFIG.get('db_host') or '')
     if store.db.engine == 'postgres' and host0 in ('', 'localhost', '127.0.0.1', '::1') \
@@ -1242,7 +1242,8 @@ def cli_ha(args, pal):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for a second node was made on the command line '
                     '(the database at %s)' % db_host, 'warn', who=cli_who())
-    ha_mark_shared(args.ha_peer or '')
+    # Under the name the running daemon holds (1.0.252): carried to a new one at its restart.
+    ha_mark_shared(args.ha_peer or '', store)
     print('')
     print(pal.ok_line('the bundle for the second node: %s' % target))
     print('  ' + pal.bold('its passphrase, shown only now: ') + pal.info(phrase))
@@ -1398,17 +1399,12 @@ def cli_ha_setup_replicated(args, pal, store, ask):
         changes['node_name'] = args.node_name
     write_file_settings(changes)
     chown_to_service(CONFIG_FILE, 0o640)
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     # A node's own settings saved while it was alone made its own now (1.0.206):
     # kept as the plain key, they became the cluster's - the second node bound
     # RADIUS to the first one's address and greeted mail servers by its name.
-    me_now = node_name()
-    held = store.settings_saved()
-    for k in NODE_KEYS:
-        if k in held and (k + '@' + me_now) not in held:
-            store.save_setting(k + '@' + me_now, held[k], 'otp (cluster made)')
-            store.drop_setting(k)
-    load_config(saved=store.settings_saved())
+    ha_own_node_keys(store)
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     # Made here if the daemon never ran yet (1.0.140): the bundle held an empty
     # key, and the second node wrote an empty secrets.key and could not start.
     data = {'mode': 'replicated', 'key': sealing_key_for_write().hex(), 'pg_major': major,
@@ -1648,7 +1644,7 @@ def cli_ha_standalone(args, pal):
         store = Storage(open_db())
     except DbError as e:
         raise SystemExit('otp: %s' % e)
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     HA_STORE['store'] = store
     mode = CONFIG.get('ha_mode') or ''
     if mode == 'replicated' and store.db.engine == 'postgres':
@@ -2127,7 +2123,7 @@ def cli_store():
         raise SystemExit('otp: %s%s' % (e, half_joined_words(e)))
     store = Storage(db, quick=True)
     _cli_name_held()
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     return store
 
 
@@ -2351,7 +2347,13 @@ def cli_main(argv=None):
             raise SystemExit('otp: %s' % e)
     if args.selinux_want:
         # What otp needs of SELinux here, for --selinux-check (1.0.233): read as the service.
-        print(json.dumps(selinux_want(cli_store())))
+        st = cli_store()
+        got = selinux_want(st)
+        try:
+            got['high_security'] = bool(st.settings_saved().get('high_security'))
+        except Exception:                               # noqa: BLE001
+            pass
+        print(json.dumps(got))
         return 0
     if args.selinux_check or args.selinux or args.selinux_report is not None:
         return cli_selinux(args, pal)
@@ -2491,7 +2493,17 @@ def cli_main(argv=None):
                   'restart otp')
         return 0 if not got['left'] else 2
     if args.ha_renamed:
-        said = node_carry(store, args.ha_renamed.strip(), node_name(), by=cli_who())
+        old = args.ha_renamed.strip()
+        # Not this node, nor another one answering now (1.0.252, as at the start since 1.0.110):
+        # a name mistyped took a live node's own settings, its certificate and its VIP preference.
+        if old.lower() == node_name().lower():
+            raise SystemExit('otp: that is this node\'s own name')
+        live = [n for n in ha_nodes(store) if n['name'].lower() == old.lower() and n.get('alive')
+                and not n.get('me') and (not n.get('mid') or n['mid'] != machine_id())]
+        if live:
+            raise SystemExit('otp: %s is another node, answering now (%s) - nothing carried over'
+                             % (old, live[0].get('address') or '?'))
+        said = node_carry(store, old, node_name(), by=cli_who())
         try:
             NODE_NAME_FILE.write_text(node_name() + '\n')
         except OSError:
@@ -3001,8 +3013,33 @@ def cli_main(argv=None):
         # Under its realm's own suffix, as the pages make it (1.0.187): made for
         # novak@dpmo.local it was a second token beside novak@dpmo.cz, the one
         # RADIUS looks up first - the QR code just shown never let anyone in.
-        main = norm_name(realm_main_name(args.enroll, store.realm_for(args.enroll)))
+        r_of = store.realm_for(args.enroll)
+        main = norm_name(realm_main_name(args.enroll, r_of))
         if main != norm_name(args.enroll):
+            # Not when the name under the main suffix is another account's (1.0.252, as the pages
+            # since 1.0.224/1.0.249): the token made, and its QR code shown, were that other's.
+            ad = Daemon(store, serve=False).auth.directory((r_of or {}).get('directory')) \
+                if r_of else None
+            if ad is not None:
+                try:
+                    entry = Authenticator.find_person(ad, norm_name(args.enroll), 'upn', r_of)
+                except LdapError as e:
+                    # Said, not refused, here (root at the terminal sees whom it makes it for): as
+                    # before 1.0.252 when the directory cannot be asked.
+                    entry = False
+                    print('  the directory could not say whether %s is another account (%s) - '
+                          'made as asked' % (main, str(e)[:120]), file=sys.stderr)
+                if entry is not False:
+                    if entry and entry.get('many'):
+                        entry = None
+                    try:
+                        clash = Authenticator.alias_clash(ad, norm_name(args.enroll), main, entry or {})
+                    except LdapError as e:
+                        clash = ''
+                        print('  the directory could not say whether %s is another account (%s) - '
+                              'made as asked' % (main, str(e)[:120]), file=sys.stderr)
+                    if clash:
+                        raise SystemExit('otp: %s' % clash)
             print('  %s is %s - another suffix of its realm' % (args.enroll, main),
                   file=sys.stderr if args.json else sys.stdout)
             args.enroll = main
@@ -3593,7 +3630,8 @@ def cli_main(argv=None):
         if on and left:
             print('set up at their next sign-in: %s' % ', '.join(left))
         if args.admin_2fa != 'status':
-            print('the running service takes it within seconds; sign-ins already open stay open')
+            print('the running service takes it within seconds%s' % (
+                '; sign-ins to the pages open before it was switched on are ended' if on else ''))
         return 0
 
     if args.users:
@@ -4400,6 +4438,16 @@ def cli_selinux(args, pal):
         got = _selinux_helper(['--selinux-check', '--want-stdin'] + (['--json'] if args.json else []),
                               want)
     else:
+        if step == 'permissive':
+            # Refused under high security from here too (1.0.252), as on the pages since 1.0.249:
+            # the service's own reading of it, given with what otp needs.
+            try:
+                hs = bool(json.loads(want or '{}').get('high_security'))
+            except ValueError:
+                hs = False
+            if hs or _hs_on():
+                raise SystemExit('otp: high security is on: SELinux is not switched to permissive - '
+                                 'switch high security off first')
         words = {'prepare': 'SELinux permissive at the next start of this machine, every file '
                             'labelled then (the machine is not restarted now)',
                  'apply': 'otp\'s module, the labels of its files, the booleans and ports it needs '
@@ -4834,7 +4882,7 @@ def run_daemon():
         except Exception:                               # noqa: BLE001
             pass
         raise SystemExit(1)
-    load_config(saved=store.settings_saved())
+    load_config(saved=dbguard_settings(store.settings_saved(), store))
     log_open()
     made = False
     if not store.accounts():

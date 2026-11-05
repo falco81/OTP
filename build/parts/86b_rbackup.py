@@ -1312,9 +1312,14 @@ def rb_run(store, by, only=None, progress=None):
                 tr.close()
             one['secs'] = round(time.time() - t0, 1)
             run['targets'].append(one)
-            rb_set_fields(store, t['id'], '', '', last={
-                'at': time.time(), 'ok': one['ok'], 'error': one.get('error') or '',
-                'file': m['file'], 'bytes': m['bytes']})
+            try:
+                rb_set_fields(store, t['id'], '', '', last={
+                    'at': time.time(), 'ok': one['ok'], 'error': one.get('error') or '',
+                    'file': m['file'], 'bytes': m['bytes']})
+            except ValueError:
+                # Taken away while the backup went to it (1.0.252): the destinations after it
+                # were never tried.
+                pass
         run['ok'] = all(x['ok'] for x in run['targets'])
     except (RbError, OSError, ValueError, subprocess.SubprocessError) as e:
         run['error'] = scrub_secret(str(e))[:400]
@@ -1446,7 +1451,8 @@ def rb_now_asked(daemon):
     """A Back up now asked of this node by another; started once each."""
     store = daemon.store
     done_k = 'rbackup:nowdone:' + node_name()
-    done = {x for x in json_obj(store.get_meta(done_k), list) or [] if isinstance(x, str)}
+    done_list = [x for x in json_obj(store.get_meta(done_k), list) or [] if isinstance(x, str)]
+    done = set(done_list)
     for r in node_key_rows(store, 'rbackup:now', node_name(), guard=False):
         try:
             ask = json.loads(r['v'] or '{}')
@@ -1463,7 +1469,9 @@ def rb_now_asked(daemon):
             continue
         if RB_JOB['running']:
             return                      # asked again at the next tick
-        store.set_meta(done_k, json.dumps(sorted(done | {ident})[-20:]))
+        # The last 20 in the order done (1.0.252): sorted, an id smaller than the 20 kept was
+        # cut at once and the same ask started again at the next tick, for as long as it was live.
+        store.set_meta(done_k, json.dumps((done_list + [ident])[-20:]))
         rb_job_start(store, '%s (Back up now on %s)' % (ask.get('by') or 'otp',
                                                         ask.get('from') or '?'))
         return
@@ -1524,9 +1532,14 @@ def node_asks_of_gone_tidy(store):
     for prefix in NODE_ASK_PREFIXES:
         for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?", (prefix + ':%',)):
             k = str(r['k'])
-            if not k.endswith(mine) or NODE_KEY_SEP not in k[len(prefix) + 1:]:
+            if NODE_KEY_SEP not in k[len(prefix) + 1:]:
                 continue
-            if node_key_name(prefix, k) in here:
+            # Also an ask written by a node no longer of the cluster (1.0.252): renamed or taken
+            # out before its ask was over, it never took it away - nor anybody else.
+            asker_gone = norm_name(k.rsplit(NODE_KEY_SEP, 1)[1]) not in here
+            if not asker_gone and not k.endswith(mine):
+                continue
+            if not asker_gone and node_key_name(prefix, k) in here:
                 NODE_ASK_GONE.pop(k, None)
                 continue
             seen.add(k)
@@ -1538,7 +1551,7 @@ def node_asks_of_gone_tidy(store):
         if k not in seen:
             NODE_ASK_GONE.pop(k, None)
     if n:
-        log('%d ask(s) of this node for nodes no longer of the cluster taken away' % n)
+        log('%d ask(s) of or by nodes no longer of the cluster taken away' % n)
     return n
 
 

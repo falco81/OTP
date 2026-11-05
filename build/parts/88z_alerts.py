@@ -520,6 +520,10 @@ ALERT_EVENTS = [
                                   'the change of the SSH server went back',
                                   'went back to the network it had before', ' could not be put back'),
      'Změna na zkoušku se vrátila', 'A change on trial went back', 'network', 'warn'),
+    # A scheduled update or restart that never began, an SSH change refused (1.0.252): only events.
+    ('alerts_updates', 'settings', ('on a schedule did not start', 'the SSH server was not changed on ',
+                                    'the restart after the update of the system failed'),
+     'Plánovaná práce se nespustila', 'Work on a schedule did not start', 'osup', 'bad'),
     ('alerts_sso', 'enrolment', ('a sign-in by the load balancer was refused',),
      'Přihlášení přes load balancer odmítnuto', 'A sign-in by the load balancer refused', 'portal', 'info'),
 ]

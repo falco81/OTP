@@ -1362,7 +1362,17 @@ def cluster_addresses(store, node):
     if node == me:
         # The node a cluster is being made with (1.0.213): let in before the join -
         # replication goes both ways from its first row.
-        out.update(ha_joining())
+        joining = ha_joining()
+        # Until it has joined (1.0.252): once it answers as a node of the cluster, its address
+        # is let in as one - a mistyped one beside it stayed let in for the rest of the day.
+        try:
+            if joining and any(n.get('alive') and not n.get('me') and n.get('address') in joining
+                               for n in ha_nodes(store)):
+                ha_joining_done()
+                joining = []
+        except Exception:                               # noqa: BLE001
+            pass
+        out.update(joining)
     good = set()
     for a in out:
         try:

@@ -205,15 +205,26 @@ def ntp_tick(daemon):
                  time.time() - fnum(done.get('at')) > 600):
             _ntp_thread(ntp_apply, store)
             return
-    sync_at = float(store.get_meta('ntp:sync:' + me) or 0)
-    if sync_at > fnum(NTP_WORK.get('synced')) and time.time() - sync_at < 300:
-        NTP_WORK['synced'] = sync_at
-        _ntp_thread(ntp_sync, store)
-        return
-    wanted = float(store.get_meta('ntp:read:' + me) or 0)
-    if time.time() - NTP_WORK['read_at'] > NTP_READ_S or wanted > NTP_WORK['read_at']:
-        _ntp_thread(ntp_publish, store, wanted > NTP_WORK['read_at'] or
-                    not store.get_meta('ntp:zones'))
+    # An ask is a value new since the last one seen (1.0.252), not a time of the node that asked
+    # set against this node's clock: a clock 5 minutes ahead - the one to step - never took a
+    # Set it now of the other node, and one behind read chrony again at every tick. At the
+    # start only one asked in the last 5 minutes is done (as before).
+    sync_raw = str(store.get_meta('ntp:sync:' + me) or '')
+    if sync_raw != NTP_WORK.get('sync_raw', None):
+        first = 'sync_raw' not in NTP_WORK
+        NTP_WORK['sync_raw'] = sync_raw
+        if sync_raw and (not first or abs(time.time() - fnum(sync_raw)) < 300):
+            NTP_WORK['synced'] = fnum(sync_raw)
+            _ntp_thread(ntp_sync, store)
+            return
+    read_raw = str(store.get_meta('ntp:read:' + me) or '')
+    asked = read_raw != NTP_WORK.get('read_raw', None)
+    if asked:
+        first = 'read_raw' not in NTP_WORK
+        NTP_WORK['read_raw'] = read_raw
+        asked = bool(read_raw) and (not first or abs(time.time() - fnum(read_raw)) < 300)
+    if time.time() - NTP_WORK['read_at'] > NTP_READ_S or asked:
+        _ntp_thread(ntp_publish, store, asked or not store.get_meta('ntp:zones'))
 
 
 def ntp_problem():

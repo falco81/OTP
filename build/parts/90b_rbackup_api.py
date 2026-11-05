@@ -184,9 +184,10 @@ def _rbackup_do(h):
             pin = re.sub(r'[^0-9a-f]', '', str(b.get('pin') or '').lower())
             if len(pin) != 64:
                 raise ValueError('the fingerprint is SHA-256: 64 hex digits')
-            if t.get('password') and t.get('pin') and t['pin'] != pin:
+            if t.get('password') and (t.get('tls_check') != 'pin' or t.get('pin') != pin):
                 # Another certificate trusted, as another host key (1.0.249): the saved password
-                # typed again for the server it is.
+                # typed again for the server it is - also the first pin over a check by the
+                # system's or a given authority (1.0.252), as Save refuses it.
                 rb_set_fields(h.store, t['id'], by, 'the server\'s certificate pinned (%s), its '
                               'saved password taken away' % pin, pin=pin, tls_check='pin', password='')
                 return {'message': 'pinned - the saved password was taken away: type it again'}
@@ -339,6 +340,17 @@ def _rbackup_upload(h):
     try:
         # Inside the try (1.0.205): one that did not arrive whole, or too big,
         # stayed behind - up to 4 GB until the next upload an hour later.
+        # Room for the file and its opening, as for a backup made (1.0.252): sent from the page,
+        # up to 4 GB went beside the live database with no look at the disk.
+        want = int(h.headers.get('Content-Length') or 0)
+        try:
+            free = shutil.disk_usage(str(STATE_DIR)).free
+        except OSError:
+            free = None
+        if free is not None and want > 0 and free < 2 * want + BACKUP_ROOM_MIN:
+            raise ApiError(507, 'there is no room for it in %s: %d MB free, %d MB needed so that '
+                                'the disk is not filled under the database'
+                           % (STATE_DIR, free >> 20, (2 * want + BACKUP_ROOM_MIN) >> 20))
         h.body_to_file(dst, 4 * 1024 ** 3)        # as nginx takes (1.0.139)
         held_note(h.store, up)                      # which node it waits on (1.0.249)
         with open(str(dst), 'rb') as f:
@@ -373,6 +385,8 @@ def _rbackup_download(h):
     work = Path(tempfile.mkdtemp(prefix='otp-dl-', dir=str(STATE_DIR)))
     os.chmod(str(work), 0o700)
     try:
+        # Room first, as every other backup made or fetched here (1.0.252).
+        rb_room(h.store)
         if tid and name:
             rb_fetch(h.store, tid, name, str(work / name))
             h.store.add_event('backups', '%s downloaded the backup %s' % (s['name'], name),

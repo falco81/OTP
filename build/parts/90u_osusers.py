@@ -21,7 +21,10 @@ PWP_DEFAULT = {'managed': False, 'minlen': 12, 'minclass': 3, 'maxrepeat': 3, 'd
 PWP_WORDS = {'minlen': 'the shortest password', 'max_days': 'days a password is good',
              'min_days': 'the least days between two changes', 'warn_days': 'days of warning before',
              'remember': 'passwords remembered', 'minclass': 'kinds of characters',
-             'maxrepeat': 'the same character in a row', 'difok': 'characters other than the old'}
+             'maxrepeat': 'the same character in a row', 'difok': 'characters other than the old',
+             # 1.0.252: these three were said by their keys ("fail_interval is 60 to 86400").
+             'deny': 'wrong passwords before the lock', 'unlock_time': 'seconds locked',
+             'fail_interval': 'seconds wrong passwords are counted within'}
 PWP_RANGES = {'minlen': (6, 128), 'minclass': (0, 4), 'maxrepeat': (0, 20), 'difok': (0, 20),
               'remember': (0, 50), 'max_days': (1, 99999), 'min_days': (0, 365), 'warn_days': (0, 365),
               'deny': (0, 100), 'unlock_time': (0, 86400), 'fail_interval': (60, 86400)}

@@ -318,6 +318,11 @@ def upgrade_checks(store, meta, pages=False):
     plan = upgrade_plan(store)
     if plan and plan['state'] == 'running':
         why.append('an upgrade is going on already')
+    # Nor beside an update of the system, a new network or a restart (1.0.252): install.sh ran
+    # beside dnf, and the end of the update put the node back in service in the middle of it.
+    busy = cluster_busy(store, skip=('upgrade',))
+    if busy:
+        why.append('%s - wait for it to end' % busy)
     return not why, why
 
 
@@ -459,7 +464,11 @@ def upgrade_tick(daemon):
         was = maintenance_row(store)
         alone = len(steps) == 1
         maintenance_set(store, True, 'upgrade to %s' % plan['version'], plan.get('by') or '')
-        _my_step(store, plan, state='draining', was_maint=bool(was.get('on')),
+        # A maintenance an upgrade left (a failed one, kept out on the version that failed its
+        # checks) is no maintenance set by hand (1.0.252): taken as one, the upgrade sent again
+        # ended "back in service" with the node still out - alone, RADIUS answered nobody.
+        _my_step(store, plan, state='draining',
+                 was_maint=bool(was.get('on')) and not str(was.get('why') or '').startswith('upgrade to '),
                  began=now, said='in maintenance; the balancer and the VPN go to the other '
                  'node' if not alone else 'in maintenance')
         if not alone:

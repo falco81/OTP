@@ -474,6 +474,18 @@ def osup_tick(daemon):
                     pass
                 row['maint'] = False
         osup_put(store, row)
+    elif row.get('state') == 'rebooting' and row.get('reboot') and not row.get('rebooted'):
+        lost = _osup_restart_lost(store, row)
+        if lost:
+            plan = osup_plan(store)
+            row['reboot'] = True
+            _osup_end(store, plan if row.get('plan') == plan.get('id') else {}, row, True)
+            osup_put(store, row, said='updated; the restart failed: %s - restart it by hand'
+                     % lost[:200], rebooted=True)
+            store.add_event('settings', 'the restart after the update of the system failed on %s: '
+                            '%s - it still needs a restart' % (node_name(), lost[:200]), 'bad',
+                            who='otp (system update)')
+            return
     # A look for updates, asked.
     chk = _meta_json(store, 'host:osup:check:' + me) or {}
     # It said a restart was waiting and the node has restarted since: looked
@@ -497,6 +509,19 @@ def osup_tick(daemon):
         _osup_follow_check(store, chk)
         return
     plan = osup_plan(store)
+    if plan.get('state') == 'cancelled' and me in (plan.get('order') or []):
+        # Stopped (1.0.252): a node updating finishes, one only out of service yet comes back -
+        # left, it stayed in maintenance for good, RADIUS not answered there.
+        row = osup_row(store, me)
+        if row.get('plan') == plan.get('id'):
+            if row.get('state') == 'updating':
+                _osup_follow(daemon, plan, row)
+            elif row.get('state') == 'draining':
+                if row.get('maint'):
+                    maintenance_set(store, False, '', 'otp (system update)')
+                osup_put(store, row, state='skipped', maint=False,
+                         said='the update was stopped before it began here')
+        return
     if plan.get('state') != 'running' or me not in (plan.get('order') or []):
         return
     row = osup_row(store, me)
@@ -549,8 +574,12 @@ def _osup_go(daemon, what, ctx):
                 # the VIP address moves to it, RADIUS is answered there.
                 many = bool(others_in_service(store))
                 if many:
-                    maintenance_set(store, True, 'the system is being updated', by)
-                    osup_put(store, row, state='draining', drain_at=time.time(), maint=True,
+                    # Out of a maintenance set by hand only by hand (1.0.252): taken as the
+                    # update's own, the node was put back in service after it.
+                    had = bool((maintenance_row(store) or {}).get('on'))
+                    if not had:
+                        maintenance_set(store, True, 'the system is being updated', by)
+                    osup_put(store, row, state='draining', drain_at=time.time(), maint=not had,
                              said='out of service - the other node answers', pct=0, lines=[])
                     return
                 row['maint'] = False
@@ -628,15 +657,18 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
             maintenance_set(store, False, '', by)
             row['maint'] = False
             osup_put(store, row)
-        plan.update(state='failed', ended=time.time(), failed_on=me)
-        store.set_meta('host:osup:plan', json.dumps(plan))
+        if plan.get('state') == 'running':
+            plan.update(state='failed', ended=time.time(), failed_on=me)
+            store.set_meta('host:osup:plan', json.dumps(plan))
         store.add_event('settings', 'the update of the system failed on %s: %s' % (me, said),
                         'bad', who=by)
         return
     if reboot and plan.get('reboot') == 'auto':
         osup_put(store, row, state='rebooting', said='updated - restarting, as it needs')
         try:
-            power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
+            pw = power_ask(store, 'reboot', [me], 'one', by, keep_service=True, from_osup=True)
+            # Its restart's id kept (1.0.252): one that failed later, in its turn, is seen.
+            osup_put(store, row, power_id=str((pw or {}).get('id') or ''))
             return
         except ValueError as e:
             # Not restarted, ended as an update without a restart is (1.0.217): it was left
@@ -655,9 +687,24 @@ def _osup_end(store, plan, row, ok, said='', reboot=False):
     store.add_event('settings', 'the system of %s is updated%s' % (
         me, ' - it needs a restart' if reboot else ''), 'warn' if reboot else 'info', who=by)
     order = plan.get('order') or []
-    if order and order[-1] == me:
+    if order and order[-1] == me and plan.get('state') == 'running':
         plan.update(state='done', ended=time.time())
         store.set_meta('host:osup:plan', json.dumps(plan))
+
+
+def _osup_restart_lost(store, row):
+    """Why the restart an update asked for did not happen, or '' (1.0.252): power_go failing in its
+    turn (no other node answering, the VIP not moved, no restart in 15 minutes) only said so in its
+    own row - the node stayed "restarting" in maintenance, the plan running, for ever."""
+    pid = str(row.get('power_id') or '')
+    pw = _meta_json(store, 'power:node:' + node_name()) or {}
+    if pid and pw.get('id') == pid:
+        if pw.get('state') == 'failed':
+            return str(pw.get('said') or 'it failed')
+        return ''
+    if time.time() - fnum(row.get('done_at') or row.get('at')) > POWER_LIVE_S + 900:
+        return 'the restart never began'
+    return ''
 
 
 # -- the SSH server and the notices at sign-in (1.0.163) --------------------------------------

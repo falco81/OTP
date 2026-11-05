@@ -435,8 +435,11 @@ def names_letters_kept(daemon):
     store.set_meta(key, '1')
 
 
+# 1.0.252: the verify's (a backup opened, its key in it), uploads, restores, the MariaDB dump, ACME's,
+# the command line's - left by a restart in the middle of them, for good.
 STALE_WORK = ('otp-rbackup-', 'otp-putback-', 'otp-download-', 'otp-dl-', 'otp-peek-',
-              'otp-fetch-')
+              'otp-fetch-', 'otp-verify-', 'otp-upload-', 'otp-restore-', 'otp-sql-', 'otp-acme-',
+              'otp-dns-', '.otp-cli-')
 
 
 def stale_work_away(older=6 * 3600):
@@ -1447,6 +1450,10 @@ class Daemon(object):
                 self.store.drop_setting(k)
             else:
                 self.store.save_setting(k, v, by)
+            # A node alone again with its own row of a cluster before (1.0.252): read over the
+            # plain one, it kept the old value - every save said "saved", and changed nothing.
+            if k in NODE_KEYS and not many and (k + '@' + node_name()) in saved_now:
+                self.store.drop_setting(k + '@' + node_name())
         SAVED_KEYS['at'] = 0.0          # read again by the web state (1.0.239)
         said = []
         if 'db_guard' in file_side:
@@ -1484,6 +1491,10 @@ class Daemon(object):
                              else '',
                          '***' if k in SECRET_KEYS else json.dumps(v, ensure_ascii=False))
                 for k, v in sorted(checked.items())), who=by)
+        self.changed('settings')
+        self.reload_all()
+        # After the settings are read again (1.0.252): before it, CONFIG still had the old value
+        # and no sign-in was ever ended.
         if not was_2fa and CONFIG.get('admin_2fa'):
             # The second step for those signed in already too (1.0.149): their
             # sessions, opened with the password alone, stayed whole for hours.
@@ -1498,8 +1509,6 @@ class Daemon(object):
                                          'sign-in(s) to the pages ended' % gone, 'warn', who=by)
             except Exception as e:                      # noqa: BLE001
                 log('the sign-ins to the pages could not be ended: %s' % e, 'warn')
-        self.changed('settings')
-        self.reload_all()
         return {'message': ' '.join(['%d setting(s) saved.' % len(checked)] + said),
                 'saved': sorted(checked)}
 
@@ -1558,10 +1567,14 @@ class Daemon(object):
         last = self.store.db.row("SELECT ts, result, username FROM radius_log WHERE packet = "
                                  "'Access-Request' ORDER BY ts DESC LIMIT 1")
         day = time.time() - 86400
+        # Sign-ins only, as the Overview's chart counts them (1.0.252): a packet of a stranger or of
+        # another kind dropped made the card say one more than the line under it.
         acc = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "result = 'accept'", (day,), 0) or 0)
+                                      "packet = 'Access-Request' AND result = 'accept'",
+                                      (day,), 0) or 0)
         rej = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "result IN ('reject', 'drop')", (day,), 0) or 0)
+                                      "packet = 'Access-Request' AND result IN ('reject', 'drop')",
+                                      (day,), 0) or 0)
         serial = self.store.db.value('SELECT MAX(id) AS n FROM radius_log', (), 0) or 0
         ev = self.store.db.value('SELECT MAX(id) AS n FROM events', (), 0) or 0
         r = self.radius.state() if self.radius else {}
@@ -1984,6 +1997,15 @@ class Daemon(object):
                     ha_watch_tick(self.store)
                 except Exception as e:                  # noqa: BLE001
                     log_sparing('tick:ha_watch:' + str(e)[:80], 'the cluster\'s history: %s' % e, 'warn', 3600)
+                if getattr(self.store.db, 'columns_missing', False) and \
+                        time.monotonic() - getattr(self, '_cols_again', 0) > 600:
+                    # A column missing at the start, tried again (1.0.252): every write that used
+                    # it failed until the next restart.
+                    self._cols_again = time.monotonic()
+                    if self.store.db.add_columns_again():
+                        self.store.db.upsert('meta', 'k', {'k': 'schema:%s' % node_name(),
+                                                           'v': __version__})
+                        log('the columns missing at the start are there now')
                 if time.monotonic() - last_tidy > 3600:
                     last_tidy = time.monotonic()
                     # In a thread of its own (1.0.57): long directory lookups
@@ -2022,7 +2044,12 @@ class Daemon(object):
                 except Exception:                       # noqa: BLE001
                     pass
             except Exception as e:
-                log('housekeeping broke: %s\n%s' % (e, traceback.format_exc()), 'error')
+                # Spared too, with where it broke (1.0.252): the driver's own errors (a disk full,
+                # a server read-only, a file locked) are no DbError - a traceback every 5 s, onto
+                # the disk that was full.
+                log_sparing('housekeeping:' + type(e).__name__ + str(e)[:40],
+                            'housekeeping broke: %s\n%s' % (e, traceback.format_exc()),
+                            'error', every=300)
         try:
             self.store.add_event('starting and stopping', 'otp stopped on %s' % node_name())
         except Exception:                               # noqa: BLE001
@@ -2162,9 +2189,11 @@ class Daemon(object):
         if sig is not None and sig == getattr(self, 'conf_sig', None):
             log('the logs opened again (SIGHUP; config.json as it was)')
             return
-        self.conf_sig = sig
         try:
             self.reload_all('SIGHUP')
+            # Only once read (1.0.252): taken as read when it failed, every SIGHUP after it saw
+            # the same file and only opened the logs again.
+            self.conf_sig = sig
         except Exception as e:
             log('reading the configuration again failed: %s' % e, 'error')
 
@@ -2633,7 +2662,9 @@ def db_check(db):
     if db.engine == 'mariadb':
         ok = True
         for t in TABLES:
-            for r in db.rows('CHECK TABLE %s' % t):
+            with db.unlimited():                # minutes on a large log (1.0.252)
+                got = db.rows('CHECK TABLE %s' % t)
+            for r in got:
                 v = {k.lower(): x for k, x in r.items()}
                 if str(v.get('msg_type')).lower() in ('error', 'warning') or \
                         str(v.get('msg_text')).lower() not in ('ok', 'table is already up to date'):
@@ -2696,7 +2727,8 @@ def _db_give_back(db, progress):
         for i, t in enumerate(TABLES):
             progress(i, len(TABLES), t)
             if db.engine == 'mariadb':
-                db.rows('OPTIMIZE TABLE %s' % t)
+                with db.unlimited():            # minutes on a large log (1.0.252)
+                    db.rows('OPTIMIZE TABLE %s' % t)
             else:
                 db.run('VACUUM (FULL, ANALYZE) %s' % t)
     after = db.size()

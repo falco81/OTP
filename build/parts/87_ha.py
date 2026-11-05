@@ -350,8 +350,18 @@ def in_cluster(store=None):
 def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
+    try:
+        alive = any(n['name'] == name and n.get('alive') for n in ha_nodes(store))
+    except Exception:                                   # noqa: BLE001
+        alive = True
     store.drop_meta('node:' + name)
     store.drop_meta('cluster:with:' + name)
+    # Its maintenance and its upgrade too, from the pages as on the command line (1.0.252): put in
+    # again later under the name, it started in maintenance - RADIUS silent, the VIP never there.
+    # Not of a node answering (it writes itself back): its maintenance is its own.
+    if not alive:
+        store.drop_meta('maint:' + name)
+        store.drop_meta('upgrade:node:' + name)
     CLUSTER_WITH.discard('cluster:with:' + name)
 
 
@@ -414,11 +424,27 @@ def claim_once(store, key, value):
     if CONFIG.get('ha_mode') == 'replicated' and not key.endswith(':' + node_name()) and \
             not ha_lead(store):
         return False
+    signed = dbguard_meta_signed(key)
     if store.get_meta(key) is None:
         try:
-            store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
+            if signed:
+                with store.db.transaction():
+                    store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
+                    dbguard_sign(store.db, 'm', key, '')
+            else:
+                store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (key, ''))
         except Exception:                               # noqa: BLE001
             pass
+    if signed:
+        # Signed with what it now holds (1.0.252): a row of the guard (fw_trial_back) claimed with
+        # a bare UPDATE was otp's own row refused at its next read - a tamper alert at every
+        # firewall trial run out.
+        with store.db.transaction():
+            won = bool(store.db.run('UPDATE meta SET v = ? WHERE k = ? AND (v IS NULL OR v <> ?)',
+                                    (str(value), key, str(value))))
+            if won:
+                dbguard_sign(store.db, 'm', key, str(value))
+        return won
     return bool(store.db.run('UPDATE meta SET v = ? WHERE k = ? AND (v IS NULL OR v <> ?)',
                              (str(value), key, str(value))))
 
@@ -658,12 +684,42 @@ def pg_reach_why(said, host='', port=5432):
     return t
 
 
-def ha_mark_shared(peer=''):
+def ha_own_node_keys(store, me=None, by='otp (cluster made)'):
+    """A node's own settings saved while it was alone (NODE_KEYS) made its own when it becomes
+    the first of a cluster (1.0.206; for one shared database too since 1.0.252): kept as the plain
+    key, they became the cluster's - the second node bound RADIUS to the first one's address
+    and greeted mail servers by its name."""
+    me = me or node_name()
+    held = store.settings_saved()
+    moved = 0
+    for k in NODE_KEYS:
+        if k in held and (k + '@' + me) not in held:
+            store.save_setting(k + '@' + me, held[k], by)
+            store.drop_setting(k)
+            moved += 1
+    return moved
+
+
+def ha_mark_shared(peer='', store=None, me=None):
     """This node the first of a cluster of one shared database (1.0.213): ha_mode
     'shared' written, and the other node's address when it is known - let in by the
     firewall at once, for the join."""
+    if CONFIG.get('ha_mode') == 'shared' and peer and str(peer).strip() != CONFIG.get('ha_peer'):
+        # The other node's address said again, another one (1.0.252): a second bundle after a
+        # typo let the right address in, and keepalived and the firewall went on with the old.
+        write_file_settings({'ha_peer': str(peer).strip()})
+        if os.geteuid() == 0:
+            try:
+                chown_to_service(CONFIG_FILE, 0o640)
+            except Exception:                           # noqa: BLE001
+                pass
+        ha_joining_set([peer], 'bundle', 'the second node')
+        daemon_hup()
+        return
     if CONFIG.get('ha_mode'):
         return
+    if store is not None:
+        ha_own_node_keys(store, me)
     changes = {'ha_mode': 'shared', 'ha_address': CONFIG.get('ha_address') or node_address()}
     if peer:
         changes['ha_peer'] = str(peer).strip()
@@ -727,6 +783,12 @@ def ha_join(data, name='', even_if_data=False, by=''):
     key_hex = str(data.get('key') or '')
     if not re.match(r'^[0-9a-f]{64}\Z', key_hex):
         raise ValueError('the bundle holds no key')
+    first = str(odict(data.get('peer')).get('name') or '').strip()
+    if first and (name or node_name()).lower() == first.lower():
+        # Not under the first node's own name (1.0.252; the replicated join since 1.0.249): one
+        # heartbeat, one maintenance, its own settings - RADIUS bound to the first one's address.
+        raise ValueError('this node would be called %s, as the first node is - give it a name of '
+                         'its own' % first)
     got = db_try(db)
     if not got.get('reached'):
         raise ValueError('the database in the bundle cannot be reached from here: %s'
