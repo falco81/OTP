@@ -148,6 +148,31 @@ if (isset($_GET['api'])) {
                'codes' => '/api/portal/codes',
                // The one-time code before the first token (1.0.228).
                'gate' => '/api/portal/gate', 'gate_again' => '/api/portal/gate/again'];
+    if ($what === 'gate' && $post) {
+        /* The one-time code given (1.0.249): the daemon ends the sign-in the password opened and
+           hands a new one, as the administrators' second step - its cookie set here, the token
+           never shown to the page. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$status, $body] = otp_call('/api/portal/gate', 'POST', sent_json(), 60.0);
+        if ($status === 0) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' =>
+                'the daemon is not answering — is otp.service running?']);
+            exit;
+        }
+        $data = json_decode($body, true);
+        if (is_array($data) && !empty($data['token'])) {
+            if ($status === 200) {
+                otp_set_session((string) $data['token']);
+            }
+            unset($data['token']);
+            $body = json_encode($data);
+        }
+        http_response_code($status);
+        echo $body;
+        exit;
+    }
     if ($post && isset($writes[$what])) {
         otp_relay($writes[$what], 'POST', sent_json(), 60.0);
         exit;

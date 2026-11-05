@@ -9,8 +9,8 @@ library, and PHP pages that only relay to it.
 ## The short version
 
 ```bash
-tar xzf otp-1.0.248.tar.gz
-cd otp-1.0.248
+tar xzf otp-1.0.249.tar.gz
+cd otp-1.0.249
 sudo ./install.sh --server-name otp.example.local
 ```
 
@@ -31,7 +31,7 @@ token it has:
 
 ```bash
 mkdir /root/old-otp && cd /root/old-otp && unzip /root/otp.zip   # its etc/raddb and etc/totpcgi
-cd /root/otp-1.0.248
+cd /root/otp-1.0.249
 sudo ./install.sh --server-name otp.example.local \
      --import-legacy /root/old-otp \
      --radius-from 192.0.2.1/32 \
@@ -71,7 +71,7 @@ check afterwards.
 
 | What | Where |
 |---|---|
-| the daemon | `/usr/local/lib/otp/otp.py`, linked as `/usr/local/bin/otp` and `/usr/local/bin/otp` (the same command) |
+| the daemon | `/usr/local/lib/otp/otp.py`, started by `/usr/local/bin/otp` (a small wrapper) |
 | what it is set up with | `/etc/otp/config.json` — only the database settings (`db_*`) need be here; everything saved on the pages lives in the database and wins over this file |
 | everything it records | `/var/lib/otp/otp.db` (SQLite), or MariaDB / PostgreSQL |
 | the key that seals the token keys | `/var/lib/otp/secrets.key` — **keep it with every copy of the database** |
@@ -120,7 +120,8 @@ Keep it in mind as you would root itself:
 --portal-allow CIDR[,..]  who may reach the enrolment pages (both default to RFC 1918)
 --radius-from CIDR[,..]   who may send RADIUS through firewalld: the VPN concentrators
 --admin-user NAME         the first account (admin)
---admin-password PASS     its password (otherwise one is made and printed)
+--admin-password -        its password, read from the terminal or standard input
+                          (or OTP_ADMIN_PASSWORD; otherwise one is made and printed)
 --cert FILE --key FILE    the TLS certificate and key (otherwise a self-signed one)
 --import-legacy ROOT      bring an old totpcgi + FreeRADIUS server over
 --isemon HOST[:PORT][/tcp] send the logs to isemon

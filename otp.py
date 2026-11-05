@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.248'
+__version__ = '1.0.249'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -103,7 +103,10 @@ __version__ = '1.0.248'
 # its own in the database.
 # 1.0.226: 1.0.224 - names of tokens in one form of their letters (an older version finds a
 # name sent decomposed no more), and one person never signed in as another.
-DOWNGRADE_FLOOR = '1.0.224'
+# 1.0.249: 1.0.249 - holes of the root helper fixed in 1.0.248 and 1.0.249 (a report written
+# through a link, PostgreSQL's files read through one, a FIFO): the otp account could have root put
+# a signed older version in, and with it the hole.
+DOWNGRADE_FLOOR = '1.0.249'
 
 # ---------------------------------------------------------------------------
 # Paths and defaults
@@ -2165,7 +2168,11 @@ SETTING_STRIPPED = frozenset((
     'osup_check_at', 'osup_auto_at', 'power_auto_at', 'acme_email', 'acme_url', 'acme_dns_url',
     'acme_dns_server', 'acme_desec_domain', 'acme_dns_alias', 'acme_dns_zone',
     'acme_dns_tsig_name', 'acme_dns_user', 'acme_dns_subdomain', 'acme_node_name',
-    'siem_hostname', 'isemon_hostname', 'proxy_url'))
+    'siem_hostname', 'isemon_hostname', 'proxy_url',
+    # Checked without their spaces, kept with them (1.0.249): a token pasted with one at the end
+    # was saved, and never matched.
+    'metrics_token', 'portal_sso_key', 'acme_desec_token', 'acme_dns_tsig_secret', 'sms_url',
+    'upgrade_url', 'sms_prefix', 'portal_sso_logout'))
 
 
 CONFIG_LOADED = [False]
@@ -2301,7 +2308,18 @@ def write_file_settings(changes, path=None):
     where = Path(path) if path else CONFIG_FILE
     had = {}
     try:
-        with open(where, encoding='utf-8') as f:
+        # Never through a link, only a plain file (1.0.249): /etc/otp is the otp group's to
+        # write, and root copied a file a link there led to into one handed to otp.
+        try:
+            fd = os.open(str(where), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as e:
+            if e.errno == errno.ELOOP:
+                raise ValueError('it is a link')
+            raise
+        with os.fdopen(fd, encoding='utf-8') as f:
+            import stat as _stat
+            if not _stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise ValueError('it is not a plain file')
             got = json.load(f)
         if not isinstance(got, dict):
             raise ValueError('it is not an object')
@@ -2319,7 +2337,7 @@ def write_file_settings(changes, path=None):
         else:
             had[key] = value
     try:
-        was = os.stat(where)
+        was = os.lstat(where)
         mode = (was.st_mode & 0o770) or 0o640
     except OSError:
         mode = 0o640
@@ -4005,9 +4023,27 @@ class Db(object):
                 self.run(RawSql(off))
             except Exception:                           # noqa: BLE001
                 pass
+            # MariaDB's driver waits only so long for an answer (1.0.249): the server's limit taken
+            # away, a statement of minutes still failed at the socket's 130 s.
+            conn = self.conn if self.engine == 'mariadb' else None
+            was_rt = getattr(conn, '_read_timeout', None) if conn is not None else None
+            try:
+                if conn is not None:
+                    conn._read_timeout = None
+                    if getattr(conn, '_sock', None) is not None:
+                        conn._sock.settimeout(None)
+            except Exception:                           # noqa: BLE001
+                conn = None
             try:
                 yield
             finally:
+                if conn is not None:
+                    try:
+                        conn._read_timeout = was_rt
+                        if getattr(conn, '_sock', None) is not None:
+                            conn._sock.settimeout(was_rt)
+                    except Exception:                   # noqa: BLE001
+                        pass
                 try:
                     self.run(RawSql(on))
                 except Exception:                       # noqa: BLE001
@@ -4044,9 +4080,11 @@ class Db(object):
                 self.run(RawSql({'mariadb': 'START TRANSACTION', 'sqlite': 'BEGIN IMMEDIATE'}.get(
                     self.engine, 'BEGIN')))
                 self.in_tx = True
-                if self.engine == 'postgres' and main:
-                    self.run(RawSql('SET LOCAL idle_in_transaction_session_timeout = 10000'))
                 try:
+                    # Inside (1.0.249): failing here left in_tx set for good, and every later
+                    # transaction of the lane went in one statement at a time.
+                    if self.engine == 'postgres' and main:
+                        self.run(RawSql('SET LOCAL idle_in_transaction_session_timeout = 10000'))
                     yield
                     self.run(RawSql('COMMIT'))
                 except BaseException:
@@ -4685,7 +4723,12 @@ META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:n
                   # the time servers, the console at login, the password policy and SELinux's
                   # steps were never put in there. Without them each node puts them in again.
                   'host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
-                  'console:now:', 'host:selinux:now:', 'host:sshkeys:now:')
+                  'console:now:', 'host:selinux:now:', 'host:sshkeys:now:',
+                  # A putback asked in the copy (1.0.249): put back on a machine in use, its users
+                  # and keys taken away since came back - on one installed anew it is asked anew.
+                  'host:putback:',
+                  # Which node a download or an upload waits on (1.0.249): of that hour only.
+                  'held:')
 
 
 def _load_tables(db, src, keep_logs, say, gzip):
@@ -7202,11 +7245,11 @@ class Storage(object):
         """A row of meta taken away - with the guard's signature of its going (1.0.248): deleted
         with plain SQL, its last value put back by somebody else read as signed still."""
         if not dbguard_meta_signed(k):
-            self.db.run('DELETE FROM meta WHERE k = ?', (k,))
-            return
+            return self.db.run('DELETE FROM meta WHERE k = ?', (k,))
         with self.db.transaction():
-            self.db.run('DELETE FROM meta WHERE k = ?', (k,))
+            n = self.db.run('DELETE FROM meta WHERE k = ?', (k,))
             dbguard_sign(self.db, 'm', k, None)
+        return n
 
     def drop_setting(self, k):
         if not dbguard_setting_kept(k):
@@ -7436,7 +7479,7 @@ class Storage(object):
                 raise ValueError(bad)
         # A second step left by an account of this name taken away before
         # (1.0.146) is not this one's: somebody else's phone would answer it.
-        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
+        self.drop_meta('adm2fa:' + name.lower())
         pw = password_hash(password) if password else ''
         with self.db.transaction():                 # with its signature (1.0.234)
             got = self.db.insert('accounts', {
@@ -7477,7 +7520,7 @@ class Storage(object):
                     ('admin', one['name'].lower()))
         # Its second step with it (1.0.146): a new account of the same name
         # took it over - the old owner's authenticator signing it in.
-        self.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + one['name'].lower(),))
+        self.drop_meta('adm2fa:' + one['name'].lower())
 
     # ---- how somebody laid out the tables (as on isemon, 1.10.146 on) -------
     COLS_MOST_TABLES = 300
@@ -7883,13 +7926,13 @@ class Storage(object):
         try:
             for r in self.db.rows("SELECT k FROM meta WHERE k LIKE 'clientseen:%'"):
                 if r['k'].rsplit(':', 1)[-1] == str(int(ident)):
-                    self.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+                    self.drop_meta(r['k'])
             # Which of its addresses signed their requests, on every node
             # (1.0.101): maseen:<node>:<client>:<address>.
             for r in self.db.rows("SELECT k FROM meta WHERE k LIKE 'maseen:%'"):
                 parts = r['k'].split(':', 3)
                 if len(parts) == 4 and parts[2] == str(int(ident)):
-                    self.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+                    self.drop_meta(r['k'])
         except Exception:                               # noqa: BLE001
             pass
         self._clients = None
@@ -7963,6 +8006,8 @@ class Storage(object):
         if not re.match(r'^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}\Z', name):
             raise ValueError('a realm needs a name: letters, digits, dots, dashes and spaces')
         suffix = str(data.get('suffix') or '').strip().lstrip('@').lower()
+        if len(suffix) > 253:
+            raise ValueError('a realm is 253 characters at most')    # as a DNS name (1.0.249)
         if suffix and suffix != '*' and not re.match(r'^[a-z0-9][a-z0-9.-]*\Z', suffix):
             raise ValueError('the realm is what comes after the @ - example.cz - or * for '
                              'every name, or nothing for names written without one')
@@ -8310,7 +8355,9 @@ class Storage(object):
         elif old and old.get('bind_pw') and (
                 str(old.get('hosts') or '') != row['hosts'] or int(old.get('port') or 0) != port or
                 str(old.get('tls') or '') != tls or int(old.get('verify') or 0) != row['verify'] or
-                str(old.get('bind_dn') or '') != row['bind_dn']):
+                str(old.get('bind_dn') or '') != row['bind_dn'] or
+                # Old TLS let in where it was not (1.0.249): the check weakened is another server.
+                (row['weak'] and not int(old.get('weak') or 0))):
             # The password kept goes to the server it was given for only (1.0.207):
             # another host typed in, it was sent there - in clear with TLS off -
             # while the page never showed it.
@@ -8492,6 +8539,11 @@ class Storage(object):
         if HA_REBUILDING.is_set():
             return None
         row.setdefault('node', log_node())
+        # As long as RADIUS lets them be (1.0.249): a test of a 100 000-letter name was kept whole,
+        # and the overview took 25 s to lay out every time it was opened.
+        for k, most in (('username', 253), ('reason', 1000)):
+            if isinstance(row.get(k), str) and len(row[k]) > most:
+                row[k] = row[k][:most]
         hook = getattr(self, 'on_radius', None)
         if hook:
             try:
@@ -8679,10 +8731,10 @@ class Storage(object):
                 rej += n
 
         def top(col, where, n=10):
-            return self.db.rows(
+            return [dict(r, said=str(r.get('said') or '')[:300]) for r in self.db.rows(
                 "SELECT %s AS said, COUNT(*) AS n, MAX(ts) AS last FROM radius_log WHERE ts >= ? "
                 "AND ts < ? AND packet = 'Access-Request' AND %s GROUP BY %s ORDER BY n DESC "
-                "LIMIT %d" % (col, where, col, n), (since, until))
+                "LIMIT %d" % (col, where, col, n), (since, until))]
         return {
             'hours': hours, 'step': step, 'since': since, 'until': until, 'series': list(buckets.values()),
             'accepted': acc, 'refused': rej,
@@ -8914,7 +8966,13 @@ def dbguard_flush(force=False):
                            'seen_h': DBGUARD['seen_h'] or {}, 'adopted': DBGUARD.get('adopted') or []})
         DBGUARD['dirty'] = 0.0
     try:
-        write_replacing(DBGUARD_FILE, data, 0o600)
+        # The state folder's owner's even when root writes it (1.0.249: a copy put back, a rename from
+        # the command line) - left root's, the service could not read its counts at all.
+        owner = None
+        if os.geteuid() == 0:
+            st = os.stat(str(STATE_DIR))
+            owner = (st.st_uid, st.st_gid)
+        write_replacing(DBGUARD_FILE, data, 0o600, owner=owner)
     except Exception as e:                              # noqa: BLE001
         log_sparing('guard-file', 'the counters of signed rows could not be written to %s: %s'
                     % (DBGUARD_FILE, e), 'warn', every=600)
@@ -9150,6 +9208,7 @@ def dbguard_forget_seen(why=''):
         DBGUARD['seen'] = {}
         DBGUARD['seen_h'] = {}
         DBGUARD['refused'] = {}
+        DBGUARD['good'] = {}        # the values last found good were of that database (1.0.249)
         DBGUARD['dirty'] = time.time()
     dbguard_flush(force=True)
     if why:
@@ -9182,7 +9241,11 @@ def dbguard_resign(store, why=''):
         DBGUARD['seen_h'] = {}
         DBGUARD['good'] = {}
         DBGUARD['refused'] = {}
+        # Every row signed as it is now (1.0.249): nothing left for a version's first start to
+        # take as otp's word - switched on while running, the next start signed rows put in since.
+        DBGUARD['adopted'] = sorted(set(DBGUARD.get('adopted') or []) | set(DBGUARD_SINCE) | {'tokens'})
         DBGUARD['dirty'] = time.time()
+    dbguard_flush(force=True)
     if why:
         try:
             store.add_event('security', 'the rows of the database that reach root signed again '
@@ -10337,7 +10400,7 @@ class Tokens(object):
         self.store.token_write(name, fields)
         self._staged_forget(name)
         try:                            # a new token was never switched off (1.0.61)
-            self.store.db.run('DELETE FROM meta WHERE k = ?', ('disabled_from:' + name,))
+            self.store.drop_meta('disabled_from:' + name)
         except Exception:                               # noqa: BLE001
             pass
         out['scratch'] = codes
@@ -10405,7 +10468,7 @@ class Tokens(object):
 
     def _staged_forget(self, name):
         try:
-            self.store.db.run('DELETE FROM meta WHERE k = ?', ('staged:' + norm_name(name),))
+            self.store.drop_meta('staged:' + norm_name(name))
         except Exception:                               # noqa: BLE001
             pass
 
@@ -11149,6 +11212,13 @@ class Shipper(object):
                 except OSError:
                     pass
                 self.tcp.pop(key, None)
+        # The trouble of a target no longer sent to, gone with it (1.0.249): its alert stayed
+        # until the next restart.
+        keep = {'%s:%d/%s' % t for t in self.targets}
+        for d in (self.trouble, getattr(self, 'down', None) or {}):
+            for k in list(d):
+                if (not str(k).startswith('file:') or not CONFIG.get('ship_files')) and k not in keep:
+                    d.pop(k, None)
 
     def host(self):
         return str(CONFIG.get('isemon_hostname') or '').strip() or short_host()
@@ -11240,6 +11310,8 @@ class Shipper(object):
                 self.files[name] = f
             f.write(line + '\n')
             f.flush()
+            if self.trouble:
+                self.trouble.pop('file:' + name, None)  # written again: no trouble (1.0.249)
         except (OSError, ValueError) as e:
             self.trouble['file:' + name] = str(e)
 
@@ -11439,6 +11511,11 @@ class Siem(object):
                 except OSError:
                     pass
                 self.conns.pop(key, None)
+        keep = {'%s:%d/%s' % t for t in self.targets}      # (1.0.249) as isemon's
+        for d in (self.trouble, getattr(self, 'down', None) or {}):
+            for k in list(d):
+                if k != 'frame' and k not in keep:
+                    d.pop(k, None)
 
     def host(self):
         return str(CONFIG.get('siem_hostname') or '').strip() or node_name()
@@ -12148,7 +12225,7 @@ def node_key_give_back(store, prefix, name, when=None):
 def node_key_drop(store, prefix, name):
     n = 0
     for r in node_key_rows(store, prefix, name):
-        n += store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],)) or 0
+        n += store.drop_meta(r['k']) or 0
     return n
 
 
@@ -13177,7 +13254,7 @@ def chal_drop(store, state):
     """Done with, whatever it holds now: after a code taken once - the token's
     step, a recovery code, once_take - another answer that only counted a try
     meanwhile no longer refuses the right one (1.0.139)."""
-    store.db.run('DELETE FROM meta WHERE k = ?', (chal_key(state),))
+    store.drop_meta(chal_key(state))
 
 
 def chal_tidy(store):
@@ -13469,8 +13546,15 @@ class Authenticator(object):
                 raise
             return 'the directory could not say whether %s is another account (%s)' % (
                 tname, str(e)[:120])
-        if other and not other.get('many') and \
-                str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
+        if other and other.get('many') and '@' not in str(tname):
+            return ''       # a plain name many answer to (a forest's base): as before, not refused
+        if other and other.get('many'):
+            # More than one answers to it (1.0.249): not known whose it is - refused, as
+            # same_entry refuses it (a directory with two of one userPrincipalName).
+            return ('more than one account in the directory answers to %s - which one the token '
+                    'is cannot be said' % tname)
+        if other and \
+                str(other.get('dn') or '').lower() != str((entry or {}).get('dn') or '').lower():
             return ('%s is another account in the directory than %s - a suffix of the realm '
                     'that names two people differently' % (tname, typed))
         return ''
@@ -15179,6 +15263,11 @@ def token_name_problem(name):
     if not name or len(name) > 180 or not TOKEN_NAME_RE.match(name):
         return ('%r is not a name: a name, or a name@realm - no spaces, commas, semicolons '
                 'or =, 180 characters at most' % str(name)[:60])
+    if '@' in name and name.endswith('.'):
+        # A dot at the end (1.0.249): RADIUS and the pages read the name without it - a token made
+        # under it was found by nobody.
+        return '%r: a name is read without the dot at its end - make the token for %s' % (
+            str(name)[:60], name.rstrip('.')[:60])
     if '\\' in name:
         # DOMAIN\\name (1.0.224): RADIUS and the pages read it as name - a token made under it
         # was found by nobody, and the administrator was told it was made.
@@ -15226,7 +15315,9 @@ def import_totp(store, name, text, by='import', replace=False):
     try:
         if opts.get('OTP_LAST_STEP'):
             # Not later than now (1.0.234): a step from the future would refuse every code.
-            last_step = max(0, min(int(opts['OTP_LAST_STEP'][0]), int(time.time()) // 30 + 2))
+            # In the file's own steps (1.0.249): by 30 s, a 10 s token's last step was put far back,
+            # and codes used before the export were taken again.
+            last_step = max(0, min(int(opts['OTP_LAST_STEP'][0]), int(time.time()) // period + 2))
     except (TypeError, ValueError):
         last_step = 0
     if opts.get('OTP_STATE') and opts['OTP_STATE'][0] in ('active', 'disabled', 'pending'):
@@ -15247,7 +15338,7 @@ def import_totp(store, name, text, by='import', replace=False):
         'note': 'brought over from totpcgi' + ('' if 'TOTP_AUTH' in opts else
                                                ' (the file was not marked TOTP_AUTH)')})
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('staged:' + name,))
+        store.drop_meta('staged:' + name)
     except Exception:                                   # noqa: BLE001
         pass
     return 'imported, %d recovery code(s)' % len(codes)
@@ -15401,7 +15492,7 @@ def token_restore(store, t, by='restore', replace=False):
     if state == 'disabled' and str(t.get('was') or '') in ('pending', 'active'):
         store.set_meta('disabled_from:' + name, str(t['was']))    # (1.0.207)
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('staged:' + name,))
+        store.drop_meta('staged:' + name)
     except Exception:                                   # noqa: BLE001
         pass
     return 'restored (%s, %d recovery code(s) left)' % (
@@ -15438,7 +15529,7 @@ def seal_fp_check(store):
                         'the key of the other node to %s' % (node_name(), sealing_key_path()), 'bad')
         store.set_meta(k, json.dumps({'at': time.time(), 'here': fp, 'there': there}))
     elif store.get_meta(k):
-        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+        store.drop_meta(k)
 
 
 def names_nfc_kept(store):
@@ -16350,6 +16441,12 @@ class Daemon(object):
             if old:
                 raise BadSetting('db_guard: %s run an older version that does not sign what it '
                                  'writes - upgrade them first' % ', '.join(old))
+            # The tokens' secrets sealed as otp seals them first (1.0.249): from now on one found
+            # plain is held, and those are otp's own of before.
+            try:
+                bind_tokens(self.store, trusted=True)
+            except Exception as e:                      # noqa: BLE001
+                log('db_guard on: the tokens\' secrets not sealed again: %s' % e)
             n = dbguard_resign(self.store, 'switched on by %s: what the database holds now is '
                                          'taken as otp\'s word' % by)
             write_file_settings({'db_guard': 1})
@@ -16403,9 +16500,13 @@ class Daemon(object):
             # same moment would write the same number, and neither would
             # see that the other changed something. (1.0.14)
             mark = '%.6f:%s' % (time.time(), node_name())
+            seen = self.store.get_meta('conf_serial', '0')
             self.store.set_meta('conf_serial', mark)
-            self.conf_serial = mark
-            self.conf_loaded_at = time.time()
+            # Only when nothing else changed since this node read it (1.0.249): the other node's
+            # change of a moment before was taken as read here, and never loaded.
+            if seen == self.conf_serial:
+                self.conf_serial = mark
+                self.conf_loaded_at = time.time()
         except Exception:
             pass
         self.store._clients = None
@@ -17120,6 +17221,10 @@ class Daemon(object):
                 # traceback every 5 seconds (1.0.59).
                 log_sparing('housekeeping-db', 'housekeeping waits for the database: %s'
                             % str(e).split('\n')[0][:200], 'error', every=60)
+                try:
+                    net_local_trial_lost()      # a network on trial cut it off (1.0.249)
+                except Exception:                       # noqa: BLE001
+                    pass
             except Exception as e:
                 log('housekeeping broke: %s\n%s' % (e, traceback.format_exc()), 'error')
         try:
@@ -19063,7 +19168,7 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
         try:
             for r in store.db.rows('SELECT k FROM meta'):
                 if str(r.get('k') or '').startswith(META_TRANSIENT):
-                    store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+                    store.drop_meta(r['k'])
             for r in live_transient:
                 store.set_meta(r['k'], r['v'])
         except Exception as e:                          # noqa: BLE001
@@ -19473,6 +19578,37 @@ def dbkey_upload(up):
     if not p.is_file():
         raise ValueError('the file sent is not here any more (an hour has gone by?): send it again')
     return p
+
+
+def held_note(store, ident):
+    """Which node a file waits on (1.0.249): behind a balancer that sends each request to either
+    node, the next one reached the other node - which said only "not here any more"."""
+    try:
+        now = time.time()
+        for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'held:%'"):
+            try:
+                if now - float(json.loads(r['v']).get('at') or 0) > 7200:
+                    store.drop_meta(r['k'])
+            except (ValueError, TypeError, AttributeError):
+                store.drop_meta(r['k'])
+        store.set_meta('held:' + hashlib.sha256(str(ident).encode()).hexdigest()[:24],
+                       json.dumps({'node': node_name(), 'at': now}))
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def held_words(store, ident, words):
+    """`words`, or which node to ask, where the file waits on another."""
+    try:
+        got = json.loads(store.get_meta('held:' + hashlib.sha256(str(ident).encode()).hexdigest()[:24])
+                         or '{}')
+        if got.get('node') and got['node'] != node_name():
+            return ('it waits on the node %s, and this request reached %s - open the pages of %s '
+                    'itself for it (a balancer in front of both should keep one browser on one '
+                    'node)' % (got['node'], node_name(), got['node']))
+    except Exception:                                   # noqa: BLE001
+        pass
+    return words
 
 
 def dbkey_ticket_put(path, name, who):
@@ -20579,7 +20715,7 @@ def mailq_body(store, qid):
 
 
 def mailq_body_drop(store, qid):
-    store.db.run('DELETE FROM meta WHERE k = ?', (MAILB_PREFIX + qid,))
+    store.drop_meta(MAILB_PREFIX + qid)
 
 
 def mailq_delay(rec):
@@ -20877,8 +21013,8 @@ def mailq_retry(store, qids, by=''):
 def mailq_drop(store, qids, by=''):
     n = 0
     for qid in qids:
-        n += int(store.db.run('DELETE FROM meta WHERE k = ?', (MAILQ_PREFIX + qid,)) or 0)
-        store.db.run('DELETE FROM meta WHERE k = ?', (MAILB_PREFIX + qid,))
+        n += int(store.drop_meta(MAILQ_PREFIX + qid) or 0)
+        store.drop_meta(MAILB_PREFIX + qid)
     if n:
         store.add_event('mail', '%s took %d mail(s) out of the outgoing mail' % (
             by or 'somebody', n), 'warn', who=by or None)
@@ -21404,7 +21540,7 @@ def text_reset(store, mid, lang, keys=None):
         raise ValueError('no such message or language')
     k = 'texts:%s:%s' % (mid, lang)
     if not keys:
-        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+        store.drop_meta(k)
     else:
         for _round in range(8):
             raw = store.get_meta(k)
@@ -21630,6 +21766,15 @@ def rb_checked(data, old=None):
             raise ValueError('checked against an authority: give its certificate')
         if check == 'pin' and not t.get('pin'):
             raise ValueError('pinned: the fingerprint is needed - Try it shows the server\'s')
+        # How the server is checked is part of which server it is (1.0.249): with the check
+        # switched off, or another authority or fingerprint given, the saved password went to
+        # whoever answered on that address.
+        if old and old.get('password') and (pw is None or is_masked(pw)) and (
+                (old.get('tls_check') or 'system') != t['tls_check'] or
+                (old.get('ca') or '') != (t.get('ca') or '') or
+                (old.get('pin') or '') != (t.get('pin') or '') or
+                int(old.get('implicit') or 0) != t['implicit']):
+            raise ValueError('how the server is checked changed: type the password again')
     if kind == 'smb':
         t['share'] = rb_clean(data.get('share'), 'the share', 80, r'^[^\\/:*?"<>|;-][^\\/:*?"<>|;]*\Z',
                               empty=False)
@@ -21813,13 +21958,27 @@ class RbFolder(object):
             raise RbError('the otp account may not write into %s' % self.dir)
 
     def put(self, local, name):
-        part = os.path.join(self.dir, '.%s.part' % name)
-        shutil.copyfile(local, part)
-        os.chmod(part, 0o640)
-        os.replace(part, os.path.join(self.dir, name))
+        # A name nobody knows, made new, never through a link (1.0.249): a writer of the share put
+        # a link at the known .NAME.part, and the copy overwrote the token key it led to.
+        part = os.path.join(self.dir, '.%s.%s.part' % (name, secrets.token_hex(6)))
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+        try:
+            with os.fdopen(fd, 'wb') as out, open(local, 'rb') as src:
+                shutil.copyfileobj(src, out, 1024 * 1024)
+                out.flush()
+                os.fchmod(out.fileno(), 0o640)
+            os.replace(part, os.path.join(self.dir, name))
+        except BaseException:
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+            raise
 
     def get(self, name, local):
-        shutil.copyfile(os.path.join(self.dir, rb_safe_name(name)), local)
+        fd = os.open(os.path.join(self.dir, rb_safe_name(name)), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as src, open(local, 'wb') as out:
+            shutil.copyfileobj(src, out, 1024 * 1024)
 
     def list(self):
         out = []
@@ -22593,9 +22752,10 @@ def rb_companions(name):
     return [name + '.sha256', base + '-RESTORE.md']
 
 
-def rb_retain(tr, keep, days, now=None):
+def rb_retain(tr, keep, days, now=None, just=''):
     """This node's backups at a destination beyond what is kept, taken away -
-    never the newest."""
+    never the newest, never the one `just` sent, and none stamped ahead of now (1.0.249: made with
+    the clock ahead, they were the newest for good and every new one went at once)."""
     now = now or time.time()
     mine = rb_slug(node_name())
     files = tr.list()
@@ -22609,11 +22769,13 @@ def rb_retain(tr, keep, days, now=None):
                 when = datetime.strptime(m.group('stamp'), '%Y%m%d-%H%M%S').timestamp()
             except ValueError:
                 continue
+            if when > now + 86400:
+                continue                    # ahead of the clock: neither counted nor taken away
             ours.append((when, x['name']))
     ours.sort(reverse=True)
     gone = []
     for i, (when, name) in enumerate(ours):
-        if i == 0:
+        if i == 0 or name == just:
             continue
         if (keep and i >= keep) or (days and now - when > days * 86400):
             for n in [name] + [c for c in rb_companions(name) if c in names]:
@@ -22702,7 +22864,8 @@ def rb_run(store, by, only=None, progress=None):
                 one['ok'] = True
                 try:
                     one['taken_away'] = rb_retain(tr, int(CONFIG.get('rbackup_keep') or 0),
-                                                  int(CONFIG.get('rbackup_keep_days') or 0))
+                                                  int(CONFIG.get('rbackup_keep_days') or 0),
+                                                  just=m['file'])
                 except Exception as e:                  # noqa: BLE001
                     one['retain_error'] = str(e)[:200]
             except Exception as e:                      # noqa: BLE001
@@ -23708,8 +23871,8 @@ def in_cluster(store=None):
 def ha_forget(store, name):
     if name == node_name():
         raise ValueError('this is the node answering: it would write itself back at once')
-    store.db.run('DELETE FROM meta WHERE k = ?', ('node:' + name,))
-    store.db.run('DELETE FROM meta WHERE k = ?', ('cluster:with:' + name,))
+    store.drop_meta('node:' + name)
+    store.drop_meta('cluster:with:' + name)
     CLUSTER_WITH.discard('cluster:with:' + name)
 
 
@@ -24125,9 +24288,11 @@ def ha_join(data, name='', even_if_data=False, by=''):
     if data.get('db_guard'):
         changes['db_guard'] = 1
     write_file_settings(changes)
-    if data.get('db_guard'):
-        # The counts of before are of another database (1.0.248). The guard itself from the file,
-        # at the start: the running service still has the database it joins away from.
+    if True:
+        # The counts of before are of another database (1.0.248) - whether the cluster's guard is
+        # on or only this node's (1.0.249: kept, the cluster's rows were refused as older ones).
+        # The guard itself from the file, at the start: the running service still has the
+        # database it joins away from.
         try:
             dbguard_forget_seen('joined a cluster of one shared database')
             if os.geteuid() == 0 and DBGUARD_FILE.exists():
@@ -24197,6 +24362,7 @@ def pg_open_to(peer, db_name, db_user):
     """PostgreSQL on this machine listening beyond localhost and letting the
     other node's address in for this one database and account. Returns what
     was done, in words."""
+    pg_names_otps(None, db_name, db_user)
     # Both go into pg_hba.conf as root: a name with a space or a new line
     # in config.json wrote a line of its own there (1.0.139).
     for what, v in (('db_name', db_name), ('db_user', db_user)):
@@ -24345,11 +24511,32 @@ def pg_restart_local(port=5432):
     raise ValueError('PostgreSQL did not come back after its restart')
 
 
+def pg_names_otps(port, name, user):
+    """Refused unless `name` / `user` are otp's own (1.0.249, as the root helper since 1.0.248):
+    config.json is the otp account's to write, and root's --ha-setup gave the role postgres a
+    password it chose and let it in from the network."""
+    for v in (name, user):
+        if str(v or '').lower() in ('all', 'sameuser', 'samerole', 'samegroup', 'replication'):
+            raise ValueError('%s is a word of pg_hba.conf, not otp\'s database or account' % v)
+    if str(name or '').lower() in ('postgres', 'template0', 'template1') or \
+            str(user or '').lower() == 'postgres':
+        raise ValueError('%s / %s is PostgreSQL\'s own, not otp\'s database and account' % (name, user))
+    if port is not None:
+        try:
+            sup = pg_admin("SELECT rolsuper FROM pg_roles WHERE rolname = '%s'"
+                           % str(user).replace("'", "''"), port)
+        except Exception:                               # noqa: BLE001
+            sup = ''
+        if str(sup).strip() == 't':
+            raise ValueError('%s is a superuser of PostgreSQL - not otp\'s account' % user)
+
+
 def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
     """PostgreSQL on this machine ready to replicate with `peer`: logical
     WAL, listening on the network, the peer let in, the account able to
     replicate and to subscribe, the database there. True when it has to be
     restarted for it."""
+    pg_names_otps(port, name, user)
     major = int(pg_admin('SHOW server_version_num', port)) // 10000
     if major < 16:
         raise ValueError('PostgreSQL %d is here; replicating both ways needs 16 or later '
@@ -28524,7 +28711,7 @@ def node_carry(store, old, new, by='the daemon'):
             pass
     for k in ('node:', 'maint:', 'upgrade:node:', 'web:tls:', 'web:retry:', 'db_job:', 'fw:now:',
               'db_sizes:', 'hatls:node:', 'split:state:', 'clock:state:'):
-        store.db.run('DELETE FROM meta WHERE k = ?', (k + old,))
+        store.drop_meta(k + old)
     store.add_event('settings', 'the node %s is called %s now; carried over: %s' % (
         old, new, ', '.join(said) or 'nothing (it had nothing of its own)'), 'warn', who=by)
     dbguard_resign(store, 'the node %s is called %s now' % (old, new))      # 1.0.231
@@ -29377,6 +29564,8 @@ class Acme(object):
                 os.unlink(os.path.join(self.work, 'account.pem'))
             except OSError:
                 pass
+        if pem:
+            ACME_WAIT.pop('since', None)    # each time there is none, its own half hour (1.0.249)
         if not pem and CONFIG.get('ha_mode') == 'replicated' and not ha_lead(self.store) and \
                 time.time() - (ACME_WAIT.setdefault('since', time.time())) < 1800:
             # Half an hour at most: the first node makes it only when it orders a certificate of its
@@ -29512,7 +29701,7 @@ class Acme(object):
                 self.post_json(ch[0]['url'], {})
                 self._poll(az, ('valid',), 'the CA did not take %s' % name)
             finally:
-                self.store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
+                self.store.drop_meta('acme:chal:' + token)
         key, csr = make_csr(names[0], names[1:], key_kind or (CONFIG.get('acme_key') or 'ec'))
         der = _openssl(['req', '-in', '/dev/stdin', '-outform', 'DER'], data=csr.encode(),
                        what='the request')
@@ -29602,11 +29791,17 @@ def acme_put_back(store, target, by):
     prof = tls_profile(store, target) or {}
     prof.update({k: got.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
                                          'root_info', 'verify', 'how')})
+    # Its second certificate (ECDSA) with it (1.0.249): lost at the put back, the node served RSA
+    # only. ACME's own taken away where there was none before.
+    if got.get('alt') and float(((got['alt'] or {}).get('info') or {}).get('not_after') or 0) > time.time():
+        prof['alt'] = got['alt']                    # not one run out since (1.0.249)
+    else:
+        prof.pop('alt', None)
     prof.pop('pending_key', None)
     prof.pop('csr', None)
     tls_save(store, target, prof, by)
     store.set_meta('acme:care:' + target, json.dumps({'on': False, 'at': time.time(), 'by': by}))
-    store.db.run('DELETE FROM meta WHERE k = ?', ('acme:before:' + target,))
+    store.drop_meta('acme:before:' + target)
     store.add_event('settings', '%s put the certificate of %s from before ACME back (%s, until %s); '
                     'ACME no longer renews it' % (by, 'the VIP address' if target == 'vip' else
                                                   target, info.get('issuer') or '?',
@@ -29777,7 +29972,7 @@ def acme_order(store, target, name, by, say=None):
             # back with a click, its key as sealed as it was.
             store.set_meta('acme:before:' + target, json.dumps(
                 {k: prof.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
-                                          'root_info', 'verify', 'how')}
+                                          'root_info', 'verify', 'how', 'alt')}
                 | {'at': time.time()}))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
@@ -29963,7 +30158,7 @@ def acme_start(store, which, by):
         finally:
             try:
                 if json.loads(store.get_meta(lease) or '{}').get('node') == node_name():
-                    store.db.run('DELETE FROM meta WHERE k = ?', (lease,))
+                    store.drop_meta(lease)
             except Exception:                           # noqa: BLE001
                 pass
             with _ACME_LOCK:
@@ -30086,7 +30281,7 @@ def acme_probe(store, target):
         out['said'] = 'port 80 of %s cannot be reached: %s' % (name, getattr(e, 'reason', e))
     finally:
         scope.__exit__()
-        store.db.run('DELETE FROM meta WHERE k = ?', ('acme:chal:' + token,))
+        store.drop_meta('acme:chal:' + token)
     out['ms'] = int((time.time() - began) * 1000)
     return out
 
@@ -30999,6 +31194,11 @@ def hatls_off(store, by, here=True):
     certificates leave both PostgreSQLs (ssl as it was before otp)."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
+    if hisec_enforced('ha:tls', store):
+        # As db:tls is kept (1.0.249): the pages, the API and the command line switched it off
+        # under high security, and replication went in clear.
+        raise ValueError('high security is on: the link between the databases stays encrypted - '
+                         'or make ha:tls an exception there first')
     now = time.time()
     w = {'at': now, 'by': by, 'from': node_name(), 'off': True}
     store.set_meta('hatls:want', json.dumps(w))
@@ -31104,7 +31304,7 @@ def _hatls_off_tick(store, w, st):
             return
         else:
             # Nothing else keeps it: not renewed by Settings → The database either.
-            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+            store.drop_meta('dbtls:server:' + node_name())
         st.update(cert_end=None, done_at=now)
         hatls_put(store, st)
         store.add_event('ha', 'TLS between the databases is off on %s' % node_name(), 'warn')
@@ -32350,7 +32550,7 @@ def net_job_run(daemon, ask):
                 if undo['tls']:
                     store.set_meta('web:tls:' + me, undo['tls'])
                 else:
-                    store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + me,))
+                    store.drop_meta('web:tls:' + me)
                 _job_put(store, job, 'this node\'s certificate as it was before', 45)
         else:
             try:
@@ -32382,6 +32582,7 @@ def net_job_run(daemon, ask):
                 _job_put(store, job, 'what was kept could not be put back (%s) - the old '
                          'addresses are asked for instead' % e, 72, ok=False)
         if got is None:
+            net_local_trial_set(job, ask)
             got = net_root({'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
                             'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
                                      'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'],
@@ -32598,11 +32799,67 @@ def net_job_give_up(daemon, job):
                     % node_name(), 'bad', who=by)
 
 
+NET_LOCAL_TRIAL = STATE_DIR / 'net-trial.json'
+
+
+def net_local_trial_set(job, ask):
+    """Before the reboot of a change on trial (1.0.249): kept on this machine too, so that the
+    old network comes back when the database cannot be reached after it - on another machine, it
+    may be what the new network cut this node off from, and the job is kept there."""
+    try:
+        if ask.get('rollback') or not job.get('snap') or not int(job.get('trial_min') or 0):
+            return
+        write_replacing(NET_LOCAL_TRIAL, json.dumps({
+            'id': job.get('id'), 'snap': job['snap'],
+            'until': time.time() + NET_REBOOT_GIVE_UP_S + 60 * int(job.get('trial_min') or 0) + 300}),
+            0o600)
+    except Exception as e:                              # noqa: BLE001
+        log('network: the change on trial not kept on this machine: %s' % e, 'warn')
+
+
+def net_local_trial_tick(daemon):
+    """The kept trial: done with once the database says the job is over; acted on when the
+    database cannot be read and its time ran out."""
+    try:
+        t = json.loads(NET_LOCAL_TRIAL.read_text())
+    except (OSError, ValueError):
+        return
+    try:
+        job = _meta_json(daemon.store, 'net:job:' + node_name()) or {}
+        if job.get('id') != t.get('id') or job.get('state') not in ('trial', 'rebooting'):
+            NET_LOCAL_TRIAL.unlink()
+        return
+    except Exception:                                   # noqa: BLE001
+        pass                                            # the database not reached
+    net_local_trial_lost()
+
+
+def net_local_trial_lost():
+    """The database cannot be read (the daemon's loop, or its start): a change on trial kept
+    on this machine whose time ran out is put back by root - no database needed."""
+    try:
+        t = json.loads(NET_LOCAL_TRIAL.read_text())
+    except (OSError, ValueError):
+        return
+    if time.time() < float(t.get('until') or 0) or time.time() - float(t.get('asked') or 0) < 600:
+        return
+    log('network: the change on trial was not kept and the database cannot be reached - the '
+        'network kept before it comes back', 'warn')
+    try:
+        t['asked'] = time.time()        # asked again in ten minutes if root did not do it
+        write_replacing(NET_LOCAL_TRIAL, json.dumps(t), 0o600)
+        net_root({'do': 'restore', 'snapshot': t.get('snap'), 'reboot_in': 8}, 90)
+        NET_LOCAL_TRIAL.unlink()        # only once root put it back (1.0.249)
+    except Exception as e:                              # noqa: BLE001
+        log('network: the network kept before could not be put back: %s' % e, 'error')
+
+
 def net_tick(daemon):
     """Every few seconds: something asked of this node, a job to finish after
     a reboot, the network said again now and then."""
     if HA_REBUILDING.is_set() or not WEB_DIR.is_dir():
         return
+    net_local_trial_tick(daemon)
     store = daemon.store
     me = node_name()
     job = _meta_json(store, 'net:job:' + me)
@@ -34630,7 +34887,7 @@ def sshotp_remove(store, name, by):
     name = sshotp_name(name)
     if not sshotp_get(store, name):
         raise ValueError('%s has no SSH token' % name)
-    store.db.run('DELETE FROM meta WHERE k = ?', (sshotp_key(name),))
+    store.drop_meta(sshotp_key(name))
     store.add_event('settings', '%s removed the SSH token of %s' % (by, name), 'warn', who=by)
 
 
@@ -36905,7 +37162,7 @@ def dbtls_apply(daemon, args):
                                                                             'failed')):
             # The link between the databases uses the certificate (1.0.172):
             # it stays, renewed by the link.
-            store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+            store.drop_meta('dbtls:server:' + node_name())
             dbtls_publish(daemon, force=True)
             return dict(base, ok=True, said='the certificate stays: the link between the '
                         'databases uses it and renews it')
@@ -36916,7 +37173,7 @@ def dbtls_apply(daemon, args):
                              'them off first' % (', '.join(others), 'es' if len(others) == 1
                                                  else ''))
         got = _dbtls_helper({'do': 'server_off'}, store, by)
-        store.db.run('DELETE FROM meta WHERE k = ?', ('dbtls:server:' + node_name(),))
+        store.drop_meta('dbtls:server:' + node_name())
         store.add_event('settings', '%s: otp\'s certificate left the PostgreSQL of %s'
                         % (by, node_name()), 'warn', who=by)
         dbtls_publish(daemon, force=True)
@@ -37551,6 +37808,11 @@ def selinux_ask(store, node, action, by):
         raise ValueError('there is no node %s' % node)
     if action not in SE_ACTIONS:
         raise ValueError('check, prepare, enforce or permissive')
+    if action == 'permissive' and _hs_on():
+        # A step down, as TLS between the databases switched off (1.0.249): refused while high
+        # security is on - said afterwards only, before.
+        raise ValueError('high security is on: SELinux is not switched to permissive - switch high '
+                         'security off first')
     # A step asked and not done yet is not put aside by a look or a report (1.0.248): its one row
     # was written over, and "enforcing" never happened - said nowhere.
     was = _meta_json(store, 'host:selinux:want:' + node) or {}
@@ -37658,7 +37920,7 @@ def selinux_report_tidy(store):
     k = 'host:selinux:report:' + node_name()
     rep = _meta_json(store, k) or {}
     if rep and time.time() - float(rep.get('at') or 0) > SE_REPORT_KEEP_S:
-        store.db.run('DELETE FROM meta WHERE k = ?', (k,))
+        store.drop_meta(k)
 
 
 def selinux_reports(store):
@@ -38256,7 +38518,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                     _al(lang, 'SNMP agent na %s neposlouchá' % n, 'The SNMP agent on %s is not listening' % n),
                     str(sn.get('error') or '')[:300] or _al(lang, 'Port se nepodařilo otevřít.',
                                                             'Its port could not be opened.'), 'monitor')
-            elif isinstance(sn, dict) and sn.get('trap_error'):
+            elif isinstance(sn, dict) and sn.get('trap_error') and CONFIG.get('snmp_traps'):
                 add('snmp:trap:' + n, 'warn', n,
                     _al(lang, 'Trapy SNMP z %s neodchází' % n, 'SNMP traps from %s do not go' % n),
                     str(sn.get('trap_error'))[:300], 'monitor')
@@ -38369,7 +38631,10 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             rs = ha_repl_state(store) or {}
         except Exception:                               # noqa: BLE001
             rs = {}
-        behind = float(rs.get('behind') or 0)
+        # Its slots' own, the most of them (1.0.249): 'behind' is said per slot, never for the
+        # whole - the alert never came.
+        behind = max([float(x.get('behind') or 0) for x in rs.get('outgoing') or []
+                      if isinstance(x, dict)] + [float(rs.get('behind') or 0)])
         if rs.get('healthy', True) and behind > mb * 1048576:
             add('repl:behind', 'warn', '',
                 _al(lang, 'Replikace zaostává o %s' % human_bytes(behind), 'The replication is %s behind' % human_bytes(behind)),
@@ -38597,7 +38862,22 @@ def report_lang():
     return CONFIG.get('report_lang') or alerts_lang()
 
 
-def alerts_evaluate(store, force=False):
+ALERTS_EVAL_LOCK = threading.Lock()
+
+
+def alerts_evaluate(store, force=False, wait=True):
+    """One at a time (1.0.249): "Look again" while the tick's mail was on its way sent the same
+    problems twice, and the two wrote over each other's state. Not waited for (`wait` False):
+    None when one is going on."""
+    if not ALERTS_EVAL_LOCK.acquire(timeout=-1 if wait else 0):
+        return None
+    try:
+        return _alerts_evaluate(store, force)
+    finally:
+        ALERTS_EVAL_LOCK.release()
+
+
+def _alerts_evaluate(store, force=False):
     """The alerts' turn: what is wrong compared with what was said, mailed."""
     lang = alerts_lang()
     now = time.time()
@@ -38637,6 +38917,7 @@ def alerts_evaluate(store, force=False):
                 gone.append(p)
     # Events: a source blocked for guessing, as it happens.
     events = []
+    last_event = st.get('event_id')
     # What is said as it happens (1.0.242: a table of them; the blocked sources since 1.0.162).
     rules = [r for r in ALERT_EVENTS if CONFIG.get(r[0], DEFAULTS.get(r[0]))]
     if rules:
@@ -38665,12 +38946,21 @@ def alerts_evaluate(store, force=False):
                     break
             if len(events) >= 20:
                 break
+    to = _alerts_to()
+    mailing = bool(to and CONFIG.get('alerts'))
+    held_back = mailing and now - float(st.get('fail_at') or 0) <= 900
+    if held_back and (gone or events):
+        # Not lost while a mail that failed is waited out (1.0.249): the events and the "right
+        # again" notices were taken as said before any mail was tried - they go with the next.
+        for p in gone:
+            known[p['key']] = p
+        if last_event is not None:
+            st['event_id'] = last_event
+        gone, events = [], []
     st['problems'] = known
     st['checked'] = now
     store.set_meta('alerts:state', json.dumps(st))
-    to = _alerts_to()
-    if (new or still or gone or events) and to and CONFIG.get('alerts') and \
-            now - float(st.get('fail_at') or 0) > 900:
+    if (new or still or gone or events) and mailing and not held_back:
         said = {p['key'] for p in new + still}
         # A mail about something new names what else is still wrong too.
         others = [p for p in cur.values() if p['key'] not in said and p['sent']] \
@@ -38687,6 +38977,14 @@ def alerts_evaluate(store, force=False):
                     one.update(sent=True, sent_at=now,
                                mailed='bad' if 'bad' in (one.get('mailed'), one.get('level'))
                                else one.get('level'))
+            store.set_meta('alerts:state', json.dumps(st))
+        elif gone or events:
+            # Not sent, not waiting in the queue (1.0.249): kept for the next mail, as above.
+            st = _alert_state(store)
+            for p in gone:
+                st['problems'].setdefault(p['key'], p)
+            if last_event is not None:
+                st['event_id'] = last_event
             store.set_meta('alerts:state', json.dumps(st))
     return {'now': cur, 'new': len(new), 'still': len(still), 'over': len(gone),
             'events': len(events)}
@@ -38801,16 +39099,22 @@ def report_build(store, since, until, lang='cs'):
     days = max(1, int(round((until - since) / 86400)))
     # By day, whatever the period (the overview bars by 6 h over 3 days).
     # Counted by the database, a day a row (never the rows themselves read in).
-    slot = ('CAST((ts - ?) / 86400 AS INTEGER)' if db.engine == 'sqlite'
-            else 'FLOOR((ts - ?) / 86400)')
+    # By the hour, then into local days (1.0.249): days of 86 400 s from the first midnight were
+    # an hour off after a change of summer time - one date twice, the last one missing.
+    slot = ('CAST((ts - ?) / 3600 AS INTEGER)' if db.engine == 'sqlite'
+            else 'FLOOR((ts - ?) / 3600)')
     rows = db.rows("SELECT %s AS d, result, COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
                    "ts < ? AND packet = 'Access-Request' AND result IN ('accept', 'reject', "
                    "'drop') GROUP BY 1, 2" % slot, (since, since, until)) if days <= 62 else []
     per = collections.OrderedDict()
+    day0 = datetime.fromtimestamp(since).date()
+    starts = [time.mktime(datetime.combine(day0 + timedelta(days=i), datetime.min.time()).timetuple())
+              for i in range(min(days, 62) + 1)]
     for i in range(min(days, 62)):
-        per[i] = {'t': since + i * 86400, 'accept': 0, 'reject': 0}
+        per[i] = {'t': starts[i], 'accept': 0, 'reject': 0}
     for r in rows:
-        i = int(r['d'] or 0)
+        at = since + int(r['d'] or 0) * 3600
+        i = bisect.bisect_right(starts, at) - 1
         if i in per:
             per[i]['accept' if r['result'] == 'accept' else 'reject'] += int(r['n'] or 0)
     acc, rej = int(ov.get('accepted') or 0), int(ov.get('refused') or 0)
@@ -39410,6 +39714,9 @@ def api_token(make=False):
 
 def _int_id(v):
     """An id from a request: a whole number, or ValueError said plainly."""
+    # Never true or 1.5 (1.0.249): {"id": true} was row 1 - the localhost client deleted.
+    if isinstance(v, bool) or (isinstance(v, float) and not v.is_integer()):
+        raise ValueError('an id is a number')
     try:
         return int(v or 0)
     except (TypeError, ValueError):
@@ -39786,7 +40093,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # At the first '>' (1.0.248): an account's name has none, and a1>CORP\\novak,
                 # a2>CORP\\novak... split at the last one were a fresh count each for novak.
                 pre, sep, who = who.partition('>')
-            who = who.split('\\', 1)[-1].rsplit('@', 1)[0].strip()
+            # As the directory reads it (1.0.249): after the last backslash, before the first @ -
+            # x1\\CORP\\novak, x2\\CORP\\novak... were a fresh count each, and the directory
+            # still asked for novak.
+            who = who.rsplit('\\', 1)[-1].split('@', 1)[0].strip()
             keys.append((kind + '-name', (pre + sep + who)[:190]))
         t = time.time()
         span = wait_min * 60
@@ -40006,7 +40316,7 @@ def lockouts_tick(d):
     key = 'lockouts:ask:' + node_name()
     raw = d.store.get_meta(key)
     if raw:
-        d.store.db.run('DELETE FROM meta WHERE k = ?', (key,))
+        d.store.drop_meta(key)
         try:
             asks = json.loads(raw)
         except ValueError:
@@ -40144,7 +40454,7 @@ def dir_pw_who(name, entry=None):
     if dn:
         first = re.split(r'(?<!\\),', dn, 1)[0].split('=', 1)[-1].strip()
         return '%s#%s' % (first[:60], hashlib.sha256(dn.encode('utf-8')).hexdigest()[:8])
-    return str(name or '').strip().lower().split('\\', 1)[-1].rsplit('@', 1)[0].strip()[:190]
+    return str(name or '').strip().lower().rsplit('\\', 1)[-1].split('@', 1)[0].strip()[:190]
 
 
 def dir_pw_caps(store):
@@ -40426,7 +40736,9 @@ def admin_name_parts(name):
     """`DOMAIN\\novak`, `novak@example.cz` or `novak`, as the directory is asked."""
     name = name.strip()
     if '\\' in name:
-        name = name.split('\\', 1)[1]
+        # After the last one, as the directory reads it (1.0.249): A\\B\\novak was asked for
+        # novak while counted apart as B\\novak.
+        name = name.rsplit('\\', 1)[1]
     return name, ('upn' if '@' in name else 'sam')
 
 
@@ -41318,7 +41630,7 @@ def mailed_set(store, name, to, lang, codes, by):
 
 
 def mailed_drop(store, name):
-    store.db.run('DELETE FROM meta WHERE k = ?', ('mailed:' + norm_name(name),))
+    store.drop_meta('mailed:' + norm_name(name))
 
 
 @route('GET', '/api/token')
@@ -41368,10 +41680,18 @@ def _token_do(h):
             ad = h.d.auth.directory((r_of or {}).get('directory')) if r_of else None
             if ad is not None:
                 try:
-                    entry = ad.find_user(name, 'upn')
-                except LdapError:
+                    # As RADIUS finds the person (1.0.249): under the realm's other suffixes too -
+                    # novak@dpmo.local whose UPN is novak@dpmo.cz is novak himself.
+                    entry = Authenticator.find_person(ad, name, 'upn', r_of)
+                except LdapError as e:
+                    # Not known is no "no clash" (1.0.249, as RADIUS and the portal since 1.0.248).
+                    raise ApiError(503, 'the directory could not say whether %s is another '
+                                        'account (%s)' % (main, str(e)[:120]))
+                if entry and entry.get('many'):
                     entry = None
-                clash = Authenticator.alias_clash(ad, name, main, entry) if entry else ''
+                # A name the directory does not know under the alias too (1.0.249): made under the
+                # main suffix, the token was that account's when there is one.
+                clash = Authenticator.alias_clash(ad, name, main, entry or {})
                 if clash:
                     raise ApiError(409, clash)
             name = main
@@ -41434,7 +41754,13 @@ def token_same_person(store, name, daemon=None):
     # userPrincipalName in a realm that reads names so - falco@corp.loc was made a working
     # token beside falco@corp.cz in use by a token administrator.
     if daemon is not None and realm.get('directory') and getattr(daemon, 'auth', None):
-        same = daemon.auth.same_person(name, realm)
+        gone = []
+        same = daemon.auth.same_person(name, realm, gone=gone)
+        if gone:
+            # Not known is no "nobody else" (1.0.249): a token administrator made a second
+            # working token for the same person while the directory was away.
+            raise ApiError(503, 'the directory cannot be reached just now - whether %s has a '
+                                'token under another name cannot be said' % name)
         if same and norm_name(same) != norm_name(name):
             t = store.token(same)
             if t and t.get('state') != 'pending':
@@ -41901,6 +42227,11 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                 raise ValueError('more than 50 000 files in it')
             total = 0
             locked_any = any(i.flag_bits & 1 for i in infos)
+            if not locked_any and any(i.filename.endswith('.totp') for i in infos):
+                # Said (1.0.249): an export of otp is always locked - one not locked is a folder of
+                # the old server zipped, or one put in place of the export.
+                out.append({'name': label, 'said': 'not locked: its files imported as they are - an '
+                                                   'export of otp is always locked'})
             for info in infos:
                 base = info.filename.replace('\\', '/').rsplit('/', 1)[-1]
                 if info.is_dir() or not base.endswith('.totp') or base.startswith('.') or \
@@ -41929,8 +42260,12 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                     out.append({'name': base, 'said': 'not imported: too big for a .totp file'})
                     continue
                 got.append({'name': base, 'text': data.decode('utf-8', 'replace')})
-    except (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError) as e:
-        out.append({'name': label, 'said': 'not imported: %s' % e})
+    except (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError, struct.error,
+            zlib.error) as e:
+        # A damaged one said as damaged (1.0.249), not "it broke".
+        out.append({'name': label, 'said': 'not imported: %s' % (
+            e if isinstance(e, (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError))
+            else 'the ZIP is damaged')})
         return []
     if not got:
         out.append({'name': label, 'said': 'not imported: no .totp file in it'})
@@ -42686,6 +43021,10 @@ def radtest_do(store, daemon, by, src, b):
                            'one (the installer makes "localhost"), or give the secret')
         secret = local['_secret']
     port = int(b.get('port') or CONFIG.get('radius_auth_port') or 1812)
+    if not b.get('secret') and port != int(CONFIG.get('radius_auth_port') or 1812):
+        # The localhost client's secret only to this server's own port (1.0.249): sent to any
+        # port of the machine, a listener there could work it out from the answer it made.
+        port = int(CONFIG.get('radius_auth_port') or 1812)
     code, words, took = radius_ask(server, port, secret, user, password,
                                    extra=[('State', '0x' + state)] if state else ())
     got_state = next((v for k, v in words if k == 'State'), '')
@@ -42829,7 +43168,7 @@ def radtest_serve(daemon):
     for r in rows:
         ident = r['k'].rsplit(':', 1)[1]
         # Taken once: the row out first, so a second look does not run it again.
-        store.db.run('DELETE FROM meta WHERE k = ?', (r['k'],))
+        store.drop_meta(r['k'])
         try:
             # Seen and taken (1.0.87): the asking node says so if it waits too long.
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)',
@@ -43350,7 +43689,9 @@ def _db(h):
             # The move to another database is not for a node of a cluster (1.0.214):
             # the page's wizard says so before it starts.
             'cluster': in_cluster(h.store), 'ha_mode': CONFIG.get('ha_mode') or '',
-            'drivers': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
+            # Its own key (1.0.249): in place of 'drivers' the card said "no driver - install
+            # undefined" everywhere.
+            'driver_here': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
             'tuned': bool(json.loads(h.store.get_meta('tune_before:' + node_name()) or '{}')),
             'retain': {k: CONFIG.get(k) for k in ('retain_radius_days', 'retain_otp_days',
                                                     'retain_events_days')}})
@@ -43388,7 +43729,8 @@ def _db_download(h):
     if h.arg('ticket'):
         v = dbkey_ticket_take(h.arg('ticket'), s['name'])
         if not v:
-            raise ApiError(404, 'that download is not waiting any more: ask for it again')
+            raise ApiError(404, held_words(h.store, h.arg('ticket'),
+                                           'that download is not waiting any more: ask for it again'))
         try:
             h.send_file(v['path'], v['name'])
         finally:
@@ -43454,7 +43796,9 @@ def _db_download_ticket(h, s, b):
         raise ApiError(400, str(e))
     h.store.add_event('backups', '%s downloaded %s WITH the key that opens its tokens, locked with '
                       'a passphrase' % (by, out.name), 'warn', who=by)
-    return {'ticket': dbkey_ticket_put(out, out.name, by), 'name': out.name}
+    t = dbkey_ticket_put(out, out.name, by)
+    held_note(h.store, t)
+    return {'ticket': t, 'name': out.name}
 
 
 @route('POST', '/api/db/restore')
@@ -43478,7 +43822,9 @@ def _db_restore(h):
                 shutil.rmtree(str(work), ignore_errors=True)
             if said is None:
                 raise ApiError(400, why)
-            return {'says': said, 'upload': dbkey_keep_upload(tmp), 'locked': True,
+            up = dbkey_keep_upload(tmp)
+            held_note(h.store, up)
+            return {'says': said, 'upload': up, 'locked': True,
                     'file': head.get('file')}
         if h.arg('check'):
             said, why = db_file_peek(tmp, h.store.db.engine)
@@ -43526,7 +43872,7 @@ def _db_do(h):
         try:
             src = dbkey_upload(b.get('upload'))
         except ValueError as e:
-            raise ApiError(400, str(e))
+            raise ApiError(400, held_words(h.store, b.get('upload'), str(e)))
         passphrase = str(b.get('passphrase') or '')
         if b.get('check'):
             work = Path(tempfile.mkdtemp(prefix='otp-peek-', dir=str(STATE_DIR)))
@@ -44171,7 +44517,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     # switched off, until somebody gives it one.
                     fields['disabled'] = 1
                     said['accounts switched off: no password in the file'] += 1
-                store.db.run('DELETE FROM meta WHERE k = ?', ('adm2fa:' + name.lower(),))
+                store.drop_meta('adm2fa:' + name.lower())
                 store.db.insert('accounts', dict(fields, name=name, pw=pw or '',
                                                  created=time.time(), last_in=None,
                                                  last_from='', prefs=str(a.get('prefs') or '{}')))
@@ -44946,7 +45292,7 @@ def portal_same_person(store, realm, entry):
 def token_meta_forget(store, name):
     """What was kept beside a token that is gone (1.0.61)."""
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('disabled_from:' + norm_name(name),))
+        store.drop_meta('disabled_from:' + norm_name(name))
     except Exception:                                   # noqa: BLE001
         pass
 
@@ -44964,7 +45310,7 @@ def token_switch_state(store, name, on):
         return 'disabled'
     was = store.get_meta('disabled_from:' + name, '') or 'active'
     try:
-        store.db.run('DELETE FROM meta WHERE k = ?', ('disabled_from:' + name,))
+        store.drop_meta('disabled_from:' + name)
     except Exception:                                   # noqa: BLE001
         pass
     return 'pending' if was == 'pending' else 'active'
@@ -45069,11 +45415,18 @@ def _portal_gate(h):
     # Taken once: two requests with the right code at once both read it.
     if not h.store.session_take(s['id'], 'gate'):
         raise ApiError(409, 'that code was taken already')
-    portal_data_set(h, s, gate_wait=None, gate_ok=time.time())
+    data = portal_data_set(h, s, gate_wait=None, gate_ok=time.time())
     h.store.add_event('enrolment', '%s signed in to the enrolment pages from %s, with the one-time '
                       'code by %s' % (s['name'], h.client_ip(),
                                       'mail' if g.get('kind') == 'mail' else 'SMS'), who=s['name'])
-    return {'me': portal_state(h, s)}
+    # A sign-in of its own from here on, as the administrators' second step (1.0.249): a cookie
+    # planted before the code was typed had the person's enrolment once it was.
+    hours = max(0.05, (float(s.get('expires') or 0) - time.time()) / 3600.0)
+    token = h.store.session_new('portal', s['name'], s.get('role') or 'portal', h.client_ip(),
+                                hours, data=dict(data or {}))
+    h.store.session_drop(s['id'])
+    s2 = h.store.session_get(token, 'portal', int(CONFIG.get('portal_session_min') or 15) * 60)
+    return {'me': portal_state(h, s2 or s), 'token': token}
 
 
 @route('POST', '/api/portal/gate/again')
@@ -46001,6 +46354,11 @@ def _web_do(h):
         info = got['info']
         if info.get('not_after') and info['not_after'] < time.time():
             raise ApiError(400, 'this certificate ran out on %s' % stamp(info['not_after']))
+        # The second one too (1.0.249): an ECDSA one run out was given to most browsers.
+        a2 = (got2 or {}).get('info') or {}
+        if a2.get('not_after') and a2['not_after'] < time.time():
+            raise ApiError(400, 'the second certificate (%s) ran out on %s' % (
+                a2.get('key') or 'ECDSA', stamp(a2['not_after'])))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
@@ -46057,7 +46415,7 @@ def _web_do(h):
             words, '; making the DH parameters takes a while' if slow else ''),
                 'tls': tls_view(prof)}
     if act == 'tls_forget':
-        store.db.run('DELETE FROM meta WHERE k = ?', ('web:tls:' + target,))
+        store.drop_meta('web:tls:' + target)
         acme_care_set(store, target, False, who, 'otp lets its TLS go')
         store.add_event('settings', '%s: otp no longer looks after the TLS of %s (nginx keeps '
                         'what it has)' % (who, words), 'warn', who=who)
@@ -46741,7 +47099,7 @@ def mfa_all(store):
 
 def mfa_reset(store, name, by):
     had = mfa_get(store, name)
-    store.db.run('DELETE FROM meta WHERE k = ?', (mfa_key(name),))
+    store.drop_meta(mfa_key(name))
     store.add_event('accounts', '%s reset the second step of signing in of %s%s' % (
         by, name, ' (it was %s)' % MFA_KIND_WORDS.get(had.get('kind'), had.get('kind'))
         if had else ' (none was set up)'), 'warn', who=by)
@@ -47117,11 +47475,25 @@ def _rbackup_do(h):
                     sorted(x.strip() for x in fresh.splitlines() if x.strip()):
                 raise ValueError('the server shows other host keys now than the ones shown: '
                                  'Try it again')
+            # Another key than the one trusted, with a password saved (1.0.249): whoever answers on
+            # that address now would get it - typed again for the server it is.
+            other = bool(t.get('hostkey')) and sorted(str(t.get('hostkey')).split()) != sorted(fresh.split())
+            if other and t.get('password'):
+                rb_set_fields(h.store, t['id'], by, 'its host key trusted (%s), its saved password '
+                              'taken away' % '; '.join(fps), hostkey=fresh, password='')
+                return {'message': 'trusted - the saved password was taken away with the old key: '
+                                   'type it again', 'fingerprints': fps}
             rb_set_fields(h.store, t['id'], by, 'its host key trusted (%s)' % '; '.join(fps),
                           hostkey=fresh)
             return {'message': 'trusted', 'fingerprints': fps}
         if act == 'hostkey_forget':
             t = _rb_target_for(h, b)
+            # The saved password with it (1.0.249): Try it, then Trust it, sent it to whoever answers
+            # on that address now - typed again for the server it is.
+            if t.get('password') and t.get('hostkey'):
+                rb_set_fields(h.store, t['id'], by, 'its host key forgotten, and its saved password',
+                              hostkey=None, password='')
+                return {'message': 'forgotten - the saved password with it: type it again'}
             rb_set_fields(h.store, t['id'], by, 'its host key forgotten', hostkey=None)
             return {'message': 'forgotten'}
         if act == 'keygen':
@@ -47174,6 +47546,12 @@ def _rbackup_do(h):
             pin = re.sub(r'[^0-9a-f]', '', str(b.get('pin') or '').lower())
             if len(pin) != 64:
                 raise ValueError('the fingerprint is SHA-256: 64 hex digits')
+            if t.get('password') and t.get('pin') and t['pin'] != pin:
+                # Another certificate trusted, as another host key (1.0.249): the saved password
+                # typed again for the server it is.
+                rb_set_fields(h.store, t['id'], by, 'the server\'s certificate pinned (%s), its '
+                              'saved password taken away' % pin, pin=pin, tls_check='pin', password='')
+                return {'message': 'pinned - the saved password was taken away: type it again'}
             rb_set_fields(h.store, t['id'], by, 'the server\'s certificate pinned (%s)' % pin,
                           pin=pin, tls_check='pin')
             return {'message': 'pinned'}
@@ -47267,7 +47645,7 @@ def _rb_restore_job(h, b, by):
             raise ValueError('which file?')
         src = RB_UPLOADS / up
         if not src.is_file():
-            raise ValueError('the file sent is not here any more: send it again')
+            raise ValueError(held_words(h.store, up, 'the file sent is not here any more: send it again'))
     else:
         t = rb_target(h.store, b.get('id'))
         name = str(b.get('name') or '')
@@ -47324,6 +47702,7 @@ def _rbackup_upload(h):
         # Inside the try (1.0.205): one that did not arrive whole, or too big,
         # stayed behind - up to 4 GB until the next upload an hour later.
         h.body_to_file(dst, 4 * 1024 ** 3)        # as nginx takes (1.0.139)
+        held_note(h.store, up)                      # which node it waits on (1.0.249)
         with open(str(dst), 'rb') as f:
             head = f.read(8)
         if not (head.startswith(b'Salted__') or head.startswith(b'\x1f\x8b')):
@@ -47757,8 +48136,12 @@ OSU_PW_MIN = 8
 PWP_DEFAULT = {'managed': False, 'minlen': 12, 'minclass': 3, 'maxrepeat': 3, 'dictcheck': 1,
                'usercheck': 1, 'difok': 5, 'remember': 5, 'max_days': 99999, 'min_days': 0,
                'warn_days': 7, 'deny': 0, 'unlock_time': 900, 'fail_interval': 900, 'existing': False}
+PWP_WORDS = {'minlen': 'the shortest password', 'max_days': 'days a password is good',
+             'min_days': 'the least days between two changes', 'warn_days': 'days of warning before',
+             'remember': 'passwords remembered', 'minclass': 'kinds of characters',
+             'maxrepeat': 'the same character in a row', 'difok': 'characters other than the old'}
 PWP_RANGES = {'minlen': (6, 128), 'minclass': (0, 4), 'maxrepeat': (0, 20), 'difok': (0, 20),
-              'remember': (0, 50), 'max_days': (0, 99999), 'min_days': (0, 365), 'warn_days': (0, 365),
+              'remember': (0, 50), 'max_days': (1, 99999), 'min_days': (0, 365), 'warn_days': (0, 365),
               'deny': (0, 100), 'unlock_time': (0, 86400), 'fail_interval': (60, 86400)}
 
 
@@ -47767,6 +48150,8 @@ def pwp_conf(store):
     system's own, untouched - until set."""
     c = dict(PWP_DEFAULT)
     c.update({k: v for k, v in (_meta_json(store, 'host:pwpolicy:conf') or {}).items() if k in PWP_DEFAULT})
+    if not c.get('max_days'):
+        c['max_days'] = 99999       # 0 saved before 1.0.249: never runs out, not "at once"
     return c
 
 
@@ -47798,7 +48183,8 @@ def pwp_checked_api(b):
                 raise ValueError('%s is a number' % k)
             lo, hi = PWP_RANGES[k]
             if not lo <= v <= hi:
-                raise ValueError('%s is %d to %d' % (k, lo, hi))
+                # Said by what the page calls it (1.0.249): "minlen is 6 to 128" named no box.
+                raise ValueError('%s is %d to %d' % (PWP_WORDS.get(k, k), lo, hi))
             c[k] = v
         else:
             # '0' from the command line is no yes (1.0.248): it switched the check on.
@@ -48014,6 +48400,11 @@ def osu_ask(store, nodes, do, by, **f):
     if do == 'add':
         ask['uid'] = osu_free_uid(store, nodes, name)
         ask['sudo'] = bool(f.get('sudo'))
+        if ask['sudo'] and not f.get('password'):
+            # The pages' rule, for every way in (1.0.249): the console and the API made one in
+            # the admin group with no password - sudo asks for it.
+            raise ValueError('sudo asks for the user\'s own password - give them one, or they '
+                             'cannot use sudo')
         # A new password at the next sign-in only for one who has a password (1.0.248): a user of
         # a key only was asked at every sign-in for one never given - and let in by nothing.
         ask['must_change'] = bool(f.get('must_change')) and bool(f.get('password'))
@@ -48037,6 +48428,8 @@ def osu_ask(store, nodes, do, by, **f):
                 except (TypeError, ValueError):
                     raise ValueError('%s is a number' % k)
                 lo, hi = PWP_RANGES[k]
+                if k == 'max_days':
+                    lo = 0      # one user's as the system lists it (0 there), as before (1.0.249)
                 if not lo <= v <= hi:
                     raise ValueError('%s is %d to %d' % (k, lo, hi))
                 ask[k] = v
@@ -48302,6 +48695,26 @@ SN_ASKED = {'at': 0.0}
 # cluster kept them for, its root helper puts back what is missing - never taking anything away.
 KEEP_EVERY = 3600
 KEEP_WORK = {'at': 0.0, 'busy': False, 'putback_at': 0.0, 'putback_tries': 0}
+KEEP_HOLD_FILE = STATE_DIR / 'host-keep-hold'
+
+
+def keep_hold_until():
+    """Until when the kept row stays as the backup had it (1.0.249: in a file - only in memory,
+    a restart of otp within the week read the machine over it at once)."""
+    try:
+        return float(json.loads(KEEP_HOLD_FILE.read_text()).get('until') or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0.0
+
+
+def keep_hold_set(until):
+    try:
+        if until:
+            write_replacing(KEEP_HOLD_FILE, json.dumps({'until': until}), 0o600)
+        elif KEEP_HOLD_FILE.exists():
+            KEEP_HOLD_FILE.unlink()
+    except OSError as e:
+        log('the hold of what was kept of the machine could not be written: %s' % e, 'warn')
 PUTBACK_TRIES = 3
 PUTBACK_FILE = STATE_DIR / 'host-putback'
 APPLIED_PREFIXES = ('host:sshd:now:', 'host:sshd:fmt:', 'host:users:now:', 'ntp:applied:',
@@ -48333,7 +48746,7 @@ def keep_at_start(store):
     except (ValueError, TypeError, AttributeError):
         done = []
     for p in APPLIED_PREFIXES:
-        store.db.run('DELETE FROM meta WHERE k = ?', (p + me,))
+        store.drop_meta(p + me)
     if done:
         store.set_meta('host:users:now:' + me, json.dumps({'done': done[-300:]}))
     KEEP_WORK.update(putback_at=0.0, putback_tries=0)
@@ -48393,7 +48806,7 @@ def keep_tick(daemon):
     if pending and time.time() < KEEP_WORK['putback_at']:
         return          # tried and failed: again later - and until then the kept row stays as it is
     if not pending and (time.time() - KEEP_WORK['at'] < KEEP_EVERY or
-                        time.time() < KEEP_WORK.get('hold_until', 0)):
+                        time.time() < keep_hold_until()):
         # What could not be put back is kept as the backup had it for a week (1.0.248): read
         # again at once, the machine as it is now took its place - and nothing was left to put
         # back by hand, nor in the next backup.
@@ -48406,6 +48819,7 @@ def keep_tick(daemon):
                 k = keep_open(_meta_json(store, 'host:keep:' + me) or {}, me)
                 if k is None:
                     log('what the cluster kept of this machine could not be opened - nothing put back', 'warn')
+                    keep_hold_set(time.time() + 7 * 86400)  # not read over it either (1.0.249)
                 else:
                     try:
                         got = users_ask({'do': 'putback', 'keep': k}, 600)
@@ -48425,12 +48839,12 @@ def keep_tick(daemon):
                                         'bad' if 'not put back:' in (got.get('said') or '') else 'warn')
                         log('the machine\'s own put back: %s' % (got.get('said') or 'nothing missing'))
                     if got is None or 'not put back:' in (got.get('said') or ''):
-                        KEEP_WORK['hold_until'] = time.time() + 7 * 86400
+                        keep_hold_set(time.time() + 7 * 86400)
                     else:
-                        KEEP_WORK['hold_until'] = 0
+                        keep_hold_set(0)
                 KEEP_WORK.update(putback_at=0.0, putback_tries=0)
                 store.drop_meta('host:putback:' + me)       # with its signature (1.0.248)
-                if KEEP_WORK.get('hold_until', 0) > time.time():
+                if keep_hold_until() > time.time():
                     return              # the kept row as the backup had it: not read again now
             got = users_ask({'do': 'keep'}, 120)
             got.pop('at', None)
@@ -48476,7 +48890,7 @@ def _alerts_do(h):
             # Looked at again by the node that sends them only (1.0.211): from the
             # other node's page it could mail them too, beside the lead's own.
             if alerts_lead(h.store):
-                alerts_evaluate(h.store)
+                alerts_evaluate(h.store, wait=False)     # one going on: its result shown
             return alerts_view(h.store)
         if act == 'test':
             to = _alerts_to()
@@ -48717,7 +49131,7 @@ def _acme_do(h):
                 'will not be put in - the order is given up'), who=s['name'])
             return acme_view(h.store)
         if act == 'forget':
-            h.store.db.run("DELETE FROM meta WHERE k = 'acme:account'")
+            h.store.drop_meta('acme:account')
             h.store.add_event('settings', '%s forgot the account at the ACME CA - a new one is '
                               'made at the next order' % s['name'], 'warn', who=s['name'])
             return acme_view(h.store)
@@ -49713,6 +50127,8 @@ class SnmpAgent(object):
             except OSError as e:
                 out[key] = str(e)
                 SNMP_STATE['trap_error'] = '%s: %s' % (key, e)
+        if out and all(v == 'sent' for v in out.values()):
+            SNMP_STATE['trap_error'] = ''       # every one went: the alert over (1.0.249)
         return out
 
 
@@ -49790,7 +50206,10 @@ def snmp_traps_tick(daemon, cur):
                               ('str', str(p.get('said') or '')[:255]), ('str', node_name())])
             was.update(sent=any(v == 'sent' for v in got.values()), level=p.get('level'))
             changed = True
-    for k in [k for k in known if k not in cur]:
+    # Held while the cluster is worked on, as the mails hold them (1.0.249): a "right again"
+    # sent in the middle of the maintenance the manager watched.
+    quiet = alerts_quiet_until(store) > time.time()
+    for k in [k for k in known if k not in cur and not (quiet and k.startswith(('repl', 'db:', 'vip:')))]:
         p = known.pop(k)
         changed = True
         if p.get('sent'):
@@ -49872,7 +50291,8 @@ def _ask_snmp(daemon, args):
 def snmp_get(host, port, c, oids, timeout=3.0):
     """A small SNMPv3 manager: discovery, then one authPriv GET - for the
     node's own test. {oid: value as text}."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # IPv6 too (1.0.249): an agent bound to one was tested over IPv4, and failed.
+    s = socket.socket(socket.AF_INET6 if ':' in str(host) else socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(timeout)
     try:
         def ask(msg):
@@ -50437,7 +50857,7 @@ def push_conf_save(store, conf):
             store.set_meta('acme_push:key:' + kid, json.dumps(k))
     for kid in before:
         if kid not in now:
-            store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:key:' + kid,))
+            store.drop_meta('acme_push:key:' + kid)
     p0, p1 = was.get('pairing'), conf.get('pairing')
     if p1 and (not p0 or p0.get('id') != p1.get('id') or old_row):
         store.set_meta('acme_push:pairing', json.dumps(dict(p1, tries=0)))
@@ -50449,7 +50869,7 @@ def push_conf_save(store, conf):
             # The last wrong try: counted, so that the other node closes it too.
             store.set_meta('acme_push:try:%s:%s' % (p0['id'], secrets.token_hex(8)),
                            json.dumps({'at': time.time(), 'node': node_name()}))
-        store.db.run('DELETE FROM meta WHERE k = ?', ('acme_push:pairing',))
+        store.drop_meta('acme_push:pairing')
     conf['_was'] = json.loads(json.dumps(dict({k: v for k, v in conf.items() if k != '_was'},
                                               _old=False)))
 
@@ -51709,7 +52129,9 @@ class Console(object):
 
     def page(self, title, text):
         p = self.pal
-        lines = [ln.expandtabs(8).replace('\r', '') for ln in text.rstrip('\n').split('\n')] or ['']
+        # Never a control sequence of the data to the terminal (1.0.249): a directory's displayName
+        # with ESC in it reached root's terminal as written.
+        lines = [term_safe(ln.expandtabs(8).replace('\r', '')) for ln in text.rstrip('\n').split('\n')] or ['']
         tty = self._raw() is not None and sys.stdout.isatty()
         if not tty:
             print(text)
@@ -54339,8 +54761,11 @@ class Console(object):
                 return
             try:
                 if r == 'these':
-                    got = console_users_parse(self.ask('The users, separated by spaces',
-                                                       ' '.join(users) if isinstance(users, list) else ''))
+                    typed = self.ask_one('The console at login', 'The users, separated by spaces',
+                                         ' '.join(users) if isinstance(users, list) else '')
+                    if typed is None:
+                        return
+                    got = console_users_parse(typed)
                 else:
                     got = '*' if r == 'all' else []
                 self.note('The console at login', console_at_login_set(console_at_login(), got), 'ok')
@@ -55575,6 +56000,30 @@ HELP_EXAMPLES = [
 
 
 
+def backup_as_service(db, why):
+    """make_backup by the otp account, never by root (1.0.249): the folder of the copies is the
+    otp account's, which can make it a link - root then left a file of its own wherever it led."""
+    st = os.stat(str(STATE_DIR))
+    if os.geteuid() != 0 or (st.st_uid == 0 and not st.st_mode & 0o022):
+        return make_backup(Storage(db), why)        # nobody but root can change the folder
+
+    def go():
+        # The folder's owner (the otp account; another in a test of its own)
+        import pwd
+        try:
+            name = pwd.getpwuid(st.st_uid).pw_name
+            os.initgroups(name, st.st_gid)
+        except (KeyError, OSError):
+            os.setgroups([st.st_gid])
+        os.setgid(st.st_gid)
+        os.setuid(st.st_uid)
+        return {'path': str(make_backup(Storage(open_db()), why))}
+    got = console_in_child(go, 1800)
+    if got.get('error'):
+        raise OSError(got['error'])
+    return got.get('path')
+
+
 def become_service_user():
     """Run as the daemon's own account when started as root, so that nothing
     the command line writes - the database file and its journal, a copy, the
@@ -55800,7 +56249,7 @@ def cli_ha(args, pal):
     target = Path(args.ha_bundle or '/root/otp-join-%s.json' % node_name())
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for a second node was made on the command line '
-                    '(the database at %s)' % db_host, 'warn', who='command line')
+                    '(the database at %s)' % db_host, 'warn', who=cli_who())
     ha_mark_shared(args.ha_peer or '')
     print('')
     print(pal.ok_line('the bundle for the second node: %s' % target))
@@ -55830,7 +56279,7 @@ def firewall_peer(peer, pal, port=5432):
     except ValueError as e:
         print(pal.bad_line('the firewall: %s is not an address (%s)' % (peer, e)))
         return False
-    ha_joining_set([str(a)], 'command line', 'a cluster made with it')
+    ha_joining_set([str(a)], cli_who(), 'a cluster made with it')
     fam = 'ipv4' if a.version == 4 else 'ipv6'
     ipt = 'iptables' if a.version == 4 else 'ip6tables'
     net = '%s/%d' % (a, 32 if a.version == 4 else 128)
@@ -55902,7 +56351,7 @@ def cli_ha_bundle_again(args, pal, store):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'a bundle for the other node (slot %d) was made again on the '
                     'command line - it carries the key that opens every token' % data['slot'],
-                    'warn', who='command line')
+                    'warn', who=cli_who())
     print(pal.ok_line('the bundle for the other node (slot %d): %s' % (data['slot'], target)))
     print('  ' + pal.bold('its passphrase, shown only now: ') + pal.info(phrase))
     print('  on the other node: otp --ha-join %s --node-name NAME' % target.name)
@@ -55921,6 +56370,11 @@ def cli_ha_setup_replicated(args, pal, store, ask):
         peer_address(peer)
     except ValueError as e:
         raise SystemExit('otp: %s' % e)
+    if CONFIG.get('ha_mode') == 'replicated' and int(CONFIG.get('ha_slot') or 1) != 1:
+        # The second node made the first again (1.0.249): both slot 1, the same ids made on both,
+        # and replication stopped on them.
+        raise SystemExit('otp: this node is the second of a cluster - --ha-bundle makes the '
+                         'bundle on the first one; to begin again here, --ha-standalone first')
     port = int(CONFIG.get('db_port') or 5432)
     name, user, pw = CONFIG.get('db_name'), CONFIG.get('db_user'), CONFIG.get('db_password')
     try:
@@ -55976,7 +56430,7 @@ def cli_ha_setup_replicated(args, pal, store, ask):
     write_private(target, json.dumps(bundle_lock(data, phrase), indent=1) + '\n')
     store.add_event('settings', 'this node became the first of two, replicating with %s; a '
                     'bundle for the second was made on the command line' % peer, 'warn',
-                    who='command line')
+                    who=cli_who())
     if not os.environ.get('OTP_HA_NO_RESTART'):
         subprocess.run(['systemctl', 'restart', 'otp'], capture_output=True)
     print('')
@@ -56005,8 +56459,33 @@ def cli_ha_join_replicated(args, pal, data, ask):
     print(pal.head('joining %s - a PostgreSQL on each node, replicating both ways'
                    % (peer.get('name') or '?')))
     node = args.node_name or ask('This node\'s name', socket.gethostname().split('.')[0])
+    if str(peer.get('name') or '').lower() == str(node or '').lower():
+        # One name for both (1.0.249): both took themselves for the lead, and replication stopped
+        # on a key written by both.
+        raise SystemExit('otp: %s is the first node\'s name too - give this one another '
+                         '(--node-name)' % node)
     port = int(FILE_CONFIG.get('db_port') or 5432) if FILE_CONFIG.get('db_engine') == 'postgres' \
         else 5432
+    # What this node holds kept first, before anything is changed (1.0.249), as --ha-resync keeps
+    # it: the join empties the tables - a node in use lost its tokens with no copy of them.
+    try:
+        cur = open_db()
+        mine = int(cur.value('SELECT COUNT(*) FROM tokens', (), 0) or 0)
+    except Exception:                                   # noqa: BLE001
+        cur, mine = None, 0
+    if mine:
+        try:
+            kept = backup_as_service(cur, 'before this node joined %s, on the command line'
+                                     % (peer.get('name') or 'a cluster'))
+            say('a copy of what was here (%d tokens): %s' % (mine, kept))
+        except Exception as e:                          # noqa: BLE001
+            raise SystemExit('otp: no copy of what is here (%d tokens) could be made, so nothing '
+                             'was changed: %s' % (mine, e))
+    if cur is not None:
+        try:
+            cur.close()
+        except Exception:                               # noqa: BLE001
+            pass
     try:
         if not pg_local_running(port):
             pg_install_local(int(data.get('pg_major') or 16), say)
@@ -56037,6 +56516,8 @@ def cli_ha_join_replicated(args, pal, data, ask):
                 subprocess.run(['systemctl', 'is-active', '--quiet', 'otp']).returncode == 0:
             subprocess.run(['systemctl', 'stop', 'otp'], capture_output=True)
             say('otp is stopped on this node while the rows come over')
+        # A rebuild that fails leaves the node in maintenance, as the pages' (1.0.249).
+        HA_STORE['store'] = Storage(local)
         got = ha_rebuild(local, remote, int(data.get('slot') or 2), int(peer.get('slot') or 1),
                          me, port, peer['address'], int(peer.get('port') or 5432),
                          name, user, pw, lambda t: print(pal.dim('  ' + t)))
@@ -56130,13 +56611,14 @@ def cli_ha_resync(args, pal):
         # What is here kept first, as the pages do (1.0.47): a rebuild
         # replaces all of it.
         try:
-            kept = make_backup(Storage(local), 'before this node was rebuilt from the other, '
-                               'on the command line')
+            kept = backup_as_service(local, 'before this node was rebuilt from the other, '
+                                     'on the command line')
             print(pal.ok_line('a copy of what was here: %s' % kept))
         except Exception as e:                          # noqa: BLE001
             raise SystemExit('otp: no copy of what is here could be made, so nothing was '
                              'changed: %s' % e)
         remote = ha_peer_db()
+        HA_STORE['store'] = Storage(local)      # a failed one in maintenance (1.0.249)
         got = ha_rebuild(local, remote, int(CONFIG.get('ha_slot') or 2),
                          3 - int(CONFIG.get('ha_slot') or 2),
                          CONFIG.get('ha_address') or node_address(),
@@ -56179,7 +56661,7 @@ def cli_ha_standalone(args, pal):
     mode = CONFIG.get('ha_mode') or ''
     if mode == 'replicated' and store.db.engine == 'postgres':
         try:
-            say(ha_control(store, 'stop', by='command line')['message'])
+            say(ha_control(store, 'stop', by=cli_who())['message'])
         except Exception as e:                          # noqa: BLE001
             print(pal.warn_line('the replication: %s' % str(e).split('\n')[0][:200]))
         # Whatever is left of it here - the other node gone for good, or
@@ -56210,7 +56692,7 @@ def cli_ha_standalone(args, pal):
     say('%s: a single server again (the database, the key and the node\'s name are kept)'
         % CONFIG_FILE)
     store.add_event('settings', '%s left the cluster on the command line and answers alone'
-                    % node_name(), 'warn', who='command line')
+                    % node_name(), 'warn', who=cli_who())
     store.db.close()
     if not os.environ.get('OTP_HA_NO_RESTART'):
         subprocess.run(['systemctl', 'restart', 'otp'], capture_output=True)
@@ -56327,6 +56809,10 @@ def cli_web(args, pal, store):
         # As on the pages (1.0.187): one run out is not put in.
         if got['info'].get('not_after') and got['info']['not_after'] < time.time():
             raise ValueError('this certificate ran out on %s' % stamp(got['info']['not_after']))
+        a2 = (got2 or {}).get('info') or {}
+        if a2.get('not_after') and a2['not_after'] < time.time():
+            raise ValueError('the second certificate (%s) ran out on %s' % (
+                a2.get('key') or 'ECDSA', stamp(a2['not_after'])))
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=got['info'],
                     chain_info=got['chain_info'], root_info=got['root_info'],
@@ -56618,9 +57104,10 @@ def cli_stage_files(args):
             args.ca = stage(args.ca)
         if getattr(args, 'export_config', None) and args.export_config != '-':
             mode = 0o600 if getattr(args, 'with_secrets', False) else 0o640
-            fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
-                         os.O_NOFOLLOW, mode)
-            os.fchmod(fd, mode)
+            # Emptied only when written (1.0.249): a passphrase typed twice wrong, a refusal,
+            # left the file there before at 0 bytes.
+            fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, mode)
+            os.fchmod(fd, mode)         # as root: the otp account may not change root's file
             args.export_fd = fd
         # The files of a certificate and of isemon's bundle too (1.0.248): opened after the command
         # line became the otp account, root's /root/x.pfx was refused, and a file there already
@@ -56628,12 +57115,11 @@ def cli_stage_files(args):
         te = getattr(args, 'tls_export', None)
         if te and len(te) == 2 and te[0] in TLS_EXPORT_KINDS:
             mode = 0o600 if TLS_EXPORT_KINDS[te[0]][2] else 0o644
-            fd = os.open(te[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+            fd = os.open(te[1], os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, mode)
             os.fchmod(fd, mode)
             args.tls_export_fd = fd
         if getattr(args, 'isemon_tls_bundle', None):
-            fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                         0o600)
+            fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             os.fchmod(fd, 0o600)
             args.isemon_bundle_fd = fd
     except OSError as e:
@@ -56937,12 +57423,15 @@ def cli_main(argv=None):
             if not args.yes:
                 raise SystemExit('otp: --ha-tls-off switches off what stops somebody between the '
                                  'nodes from reading and writing the rows going over: add --yes')
-            got = hatls_off(store, 'command line', here=False)
+            try:
+                got = hatls_off(store, cli_who(), here=False)
+            except ValueError as e:
+                raise SystemExit('otp: %s' % e)
             print(pal.warn_line(got['message']))
             print('the daemons of both nodes go through the steps; follow them with  otp --ha-tls')
         if args.ha_tls_repair:
             try:
-                got = hatls_start(store, 'command line', here=False)
+                got = hatls_start(store, cli_who(), here=False)
             except ValueError as e:
                 raise SystemExit('otp: %s' % e)
             print(pal.ok_line(got['message']))
@@ -56971,12 +57460,12 @@ def cli_main(argv=None):
             node = args.node or (next((x['node'] for x in trials if x['kind'] == 'net'), None)
                                  or node_name())
             try:
-                said = net_trial_answer(store, node, act, 'command line')
+                said = net_trial_answer(store, node, act, cli_who())
             except ValueError as e:
                 raise SystemExit('otp: %s' % e)
         else:
             try:
-                said = fw_trial_answer(store, act, 'command line')
+                said = fw_trial_answer(store, act, cli_who())
             except ValueError as e:
                 raise SystemExit('otp: %s' % e)
         print(pal.ok_line(said))
@@ -56995,7 +57484,7 @@ def cli_main(argv=None):
             return 0
         try:
             # pg_hba.conf by the root helper (otp-web.path), as for the pages.
-            got = ha_readdress(store, args.ha_address or '', args.ha_peer or '', by='command line')
+            got = ha_readdress(store, args.ha_address or '', args.ha_peer or '', by=cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         for x in got['done']:
@@ -57010,7 +57499,7 @@ def cli_main(argv=None):
                   'restart otp')
         return 0 if not got['left'] else 2
     if args.ha_renamed:
-        said = node_carry(store, args.ha_renamed.strip(), node_name(), by='command line')
+        said = node_carry(store, args.ha_renamed.strip(), node_name(), by=cli_who())
         try:
             NODE_NAME_FILE.write_text(node_name() + '\n')
         except OSError:
@@ -57027,7 +57516,7 @@ def cli_main(argv=None):
         store.db.run('DELETE FROM meta WHERE k IN (?, ?)',
                      ('maint:' + args.ha_forget, 'upgrade:node:' + args.ha_forget))
         store.add_event('settings', '%s was taken off the list of nodes on the command line'
-                        % args.ha_forget, 'warn', who='command line')
+                        % args.ha_forget, 'warn', who=cli_who())
         print(pal.ok_line('%s is off the list (if it still runs, it writes itself back within '
                           'fifteen seconds)' % args.ha_forget))
         return 0
@@ -57060,7 +57549,7 @@ def cli_main(argv=None):
             maintenance_ensure(store)
         try:
             maintenance_set(store, args.maintenance == 'on', args.why or 'on the command line',
-                            'command line', name)
+                            cli_who(), name)
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('%s: %s' % (name, 'in maintenance - RADIUS is not answered and '
@@ -57069,13 +57558,13 @@ def cli_main(argv=None):
         return 0
     if args.upgrade_cancel:
         try:
-            upgrade_cancel(store, 'command line')
+            upgrade_cancel(store, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('the upgrade is stopped; the nodes not begun stay as they are'))
         return 0
     if args.upgrade_check:
-        row = online_look(store, 'command line')
+        row = online_look(store, cli_who())
         if args.json:
             print(json.dumps(row, indent=2, default=str))
             return 0 if not row.get('error') else 1
@@ -57101,7 +57590,7 @@ def cli_main(argv=None):
         plan = upgrade_plan(store)
         if plan and plan['state'] == 'running':
             raise SystemExit('otp: an upgrade is going on - otp --upgrade-follow')
-        row = online_look(store, 'command line')
+        row = online_look(store, cli_who())
         if row.get('error'):
             raise SystemExit('otp: %s: %s' % (row.get('url'), row['error']))
         want = args.upgrade_online
@@ -57128,13 +57617,13 @@ def cli_main(argv=None):
                 return 1
         print(pal.dim('  fetching it and checking its signature…'))
         try:
-            meta = online_fetch(store, pk['version'], 'command line')
+            meta = online_fetch(store, pk['version'], cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('otp %s fetched, signed by %s' % (meta['version'],
                                                              meta.get('signed_by'))))
         try:
-            upgrade_start(store, 'command line')
+            upgrade_start(store, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         return cli_upgrade_follow(store, pal)
@@ -57193,15 +57682,15 @@ def cli_main(argv=None):
             if is_file:
                 if not os.path.isfile(want):
                     raise ValueError('%s is not a file' % want)
-                meta = downgrade_file(store, want, 'command line')
+                meta = downgrade_file(store, want, cli_who())
             else:
-                meta = downgrade_fetch(store, want, 'command line')
+                meta = downgrade_fetch(store, want, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         print(pal.ok_line('otp %s checked (signed by %s) - the database can take it'
                           % (meta['version'], meta.get('signed_by'))))
         try:
-            upgrade_start(store, 'command line')
+            upgrade_start(store, cli_who())
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         return cli_upgrade_follow(store, pal)
@@ -57527,6 +58016,11 @@ def cli_main(argv=None):
             args.enroll = main
     if args.enroll:
         had = store.token(args.enroll)
+        bad_name = '' if had else token_name_problem(norm_name(args.enroll))
+        if bad_name:
+            # The pages' rule (1.0.224, here too 1.0.249): CORP\\novak was made, and found by
+            # nobody - RADIUS reads it as novak.
+            raise SystemExit('otp: %s' % bad_name)
         if had and had.get('state') != 'pending':
             # Not silently (1.0.59): the token in use stops working now.
             cli_sure(args, 'the token of %s in use is replaced, and stops working now'
@@ -57602,7 +58096,7 @@ def cli_main(argv=None):
         store.token_drop(args.delete_token)
         # What was kept beside it goes too, as on the pages (1.0.44).
         for k in ('staged:', 'mailed:', 'disabled_from:'):
-            store.db.run('DELETE FROM meta WHERE k = ?', (k + norm_name(args.delete_token),))
+            store.drop_meta(k + norm_name(args.delete_token))
         store.add_event('tokens', 'the token of %s was taken away on the command line'
                         % norm_name(args.delete_token), 'warn', who=who)
         print(pal.ok_line('gone'))
@@ -57624,7 +58118,7 @@ def cli_main(argv=None):
         # Its recovery codes given back too, as on the pages (1.0.103).
         scratch_guard_give_back(store, args.unlock)
         store.add_event('tokens', 'the command line let %s try again at once'
-                        % norm_name(args.unlock), who='command line')
+                        % norm_name(args.unlock), who=cli_who())
         print(pal.ok_line('the wrong codes of %s are forgotten' % norm_name(args.unlock)))
         return 0
 
@@ -57655,7 +58149,7 @@ def cli_main(argv=None):
 
     if args.fill_names:
         print(pal.dim('  the owners\' names, from the directory of each token\'s realm...'))
-        got = Daemon(store, serve=False).fill_names(by='command line')
+        got = Daemon(store, serve=False).fill_names(by=cli_who())
         print(pal.ok_line('%d token(s) given their owner\'s name; %d not found, %d with no '
                           'directory to ask, %d could not be asked'
                           % (got['filled'], got['not_found'], got['no_directory'],
@@ -57778,7 +58272,7 @@ def cli_main(argv=None):
         cli_sure(args, 'the client %s is taken away' % one['name'])
         store.client_drop(one['id'])
         store.add_event('clients', 'command line took away the client %s' % one['name'],
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -57834,7 +58328,7 @@ def cli_main(argv=None):
                           else old.get('aliases') or [],
                           'note': args.note or old.get('note', '')}, who)
         store.add_event('realms', 'command line saved the realm %s' % args.add_realm,
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('the realm %s is saved' % args.add_realm))
         return 0
@@ -57850,7 +58344,7 @@ def cli_main(argv=None):
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         store.add_event('realms', 'command line took away the realm %s' % one['name'],
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -57893,7 +58387,7 @@ def cli_main(argv=None):
             data['ca'] = ca
         store.directory_save(data, who)
         store.add_event('directories', 'command line saved the directory %s'
-                        % args.add_directory, who='command line')
+                        % args.add_directory, who=cli_who())
         bump(store)
         print(pal.ok_line('the directory %s is saved' % args.add_directory))
         return 0
@@ -57908,7 +58402,7 @@ def cli_main(argv=None):
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         store.add_event('directories', 'command line took away the directory %s' % one['name'],
-                        who='command line')
+                        who=cli_who())
         bump(store)
         print(pal.ok_line('gone'))
         return 0
@@ -57988,9 +58482,11 @@ def cli_main(argv=None):
             if fd is None:
                 fd = os.open(args.export_config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                              0o600 if args.with_secrets else 0o640)
-            # The mode of a file there already too (1.0.94): O_CREAT's mode is
-            # only a new file's, and secrets went into a 0644 one.
-            os.fchmod(fd, 0o600 if args.with_secrets else 0o640)
+                # The mode of a file there already too (1.0.94): O_CREAT's mode is
+                # only a new file's, and secrets went into a 0644 one. One opened by root
+                # had its mode set then (1.0.249): the otp account may not change it.
+                os.fchmod(fd, 0o600 if args.with_secrets else 0o640)
+            os.ftruncate(fd, 0)
             with os.fdopen(fd, 'w') as f:
                 f.write(text + '\n')
             print(pal.ok_line('%s: the configuration%s' % (
@@ -58264,7 +58760,7 @@ def cli_main(argv=None):
 
     if args.rbackup_now:
         try:
-            run = rb_run(store, 'command line')
+            run = rb_run(store, cli_who())
         except (RbError, ValueError) as e:
             raise SystemExit('otp: %s' % e)
         if run.get('error'):
@@ -58314,7 +58810,7 @@ def cli_main(argv=None):
                                         ' and make this machine node %s' % m.get('node')))
             return 0
         try:
-            got = rb_restore(store, path, password, 'command line',
+            got = rb_restore(store, path, password, cli_who(),
                              keep_node_name=args.keep_node_name, need_admin=False)
         except (RbError, ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
@@ -58339,7 +58835,7 @@ def cli_main(argv=None):
         if not Path(args.restore).is_file():
             raise SystemExit('otp: there is no file %s' % args.restore)
         try:
-            got = db_file_restore(store, args.restore, 'command line',
+            got = db_file_restore(store, args.restore, cli_who(),
                                   key_file=_key_beside(args.restore), need_admin=False)
         except (ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
@@ -58686,7 +59182,8 @@ def cli_main(argv=None):
         fd = getattr(args, 'isemon_bundle_fd', None)
         if fd is None:
             fd = os.open(args.isemon_tls_bundle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        os.fchmod(fd, 0o600)
+            os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
         with os.fdopen(fd, 'wb') as f:
             f.write(base64.b64decode(got['file']))
         print(pal.ok_line('%s: isemon\'s certificate and key, locked with the passphrase given'
@@ -58720,7 +59217,8 @@ def cli_main(argv=None):
         fd = getattr(args, 'tls_export_fd', None)
         if fd is None:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
-        os.fchmod(fd, mode)
+            os.fchmod(fd, mode)
+        os.ftruncate(fd, 0)
         with os.fdopen(fd, 'wb') as f:
             f.write(base64.b64decode(got['file']))
         print(pal.ok_line('%s: %s' % (path, TLS_EXPORT_KINDS[kind][0])))
@@ -58931,11 +59429,15 @@ def cli_selinux(args, pal):
     return got.returncode
 
 
+CLI_STARTED_ROOT = os.geteuid() == 0
+
+
 def cli_who():
     """Who did it, for the events: the command line - and, run through sudo (the console of a
     normal user, 1.0.240), whose sudo it was."""
     by = os.environ.get('SUDO_USER') or ''
-    if os.geteuid() == 0 and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
+    # Root when it was started (1.0.249): most commands become the otp account before they act.
+    if CLI_STARTED_ROOT and by and by != 'root' and re.match(r'^[A-Za-z_][A-Za-z0-9_.-]{0,31}$', by):
         return 'command line (sudo %s)' % by
     return 'command line'
 
@@ -59338,6 +59840,10 @@ def run_daemon():
         DAEMON_DB[0] = db
     except Exception as e:
         log('the database %s could not be opened: %s' % (CONFIG.get('db_engine'), e), 'error')
+        try:
+            net_local_trial_lost()      # a network on trial cut it off from it (1.0.249)
+        except Exception:                               # noqa: BLE001
+            pass
         raise SystemExit(1)
     load_config(saved=store.settings_saved())
     log_open()

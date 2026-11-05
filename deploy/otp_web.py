@@ -39,6 +39,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import select
+import signal
 import tarfile
 import tempfile
 import time
@@ -62,6 +64,7 @@ HA_CA_FILE = os.environ.get('OTP_HA_CA', '/etc/pki/otp/ha-ca.pem')
 PG_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,62}\Z')
 PG_HBA_WORDS = ('all', 'sameuser', 'samerole', 'samegroup', 'replication')
 PGLOG_FILE = 'pglog.json'
+PG_PW_RE = re.compile(r"(?i)(password\s*=\s*)('(?:[^']|'')*'|\S+)")
 MARK = '# written by otp (otp_web.py) - otp keeps this file; change it on its pages'
 
 
@@ -1620,6 +1623,13 @@ def pglog_part():
                 cur = None
         keep = [e for e in entries if PGLOG_WORDS.search(e['text'] + ' ' +
                                                          ' '.join(e.get('more') or []))]
+        # A statement logged (log_statement ddl/all: CREATE SUBSCRIPTION ... password=...) never
+        # handed on, nor any password in what is (1.0.249).
+        keep = [e for e in keep if not re.match(r'(?i)(statement|duration|execute)\b', e['text'])]
+        for e in keep:
+            e['text'] = PG_PW_RE.sub(r'\1***', e['text'])
+            if e.get('more'):
+                e['more'] = [PG_PW_RE.sub(r'\1***', x) for x in e['more']]
         out['entries'] = keep[-200:]
     except Exception as e:                              # noqa: BLE001
         out['said'] = 'PostgreSQL\'s log could not be read: %s' % str(e)[:200]
@@ -1812,10 +1822,14 @@ def pgtls_server(r):
         was_conf[k] = got.split('|', 1) if '|' in got else [got, '']
     was_files = {}
     for name in ('otp-ha.key', 'otp-ha.crt'):
+        # Never through a link, only postgres's own plain file (1.0.249): put back after a
+        # change that did not take, a link to /etc/shadow became a file postgres could read.
         try:
-            with open(os.path.join(data, name)) as f:
-                was_files[name] = f.read()
-        except OSError:
+            p = os.path.join(data, name)
+            st = os.lstat(p)
+            was_files[name] = pg_file_read(p) if (stat.S_ISREG(st.st_mode) and
+                                                  st.st_uid == uid) else None
+        except (OSError, Refused):
             was_files[name] = None
     for name, text, mode in (('otp-ha.key', r['key'], 0o600), ('otp-ha.crt', r['cert'], 0o644)):
         path = os.path.join(data, name)
@@ -3010,6 +3024,7 @@ def sshd_says():
 # home can only ever touch what is theirs already.
 LOGIN_DEFS = os.environ.get('OTP_LOGIN_DEFS', '/etc/login.defs')
 NO_SHELLS = ('nologin', 'false', 'sync', 'shutdown', 'halt')
+NOLOGIN_PATHS = ('/usr/sbin/nologin', '/sbin/nologin', '/bin/false', '/usr/bin/false')
 
 
 def uid_range():
@@ -3086,13 +3101,29 @@ def as_user(pw, fn):
             os._exit(code)
     os.close(wr)
     chunks = []
+    # A deadline (1.0.249): the child is the user's, who may stop it (SIGSTOP) - and every ask of
+    # the helper waited behind it, half an hour at a time.
+    end = time.time() + 30
+    late = False
     with os.fdopen(rd, 'rb') as f:
         while True:
-            b = f.read(65536)
+            left = end - time.time()
+            ready = select.select([f], [], [], max(0.0, left))[0] if left > 0 else []
+            if not ready:
+                late = True
+                break
+            b = os.read(f.fileno(), 65536)
             if not b:
                 break
             chunks.append(b)
+    if late:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
     os.waitpid(pid, 0)
+    if late:
+        raise Refused('the child working as %s did not answer in 30 s' % pw.pw_name)
     try:
         got = json.loads(b''.join(chunks).decode('utf-8', 'replace') or '{}')
     except ValueError:
@@ -3798,11 +3829,15 @@ def pwp_orig_read():
         if not p:
             continue
         try:
-            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+            # Not waited on (1.0.249): a FIFO put there held the helper, and every ask after it.
+            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd) as f:
+                st = os.fstat(f.fileno())
+                if not stat.S_ISREG(st.st_mode):
+                    continue
                 # The one of the service's folder only as root wrote it (1.0.248): one of the
                 # otp account's own there is no word of root's.
-                if p == PWP_ORIG_OLD and os.fstat(f.fileno()).st_uid != 0:
+                if p == PWP_ORIG_OLD and st.st_uid != 0:
                     continue
                 got = json.load(f)
             break
@@ -4043,9 +4078,9 @@ def keep_putback(k):
                 shell = str(u.get('shell') or '/bin/bash')
                 # A shell that lets nobody in (nologin, false) kept as it is, where it is here: a user
                 # of SFTP only made again with bash could sign in (1.0.248).
-                if shell not in lu_shells() and not (os.path.basename(shell) in NO_SHELLS and
-                                                     os.path.isfile(shell) and shell.startswith('/') and
-                                                     '..' not in shell):
+                # Only the known paths of those (1.0.249): /tmp/nologin, any script so named, was
+                # taken - and ran at every sign-in of that user.
+                if shell not in lu_shells() and not (shell in NOLOGIN_PATHS and os.path.isfile(shell)):
                     shell = '/bin/bash' if not os.path.basename(shell) in NO_SHELLS else \
                         next((x for x in ('/usr/sbin/nologin', '/sbin/nologin', '/bin/false')
                               if os.path.isfile(x)), '/bin/false')
@@ -4634,7 +4669,12 @@ def sshd_put_back(why='not kept in time'):
     for where in ('issue', 'motd'):
         notice_set(where, None)
         if t.get(where) is not None:
-            notice_set(where, t[where])
+            text = t[where]
+            if where == 'issue':
+                # Kept as the file had it - agetty's escaping in already (1.0.249): put in again
+                # as it is, every backslash doubled at each trial not kept.
+                text = text.rstrip('\n').replace('\\\\', '\\')
+            notice_set(where, text)
     banner = notice_paths()['banner']
     if t.get('banner') is None:
         _drop(banner)
@@ -5140,7 +5180,10 @@ def osup_job(ident, kind, security=False):
         if force or time.time() - last[0] > 0.8:
             last[0] = time.time()
             state['lines'] = state['lines'][-400:]
-            write_here(OSUP_FILE, json.dumps(state))
+            try:
+                write_here(OSUP_FILE, json.dumps(state))
+            except OSError:
+                pass        # best effort (1.0.249): one failed write ended the job mid-transaction
 
     def say(line):
         line = line.rstrip()
@@ -5156,11 +5199,18 @@ def osup_job(ident, kind, security=False):
         say('$ ' + ' '.join(cmd))
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                              stdin=subprocess.DEVNULL, text=True, bufsize=1)
-        for ln in p.stdout:
-            say(ln)
-            if on_line:
-                on_line(ln)
-        rc = p.wait()
+        try:
+            for ln in p.stdout:
+                say(ln)
+                if on_line:
+                    on_line(ln)
+        finally:
+            try:
+                for _ in p.stdout:      # read to its end: a full pipe never let it finish
+                    pass
+            except Exception:           # noqa: BLE001
+                pass
+            rc = p.wait()       # never left running behind (1.0.249)
         if rc not in ok:
             raise Refused('%s ended with %d' % (cmd[0], rc))
         return rc
@@ -5329,6 +5379,30 @@ def se_applied_at():
             return float((json.load(f) or {}).get('at') or 0)
     except (OSError, TypeError, ValueError, AttributeError):
         return 0.0
+
+
+SE_UPGRADE_BOOT = 'selinux-upgrade-boot'
+
+
+def se_upgrade_boot_same():
+    """Whether the machine has not started again since the upgrade that lost the note of when
+    otp's needs were put in (1.0.249): after a restart what is counted since then is new."""
+    try:
+        now = open('/proc/sys/kernel/random/boot_id').read().strip()
+    except OSError:
+        return False
+    try:
+        fd = os.open(os.path.join(ROOT_STATE_DIR, SE_UPGRADE_BOOT), os.O_RDONLY | os.O_NOFOLLOW |
+                     os.O_NONBLOCK)
+        with os.fdopen(fd) as f:
+            was = f.read(100).strip()
+    except OSError:
+        try:
+            root_state_write(SE_UPGRADE_BOOT, now + '\n')
+        except OSError:
+            pass
+        return True
+    return was == now
 
 
 def root_state_write(name, text):
@@ -5572,6 +5646,11 @@ def se_check(r):
                                              if known is not None else None)))
     if on:
         out['denials'] = se_denials(se_applied_at())
+        # Upgraded from a version before 1.0.248 (1.0.249): when otp's needs were put in was
+        # kept in the service's own folder, not read any more (the service could write a time
+        # ahead there) - what was refused since the machine started counts again, once.
+        out['denials']['since_lost'] = not out['denials'].get('since') and os.path.isfile(
+            os.path.join(WEB_DIR, SE_APPLIED)) and se_upgrade_boot_same()
         out['auditd'] = se_auditd()
     probs = out['problems']
     if on:
@@ -5592,7 +5671,11 @@ def se_check(r):
             probs.append(('SELinux refused %d thing(s) since otp\'s needs were put in'
                           if out['denials'].get('since') else
                           'SELinux refused %d thing(s) since the machine started')
-                         % out['denials']['total'])
+                         % out['denials']['total'] + (
+                             ' - after the upgrade also what was put right before it (the old note '
+                             'of when otp\'s needs were put in is not read any more): they go at '
+                             'the next restart of the machine'
+                             if out['denials'].get('since_lost') else ''))
         if not out.get('auditd', True):
             # Nothing written down, nothing counted (1.0.234): enforcing let through on no word.
             probs.append('auditd does not run - what SELinux refuses is not written down '
@@ -5936,6 +6019,8 @@ def se_report(c):
                                                     '? (ausearch is not there)'))
     if d.get('settled'):
         lines.append('  refused before, allowed now (not counted): %d' % d['settled'])
+    if d.get('since_lost'):
+        lines.append('  (after the upgrade counted since the start again - also what was put right before it)')
     for g in d['groups'][:15]:
         lines.append('    %4dx %s -> %s %s { %s } %s' % (g['count'], g['source'], g['target'],
                                                          g['class'], g['perms'], g['what']))
