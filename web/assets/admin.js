@@ -10596,9 +10596,20 @@ function drawAfter(d) {
     items.forEach(function (it) { host.appendChild(afterBand(it, d)); });
   });
   liveFill(lately, function (box) {
-    box.appendChild(el('h3', 'after-lately-h', 'Done lately'));
+    /* none: no table, no heading, no Clear (1.0.260) - an empty list has nothing to clear */
     var rows = d.lately || [];
-    if (!rows.length) { box.appendChild(el('p', 'muted small', 'Nothing yet.')); return; }
+    if (!rows.length) return;
+    var head = el('div', 'after-lately-head');
+    head.appendChild(el('h3', 'after-lately-h', 'Done lately'));
+    var clr = cmdButton('Clear', 'trash', 'small after-lately-clear');
+    clr.type = 'button';
+    clr.title = 'Empty this list - what is still to be done stays';
+    clr.onclick = function () {
+      /* exactly what this page shows: a line come meanwhile stays */
+      afterAct({action: 'clear_done', items: rows.map(function (x) { return [x.id || '', x.node || '', Math.floor(x.at || 0)]; })}, clr);
+    };
+    head.appendChild(clr);
+    box.appendChild(head);
     var t = el('table', 'rows after-lately-t');
     var hr = el('tr');
     ['What', 'How', 'Who', 'When'].forEach(function (w) { hr.appendChild(el('th', '', w)); });
