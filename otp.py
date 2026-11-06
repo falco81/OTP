@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.258'
+__version__ = '1.0.259'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -161,6 +161,8 @@ DEFAULTS = {
     'web_proxy_from': '',
     'web_proxy_header': 'X-Forwarded-For',
     'web_proxy_recursive': 1,
+    # The balancer's own port on each node (1.0.259): the enrolment pages only. 0: none, as before.
+    'web_proxy_port': 0,
     # --- the tokens ---------------------------------------------------------
     'totp_issuer': 'OTP',
     'totp_label': '{user}',
@@ -524,7 +526,7 @@ SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_passwo
 
 # Saved as a row even when equal to the default (1.0.238): what they were before tells "switched
 # off" from "never switched on".
-KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso')
+KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso', 'web_proxy_port')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -544,6 +546,7 @@ TUNABLE = {
     'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
     'web_proxy': (0, 1), 'web_proxy_recursive': (0, 1), 'portal_sso': (0, 1),
+    'web_proxy_port': (0, 65535),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
     'names_czsk_letters': (0, 1),
@@ -788,6 +791,7 @@ NAMES = {
     'web_proxy_from': 'The load balancers and WAFs',
     'web_proxy_header': 'The header with the client\'s address',
     'web_proxy_recursive': 'Through more than one of them',
+    'web_proxy_port': 'The balancer\'s own port on the nodes',
     'rate_limit_s': '...counted over (s)',
     'scratch_count': 'Recovery codes per token',
     'scratch_digits': 'Digits in a recovery code',
@@ -1258,6 +1262,15 @@ SAYS = {
     'web_proxy_recursive': 'On: in a chain (a WAF in front of a balancer), the last address in the '
                            'header that is not one of them is taken. Off: the last one, whoever '
                            'put it there.',
+    'web_proxy_port': 'A port of each node for the balancer alone (8443, say): it serves the '
+                      'enrolment pages and nothing else - not the administration, /metrics or '
+                      '/healthz - whatever the balancer passes on, and only to the addresses '
+                      'above (the firewall opens it to them alone, where otp looks after it). '
+                      'The header above is believed on it; proxy_protocol as the header: the '
+                      'balancer passes TLS through and says who the client is in the PROXY '
+                      'protocol (L4), on this port only. 443 stays as it is, for everybody '
+                      'else. SELinux lets nginx use 8443; another port needs semanage port -a '
+                      '-t http_port_t -p tcp PORT. 0: none, as before.',
     'fw_confirm_min': 'A change of the firewall or of who may reach the pages is put in - and '
                       'what was there before comes back by itself unless somebody presses Keep '
                       'it within these minutes: a rule that shuts SSH, the pages or RADIUS out '
@@ -1713,7 +1726,8 @@ PANES = {
               'dir_pw_tries', 'dir_pw_window_min'],
     # Where the change they take back is made (1.0.150), not under sign-ins.
     'network': ['net_confirm_min'],
-    'fw': ['fw_confirm_min', 'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive'],
+    'fw': ['fw_confirm_min', 'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive',
+           'web_proxy_port'],
     'radius': ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'radius_status_server',
                'radius_reply_ma', 'radius_dup_window_s', 'radius_workers',
                'radius_unknown_log', 'radius_reject_delay_ms', 'radius_reject_reason',
@@ -1794,7 +1808,7 @@ ONLY_WHEN = {
     'radius_guard_block_min': ['radius_guard', '1'],
     'radius_guard_trusted': ['radius_guard', '1'],
     'web_proxy_from': ['web_proxy', '1'], 'web_proxy_header': ['web_proxy', '1'],
-    'web_proxy_recursive': ['web_proxy', '1'],
+    'web_proxy_recursive': ['web_proxy', '1'], 'web_proxy_port': ['web_proxy', '1'],
     'portal_title': ['portal', '1'], 'portal_realm': ['portal', '1'],
     'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
     'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
@@ -2045,11 +2059,18 @@ def check_setting(key, value):
                      re.match(r'^/(?!/)', u)):
             raise BadSetting('portal_sso_logout: an https:// address or a path starting with /')
     if key == 'web_proxy_header':
-        # A header's name only (1.0.237) - it goes into nginx's configuration as it is.
-        if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
+        # A header's name only (1.0.237) - it goes into nginx's configuration as it is. Or
+        # proxy_protocol (1.0.259): the PROXY protocol, on the balancer's own port only.
+        if str(got) != 'proxy_protocol' and not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
                 str(got).lower() in ('host', 'cookie', 'authorization', 'content-length',
                                      'content-type', 'transfer-encoding', 'connection'):
-            raise BadSetting('web_proxy_header: the name of a header, as X-Forwarded-For or X-Real-IP')
+            raise BadSetting('web_proxy_header: the name of a header, as X-Forwarded-For or X-Real-IP, '
+                             'or proxy_protocol')
+    if key == 'web_proxy_port' and int(got):
+        p = int(got)
+        if p < 1024 or p in (int(CONFIG.get('api_port') or 9861), int(CONFIG.get('ssh_gate_port') or 0)):
+            raise BadSetting('web_proxy_port: 0, or a free TCP port from 1024 up (not the API\'s '
+                             'own, not the SSH gate\'s) - 8443, say')
     if key == 'radius_guard_trusted':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
@@ -9065,7 +9086,7 @@ DBGUARD_META_PREFIXES = (
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
     'radius_acct_port', 'snmp', 'snmp_from', 'snmp_port', 'net_confirm_min', 'fw_confirm_min',
-    'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive',
+    'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive', 'web_proxy_port',
     'portal_sso', 'portal_sso_from', 'portal_sso_header', 'portal_sso_key', 'portal_sso_logout',
     'proxy', 'proxy_url', 'proxy_user', 'proxy_password', 'proxy_os', 'proxy_no', 'proxy_update',
     'osup_check', 'osup_check_at', 'osup_auto', 'osup_auto_every', 'osup_auto_day',
@@ -17082,6 +17103,17 @@ class Daemon(object):
             if after.get('web_proxy') and not str(after.get('web_proxy_from') or '').split():
                 raise BadSetting('behind a load balancer or WAF: say which addresses are the '
                                  'balancers first (The load balancers and WAFs)')
+        if any(k in checked for k in ('web_proxy', 'web_proxy_header', 'web_proxy_port')):
+            # The PROXY protocol on the balancer's own port only (1.0.259): on 443 it would have
+            # shut out everybody who comes without it - the administrators, the VIP address, the
+            # other node, the health checks.
+            after = dict(CONFIG)
+            after.update(checked)
+            if after.get('web_proxy') and str(after.get('web_proxy_header') or '') == \
+                    'proxy_protocol' and not int(after.get('web_proxy_port') or 0):
+                raise BadSetting('the PROXY protocol (proxy_protocol as the header) only on the '
+                                 'balancer\'s own port: give it first (The balancer\'s own port '
+                                 'on the nodes, 8443 say)')
         if any(k in checked for k in ('portal_sso', 'portal_sso_from', 'portal_sso_key')):
             # Signed in by the balancer only from the balancers, with the key (1.0.239): on
             # without either, a header of anybody's would have been a sign-in.
@@ -29118,14 +29150,49 @@ def realip_desired(store):
                     nets.append(str(ipaddress.ip_network(w, strict=False)))
                 except ValueError:
                     continue
+        head = str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For')
+        if nets and head == 'proxy_protocol':
+            # The PROXY protocol (1.0.259) only on the balancer's own port (lbport_desired): 443
+            # believes nobody's header - otp's own lines there taken out.
+            return {'from': [], 'header': '', 'recursive': False}
         if nets:
-            return {'from': nets, 'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+            return {'from': nets, 'header': head,
                     'recursive': bool(CONFIG.get('web_proxy_recursive', 1))}
     try:
         # Switched off: the row kept off (1.0.238) - or, switched off before that, the balancers
         # named are still there.
         if any(k.split('@', 1)[0].startswith('web_proxy') for k in saved_keys(store)):
             return {'from': [], 'header': '', 'recursive': False}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
+def web_proxy_nets():
+    nets = []
+    for w in re.split(r'[\s,;]+', str(CONFIG.get('web_proxy_from') or '')):
+        if w:
+            try:
+                nets.append(str(ipaddress.ip_network(w, strict=False)))
+            except ValueError:
+                continue
+    return nets
+
+
+def lbport_desired(store):
+    """The balancer's own port on this node (1.0.259): {'port', 'from', 'header', 'recursive'} -
+    a server of its own with the enrolment pages only; {'port': 0} takes it away again; None where
+    it was never set (nginx left as it is)."""
+    port = int(CONFIG.get('web_proxy_port') or 0)
+    nets = web_proxy_nets() if CONFIG.get('web_proxy') else []
+    if port and nets:
+        return {'port': port, 'from': nets,
+                'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+                'recursive': bool(CONFIG.get('web_proxy_recursive', 1))
+                if str(CONFIG.get('web_proxy_header') or '') != 'proxy_protocol' else False}
+    try:
+        if any(k.split('@', 1)[0] == 'web_proxy_port' for k in saved_keys(store)):
+            return {'port': 0}
     except Exception:                                   # noqa: BLE001
         pass
     return None
@@ -29202,6 +29269,10 @@ def web_desired(store):
     sp = sso_peer_desired(store)
     if sp is not None:
         out['sso_peer'] = sp
+    # The balancer's own port (1.0.259): the same - asked once set, or taken away after.
+    lp = lbport_desired(store)
+    if lp is not None:
+        out['lbport'] = lp
     if fw is not None:
         out['fw'] = fw
     if access is not None:
@@ -29238,7 +29309,8 @@ def web_tick(store):
     # Nothing ever asked and nothing to ask: no request at all.
     st = web_status()
     if not st and not desired['vip']['on'] and not desired['tls']['node'] and \
-            'fw' not in desired and 'access' not in desired and 'acme' not in desired:
+            'fw' not in desired and 'access' not in desired and 'acme' not in desired and \
+            'lbport' not in desired:
         return
     h = web_hash(desired)
     if st.get('hash') == h:
@@ -29902,6 +29974,12 @@ def fw_auto(store, node):
         # answers the CA's question and sends everything else to HTTPS.
         for f in (4, 6):
             web.append({'family': f, 'proto': 'tcp', 'port': '80', 'source': ''})
+    # The balancer's own port (1.0.259): from the balancers alone, whoever else the pages are for.
+    lp = lbport_desired(store) or {}
+    if lp.get('port'):
+        for n in lp.get('from') or []:
+            web.append({'family': _fam(n.split('/')[0]), 'proto': 'tcp', 'port': str(lp['port']),
+                        'source': n, 'note': 'the balancer\'s own port'})
     out.append({'key': 'web', 'title': 'HTTP / HTTPS', 'why': 'the enrolment and '
                 'administration pages and the health check; who sees which is under '
                 '"Who may reach the pages"', 'rules': web})
@@ -41633,10 +41711,13 @@ ROLE_RANK = {'readonly': 1, 'tokenadmin': 2, 'fulladmin': 3}
 
 
 class ApiError(Exception):
-    def __init__(self, status, words, detail=''):
+    def __init__(self, status, words, detail='', extra=None):
         Exception.__init__(self, words)
         self.status = status
         self.detail = detail
+        # More of the answer beside the words (1.0.259): when the next code may go, how many are
+        # left - never a secret.
+        self.extra = extra if isinstance(extra, dict) else None
 
 
 def api_token(make=False):
@@ -41842,7 +41923,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             detail = e.detail if self._signed_in() else None
             if e.detail and not detail:
                 log('%s %s: %s (%s)' % (method, path, e, e.detail), 'info')
-            self.send_json({'ok': False, 'error': str(e), 'detail': detail}, e.status)
+            said = {'ok': False, 'error': str(e), 'detail': detail}
+            for k, v in (e.extra or {}).items():
+                said.setdefault(k, v)
+            self.send_json(said, e.status)
         except (ValueError, BadSetting, RadiusError) as e:
             said = str(e)
             if said.startswith(('invalid literal for int()', 'could not convert string to float',
@@ -48184,6 +48268,14 @@ def _hatls_view_safe(store):
         return {'error': str(e)[:200]}
 
 
+def _lb_fw_on(store):
+    try:
+        c = fw_conf(store)
+        return bool(c.get('set') and c.get('on'))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def lb_facts(store):
     """What the load balancer guides on the pages fill in (1.0.52): the real
     names, addresses and ports of this installation."""
@@ -48204,7 +48296,22 @@ def lb_facts(store):
     v = vip_conf(store)
     clients = [{'name': c.get('name'), 'address': c.get('address')} for c in store.clients()
                if c.get('enabled')][:20]
+    # What the guides check their advice against (1.0.259): behind a balancer as set, who may
+    # reach which pages, the sign-in by the balancer. Addresses and switches only - no secret.
+    try:
+        acc = access_desired(store) or {}
+    except Exception:                                   # noqa: BLE001
+        acc = {}
+    access = {k: {'any': bool((acc.get(k) or {}).get('any', True)),
+                  'from': list((acc.get(k) or {}).get('from') or [])[:50],
+                  'set': k in acc} for k in ('portal', 'admin', 'health')}
     return {'server_name': server_name, 'trusted': proxies,
+            'web_proxy': {'on': bool(CONFIG.get('web_proxy')), 'from': web_proxy_nets(),
+                          'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+                          'recursive': bool(CONFIG.get('web_proxy_recursive', 1)),
+                          'port': int(CONFIG.get('web_proxy_port') or 0)},
+            'access': access, 'portal_sso': bool(CONFIG.get('portal_sso')),
+            'fw_managed': _lb_fw_on(store),
             'auth_port': int(CONFIG.get('radius_auth_port') or 1812),
             'acct_port': int(CONFIG.get('radius_acct_port') or 0),
             'vip': {'on': bool(v.get('on')), 'address': v.get('address') or '',
@@ -49352,15 +49459,40 @@ def _mfa_wrong(h, s, key, words):
     raise ApiError(400, words)
 
 
+def mfa_send_state(data, field='mfa_code', now=None):
+    """Where the codes of this sign-in stand (1.0.259), for the page's countdown: how many went,
+    how many more may, in how many seconds the next one may, how long the last one is good for.
+    Seconds from now, not times: the node's clock and the browser's need not agree."""
+    data = data or {}
+    t = time.time() if now is None else now
+    at = fnum(data.get('mfa_sent_at'))
+    n = int(data.get('mfa_sent') or 0)
+    left = max(0, MFA_SEND_MOST - n)
+    # Clamped to the gap: the other node's clock a little ahead is not a longer wait.
+    wait = min(MFA_SEND_GAP_S, max(0, int(math.ceil(MFA_SEND_GAP_S - (t - at))))) if at else 0
+    saved = data.get(field) or {}
+    ttl = int(CONFIG.get('code_ttl_s') or 300)
+    code_left = max(0, min(ttl, int(fnum(saved.get('exp')) - t))) if saved.get('exp') else 0
+    return {'sent': n, 'most': MFA_SEND_MOST, 'left': left, 'gap_s': MFA_SEND_GAP_S,
+            'wait_s': wait if left else 0, 'can': bool(left and not wait),
+            'why': 'most' if not left else ('gap' if wait else ''),
+            'code_left_s': code_left, 'code_ttl_s': ttl, 'auto': not at}
+
+
+def mfa_wait_words(wait):
+    return 'a code went a moment ago - another in %d s' % max(1, int(wait))
+
+
 def _mfa_send(h, s, kind, dest, field):
     data = s.get('data') or {}
     t = time.time()
-    if t - fnum(data.get('mfa_sent_at')) < MFA_SEND_GAP_S:
-        raise ApiError(429, 'a code went a moment ago - wait half a minute for another')
+    st = mfa_send_state(data, field, t)
+    if st['why'] == 'gap':
+        raise ApiError(429, mfa_wait_words(st['wait_s']), extra={'send': st})
     n = int(data.get('mfa_sent') or 0)
     if n >= MFA_SEND_MOST:
         raise ApiError(429, 'that is %d codes for this sign-in: sign in again for more'
-                       % MFA_SEND_MOST)
+                       % MFA_SEND_MOST, extra={'send': st})
     # The place taken before the code goes (1.0.255), only while nobody else took it since this
     # request read the sign-in: requests at once - on one node or both - each sent a code, past
     # the gap and the most.
@@ -49369,7 +49501,9 @@ def _mfa_send(h, s, kind, dest, field):
     if took is None:
         raise ApiError(401, 'not signed in, or the sign-in has run out')
     if took is False:
-        raise ApiError(429, 'a code went a moment ago - wait half a minute for another')
+        # Another request took the place a moment ago (a second tab, the other node).
+        st = mfa_send_state({'mfa_sent_at': t, 'mfa_sent': n + 1}, field, t)
+        raise ApiError(429, mfa_wait_words(st['wait_s']), extra={'send': st})
     code, salt = code_new(), secrets.token_hex(8)
     saved = {'hash': code_hash(salt, code), 'salt': salt,
              't': t, 'exp': t + int(CONFIG.get('code_ttl_s') or 300)}
@@ -49392,6 +49526,9 @@ def _mfa_send(h, s, kind, dest, field):
     h.store.session_merge(s['id'], {field: new})
     log('the second step of %s: a code sent by %s to %s (%s)' % (
         s['name'], kind, dest_masked(kind, dest), said))
+    # Where they stand now (1.0.259): this one counted, its time the gap's start.
+    h._mfa_send_st = mfa_send_state(dict(data, mfa_sent_at=t, mfa_sent=n + 1, **{field: saved}),
+                                    field, t)
     return dest_masked(kind, dest)
 
 
@@ -49427,7 +49564,11 @@ def _mfa(h):
             'digits': 6 if (stage == 'check' and rec.get('kind') == 'app') else
             int(CONFIG.get('code_digits') or 6),
             # Why nothing can be set up (1.0.255), with the guard on.
-            'blocked': MFA_BLOCKED_WORDS % acc['name'] if stage == 'blocked' else ''}
+            'blocked': MFA_BLOCKED_WORDS % acc['name'] if stage == 'blocked' else '',
+            # The codes sent in this sign-in (1.0.259): the countdown, how many more, the first
+            # one sent by itself once.
+            'send': mfa_send_state(odict(s.get('data')), 'mfa_code' if stage == 'check' else 'mfa_new')
+            if (stage == 'check' and rec.get('kind') in ('mail', 'sms')) or stage == 'enrol' else None}
 
 
 @route('POST', '/api/auth/mfa')
@@ -49479,7 +49620,8 @@ def _mfa_do(h):
             dest = dest_checked(kind, b.get('dest'))
         except ValueError as e:
             raise ApiError(400, str(e))
-        return {'kind': kind, 'sent_to': _mfa_send(h, s, kind, dest, 'mfa_new')}
+        to = _mfa_send(h, s, kind, dest, 'mfa_new')
+        return {'kind': kind, 'sent_to': to, 'send': getattr(h, '_mfa_send_st', None)}
     if act == 'enrol_confirm':
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
@@ -49537,7 +49679,13 @@ def _mfa_do(h):
                                 'administrator resets your second step (Accounts), or root '
                                 'with  otp --reset-2fa %s' % ('mail' if rec['kind'] == 'mail'
                                                               else 'SMS', name))
-        return {'sent_to': _mfa_send(h, s, rec['kind'], rec.get('dest'), 'mfa_code')}
+        if b.get('auto') and odict(s.get('data')).get('mfa_sent_at'):
+            # The first code by itself (1.0.259) once a sign-in: a code went already - after a
+            # reload, in another tab, from the other node - so none goes now.
+            return {'sent_to': dest_masked(rec['kind'], rec.get('dest')), 'skipped': True,
+                    'send': mfa_send_state(odict(s.get('data')), 'mfa_code')}
+        to = _mfa_send(h, s, rec['kind'], rec.get('dest'), 'mfa_code')
+        return {'sent_to': to, 'send': getattr(h, '_mfa_send_st', None)}
     if act == 'pk_begin':
         # The question for the account's passkey (1.0.254), kept with this sign-in.
         if stage != 'check':
@@ -54832,7 +54980,13 @@ def load_since(text):
 
 
 def load_now():
-    d = dict(server_load())
+    # While the sampler reads (1.0.259): its last reading, never one of the page's own - a page
+    # asking a moment before the sampler read the counters the sampler then found unchanged, and
+    # that second was missing from the graph.
+    with LOAD_LOCK:
+        last = LOAD_LAST['out'] if load_looked() and LOAD_LAST['out'] and \
+            time.time() - LOAD_LAST['at'] < 3 * LOAD_STEP else None
+    d = dict(last or server_load())
     return {k: d.get(k) for k in ('at', 'cpu', 'cores', 'mem_total', 'mem_used', 'swap_used', 'load',
                                   'disk_rd', 'disk_wr', 'net_rx', 'net_tx', 'over_s')}
 

@@ -1214,6 +1214,7 @@ function api(what, body, wait) {
         var err = new Error(data.error || ('HTTP ' + r.status));
         err.status = r.status;
         err.detail = data.detail || '';
+        err.data = data;             /* the rest of the answer (1.0.259): when the next code may go */
         throw err;
       }
       return data;
@@ -2449,6 +2450,59 @@ function mfaOut() {
   b.onclick = function () { api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); }); };
   return b;
 }
+/* The codes of this sign-in (1.0.259): "Send another" counts down to the next one allowed,
+   says how many more may go, and at the last one says why not - with Sign in again. st is the
+   daemon's `send` (wait_s, left, most, code_left_s); seconds from now, so the clocks need not agree. */
+function mmss(n) {
+  n = Math.max(0, Math.round(n));
+  return Math.floor(n / 60) + ':' + ('0' + (n % 60)).slice(-2);
+}
+function mfaSendPaint(btn, note, st, icon) {
+  if (btn._t) { clearInterval(btn._t); btn._t = null; }
+  if (!st) return;
+  var until = Date.now() + (st.wait_s || 0) * 1000;
+  btn._busy = false;
+  function draw() {
+    if (!document.body.contains(btn)) { clearInterval(btn._t); btn._t = null; return; }
+    if (btn._busy) return;
+    clear(note);
+    if (!st.left) {
+      /* the last code (1.0.259): the button in its own place becomes the way on - Sign in again -
+         and the note only says why */
+      btn.disabled = false;
+      setButtonIcon(btn, 'out', 'Sign in again');
+      btn.onclick = function () { api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); }); };
+      note.className = 'note small warn mfa-limit';
+      note.textContent = 'That was the last code for this sign-in (' + st.most + ') - sign in again for more.';
+      clearInterval(btn._t); btn._t = null;
+      return;
+    }
+    var w = Math.ceil((until - Date.now()) / 1000);
+    btn.disabled = w > 0;
+    if (st.sent) setButtonIcon(btn, icon, w > 0 ? 'Send another (' + mmss(w) + ')' : 'Send another');
+    note.className = 'muted small mfa-left';
+    note.textContent = st.sent ? (st.left === 1 ? '1 more can be sent for this sign-in.'
+      : st.left + ' more can be sent for this sign-in.') : '';
+    if (w <= 0 && btn._t) { clearInterval(btn._t); btn._t = null; }
+  }
+  draw();
+  if ((st.wait_s || 0) > 0 && st.left) btn._t = setInterval(draw, 1000);
+}
+function mfaSentSay(box, to, st) {
+  /* After a reload (1.0.259): how long the code already sent is good for - each sentence its own
+     words, so each is put into the page's language by itself. */
+  box.className = 'said good';
+  clear(box);
+  box.appendChild(document.createTextNode('Sent to ' + to + ' - write the code from it below.'));
+  if (st && st.code_left_s > 0) {
+    box.appendChild(document.createTextNode(' '));
+    box.appendChild(el('span', '', 'It is good for ' + mmss(st.code_left_s) + ' more.'));
+  }
+  if (st && st.sent > 1) {
+    box.appendChild(document.createTextNode(' '));
+    box.appendChild(el('span', '', 'Only the last one sent is good.'));
+  }
+}
 function mfaCodeForm(box, d, action, words, after) {
   var f = el('form', 'mfa-form');
   var row = el('div', 'mfa-row');
@@ -2518,29 +2572,59 @@ function mfaDraw(box, d) {
     } else {
       var p = el('p', 'lede', d.kind === 'mail' ? 'A code is sent by e-mail to ' + d.dest + '.' : 'A code is sent by SMS to ' + d.dest + '.');
       box.appendChild(p);
-      var send = cmdButton('Send the code', 'mail', 'primary');
+      var icon = d.kind === 'mail' ? 'mail' : 'phone';
+      var send = cmdButton('Send the code', icon, 'primary');
       send.type = 'button';
       var sent = el('div', 'said');
+      var left = el('div', 'muted small mfa-left');
       var form = null;
-      send.onclick = function () {
+      var st0 = d.send || null;
+      var go = function (auto) {
         send.disabled = true;
+        send._busy = true;
         sent.className = 'said';
         sent.textContent = 'Sending…';
-        api('mfa', {action: 'send'}).then(function (r) {
-          sent.className = 'said good';
-          sent.textContent = 'Sent to ' + r.sent_to + ' - write the code from it below.';
-          setButtonIcon(send, 'mail', 'Send another');
+        api('mfa', auto ? {action: 'send', auto: true} : {action: 'send'}).then(function (r) {
+          mfaSentSay(sent, r.sent_to, r.skipped ? r.send : (r.send && r.send.sent > 1 ? {sent: r.send.sent} : null));
+          setButtonIcon(send, icon, 'Send another');
           send.classList.remove('primary');
-          setTimeout(function () { send.disabled = false; }, 30000);
+          mfaSendPaint(send, left, r.send, icon);
+          if (!r.send) setTimeout(function () { send.disabled = false; }, 30000);
           form.querySelector('input').focus();
-        }).catch(function (e) { send.disabled = false; sent.className = 'said bad'; sent.textContent = String(e.message || e); });
+        }).catch(function (e) {
+          send._busy = false;
+          var st = e.data && e.data.send;
+          if (auto && e.status === 429) {
+            /* another tab or node sent it a moment ago: that code is the one */
+            sent.className = 'said';
+            sent.textContent = '';
+          } else {
+            sent.className = 'said bad';
+            sent.textContent = String(e.message || e);
+          }
+          if (st) mfaSendPaint(send, left, st, icon); else send.disabled = false;
+        });
       };
+      send.onclick = function () { go(false); };
       box.appendChild(send);
+      box.appendChild(left);
       box.appendChild(sent);
       /* the box for the code always under Send (1.0.255): a code sent before the page was
          reloaded - or a send refused as too soon (429) - is still written in */
       form = mfaCodeForm(box, d, 'check', 'Sign in');
-      setTimeout(function () { send.focus(); }, 40);
+      if (st0 && st0.sent) {
+        /* sent already in this sign-in (a reload): said, and counted down - nothing sent again */
+        mfaSentSay(sent, d.dest, st0);
+        setButtonIcon(send, icon, 'Send another');
+        send.classList.remove('primary');
+        mfaSendPaint(send, left, st0, icon);
+        setTimeout(function () { form.querySelector('input').focus(); }, 40);
+      } else if (st0 && st0.auto && st0.can) {
+        /* the first code goes by itself (1.0.259), once a sign-in */
+        go(true);
+      } else {
+        setTimeout(function () { send.focus(); }, 40);
+      }
     }
   } else {
     box.appendChild(el('p', 'lede small', 'After the password these pages ask for a code too - choose how (the account\'s own, not a VPN token).'));
@@ -2609,30 +2693,43 @@ function mfaWay(body, d, kind) {
   send.type = 'button';
   drow.appendChild(send);
   var sent = el('div', 'said');
+  var left = el('div', 'muted small mfa-left');
+  var icon = kind === 'mail' ? 'mail' : 'phone';
   var form = null;
   send.onclick = function () {
     if (!dest.value.trim()) { dest.focus(); return; }
     send.disabled = true;
+    send._busy = true;
     sent.className = 'said';
     sent.textContent = 'Sending…';
     api('mfa', {action: 'enrol_start', kind: kind, dest: dest.value}).then(function (r) {
-      sent.className = 'said good';
-      sent.textContent = 'Sent to ' + r.sent_to + ' - write the code from it below.';
-      setButtonIcon(send, kind === 'mail' ? 'mail' : 'phone', 'Send another');
+      mfaSentSay(sent, r.sent_to, r.send && r.send.sent > 1 ? {sent: r.send.sent} : null);
+      setButtonIcon(send, icon, 'Send another');
       d.started = {kind: kind, dest: r.sent_to};     /* the way now being proven (1.0.255) */
-      setTimeout(function () { send.disabled = false; }, 30000);
+      d.send = r.send || d.send;
+      mfaSendPaint(send, left, r.send, icon);
+      if (!r.send) setTimeout(function () { send.disabled = false; }, 30000);
       if (!form) form = mfaCodeForm(body, d, 'enrol_confirm', 'Sign in');
       else form.querySelector('input').focus();
-    }).catch(function (e) { send.disabled = false; sent.className = 'said bad'; sent.textContent = String(e.message || e); });
+    }).catch(function (e) {
+      send._busy = false;
+      sent.className = 'said bad';
+      sent.textContent = String(e.message || e);
+      if (e.data && e.data.send) mfaSendPaint(send, left, e.data.send, icon); else send.disabled = false;
+    });
   };
   dest.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send.click(); } });
   body.appendChild(drow);
+  body.appendChild(left);
   body.appendChild(sent);
   /* a code went to this way before the page was reloaded (1.0.255): its box at once, as after Send */
   if (d.started && d.started.kind === kind) {
-    sent.className = 'said good';
-    sent.textContent = 'Sent to ' + d.started.dest + ' - write the code from it below.';
-    setButtonIcon(send, kind === 'mail' ? 'mail' : 'phone', 'Send another');
+    mfaSentSay(sent, d.started.dest, d.send);
+    setButtonIcon(send, icon, 'Send another');
+    mfaSendPaint(send, left, d.send, icon);
     form = mfaCodeForm(body, d, 'enrol_confirm', 'Sign in');
+  } else if (d.send && d.send.sent) {
+    /* codes went to another way of this sign-in: the count and the wait are this sign-in's */
+    mfaSendPaint(send, left, d.send, icon);
   }
 }

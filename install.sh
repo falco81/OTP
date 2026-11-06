@@ -397,6 +397,7 @@ if [[ -n "$DO_UNINSTALL" ]]; then
         say "keepalived stopped: its file was otp's (the web address)"
     fi
     [[ -e /etc/nginx/conf.d/otp_vip.conf ]] && run rm -f /etc/nginx/conf.d/otp_vip.conf
+    [[ -e /etc/nginx/conf.d/otp_lbport.conf ]] && run rm -f /etc/nginx/conf.d/otp_lbport.conf
     [[ -e /usr/libexec/keepalived/otp-vip-check ]] && run rm -f /usr/libexec/keepalived/otp-vip-check
     for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$CONSOLE_SYSCTL" "$NGINX_CONF" "$BIN_LINK" \
                "$UPGRADE_PATH_UNIT" "$UPGRADE_SERVICE_UNIT" "$WEB_PATH_UNIT" "$WEB_SERVICE_UNIT" \

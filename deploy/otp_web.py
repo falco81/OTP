@@ -51,6 +51,8 @@ KA_CONF = os.environ.get('OTP_VIP_KA_CONF', '/etc/keepalived/keepalived.conf')
 NGINX_DIR = os.environ.get('OTP_VIP_NGINX_DIR', '/etc/nginx/conf.d')
 NGINX_MAIN = os.path.join(NGINX_DIR, 'otp.conf')
 NGINX_VIP = os.path.join(NGINX_DIR, 'otp_vip.conf')   # read after otp.conf: never the default server
+# The balancer's own port (1.0.259): read after otp.conf too - its limits are defined there.
+NGINX_LB = os.path.join(NGINX_DIR, 'otp_lbport.conf')
 CERT_DIR = os.environ.get('OTP_VIP_CERT_DIR', '/etc/nginx/certs')
 # Where SELinux lets keepalived run it; the program's own folder otherwise.
 CHECK = os.environ.get('OTP_VIP_CHECK') or next(
@@ -330,6 +332,8 @@ def checked(r):
     # by the balancer was switched on - None leaves nginx as it is.
     sp = r.get('sso_peer')
     out['sso_peer'] = None if sp is None else bool(sp)
+    # The balancer's own port (1.0.259): None leaves nginx as it is.
+    out['lbport'] = lbport_checked(r.get('lbport'))
     names = r.get('acme')
     if names is None:
         out['acme'] = None
@@ -561,6 +565,110 @@ def realip_checked(rp):
     if nets and (not HEADER_RE.match(head) or head.lower() in ('host', 'cookie', 'authorization')):
         raise Refused('realip: %r is not the name of a header' % head[:60])
     return nets, head, bool(rp.get('recursive'))
+
+
+def lbport_checked(lp):
+    """The balancer's own port as the daemon asked (1.0.259): {'port': 0} takes it away."""
+    if lp is None:
+        return None
+    if not isinstance(lp, dict):
+        raise Refused('lbport: not an object')
+    try:
+        port = int(lp.get('port') or 0)
+    except (TypeError, ValueError):
+        raise Refused('lbport: the port is not a number')
+    if not port:
+        return {'port': 0}
+    if not 1024 <= port <= 65535:
+        raise Refused('lbport: the port is from 1024 to 65535')
+    head = str(lp.get('header') or 'X-Forwarded-For')
+    if head == 'proxy_protocol':
+        nets, _h, _r = realip_checked({'from': lp.get('from'), 'header': 'X-Forwarded-For'})
+        rec = False
+    else:
+        nets, head, rec = realip_checked({'from': lp.get('from'), 'header': head,
+                                          'recursive': lp.get('recursive')})
+    if not nets:
+        raise Refused('lbport: the balancers\' addresses are not given')
+    return {'port': port, 'from': nets, 'header': head, 'recursive': rec}
+
+
+LB_HEAD = ('# otp: the load balancer\'s own port (1.0.259) - the enrolment pages only, never the\n'
+           '# administration, /metrics or /healthz. Made from the HTTPS server of otp.conf again\n'
+           '# whenever either is changed on the pages: not to be edited (Settings - Firewall and access).\n')
+# What the balancer's server takes over from the HTTPS server of otp.conf: its TLS, its headers,
+# where it logs - one line each, at the server's own level.
+LB_KEEP = ('ssl_', 'add_header', 'root', 'index', 'server_tokens', 'gzip', 'access_log',
+           'error_log', 'client_body_timeout', 'http2')
+LB_ASSETS = r'^/assets/(core\.js|portal\.js|i18n\.js|otp\.css|favicon\.svg|apple-touch-icon\.png)$'
+
+
+def block_at(text, start):
+    """The text of the { } block whose opening brace is the first one from `start`."""
+    i = text.index('{', start)
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == '{':
+            depth += 1
+        elif text[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:j + 1]
+    raise Refused('a block of %s does not end' % NGINX_MAIN)
+
+
+def lbport_server(main, lp):
+    """The server { } of the balancer's own port: the TLS and headers of this node's HTTPS
+    server, its enrolment page as it is there (who may reach it, the limits, the balancer that
+    signs people in), the files that page needs - and nothing else."""
+    where = server_block(main)
+    if not where:
+        raise Refused('no HTTPS server { } was found in %s' % NGINX_MAIN)
+    block = main[where[0]:where[1]]
+    body = block[block.index('{') + 1:block.rindex('}')]
+    keep, depth = [], 0
+    for line in body.split('\n'):
+        k = line.strip()
+        if depth == 0 and k.endswith(';') and '{' not in k and k.split(None, 1)[0].startswith(LB_KEEP):
+            keep.append('    ' + k)
+        depth += line.count('{') - line.count('}')
+    m = re.search(r'(?m)^[ \t]*location[ \t]*=[ \t]*/[ \t]*\{', block)
+    if not m:
+        raise Refused('no location = / { } (the enrolment pages) in the HTTPS server of %s' % NGINX_MAIN)
+    portal = block_at(block, m.start())
+    portal = re.sub(r'(?m)^[ \t]*', '', portal)
+    lines = portal.split('\n')
+    portal = '\n'.join(['    ' + lines[0]] + ['        ' + x for x in lines[1:-1]] + ['    ' + lines[-1]])
+    lm = re.search(r'(?m)^\s*listen\s+(?:[0-9.]+:)?443\b([^;]*);', body)
+    # TLS and HTTP/2 as on 443 (the old spelling of http2 where nginx is older than 1.25.1).
+    opts = ['ssl'] + (['http2'] if lm and 'http2' in lm.group(1).split() else [])
+    pp = lp['header'] == 'proxy_protocol'
+    if pp:
+        opts.append('proxy_protocol')
+    port = int(lp['port'])
+    out = ['server {', '    listen %d %s;' % (port, ' '.join(opts))]
+    if re.search(r'(?m)^\s*listen\s+\[::\]:443\b', body):
+        out.append('    listen [::]:%d %s;' % (port, ' '.join(opts)))
+    out.append('    server_name _;')
+    out += keep
+    out.append('    # the balancers alone are believed - %s' % (
+        'the client\'s address in the PROXY protocol' if pp else 'the client\'s address in ' + lp['header']))
+    out += ['    set_real_ip_from %s;' % n for n in lp['from']]
+    out.append('    real_ip_header %s;' % lp['header'])
+    out.append('    real_ip_recursive %s;' % ('on' if lp.get('recursive') else 'off'))
+    out += ['    client_max_body_size 8m;',
+            '    if ($request_method !~ ^(GET|HEAD|POST)$) { return 405; }',
+            '    if ($http_content_type ~* "multipart") { return 403; }',
+            portal,
+            '    location = /index.php { return 301 /; }',
+            '    location ~ %s {' % LB_ASSETS,
+            '        expires 7d;', '        access_log off;', '        try_files $uri =404;', '    }',
+            '    location = /favicon.ico { return 301 /assets/favicon.svg; }',
+            '    location ~ ^/apple-touch-icon(-precomposed)?(-[0-9]+x[0-9]+)?\\.png$ {',
+            '        rewrite ^ /assets/apple-touch-icon.png last;', '    }',
+            '    # nothing else: the administration, /metrics, /healthz and every other path',
+            '    location / { return 404; }', '}']
+    return '\n'.join(out) + '\n'
 
 
 def realip_into(main, rp):
@@ -991,7 +1099,7 @@ def nginx_part(r, last):
             DH_READY[files['dh']] = files['dh']
             continue
         DH_READY[files['dh']] = dh_file(t['dh'], files['dh'], (last.get('dh') or {}).get(which))
-    paths = [NGINX_MAIN, NGINX_VIP] + list(NODE_FILES.values()) + list(VIP_FILES.values())
+    paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB] + list(NODE_FILES.values()) + list(VIP_FILES.values())
     snap = snapshot(paths)
     changed = False
     TLS_FILES_NEW[0] = False
@@ -1095,6 +1203,20 @@ def nginx_part(r, last):
             changed = True
             said.append('nginx: the web address\'s own server taken away (it answers with this '
                         'node\'s certificate)')
+        # The balancer's own port (1.0.259): made from this node's server as it is now.
+        lp = r.get('lbport')
+        if lp is not None and lp.get('port'):
+            text = LB_HEAD + lbport_server(main[:where[0]] + block + main[where[1]:], lp)
+            if snap.get(NGINX_LB) is None or snap[NGINX_LB][0].decode() != text:
+                write_root(NGINX_LB, text, 0o644)
+                changed = True
+                said.append('nginx: the balancer\'s own port %d - the enrolment pages only, for %s%s'
+                            % (lp['port'], ', '.join(lp['from']),
+                               ' (the PROXY protocol)' if lp['header'] == 'proxy_protocol' else ''))
+        elif lp is not None and os.path.exists(NGINX_LB):
+            os.unlink(NGINX_LB)
+            changed = True
+            said.append('nginx: the balancer\'s own port taken away')
         # A certificate renewed changes no line of nginx's (1.0.205): its files
         # alone were written, nginx was not reloaded, and went on giving the
         # old one until it ran out.
