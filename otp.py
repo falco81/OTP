@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.256'
+__version__ = '1.0.257'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -48934,6 +48934,131 @@ def mfa_window():
         return max(0, int(v)) if v is not None and v != '' else 1
     except (TypeError, ValueError):
         return 1
+
+
+# ---- the passkeys of the account signed in (1.0.257) -------------------------------------
+# Your account: the passkeys of this account listed, one added from another device, named,
+# taken away - while the second step is on and it is a passkey. The last one is the second
+# step itself: taken away only by a reset (another full administrator, or root).
+PK_MAX = 10
+
+
+def _pk_own(h):
+    s = h.me('readonly')
+    if not CONFIG.get('admin_2fa') or not CONFIG.get('admin_2fa_passkey'):
+        raise ApiError(409, 'the second step by a passkey is switched off (Settings - Accounts)')
+    rec = mfa_get(h.store, s['name']) or {}
+    if rec.get('kind') != 'passkey':
+        raise ApiError(409, 'the second step of this account is not a passkey')
+    return s, rec
+
+
+def _pk_row(k):
+    return {'id': k.get('id'), 'name': k.get('name') or '', 'host': k.get('host') or '',
+            'at': fnum(k.get('at')), 'used': fnum(k.get('used')), 'backed_up': bool(k.get('backed_up'))}
+
+
+@route('GET', '/api/auth/passkeys')
+def _pk_list(h):
+    s = h.me('readonly')
+    on = bool(CONFIG.get('admin_2fa') and CONFIG.get('admin_2fa_passkey'))
+    rec = (mfa_get(h.store, s['name']) or {}) if on else {}
+    mine = rec.get('kind') == 'passkey'
+    why = ''
+    if mine and not wa_host_ok(h):
+        why = 'A passkey is added on these pages opened by a name over HTTPS (https://name/), not by an address.'
+    elif mine and mfa_old_nodes(h.store):
+        why = 'A passkey waits until every node runs otp 1.0.254 or newer (%s does not yet).' \
+            % ', '.join(mfa_old_nodes(h.store))
+    elif mine and len(rec.get('keys') or []) >= PK_MAX:
+        why = 'This account has %d passkeys, as many as it may.' % PK_MAX
+    return {'on': on, 'mine': mine, 'kind': rec.get('kind') or '',
+            'keys': [_pk_row(k) for k in rec.get('keys') or []] if mine else [],
+            'can_add': mine and not why, 'why': why, 'max': PK_MAX}
+
+
+@route('POST', '/api/auth/passkeys')
+def _pk_do(h):
+    s, rec = _pk_own(h)
+    b = h.body()
+    act = str(b.get('action') or '')
+    name = s['name']
+    if act == 'add_begin':
+        if mfa_old_nodes(h.store):
+            raise ApiError(409, 'a passkey waits until every node runs otp 1.0.254 or newer (%s does '
+                                'not yet)' % ', '.join(mfa_old_nodes(h.store)))
+        keys = rec.get('keys') or []
+        if len(keys) >= PK_MAX:
+            raise ApiError(409, 'this account has %d passkeys, as many as it may' % PK_MAX)
+        acc = s.get('account') or {}
+        try:
+            saved, opts = wa_register_options(h, name, acc.get('display') or '',
+                                              have=[k.get('id') for k in keys if k.get('id')])
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        # Kept with this sign-in, so either node takes the answer.
+        h.store.session_merge(s['id'], {'pk_add': saved})
+        return opts
+    if act == 'add_finish':
+        saved = odict((s.get('data') or {}).get('pk_add'))
+        if not saved:
+            raise ApiError(409, 'that answer is to an old question - press the button again')
+        try:
+            pk = wa_register_finish(saved, b)
+        except (ValueError, TypeError, KeyError) as e:
+            raise ApiError(400, 'the passkey was not taken: %s' % e)
+        if not h.store.session_take(s['id'], 'pk_add'):
+            raise ApiError(409, 'that answer was taken already - press the button again')
+        with MFA_LOCK:
+            rec = mfa_get(h.store, name) or {}
+            if rec.get('kind') != 'passkey':
+                raise ApiError(409, 'the second step of this account is not a passkey')
+            keys = list(rec.get('keys') or [])
+            if any(k.get('id') == pk['id'] for k in keys):
+                raise ApiError(409, 'this device has a passkey for this account already')
+            if len(keys) >= PK_MAX:
+                raise ApiError(409, 'this account has %d passkeys, as many as it may' % PK_MAX)
+            keys.append(pk)
+            rec['keys'] = keys
+            h.store.set_meta(mfa_key(name), json.dumps(rec))
+        h.store.add_event('accounts', '%s added a passkey (%s, for https://%s/)' % (
+            name, pk.get('name') or 'a device', pk['host']), who=name)
+        return {'message': 'the passkey is added', 'keys': [_pk_row(k) for k in keys]}
+    ident = str(b.get('id') or '')
+    if act == 'rename':
+        label = ' '.join(str(b.get('name') or '').split())[:60]
+        if not label:
+            raise ApiError(400, 'a name for the passkey')
+        with MFA_LOCK:
+            rec = mfa_get(h.store, name) or {}
+            keys = list(rec.get('keys') or [])
+            hit = next((k for k in keys if k.get('id') == ident), None)
+            if hit is None:
+                raise ApiError(404, 'no such passkey of this account')
+            was = hit.get('name') or 'a device'
+            hit['name'] = label
+            rec['keys'] = keys
+            h.store.set_meta(mfa_key(name), json.dumps(rec))
+        h.store.add_event('accounts', '%s named a passkey %s (was %s)' % (name, label, was), who=name)
+        return {'message': 'named', 'keys': [_pk_row(k) for k in keys]}
+    if act == 'delete':
+        with MFA_LOCK:
+            rec = mfa_get(h.store, name) or {}
+            keys = list(rec.get('keys') or [])
+            hit = next((k for k in keys if k.get('id') == ident), None)
+            if hit is None:
+                raise ApiError(404, 'no such passkey of this account')
+            if len(keys) <= 1:
+                raise ApiError(409, 'the last passkey is the second step of this account: another '
+                                    'full administrator resets it (Accounts), or root with  otp '
+                                    '--reset-2fa %s' % name)
+            keys = [k for k in keys if k.get('id') != ident]
+            rec['keys'] = keys
+            h.store.set_meta(mfa_key(name), json.dumps(rec))
+        h.store.add_event('accounts', '%s took a passkey away (%s, for https://%s/)' % (
+            name, hit.get('name') or 'a device', hit.get('host') or '?'), 'warn', who=name)
+        return {'message': 'taken away', 'keys': [_pk_row(k) for k in keys]}
+    raise ApiError(400, 'what should be done?')
 # ---- a passkey as the administration's second step (1.0.254) ----------------------
 # Face ID, Touch ID, Windows Hello or a security key: WebAuthn, after the password -
 # never instead of it. The account sets it up as it sets up an app or a mail address
@@ -53772,6 +53897,7 @@ def load_ask():
     """A page on this node looks."""
     if time.monotonic() >= LOAD_LOOK['until']:
         LOAD_HA_WAKE.set()          # just begun: its row written now, not in 5 s
+        LOAD_LOOK['began'] = time.monotonic()
     LOAD_LOOK['until'] = time.monotonic() + LOAD_LOOK_S
     LOAD_WAKE.set()
 
@@ -53938,7 +54064,12 @@ def load_others(store, since):
     for n in load_cluster(store):
         with LOAD_HA_LOCK:
             got = dict(LOAD_HA['peers'].get(n['name']) or {})
-        late = not got.get('at') or time.monotonic() - got['at'] > LOAD_STALE_S
+        # Not late while the other node is only waking up to a page that began to look (1.0.257):
+        # its last numbers shown at once, the graph going on from its next row - "does not
+        # answer" was said for the first seconds of every look.
+        waking = time.monotonic() - LOAD_LOOK.get('began', 0.0) < LOAD_STALE_S + LOAD_PUB_S
+        late = not got.get('at') or (time.monotonic() - got['at'] > LOAD_STALE_S and
+                                     not (waking and got.get('now')))
         hist = got.get('hist') or []
         after = since.get(n['name']) or 0
         if hist and after > hist[-1]['at'] + LOAD_BACK_S:

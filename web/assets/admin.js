@@ -225,6 +225,118 @@ $('signout').onclick = function () {
   api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); });
 };
 
+/* Your account: the passkeys of this account (1.0.257) - while the second step is on and it is
+   a passkey. Each listed for the name of the pages it is for, named here, taken away (not the
+   last: that is the second step itself); another added from this device. */
+function mePasskeys(body) {
+  var sec = el('div', 'me-sec me-pk');
+  sec.hidden = true;
+  body.appendChild(sec);
+  var draw = function (d) {
+    clear(sec);
+    if (!d || !d.on || !d.mine) { sec.hidden = true; return; }
+    sec.hidden = false;
+    sec.appendChild(el('h3', '', 'Passkeys - Face ID, Touch ID'));
+    sec.appendChild(el('p', 'note', 'A passkey is the second step after your password, with the face, a finger or the PIN of this device. It is kept in the device (on an iPad and an iPhone in the iCloud Keychain, so on your other Apple devices too); the server has only its public half.'));
+    var t = el('table', 'rows me-pk-t');
+    var hr = el('tr');
+    ['Passkey', 'For', 'Added', 'Last used', ''].forEach(function (w) { hr.appendChild(el('th', '', w)); });
+    var th = el('thead'); th.appendChild(hr); t.appendChild(th);
+    var tb = el('tbody');
+    var keys = d.keys || [];
+    keys.forEach(function (k) {
+      var tr = el('tr');
+      var nameTd = el('td', 'me-pk-name');
+      var shown = noI18n(el('span', '', k.name || 'a device'));
+      nameTd.appendChild(shown);
+      tr.appendChild(nameTd);
+      tr.appendChild(noI18n(el('td', 'mono small', k.host || '')));
+      tr.appendChild(stampCell(k.at));
+      tr.appendChild(stampCell(k.used));
+      var act = el('td', 'me-pk-act');
+      var ed = iconButton('edit', 'Name this passkey');
+      var rm = iconButton('trash', keys.length > 1 ? 'Take this passkey away'
+        : 'The last passkey is the second step of this account: another full administrator resets it (Accounts)');
+      rm.disabled = keys.length <= 1;
+      ed.onclick = function () {
+        if (nameTd.querySelector('input')) return;
+        var box = textBox(k.name || '', 'iPad', '');
+        box.maxLength = 60;
+        noI18n(box);
+        clear(nameTd);
+        nameTd.appendChild(box);
+        box.focus();
+        box.select();
+        var done = false;
+        var back = function () { if (done) return; done = true; clear(nameTd); nameTd.appendChild(shown); };
+        var save = function () {
+          if (done) return;
+          var v = box.value.trim();
+          if (!v || v === (k.name || '')) { back(); return; }
+          done = true;
+          box.disabled = true;
+          api('passkeys', {action: 'rename', id: k.id, name: v}).then(function (r) {
+            toast(r.message || 'named', 'good');
+            draw(Object.assign({}, d, {keys: r.keys}));
+          }).catch(function (e) { done = false; box.disabled = false; oops(e); box.focus(); });
+        };
+        box.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); save(); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); back(); }
+        });
+        box.addEventListener('blur', function () { setTimeout(save, 120); });
+      };
+      rm.onclick = function () {
+        modalOver(function () {
+          confirmThen('Take the passkey away',
+            'The passkey <b>' + htmlText(k.name || 'a device') + '</b> for ' + htmlText(k.host || '')
+            + ' no longer gives the second step of this account. The device keeps it until it is taken out there too.',
+            'Take it away', function () {
+              api('passkeys', {action: 'delete', id: k.id}).then(function (r) {
+                toast(r.message || 'taken away', 'good');
+                draw(Object.assign({}, d, {keys: r.keys}));
+              }).catch(oops);
+            }, true);
+        });
+      };
+      act.appendChild(ed);
+      act.appendChild(rm);
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    sec.appendChild(t);
+    var said = el('div', 'said');
+    var add = cmdButton('Add a passkey of this device', 'key', 'primary');
+    add.type = 'button';
+    var why = d.why || (!pkCan() ? pkWhy() : '');
+    if (!d.can_add || !pkCan()) { add.disabled = true; if (why) { said.className = 'said'; said.textContent = why; } }
+    add.onclick = function () {
+      add.disabled = true;
+      said.className = 'said';
+      said.textContent = 'Asking the device…';
+      api('passkeys', {action: 'add_begin'}).then(function (r) {
+        var o = r.publicKey;
+        o.challenge = pkBytes(o.challenge);
+        o.user.id = pkBytes(o.user.id);
+        o.excludeCredentials = (o.excludeCredentials || []).map(function (c) { return {type: c.type, id: pkBytes(c.id)}; });
+        return navigator.credentials.create({publicKey: o});
+      }).then(function (cr) {
+        return api('passkeys', {action: 'add_finish', device: pkDevice(),
+          clientDataJSON: pkText(cr.response.clientDataJSON), attestationObject: pkText(cr.response.attestationObject)});
+      }).then(function (r) {
+        toast(r.message || 'the passkey is added', 'good');
+        draw(Object.assign({}, d, {keys: r.keys, can_add: (r.keys || []).length < (d.max || 10)}));
+      }).catch(function (e) { add.disabled = false; pkErr(said, e); });
+    };
+    var row = el('div', 'btnrow me-pk-add');
+    row.appendChild(add);
+    sec.appendChild(row);
+    sec.appendChild(said);
+  };
+  api('passkeys').then(draw).catch(function () { sec.hidden = true; });
+}
+
 /* ---- the account signed in --------------------------------------------- */
 function showMe() {
   modal('Your account', function (body) {
@@ -285,6 +397,10 @@ function showMe() {
       api('prefs', {lang: lang.value}).then(function () { location.reload(); }).catch(oops);
     };
     lsec.appendChild(formField('The language of these pages', lang));
+
+    /* The passkeys of this account (1.0.257): drawn when the daemon says they are this
+       account's second step. */
+    mePasskeys(body);
 
     /* The performance meter's looks (1.0.253), while Settings - About has it on. */
     if (typeof hloadAllowed === 'function' && hloadAllowed()) {
