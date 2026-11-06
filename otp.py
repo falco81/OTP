@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.255'
+__version__ = '1.0.256'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -4294,7 +4294,12 @@ BEGIN
     END IF;
     IF NEW.secret IS DISTINCT FROM OLD.secret
        OR NEW.pending_secret IS DISTINCT FROM OLD.pending_secret
+       OR NEW.pending_scratch IS DISTINCT FROM OLD.pending_scratch
+       OR NEW.name IS DISTINCT FROM OLD.name
        OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.dest IS DISTINCT FROM OLD.dest THEN
+      -- The waiting recovery codes and the name too (1.0.256): kept with the key where
+      -- the other node's row is older, but changed alone they left its time as it was,
+      -- and the other node's older row, written after, put the old ones back.
       -- Never before the stamp it has (1.0.214): one written by the other node with
       -- a clock ahead made this node's later change the older, and it was lost there.
       NEW.key_at := GREATEST(now_, COALESCE(OLD.key_at, 0) + 0.000001);
@@ -6775,6 +6780,22 @@ def norm_name(name):
     if CONFIG.get('token_names_case', 'lower') == 'lower':
         said = said.lower()
     return said[:190]
+
+
+def token_case_problem(store, value):
+    """Why token_names_case cannot go to `value` now, or '' (1.0.256): from as-typed back to
+    small letters, a token kept as Novak@x.cz was looked up as novak@x.cz - by RADIUS and the
+    pages alike - and found by nobody, on both nodes. Refused while there is one."""
+    if str(value or '') != 'lower' or CONFIG.get('token_names_case', 'lower') != 'as-typed':
+        return ''
+    caps = [r['name'] for r in store.db.rows('SELECT name FROM tokens')
+            if str(r['name'] or '') != str(r['name'] or '').lower()]
+    if not caps:
+        return ''
+    return ('%d token(s) have capital letters in their names (%s): in small letters they would '
+            'be found by nobody - rename them to small letters first (the token\'s window - Move to), then '
+            'switch to small letters' % (len(caps), ', '.join(sorted(caps)[:3]) +
+                                         (', ...' if len(caps) > 3 else '')))
 
 
 PLAIN_ADDR_RE = re.compile(r'^[0-9A-Fa-f:.]+(/[0-9]{1,3})?\Z')
@@ -17023,6 +17044,12 @@ class Daemon(object):
             node = node_name()
         if node not in self.cluster_nodes() + [node_name()]:
             raise BadSetting('there is no node %s' % node)
+        # Token names back to small letters while some have capitals (1.0.256): found by nobody
+        # after - refused on every road to a save (the pages, otp --set, a configuration import).
+        if 'token_names_case' in (changes or {}):
+            why = token_case_problem(self.store, changes['token_names_case'])
+            if why:
+                raise BadSetting(why)
         # A secret kept goes to the server it was given for only (1.0.207): saved as
         # its dots with another server beside it, it was sent there - in clear with
         # TLS off - while nobody had seen more than its last two letters.
@@ -42740,6 +42767,12 @@ def totp_file_text(tok):
             lines.append('" OTP_LAST_STEP %d' % int(tok['last_step']))
     except (TypeError, ValueError):
         pass
+    # Whose it is, inside the file (1.0.256): in a locked ZIP only what is in a file is
+    # locked, not its name - renamed, alice's key became bob's token. Written as the file's
+    # name is, so it has no spaces; an import before 1.0.256 passes it by as an option it
+    # does not know.
+    if tok.get('name'):
+        lines.append('" OTP_NAME %s' % totp_file_name(tok['name'])[:-5])
     lines.append('" TOTP_AUTH')
     for c in codes_open(tok) or []:
         if isinstance(c, dict):
@@ -43452,6 +43485,19 @@ def totp_file_owner(fname):
     return unquote(fname[:-5] if fname.endswith('.totp') else fname)
 
 
+def totp_file_said_owner(text):
+    """The owners a .totp file names inside it (" OTP_NAME, 1.0.256) - every such line, so
+    that a second one cannot say another - or None where it names none: a file of totpcgi,
+    or of otp before 1.0.256."""
+    from urllib.parse import unquote
+    said = []
+    for line in str(text or '').splitlines():
+        bits = line.strip()[1:].split() if line.strip().startswith('"') else []
+        if bits and bits[0].upper() == 'OTP_NAME':
+            said.append(unquote(' '.join(bits[1:])))
+    return said or None
+
+
 def totp_files_in_zip(b64, label, out, phrase=''):
     """The .totp files inside a ZIP the page sent (1.0.33) - a totpcgi
     folder zipped, or another otp's export. Read in memory with limits on
@@ -43502,7 +43548,8 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                 if len(data) > 64 * 1024:
                     out.append({'name': base, 'said': 'not imported: too big for a .totp file'})
                     continue
-                got.append({'name': base, 'text': data.decode('utf-8', 'replace')})
+                got.append({'name': base, 'text': data.decode('utf-8', 'replace'),
+                            'locked_in': label if info.flag_bits & 1 else ''})
     except (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError, struct.error,
             zlib.error) as e:
         # A damaged one said as damaged (1.0.249), not "it broke".
@@ -43651,17 +43698,37 @@ def _token_import(h):
                 raise ApiError(423, str(e))
         else:
             files.append(one)
+    label_said = {}
     for one in files:
         fname = os.path.basename(str(one.get('name') or ''))
         name = totp_file_owner(fname)
         if want and norm_name(name) not in want:
+            continue
+        # The owner the file names inside (1.0.256) is the one its name says, or it is not
+        # taken: in a locked ZIP the names of the files are not locked - renamed, one person's
+        # key was imported as another's token. A file without it (totpcgi's, or an export
+        # before 1.0.256) is imported by its name as before - said, where it was locked.
+        inside = totp_file_said_owner(one.get('text'))
+        other = next((x for x in inside or [] if norm_name(x) != norm_name(name)), None)
+        # Only in a locked ZIP, whose names alone are not locked: a file renamed on purpose
+        # elsewhere (into a realm, say) is imported by its name, as before.
+        if other is not None and one.get('locked_in'):
+            out.append({'name': norm_name(name), 'said': 'not imported: the file is named for %s, '
+                        'but the token in it is of %s' % (norm_name(name), norm_name(other) or '-')})
             continue
         try:
             said = import_totp(h.store, name, str(one.get('text') or ''), 'import:' + s['name'],
                                replace=bool(b.get('replace')))
         except ValueError as e:
             said = 'not imported: %s' % e
+        if inside is None and one.get('locked_in') and label_said.get(one['locked_in']) is None:
+            label_said[one['locked_in']] = len(out)
         out.append({'name': norm_name(name), 'said': said})
+    # Once for each locked ZIP with such files (1.0.256), after them.
+    for label in sorted(label_said, key=label_said.get):
+        out.append({'name': label, 'said': 'no owner written inside (an otp export before 1.0.256, '
+                                           'or a folder zipped): the owner is read from the file '
+                                           'name only'})
     h.store.add_event('tokens', '%s imported %d token file(s)' % (s['name'], len(out)),
                       who=s['name'])
     # Their owners' names from the directory, as an enrolment on the pages
@@ -44479,6 +44546,11 @@ def _settings_do(h):
         raise ApiError(400, 'the database is changed on Settings - The database with its own '
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
+    if 'token_names_case' in asked:
+        # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
+        bad = token_case_problem(h.store, asked.get('token_names_case'))
+        if bad:
+            raise ApiError(400, '%s (nothing saved)' % bad)
     try:
         # The other sign-ins ended when the second step is switched on: in
         # save_settings, the one saving it kept.
@@ -45024,6 +45096,11 @@ def _db_download_ticket(h, s, b):
     tokens, locked with the passphrase given: made, and left for the browser
     to fetch with the ticket."""
     by = s['name']
+    # Only where keys may be shown (1.0.256), as the token exports: the key that opens every
+    # token's key came with the file with "showing the keys" switched off - and under high
+    # security, which keeps that off.
+    if not CONFIG.get('admin_show_key'):
+        raise ApiError(403, 'showing the keys of tokens is switched off (Settings - Tokens)')
     dbkey_passphrase_checked(b.get('passphrase'))
     kind = 'dump' if b.get('kind') == 'dump' else ''
     work = Path(tempfile.mkdtemp(prefix='otp-dl-', dir=str(STATE_DIR)))
@@ -45568,6 +45645,15 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             check_setting(base, v)
         except (BadSetting, ValueError) as e:
             raise ApiError(400, '%s - nothing was imported' % e)
+    # Not back to small letters over tokens named with capitals (1.0.256): the file's value, or
+    # with "exactly the file" the default where the file has none.
+    case_to = odict(conf.get('settings')).get('token_names_case')
+    if case_to is None and replace and 'settings' in conf:
+        # What a row dropped falls back to: config.json's, then the built-in default.
+        case_to = FILE_CONFIG.get('token_names_case', DEFAULTS.get('token_names_case'))
+    bad = token_case_problem(store, case_to) if case_to is not None else ''
+    if bad:
+        raise ApiError(400, '%s - nothing was imported' % bad)
     # Checked before anything is saved (1.0.44): a realm naming a directory
     # that neither is here nor comes with it stopped the import halfway.
     dirs = set(x['name'].lower() for x in store.directories()) | \
@@ -49580,6 +49666,11 @@ def _rbackup_download(h):
                               'warn', who=s['name'])
             h.send_file(work / name, name)
             return None
+        # Only where keys may be shown (1.0.256), as the database's download with its key: the
+        # backup made now holds the key that opens every token's key, locked with a password a
+        # full administrator sets.
+        if not CONFIG.get('admin_show_key'):
+            raise ApiError(403, 'showing the keys of tokens is switched off (Settings - Tokens)')
         if not rb_password():
             # Locked always (1.0.136): unlocked it holds every token's key.
             raise ApiError(403, 'without a password of the backups the file would hold every '
