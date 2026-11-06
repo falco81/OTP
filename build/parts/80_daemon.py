@@ -1998,6 +1998,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('alerts-tick', 'the alerts: %s' % e, 'warn', every=600)
                 try:
+                    after_tick(self)            # what an update left to be done by hand (1.0.258)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('after-tick', 'after the update: %s' % e, 'warn', every=600)
+                try:
                     osup_tick(self)             # the updates of the system (1.0.158)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osup-tick', 'the update of the system: %s' % e, 'warn',

@@ -32,7 +32,10 @@ function hloadHistOf(list) {
    the newest readings wait beyond the right edge until their time - so it never jumps.
    Two nodes, two clocks: each node's readings against its own clock as they came. */
 var HL_SPAN = 120;                  /* seconds across a graph */
-var HL_LAG = {here: 3.5, peer: 10}; /* how old the right edge is: the pace + the asking (+ the other node's 5 s) */
+/* how old the right edge is: the pace + the asking; the other node's readings come up to 5 s (its row)
+   + 5 s (this node reading it) + 2 s (the page asking) late - 10 s was not always enough, and its
+   graph grew by jumps at the edge (1.0.258) */
+var HL_LAG = {here: 3.5, peer: 14};
 var HL_T0 = Date.now() / 1000;      /* when the animations of this page began */
 var HL_RUN_S = 86400;
 HLOAD.series = {};                  /* node ('' this one) -> [{at, cpu, mem, disk, net}] */
@@ -384,7 +387,7 @@ function hloadPanelOpen(k, chip) {
   p.hidden = false;
   hloadPanelDraw();
   hloadPanelPlace(chip);
-  if (!HLOAD.openNode && (!HLOAD.detail || Date.now() - (HLOAD.detailAt || 0) > 2500)) hloadTick(true);
+  if (HLOAD.openNode || !HLOAD.detail || Date.now() - (HLOAD.detailAt || 0) > 2500) hloadTick(true);
 }
 function hloadPanelSoon() { clearTimeout(HLOAD.shut); HLOAD.shut = setTimeout(hloadPanelClose, 350); }
 function hloadPanelClose() {
@@ -452,8 +455,13 @@ function hloadPanelDraw() {
   HLOAD.ctx = node;
   p.className = 'hl-panel hp-' + st;
   try {
-    if (o) { p.className = 'hl-panel hp-tiles'; hpPeer(p, k, node, o); }
-    else hpStyleDraw(p, k, st);
+    /* the other node's own details once it sends them (1.0.258), in the style picked */
+    if (o && !(o.detail && !o.late)) { p.className = 'hl-panel hp-tiles'; hpPeer(p, k, node, o); }
+    else {
+      hpStyleDraw(p, k, st);
+      /* whose they are: the other node's name over its own details */
+      if (o) p.insertBefore(noI18n(el('div', 'hp-node muted small', node)), p.firstChild);
+    }
   } finally { HLOAD.last = keep[0]; HLOAD.detail = keep[1]; HLOAD.ctx = keep[2]; }
   p._key = key;
   p.scrollTop = top;
@@ -896,7 +904,13 @@ function hloadOff() {
 function hloadTick(now) {
   if (!$('hload')) return;
   if (!hloadAllowed()) { if (!$('hload').hidden || HLOAD.had) hloadOff(); return; }
-  if ((HLOAD.busy && !now) || document.hidden || !hloadLive()) return;
+  if ((HLOAD.busy && !now) || !hloadLive()) return;
+  /* In a tab behind others (1.0.258) the page goes on asking, every 30 s and drawing nothing, and
+     says so (keep): the daemons go on reading, and back in front the graphs have no hole. The
+     browser lets a page in the background ask once a minute only - the daemon keeps it 75 s. */
+  var hidden = !!document.hidden;
+  if (hidden && Date.now() - (HLOAD.hiddenAsked || 0) < 30000) return;
+  if (hidden) HLOAD.hiddenAsked = Date.now();
   HLOAD.look = prefs().hload || 'graphs';
   if (HLOAD.look === 'off') { hloadPanelClose(); $('hload').hidden = true; return; }
   HLOAD.busy = true;
@@ -905,7 +919,10 @@ function hloadTick(now) {
   var since = Object.keys(HLOAD.series).filter(function (n) { return hlLast(n); })
     .map(function (n) { return encodeURIComponent((n || HLOAD.node || '') + ':' + hlLast(n)); }).join(',');
   var q = 'load' + (since ? '&since=' + since : '');
-  if (HLOAD.open && !HLOAD.openNode) q += '&detail=1';
+  if (hidden) q += '&keep=75';
+  else if (HLOAD.open && !HLOAD.openNode) q += '&detail=1';
+  /* the other node's panel open: its cores, disks and processes asked of it (1.0.258) */
+  else if (HLOAD.open && HLOAD.openNode) q += '&detail_node=' + encodeURIComponent(HLOAD.openNode);
   api(q).then(function (d) {
     if (!hloadAllowed() || !d || !d.now) return;
     HLOAD.node = d.node || '';
@@ -914,6 +931,7 @@ function hloadTick(now) {
     HLOAD.had = true;
     HLOAD.others = d.others || null;
     if (d.detail) { HLOAD.detail = d.detail; HLOAD.detailAt = Date.now(); }
+    if (document.hidden) { HLOAD.last = d.now; return; }     /* nothing drawn behind other tabs */
     hloadDraw(d.now);
   }).catch(function (e) {
     /* switched off meanwhile (404) - the next status says so too */

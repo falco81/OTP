@@ -839,9 +839,15 @@ def build_parser():
     g.add_argument('--maintenance', choices=('on', 'off', 'status'), help='this node out of '
                    'service (RADIUS not answered, /healthz 503) or back; status says which')
     g.add_argument('--node', metavar='NAME', help='with --maintenance, --set (a node\'s own '
-                   'setting; * for the cluster\'s own value), --change-keep: another node of '
-                   'the cluster rather than this one')
+                   'setting; * for the cluster\'s own value), --change-keep, --after-done: another '
+                   'node of the cluster rather than this one')
     g.add_argument('--why', metavar='TEXT', help='with --maintenance on: why, for the events')
+    g.add_argument('--after', action='store_true', help='what is to be done by hand after an '
+                   'update, on every node, with the commands (as Settings → Upgrades → To be done '
+                   'by hand); this node looks again first')
+    g.add_argument('--after-done', metavar='ID', help='mark one of --after as done (a manual one; '
+                   'an automatic one too, logged as such) - with --node for another node\'s')
+    g.add_argument('--after-brief', action='store_true', help=argparse.SUPPRESS)
     g.add_argument('--upgrade-status', action='store_true', help='the package sent on the pages '
                    'and how an upgrade started there is going')
     g.add_argument('--upgrade-check', action='store_true', help='look at upgrade_url now for a '
@@ -2476,6 +2482,8 @@ def cli_main(argv=None):
 
     cli_stage_files(args)
     store = cli_store()
+    if args.after or args.after_done:
+        return cli_after(args, pal, store)     # to be done by hand (1.0.258)
     if args.ha_compare:
         return cli_ha_compare(store, pal, args.json)
     if args.web_status or args.tls_import or args.tls_preset or args.tls_dh or \
@@ -2865,6 +2873,12 @@ def cli_main(argv=None):
             listening.append((kind, port, cli_udp_taken(CONFIG.get('radius_bind'), port)))
         s['daemon_alive'] = alive
         s['ports'] = listening
+        # What an update left to be done by hand (1.0.258): a line here, the console's first
+        # screen from the JSON; never among the problems (their exit code stays as it was).
+        try:
+            s['after'] = after_summary(store, fresh=True)
+        except Exception:                               # noqa: BLE001
+            s['after'] = {'n': 0, 'level': '', 'items': []}
         if args.json and args.check:
             # --check --json (1.0.103): the checks run as without --json, their
             # lines and their verdict in the JSON - and the same exit code. It
@@ -2914,6 +2928,16 @@ def cli_main(argv=None):
         for p in trial_problem_words(s.get('trials') or []):
             print(pal.warn_line(p))
         bad = 0
+        aft = odict(s.get('after'))
+        if aft.get('n'):
+            print((pal.bad_line if aft.get('level') == 'bad' else pal.warn_line)(
+                'to be done by hand: %d - otp --after says what and how' % aft['n']))
+            for x in (aft.get('items') or [])[:5]:
+                print(pal.dim('    %s%s' % (x.get('title'), ('  [%s]' % x.get('node'))
+                                            if x.get('node') != node_name() else '')))
+            # In the check's verdict where it is bad (1.0.258): a warning or a note is said only.
+            if args.check and aft.get('level') == 'bad':
+                bad += 1
         if args.check:
             print(pal.head('checking every part of it'))
             def said(ok, text, hint=''):

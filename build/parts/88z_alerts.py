@@ -639,6 +639,16 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                 _al(lang, 'Upgrade otp na %s se nepovedl' % up.get('version'),
                     'The upgrade of otp to %s failed' % up.get('version')),
                 '; '.join('%s: %s' % (x.get('name'), x.get('said')) for x in bad)[:300], 'upgrade')
+        # What an update left to be done by hand (1.0.258): each node's own row, as Settings →
+        # Upgrades shows it - until it is so, or Done is pressed. A note (info) goes as a warning.
+        try:
+            for it in after_needed(store, names):
+                words = odict(it.get('cs')) if lang == 'cs' else it
+                add('after:%s:%s' % (it['id'], it['node']), 'bad' if it['level'] == 'bad' else 'warn',
+                    it['node'], str(words.get('title') or it.get('title') or it['id']),
+                    str(words.get('why') or it.get('why') or '')[:300], 'upgrade')
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('alerts-after', 'the alerts, after the update: %s' % e, 'warn', every=3600)
     # Rows of the database not written by otp.
     if CONFIG.get('alerts_dbguard', 1):
         for n in names:

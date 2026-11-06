@@ -55,6 +55,11 @@ PY_SYSTEM=""
 OTP_PY=""
 DB_RESTART_AGAIN=""
 PHP_UPDATE="yes"
+# What this run found as root, for root-facts.json (1.0.258): the daemon cannot see it itself.
+FACT_NGINX_ADD=""
+FACT_NGINX_GUARD=""
+FACT_SELINUX_MODULE=""
+FACT_FIREWALL=""
 PHP_STREAM="8.3"
 USE_REMI=""
 
@@ -865,9 +870,12 @@ print('; '.join(said))
 PY
             if nginx -t >/dev/null 2>&1; then
                 good "$NGINX_CONF brought up to this version (its copy: $NGINX_BAK)"
+                FACT_NGINX_ADD=ok
             else
                 cp -a "$NGINX_BAK" "$NGINX_CONF"
                 warn "nginx did not take the additions, so $NGINX_CONF is as it was"
+                # Kept for the pages (1.0.258): Settings → Upgrades says it until an upgrade gets them in.
+                FACT_NGINX_ADD=failed
             fi
         fi
         if ! grep -qiE 'content_type[^;]*multipart' "$NGINX_CONF"; then
@@ -899,6 +907,7 @@ if not os.path.exists('/proc/net/if_inet6'):
 open(dst, 'w').write(text)
 PY
         good "$NGINX_CONF for $SERVER_NAME"
+        FACT_NGINX_ADD=ok
     fi
     if command -v nginx >/dev/null; then
         if [[ -z "$DRY_RUN" ]] && ! nginx -t >/dev/null 2>&1; then
@@ -970,9 +979,13 @@ selinux_module() {
         if run semodule -i "$LIB_DIR/otp_server.cil" 2>/dev/null; then
             run install -m 0644 "$LIB_DIR/otp_server.cil" "$LIB_DIR/otp_server.cil.in-policy"
             good "SELinux: otp's module (otp_server) is in the policy"
+            FACT_SELINUX_MODULE=in
         else
             warn "SELinux: otp's module could not be put in: semodule -i $LIB_DIR/otp_server.cil"
+            FACT_SELINUX_MODULE=failed
         fi
+    else
+        FACT_SELINUX_MODULE=in
     fi
     [[ -d /run/otp ]] && command -v restorecon >/dev/null 2>&1 && run restorecon -R /run/otp 2>/dev/null || true
     # Upgraded from a version before 1.0.248 (1.0.249): when otp's needs were last put in is
@@ -1230,6 +1243,63 @@ as_otp() {             # a command of otp's, as its own account
     runuser -u "$SERVICE_USER" -- env OTP_CONFIG="$CONFIG_FILE" "$BIN_LINK" "$@"
 }
 
+# What root found and the daemon cannot see (1.0.258): which install.sh put the root parts in, and
+# what nginx, SELinux and the firewall made of it - in a file of root's beside the program, for
+# the otp account to read (Settings → Upgrades → To be done by hand, otp --after). Never a secret:
+# versions, words and times. A value this run did not look at is kept from the run before it;
+# written last before the daemon starts, so it starts knowing it.
+root_facts_write() {
+    [[ -n "$DRY_RUN" ]] && { note "[would write] $LIB_DIR/root-facts.json"; return 0; }
+    [[ -d "$LIB_DIR" && ! -L "$LIB_DIR" ]] || return 0
+    FACT_VERSION="$VERSION" FACT_KIND="${DO_UPGRADE:+upgrade}" FACT_NGINX_ADD="$FACT_NGINX_ADD" \
+        FACT_NGINX_GUARD="$FACT_NGINX_GUARD" FACT_SELINUX_MODULE="$FACT_SELINUX_MODULE" \
+        FACT_FIREWALL="$FACT_FIREWALL" python3 - "$LIB_DIR/root-facts.json" <<'PY' || warn "$LIB_DIR/root-facts.json could not be written - the pages may say the root parts are older"
+import json, os, re, sys, time
+path = sys.argv[1]
+was = {}
+try:
+    if os.path.isfile(path) and not os.path.islink(path):
+        with open(path) as f:
+            was = json.load(f)
+except (OSError, ValueError):
+    was = {}
+was = was if isinstance(was, dict) else {}
+env = os.environ.get
+now = int(time.time())
+def word(v):
+    return v if re.match(r'^[a-z]{1,12}$', v or '') else ''
+out = {'installer': re.sub(r'[^0-9.]', '', env('FACT_VERSION') or '')[:20], 'at': now,
+       'kind': 'upgrade' if env('FACT_KIND') else 'install',
+       'nginx': was.get('nginx') if isinstance(was.get('nginx'), dict) else {},
+       'selinux_module': word(str(was.get('selinux_module') or '')),
+       'firewall': was.get('firewall') if isinstance(was.get('firewall'), dict) else {}}
+for key, name in (('additions', 'FACT_NGINX_ADD'), ('guard', 'FACT_NGINX_GUARD')):
+    if word(env(name)):
+        out['nginx'] = dict(out['nginx'], **{key: env(name), 'at': now})
+if word(env('FACT_SELINUX_MODULE')):
+    out['selinux_module'] = env('FACT_SELINUX_MODULE')
+if word(env('FACT_FIREWALL')):
+    out['firewall'] = {'state': env('FACT_FIREWALL'), 'at': now}
+tmp = path + '.new'
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0), 0o644)
+with os.fdopen(fd, 'w') as f:
+    json.dump(out, f, indent=1, sort_keys=True)
+    f.write('\n')
+os.chmod(tmp, 0o644)
+os.rename(tmp, path)
+PY
+    chown root:root "$LIB_DIR/root-facts.json" 2>/dev/null || true
+    return 0
+}
+
+# What an update left to be done by hand (1.0.258), said at the end: the same as Settings →
+# Upgrades → To be done by hand, and otp --after.
+after_says() {
+    [[ -n "$DRY_RUN" ]] && return 0
+    step "To be done by hand"
+    as_otp --after --after-brief || true
+}
+
 restart_daemon() {
     run systemctl reenable otp.service >/dev/null 2>&1 || run systemctl enable otp.service >/dev/null
     run systemctl restart otp.service
@@ -1386,6 +1456,7 @@ EOR
 nginx_upload_guard() {
     [[ -f "$NGINX_CONF" && -z "$DRY_RUN" ]] || return 0
     if grep -q 'location = /admin/upload/' "$NGINX_CONF"; then
+        FACT_NGINX_GUARD=ok
         # A backup from another machine put back goes this way too (1.0.136):
         # left out, it was refused at 32 MB.
         if grep -q 'api=(db-restore|upgrade-package)(&|\$)' "$NGINX_CONF"; then
@@ -1456,12 +1527,14 @@ open(p, 'w').write(text)
 print(done)
 PY
     if nginx -t >/dev/null 2>&1; then
+        FACT_NGINX_GUARD=ok
         good "nginx asks who sends a database or a new version before it takes the file (copy: $bak)"
         # Read again now (1.0.103): restarted before the guard was added, nginx
         # answered /admin/upload/ with 404 until something else reloaded it.
         run systemctl reload nginx || warn "nginx could not be reloaded - systemctl reload nginx"
     else
         cp -a "$bak" "$NGINX_CONF"
+        FACT_NGINX_GUARD=failed
         warn "nginx did not take the guard for big uploads, so $NGINX_CONF is as it was"
     fi
 }
@@ -1470,6 +1543,7 @@ open_firewall() {
     step "The firewall"
     if ! command -v firewall-cmd >/dev/null || ! systemctl is-active --quiet firewalld; then
         warn "firewalld is not running here, so nothing was opened or narrowed."
+        FACT_FIREWALL=none
         note "Whatever filters this machine must let through: TCP 443 (and 80) to the pages,"
         note "UDP 1812 and 1813 from the VPN concentrators${RADIUS_FROM:+ ($RADIUS_FROM)}."
         return 0
@@ -1479,6 +1553,7 @@ open_firewall() {
         run firewall-cmd --permanent --add-service=http >/dev/null 2>&1 || true
         good "https (and http, which only sends to https) are open"
     fi
+    FACT_FIREWALL=firewalld
     if [[ -n "$RADIUS_FROM" ]]; then
         IFS=',' read -r -a srcs <<< "$RADIUS_FROM"
         for one in "${srcs[@]}"; do
@@ -1757,6 +1832,7 @@ except Exception:
         ensure_php
         install_pages
     fi
+    root_facts_write
     restart_daemon
     UPGRADE_STAGE=done
     if [[ -n "$MAINT_BY_US" ]]; then
@@ -1769,6 +1845,7 @@ except Exception:
     fi
     step "Done"
     as_otp --status || true
+    after_says
     exit 0
 fi
 
@@ -1978,10 +2055,13 @@ if [[ -n "$ISEMON_TARGET" ]]; then
 fi
 
 step "The service"
+root_facts_write
 restart_daemon
 
 if [[ -n "$WITH_WEB" ]]; then install_pages; fi
 open_firewall
+# Again (1.0.258): the pages, SELinux and the firewall were done after the daemon started.
+root_facts_write
 
 step "Does it work"
 as_otp --status || true
@@ -2000,4 +2080,5 @@ say "Next: Settings -> Active Directory, Realms and Clients (or otp --help), the
 say "      otp --enroll somebody@example.cz  and  otp --radtest somebody 123456"
 [[ -n "$ISEMON_TARGET" ]] && say "On the isemon machine: deploy/isemon/11-otp.conf into /etc/rsyslog.d/, and"
 [[ -n "$ISEMON_TARGET" ]] && say "      Settings -> The OTP logs switched on, with RADIUS detail."
+after_says
 exit 0

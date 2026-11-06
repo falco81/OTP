@@ -4,6 +4,27 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.258 — 6 November 2026
+
+To be done by hand: one place for what an update cannot do itself.
+
+- **Settings → Upgrades → To be done by hand**: what an update cannot do itself - a step as root on the command line, what the installer left (SELinux, the firewall, a package) - as one band a thing and a node: what and why, the command in a box with Copy, when it was first seen; Look again (this node at once, the other within a minute) and Done (for what otp cannot check; for what it can, marked by hand and written in the events). DONE LATELY: what, how (done, by itself, taken back), who, when. With nothing to do, "Nothing is to be done by hand."
+- **The count beside Upgrades** in the settings menu and on the Settings tab - red for a bad one, amber otherwise. Nothing else at the top of the pages changes.
+- **What there is to do, checked by each node itself**: otp newer than the parts root installs (copied by hand, an install.sh --upgrade that stopped half way), upgrades from the pages not installed, nginx refusing the additions or the upload guard, SELinux's module not the one of this version, SELinux refusing otp something (never "switch it off"), PHP without the php2shell fix, no firewall opened at the install. A new version adds one entry and every place says it.
+- **install.sh writes /usr/local/lib/otp/root-facts.json** (root's, readable, no secret): which version put the root parts in, what nginx, SELinux and the firewall made of it - before the daemon starts; at its end it says what is still to be done by hand.
+- **The performance meter, the other node** (a cluster): its panel shows its own cores, disks,
+  filesystems, cards and processes, as this node's, under its name - asked of it through its row
+  only while that panel is open (it said "shown on its own pages").
+- **Both nodes' graphs together**: the other node's readings reach the page up to 12 s after they
+  were read (its row every 5 s, this node reading it every 5 s, the page asking every 2 s) - the
+  right edge of both graphs now stands 14 s back, and the other node's graph no longer grows by
+  jumps at the edge.
+- **No holes while the page is behind other tabs**: it goes on asking every 30 s (drawing nothing),
+  and the daemons go on reading for 75 s after each ask - a browser lets a page in the background
+  ask once a minute only. Back in front, the graphs are whole. A page closed: both nodes stop
+  within 75 s (10 s for one in front, as before).
+- **The alerts mail them** (An upgrade of otp, in Czech and English); `otp --after` (`--json`), `otp --after-done ID [--node N]`; a line in `otp --status` and `otp --check` (which fails on a bad one); the console's first screen. Both nodes: each writes its own row; RADIUS never waits for any of it.
+
 ## 1.0.257 — 6 November 2026
 
 Your account lists the passkeys of the account; the performance meter draws a cluster's nodes in

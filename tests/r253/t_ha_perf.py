@@ -91,6 +91,35 @@ for _ in range(10):
     time.sleep(1)
 H.ok('...and a writes its row again for b\'s page', rows('b').get('load:' + H.NAME['a']) != before)
 
+# 1.0.258: the other node's panel - its own cores, disks and processes, asked through the row
+if 'detail_node' in open(H.V + '/otp.py').read():
+    det = None
+    for _ in range(25):
+        st, d = H.call('a', '/api/load?detail_node=' + H.NAME['b'])
+        det = ((d.get('others') or [{}])[0] or {}).get('detail')
+        if det:
+            break
+        time.sleep(1)
+    H.ok('the other node\'s panel: its own details come (cores, disks, processes)', isinstance(det, dict) and
+         any(det.get(k) for k in ('cpus', 'cores', 'disks', 'procs', 'top')), sorted((det or {}).keys()))
+    for _ in range(40):
+        H.call('a', '/api/load')
+        time.sleep(1)
+    ra = json.loads(rows('a').get('load:' + H.NAME['b']) or '{}')
+    H.ok('...and no more of them once nobody asks', 'detail' not in ra, sorted(ra))
+    # a page in a tab behind others: one ask that keeps the sampler 75 s, no hole meanwhile
+    st, d0 = H.call('a', '/api/load?keep=75')
+    t0 = (d0.get('now') or {}).get('at') or time.time()
+    time.sleep(40)
+    st, d = H.call('a', '/api/load')
+    at = [x['at'] for x in d.get('hist') or [] if x['at'] >= t0 - 1]
+    gaps = [round(y - x, 1) for x, y in zip(at, at[1:]) if y - x > 2.5]
+    H.ok('a page behind other tabs (keep=75): read all along, no hole', len(at) >= 35 and not gaps, (len(at), gaps[:5]))
+    o0 = (d.get('others') or [{}])[0]
+    pat = [x['at'] for x in o0.get('hist') or []]
+    pg = [round(y - x, 1) for x, y in zip(pat[-30:], pat[-30:][1:]) if y - x > 2.5]
+    H.ok('...the other node\'s too', len(pat) >= 30 and not pg, (len(pat), pg[:5]))
+
 H.ok('switched off', setp(False) == 200)
 time.sleep(14)
 H.ok('off: the rows taken away on both nodes', not rows('a') and not rows('b'), (sorted(rows('a')), sorted(rows('b'))))

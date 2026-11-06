@@ -198,6 +198,53 @@ its floor file.
 What came in the newer versions is gone until you upgrade again; settings
 that only a newer version knows stay in the database and are used again then.
 
+## To be done by hand (1.0.258)
+
+Some things an update cannot do itself: a step only root can take on the
+command line, or what the installer had to leave to you. otp says each of them
+until it is done - never only in a log line:
+
+- **Settings → Upgrades → To be done by hand**, the first card of the pane: one
+  band a thing and a node - what it is, why it matters, the command with a
+  **Copy** button, and when it was first seen. **Look again** asks the node at
+  once (the other node within a minute); **Done** is for what otp cannot check
+  itself, and for one it can, marked by hand (written in the events). *Done
+  lately* lists what was done, by whom, and what went by itself.
+- A count beside **Upgrades** in the settings menu and on the **Settings**
+  tab - red when one of them is bad, amber otherwise. Nothing else on the pages
+  changes for it.
+- The alerts mail them with the rest (*An upgrade of otp*, on by default).
+- `otp --after` lists them with the commands (`--json` too) and looks at this
+  node again first; `otp --after-done ID [--node NAME]` marks one done.
+  `otp --status` and `otp --check` say how many (`--check` fails on a bad
+  one), the console says them on its first screen, and `install.sh --upgrade`
+  says those still to be done at its end.
+
+What there is now:
+
+| What | When | How it goes |
+|---|---|---|
+| otp is newer than the parts root installs | the program was put in without install.sh of its version (copied by hand, an install.sh --upgrade that stopped half way) | by itself, once `./install.sh --upgrade` of that version has run to its end |
+| upgrades from the pages cannot be put in | otp_upgrade.py or otp-upgrade.path missing | by itself, after `install.sh --upgrade` |
+| nginx did not take the additions / the guard for big uploads | `nginx -t` refused what install.sh put into otp.conf | by itself, once an upgrade gets them in |
+| SELinux: otp's module is not the one this version needs | SELinux on, the module missing or older than the one beside the program | by itself, once it is in (`semodule -i /usr/local/lib/otp/otp_server.cil`, as install.sh) |
+| SELinux refuses otp something | enforcing, and refusals counted | by itself when nothing is refused; Done holds until more is refused |
+| PHP without the php2shell fix | the PHP here is not fixed | by itself, within the hour of the update |
+| nothing opened the firewall | firewalld was not running at the install | Done, once the ports are open |
+
+Each node looks at its own at the start, every ten minutes and when asked,
+and keeps what it found in a row of its own (`after:NODE`); a Done is kept for
+every node (`after:ack:ID:NODE`). What root found and the service cannot see
+itself install.sh writes into `/usr/local/lib/otp/root-facts.json` (root's,
+readable by all, no secret in it): which version put the root parts in, and
+what nginx, SELinux and the firewall made of it. Never switch SELinux off for
+any of this: what it refuses is put right by what otp needs.
+
+A new version that needs something by hand adds one entry to the list in the
+program (`after_entry(...)` in the part *after the update*): its words, its
+commands and a check - the pages, the mails, the command line, the console and
+install.sh then say it with nothing else changed.
+
 ## A cluster: what goes where
 
 Settings, clients, realms, directories, tokens and accounts are the cluster's

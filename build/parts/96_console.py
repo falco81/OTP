@@ -354,6 +354,19 @@ class Console(object):
         for one in (st.get('problems') or [])[:max(0, min(4, h - 12))]:
             self._put(y, 1, '! ' + str(one), A['warn'])
             y += 1
+        # What an update left to be done by hand (1.0.258), as Settings → Upgrades shows it: the
+        # first three, and where the rest is said.
+        aft = odict(st.get('after'))
+        if aft.get('n'):
+            for x in (aft.get('items') or [])[:max(0, min(3, h - 14))]:
+                x = odict(x)
+                self._put(y, 1, '! to be done by hand%s: %s' % (
+                    (' on %s' % x.get('node')) if x.get('node') and x.get('node') != st.get('node') else '',
+                    x.get('title') or x.get('id')), A['bad'] if x.get('level') == 'bad' else A['warn'])
+                y += 1
+            self._put(y, 1, '  %d to be done by hand in all - otp --after says how (Settings > Upgrades too)'
+                      % int(fnum(aft.get('n'))), A['dim'])
+            y += 1
         y += 1
         self._put(y, 2, path, A['dim'])
         self._put(y, 2 + len(path), title, A['title'])

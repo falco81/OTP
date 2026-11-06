@@ -3798,3 +3798,58 @@ table.split-scen{table-layout:fixed;width:100%;min-width:760px}
 .sn-pop .sn-n{font-weight:600}
 .sn-pop .dot{display:inline-block;width:8px;height:8px}
 .pwp-how{margin:4px 0 10px}.pwp-how>summary{cursor:pointer;font-size:13px;color:var(--tx-dim)}.pwp-how p{margin:6px 0 0}
+
+/* To be done by hand, after an update (1.0.258): the first card of Settings → Upgrades, its
+   border in the worst level's colour while something is to be done; one band a thing - a 4px bar
+   of its level on the left, a tint of it into the panel, the command in a dark box with Copy;
+   the buttons at the top right (under the words on a phone). The count beside Upgrades in the
+   menu - at the icon's top right, the rail shut or open - and on the Settings tab. */
+.after-card.bad{border-color:color-mix(in srgb,var(--crit) 55%,var(--line))}
+.after-card.warn,.after-card.info{border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
+.after-card .after-none{margin:0 0 4px}
+.after-band{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 14px;
+  align-items:start;margin:0 0 12px;padding:16px 20px 14px 22px;border-radius:8px;
+  border:1px solid var(--line);overflow:hidden}
+.after-band::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px}
+.after-band.bad{border-color:color-mix(in srgb,var(--crit) 50%,transparent);
+  background:linear-gradient(90deg,var(--crit-bg),transparent 70%),var(--panel)}
+.after-band.bad::before{background:var(--crit)}
+.after-band.warn{border-color:color-mix(in srgb,var(--warn) 50%,transparent);
+  background:linear-gradient(90deg,var(--warn-bg),transparent 70%),var(--panel)}
+.after-band.warn::before{background:var(--warn)}
+.after-band.info{border-color:color-mix(in srgb,var(--info) 45%,transparent);
+  background:linear-gradient(90deg,var(--info-bg),transparent 70%),var(--panel)}
+.after-band.info::before{background:var(--info)}
+.after-ic{padding-top:1px;line-height:0}
+.after-ic svg{width:20px;height:20px}
+.after-band.bad .after-ic{color:var(--crit)} .after-band.warn .after-ic{color:var(--warn)}
+.after-band.info .after-ic{color:var(--info)}
+.after-body{min-width:0}
+.after-title{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:14.5px;line-height:1.35}
+.after-why{margin-top:4px;color:var(--tx-dim);font-size:13px;line-height:1.5}
+.after-lead{margin-top:10px;font-size:13px;color:var(--tx)}
+.after-cmd{position:relative;display:flex;align-items:center;gap:10px;margin-top:6px;padding:9px 10px 9px 14px;
+  background:#0a0d12;border:1px solid var(--line);border-radius:8px}
+.after-cmd code{flex:1 1 auto;min-width:0;font-family:var(--mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);
+  font-size:12.5px;color:var(--tx);white-space:pre-wrap;word-break:break-all}
+.after-cmd .after-copy{flex:none}
+.after-foot{margin-top:10px;color:var(--tx-mut);font-size:12.5px}
+.after-seen{margin-top:2px;color:var(--tx-mut);font-size:12px}
+.after-btns{display:flex;flex-direction:column;align-items:stretch;gap:6px}
+.after-lately-w{overflow-x:auto;max-width:100%}
+.after-lately-h{margin:18px 0 8px;font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--tx-mut)}
+.after-lately-t td .node-tag{margin-left:8px}
+.after-lately-t td.after-how.done{color:var(--ok)}
+.after-lately-t td.after-how.taken-back{color:var(--warn)}
+@media (max-width:760px){
+  .after-band{grid-template-columns:auto minmax(0,1fr);padding:14px 14px 12px 18px}
+  .after-btns{grid-column:1 / -1;flex-direction:row;flex-wrap:wrap}
+}
+.ctl-nav .rail-n{position:absolute;top:2px;left:21px;min-width:16px;height:16px;padding:0 4px;
+  border-radius:8px;font-size:10px;font-weight:700;line-height:16px;text-align:center;
+  background:var(--warn);color:#111;pointer-events:none;opacity:1 !important}
+.ctl-nav .rail-n.bad{background:var(--crit);color:#fff}
+.ctl-nav .rail-n:empty{display:none}
+.tabs .count.after-n.hot,.tabs button[aria-selected="true"] .count.after-n.hot{background:var(--crit-bg);color:var(--crit)}
+.tabs .count.after-n.warm,.tabs button[aria-selected="true"] .count.after-n.warm{background:var(--warn-bg);color:var(--warn)}

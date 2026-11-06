@@ -11,6 +11,9 @@ if ($('ev-time')) timePicker('ev-time', {start: {k: 'all'}, all: true});
 ADMIN = !!(ME && ME.role === 'fulladmin');
 var TOKADMIN = !!(ME && (ME.role === 'fulladmin' || ME.role === 'tokenadmin'));
 var LIVE = true, SERIAL = STATUS ? STATUS.serial : '', PANE = 'radius';
+/* To be done by hand (1.0.258): what the Upgrade pane and the badges were last given. Here at the
+   top: the header is painted (afterBadge) while the file is still being read. */
+var AFT = {d: null, seen: '', again: null};
 var SETTINGS = null, DIRTY = {}, DRAWN_NODE = '';
 var PAGE = {tokens: 0, requests: 0, codes: 0, events: 0, enrolment: 0};
 
@@ -102,6 +105,7 @@ function paintHeader(s) {
     hs.title = 'this page is answered by ' + s.node + ' · otp ' + (s.version || '');
   }
   mailqBadge(s.mailq);
+  afterBadge(s.after);         /* to be done by hand: the count beside Upgrades (1.0.258) */
   var pill = $('state-pill');
   var listening = s.radius && s.radius.listening && s.radius.listening.length;
   var kind = !listening ? 'crit' : (s.problems && s.problems.length ? 'warn' : 'ok');
@@ -2691,7 +2695,7 @@ function showPane(name) {
   if (name === 'texts') loadTexts();
   if (name === 'isemon') loadIsemon();
   if (name === 'about') drawAbout();
-  if (name === 'upgrade') loadUpgrade();
+  if (name === 'upgrade') { loadAfter(); loadUpgrade(); }
   if (name === 'web') loadWeb();
   if (name === 'fw') loadFw();
   if (name === 'portal') { $('portal-url').textContent = location.protocol + '//' + location.host + '/'; loadArt(); }
@@ -10308,6 +10312,154 @@ if ($('up-drop')) {
       });
     };
   }());
+}
+
+/* ==========================================================================
+   To be done by hand, after an update (1.0.258)
+   --------------------------------------------------------------------------
+   What otp cannot do itself - a step a new version needs as root, what the
+   installer left - drawn at the top of Settings → Upgrades, one band a thing
+   and a node; elsewhere only a count beside Upgrades in the menu and on the
+   Settings tab. Nothing else at the top of the pages changes for it. Each
+   node says its own; "Look again" asks it again, "Done" is kept for every
+   node's pages (and logged).
+   ========================================================================== */
+/* (declared where the header is drawn: start() paints the header before this line of the file runs) */
+function afterBadge(a) {
+  if (!ADMIN) return;
+  a = a || {};
+  var n = Number(a.n || 0), lvl = n ? (a.level === 'bad' ? 'bad' : 'warn') : '';
+  var b = $('after-badge');
+  if (b) {
+    b.textContent = n ? num(n) : '';
+    b.className = 'count rail-n' + (lvl ? ' ' + lvl : '');
+    b.title = n ? n + ' to be done by hand' : '';
+  }
+  var t = $('tabn-settings');
+  if (t) {
+    t.textContent = n ? num(n) : '';
+    t.className = 'count after-n' + (lvl === 'bad' ? ' hot' : (lvl ? ' warm' : ''));
+    t.title = n ? n + ' to be done by hand - Settings → Upgrades' : '';
+  }
+  /* Drawn again when the count changes while the pane is open. */
+  var sig = n + ':' + lvl;
+  if (AFT.seen && sig !== AFT.seen && paneLive('upgrade')) loadAfter();
+  AFT.seen = sig;
+}
+function loadAfter() {
+  if (!ADMIN || !$('after-card')) return;
+  apiLatest('after', 'after').then(drawAfter).catch(oops);
+}
+function afterAct(body, button, then) {
+  busy(button, true);
+  api('after', body).then(function (d) {
+    toast(d.message || 'done', 'good');
+    drawAfter(d);
+    if (then) then(d);
+  }).catch(oops).then(function () { busy(button, false); });
+}
+function afterBand(it, d) {
+  var lvl = it.level === 'bad' ? 'bad' : (it.level === 'info' ? 'info' : 'warn');
+  var band = el('div', 'after-band ' + lvl);
+  band.dataset.id = it.id;
+  band.dataset.node = it.node;
+  var ic = el('div', 'after-ic');
+  ic.innerHTML = iconMarkup(lvl === 'bad' ? 'close' : 'flag');
+  band.appendChild(ic);
+  var body = el('div', 'after-body');
+  var head = el('div', 'after-title');
+  head.appendChild(el('b', '', it.title));
+  if (d.cluster) head.appendChild(noI18n(el('span', 'tag dim node-tag', it.node)));
+  body.appendChild(head);
+  body.appendChild(el('div', 'after-why', it.why));
+  (it.steps || []).forEach(function (st) {
+    if (st.cmd) {
+      if (st.lead) body.appendChild(el('div', 'after-lead', st.lead));
+      var box = el('div', 'after-cmd');
+      box.appendChild(noI18n(el('code', 'mono', st.cmd)));
+      var cp = cmdButton('Copy', 'copy', 'small after-copy');
+      cp.onclick = function () { copyText(st.cmd, cp, 'the command is on the clipboard'); };
+      box.appendChild(cp);
+      body.appendChild(box);
+    } else if (st.words) {
+      body.appendChild(el('div', 'after-lead', st.words));
+    }
+  });
+  if (it.foot) body.appendChild(el('div', 'after-foot', it.foot));
+  body.appendChild(el('div', 'after-seen', it.since ? 'First seen ' + stamp(it.since) : 'Just seen'));
+  band.appendChild(body);
+  var tools = el('div', 'after-btns');
+  var pane = (it.steps || []).filter(function (st) { return st.pane && $('pane-' + st.pane); })[0];
+  if (pane) {
+    var open = cmdButton('Open it', 'next', 'small');
+    open.onclick = function () { showPane(pane.pane); };
+    tools.appendChild(open);
+  }
+  if (it.ack === 'auto') {
+    var look = cmdButton('Look again', 'refresh', 'small');
+    explain(look, it.node === d.me ? 'This node looks again now.' : it.node + ' looks again within a minute.');
+    look.onclick = function () {
+      afterAct({action: 'check', node: it.node}, look, function () {
+        /* The other node's answer comes at its next tick. */
+        if (it.node !== d.me) { clearTimeout(AFT.again); AFT.again = setTimeout(function () { if (paneLive('upgrade')) loadAfter(); }, 25000); }
+      });
+    };
+    tools.appendChild(look);
+  }
+  var done = cmdButton('Done', 'check', 'small' + (it.ack === 'manual' ? ' primary' : ''));
+  done.onclick = function () {
+    var go = function () { afterAct({action: 'done', id: it.id, node: it.node}, done); };
+    if (it.ack === 'manual') { go(); return; }
+    confirmThen('Mark it as done?', 'As far as ' + htmlText(it.node) + ' can tell it is not done yet: '
+      + 'it looks for it itself and this band would go by itself. Marked done by hand, it goes now, '
+      + 'and that is written in the events.', 'Mark it as done', go, false);
+  };
+  tools.appendChild(done);
+  band.appendChild(tools);
+  return band;
+}
+function drawAfter(d) {
+  AFT.d = d;
+  var card = $('after-card'), host = $('after-bands'), lately = $('after-lately');
+  if (!card || !host || !d) return;
+  var items = d.items || [];
+  var worst = !items.length ? '' : (d.level === 'bad' ? 'bad' : (d.level === 'info' ? 'info' : 'warn'));
+  card.classList.remove('bad', 'warn', 'info');
+  if (worst) card.classList.add(worst);
+  liveFill(host, function (host) {
+    if (!items.length) {
+      host.appendChild(el('p', 'note good after-none', 'Nothing is to be done by hand.'));
+      return;
+    }
+    items.forEach(function (it) { host.appendChild(afterBand(it, d)); });
+  });
+  liveFill(lately, function (box) {
+    box.appendChild(el('h3', 'after-lately-h', 'Done lately'));
+    var rows = d.lately || [];
+    if (!rows.length) { box.appendChild(el('p', 'muted small', 'Nothing yet.')); return; }
+    var t = el('table', 'rows after-lately-t');
+    var hr = el('tr');
+    ['What', 'How', 'Who', 'When'].forEach(function (w) { hr.appendChild(el('th', '', w)); });
+    var th = el('thead'); th.appendChild(hr); t.appendChild(th);
+    var tb = el('tbody');
+    rows.forEach(function (x) {
+      var tr = el('tr');
+      var what = el('td');
+      what.appendChild(el('span', '', x.title || x.id));
+      if (d.cluster) what.appendChild(noI18n(el('span', 'tag dim node-tag', x.node)));
+      tr.appendChild(what);
+      tr.appendChild(el('td', 'after-how ' + String(x.how || '').replace(/\s+/g, '-'), x.how || ''));
+      tr.appendChild(x.who && x.who !== 'the command line' ? noI18n(el('td', '', x.who)) : el('td', x.who ? '' : 'muted', x.who || '–'));
+      tr.appendChild(stampCell(x.at));
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    /* scrolled sideways on a phone, not wider than the screen (1.0.258) */
+    var tw = el('div', 'after-lately-w');
+    tw.appendChild(t);
+    box.appendChild(tw);
+  });
+  afterBadge({n: d.count, level: d.level});
 }
 
 /* ==========================================================================

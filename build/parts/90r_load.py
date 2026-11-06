@@ -411,12 +411,20 @@ LOAD_LOOK = {'until': 0.0, 'other': 0.0}
 LOAD_HA_WAKE = threading.Event()
 
 
-def load_ask():
-    """A page on this node looks."""
+LOAD_KEEP_MAX = 75               # a page in the background asks at most once a minute (1.0.258)
+
+
+def load_ask(keep=None):
+    """A page on this node looks. keep: how long, for a page in a tab behind others - the browser
+    lets it ask once a minute only, and its graphs had a hole for every minute it was not seen."""
     if time.monotonic() >= LOAD_LOOK['until']:
         LOAD_HA_WAKE.set()          # just begun: its row written now, not in 5 s
         LOAD_LOOK['began'] = time.monotonic()
-    LOAD_LOOK['until'] = time.monotonic() + LOAD_LOOK_S
+    try:
+        look = max(LOAD_LOOK_S, min(LOAD_KEEP_MAX, float(keep or 0)))
+    except (TypeError, ValueError):
+        look = LOAD_LOOK_S
+    LOAD_LOOK['until'] = max(LOAD_LOOK['until'], time.monotonic() + look)
     LOAD_WAKE.set()
 
 
@@ -543,6 +551,11 @@ def load_ha_tick(store):
             got = [x for x in fine if x['at'] > last]
             one['hist'] = (one['hist'] + got)[-LOAD_HIST_KEEP:]
             one['now'] = d.get('now') if isinstance(d.get('now'), dict) else None
+            # its cores, disks and processes (1.0.258): in its row only while a page's panel of it
+            # is open - "shown on its own pages" was all the other node's panel said
+            one['detail'] = d.get('detail') if isinstance(d.get('detail'), dict) else None
+            if d.get('want_detail') == me and d.get('asked'):
+                LOAD_HA['detail_asked'] = mono
             one['at'] = mono
         LOAD_HA['ticked'] = True
         wanted = mono - LOAD_HA['wanted'] < LOAD_WANTED_S if LOAD_HA['wanted'] else False
@@ -551,6 +564,14 @@ def load_ha_tick(store):
     if not here:
         load_keep()                 # the other node's page keeps this sampler going
     d = {'asked': here, 'now': load_now(), 'hist': load_history(time.time() - LOAD_PUB_S - 3)}
+    want = LOAD_LOOK.get('detail_for') or ('', 0.0)
+    if here and want[0] and mono < want[1]:
+        d['want_detail'] = want[0]          # a panel of that node open on a page here (1.0.258)
+    if mono - LOAD_HA.get('detail_asked', -1e9) < 2 * LOAD_PUB_S + 2:
+        try:
+            d['detail'] = load_detail()
+        except Exception:                               # noqa: BLE001
+            pass
     store.set_meta('load:' + me, json.dumps(d, separators=(',', ':')))
     LOAD_HA['mine'] = True
 
@@ -592,7 +613,7 @@ def load_others(store, since):
         after = since.get(n['name']) or 0
         if hist and after > hist[-1]['at'] + LOAD_BACK_S:
             after = 0               # a since later than all it said: that node's clock stepped back (1.0.255)
-        out.append({'node': n['name'], 'late': late, 'now': got.get('now'),
+        out.append({'node': n['name'], 'late': late, 'now': got.get('now'), 'detail': got.get('detail'),
                     'hist': [x for x in hist if x['at'] > after]})
     return out
 
@@ -623,9 +644,12 @@ def _load(h):
     h.me('fulladmin')
     if not CONFIG.get('perf_meter'):
         raise ApiError(404, 'the performance meter is switched off (Settings - About)')
-    load_ask()
+    load_ask(h.arg('keep'))
     since = load_since(h.arg('since'))
     me = node_name()
+    want = str(h.arg('detail_node') or '')[:64]
+    if want and want != me:
+        LOAD_LOOK['detail_for'] = (want, time.monotonic() + LOAD_LOOK_S)
     out = {'node': me, 'now': load_now(), 'step': LOAD_STEP, 'hist': load_history(since.get(me))}
     if h.arg('detail'):
         out['detail'] = load_detail()

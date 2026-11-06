@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.257'
+__version__ = '1.0.258'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -889,7 +889,7 @@ NAMES = {
     'alerts_shipping': 'Logs not reaching isemon or the syslog servers',
     'alerts_snmp': 'The SNMP agent not listening',
     'alerts_acme': 'A certificate the CA did not renew',
-    'alerts_upgrade': 'An upgrade of otp that failed',
+    'alerts_upgrade': 'An upgrade of otp that failed, or left to be done by hand',
     'alerts_trial': 'A change on trial that went back',
     'alerts_dbguard': 'Rows of the database not written by otp',
     'alerts_mailq': 'Mails that do not go',
@@ -1525,7 +1525,7 @@ SAYS = {
     'alerts_shipping': 'Sending to isemon or to the syslog servers (SIEM) failing on a node - not reached, refused, or lines dropped.',
     'alerts_snmp': 'SNMPv3 switched on and its agent on a node not listening (the port taken, refused), or its traps not going out.',
     'alerts_acme': 'ACME ordered a certificate and none came - said at once, not only once it is about to run out.',
-    'alerts_upgrade': 'An upgrade of otp (Settings → Upgrades) that failed on a node, or one left stuck.',
+    'alerts_upgrade': 'An upgrade of otp (Settings → Upgrades) that failed on a node, or one left stuck - and what an update left to be done by hand (To be done by hand, there).',
     'alerts_trial': 'A change of the network, the firewall or the SSH server on trial that was not kept and went back by itself - whoever made it may have lost the way in.',
     'alerts_dbguard': 'With the guard against writes to the database on: rows that reach root not as otp wrote them, refused - somebody may be writing to the database.',
     'alerts_mailq': 'Codes or tokens by mail that failed or ran out in the outgoing queue (Settings → Outgoing mail).',

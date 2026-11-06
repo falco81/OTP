@@ -1501,6 +1501,13 @@ def _status(h):
             pass
         MAILQ_COUNT_CACHE[0] = now
     out['mailq'] = MAILQ_COUNT_CACHE[1]
+    # What is to be done by hand (1.0.258): the count beside Upgrades in the menu and on the
+    # Settings tab - read at most every 10 s, never in the way of the answer.
+    try:
+        a = after_summary(h.store)
+        out['after'] = {'n': a['n'], 'level': a['level']}
+    except Exception:                                   # noqa: BLE001
+        out['after'] = {'n': 0, 'level': ''}
     return out
 
 

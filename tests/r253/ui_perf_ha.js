@@ -12,10 +12,11 @@ function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w +
   const p = await ctx.newPage();
   const errs = [];
   p.on('pageerror', e => errs.push(String(e)));
-  let late = false, sent = 0;
+  let late = false, sent = 0, DET = null;
   await p.route(/[?&]api=load\b/, async (route) => {
     const r = await route.fetch();
-    const d = await r.json();
+    let d;
+    try { d = await r.json(); } catch (e) { await route.fulfill({ response: r }); return; }   /* the pages' limit: as it came */
     const now = Date.now() / 1000 + 40, hist = [];
     const since = (/since=([^&]*)/.exec(route.request().url()) || [])[1] || '';
     const from = (decodeURIComponent(since).split(',').filter(x => /^nodeb:/.test(x))[0] || '').split(':')[1];
@@ -25,6 +26,17 @@ function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w +
     sent++;
     d.others = [{node: 'nodeb', late, now: late ? null : {at: now, cpu: 33, cores: 8, mem_total: 32e9, mem_used: 12e9, load: [1, 1, 1], disk_rd: 1e6, disk_wr: 0, net_rx: 2e5, net_tx: 1e5},
                  hist: late ? [] : hist}];
+    /* the other node's own details when its panel asks (1.0.258): this node's, under its name */
+    if (d.detail) DET = d.detail;
+    if (/detail_node=/.test(route.request().url()) && !late) {
+      if (!DET) {
+        try {
+          const r2 = await route.fetch({ url: route.request().url().replace(/detail_node=[^&]*/, 'detail=1') });
+          DET = (await r2.json()).detail || null;
+        } catch (e) {}          /* the pages' own limit of asks a second: the next one then */
+      }
+      if (DET) d.others[0].detail = DET;
+    }
     await route.fulfill({ response: r, json: d });
   });
   await p.goto('https://127.0.0.1/admin/');
@@ -36,7 +48,7 @@ function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w +
     await fetch('?api=settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({settings: {perf_meter: true}})});
     await fetch('?api=prefs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: 'en', hload: 'graphs', hpanel: 'tiles'})});
   });
-  await p.reload(); await p.waitForTimeout(8000);
+  sent = 0; await p.reload(); await p.waitForTimeout(12000);
   const groups = await p.$$eval('#hload .hl-node', a => a.map(g => g.querySelector('.hl-name').textContent));
   ok('a group for each node, with its name', groups.length === 2 && groups[1] === 'nodeb', JSON.stringify(groups));
   const g = await p.evaluate(() => {
@@ -52,7 +64,10 @@ function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w +
   await p.screenshot({ path: '/tmp/claude-0/perfui/ha-header.png', clip: { x: 0, y: 0, width: 1900, height: 70 } });
   await p.hover('#hload .hl-peer [data-k="cpu"]'); await p.waitForTimeout(1500);
   const pan = await p.evaluate(() => { const x = document.getElementById('hload-panel'); return x && !x.hidden ? x.textContent : ''; });
-  ok('the other node\'s panel: its numbers, its name', /nodeb/.test(pan) && /33 %/.test(pan) && /its own pages/.test(pan), pan.slice(0, 200));
+  ok('the other node\'s panel: its numbers, its name', /nodeb/.test(pan) && /33 %/.test(pan), pan.slice(0, 200));
+  await p.waitForTimeout(3500);
+  const pan2 = await p.evaluate(() => { const x = document.getElementById('hload-panel'); return x && !x.hidden ? x.textContent : ''; });
+  ok('...then its own details, as this node\'s (1.0.258)', !/its own pages/.test(pan2) && /nodeb/.test(pan2) && /CPU 0/.test(pan2), pan2.slice(0, 200));
   await p.screenshot({ path: '/tmp/claude-0/perfui/ha-panel.png', clip: { x: 0, y: 0, width: 1900, height: 450 } });
   await p.mouse.move(900, 700); await p.waitForTimeout(600);
   const fits = async (w) => {

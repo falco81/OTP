@@ -69,6 +69,36 @@ def _alerts_do(h):
     raise ApiError(400, 'no such thing to do')
 
 
+# ---- to be done by hand, after an update (1.0.258) ----------------------------------------
+# Settings → Upgrades: every node's things to be done (88n_after.py). Any account sees how many;
+# a full administrator what, the commands, and does "Look again" and "Done".
+@route('GET', '/api/after')
+def _after(h):
+    s = h.me()
+    return after_view(h.store, full=s['role'] == 'fulladmin')
+
+
+@route('POST', '/api/after')
+def _after_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    node = str(b.get('node') or '').strip()[:64]
+    try:
+        if act == 'check':
+            said = after_look(h.store, node, s['name'])
+            return dict(after_view(h.store), message=said)
+        if act == 'done':
+            ident = str(b.get('id') or '').strip()[:48]
+            if not re.match(r'^[a-z0-9][a-z0-9-]{0,40}\Z', ident):
+                raise ValueError('which one?')
+            said = after_done(h.store, ident, node or node_name(), s['name'])
+            return dict(after_view(h.store), message=said)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    raise ApiError(400, 'no such thing to do')
+
+
 # ---- syslog / SIEM, the proxy, the disks and the logs (1.0.166) -------------------------
 def _siem_view(h):
     nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]

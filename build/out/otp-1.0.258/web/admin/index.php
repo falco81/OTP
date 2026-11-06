@@ -336,6 +336,7 @@ if (isset($_GET['api'])) {
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
         'load' => '/api/load',
+        'after' => '/api/after',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -356,6 +357,7 @@ if (isset($_GET['api'])) {
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
+        'after' => '/api/after',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -561,7 +563,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   <button role="tab" aria-selected="false" data-tab="events" data-icon="history"
           title="Every token made or taken away, every change of a setting, every sign-in - and the daemon’s own log.">Events</button>
   <button role="tab" aria-selected="false" data-tab="settings" data-icon="gear"
-          title="The RADIUS server, its clients, the realms, Active Directory, the tokens, the enrolment pages, isemon, the accounts and the database.">Settings</button>
+          title="The RADIUS server, its clients, the realms, Active Directory, the tokens, the enrolment pages, isemon, the accounts and the database.">Settings<span class="count after-n" id="tabn-settings"></span></button>
 </div>
 
 <!-- ===================== Overview ===================== -->
@@ -814,7 +816,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <button type="button" data-pane="isemon" data-icon="pulse" title="Sending every check of a code and every RADIUS packet to isemon, in the shape isemon already reads.">isemon</button>
     <button type="button" class="fulladmin-only" data-pane="siem" data-icon="log" title="Every event and every sign-in to a syslog server or a SIEM - UDP, TCP or TLS; JSON, CEF or RFC 5424.">Syslog and SIEM</button>
     <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated, one node at a time, the VIP address moved out of the way first; a restart offered when one is needed.">System updates</button>
-    <button type="button" class="fulladmin-only" data-pane="upgrade" data-icon="up" title="A new version, put in from here; nodes in and out of service.">Upgrades</button>
+    <button type="button" class="fulladmin-only" data-pane="upgrade" data-icon="up" title="A new version, put in from here; nodes in and out of service.">Upgrades<b class="count rail-n" id="after-badge"></b></button>
     <button type="button" data-pane="about" data-icon="info" title="Version, what is running, the language, the debug log.">About</button>
   </nav>
 
@@ -1749,6 +1751,17 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
         upgraded one at a time - each taken out of service first, so the VPN and the load
         balancer go to the other, and brought back only once it answers again. The command
         line (install.sh --upgrade) works as it always has.</p></div>
+    <!-- What an update cannot do itself (1.0.258): counted beside Upgrades in the menu, said in
+         the alerts and the console until it is done; the first card of the pane. -->
+    <div class="card full fulladmin-only after-card" id="after-card">
+      <h2>To be done by hand</h2>
+      <p class="note">What otp cannot do itself and somebody has to - a step a new version needs on
+        the command line, what the installer left to you (SELinux, the firewall, a package). Kept
+        here, counted beside Upgrades in the menu, said in the alerts and in the console until it is
+        done. One that can be checked goes by itself once it is so.</p>
+      <div id="after-bands"></div>
+      <div id="after-lately"></div>
+    </div>
     <div class="card full">
       <h2>The nodes</h2>
       <p class="note">A node in maintenance answers no RADIUS request and its /healthz says
