@@ -335,6 +335,7 @@ if (isset($_GET['api'])) {
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
+        'load' => '/api/load',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -425,6 +426,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 <html lang="<?= h($lang) ?>" class="app-shell-root<?= $load ? ' i18n-wait' : '' ?>">
 <head>
 <?php otp_head($title, $lang, $load, $nonce, '/'); ?>
+<link rel="stylesheet" nonce="<?= h($nonce) ?>" href="/assets/hload.css?v=<?= h(OTP_VERSION) ?>">
 </head>
 <body class="app-shell fold-words<?= $me ? ' framed' : '' ?>">
 <div class="wrap">
@@ -529,6 +531,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 <header>
   <h1 data-no-i18n><?= h($site ?: 'otp') ?> <span class="host"><?= h($host) ?></span></h1>
   <span id="state-pill" class="pill unknown"><span class="dot"></span><span>…</span></span>
+  <div class="hload" id="hload" hidden aria-live="off"></div>
   <div class="spacer"></div>
   <div class="btnrow">
     <button type="button" class="btn small mebtn" id="me-btn" data-icon="person"
@@ -1857,6 +1860,7 @@ var PHP_SAFETY = <?= ($me['role'] ?? '') === 'fulladmin' ? json_encode(otp_php_s
 </script>
 <script nonce="<?= h($nonce) ?>" src="/assets/core.js?v=<?= h(OTP_VERSION) ?>"></script>
 <script nonce="<?= h($nonce) ?>" src="/assets/cols.js?v=<?= h(OTP_VERSION) ?>"></script>
+<script nonce="<?= h($nonce) ?>" src="/assets/hload.js?v=<?= h(OTP_VERSION) ?>"></script>
 <script nonce="<?= h($nonce) ?>" src="/assets/admin.js?v=<?= h(OTP_VERSION) ?>"></script>
 </body>
 </html>

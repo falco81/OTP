@@ -90,6 +90,9 @@ function onTab(name) {
 /* ---- the header and the live updates -------------------------------------- */
 function paintHeader(s) {
   STATUS = s;
+  /* The performance meter (1.0.253): started the first time Settings - About has it on; its
+     ticks ask nothing while it is off. */
+  if (s && s.perf_meter && typeof hloadLoop === 'function' && !HLOAD.timer) hloadLoop();
   /* The node that answered this page, on every tab (1.0.100) - it was
      written only while the overview was drawn. */
   var hs = document.querySelector('header .host');
@@ -282,6 +285,14 @@ function showMe() {
       api('prefs', {lang: lang.value}).then(function () { location.reload(); }).catch(oops);
     };
     lsec.appendChild(formField('The language of these pages', lang));
+
+    /* The performance meter's looks (1.0.253), while Settings - About has it on. */
+    if (typeof hloadAllowed === 'function' && hloadAllowed()) {
+      var psec = el('div', 'me-sec');
+      psec.appendChild(el('h3', '', 'The performance meter'));
+      hloadPickers(psec);
+      body.appendChild(psec);
+    }
 
     /* The columns of the tables - exactly isemon's. */
     var cols = el('div', 'me-sec');
