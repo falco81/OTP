@@ -397,6 +397,11 @@ def _rbackup_download(h):
                               'warn', who=s['name'])
             h.send_file(work / name, name)
             return None
+        # Only where keys may be shown (1.0.256), as the database's download with its key: the
+        # backup made now holds the key that opens every token's key, locked with a password a
+        # full administrator sets.
+        if not CONFIG.get('admin_show_key'):
+            raise ApiError(403, 'showing the keys of tokens is switched off (Settings - Tokens)')
         if not rb_password():
             # Locked always (1.0.136): unlocked it holds every token's key.
             raise ApiError(403, 'without a password of the backups the file would hold every '

@@ -134,7 +134,10 @@ What you add - three things:
      another machine: the key is the `.key` file beside it in
      `/var/lib/otp/backups/` or `/var/lib/otp/dumps/` (or `secrets.key`).
 
-   Every download is an event; one with the key a warning.
+   Every download is an event; one with the key a warning. Where showing the keys of
+   tokens is switched off (*Settings → Tokens*, and so under high security), the download
+   with the key - and *Download one made now* of the remote backups, which holds it too - is
+   refused (1.0.256).
 
    ```
    NAME.with-key.tar

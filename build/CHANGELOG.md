@@ -4,6 +4,27 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.256 — 6 November 2026
+
+The third round of looking for faults (the tokens and their files, the cluster's rows, the
+administration's panes), each put right.
+
+- An exported .totp file names its owner inside (`" OTP_NAME`); an import refuses an entry of a locked ZIP whose file name says another owner, since in a locked ZIP the names of the files are not locked - a renamed entry gave one person's key to another's token. Files not locked are imported by their names as before (renamed on purpose, into a realm); exports of earlier versions as before too, with a word that the owner is read from the file name only.
+- Token names cannot be switched from "as typed" back to small letters while tokens named with capitals are there (Settings, the command line and a configuration import): they would have been found by nobody. Rename them first - the token's window - Move to now takes a change of letters alone.
+- Two nodes: the waiting recovery codes and the name of a token changed alone could be put back by the other node's older row; they are now stamped with the key.
+- The database download with the key that opens its tokens is refused where showing the keys of tokens is switched off (and so under high security), as the token exports are.
+- Pages: a token administrator is no longer offered what the API refuses them on a token in use - replacing it (New QR code, The app instead), changing where its codes go, taking it away - nor moving a token to another name, which is a full administrator's; a waiting token keeps them all.
+- Pages: the "In the directory" buttons are shown only to token and full administrators - a read-only account's press ended in a refusal.
+- Accounts: switching an account off asks first; switching off your own account, or changing your own role, asks with a warning that only another full administrator can undo it.
+- Test: the test made on this node names it, as on the other one - behind a shared address the test could reach the node that was not asked.
+- Database: on a node of a cluster the buttons that move or set up the database stay shut whichever kind is chosen in the list.
+- Settings: the dots saying whether both nodes have the settings keep coming back after a failed look (retried after 15 s, 30 s, 60 s, then every 2 min) instead of stopping until the page is opened again.
+- Settings: the card "When the nodes lose each other" and "Take my own picture away" are shown to full administrators only.
+- Czech: taking a certificate out of the mail server's or the SMS gateway's trust no longer reads "u adresáře"; a few texts that stayed in English (time servers set, tokens left out of an export, a user's SSH key taken away, a group put in a role, the mail queue's "tried until") are in Czech.
+- Remote backups: *Download one made now*, which holds the key that opens the tokens, is refused too where showing the keys of tokens is switched off.
+- Database: the download "with its key" is shut on the page where showing the keys of tokens is
+  switched off, and says why.
+
 ## 1.0.255 — 6 November 2026
 
 Two rounds of looking for faults over the whole of otp (RADIUS, the sign-ins and the second step,

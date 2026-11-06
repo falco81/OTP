@@ -1154,7 +1154,7 @@ function loadTokens() {
         tr.appendChild(el('td', 'num', num(r.scratch_left)));
         tr.appendChild(el('td', 'num', num(r.failures || 0)));
         tr.appendChild(noI18n(el('td', 'muted small tok-note', r.note || '')));
-        tr.appendChild(tokenTools(r.name));
+        tr.appendChild(tokenTools(r.name, r));
         tr.onclick = function () { tokenPeek(r.name); };
         return tr;
       }, 'rows', {own: true}));
@@ -1167,15 +1167,21 @@ $('tk-state').onchange = $('tk-per').onchange = function () { PAGE.tokens = 0; l
 if ($('tk-kind')) $('tk-kind').onchange = function () { PAGE.tokens = 0; loadTokens(); };
 
 /** Edit and Delete at the end of a token's row. */
-function tokenTools(name) {
+function tokenTools(name, r) {
   var tools = el('td', 'rowtools');
-  var who = iconButton('person', 'In the directory: who it is, whether the account is switched off, its groups');
-  who.onclick = function (ev) { ev.stopPropagation(); whoisPeek(name, 'token'); };
-  tools.appendChild(who);
+  /* The directory is asked for a token administrator, as the API (1.0.256):
+     a reader's press ended in a refusal. */
+  if (TOKADMIN) {
+    var who = iconButton('person', 'In the directory: who it is, whether the account is switched off, its groups');
+    who.onclick = function (ev) { ev.stopPropagation(); whoisPeek(name, 'token'); };
+    tools.appendChild(who);
+  }
   var ed = iconButton('edit', 'Edit: the QR code, the recovery codes, switching it off, the note');
   ed.onclick = function (ev) { ev.stopPropagation(); tokenPeek(name); };
   tools.appendChild(ed);
-  if (TOKADMIN) {
+  /* A token in use is taken away by a full administrator only (1.0.256):
+     a token administrator was offered it and refused by the API. */
+  if (tokenMayReplace(r && r.state)) {
     var x = iconButton('trash', 'Take it away');
     x.onclick = function (ev) { ev.stopPropagation(); tokenDelete(name); };
     tools.appendChild(x);
@@ -1221,6 +1227,13 @@ function msect(title, lede, wide) {
   return box;
 }
 
+/** May this sign-in replace, take away or re-route a token in this state
+    (1.0.256): a full administrator any, a token administrator only one
+    still waiting for its first code - as the API's rule (1.0.57, 1.0.94). */
+function tokenMayReplace(state) {
+  return !!(ADMIN || (TOKADMIN && state === 'pending'));
+}
+
 function tokenPeek(name) {
   peek(name, function () { return api('token&name=' + encodeURIComponent(name)); }, function (body, d) {
     var t = d.token;
@@ -1236,8 +1249,8 @@ function tokenPeek(name) {
         var m = cmdButton('Make a token', 'token', 'primary');
         m.onclick = function () { makeToken(name); };
         r0.appendChild(m);
+        r0.appendChild(whoBtn);     /* the directory for a token administrator (1.0.256) */
       }
-      r0.appendChild(whoBtn);
       s0._body.appendChild(r0);
       none.appendChild(s0);
       body.appendChild(none);
@@ -1289,13 +1302,17 @@ function tokenPeek(name) {
       'After the directory password the VPN asks for a code sent to ' + (t.dest || '?'))
       : actCard('The phone', (t.issuer || '') + ' · ' + (t.label || name) + ' · ' + t.digits + ' digits, '
       + t.period + ' s, ' + t.algorithm);
+    var mayReplace = tokenMayReplace(t.state);   /* as the API (1.0.256) */
     if (sent && TOKADMIN) {
       var db = textBox(t.dest || '', t.kind === 'mail' ? 'name@example.cz' : '+420 603 123 456', 'mono');
       db.classList.add('tw-move');
       var dsv = cmdButton('Save', 'save', '');
       dsv.classList.add('tw-btn');
       dsv.onclick = function () { tokenDo(name, 'dest', {dest: db.value}, function (x) { toast(x.message, 'good'); tokenPeek(name); }); };
-      ph.add('Where they go', t.kind === 'mail' ? 'The mailbox the codes are sent to.' : 'The phone number the codes are sent to.', [db, dsv]);
+      /* Where the codes of a token in use go is a full administrator's to
+         change (1.0.256): a token administrator sees it, read only. */
+      if (mayReplace) ph.add('Where they go', t.kind === 'mail' ? 'The mailbox the codes are sent to.' : 'The phone number the codes are sent to.', [db, dsv]);
+      else ph.add('Where they go', noI18n(el('div', 'arow-s mono', t.dest || '–')), []);
       /* A test and another way in one row (1.0.85): the window fits the
          screen without scrolling. */
       var tst = cmdButton('Send a test', t.kind === 'mail' ? 'mail' : 'phone', '');
@@ -1307,7 +1324,10 @@ function tokenPeek(name) {
       };
       var toApp = cmdButton('The app instead', 'refresh', '');
       toApp.onclick = function () { modalOver(function () { makeToken(name); }, function () { tokenPeek(name); }); };
-      ph.add('Test it, or another way', 'A message the way a code goes, with a code that opens nothing - or a token in the app, made anew.', [tst, toApp]);
+      /* The app instead replaces the token: not a token administrator's for
+         one in use (1.0.256); the test stays theirs. */
+      if (mayReplace) ph.add('Test it, or another way', 'A message the way a code goes, with a code that opens nothing - or a token in the app, made anew.', [tst, toApp]);
+      else ph.add('Test it', 'A message the way a code goes, with a code that opens nothing.', [tst]);
     }
     if (showKeys && !sent) {
       var sh = cmdButton(t.pending ? 'Show the current one' : 'Show', 'eye', '');
@@ -1326,7 +1346,7 @@ function tokenPeek(name) {
       row.push(drop);
       ph.add('A new key waits', 'For a code from it; until then the old one works.', row);
     }
-    if (TOKADMIN && !sent) {
+    if (mayReplace && !sent) {      /* a new key replaces it (1.0.256) */
       var re = cmdButton('New QR code', 'refresh', '');
       re.onclick = function () { modalOver(function () { makeToken(name); }, function () { tokenPeek(name); }); };
       ph.add('A new key', 'The old one stops; the person scans the new one.', [re]);
@@ -1451,13 +1471,15 @@ function tokenPeek(name) {
       noI18n(mbox);
       var rmove = cmdButton('Move', 'next', '');
       rmove.disabled = true;
+      /* As typed (1.0.256): the server makes the name small where names are small - a change
+         of letters alone (Novak to novak) is the way back to small letters, and was shut. */
       mbox.addEventListener('input', function () {
-        var to = mbox.value.trim().toLowerCase();
-        rmove.disabled = !to || to === name.toLowerCase();
+        var to = mbox.value.trim();
+        rmove.disabled = !to || to === name;
       });
       rmove.onclick = function () {
-        var to = mbox.value.trim().toLowerCase();
-        var same = to.split('@')[0] === name.toLowerCase().split('@')[0];
+        var to = mbox.value.trim();
+        var same = to.toLowerCase().split('@')[0] === name.toLowerCase().split('@')[0];
         /* Over the token window (1.0.36): "No" went back to nothing. */
         modalOver(function () { confirmThen(same ? 'Move the token to another realm' : 'Give the token to somebody else',
           'The token <b>' + htmlText(name) + '</b> becomes <b>' + htmlText(to) + '</b>: the same key, '
@@ -1470,8 +1492,11 @@ function tokenPeek(name) {
       };
       mbox.classList.add('tw-move');
       rmove.classList.add('tw-btn');
-      nt.add('Move to', 'Another realm or another person.', [mbox, rmove]);
-      personSuggest(mbox, {});
+      /* A rename is a full administrator's (1.0.256), as the API (1.0.57). */
+      if (ADMIN) {
+        nt.add('Move to', 'Another realm or another person.', [mbox, rmove]);
+        personSuggest(mbox, {});
+      }
       var nb = textBox(t.note || '', 'a note', '');
       nb.classList.add('tw-move');
       var ns = cmdButton('Save', 'save', '');
@@ -1482,7 +1507,8 @@ function tokenPeek(name) {
     } else {
       grid.appendChild(rcCard);
       var nt2 = actCard('The person', t.display || '');
-      nt2.add('In the directory', t.note || '', [whoBtn]);
+      /* No directory button for a reader (1.0.256): the API refuses it. */
+      if (t.note) nt2.add('Note', t.note, []);
       colB.appendChild(nt2.card);
     }
     body.appendChild(grid);
@@ -1490,7 +1516,7 @@ function tokenPeek(name) {
        button, not a card of its own. */
     var foot = historyButtons(name, d);
     foot.classList.add('tw-foot');
-    if (TOKADMIN) {
+    if (mayReplace) {     /* a token in use: a full administrator's (1.0.256) */
       var del = cmdButton('Take the token away', 'forget', 'danger');
       del.title = 'They cannot sign in to the VPN until they enrol a new one.';
       del.onclick = function () { modalOver(function () { tokenDelete(name, closeModal); }); };
@@ -2334,7 +2360,10 @@ function loadTest() {
     var nodes = (STATUS && STATUS.nodes) || [];
     nodes.forEach(function (n) {
       var o = el('option', '', n.name + (n.me ? ' (this one)' : '') + (n.alive ? '' : ' - not answering'));
-      o.value = n.me ? '' : n.name;
+      /* Its name for this one too (1.0.256): '' was "whichever node the page's
+         request reaches" - behind a shared address, the other one, and the
+         second window's code went to a node that never asked. */
+      o.value = n.name;
       o.disabled = !n.alive && !n.me;
       nsel.appendChild(o);
     });
@@ -2994,7 +3023,10 @@ function snPills() {
   });
 }
 function snLoad() {
-  return api('settings-nodes').then(function (d) { SN.d = d; snPills(); snPace(); }).catch(function () {});
+  /* A failed look keeps the round going, slower each time (1.0.256): one
+     request lost to a restarting node stopped the pills for good. */
+  return api('settings-nodes').then(function (d) { SN.d = d; SN.fails = 0; snPills(); snPace(); })
+    .catch(function () { SN.fails = (SN.fails || 0) + 1; snPace(true); });
 }
 function snAgain() {
   SN.busy = true; snPills();
@@ -3003,8 +3035,14 @@ function snAgain() {
     setTimeout(function () { SN.busy = false; snLoad(); }, 1500);
   }).catch(function (e) { SN.busy = false; snPills(); oops(e); });
 }
-function snPace() {
+function snPace(failed) {
   clearTimeout(SN.poll);
+  if (failed) {
+    /* 15 s, 30 s, 60 s, then every 2 min - not on one known to stand alone. */
+    if (TAB !== 'settings' || (SN.d && !SN.d.cluster)) return;
+    SN.poll = setTimeout(snLoad, Math.min(120000, 15000 * Math.pow(2, Math.min(3, (SN.fails || 1) - 1))));
+    return;
+  }
   if (TAB !== 'settings' || !SN.d || !SN.d.cluster) return;
   var behind = SN.d.nodes.some(function (n) { return n.alive && n.known && !n.seen; });
   if (behind || SN.fast > 0) SN.fast = Math.max(0, SN.fast - 1);
@@ -5197,12 +5235,28 @@ function loadUsers() {
       var info = iconButton('person', u.source === 'directory'
         ? 'In the directory: who it is, whether the account is switched off, its groups'
         : 'An account kept here, not in a directory');
-      if (u.source === 'directory') info.onclick = function (ev) { ev.stopPropagation(); whoisPeek(u.name, 'account'); };
-      else info.disabled = true;
+      if (u.source === 'directory' && TOKADMIN) info.onclick = function (ev) { ev.stopPropagation(); whoisPeek(u.name, 'account'); };
+      else {
+        info.disabled = true;
+        /* The directory is asked for a token administrator (1.0.256), as the API. */
+        if (u.source === 'directory') info.title = 'In the directory - asked by a token administrator or a full administrator';
+      }
       if (ADMIN) {
         /* The role first, the buttons as one group after it. */
         var role = selectBox(d.roles.map(function (x) { return [x.role, x.words]; }), u.role);
-        role.onchange = function () { userDo({action: 'role', name: u.name, role: role.value}); };
+        /* One's own role changed asks first (1.0.256): a full administrator
+           who made themselves a reader lost these pages at once, by one slip
+           of the list. The list shows the old role until it is confirmed. */
+        role.onchange = function () {
+          var to = role.value;
+          if (!userIsMe(u.name) || to === u.role) { userDo({action: 'role', name: u.name, role: to}); return; }
+          role.value = u.role;
+          confirmThen('Change your own role', 'You are signed in as <b>' + htmlText(u.name) + '</b>. '
+            + 'Made ' + htmlText(roleWordsOf(d.roles, to)) + ', you can no longer change the settings, the accounts or this role on these pages - '
+            + 'another full administrator has to give it back.', 'Change my role', function () {
+              userDo({action: 'role', name: u.name, role: to});
+            });
+        };
         role.style.marginRight = '10px';
         tools.appendChild(role);
       }
@@ -5227,7 +5281,21 @@ function loadUsers() {
           tools.appendChild(gap);
         }
         var off = iconButton('power', u.disabled ? 'Let it sign in again' : 'Stop it signing in');
-        off.onclick = function () { userDo({action: u.disabled ? 'enable' : 'disable', name: u.name}); };
+        /* Switching an account off asks first (1.0.256): it ends its sign-ins at
+           once - one's own too, and then there is no way back from here. */
+        off.onclick = function () {
+          if (u.disabled) { userDo({action: 'enable', name: u.name}); return; }
+          if (userIsMe(u.name)) {
+            confirmThen('Switch your own account off', 'You are signed in as <b>' + htmlText(u.name) + '</b>. '
+              + 'Switched off, you are signed out at once and cannot sign in again - '
+              + 'only another full administrator can switch it back on.', 'Switch me off', function () {
+                userDo({action: 'disable', name: u.name});
+              });
+          } else {
+            confirmThen('Switch the account ' + u.name + ' off', 'It cannot sign in until it is switched on again; its sign-ins now are ended.',
+              'Switch off', function () { userDo({action: 'disable', name: u.name}); });
+          }
+        };
         var x = iconButton('trash', 'Remove it');
         x.onclick = function () {
           confirmThen('Remove the account ' + u.name, 'It cannot sign in any more.', 'Remove it', function () {
@@ -5470,6 +5538,15 @@ function drawLockoutsIn(v) {
   }, true);
 }
 if ($('gd-find')) $('gd-find').addEventListener('input', function () { drawLockouts(); });
+/** Is this account the one signed in now (1.0.256)? */
+function userIsMe(name) {
+  return !!(ME && ME.name && String(name || '').toLowerCase() === String(ME.name).toLowerCase());
+}
+/** The words of a role as the accounts list gives them (1.0.256). */
+function roleWordsOf(roles, role) {
+  var r = (roles || []).filter(function (x) { return x.role === role; })[0];
+  return r ? r.words : role;
+}
 function userDo(body) {
   /* Drawn again either way (1.0.44): a refused change stayed in its box. */
   api('users', body).then(function (d) { toast(d.message, 'good'); loadUsers(); })
@@ -5581,10 +5658,14 @@ function engineButtons() {
   var chosen = engineChosen();
   var live = String((DBSTATE && DBSTATE.engine) || 'sqlite');
   var same = chosen === live;
-  if ($('db-engine-setup')) $('db-engine-setup').disabled = chosen === 'sqlite';
-  if ($('db-engine-move')) $('db-engine-move').disabled = same;
-  if ($('db-engine-empty')) $('db-engine-empty').disabled = same;
-  if ($('db-engine-use')) $('db-engine-use').disabled = same;
+  /* Shut on a node of a cluster whatever is chosen (1.0.256): drawEngine shut
+     them, and this - run right after it, and on each change of the list -
+     opened them again. */
+  var shut = !!(DBSTATE && DBSTATE.cluster);
+  if ($('db-engine-setup')) $('db-engine-setup').disabled = shut || chosen === 'sqlite';
+  if ($('db-engine-move')) $('db-engine-move').disabled = shut || same;
+  if ($('db-engine-empty')) $('db-engine-empty').disabled = shut || same;
+  if ($('db-engine-use')) $('db-engine-use').disabled = shut || same;
 }
 document.addEventListener('change', function (e) {
   if (e.target && e.target.id === 'set-db_engine') engineButtons();
@@ -6282,6 +6363,12 @@ function dbDownloadAsk(o) {
     body._with = true;
     withB.onclick = function () { body._with = true; withB.classList.add('on'); noB.classList.remove('on'); withBox.hidden = false; noBox.hidden = true; };
     noB.onclick = function () { body._with = false; noB.classList.add('on'); withB.classList.remove('on'); withBox.hidden = true; noBox.hidden = false; };
+    /* With its key only where the keys of tokens may be shown (1.0.256): the server refuses it there */
+    if (STATUS && STATUS.admin_show_key === false) {
+      withB.disabled = true;
+      withB.title = 'Showing the keys of tokens is switched off (Settings - Tokens), and with it this download with its key';
+      noB.onclick();
+    }
     MODAL_BODY_DBK = body;
   }, [
     {words: 'Cancel', close: true},
@@ -8310,8 +8397,10 @@ function loadSplit(ha) {
   var card = $('ha-split-card');
   if (!card) return;
   var cluster = !!(ha && ha.mode);
-  card.hidden = !cluster;
-  if (!cluster) return;
+  /* A full administrator's card (1.0.256), as /api/split: a reader saw it
+     empty, its request refused. */
+  card.hidden = !cluster || !ADMIN;
+  if (!cluster || !ADMIN) return;
   api('split').then(function (v) {
     SPLITC.view = v;
     /* Taken again while nothing waits to be saved (1.0.252): changed elsewhere, the old draft was
@@ -11920,7 +12009,7 @@ function drawArt(all) {
     };
     grid.appendChild(tile);
   });
-  $('art-forget').hidden = !own;
+  $('art-forget').hidden = !own || !ADMIN;     /* fulladmin-only, kept so here (1.0.256) */
   $('art-reset').disabled = dr.art === saved.default;
   $('art-said').textContent = '';
 }

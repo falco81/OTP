@@ -562,7 +562,7 @@ ok('N3 refusals before any change known', g['net_root_refused_first'](
     'hostnamectl set-hostname: failed'))
 ok('N3 the same NAME_RE as root', g['NET_DOMAIN_RE'].pattern == re.search(
     r"NAME_RE = re\.compile\(r'([^']*)'\s*\n\s*r'([^']*)'\)", open(
-        '/home/claude/build/out/otp-1.0.255/deploy/otp_web.py').read()).expand(r'\1\2'))
+        '/home/claude/build/out/otp-%s/deploy/otp_web.py' % (sys.argv[1] if len(sys.argv) > 1 else '1.0.255')).read()).expand(r'\1\2'))
 
 shutil.rmtree(str(TMP), ignore_errors=True)
 print('ALL %d / %d' % (sum(R), len(R)))

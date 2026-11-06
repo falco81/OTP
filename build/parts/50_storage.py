@@ -33,6 +33,22 @@ def norm_name(name):
     return said[:190]
 
 
+def token_case_problem(store, value):
+    """Why token_names_case cannot go to `value` now, or '' (1.0.256): from as-typed back to
+    small letters, a token kept as Novak@x.cz was looked up as novak@x.cz - by RADIUS and the
+    pages alike - and found by nobody, on both nodes. Refused while there is one."""
+    if str(value or '') != 'lower' or CONFIG.get('token_names_case', 'lower') != 'as-typed':
+        return ''
+    caps = [r['name'] for r in store.db.rows('SELECT name FROM tokens')
+            if str(r['name'] or '') != str(r['name'] or '').lower()]
+    if not caps:
+        return ''
+    return ('%d token(s) have capital letters in their names (%s): in small letters they would '
+            'be found by nobody - rename them to small letters first (the token\'s window - Move to), then '
+            'switch to small letters' % (len(caps), ', '.join(sorted(caps)[:3]) +
+                                         (', ...' if len(caps) > 3 else '')))
+
+
 PLAIN_ADDR_RE = re.compile(r'^[0-9A-Fa-f:.]+(/[0-9]{1,3})?\Z')
 
 

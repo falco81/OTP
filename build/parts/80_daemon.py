@@ -1338,6 +1338,12 @@ class Daemon(object):
             node = node_name()
         if node not in self.cluster_nodes() + [node_name()]:
             raise BadSetting('there is no node %s' % node)
+        # Token names back to small letters while some have capitals (1.0.256): found by nobody
+        # after - refused on every road to a save (the pages, otp --set, a configuration import).
+        if 'token_names_case' in (changes or {}):
+            why = token_case_problem(self.store, changes['token_names_case'])
+            if why:
+                raise BadSetting(why)
         # A secret kept goes to the server it was given for only (1.0.207): saved as
         # its dots with another server beside it, it was sent there - in clear with
         # TLS off - while nobody had seen more than its last two letters.

@@ -818,7 +818,12 @@ BEGIN
     END IF;
     IF NEW.secret IS DISTINCT FROM OLD.secret
        OR NEW.pending_secret IS DISTINCT FROM OLD.pending_secret
+       OR NEW.pending_scratch IS DISTINCT FROM OLD.pending_scratch
+       OR NEW.name IS DISTINCT FROM OLD.name
        OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.dest IS DISTINCT FROM OLD.dest THEN
+      -- The waiting recovery codes and the name too (1.0.256): kept with the key where
+      -- the other node's row is older, but changed alone they left its time as it was,
+      -- and the other node's older row, written after, put the old ones back.
       -- Never before the stamp it has (1.0.214): one written by the other node with
       -- a clock ahead made this node's later change the older, and it was lost there.
       NEW.key_at := GREATEST(now_, COALESCE(OLD.key_at, 0) + 0.000001);
