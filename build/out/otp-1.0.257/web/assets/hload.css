@@ -177,3 +177,16 @@
 /* the graphs moved by time (1.0.253): one animation for each, by its own distance */
 @keyframes hl-run{from{transform:translateX(0)}to{transform:translateX(var(--hl-run,0))}}
 .hl-live .hl-run{animation-name:hl-run;animation-timing-function:linear;animation-fill-mode:both}
+/* A cluster's nodes one under the other, a row each, as acme draws them (1.0.257): the name, then
+   the same four chips in the same places, so the numbers of both nodes stand in columns - and
+   no more hidden than a single node's for want of room beside each other. */
+.hload.hl-cluster{flex-direction:column;align-items:flex-start;flex-wrap:nowrap;gap:3px}
+.hload.hl-cluster .hl-node{display:flex;border:0;border-radius:0;padding:0;gap:5px}
+.hload.hl-cluster .hl-name{min-width:7ch;max-width:12ch;padding:0 2px 0 0;font-size:10.5px}
+.hload.hl-cluster .hl{padding:1px 8px;font-size:11.5px;line-height:1.25}
+.hload.hl-cluster .hl-spark{height:15px}
+@media (max-width:2150px){.hload.hl-cluster .hl-node .hl-disk,.hload.hl-cluster .hl-node .hl-net{display:inline-flex}}
+@media (max-width:1650px){.hload.hl-cluster .hl-node .hl-mem{display:inline-flex}}
+@media (max-width:1100px){.hload.hl-cluster .hl-peer{display:flex}}
+@media (max-width:1760px){.hload.hl-cluster .hl-node .hl-disk,.hload.hl-cluster .hl-node .hl-net{display:none}}
+@media (max-width:1100px){.hload.hl-cluster .hl-node .hl-mem{display:none}}

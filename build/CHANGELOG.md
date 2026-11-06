@@ -4,6 +4,29 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.257 — 6 November 2026
+
+Your account lists the passkeys of the account; the performance meter draws a cluster's nodes in
+rows, on one time.
+
+- **Your account → Passkeys - Face ID, Touch ID** (the administration's pages, while the second
+  step by a passkey is on and it is this account's): a table of the account's passkeys - the
+  device, the name of the pages it is for, when it was added and last used. The pencil names one
+  in its row (Enter saves, Escape leaves it), the bin takes one away (asked twice, as everything
+  that destroys); the last one cannot be - it is the second step itself, reset by another full
+  administrator. **Add a passkey of this device** adds another (an iPhone beside the iPad, a
+  second Windows computer), up to 10: by an address, or while a node runs a version before
+  1.0.254, the page says why it cannot. Every passkey of the account signs in. Both nodes: the
+  question kept with the sign-in, the passkeys in the account's own row. In the events.
+- **The performance meter in a cluster**: the nodes one under the other, a row each with its
+  name, the same four chips in the same places - as acme draws them - and no more hidden for want
+  of room than a single node's.
+- **Both nodes' graphs on one time**: this node's right edge stood 3.5 s back, the other's 10 s,
+  so the same moment was 6.5 s apart in the two graphs; both now 10 s, moving together.
+- **The numbers at once when a page looks again**: the other node's last numbers are shown while
+  it wakes up to the page (it was "does not answer", with dashes, for the first seconds of every
+  look); a node that does not answer keeps its last numbers, dimmed.
+
 ## 1.0.256 — 6 November 2026
 
 The third round of looking for faults (the tokens and their files, the cluster's rows, the

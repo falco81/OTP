@@ -415,6 +415,7 @@ def load_ask():
     """A page on this node looks."""
     if time.monotonic() >= LOAD_LOOK['until']:
         LOAD_HA_WAKE.set()          # just begun: its row written now, not in 5 s
+        LOAD_LOOK['began'] = time.monotonic()
     LOAD_LOOK['until'] = time.monotonic() + LOAD_LOOK_S
     LOAD_WAKE.set()
 
@@ -581,7 +582,12 @@ def load_others(store, since):
     for n in load_cluster(store):
         with LOAD_HA_LOCK:
             got = dict(LOAD_HA['peers'].get(n['name']) or {})
-        late = not got.get('at') or time.monotonic() - got['at'] > LOAD_STALE_S
+        # Not late while the other node is only waking up to a page that began to look (1.0.257):
+        # its last numbers shown at once, the graph going on from its next row - "does not
+        # answer" was said for the first seconds of every look.
+        waking = time.monotonic() - LOAD_LOOK.get('began', 0.0) < LOAD_STALE_S + LOAD_PUB_S
+        late = not got.get('at') or (time.monotonic() - got['at'] > LOAD_STALE_S and
+                                     not (waking and got.get('now')))
         hist = got.get('hist') or []
         after = since.get(n['name']) or 0
         if hist and after > hist[-1]['at'] + LOAD_BACK_S:

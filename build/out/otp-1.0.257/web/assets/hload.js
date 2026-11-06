@@ -100,7 +100,12 @@ function hlPaint() {
   document.querySelectorAll('svg.hl-live').forEach(function (svg) {
     var node = svg.getAttribute('data-gnode') || '', k = svg.getAttribute('data-gk');
     var w = +svg.getAttribute('data-w'), h = +svg.getAttribute('data-h'), list = HLOAD.series[node] || [];
-    var pps = w / HL_SPAN, lag = node ? HL_LAG.peer : HL_LAG.here, off = HLOAD.off[node] || 0;
+    /* One time for every node of a cluster (1.0.257): the same lag for all - a moment stands at
+       the same place in both graphs (this node's right edge was 3.5 s old, the other's 10 s, and
+       its graph ran 6.5 s behind); each node's readings by its own clock, as before. */
+    var many = !!(HLOAD.others && HLOAD.others.length);
+    var pps = w / HL_SPAN, lag = many ? HL_LAG.peer : (node ? HL_LAG.peer : HL_LAG.here);
+    var off = HLOAD.off[node] || 0;
     var key = node + '/' + k;
     var top = (k === 'cpu' || k === 'mem') ? 100 : (tops[key] || (tops[key] = hlTop(node, k)));
     var area = !!svg.querySelector('.hl-fill'), segs = [], seg = null, prev = null;
@@ -247,16 +252,18 @@ function hloadDraw(d, into, asLook) {
     hist = {cpu: [], mem: [], disk: [], net: []};     /* the live graphs read HLOAD.series */
   }
   var look = asLook || HLOAD.look || 'graphs';
-  host.className = 'hload look-' + look + (preview ? ' hl-preview' : '');
-  clear(host);
-  /* In a cluster (1.0.253) a group for each node, with its name; alone, the chips as they were. */
+  /* In a cluster (1.0.253) a group for each node, with its name; alone, the chips as they were.
+     The groups one under the other (1.0.257), a row each, as acme draws them. */
   var others = preview ? [] : (HLOAD.others || []);
+  host.className = 'hload look-' + look + (preview ? ' hl-preview' : '') + (others.length ? ' hl-cluster' : '');
+  clear(host);
   var was = HLOAD.ctx;
   HLOAD.ctx = preview ? null : '';
   if (!others.length) { hloadChips(host, d, hist, look, preview, '', HLOAD_KEEP); }
   else {
     [{node: HLOAD.node || '', d: d, hist: hist, keep: HLOAD_KEEP}].concat(others.map(function (o) {
-      return {node: o.node, d: o.late || !o.now ? {late: true} : o.now, hist: hist, keep: HLOAD_KEEP, late: o.late || !o.now, error: o.error};
+      /* its last numbers kept while it is late (1.0.257), dimmed; none ever heard: a dash */
+      return {node: o.node, d: o.now ? o.now : {late: true}, hist: hist, keep: HLOAD_KEEP, late: o.late || !o.now, error: o.error};
     })).forEach(function (g, i) {
       HLOAD.ctx = i ? g.node : '';
       var box = el('span', 'hl-node' + (i ? ' hl-peer' : ' hl-here') + (g.late ? ' hl-late' : ''));

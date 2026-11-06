@@ -107,7 +107,10 @@ async function openMe(p) {
   await openMe(p);
   await p.click('.me-pk-t tbody tr:has-text("My iPad") .iconbtn:last-child');
   await p.waitForTimeout(500);
-  await p.click('.modal button:has-text("Take it away")');
+  await p.screenshot({ path: SHOTS + '/confirm.png' });
+  await p.click('#modal-foot button:has-text("Take it away")');
+  await p.waitForTimeout(300);
+  await p.click('.sure-strip button.danger');       /* asked twice, as everything that destroys */
   await p.waitForTimeout(1500);
   const l2 = (await get(p, 'passkeys')).d;
   ok('one taken away: one left, the other device\'s', (l2.keys || []).length === 1 && l2.keys[0].name !== 'My iPad', JSON.stringify(l2.keys));
@@ -124,7 +127,7 @@ async function openMe(p) {
   await cp.waitForTimeout(2000);
   await openMe(cp);
   const cz = await cp.$eval('.me-pk', e => e.textContent).catch(() => '');
-  ok('Czech: the passkeys in Czech', /Naposledy použito/.test(cz) && /Přidat passkey/.test(cz), cz.slice(0, 200));
+  ok('Czech: the passkeys in Czech', /Naposledy použit/.test(cz) && /Přidat passkey/.test(cz), cz.slice(0, 200));
   await cp.screenshot({ path: SHOTS + '/cs.png' });
   await cctx.close();
   // the second step off: not shown

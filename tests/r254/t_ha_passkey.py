@@ -16,6 +16,11 @@ for n in 'ab':
     HL.up(n)
 HL.in_node('a', "try:\n    st.add_account('local', 'fulladmin', %r, must_change=0)\nexcept Exception: pass\n" % HL.ADMIN_PW)
 PW = 'Pk-Ha-254-pass!'
+# from nothing, whatever a run before left (the second step off, no pkha, no passkey of it)
+HL.in_node('a', "st.db.run(\"DELETE FROM settings WHERE k IN ('admin_2fa', 'admin_2fa_passkey')\")\n"
+           "st.db.run(\"DELETE FROM meta WHERE k = 'adm2fa:pkha'\")\n"
+           "try:\n    st.drop_account('pkha')\nexcept Exception: pass\n")
+time.sleep(4)
 HL.in_node('a', "try:\n    st.add_account('pkha', 'fulladmin', %r, must_change=0)\nexcept Exception: pass\n" % PW)
 time.sleep(3)
 for n in 'ab':
@@ -104,12 +109,45 @@ for first, second in (('b', 'a'), ('a', 'b')):
     call(first, '/api/auth/logout', {}, tok=t2)
     call(first, '/api/auth/logout', {}, tok=tok2)
 
+# 1.0.257: the passkeys of the account signed in, across the nodes - added on a, answered on b,
+# named on a, seen on b, the last one kept
+if os.path.exists(HL.V + '/web/assets/admin.js') and '/api/auth/passkeys' in open(HL.V + '/otp.py').read():
+    t = password('a')
+    st, o = call('a', '/api/auth/mfa', {'action': 'pk_begin'}, tok=t)
+    st, got = call('b', '/api/auth/mfa', {'action': 'check', **dev.get(o, ORIGIN)}, tok=t)
+    full = got.get('token')
+    st, l = call('b', '/api/auth/passkeys', tok=full)
+    HL.ok('Your account (b): the passkey listed', st == 200 and l.get('mine') and len(l.get('keys') or []) == 1 and l.get('can_add'), l)
+    rdev2 = Device('rs')
+    st, opts = call('a', '/api/auth/passkeys', {'action': 'add_begin'}, tok=full)
+    HL.ok('...another one asked for on a', st == 200 and opts.get('publicKey', {}).get('excludeCredentials'), (st, opts))
+    time.sleep(2)
+    st, got = call('b', '/api/auth/passkeys', {'action': 'add_finish', **rdev2.create(opts, ORIGIN)}, tok=full)
+    HL.ok('...its answer taken on b: two', st == 200 and len(got.get('keys') or []) == 2, (st, got))
+    new_id = [k['id'] for k in got.get('keys') or [] if k['id'] != l['keys'][0]['id']][0]
+    st, got = call('a', '/api/auth/passkeys', {'action': 'rename', 'id': new_id, 'name': 'Windows Hello'}, tok=full)
+    time.sleep(2)
+    st, l2 = call('b', '/api/auth/passkeys', tok=full)
+    HL.ok('...named on a, seen on b', any(k['name'] == 'Windows Hello' for k in l2.get('keys') or []), l2)
+    call('b', '/api/auth/logout', {}, tok=full)
+    t = password('b')
+    st, o = call('b', '/api/auth/mfa', {'action': 'pk_begin'}, tok=t)
+    st, got = call('a', '/api/auth/mfa', {'action': 'check', **rdev2.get(o, ORIGIN)}, tok=t)
+    HL.ok('...the new one signs in (asked on b, answered on a)', st == 200 and got.get('done'), (st, got))
+    full = got.get('token')
+    st, got = call('a', '/api/auth/passkeys', {'action': 'delete', 'id': new_id}, tok=full)
+    HL.ok('...taken away on a: one left', st == 200 and len(got.get('keys') or []) == 1, (st, got))
+    st, got = call('b', '/api/auth/passkeys', {'action': 'delete', 'id': l['keys'][0]['id']}, tok=full)
+    HL.ok('...the last one refused on b', st == 409, (st, got))
+    call('a', '/api/auth/logout', {}, tok=full)
+
 # a copied device: the counter back (an RS key counts)
 rdev = Device('ed')
 HL.call('a', '/api/users', {'action': 'mfa_reset', 'name': 'pkha'})
 time.sleep(2)
 t = password('a')
 st, opts = call('a', '/api/auth/mfa', {'action': 'enrol_start', 'kind': 'passkey'}, tok=t)
+time.sleep(2)                       # the question over to b first
 st, got = call('b', '/api/auth/mfa', {'action': 'enrol_confirm', **rdev.create(opts, ORIGIN)}, tok=t)
 HL.ok('an Ed25519 passkey set up across the nodes', st == 200 and got.get('done'), (st, got))
 call('b', '/api/auth/logout', {}, tok=got.get('token'))

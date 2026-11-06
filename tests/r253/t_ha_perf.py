@@ -79,7 +79,17 @@ time.sleep(12)
 r2 = rows('a')
 H.ok('the page gone: no row written any more after 45 s', r1 == r2, [k for k in r2 if r1.get(k) != r2.get(k)])
 st, d = H.call('b', '/api/load')
-H.ok('b\'s page: a said late (nobody writes)', st == 200 and (d.get('others') or [{}])[0].get('late'), d.get('others'))
+# A page that looks again (1.0.257): the other node's last numbers at once, not "does not answer"
+# while it wakes up; its rows again within seconds.
+o0 = (d.get('others') or [{}])[0]
+H.ok('b\'s page looks again: a\'s last numbers at once, not said late while it wakes',
+     st == 200 and not o0.get('late') and (o0.get('now') or {}).get('cpu') is not None, d.get('others'))
+time.sleep(1)
+before = rows('b').get('load:' + H.NAME['a'])
+for _ in range(10):
+    H.call('b', '/api/load')
+    time.sleep(1)
+H.ok('...and a writes its row again for b\'s page', rows('b').get('load:' + H.NAME['a']) != before)
 
 H.ok('switched off', setp(False) == 200)
 time.sleep(14)

@@ -2066,6 +2066,12 @@ table td.mono, table td > .mono, table td > span.mono, .fields dd{white-space:no
 /* the person card: a group that lets into a realm, in green (1.0.19) */
 .me-group.gives.realm{border-color:rgba(63,185,80,.5);background:var(--ok-bg, rgba(63,185,80,.1))}
 .me-group.gives.realm .gwhy{color:var(--ok)}
+/* Your account - the passkeys (1.0.257) */
+.me-pk-t{width:100%;margin:6px 0 10px}
+.me-pk-t td.me-pk-act{text-align:right;white-space:nowrap;width:1%}
+.me-pk-t td.me-pk-act .iconbtn+.iconbtn{margin-left:6px}
+.me-pk-name input{width:100%;max-width:260px}
+.me-pk-add{margin-top:4px}
 .me-sec h3 .me-count{color:var(--tx-mut);font-weight:600;letter-spacing:0}
 .modal .me-kv{grid-template-columns:170px minmax(0,1fr)}
 
