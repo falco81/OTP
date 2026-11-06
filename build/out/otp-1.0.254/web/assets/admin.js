@@ -5175,7 +5175,7 @@ function loadUsers() {
       /* The second step of signing in (1.0.125): how it is given, or not yet. */
       var mf = el('td', 'small');
       if (u.mfa) {
-        mf.appendChild(el('span', 'tag ok', {app: 'an app', mail: 'e-mail', sms: 'SMS'}[u.mfa.kind] || u.mfa.kind));
+        mf.appendChild(el('span', 'tag ok', {app: 'an app', mail: 'e-mail', sms: 'SMS', passkey: 'a passkey'}[u.mfa.kind] || u.mfa.kind));
         if (u.mfa.dest) mf.appendChild(noI18n(el('span', 'sub mono', u.mfa.dest)));
       } else {
         mf.appendChild(el('span', d.mfa_on ? 'muted' : 'muted', d.mfa_on ? 'set up at the next sign-in' : '–'));

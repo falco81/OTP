@@ -32,11 +32,16 @@ async function device(ctx, p, verified = true) {
     hasResidentKey: true, hasUserVerification: true, isUserVerified: verified, automaticPresenceSimulation: true}});
   return {cdp, id: a.authenticatorId};
 }
+async function newCtx(b, o, lang = 'en') {
+  const c = await b.newContext(Object.assign({ ignoreHTTPSErrors: true }, o || {}));
+  await c.addCookies([{name: 'otp_lang', value: lang, domain: 'otp.test', path: '/'}, {name: 'otp_lang', value: lang, domain: '127.0.0.1', path: '/'}]);
+  return c;
+}
 (async () => {
   const b = await chromium.launch({ proxy: { server: process.env.HTTPS_PROXY || process.env.https_proxy || 'direct://', bypass: 'otp.test,localhost,127.0.0.1' },
     args: ['--host-resolver-rules=MAP otp.test 127.0.0.1', '--ignore-certificate-errors'] });
   // the administrator: switches it on, makes the account
-  const actx = await b.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1300, height: 900 } });
+  const actx = await newCtx(b, { viewport: { width: 1300, height: 900 } });
   const a = await actx.newPage();
   await signIn(a, 'admin', fs.readFileSync('/home/claude/run/adminpw', 'utf8').trim());
   await post(a, 'users', {action: 'delete', name: 'pkuser'});
@@ -45,7 +50,7 @@ async function device(ctx, p, verified = true) {
   await a.waitForTimeout(2500);
 
   const errs = [];
-  let ctx = await b.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1180, height: 820 } });
+  let ctx = await newCtx(b, { viewport: { width: 1180, height: 820 } });
   let p = await ctx.newPage();
   p.on('pageerror', e => errs.push(String(e)));
   let dev = await device(ctx, p);
@@ -57,7 +62,7 @@ async function device(ctx, p, verified = true) {
 
   ok('the passkey switched on', (await post(a, 'settings', {settings: {admin_2fa_passkey: 1}})).st === 200);
   await a.waitForTimeout(2500);
-  ctx = await b.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1180, height: 820 } });
+  ctx = await newCtx(b, { viewport: { width: 1180, height: 820 } });
   p = await ctx.newPage();
   p.on('pageerror', e => errs.push(String(e)));
   dev = await device(ctx, p);
@@ -76,7 +81,7 @@ async function device(ctx, p, verified = true) {
   ok('...the device keeps the passkey', creds.length === 1 && creds[0].rpId === 'otp.test', JSON.stringify(creds.map(c => c.rpId)));
   const acc = await a.evaluate(async () => (await (await fetch('?api=users')).json()));
   const row = (acc.users || []).find(u => u.name === 'pkuser');
-  ok('Accounts: the second step a passkey, of which device for which name', row && row.mfa && row.mfa.kind === 'passkey' && /otp\.test/.test(row.mfa.dest), JSON.stringify(row && row.mfa));
+  ok('Accounts: the second step a passkey, of which device for which name', row && row.mfa && row.mfa.kind === 'passkey' && /otp\.test/.test(row.mfa.dest), JSON.stringify(row ? row.mfa : acc).slice(0, 400));
 
   // the next time: the password, then the passkey
   await post(p, 'logout', {});
@@ -106,7 +111,7 @@ async function device(ctx, p, verified = true) {
   await ctx.close();
 
   // by an address: no passkey - said why
-  ctx = await b.newContext({ ignoreHTTPSErrors: true });
+  ctx = await newCtx(b);
   p = await ctx.newPage();
   await p.goto('https://127.0.0.1/admin/');
   await p.fill('input[autocomplete=username]', 'pkuser');
@@ -119,7 +124,7 @@ async function device(ctx, p, verified = true) {
 
   // reset by a full administrator: set up again at the next sign-in
   ok('Accounts: the second step reset', (await post(a, 'users', {action: 'mfa_reset', name: 'pkuser'})).st === 200);
-  ctx = await b.newContext({ ignoreHTTPSErrors: true });
+  ctx = await newCtx(b);
   p = await ctx.newPage();
   dev = await device(ctx, p);
   await signIn(p, 'pkuser', PW);
@@ -128,7 +133,7 @@ async function device(ctx, p, verified = true) {
   await ctx.close();
 
   // a device that does not check who it is (no face, finger, PIN): refused at the setting up
-  ctx = await b.newContext({ ignoreHTTPSErrors: true });
+  ctx = await newCtx(b);
   p = await ctx.newPage();
   await device(ctx, p, false);
   await signIn(p, 'pkuser', PW);
@@ -143,10 +148,8 @@ async function device(ctx, p, verified = true) {
   const ev = await a.evaluate(async () => JSON.stringify(await (await fetch('?api=events&limit=200')).json()));
   ok('the events: the passkey set up, given, refused', /set up the second step of signing in: a passkey/.test(ev) && /gave the second step \(a passkey/.test(ev), ev.slice(0, 100));
   // Czech
-  ctx = await b.newContext({ ignoreHTTPSErrors: true });
+  ctx = await newCtx(b, {}, 'cs');
   p = await ctx.newPage();
-  await p.goto(BASE);
-  await p.evaluate(() => { document.cookie = 'otp_lang=cs; path=/'; });
   await signIn(p, 'pkuser', PW);
   await p.waitForSelector('.mfa-ways', { timeout: 10000 }).catch(() => {});
   await p.click('.mfa-ways .mfa-way:has-text("passkey")').catch(() => {});

@@ -794,6 +794,15 @@ if 'location = /healthz' not in text and 'location /assets/' in text:
 """ % (re.search(r'fastcgi_pass\s+([^;]+);', text).group(1))
     text = text.replace('    location /assets/', block + '    location /assets/', 1)
     said.append('GET /healthz for a load balancer')
+# 1.0.254: the icon of a shortcut on a home screen, where Safari asks for it first.
+if 'apple-touch-icon' not in text and 'location /assets/' in text:
+    block = """    # A shortcut put on an iPad's or iPhone's home screen asks here first (otp 1.0.254).
+    location ~ ^/apple-touch-icon(-precomposed)?(-[0-9]+x[0-9]+)?\\.png$ {
+        rewrite ^ /assets/apple-touch-icon.png last;
+    }
+"""
+    text = text.replace('    location /assets/', block + '    location /assets/', 1)
+    said.append('the icon of a shortcut on a home screen')
 # 1.0.173: Prometheus asks /metrics of each node, with its token.
 if 'location = /metrics' not in text and 'location /assets/' in text:
     zone = re.search(r'limit_req_zone\s+\$binary_remote_addr\s+zone=([A-Za-z0-9_]+):', text)

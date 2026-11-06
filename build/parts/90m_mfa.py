@@ -77,9 +77,24 @@ def mfa_methods(h=None):
         out.append('mail')
     if CONFIG.get('admin_2fa_sms', 1) and 'sms' in ch:
         out.append('sms')
-    if CONFIG.get('admin_2fa_passkey') and (h is None or wa_host_ok(h)):
+    if CONFIG.get('admin_2fa_passkey') and (h is None or wa_host_ok(h)) and \
+            not (h is not None and mfa_old_nodes(h.store)):
         out.append('passkey')
     return out or ['app']
+
+
+def mfa_old_nodes(store):
+    """The other nodes of the cluster on a version that does not know a passkey (before
+    1.0.254), heard from in the last day: there an account with a passkey reads as one that has
+    not set up its second step, and the password alone would set up another. No passkey is set
+    up while one is."""
+    if not CONFIG.get('ha_mode'):
+        return []
+    try:
+        return [n['name'] for n in ha_nodes(store) if not n.get('me') and fnum(n.get('age')) < 86400
+                and _ver_tuple(n.get('version')) < (1, 0, 254)]
+    except Exception:                                   # noqa: BLE001
+        return []
 
 
 def mfa_stage(store, name):
@@ -211,6 +226,9 @@ def _mfa_do(h):
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
         kind = str(b.get('kind') or '')
+        if kind == 'passkey' and mfa_old_nodes(h.store):
+            raise ApiError(409, 'a passkey waits until every node runs otp 1.0.254 or newer (%s does '
+                                'not yet)' % ', '.join(mfa_old_nodes(h.store)))
         if kind not in mfa_methods(h):
             raise ApiError(400, 'that way is not offered here')
         if kind == 'passkey':

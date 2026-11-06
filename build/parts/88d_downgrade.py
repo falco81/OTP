@@ -72,6 +72,20 @@ def downgrade_why_not(store, version):
         if on:
             why.append('older than 1.0.231 while the guard against writes to the database is on '
                        '(%s): switch it off on every node first' % ', '.join(on))
+    # Not below 1.0.254 while an account signs in with a passkey: an older version reads it as
+    # an account with no second step set up, and lets the password alone set up another.
+    if v < (1, 0, 254):
+        try:
+            pk = sorted(str(r['k'])[len('adm2fa:'):] for r in
+                        store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'adm2fa:%'")
+                        if '"passkey"' in str(r['v'] or ''))
+        except Exception:                               # noqa: BLE001
+            pk = []
+        if pk:
+            why.append('older than 1.0.254 while %s sign%s in to these pages with a passkey, which '
+                       'older versions do not know: reset %s second step first (Accounts, or otp '
+                       '--reset-2fa NAME)' % (', '.join(pk), 's' if len(pk) == 1 else '',
+                                               'its' if len(pk) == 1 else 'their'))
     floor, by = downgrade_db_floor(store)
     if v < _ver_tuple(floor):
         why.append('older than %s: otp %s, which ran on this database, wrote what older '

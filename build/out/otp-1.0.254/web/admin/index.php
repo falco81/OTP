@@ -425,7 +425,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 <!doctype html>
 <html lang="<?= h($lang) ?>" class="app-shell-root<?= $load ? ' i18n-wait' : '' ?>">
 <head>
-<?php otp_head($title, $lang, $load, $nonce, '/'); ?>
+<?php otp_head($title, $lang, $load, $nonce, '/', $site !== '' ? $site : 'otp'); ?>
 <link rel="stylesheet" nonce="<?= h($nonce) ?>" href="/assets/hload.css?v=<?= h(OTP_VERSION) ?>">
 </head>
 <body class="app-shell fold-words<?= $me ? ' framed' : '' ?>">

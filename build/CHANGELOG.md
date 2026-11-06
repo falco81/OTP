@@ -4,6 +4,37 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.254 — 6 November 2026
+
+A passkey (Face ID, Touch ID, Windows Hello) as the second step of the administration, and an
+icon for a shortcut on a home screen.
+
+- **Settings → Accounts → "...with Face ID, Touch ID or Windows Hello (a passkey)"** (off by
+  default), beside the app, e-mail and SMS: the second step of signing in to these pages, never
+  instead of the password - the password is always asked first. An account sets it up at its
+  first sign-in, as e-mail and SMS are; more ways allowed, it chooses. A full administrator
+  resets it as the others (Accounts, or `otp --reset-2fa NAME`); the account sets one up again.
+  Accounts shows "a passkey", of which device for which name of the pages.
+- **The checks of the server**: ES256, RS256 and EdDSA signatures checked by otp itself (no
+  library, nothing run); the question used once, on either node of a cluster; the origin and the
+  name of the pages checked; the device must check who it is (the face, a finger, the PIN); its
+  counter may not go back (a copied passkey refused, said in the events); wrong answers counted
+  as wrong codes are. No attestation asked: the server keeps only the public half.
+- **A passkey is for a name**: offered on these pages opened by a name over HTTPS
+  (`https://otp.firma.cz/`); opened by an address it is not offered, and the page says why. Set
+  up for one name, it works on that name.
+- **Both nodes**: the question kept with the sign-in, so one node asks and the other takes the
+  answer.
+- **Older versions do not know a passkey** (they read it as no second step set up, and the
+  password alone would set up another): no passkey is offered or set up while another node of
+  the cluster runs a version before 1.0.254 (the page says which), and going back below 1.0.254
+  is refused while an account signs in with one (reset its second step first). With the guard
+  against writes to the database on, the setting is signed as its siblings are. A browser answer
+  nested too deep is a wrong answer, not an error of the server.
+- **The icon of a shortcut on an iPad's or iPhone's home screen** (Safari → Share → Add to Home
+  Screen): the shield, 180 × 180, with the name of the installation under it.
+  `/apple-touch-icon.png` answers (nginx, added to an existing configuration on update).
+
 ## 1.0.253 — 5 November 2026
 
 The performance meter (from the server-load package), off until switched on.

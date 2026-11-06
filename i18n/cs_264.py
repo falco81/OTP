@@ -56,4 +56,10 @@ P264 = {
   'passkey tohoto účtu je pro https://{0}/ – otevřete stránky tam (nebo plný správce resetuje druhý krok)',
  'the passkey is for another name than {0}': 'passkey je pro jiné jméno než {0}',
  'the answer came from {0}, not from these pages ({1})': 'odpověď přišla z {0}, ne z těchto stránek ({1})',
+ 'a passkey waits until every node runs otp 1.0.254 or newer ({0} does not yet)':
+  'passkey počká, až všechny uzly poběží na otp 1.0.254 nebo novějším ({0} zatím ne)',
+ 'older than 1.0.254 while {0} signs in to these pages with a passkey, which older versions do not know: reset its second step first (Accounts, or otp --reset-2fa NAME)':
+  'starší než 1.0.254, zatímco {0} se do těchto stránek přihlašuje s passkey, kterou starší verze neznají: nejdřív resetujte jeho druhý krok (Účty, nebo otp --reset-2fa JMÉNO)',
+ 'older than 1.0.254 while {0} sign in to these pages with a passkey, which older versions do not know: reset their second step first (Accounts, or otp --reset-2fa NAME)':
+  'starší než 1.0.254, zatímco {0} se do těchto stránek přihlašují s passkey, kterou starší verze neznají: nejdřív resetujte jejich druhý krok (Účty, nebo otp --reset-2fa JMÉNO)',
 }

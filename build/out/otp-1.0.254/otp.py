@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.253'
+__version__ = '1.0.254'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -226,6 +226,8 @@ DEFAULTS = {
     'admin_2fa_app': 1,
     'admin_2fa_mail': 1,
     'admin_2fa_sms': 1,
+    # A passkey as the second step (1.0.254): Face ID, Touch ID, Windows Hello - off until set.
+    'admin_2fa_passkey': 0,
     # --- isemon ---------------------------------------------------------------
     'isemon': 0,
     'isemon_targets': '',
@@ -550,7 +552,7 @@ TUNABLE = {
     'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
-    'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
+    'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
     'ssh_gate_port': (1025, 65535),
@@ -823,6 +825,7 @@ NAMES = {
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
     'admin_2fa_sms': '...with a code by SMS',
+    'admin_2fa_passkey': '...with Face ID, Touch ID or Windows Hello (a passkey)',
     'isemon': 'Send the logs to isemon',
     'isemon_targets': 'isemon’s syslog receivers',
     'isemon_hostname': 'The name this machine is written under',
@@ -1371,14 +1374,21 @@ SAYS = {
     'admin_group_readonly': 'Members may look at everything and change nothing.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
-                 'and sets it up (an authenticator app, or a code sent to an address or a phone '
-                 'it proves it has). Accounts → Reset the second step, or otp --reset-2fa NAME, '
+                 'and sets it up (an authenticator app, a code sent to an address or a phone '
+                 'it proves it has, or a passkey - Face ID, Touch ID, Windows Hello). Accounts → Reset the second step, or otp --reset-2fa NAME, '
                  'makes it choose again. Sign-ins already open stay open.',
     'admin_2fa_app': 'Offered when the second step is set up: a code from an app (Google or '
                      'Microsoft Authenticator…). With nothing else on, it is offered anyway.',
     'admin_2fa_mail': 'Offered only while mail is set up (Settings → Mail).',
     'admin_2fa_sms': 'Offered only while sending SMS is set up (Settings → Codes by e-mail and '
                      'SMS).',
+    'admin_2fa_passkey': 'The face, a finger or the PIN of the device, after the password - never '
+                         'instead of it: the device keeps the key (an iPad and an iPhone in the '
+                         'iCloud Keychain, so on the person\'s other Apple devices too), this '
+                         'server only its public half. Offered on these pages opened by a name '
+                         'with a certificate the browser trusts (https://name/), not by an '
+                         'address; the passkey works on that name only. Set up at the next '
+                         'sign-in, as the other ways; reset the same way.',
     'isemon': 'Send every check of a code and every RADIUS packet to isemon, as syslog, in '
               'the very shape a totpcgi token server and its FreeRADIUS write - so isemon '
               'reads it with what it already has (<i>Settings → The OTP logs</i>, with '
@@ -1711,7 +1721,7 @@ PANES = {
                'isemon_events', 'isemon_max_bytes', 'isemon_verify', 'isemon_mtls',
                'isemon_ca', 'ship_files'],
     'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
-               'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms',
+               'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms', 'admin_2fa_passkey',
                'admin_directory', 'admin_group_full', 'admin_group_token',
                'admin_group_readonly'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
@@ -1794,6 +1804,7 @@ ONLY_WHEN = {
     'admin_group_readonly': ['admin_directory', '*'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
+    'admin_2fa_passkey': ['admin_2fa', '1'],
     'db_host': ['db_engine', 'sqlite-not'], 'db_port': ['db_engine', 'sqlite-not'],
     'db_name': ['db_engine', 'sqlite-not'], 'db_user': ['db_engine', 'sqlite-not'],
     'db_password': ['db_engine', 'sqlite-not'], 'db_timeout_s': ['db_engine', 'sqlite-not'],
@@ -8953,7 +8964,7 @@ DBGUARD_SETTINGS = frozenset((
     'logs_journal_days', 'logs_keep', 'logs_max_mb', 'ssh_gate_port', 'upgrade_downgrade',
     'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
     'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
-    'admin_2fa_sms', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
+    'admin_2fa_sms', 'admin_2fa_passkey', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify',
@@ -27705,6 +27716,20 @@ def downgrade_why_not(store, version):
         if on:
             why.append('older than 1.0.231 while the guard against writes to the database is on '
                        '(%s): switch it off on every node first' % ', '.join(on))
+    # Not below 1.0.254 while an account signs in with a passkey: an older version reads it as
+    # an account with no second step set up, and lets the password alone set up another.
+    if v < (1, 0, 254):
+        try:
+            pk = sorted(str(r['k'])[len('adm2fa:'):] for r in
+                        store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'adm2fa:%'")
+                        if '"passkey"' in str(r['v'] or ''))
+        except Exception:                               # noqa: BLE001
+            pk = []
+        if pk:
+            why.append('older than 1.0.254 while %s sign%s in to these pages with a passkey, which '
+                       'older versions do not know: reset %s second step first (Accounts, or otp '
+                       '--reset-2fa NAME)' % (', '.join(pk), 's' if len(pk) == 1 else '',
+                                               'its' if len(pk) == 1 else 'their'))
     floor, by = downgrade_db_floor(store)
     if v < _ver_tuple(floor):
         why.append('older than %s: otp %s, which ran on this database, wrote what older '
@@ -47640,7 +47665,8 @@ def _portal_sso_do(h):
 # sent by mail or SMS. The first time the account chooses how and proves it
 # (enrol); after that it gives the code each time (check). The way chosen is
 # the account's own - not a VPN token - kept in meta 'adm2fa:<name>':
-#   {'kind': 'app'|'mail'|'sms', 'secret': sealed (app), 'dest': (mail/sms),
+#   {'kind': 'app'|'mail'|'sms'|'passkey', 'secret': sealed (app), 'dest': (mail/sms),
+#    'keys': [the passkeys' public halves] (passkey, 1.0.254: 90w_webauthn.py),
 #    'at', 'step': the last app code's step, used once}
 # Accounts → Reset the second step and otp --reset-2fa NAME take it away.
 MFA_ALLOWED = ('/api/auth/mfa', '/api/auth/logout', '/api/auth/whoami')
@@ -47668,8 +47694,12 @@ def mfa_all(store):
         v = json_obj(r['v'])
         if v is None:
             continue
-        out[r['k'][len('adm2fa:'):]] = {'kind': v.get('kind'), 'at': v.get('at'),
-                                        'dest': dest_masked(v.get('kind'), v.get('dest'))}
+        dest = dest_masked(v.get('kind'), v.get('dest')) if v.get('kind') in ('mail', 'sms') else ''
+        if v.get('kind') == 'passkey':
+            # which device, for which name of the pages (1.0.254)
+            dest = ', '.join('%s · %s' % (k.get('name') or 'a device', k.get('host') or '?')
+                             for k in v.get('keys') or [] if isinstance(k, dict))
+        out[r['k'][len('adm2fa:'):]] = {'kind': v.get('kind'), 'at': v.get('at'), 'dest': dest}
     return out
 
 
@@ -47683,7 +47713,8 @@ def mfa_reset(store, name, by):
 
 
 MFA_KIND_WORDS = {'app': 'an authenticator app', 'mail': 'a code by e-mail',
-                  'sms': 'a code by SMS'}
+                  'sms': 'a code by SMS', 'passkey': 'a passkey (Face ID, Touch ID, Windows Hello)'}
+MFA_KINDS = ('app', 'mail', 'sms', 'passkey')
 
 
 def mfa_lang(h):
@@ -47696,8 +47727,9 @@ def mfa_lang(h):
     return got if got in CODE_TEXTS else None
 
 
-def mfa_methods():
-    """The ways offered when an account sets up its second step."""
+def mfa_methods(h=None):
+    """The ways offered when an account sets up its second step. A passkey (1.0.254) only
+    where it can be: the pages opened by a name (asked from a page: h)."""
     out = []
     ch = code_channels()
     if CONFIG.get('admin_2fa_app', 1):
@@ -47706,12 +47738,29 @@ def mfa_methods():
         out.append('mail')
     if CONFIG.get('admin_2fa_sms', 1) and 'sms' in ch:
         out.append('sms')
+    if CONFIG.get('admin_2fa_passkey') and (h is None or wa_host_ok(h)) and \
+            not (h is not None and mfa_old_nodes(h.store)):
+        out.append('passkey')
     return out or ['app']
+
+
+def mfa_old_nodes(store):
+    """The other nodes of the cluster on a version that does not know a passkey (before
+    1.0.254), heard from in the last day: there an account with a passkey reads as one that has
+    not set up its second step, and the password alone would set up another. No passkey is set
+    up while one is."""
+    if not CONFIG.get('ha_mode'):
+        return []
+    try:
+        return [n['name'] for n in ha_nodes(store) if not n.get('me') and fnum(n.get('age')) < 86400
+                and _ver_tuple(n.get('version')) < (1, 0, 254)]
+    except Exception:                                   # noqa: BLE001
+        return []
 
 
 def mfa_stage(store, name):
     rec = mfa_get(store, name)
-    if rec and rec.get('kind') in ('app', 'mail', 'sms'):
+    if rec and rec.get('kind') in MFA_KINDS:
         # A way switched off since is still the account's, and the only one
         # (1.0.136): mail or SMS that can no longer be sent was set up anew
         # - by whoever had the password. Now that waits for a reset (the
@@ -47809,7 +47858,8 @@ def _mfa(h):
     rec = mfa_get(h.store, s['name']) or {}
     new = odict(s.get('data')).get('mfa_new') or {}
     return {'name': acc['name'], 'display': acc.get('display') or '', 'stage': stage,
-            'methods': mfa_methods(), 'kind': rec.get('kind') if stage == 'check' else '',
+            'methods': mfa_methods(h), 'kind': rec.get('kind') if stage == 'check' else '',
+            'hosts': sorted(set(k.get('host') for k in rec.get('keys') or [])) if stage == 'check' else [],
             'dest': dest_masked(rec.get('kind'), rec.get('dest')) if stage == 'check' else '',
             'started': {'kind': new.get('kind'),
                         'dest': dest_masked(new.get('kind'), new.get('dest'))} if new else None,
@@ -47837,8 +47887,20 @@ def _mfa_do(h):
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
         kind = str(b.get('kind') or '')
-        if kind not in mfa_methods():
+        if kind == 'passkey' and mfa_old_nodes(h.store):
+            raise ApiError(409, 'a passkey waits until every node runs otp 1.0.254 or newer (%s does '
+                                'not yet)' % ', '.join(mfa_old_nodes(h.store)))
+        if kind not in mfa_methods(h):
             raise ApiError(400, 'that way is not offered here')
+        if kind == 'passkey':
+            # The question for the device (1.0.254): kept with this sign-in, so either node
+            # takes the answer.
+            try:
+                saved, opts = wa_register_options(h, name, acc.get('display') or '')
+            except ValueError as e:
+                raise ApiError(400, str(e))
+            h.store.session_merge(s['id'], {'mfa_new': dict(saved, kind='passkey')})
+            return dict(opts, kind='passkey')
         if kind == 'app':
             secret = b32_new(20)
             h.store.session_merge(s['id'], {'mfa_new': {
@@ -47861,9 +47923,18 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = code_typed(b.get('code') or '')
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
-        if new['kind'] == 'app':
+        code = code_typed(b.get('code') or '') if new['kind'] != 'passkey' else ''
+        if new['kind'] == 'passkey':
+            try:
+                pk = wa_register_finish(new, b)
+            except (ValueError, TypeError, KeyError) as e:
+                h.failed(key)
+                raise ApiError(400, 'the passkey was not taken: %s' % e)
+            if not h.store.session_take(s['id'], 'mfa_new'):
+                raise ApiError(409, 'that answer was taken already - start again')
+            rec['keys'] = [pk]
+        elif new['kind'] == 'app':
             secret = unseal_secret(new.get('secret'), 'adm2fa-new:' + name.lower())
             step = totp_match(secret, code, clock_now('codes'), digits=6, window=mfa_window()) \
                 if secret else None
@@ -47884,21 +47955,36 @@ def _mfa_do(h):
         token = _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
         h.store.add_event('accounts', '%s set up the second step of signing in: %s%s' % (
             name, MFA_KIND_WORDS.get(rec['kind']),
-            ' (%s)' % dest_masked(rec['kind'], rec.get('dest')) if rec.get('dest') else ''),
-            who=name)
+            ' (%s)' % dest_masked(rec['kind'], rec.get('dest')) if rec.get('dest') else
+            ' (%s, for https://%s/)' % (rec['keys'][0].get('name') or 'a device', rec['keys'][0]['host'])
+            if rec.get('keys') else ''), who=name)
         return {'message': 'the second step is set up', 'done': True, 'token': token}
     if act == 'send':
         if stage != 'check':
             raise ApiError(409, 'set the second step up first')
         rec = mfa_get(h.store, name) or {}
         if rec.get('kind') not in ('mail', 'sms'):
-            raise ApiError(400, 'the code comes from the app - nothing is sent')
+            raise ApiError(400, 'the second step is %s - nothing is sent'
+                           % MFA_KIND_WORDS.get(rec.get('kind'), 'the app'))
         if rec['kind'] not in code_channels():
             raise ApiError(503, 'codes by %s cannot be sent from here now: another full '
                                 'administrator resets your second step (Accounts), or root '
                                 'with  otp --reset-2fa %s' % ('mail' if rec['kind'] == 'mail'
                                                               else 'SMS', name))
         return {'sent_to': _mfa_send(h, s, rec['kind'], rec.get('dest'), 'mfa_code')}
+    if act == 'pk_begin':
+        # The question for the account's passkey (1.0.254), kept with this sign-in.
+        if stage != 'check':
+            raise ApiError(409, 'set the second step up first')
+        rec = mfa_get(h.store, name) or {}
+        if rec.get('kind') != 'passkey':
+            raise ApiError(400, 'the second step of this account is not a passkey')
+        try:
+            saved, opts = wa_login_options(h, rec.get('keys') or [])
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        h.store.session_merge(s['id'], {'mfa_pk': saved})
+        return opts
     if act == 'check':
         if stage != 'check':
             raise ApiError(409, 'set the second step up first')
@@ -47906,7 +47992,30 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = code_typed(b.get('code') or '')
+        code = code_typed(b.get('code') or '') if rec.get('kind') != 'passkey' else ''
+        if rec.get('kind') == 'passkey':
+            saved = data.get('mfa_pk') or {}
+            # The question once (as a code is), here and on the other node.
+            if not saved or not h.store.session_take(s['id'], 'mfa_pk') or \
+                    not once_take(h.store, 'chal', 'adm2fa-pk:' + name.lower(),
+                                  str(saved.get('challenge') or '')):
+                _mfa_wrong(h, s, key, 'that answer is to an old question - try again')
+            with MFA_LOCK:
+                rec = mfa_get(h.store, name) or {}
+                try:
+                    used = wa_login_finish(saved, rec.get('keys') or [], b)
+                except PermissionError as e:
+                    h.store.add_event('sign-ins', '%s: the passkey was refused - %s' % (name, e),
+                                      'bad', who=name)
+                    _mfa_wrong(h, s, key, str(e))
+                except (ValueError, TypeError, KeyError) as e:
+                    h.store.add_event('sign-ins', '%s: the passkey was refused - %s' % (name, e),
+                                      'warn', who=name)
+                    _mfa_wrong(h, s, key, str(e))
+                rec['keys'] = [used if k.get('id') == used['id'] else k for k in rec.get('keys') or []]
+                h.store.set_meta(mfa_key(name), json.dumps(rec))
+            token = _mfa_done(h, s, 'a passkey (%s)' % (used.get('name') or 'a device'))
+            return {'message': 'signed in', 'done': True, 'token': token}
         if rec.get('kind') == 'app':
             # Read, checked and written under one lock (1.0.136): two requests
             # with the same code at once both passed the check.
@@ -47948,6 +48057,339 @@ def mfa_window():
         return max(0, int(v)) if v is not None and v != '' else 1
     except (TypeError, ValueError):
         return 1
+# ---- a passkey as the administration's second step (1.0.254) ----------------------
+# Face ID, Touch ID, Windows Hello or a security key: WebAuthn, after the password -
+# never instead of it. The account sets it up as it sets up an app or a mail address
+# (the first sign-in, Accounts → Reset the second step, otp --reset-2fa NAME), and the
+# server keeps only the public half of the key, in the account's adm2fa:<name> row:
+#   {'kind': 'passkey', 'keys': [{'id', 'alg', 'pub', 'count', 'host', 'name', 'at',
+#    'used', 'backed_up'}], 'at', 'by'}
+# Checked as the WebAuthn rules say: the challenge once (the sign-in's own, and on
+# either node), its type, the origin and the name the pages were opened by (the RP ID
+# - a name, never an address), the user present AND verified (a face, a finger, the
+# device's PIN: without it no second step), the signature, the counter. The
+# attestation is not asked for ("none"). The signature checked here, in Python
+# (ES256, RS256, EdDSA) - nothing run, nothing written to a file.
+WA_TIMEOUT_MS = 300000
+WA_CHALLENGE_S = 300
+WA_ALGS = (-7, -8, -257)
+
+
+def wa_b64(raw):
+    return base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
+
+
+def wa_unb64(text, most=1 << 16):
+    s = str(text or '')
+    if len(s) > most * 2 or not re.fullmatch(r'[A-Za-z0-9_-]*', s):
+        raise ValueError('not base64url')
+    return base64.urlsafe_b64decode(s + '=' * (-len(s) % 4))
+
+
+def wa_cbor(data, i=0, depth=0):
+    """(value, next index) of the CBOR item at data[i] - the part WebAuthn uses."""
+    if depth > 8 or i >= len(data):
+        raise ValueError('CBOR too deep or cut short')
+    first = data[i]
+    major, info = first >> 5, first & 31
+    i += 1
+    if info < 24:
+        n = info
+    elif info in (24, 25, 26, 27):
+        size = 1 << (info - 24)
+        if i + size > len(data):
+            raise ValueError('CBOR cut short')
+        n = int.from_bytes(data[i:i + size], 'big')
+        i += size
+    else:
+        raise ValueError('CBOR of an indefinite length')
+    if major == 0:
+        return n, i
+    if major == 1:
+        return -1 - n, i
+    if major in (2, 3):
+        if i + n > len(data):
+            raise ValueError('CBOR cut short')
+        raw = bytes(data[i:i + n])
+        return (raw if major == 2 else raw.decode('utf-8')), i + n
+    if major == 4:
+        if n > 64:
+            raise ValueError('CBOR list too long')
+        out = []
+        for _ in range(n):
+            v, i = wa_cbor(data, i, depth + 1)
+            out.append(v)
+        return out, i
+    if major == 5:
+        if n > 64:
+            raise ValueError('CBOR map too long')
+        out = {}
+        for _ in range(n):
+            k, i = wa_cbor(data, i, depth + 1)
+            v, i = wa_cbor(data, i, depth + 1)
+            out[k] = v
+        return out, i
+    if major == 7 and info in (20, 21, 22):
+        return {20: False, 21: True, 22: None}[info], i
+    raise ValueError('CBOR of a kind not used here')
+
+
+# P-256 (secp256r1), for ES256.
+_P256_P = 2 ** 256 - 2 ** 224 + 2 ** 192 + 2 ** 96 - 1
+_P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+_P256_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+_P256_G = (0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296,
+           0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5)
+
+
+def _p256_on(pt):
+    x, y = pt
+    return 0 <= x < _P256_P and 0 <= y < _P256_P and \
+        (y * y - (x * x * x - 3 * x + _P256_B)) % _P256_P == 0
+
+
+def _p256_add(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    p = _P256_P
+    if a[0] == b[0]:
+        if (a[1] + b[1]) % p == 0:
+            return None
+        lam = (3 * a[0] * a[0] - 3) * pow(2 * a[1], p - 2, p) % p
+    else:
+        lam = (b[1] - a[1]) * pow(b[0] - a[0], p - 2, p) % p
+    x = (lam * lam - a[0] - b[0]) % p
+    return x, (lam * (a[0] - x) - a[1]) % p
+
+
+def _p256_mul(k, pt):
+    out = None
+    while k:
+        if k & 1:
+            out = _p256_add(out, pt)
+        pt = _p256_add(pt, pt)
+        k >>= 1
+    return out
+
+
+def _der_ints(sig):
+    """(r, s) of an ECDSA signature as DER."""
+    if len(sig) < 8 or sig[0] != 0x30 or sig[1] != len(sig) - 2:
+        raise ValueError('not a DER signature')
+    out, i = [], 2
+    for _ in range(2):
+        if sig[i] != 0x02:
+            raise ValueError('not a DER signature')
+        n = sig[i + 1]
+        out.append(int.from_bytes(sig[i + 2:i + 2 + n], 'big'))
+        i += 2 + n
+    if i != len(sig):
+        raise ValueError('not a DER signature')
+    return out
+
+
+def wa_es256_ok(x, y, msg, sig):
+    try:
+        r, s = _der_ints(sig)
+    except (ValueError, IndexError):
+        return False
+    q = (int.from_bytes(x, 'big'), int.from_bytes(y, 'big'))
+    if not (1 <= r < _P256_N and 1 <= s < _P256_N) or not _p256_on(q):
+        return False
+    e = int.from_bytes(hashlib.sha256(msg).digest(), 'big')
+    w = pow(s, _P256_N - 2, _P256_N)
+    pt = _p256_add(_p256_mul(e * w % _P256_N, _P256_G), _p256_mul(r * w % _P256_N, q))
+    return pt is not None and pt[0] % _P256_N == r
+
+
+def wa_rs256_ok(n, e, msg, sig):
+    k = (n.bit_length() + 7) // 8
+    if n.bit_length() < 2048 or len(sig) != k:
+        return False
+    m = pow(int.from_bytes(sig, 'big'), e, n).to_bytes(k, 'big')
+    info = bytes.fromhex('3031300d060960864801650304020105000420') + hashlib.sha256(msg).digest()
+    want = b'\x00\x01' + b'\xff' * (k - 3 - len(info)) + b'\x00' + info
+    return hmac.compare_digest(m, want)
+
+
+def wa_cose(key):
+    """The COSE key of a new passkey as (alg, its public half kept here)."""
+    if not isinstance(key, dict):
+        raise ValueError('the key is not a COSE key')
+    kty, alg = key.get(1), key.get(3)
+    if alg == -7 and kty == 2 and key.get(-1) == 1:
+        x, y = key.get(-2), key.get(-3)
+        if not (isinstance(x, bytes) and isinstance(y, bytes) and len(x) == 32 == len(y)) or \
+                not _p256_on((int.from_bytes(x, 'big'), int.from_bytes(y, 'big'))):
+            raise ValueError('not a key of the curve P-256')
+        return alg, wa_b64(x + y)
+    if alg == -257 and kty == 3:
+        n, e = key.get(-1), key.get(-2)
+        if not (isinstance(n, bytes) and isinstance(e, bytes)) or len(n) * 8 < 2048:
+            raise ValueError('an RSA key under 2048 bits')
+        return alg, wa_b64(e) + '.' + wa_b64(n)
+    if alg == -8 and kty == 1 and key.get(-1) == 6:
+        x = key.get(-2)
+        if not (isinstance(x, bytes) and len(x) == 32):
+            raise ValueError('not an Ed25519 key')
+        return alg, wa_b64(x)
+    raise ValueError('a key of a kind not taken here (ES256, RS256 and EdDSA are)')
+
+
+def wa_sig_ok(alg, pub, msg, sig):
+    try:
+        if alg == -7:
+            raw = wa_unb64(pub)
+            return wa_es256_ok(raw[:32], raw[32:], msg, sig)
+        if alg == -257:
+            e, n = pub.split('.', 1)
+            return wa_rs256_ok(int.from_bytes(wa_unb64(n), 'big'), int.from_bytes(wa_unb64(e), 'big'), msg, sig)
+        if alg == -8:
+            return bool(ed25519_verify(wa_unb64(pub), msg, sig))
+    except (ValueError, TypeError, IndexError):
+        return False
+    return False
+
+
+def wa_host(h):
+    """(the RP ID, the origin) of the page asking: the name it was opened by - never an
+    address (a passkey cannot be bound to one) - over HTTPS."""
+    host = str(h.headers.get('X-Otp-Host') or '').strip().lower()
+    m = re.fullmatch(r'([a-z0-9.-]{1,253})(?::([0-9]{1,5}))?', host)
+    if not m:
+        raise ValueError('a passkey works on these pages opened by a name over HTTPS '
+                         '(https://name/), not by an address')
+    name, port = m.group(1).rstrip('.'), m.group(2)
+    try:
+        ipaddress.ip_address(name)
+        is_ip = True
+    except ValueError:
+        is_ip = False
+    if is_ip or not name:
+        raise ValueError('a passkey works on these pages opened by a name over HTTPS '
+                         '(https://name/), not by an address')
+    origin = 'https://' + name + ('' if not port or port == '443' else ':' + port)
+    return name, origin
+
+
+def wa_host_ok(h):
+    try:
+        wa_host(h)
+        return True
+    except ValueError:
+        return False
+
+
+def wa_client(raw, kind, challenge, origin):
+    """clientDataJSON checked: its type, the challenge given, the origin."""
+    try:
+        c = json.loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        raise ValueError('the browser\'s answer is not JSON')
+    if not isinstance(c, dict) or c.get('type') != kind:
+        raise ValueError('the browser\'s answer is not of this step')
+    if not hmac.compare_digest(str(c.get('challenge') or ''), str(challenge or '')):
+        raise ValueError('the answer is to another question - try again')
+    if c.get('origin') != origin:
+        raise ValueError('the answer came from %s, not from these pages (%s)' % (
+            str(c.get('origin'))[:80], origin))
+    if c.get('crossOrigin') is True:
+        raise ValueError('the answer came from a page inside another')
+    return c
+
+
+def wa_auth_data(ad, rp_id, need_key=False):
+    """authenticatorData: the name, the user present and verified, the counter; with
+    need_key, the new key's ID and its COSE key."""
+    if len(ad) < 37:
+        raise ValueError('the authenticator\'s data is cut short')
+    if not hmac.compare_digest(ad[:32], hashlib.sha256(rp_id.encode()).digest()):
+        raise ValueError('the passkey is for another name than %s' % rp_id)
+    flags = ad[32]
+    if not flags & 0x01:
+        raise ValueError('nobody was there (the authenticator says so)')
+    if not flags & 0x04:
+        raise ValueError('the device did not check who it was (no face, finger or PIN) - '
+                         'that is no second step')
+    out = {'count': int.from_bytes(ad[33:37], 'big'), 'backed_up': bool(flags & 0x10)}
+    if need_key:
+        if not flags & 0x40 or len(ad) < 55:
+            raise ValueError('the authenticator gave no key')
+        n = int.from_bytes(ad[53:55], 'big')
+        if n < 16 or n > 1023 or len(ad) < 55 + n:
+            raise ValueError('the authenticator\'s key ID is not right')
+        out['id'] = wa_b64(ad[55:55 + n])
+        key, _ = wa_cbor(ad, 55 + n)
+        out['alg'], out['pub'] = wa_cose(key)
+    return out
+
+
+def wa_user_id(name):
+    return wa_b64(hashlib.sha256(('otp-admin:' + str(name).lower()).encode()).digest()[:16])
+
+
+def wa_register_options(h, name, display, have=()):
+    rp_id, origin = wa_host(h)
+    ch = wa_b64(secrets.token_bytes(32))
+    site = str(CONFIG.get('site_name') or socket.gethostname())
+    return {'challenge': ch, 'host': rp_id, 'origin': origin, 't': time.time()}, {'publicKey': {
+        'challenge': ch, 'rp': {'id': rp_id, 'name': '%s (administration)' % site[:60]},
+        'user': {'id': wa_user_id(name), 'name': name, 'displayName': display or name},
+        'pubKeyCredParams': [{'type': 'public-key', 'alg': a} for a in WA_ALGS],
+        'authenticatorSelection': {'userVerification': 'required', 'residentKey': 'preferred'},
+        'excludeCredentials': [{'type': 'public-key', 'id': k} for k in have],
+        'attestation': 'none', 'timeout': WA_TIMEOUT_MS}}
+
+
+def wa_register_finish(saved, b):
+    """The new passkey from the browser's answer, checked against the question asked."""
+    if not saved or time.time() - fnum(saved.get('t')) > WA_CHALLENGE_S:
+        raise ValueError('that took too long - start again')
+    cd = wa_unb64(b.get('clientDataJSON'))
+    wa_client(cd, 'webauthn.create', saved.get('challenge'), saved.get('origin'))
+    att, _ = wa_cbor(wa_unb64(b.get('attestationObject'), 1 << 17))
+    if not isinstance(att, dict) or not isinstance(att.get('authData'), bytes):
+        raise ValueError('the authenticator\'s answer is not right')
+    got = wa_auth_data(att['authData'], saved['host'], need_key=True)
+    return {'id': got['id'], 'alg': got['alg'], 'pub': got['pub'], 'count': got['count'],
+            'backed_up': got['backed_up'], 'host': saved['host'], 'at': time.time(), 'used': 0,
+            'name': str(b.get('device') or '')[:60]}
+
+
+def wa_login_options(h, keys):
+    rp_id, origin = wa_host(h)
+    mine = [k for k in keys if k.get('host') == rp_id]
+    if not mine:
+        raise ValueError('the passkey of this account is for https://%s/ - open these pages '
+                         'there (or a full administrator resets the second step)'
+                         % (keys[0].get('host') if keys else '?'))
+    ch = wa_b64(secrets.token_bytes(32))
+    return {'challenge': ch, 'host': rp_id, 'origin': origin, 't': time.time()}, {'publicKey': {
+        'challenge': ch, 'rpId': rp_id, 'userVerification': 'required', 'timeout': WA_TIMEOUT_MS,
+        'allowCredentials': [{'type': 'public-key', 'id': k['id']} for k in mine]}}
+
+
+def wa_login_finish(saved, keys, b):
+    """The key of this account that signed, checked; its counter moved on (the key, changed)."""
+    if not saved or time.time() - fnum(saved.get('t')) > WA_CHALLENGE_S:
+        raise ValueError('that took too long - start again')
+    cid = str(b.get('id') or '')
+    key = next((k for k in keys if hmac.compare_digest(str(k.get('id')), cid)), None)
+    if not key:
+        raise ValueError('that passkey is not this account\'s (taken away, or of another server)')
+    cd = wa_unb64(b.get('clientDataJSON'))
+    wa_client(cd, 'webauthn.get', saved.get('challenge'), saved.get('origin'))
+    ad = wa_unb64(b.get('authenticatorData'))
+    got = wa_auth_data(ad, saved['host'])
+    if not wa_sig_ok(key.get('alg'), key.get('pub'), ad + hashlib.sha256(cd).digest(),
+                     wa_unb64(b.get('signature'))):
+        raise ValueError('the passkey\'s signature is not right')
+    was = int(key.get('count') or 0)
+    if (was or got['count']) and got['count'] <= was:
+        raise PermissionError('the passkey\'s counter went back - it may have been copied')
+    return dict(key, count=got['count'], used=time.time(), backed_up=got['backed_up'])
 
 
 

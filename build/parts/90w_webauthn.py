@@ -227,7 +227,7 @@ def wa_client(raw, kind, challenge, origin):
     """clientDataJSON checked: its type, the challenge given, the origin."""
     try:
         c = json.loads(raw.decode('utf-8'))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         raise ValueError('the browser\'s answer is not JSON')
     if not isinstance(c, dict) or c.get('type') != kind:
         raise ValueError('the browser\'s answer is not of this step')
