@@ -41,6 +41,16 @@ HLOAD.tops = {};
 function hlAdd(node, list) {
   var have = HLOAD.series[node] || (HLOAD.series[node] = []);
   var last = have.length ? have[have.length - 1].at : 0;
+  /* that node's clock was stepped back (1.0.255): its newest reading well before the last one
+     here - the series starts again (and its clock's distance with it), or nothing would ever be
+     newer than the last and the graph stayed blank */
+  var newest = 0;
+  (list || []).forEach(function (x) { if (x && typeof x.at === 'number' && x.at > newest) newest = x.at; });
+  if (last && newest && newest < last - 5) {
+    have = HLOAD.series[node] = [];
+    last = 0;
+    delete HLOAD.off[node];
+  }
   (list || []).forEach(function (x) {
     if (!x || typeof x.at !== 'number' || x.at <= last) return;
     have.push({at: x.at, cpu: x.cpu || 0, mem: x.mem || 0, disk: (x.disk_rd || 0) + (x.disk_wr || 0),
@@ -180,8 +190,8 @@ function hloadChips(host, d, hist, look, preview, peer, keep) {
       heat(part, x[3]);
       if (hpStyle() === 'off') part.title = tips[x[2]];
       part.dataset.k = x[2];
-      part.tabIndex = 0;
-      part.setAttribute('role', 'button');
+      /* a preview (My account) sits inside a button of its own: nothing in it to tab to (1.0.255) */
+      if (!preview) { part.tabIndex = 0; part.setAttribute('role', 'button'); }
       if (peer) part.dataset.node = peer;
       if (!preview) hloadPanelHooks(part, x[2]);
       line.appendChild(part);
@@ -209,8 +219,7 @@ function hloadChips(host, d, hist, look, preview, peer, keep) {
       }
       heat(c, x[3]);
       c.dataset.k = x[2];
-      c.tabIndex = 0;
-      c.setAttribute('role', 'button');
+      if (!preview) { c.tabIndex = 0; c.setAttribute('role', 'button'); }
       if (hpStyle() !== 'off') c.removeAttribute('title');
       if (peer) c.dataset.node = peer;
       if (!preview) hloadPanelHooks(c, x[2]);
@@ -224,6 +233,12 @@ function hloadDraw(d, into, asLook) {
   var preview = !!into;
   var host = into || $('hload');
   if (!host) return;
+  /* the animations run HL_RUN_S once (1.0.255): a page open for a day begins them again from
+     now - every live graph is drawn anew below (and the panel's with it), so all move together */
+  if (!preview && Date.now() / 1000 - HL_T0 > HL_RUN_S - 600) HL_T0 = Date.now() / 1000;
+  /* the chip that has the keyboard's focus keeps it across the redraw (1.0.255) */
+  var act = !preview && document.activeElement && host.contains(document.activeElement) ? document.activeElement : null;
+  var focusK = act && act.dataset ? act.dataset.k : null, focusNode = act && act.dataset ? act.dataset.node || '' : '';
   var hist;
   var mp = d.mem_total ? 100 * d.mem_used / d.mem_total : null;
   if (preview) hist = hpSample().hist;
@@ -255,6 +270,7 @@ function hloadDraw(d, into, asLook) {
   }
   HLOAD.ctx = was;
   host.hidden = false;
+  if (focusK) { var back = hloadChipOf(focusK, focusNode); if (back) back.focus({preventScroll: true}); }
   if (!preview && HLOAD.open) hloadPanelDraw();
   if (!preview) hlPaint();
 }
@@ -417,6 +433,8 @@ function hloadPanelDraw() {
   var p = $('hload-panel'), k = HLOAD.open;
   if (!p || !k) return;
   var st = hpStyle(), node = HLOAD.openNode || '';
+  /* the same panel drawn anew every tick keeps where it was scrolled to (1.0.255) */
+  var key = k + '/' + node + '/' + st, top = p._key === key ? p.scrollTop : 0;
   clear(p);
   document.querySelectorAll('#hload [data-k]').forEach(function (c) {
     c.classList.toggle('hl-open', (c.dataset.node || '') === node && (st !== 'wide' ? c.dataset.k === k : true));
@@ -430,6 +448,8 @@ function hloadPanelDraw() {
     if (o) { p.className = 'hl-panel hp-tiles'; hpPeer(p, k, node, o); }
     else hpStyleDraw(p, k, st);
   } finally { HLOAD.last = keep[0]; HLOAD.detail = keep[1]; HLOAD.ctx = keep[2]; }
+  p._key = key;
+  p.scrollTop = top;
   hlPaint();
 }
 function hpStyleDraw(p, k, st) {
@@ -744,7 +764,8 @@ function hpPeer(p, k, node, o) {
   else if (k === 'cpu') { kv('Now', hpPct(d.cpu)); if (d.load) kv('load', d.load.join(' / ')); kv('cores', String(d.cores || '')); }
   else if (k === 'mem') { kv('In use', d.mem_total ? bytes(d.mem_used) + ' / ' + bytes(d.mem_total) : '–'); if (d.swap_used) kv('Swap', bytes(d.swap_used)); }
   else if (k === 'disk') { kv('read', hloadRate(d.disk_rd)); kv('written', hloadRate(d.disk_wr)); }
-  else { kv('down', hloadRate(d.net_rx)); kv('up', hloadRate(d.net_tx)); }
+  /* its own words (1.0.255): 'down' alone is a service down elsewhere on the pages */
+  else { kv('received ↓', hloadRate(d.net_rx)); kv('sent ↑', hloadRate(d.net_tx)); }
   p.appendChild(el('p', 'muted small', 'Each core, the disks and the processes of this node are shown on its own pages.'));
 }
 /* A - the tiles */

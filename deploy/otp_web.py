@@ -2614,7 +2614,7 @@ def ntp_read():
             text = f.read()
         out['managed'] = NTP_BEGIN in text
         out['own'] = [l.strip() for l in text.splitlines()
-                      if l.strip().split(' ')[0] in ('server', 'pool', 'peer')][:20]
+                      if (l.split() or [''])[0] in ('server', 'pool', 'peer')][:20]
     except OSError:
         out['managed'] = False
     return out
@@ -2686,7 +2686,9 @@ def ntp_conf_text(text, n):
         return '\n'.join(out).rstrip('\n') + '\n'
     kept = []
     for l in out:
-        if l.strip().split(' ')[0] in NTP_KEYS:
+        # Any whitespace (1.0.255): chrony takes "server<TAB>host" too, and such a line was
+        # left in beside otp's block - two sets of sources.
+        if (l.split() or [''])[0] in NTP_KEYS:
             kept.append('#otp# ' + l)
         else:
             kept.append(l)
@@ -2953,10 +2955,19 @@ def auth_lines():
     with os.fdopen(fd, 'r', encoding='utf-8', errors='replace') as f:
         if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
             raise Refused('%s is not a plain file' % ROOT_AUTH)
-        return f.read(1 << 20).split('\n')
+        return f.read(AUTH_READ_MAX).split('\n')
 
 
 AUTH_KEYS_MAX = 1000
+# What of an authorized_keys is read (1.0.255): a file longer than that is not written again
+# from what was read of it - its end, keys among it, was cut off without a word.
+AUTH_READ_MAX = 1 << 20
+
+
+def auth_too_long(path, size):
+    if size > AUTH_READ_MAX:
+        raise Refused('%s is longer than the %d MiB read of it - it is not written again from a '
+                      'part: shorten it by hand first' % (path, AUTH_READ_MAX >> 20))
 
 
 def auth_keys(lines):
@@ -2992,8 +3003,10 @@ def auth_write(lines):
     except FileNotFoundError:
         os.makedirs(folder, mode=0o700)
     try:
-        if stat.S_ISLNK(os.lstat(ROOT_AUTH).st_mode):
+        st = os.lstat(ROOT_AUTH)
+        if stat.S_ISLNK(st.st_mode):
             raise Refused('%s is a link - put the file itself there' % ROOT_AUTH)
+        auth_too_long(ROOT_AUTH, st.st_size)
     except FileNotFoundError:
         pass
     text = '\n'.join(lines).rstrip('\n') + '\n'
@@ -3169,7 +3182,7 @@ def user_auth_read(pw):
         with os.fdopen(fd, 'r', encoding='utf-8', errors='replace') as f:
             if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
                 raise Refused('%s is not a plain file' % path)
-            return f.read(1 << 20)
+            return f.read(AUTH_READ_MAX)
     return (as_user(pw, go) or '').split('\n')
 
 
@@ -3190,8 +3203,10 @@ def user_auth_write(pw, lines):
         except FileNotFoundError:
             os.mkdir(folder, 0o700)
         try:
-            if stat.S_ISLNK(os.lstat(path).st_mode):
+            st = os.lstat(path)
+            if stat.S_ISLNK(st.st_mode):
                 raise Refused('%s is a link - put the file itself there' % path)
+            auth_too_long(path, st.st_size)
         except FileNotFoundError:
             pass
         fd, tmp = tempfile.mkstemp(prefix='.authorized_keys.', dir=folder)

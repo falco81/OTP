@@ -3221,6 +3221,11 @@ function settingItemBare(s) {
     item.appendChild(pickRow);
   }
   if (s.says) item.appendChild(saysClamped(s.short || s.says));   /* the whole on the (i) (1.0.156) */
+  /* What the server warns of in this setting (1.0.255): the first-enrol SMS to a number every
+     user may change on their own account - shown on it and on the one-time code itself. */
+  var warns = (SETTINGS && SETTINGS.warnings) || {};
+  var warn = warns[s.key] || (s.key === 'portal_first_code' ? warns.portal_first_sms_attr : '');
+  if (warn) item.appendChild(el('div', 'said bad small', warn));
   hsDress(item, s, input);
   return item;
 }

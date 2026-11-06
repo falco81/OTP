@@ -2492,6 +2492,14 @@ function mfaDraw(box, d) {
   head.appendChild(el('b', '', d.stage === 'enrol' ? 'Set up the second step' : 'The second step'));
   head.appendChild(noI18n(el('span', 'muted small mono', ' ' + (d.name || ''))));
   box.appendChild(head);
+  if (d.blocked) {
+    /* held until reset (1.0.255): written in the database by somebody else, not by otp */
+    box.appendChild(el('div', 'said bad', d.blocked));
+    var bfoot = el('div', 'mfa-foot');
+    bfoot.appendChild(mfaOut());
+    box.appendChild(bfoot);
+    return;
+  }
   if (d.stage === 'check') {
     if (d.kind === 'passkey') {
       box.appendChild(el('p', 'lede', 'Face ID, Touch ID or Windows Hello - the passkey of the device you set up'
@@ -2524,12 +2532,15 @@ function mfaDraw(box, d) {
           setButtonIcon(send, 'mail', 'Send another');
           send.classList.remove('primary');
           setTimeout(function () { send.disabled = false; }, 30000);
-          if (!form) form = mfaCodeForm(box, d, 'check', 'Sign in');
-          else form.querySelector('input').focus();
+          form.querySelector('input').focus();
         }).catch(function (e) { send.disabled = false; sent.className = 'said bad'; sent.textContent = String(e.message || e); });
       };
       box.appendChild(send);
       box.appendChild(sent);
+      /* the box for the code always under Send (1.0.255): a code sent before the page was
+         reloaded - or a send refused as too soon (429) - is still written in */
+      form = mfaCodeForm(box, d, 'check', 'Sign in');
+      setTimeout(function () { send.focus(); }, 40);
     }
   } else {
     box.appendChild(el('p', 'lede small', 'After the password these pages ask for a code too - choose how (the account\'s own, not a VPN token).'));
@@ -2537,6 +2548,10 @@ function mfaDraw(box, d) {
     var body = el('div', 'mfa-body');
     /* a passkey offered only where this browser can give one (1.0.254) */
     var ways = (d.methods || ['app']).filter(function (k) { return k !== 'passkey' || pkCan(); });
+    /* a code already sent to prove an address or a phone (1.0.255): after a reload that way
+       opens again, with the box for the code */
+    var was = d.started && (d.started.kind === 'mail' || d.started.kind === 'sms') ? d.started.kind : '';
+    var first = Math.max(0, (ways.length ? ways : ['app']).indexOf(was));
     (ways.length ? ways : ['app']).forEach(function (k, i) {
       var b = el('button', 'mfa-way', MFA_WORDS[k] || k);
       b.type = 'button';
@@ -2545,7 +2560,7 @@ function mfaDraw(box, d) {
         mfaWay(body, d, k);
       };
       seg.appendChild(b);
-      if (i === 0) setTimeout(function () { b.click(); }, 0);
+      if (i === first) setTimeout(function () { b.click(); }, 0);
     });
     box.appendChild(seg);
     box.appendChild(body);
@@ -2572,6 +2587,7 @@ function mfaWay(body, d, kind) {
     pic.appendChild(el('span', 'muted small', 'Making it…'));
     body.appendChild(pic);
     api('mfa', {action: 'enrol_start', kind: 'app'}).then(function (r) {
+      d.started = null;             /* the code sent before is not the one asked for now (1.0.255) */
       clear(pic);
       var img = el('img');
       img.src = r.qr;
@@ -2603,6 +2619,7 @@ function mfaWay(body, d, kind) {
       sent.className = 'said good';
       sent.textContent = 'Sent to ' + r.sent_to + ' - write the code from it below.';
       setButtonIcon(send, kind === 'mail' ? 'mail' : 'phone', 'Send another');
+      d.started = {kind: kind, dest: r.sent_to};     /* the way now being proven (1.0.255) */
       setTimeout(function () { send.disabled = false; }, 30000);
       if (!form) form = mfaCodeForm(body, d, 'enrol_confirm', 'Sign in');
       else form.querySelector('input').focus();
@@ -2611,4 +2628,11 @@ function mfaWay(body, d, kind) {
   dest.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send.click(); } });
   body.appendChild(drow);
   body.appendChild(sent);
+  /* a code went to this way before the page was reloaded (1.0.255): its box at once, as after Send */
+  if (d.started && d.started.kind === kind) {
+    sent.className = 'said good';
+    sent.textContent = 'Sent to ' + d.started.dest + ' - write the code from it below.';
+    setButtonIcon(send, kind === 'mail' ? 'mail' : 'phone', 'Send another');
+    form = mfaCodeForm(body, d, 'enrol_confirm', 'Sign in');
+  }
 }
