@@ -765,7 +765,16 @@ p = sys.argv[1]
 text = open(p).read()
 said = []
 admin = 'fastcgi_param  SCRIPT_FILENAME $document_root/admin/index.php;'
-if admin in text and 'client_max_body_size 4g' not in text:
+# Asked of the admin block itself, for any size (1.0.255): nginx_upload_guard
+# turns its 4g into 32m where nginx has no auth_request, the next install put
+# a second client_max_body_size in, nginx -t refused the file - and every
+# other addition of the upgrade went with it.
+ablk = re.search(r'(?ms)^([ \t]*)location = /admin/ \{\n(.*?)^\1\}\n', text)
+if ablk and admin in ablk.group(2):
+    sized = 'client_max_body_size' in ablk.group(2)
+else:
+    sized = 'client_max_body_size 4g' in text
+if admin in text and not sized:
     text = text.replace(admin, admin + """
         # Putting a copy of the database back: the file itself is the body.
         client_max_body_size 4g;
@@ -1955,8 +1964,11 @@ sys.exit(0 if any(ipaddress.ip_address("127.0.0.1") in ipaddress.ip_network(r["a
         TEST_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
         OTP_SECRET="$TEST_SECRET" as_otp --add-client localhost --address 127.0.0.1 --secret - \
             --note "for radtest and the Test page, from this machine" >/dev/null
-        good "localhost (127.0.0.1), secret $TEST_SECRET"
-        note "radtest NAME CODE 127.0.0.1 0 $TEST_SECRET   - or simply:  otp --radtest NAME CODE"
+        # Its secret never printed (1.0.255): the install's output is kept in logs and
+        # terminals' scrollback, and radtest's command line is shown by ps and kept in history.
+        unset TEST_SECRET
+        good "localhost (127.0.0.1), its secret kept in otp"
+        note "try a sign-in:  otp --radtest NAME -   (the password and code are asked for; the secret is that client's)"
     fi
 fi
 

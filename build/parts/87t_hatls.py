@@ -435,15 +435,43 @@ def _hatls_off_tick(store, w, st):
 
 
 PGTLS_LOCK = threading.Lock()
+# How long this thread's pgtls_send waits for a request still in pgtls.ask (1.0.255): the
+# daemon's main loop sets 0 - its hatls_tick waited there up to 30 s, the heartbeat with it,
+# and the other node took this one for gone. The pages and the command line: 30 s as before.
+PGTLS_WAIT = threading.local()
 
 
-def pgtls_send(data):
+class PgtlsBusy(Exception):
+    """pgtls.ask holds a request not yet read, and this thread does not wait (1.0.255)."""
+
+
+def _pgtls_ask_fresh(stale_s=180):
+    """A request to the root helper still unread, and not for long (1.0.255): one left there longer
+    (otp-web.path stopped) is written over as before, and the step said why it waits - not passed
+    over at every tick with nothing said."""
+    try:
+        return time.time() - (WEB_DIR / PGTLS_ASK).stat().st_mtime < stale_s
+    except OSError:
+        return False
+
+
+def pgtls_send(data, wait_s=None):
     """A request into the root helper's pgtls.ask (1.0.139): one waiting there
     and not yet read is not written over - the change of the addresses and the
     link's TLS used the same file and the same temporary name, and one of
-    them waited for an answer that never came."""
-    with PGTLS_LOCK:
-        end = time.time() + 30
+    them waited for an answer that never came. wait_s 0 (the main loop, 1.0.255):
+    PgtlsBusy at once instead of waiting - tried again at its next pass."""
+    if wait_s is None:
+        wait_s = getattr(PGTLS_WAIT, 's', 30)
+    if wait_s <= 0:
+        if not PGTLS_LOCK.acquire(False):
+            raise PgtlsBusy('another request to the root helper is being made')
+    else:
+        PGTLS_LOCK.acquire()
+    try:
+        if wait_s <= 0 and _pgtls_ask_fresh():
+            raise PgtlsBusy('the root helper has not read the request before yet')
+        end = time.time() + wait_s
         while (WEB_DIR / PGTLS_ASK).exists() and time.time() < end:
             time.sleep(0.5)
         tmp = WEB_DIR / ('.%s.%s' % (PGTLS_ASK, secrets.token_hex(6)))
@@ -451,6 +479,8 @@ def pgtls_send(data):
         with os.fdopen(fd, 'w') as f:
             f.write(json.dumps(data))
         os.replace(str(tmp), str(WEB_DIR / PGTLS_ASK))
+    finally:
+        PGTLS_LOCK.release()
 
 
 def _hatls_ask(st, what):
@@ -614,12 +644,17 @@ def hatls_check(store):
                     % (node_name(), '; '.join(wrong)), 'warn')
 
 
-def hatls_tick(store):
-    """One look at where this node is; every step is safe to take again."""
+def hatls_tick(store, ask_wait_s=None):
+    """One look at where this node is; every step is safe to take again. ask_wait_s 0
+    (the main loop, 1.0.255): a request to the root helper never waits for one before it -
+    the step is taken again at the next pass."""
     if CONFIG.get('ha_mode') != 'replicated' or getattr(store.db, 'engine', '') != 'postgres':
         return
     if not HATLS_LOCK.acquire(False):
         return
+    was = getattr(PGTLS_WAIT, 's', None)
+    if ask_wait_s is not None:
+        PGTLS_WAIT.s = ask_wait_s
     try:
         if time.time() >= HATLS_CHECK['next']:
             HATLS_CHECK['next'] = time.time() + 600
@@ -628,11 +663,17 @@ def hatls_tick(store):
             except Exception as e:                      # noqa: BLE001
                 log('looking at the link between the databases: %s' % e, 'warn')
         _hatls_tick(store)
+    except PgtlsBusy:
+        pass                    # the root helper still busy with one before: the next pass (1.0.255)
     except Exception as e:                              # noqa: BLE001
         # Spared (1.0.252): a step that fails the same way fails again at every pass of the loop.
         log_sparing('hatls:' + str(e)[:60], 'encrypting the link between the databases: %s' % e,
                     'warn', every=600)
     finally:
+        if was is None:
+            PGTLS_WAIT.__dict__.pop('s', None)
+        else:
+            PGTLS_WAIT.s = was
         HATLS_LOCK.release()
 
 
@@ -749,6 +790,8 @@ def _hatls_tick(store):
                     st['said'] = 'waiting for the cluster\'s authority to come over'
                     hatls_put(store, st)
                     return
+            if getattr(PGTLS_WAIT, 's', 30) <= 0 and _pgtls_ask_fresh():
+                return          # the root helper busy with one before: no key made for nothing
             key, crt = hatls_issue(store, st.get('names') or hatls_names())
             st['cert_end'] = _cert_end(crt)
             _hatls_ask(st, {'do': 'server', 'cert': crt, 'key': key,

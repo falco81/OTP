@@ -1750,7 +1750,8 @@ class Daemon(object):
             # (1.0.76): logical replication sends every column of a row, and
             # one the other node does not have yet stopped what goes to it
             # until it was upgraded too. Old code there never reads them.
-            threading.Thread(target=ha_peer_columns, name='peer-columns', daemon=True).start()
+            threading.Thread(target=ha_peer_columns_start, name='peer-columns',
+                             daemon=True).start()
         self.radius.start()
         self.api = ApiServer(self)
         self.api.start()
@@ -1890,15 +1891,21 @@ class Daemon(object):
                     log_sparing('rbackup-tick', 'the scheduled backup: %s' % e, 'warn', every=600)
                 if CONFIG.get('ha_mode') == 'replicated':
                     try:
-                        hatls_tick(self.store)  # the link between the databases (1.0.104)
+                        # Never waiting on the root helper for a request before it (1.0.255):
+                        # up to 30 s here held the heartbeat back.
+                        hatls_tick(self.store, ask_wait_s=0)    # the link between the databases (1.0.104)
                     except Exception as e:      # noqa: BLE001
                         log_sparing('hatls-tick', 'the link between the databases: %s' % e,
                                     'warn', every=600)
-                    try:
-                        readdress_dropold_tick(self.store)  # a new address kept (1.0.137)
-                    except Exception as e:      # noqa: BLE001
-                        log_sparing('dropold-tick', 'the other node\'s old address: %s' % e,
-                                    'warn', every=600)
+                    # In a thread of its own too (1.0.255): it waits up to 90 s on the root
+                    # helper, as readdress_tick below did before 1.0.205.
+                    def dropold(daemon=self):
+                        try:
+                            readdress_dropold_tick(daemon.store)    # a new address kept (1.0.137)
+                        except Exception as e:      # noqa: BLE001
+                            log_sparing('dropold-tick', 'the other node\'s old address: %s' % e,
+                                        'warn', every=600)
+                    self.background('dropold', dropold)
                     # In a thread of its own (1.0.205): it waits up to a minute on the
                     # root helper, and the heartbeat waited with it - the other
                     # node took this one for gone.

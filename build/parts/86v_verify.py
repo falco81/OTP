@@ -130,7 +130,10 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
     def say(n, t):
         if progress:
             progress(n, 4, t)
-    targets = [t for t in rb_targets(store) if t.get('enabled') and (not tid or t['id'] == tid)]
+    # One named is tried even while switched off (1.0.255): Try it on the card of a destination
+    # kept for the old copies said "no such destination". Switched on counts only with none named.
+    targets = [t for t in rb_targets(store) if t['id'] == tid] if tid else \
+        [t for t in rb_targets(store) if t.get('enabled')]
     if tid and not targets:
         raise RbError('no such destination')
     if not targets:

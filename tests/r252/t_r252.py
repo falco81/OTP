@@ -135,7 +135,8 @@ ok('room looked for before a download or an upload', 'rb_room(h.store)\n        
    '2 * want + BACKUP_ROOM_MIN' in SRC)
 ok('the first pin over another check drops the saved password',
    "t.get('tls_check') != 'pin' or t.get('pin') != pin" in SRC)
-ok('a destination taken away mid-run: the others still tried', "except ValueError:\n                # Taken away" in SRC)
+ok('a destination taken away mid-run: the others still tried', "except ValueError:\n                # Taken away" in SRC
+   or "except Exception as e:                      # noqa: BLE001\n                # Taken away" in SRC)
 ok('the hatls tick spared', "log_sparing('hatls:'" in SRC)
 
 # the admin's second step: five wrong codes end the sign-in
@@ -249,7 +250,8 @@ ok('no 5 min lock wait at the start; missing columns tried again', "lock_timeout
 ok('a quick store writes its mark', "if quick or not getattr(self.db, 'columns_missing', False):" in SRC)
 ok('the settings read through the guard at the start and on the command line',
    SRC.count('load_config(saved=dbguard_settings(store.settings_saved(), store))') >= 6)
-ok('the guard\'s counts of sign-ins over pruned', "k.startswith('sig:x:') and k.rsplit(':', 1)[0] not in pre" in SRC)
+ok('the guard\'s counts of sign-ins over pruned', ("k.startswith('sig:x:') and k.rsplit(':', 1)[0] not in pre" in SRC or
+   "k.startswith(('sig:x:', 'sig:xm:')) and\n                          k.rsplit(':', 1)[0] not in pre" in SRC))
 ok('more work left by a restart taken away', "'otp-verify-'" in SRC and "'otp-sql-'" in SRC)
 ok('SIGHUP: config.json taken as read only once read', 'self.reload_all(\'SIGHUP\')\n            # Only once read' in SRC)
 ok('the code sent to the old token tied to it', "'mark': portal_token_mark(tok)" in SRC and SRC.count('portal_old_same(h, s, old)') == 3)

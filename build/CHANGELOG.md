@@ -4,6 +4,56 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.255 — 6 November 2026
+
+Two rounds of looking for faults over the whole of otp (RADIUS, the sign-ins and the second step,
+the enrolment pages, the cluster, the network, backups, certificates, the command line, the
+console and the installer), each put right.
+
+- RADIUS: in a realm where the password is followed by the code, nothing that is not a code is any longer taken off the password - the directory never gets a password cut short (a wrong password counted there, the account locked out in the end) - and a space or line end typed after the code no longer refuses the code.
+- RADIUS: a code by mail or SMS, or from the app in the second window, that was right is let in even when the database fails to drop the question or mark the token used afterwards; this is logged, and the VPN's retry is no longer refused as a used code.
+- RADIUS: the realm's and the groups' reply is built and measured before the code is used (or sent): a reply that cannot be built, or too long for a packet, is refused without using up the code.
+- Sign-in protection: a token key this node cannot open, a directory that could not say whether a name is another account, and an answer to a second window that ran out are no longer counted as guesses from the place they came from.
+- Performance meter: a page left open for more than a day keeps its graphs moving (the animation's start is moved to now before its 24 h run ends).
+- Performance meter: the chip with the keyboard focus keeps it across the redraw every 2 s, and an open panel keeps its scroll position.
+- Performance meter: a node whose clock is stepped back no longer leaves its graphs blank - the page and the daemon (its own history and the other node's) start that node's readings again, and a since later than now is ignored.
+- Performance meter: the other node's network rate reads "received ↓ / sent ↑" instead of the generic "down / up" (in Czech it said "nefunguje").
+- Performance meter: the previews in My account no longer add tab stops inside their picker buttons.
+- Second step by e-mail or SMS: after a reload, or a send refused as too soon, the box for the code is still shown; during setup, a way already sent a code reopens with its box.
+- Czech: the load balancer sign-in throttle message and "that request did not come from this page".
+- The console's Delete for an account, a client, a realm, a directory and an SSH token works again: the command it ran refused for want of --yes, though the console had asked already.
+- An upgrade no longer loses every nginx addition on a machine whose nginx has no auth_request: the admin block's 32 MB limit was taken as missing, a second one was put in, and nginx refused the file.
+- otp --acme-order takes the same lease as the pages and the renewals, and looks names up with ACME's DNS servers: ordered while a node renewed it, both spent the CA's limit.
+- otp --rbackup-now tries the backup afterwards when rbackup_verify=after, as the pages do, refuses while a backup is being made on this node (--yes over it), and with --rbackup-all asks the other nodes to make theirs too.
+- otp --status asks whether the RADIUS ports are listened on with the address family of radius_bind, and only a port in use counts as listened on.
+- The installer no longer prints the secret of the test client for 127.0.0.1, nor a radtest command line with it.
+- Settings - SSH keys refuses to write an authorized_keys longer than the 1 MiB read of it: the keys past that were dropped.
+- Settings - Time recognises the file's own server, pool and other chrony lines separated by tabs or several spaces: they were left in beside otp's block.
+- A column added while the daemon runs (tried again after a busy start, or on the other node of a replicated pair) waits only a moment for its table (PostgreSQL 300 ms, MariaDB 1 s) and is tried again later: its 10 s wait held every sign-in queued behind it, and RADIUS failed meanwhile.
+- The daemon's main loop no longer waits on the root helper: the link's TLS steps try again at the next pass while a request before them is unread (one left unread for 3 min is written over, as before), and taking the other node's old address out of pg_hba.conf runs in a thread of its own. Up to 90 s there held the heartbeat back, and the other node took this one for gone.
+- A rebuild from the other node that fails after the tables were emptied puts the node in maintenance before it leaves the rebuild: for a moment it answered RADIUS from the emptied tables.
+- The connection to a database on the same machine goes back to no TLS only after two failures in a row with TLS alone, and never while PostgreSQL is starting, stopping or refusing: a restart of PostgreSQL dropped TLS for good.
+- Watching whether the nodes lost each other is timed on the monotonic clock: a clock stepped forward by NTP made a node step aside at once, and one stepped back held off a real split.
+- Backups to other machines: the list of backups sent and each destination's last send and Try it are kept per node (`rbackup:runs:NODE`, `rbackup:last:NODE:ID`, `rbackup:tried:NODE:ID`) and read merged. In a cluster one node's write no longer takes away the other's, a destination changed meanwhile is no longer lost, and the row is no longer made by both nodes at once. The list kept by versions before is still read, and is still written while a node of one is in the cluster.
+- Backups to other machines: "this node's backup" means this node of this site. Another site's node of the same name is no longer verified, put back or taken as its own. Two nodes whose names give the same backup file name are reported in the alerts, and their old backups are not taken away.
+- Backups to other machines: the room check counts PostgreSQL and MariaDB too, by the size of the node's last backup (before the first one, as until now).
+- Backups to other machines: trying a destination named on its card works while it is switched off.
+- Automatic certificates: right after the start, the renewal check waits for DNS to say the node's full name. A certificate is no longer ordered for the short host name.
+- Network: going back from a new network that was not kept is no longer refused on a cluster sharing one database, nor while a restart or power-off is under way. A restart or power-off is refused while a node's new network waits to be kept or is going back.
+- Network: search domains and DNS servers are checked as the root helper checks them (no dot at the end, no zone id). When the change stops before the network was touched, the node's settings, config.json and certificate are put back as they were.
+- With db_guard on, the marks of the administration's second step in a sign-in are signed too: a sign-in opened with the password alone could no longer be made whole by changing its row in the database (sign-ins opened by 1.0.254 sign in again once while the second step is on; while a node of 1.0.254 is in the cluster, its sign-ins are taken as before).
+- With db_guard on, an account whose second step was changed in the database by somebody else (a row otp did not write) is held until it is reset, instead of setting up a new one with the password alone.
+- Switching the second step on ended password-only sign-ins only where the database had them at that moment: one opened on the other node before it read the settings again stayed whole. Such sign-ins now give the second step on either node.
+- Two requests at once could each send a second-step code past the 30-second gap and the limit per sign-in; the slot is now taken before the code goes and given back if it fails.
+- New setting "Its SMS only to a number in these attributes" (portal_first_sms_attr): which directory attributes the one-time code before the first token may be sent to by SMS; empty works as before. Settings shows a warning when the code goes to mobile or telephoneNumber, which every user may change on their own account in Active Directory.
+- Lockouts of the one-time code before the first token and of sign-ins by the load balancer are now named on the Locked out page and can be cleared there.
+- The sign-in throttle counted a name typed with composed and decomposed accents as two people.
+- `/api/portal/me` now runs the same checks as every other step of the enrolment pages: a sign-in by the balancer after SSO was switched off, or one that now needs the one-time code, is ended instead of shown as signed in.
+- The second step held (with the guard against writes to the database on) says so on the page,
+  with the way out (a reset by another full administrator), instead of offering a way to set up.
+- `otp --acme-order` and a renewal by this node's daemon no longer order the same certificate
+  together: the daemon leaves a name the command line holds.
+
 ## 1.0.254 — 6 November 2026
 
 A passkey (Face ID, Touch ID, Windows Hello) as the second step of the administration, and an

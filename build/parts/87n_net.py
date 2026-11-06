@@ -122,6 +122,20 @@ def net_current_ip(now):
     return ''
 
 
+# A name as the root helper takes it (otp_web.py NAME_RE, 1.0.255): a search domain it refuses
+# (a dot at its end) was only refused there - after this node's settings had been written.
+NET_DOMAIN_RE = re.compile(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
+                           r'(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z')
+
+
+def _net_dns_ok(x):
+    """A DNS server as root takes it: a plain address, no zone id (fe80::1%eth0)."""
+    try:
+        return plain_ip(x, 'address')
+    except ValueError:
+        return None
+
+
 def net_check(store, node, want, rollback=False):
     """What the page asked for, made whole and checked against the node as it
     said it is; with the plan in words. Raises ValueError."""
@@ -160,16 +174,27 @@ def net_check(store, node, want, rollback=False):
         if g.version != 4 or g not in a4.network or g == a4.ip:
             raise ValueError('the gateway %s is not another address in %s' % (g, a4.network))
     dns = _net_list(v4.get('dns'))
+    if rollback:
+        # Going back is never refused for what NetworkManager had (1.0.255): what root would
+        # not take is left out - the network kept before is put back whole by root anyway.
+        dns = [x for x in dns if _net_dns_ok(x) and _net_dns_ok(x).version == 4]
     for x in dns:
-        try:
-            d4 = ipaddress.ip_address(x)
-        except ValueError:
+        d4 = _net_dns_ok(x)          # as root checks it (1.0.255): no zone id
+        if d4 is None:
             raise ValueError('%r is not the address of a DNS server' % x)
         if d4.version != 4:
             # The IPv4 side's servers are IPv4 ones (1.0.209): root refused the
             # whole change for an IPv6 one put here.
             raise ValueError('%s is an IPv6 address - put it with the IPv6 DNS servers' % x)
     search = _net_list(v4.get('search'), 6)
+    if rollback:
+        search = [x for x in search if NET_DOMAIN_RE.match(x)]
+    for x in search:
+        if not NET_DOMAIN_RE.match(x):
+            # Refused here, before anything is written (1.0.255) - root refused it only once
+            # this node's settings named the new address.
+            raise ValueError('%r is not a search domain: a DNS name such as example.cz, with no '
+                             'dot at its end' % x)
     v6 = want.get('ipv6') or {}
     on6 = bool(v6.get('on'))
     mode6 = 'off'
@@ -188,15 +213,15 @@ def net_check(store, node, want, rollback=False):
         g6 = str(v6.get('gw') or '').strip()
         if g6:
             try:
-                if ipaddress.ip_address(g6).version != 6:
+                if plain_ip(g6, 'address').version != 6:      # no zone id, as root (1.0.255)
                     raise ValueError
             except ValueError:
                 raise ValueError('the IPv6 gateway is one IPv6 address')
     dns6 = _net_list(v6.get('dns')) if on6 else []
+    if rollback:
+        dns6 = [x for x in dns6 if _net_dns_ok(x)]
     for x in dns6:
-        try:
-            ipaddress.ip_address(x)
-        except ValueError:
+        if _net_dns_ok(x) is None:  # as root checks it (1.0.255): no zone id
             raise ValueError('%r is not the address of a DNS server' % x)
     host = str(want.get('hostname') or '').strip().rstrip('.').lower()
     # The name the node has now, kept as it is, may be a short one - and going
@@ -236,7 +261,9 @@ def net_check(store, node, want, rollback=False):
     elif ip_changed and many:
         # One database for both (1.0.211): the other node reaches it - or is let into it -
         # at the old address, and nothing here moves that. Done by hand, and said so.
-        if not want.get('shared_db_ok'):
+        # Never refused going back (1.0.255): the old network of a trial not kept stayed - the
+        # node cut off - for a box nobody can tick there.
+        if not want.get('shared_db_ok') and not rollback:
             raise ValueError('the nodes share one database: the other node reaches it (db_host) '
                              'or is let into it (pg_hba.conf) at %s - that is not moved from '
                              'here. Change it there by hand, then tick that it is done'
@@ -274,6 +301,16 @@ def net_job_active(job):
         time.time() - float(job.get('moved') or job.get('at') or 0) < NET_JOB_LIVE_S
 
 
+def net_job_on_trial(job):
+    """A new network waiting to be kept, or going back (1.0.255): not active for net_ask - its own
+    going back is asked then - but a restart or power-off planned meanwhile went ahead, and a
+    node powered off could not go back."""
+    if not isinstance(job, dict) or job.get('state') not in ('trial', 'going back'):
+        return False
+    return time.time() < max(fnum(job.get('trial_until')),
+                             fnum(job.get('moved') or job.get('at'))) + NET_JOB_LIVE_S
+
+
 def cluster_busy(store, skip=()):
     """What takes a node out of service and is going on anywhere in the cluster
     now, or '' (1.0.211): a new network on one node, a restart, a system update
@@ -300,7 +337,9 @@ def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     old network asked back by the node itself - not put on trial again."""
     if net_job_active(_meta_json(store, 'net:job:' + node)):
         raise ValueError('%s is changing its network already' % node)
-    if power_busy(store):
+    # Going back is not stopped by a restart under way (1.0.255): it failed, and the network of
+    # the trial not kept stayed for good.
+    if not rollback and power_busy(store):
         raise ValueError('a restart or a power-off is under way')
     if not rollback:
         busy = cluster_busy(store, skip=('power',))
@@ -394,14 +433,45 @@ NET_UNDO_KEYS = ('radius_bind', 'mail_helo', 'isemon_hostname')
 NET_UNDO_FILE_KEYS = ('db_host', 'ha_address')
 
 
+def net_undo_now(store, snap=''):
+    """This node's own settings and certificate as they are now."""
+    return {'snap': snap, 'at': time.time(),
+            'settings': {k: CONFIG.get(k) for k in NET_UNDO_KEYS},
+            'file': {k: FILE_CONFIG.get(k) for k in NET_UNDO_FILE_KEYS if k in FILE_CONFIG},
+            'tls': store.get_meta('web:tls:' + node_name()) or ''}
+
+
 def net_undo_keep(store, snap):
     """This node's own settings and certificate as they are before a change on
     trial (1.0.139) - not in the job, which the pages read."""
-    store.set_meta('net:undo:' + node_name(), json.dumps({
-        'snap': snap, 'at': time.time(),
-        'settings': {k: CONFIG.get(k) for k in NET_UNDO_KEYS},
-        'file': {k: FILE_CONFIG.get(k) for k in NET_UNDO_FILE_KEYS if k in FILE_CONFIG},
-        'tls': store.get_meta('web:tls:' + node_name()) or ''}))
+    store.set_meta('net:undo:' + node_name(), json.dumps(net_undo_now(store, snap)))
+
+
+def net_undo_put_back(daemon, undo, by):
+    """A job stopped before the network changed (1.0.255): this node's settings, config.json
+    and certificate it had written already put back as they were - left, RADIUS listened on an
+    address that never came and db_host named it. Words of what was put back."""
+    store = daemon.store
+    me = node_name()
+    said = []
+    changes = {k: v for k, v in odict(undo.get('settings')).items()
+               if str(CONFIG.get(k) or '') != str(v or '')}
+    if changes:
+        daemon.save_settings(changes, by=by, node=me)
+        said.append(', '.join('%s = %s' % kv for kv in sorted(changes.items())))
+    files = {k: v for k, v in odict(undo.get('file')).items()
+             if str(FILE_CONFIG.get(k) or '') != str(v or '')}
+    if files:
+        write_file_settings(files)
+        CONFIG.update(files)
+        said.append('config.json: ' + ', '.join('%s = %s' % kv for kv in sorted(files.items())))
+    if undo.get('tls') is not None and (store.get_meta('web:tls:' + me) or '') != undo['tls']:
+        if undo['tls']:
+            store.set_meta('web:tls:' + me, undo['tls'])
+        else:
+            store.drop_meta('web:tls:' + me)
+        said.append('the certificate')
+    return said
 
 
 def net_undo_get(store, snap):
@@ -429,6 +499,21 @@ def net_job_undo_told(daemon, job, by):
     job['told'] = False
 
 
+# What root's net_checked() / net_apply() refuse before they touch anything (otp_web.py) - a
+# refusal after, of nmcli or hostnamectl, may have changed the network.
+NET_ROOT_REFUSED_FIRST = ('which connection?', 'the IPv4 address is', 'the gateway ',
+                          'IPv6 is off', 'the IPv6 address is', 'the IPv6 gateway is',
+                          'the host name is the whole', 'NetworkManager (nmcli) is not on',
+                          'there is no connection')
+NET_ROOT_REFUSED_FIRST_IN = (' is not the address of a DNS server', ' is not a domain')
+
+
+def net_root_refused_first(said):
+    said = str(said or '')
+    return said.startswith(NET_ROOT_REFUSED_FIRST) or (
+        said[:1] in ('"', "'") and any(said.endswith(w) for w in NET_ROOT_REFUSED_FIRST_IN))
+
+
 def net_job_run(daemon, ask):
     store = daemon.store
     me = node_name()
@@ -450,6 +535,10 @@ def net_job_run(daemon, ask):
             net_undo_keep(store, job['snap'])
     job['rollback'] = bool(ask.get('rollback'))
     undo = net_undo_get(store, ask.get('snap')) if ask.get('rollback') else None
+    # What this node has before anything is written (1.0.255): put back if the job stops before
+    # the network changed. Kept here, not in 'net:undo' - a going back may need that one again.
+    before = net_undo_now(store)
+    applied = False
     # Maintenance put on by the job it goes back from: taken off by this one.
     if ask.get('maint'):
         job['maint'] = True
@@ -584,6 +673,7 @@ def net_job_run(daemon, ask):
                             'old_hostname': w['old_hostname'], 'reboot_in': 8,
                             'snapshot': job.get('snap') or '',
                             'rollback': bool(ask.get('rollback'))}, 90)
+        applied = True
         job['before'] = got.get('before') or {}
         job['down_at'] = time.time() + 8
         _job_put(store, job, '; '.join(got.get('said') or []) or 'set', 80)
@@ -598,13 +688,26 @@ def net_job_run(daemon, ask):
                      'in and restart; waiting for that', job.get('pct'), ok=False)
             return
         net_job_undo_told(daemon, job, by)
+        # Root refused the request itself (a search domain it does not take, 1.0.255): the
+        # network was not changed - nor are this node's settings left naming the new address.
+        unchanged = job.get('state') != 'rebooting' or (
+            not applied and net_root_refused_first(str(e)))
+        if unchanged:
+            try:
+                said = net_undo_put_back(daemon, before, by)
+                if said:
+                    _job_put(store, job, 'put back as it was: %s' % '; '.join(said),
+                             job.get('pct'))
+            except Exception as e2:                     # noqa: BLE001
+                _job_put(store, job, 'this node\'s settings could not be put back as they '
+                         'were: %s' % e2, job.get('pct'), ok=False)
         if job.get('maint'):
             try:
                 maintenance_set(store, False, '', by)
             except Exception:                           # noqa: BLE001
                 pass
         _job_put(store, job, 'stopped: %s - nothing of the network was changed' % e
-                 if job.get('state') != 'rebooting' else 'stopped: %s' % e, job.get('pct'),
+                 if unchanged else 'stopped: %s' % e, job.get('pct'),
                  ok=False, state='failed')
         store.add_event('settings', 'the new network of %s was not put in: %s' % (me, e),
                         'bad', who=by)
@@ -956,6 +1059,11 @@ def power_ask(store, how, targets, order, by, keep_service=False, from_osup=Fals
     for t in targets:
         if net_job_active(_meta_json(store, 'net:job:' + t)):
             raise ValueError('%s is changing its network' % t)
+    for n in host_nodes(store):
+        # Any node of the cluster (1.0.255): going back restarts it, and the other one answers.
+        if net_job_on_trial(_meta_json(store, 'net:job:' + n)):
+            raise ValueError('the new network of %s waits to be kept - keep it or let it go back '
+                             'first' % n)
     if order == 'rolling':
         # The node this page is not on last: the page stays with the other
         # while the first restarts.

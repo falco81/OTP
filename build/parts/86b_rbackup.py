@@ -70,6 +70,95 @@ def rb_target(store, tid):
     return next((t for t in rb_targets(store) if t['id'] == str(tid)), None)
 
 
+# What each node last did at a destination, in a row of its own (1.0.255): 'last' (sent) and
+# 'tried' (Try it) were written into 'rbackup:targets' by both nodes - one node's write took
+# away the other's, a destination changed on the pages meanwhile was lost, and the row is a signed
+# one. 'rbackup:last:NODE:ID' / 'rbackup:tried:NODE:ID', written only by NODE; read merged, with
+# what an older version kept in the destination itself.
+RB_STATUS_KINDS = ('last', 'tried')
+
+
+def rb_status_key(kind, tid, node=None):
+    return 'rbackup:%s:%s:%s' % (kind, node or node_name(), tid)
+
+
+def rb_status_put(store, tid, kind, value):
+    """This node's own word of a destination - only while the destination is there."""
+    if not rb_target(store, tid):
+        return False
+    store.set_meta(rb_status_key(kind, tid), json.dumps(value, default=str))
+    return True
+
+
+def rb_status_rows(store):
+    """{(kind, tid): {node: value}} of every node."""
+    out = {}
+    try:
+        rows = store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'rbackup:last:%' OR "
+                             "k LIKE 'rbackup:tried:%'")
+    except Exception:                                   # noqa: BLE001
+        return out
+    for r in rows:
+        kind, _, rest = str(r['k'])[len('rbackup:'):].partition(':')
+        node, _, tid = rest.rpartition(':')
+        v = json_obj(r['v'], dict)
+        if kind in RB_STATUS_KINDS and node and tid and isinstance(v, dict):
+            out.setdefault((kind, tid), {})[node] = dict(v, node=node)
+    return out
+
+
+def rb_with_status(store, targets=None):
+    """The destinations with 'last' and 'tried' the newest of any node's (and '<kind>_nodes':
+    each node's) - copies; rbackup:targets is not written."""
+    rows = rb_status_rows(store)
+    out = []
+    for t in (rb_targets(store) if targets is None else targets):
+        t = dict(t)
+        for kind in RB_STATUS_KINDS:
+            each = dict(rows.get((kind, t['id'])) or {})
+            had = t.get(kind) if isinstance(t.get(kind), dict) else None
+            got = list(each.values()) + ([had] if had else [])
+            if got:
+                t[kind] = max(got, key=lambda x: fnum(x.get('at')))
+                t[kind + '_nodes'] = each
+        out.append(t)
+    return out
+
+
+def rb_status_drop(store, tid):
+    """A destination taken away: every node's word of it with it."""
+    try:
+        for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'rbackup:last:%' OR "
+                               "k LIKE 'rbackup:tried:%'"):
+            if str(r['k']).endswith(':' + str(tid)):
+                store.drop_meta(r['k'])
+    except Exception as e:                              # noqa: BLE001
+        log('remote backup: what the nodes said of a destination taken away is left: %s' % e,
+            'warn')
+
+
+def rb_slug_clashes(names):
+    """Nodes whose backup files are named alike (1.0.255): rb_slug() makes "otp-1" and "otp_1"
+    one name, and a share may not tell "OTP1" from "otp1" - each node took the other's old
+    backups away as its own. [[name, name], ...]."""
+    seen = {}
+    for n in names:
+        seen.setdefault(rb_slug(n).lower(), []).append(n)
+    return [sorted(v) for v in seen.values() if len(set(v)) > 1]
+
+
+def rb_slug_clash(store):
+    """The other nodes whose backups are named as this node's."""
+    try:
+        names = [node_name()] + [n['name'] for n in ha_nodes(store) if n['name'] != node_name()]
+    except Exception:                                   # noqa: BLE001
+        return []
+    for g in rb_slug_clashes(names):
+        if node_name() in g:
+            return [n for n in g if n != node_name()]
+    return []
+
+
 def rb_secret(t, k):
     v = t.get(k) or ''
     return (unseal_secret(v, bind=RB_BIND) or '') if v else ''
@@ -272,6 +361,7 @@ def rb_delete(store, tid, by):
         if not t:
             raise ValueError('no such destination')
         rb_put_targets(store, [x for x in targets if x['id'] != t['id']])
+    rb_status_drop(store, t['id'])         # 1.0.255
     store.add_event('settings', '%s took away the backup destination %s' % (by, t['name']),
                     'warn', who=by)
 
@@ -1190,19 +1280,24 @@ def rb_companions(name):
     return [name + '.sha256', base + '-RESTORE.md']
 
 
+def rb_mine(m):
+    """A backup's name (RB_NAME_RE's match) is this node's of this site (1.0.255: the node alone
+    took another site's node of the same name for this one)."""
+    return bool(m) and m.group('node') == rb_slug(node_name()) and \
+        m.group('site') == rb_slug(CONFIG.get('site_name') or 'otp')
+
+
 def rb_retain(tr, keep, days, now=None, just=''):
     """This node's backups at a destination beyond what is kept, taken away -
     never the newest, never the one `just` sent, and none stamped ahead of now (1.0.249: made with
     the clock ahead, they were the newest for good and every new one went at once)."""
     now = now or time.time()
-    mine = rb_slug(node_name())
     files = tr.list()
     names = set(x['name'] for x in files)
     ours = []
     for x in files:
         m = RB_NAME_RE.match(x['name'])
-        if m and m.group('node') == mine and m.group('site') == rb_slug(
-                CONFIG.get('site_name') or 'otp'):
+        if rb_mine(m):
             try:
                 when = datetime.strptime(m.group('stamp'), '%Y%m%d-%H%M%S').timestamp()
             except ValueError:
@@ -1239,6 +1334,16 @@ def rb_room(store, times=2):
             size = os.path.getsize(str(store.db.path))
         except (OSError, TypeError):
             size = 0
+    else:
+        # PostgreSQL and MariaDB counted too (1.0.255): 0 there, and a backup filled the disk all
+        # the same. The size of this node's last backup (the copy is of the rows, not the
+        # server's files); none yet, as before: the database's own size is many times what its
+        # copy takes, and a refused backup wrote no line to learn from - refused for good.
+        try:
+            size = next((int(r.get('bytes') or 0) for r in rb_history(store)
+                         if r.get('node') == node_name() and int(r.get('bytes') or 0) > 0), 0)
+        except Exception:                               # noqa: BLE001
+            size = 0
     need = times * size + BACKUP_ROOM_MIN
     if free < need:
         raise RbError('there is no room for it in %s: %d MB free, %d MB needed so that the disk '
@@ -1265,6 +1370,13 @@ def rb_run(store, by, only=None, progress=None):
     os.chmod(work, 0o700)
     began = time.time()
     run = {'at': began, 'by': by, 'node': node_name(), 'targets': [], 'ok': False}
+    clash = rb_slug_clash(store)
+    if clash:
+        # Sent all the same, and said (1.0.255) - but no old one taken away: they may be the
+        # other node's.
+        run['warning'] = ('the backups of %s are named as this node\'s (%s) - old ones are not '
+                          'taken away until one of the nodes has another name (node_name)'
+                          % (', '.join(clash), rb_slug(node_name())))
     try:
         path, m, _md = rb_build(store, work, progress)
         if not m.get('encrypted'):
@@ -1301,6 +1413,8 @@ def rb_run(store, by, only=None, progress=None):
                         got.get(m['file']), m['bytes']))
                 one['ok'] = True
                 try:
+                    if clash:
+                        raise RbError(run['warning'])
                     one['taken_away'] = rb_retain(tr, int(CONFIG.get('rbackup_keep') or 0),
                                                   int(CONFIG.get('rbackup_keep_days') or 0),
                                                   just=m['file'])
@@ -1313,13 +1427,14 @@ def rb_run(store, by, only=None, progress=None):
             one['secs'] = round(time.time() - t0, 1)
             run['targets'].append(one)
             try:
-                rb_set_fields(store, t['id'], '', '', last={
+                # In this node's own row (1.0.255), not in the destinations both nodes write.
+                rb_status_put(store, t['id'], 'last', {
                     'at': time.time(), 'ok': one['ok'], 'error': one.get('error') or '',
                     'file': m['file'], 'bytes': m['bytes']})
-            except ValueError:
+            except Exception as e:                      # noqa: BLE001
                 # Taken away while the backup went to it (1.0.252): the destinations after it
                 # were never tried.
-                pass
+                log('remote backup: what %s said is not kept: %s' % (t['name'], e), 'warn')
         run['ok'] = all(x['ok'] for x in run['targets'])
     except (RbError, OSError, ValueError, subprocess.SubprocessError) as e:
         run['error'] = scrub_secret(str(e))[:400]
@@ -1332,8 +1447,9 @@ def rb_run(store, by, only=None, progress=None):
     store.add_event('backups', 'a backup of %s (%s) %s%s%s' % (
         node_name(), human_bytes(run.get('bytes') or 0), ('went to ' + ', '.join(good))
         if good else 'went nowhere', ('; not to ' + '; '.join(bad)) if bad else '',
-        ('; ' + run['error']) if run.get('error') else ''),
-        'info' if run['ok'] else 'bad', who=by)
+        ('; ' + run['error']) if run.get('error') else '') + (
+        ('; ' + run['warning']) if run.get('warning') else ''),
+        ('warn' if run.get('warning') else 'info') if run['ok'] else 'bad', who=by)
     log('remote backup: %s' % ('sent to ' + ', '.join(good) if good else 'not sent')
         + (' - failed: ' + '; '.join(bad) if bad else '')
         + (' - ' + run['error'] if run.get('error') else ''), 'info' if run['ok'] else 'warn')
@@ -1349,29 +1465,100 @@ def human_bytes(n):
     return '%d B' % n
 
 
+# The backups sent, a row for each node (1.0.255): 'rbackup:runs:NODE', written only by NODE.
+# One row both nodes wrote lost the other node's line whenever both sent at once, and made new
+# by both at once it was a duplicate key that stopped replication. The row of the versions
+# before ('rbackup:runs') is read too: nothing of it lost on the upgrade, and the lines of a node
+# not upgraded yet seen.
+RB_RUNS_KEEP = 60
+RB_RUNS_SHARED = 'rbackup:runs'
+
+
+def rb_runs_key(node=None):
+    return '%s:%s' % (RB_RUNS_SHARED, node or node_name())
+
+
+def _rb_runs_rows(store):
+    """[(key, [run])] - the row of the versions before first, then each node's."""
+    out = []
+    try:
+        rows = store.db.rows("SELECT k, v FROM meta WHERE k = ? OR k LIKE ?",
+                             (RB_RUNS_SHARED, RB_RUNS_SHARED + ':%'))
+    except Exception:                                   # noqa: BLE001
+        rows = []
+    for r in sorted(rows, key=lambda r: (str(r['k']) != RB_RUNS_SHARED, str(r['k']))):
+        got = json_obj(r['v'], list) or []                          # a list only (1.0.250)
+        out.append((str(r['k']), [x for x in got if isinstance(x, dict)]))
+    return out
+
+
+def _rb_run_id(r):
+    return (round(fnum(r.get('at')), 3), str(r.get('node') or ''), str(r.get('file') or ''))
+
+
 def rb_history(store):
-    got = json_obj(store.get_meta('rbackup:runs'), list) or []        # a list only (1.0.250)
-    return [x for x in got if isinstance(x, dict)]
+    """Every node's backups sent, newest first - each once."""
+    seen = set()
+    out = []
+    for _k, runs in _rb_runs_rows(store):
+        for r in runs:
+            i = _rb_run_id(r)
+            if i not in seen:
+                seen.add(i)
+                out.append(r)
+    out.sort(key=lambda r: -fnum(r.get('at')))
+    return out
+
+
+def rb_old_readers(store):
+    """Whether a node of a version before 1.0.255 is in the cluster - it reads 'rbackup:runs'
+    alone, and would say no backup of this node went out."""
+    try:
+        return any(n['name'] != node_name() and hatls_version(n.get('version')) < (1, 0, 255)
+                   for n in ha_nodes(store))
+    except Exception:                                   # noqa: BLE001
+        return False
 
 
 def rb_history_forget(store, at=None, file=None):
     """One line off the list (at and file), or all of it (1.0.110). The
-    backups themselves stay where they went."""
+    backups themselves stay where they went. Taken out of the row it is in -
+    another node's too: a row that is there already, never one made here."""
+    n = 0
     with RB_LOCK:
-        runs = rb_history(store)
-        if at is None:
-            left = []
-        else:
-            left = [r for r in runs if not (abs(fnum(r.get('at')) - float(at)) < 0.001 and
-                                           str(r.get('file') or '') == str(file or ''))]
-        store.set_meta('rbackup:runs', json.dumps(left, default=str))
-        return len(runs) - len(left)
+        for k, runs in _rb_runs_rows(store):
+            if at is None:
+                left = []
+            else:
+                left = [r for r in runs if not (abs(fnum(r.get('at')) - float(at)) < 0.001 and
+                                               str(r.get('file') or '') == str(file or ''))]
+            if len(left) != len(runs):
+                if k == rb_runs_key():
+                    store.set_meta(k, json.dumps(left, default=str))
+                else:
+                    store.db.run('UPDATE meta SET v = ? WHERE k = ?',
+                                 (json.dumps(left, default=str), k))
+                n += len(runs) - len(left)
+    return n
 
 
 def rb_history_add(store, run):
     with RB_LOCK:
-        runs = [run] + rb_history(store)
-        store.set_meta('rbackup:runs', json.dumps(runs[:60], default=str))
+        k = rb_runs_key()
+        mine = json_obj(store.get_meta(k), list) or []
+        runs = [run] + [x for x in mine if isinstance(x, dict)]
+        store.set_meta(k, json.dumps(runs[:RB_RUNS_KEEP], default=str))
+        if rb_old_readers(store):
+            # Said in the row of the versions before too while a node of one is there - only
+            # into a row that is there already (made by both at once, replication stopped).
+            try:
+                old = json_obj(store.get_meta(RB_RUNS_SHARED), list)
+                if old is not None:
+                    old = [run] + [x for x in old if isinstance(x, dict)]
+                    store.db.run('UPDATE meta SET v = ? WHERE k = ?',
+                                 (json.dumps(old[:RB_RUNS_KEEP], default=str), RB_RUNS_SHARED))
+            except Exception as e:                      # noqa: BLE001
+                log('remote backup: not said to the nodes of the version before: %s' % e, 'warn')
 
 
 def rb_job_start(store, by, only=None):
@@ -1774,7 +1961,7 @@ def rb_remote_list(store, tid):
         out.append({'name': x['name'], 'bytes': x['size'], 'when': when,
                     'node': m.group('node'), 'site': m.group('site'),
                     'encrypted': bool(m.group('enc')),
-                    'mine': m.group('node') == rb_slug(node_name()),
+                    'mine': rb_mine(m),     # the site too (1.0.255)
                     'sha256': (x['name'] + '.sha256') in names})
     out.sort(key=lambda x: -x['when'])
     return out

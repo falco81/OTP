@@ -750,8 +750,11 @@ def build_parser():
                    'password of the backups, one line (else OTP_BACKUP_PASSWORD, else asked)')
     g.add_argument('--keep-node-name', action='store_true', help='with --restore-bundle: this '
                    'machine keeps its node name')
-    g.add_argument('--rbackup-now', action='store_true', help='a backup to every destination '
-                   'switched on (Settings → Backups), now')
+    g.add_argument('--rbackup-now', action='store_true', help='a backup of this node to every '
+                   'destination switched on (Settings → Backups), now - this node only, unless '
+                   '--rbackup-all asks the other nodes to make theirs too')
+    g.add_argument('--rbackup-all', action='store_true', help='with --rbackup-now: the other '
+                   'nodes are asked to make theirs too, as Back up now on the pages')
     g.add_argument('--rbackup-status', action='store_true', help='the backup destinations and '
                    'the last backups sent')
     g.add_argument('--backup-info', metavar='FILE', help='what a copy holds and the machine it '
@@ -1556,6 +1559,76 @@ def cli_guard_counts_again(why):
             chown_to_service(DBGUARD_FILE, 0o600)
     except Exception as e:                              # noqa: BLE001
         print('otp: the guard\'s counts could not be started again: %s' % e, file=sys.stderr)
+
+
+def cli_udp_taken(bind, port):
+    """Whether something listens on UDP PORT at radius_bind: True, False, or None when it
+    could not be asked (1.0.255). As the daemon binds it - IPv6 for an address with a
+    colon, both families on '::' - and only EADDRINUSE taken as listened on: an IPv6
+    bind was tried as IPv4 and failed, an address not on this machine read as in use."""
+    bind = str(bind or '0.0.0.0')
+    fam = socket.AF_INET6 if ':' in bind else socket.AF_INET
+    try:
+        probe = socket.socket(fam, socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    try:
+        if fam == socket.AF_INET6:
+            try:
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except OSError:
+                pass
+        probe.bind((bind, int(port)))
+        return False
+    except OSError as e:
+        return True if e.errno == errno.EADDRINUSE else None
+    finally:
+        probe.close()
+
+
+def cli_rbackup_busy(older=6 * 3600):
+    """The work folder of a backup or a try being made on this node now (1.0.255), or '':
+    what is left of one by a stop is taken away after hours (stale_work_away), so only
+    a younger one counts."""
+    try:
+        items = list(STATE_DIR.iterdir())
+    except OSError:
+        return ''
+    for p in items:
+        if not p.name.startswith(('otp-rbackup-', 'otp-verify-')):
+            continue
+        try:
+            if p.is_dir() and not p.is_symlink() and time.time() - p.lstat().st_mtime < older:
+                return p.name
+        except OSError:
+            continue
+    return ''
+
+
+def cli_acme_order_one(store, t, name, who, say):
+    """One order from the command line, as the pages order it (1.0.255): the
+    lease acme:busy:TARGET taken first - ordered here while a node renewed it,
+    both spent the CA's limit and the last one saved won - and names looked
+    up by ACME's DNS servers (acme_dns_scope), not this machine's resolver."""
+    lease = 'acme:busy:%s' % t
+    held = json_obj(store.get_meta(lease)) or {}
+    if held.get('node') and fnum(held.get('until')) > time.time():
+        # This node's daemon too: it does not ask its own lease, the command line has to.
+        raise ValueError('%s is being ordered on %s already - try again after %s' % (
+            name, held['node'], time.strftime('%H:%M', time.localtime(fnum(held.get('until'))))))
+    mine = {'node': node_name(), 'until': time.time() + 1800,
+            'by': 'cli', 'id': secrets.token_hex(8)}
+    store.set_meta(lease, json.dumps(mine))
+    try:
+        with acme_dns_scope():
+            return acme_order(store, t, name, who, say)
+    finally:
+        try:
+            # Only the one written here: a node that took it over keeps its own.
+            if (json_obj(store.get_meta(lease)) or {}).get('id') == mine['id']:
+                store.drop_meta(lease)
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 def cli_sure(args, what):
@@ -2789,14 +2862,7 @@ def cli_main(argv=None):
                            ('acct', CONFIG.get('radius_acct_port'))):
             if not port:
                 continue
-            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                probe.bind((str(CONFIG.get('radius_bind') or '0.0.0.0'), int(port)))
-                listening.append((kind, port, False))
-            except OSError:
-                listening.append((kind, port, True))
-            finally:
-                probe.close()
+            listening.append((kind, port, cli_udp_taken(CONFIG.get('radius_bind'), port)))
         s['daemon_alive'] = alive
         s['ports'] = listening
         if args.json and args.check:
@@ -2820,6 +2886,10 @@ def cli_main(argv=None):
             'the daemon %s' % ('answers on 127.0.0.1:%s' % CONFIG.get('api_port') if alive
                                else 'is not answering - systemctl status otp')))
         for kind, port, taken in listening:
+            if taken is None:
+                print(pal.dim('  UDP %s (%s): could not be asked here whether it is listened on'
+                              % (port, kind)))
+                continue
             print((pal.ok_line if taken else pal.bad_line)(
                 'UDP %s (%s) %s' % (port, kind, 'is being listened on' if taken
                                     else 'is free: nothing answers RADIUS there')))
@@ -3789,6 +3859,20 @@ def cli_main(argv=None):
         return 0
 
     if args.rbackup_now:
+        # Not side by side with one the daemon makes (1.0.255): its guard (RB_JOB) is in its
+        # own memory, its work folder is what this process can see of it.
+        busy = cli_rbackup_busy()
+        if busy and not args.yes:
+            raise SystemExit('otp: a backup is being made or tried on this node already (%s) - '
+                             'otp --rbackup-status; again with --yes if it was left by a stop'
+                             % busy)
+        others = []
+        if args.rbackup_all:
+            # Each node makes its own, as Back up now on the pages asks them (1.0.149).
+            others = rb_now_ask_others(store, cli_who())
+            if others:
+                print(pal.dim('  %s make%s theirs within a minute' % (
+                    ', '.join(others), 's' if len(others) == 1 else '')))
         try:
             run = rb_run(store, cli_who())
         except (RbError, ValueError) as e:
@@ -3801,6 +3885,19 @@ def cli_main(argv=None):
             print((pal.ok_line if x['ok'] else pal.bad_line)('%s: %s' % (
                 x['name'], 'sent' + (' - taken away: %s' % ', '.join(x['taken_away'])
                                      if x.get('taken_away') else '') if x['ok'] else x.get('error'))))
+        if run.get('ok') and CONFIG.get('rbackup_verify') == 'after':
+            # Tried at once at the first destination, as the pages' Back up now does (1.0.255):
+            # from here rbackup_verify=after was never done.
+            try:
+                v = rb_verify(store, cli_who(), run['targets'][0]['id'], run.get('file'))
+            except (RbError, ValueError, OSError) as e:
+                print(pal.bad_line('sent, but it could not be tried: %s' % scrub_secret(str(e))[:300]))
+                return 2
+            if not v.get('ok'):
+                print(pal.bad_line('sent, but it is not good: ' + '; '.join(
+                    c['what'] for c in v.get('checks') or [] if not c['ok'])))
+                return 2
+            print(pal.ok_line('tried at %s: it can be put back' % run['targets'][0]['name']))
         return 0 if run['ok'] else 2
 
     if args.restore_bundle:
@@ -3928,7 +4025,7 @@ def cli_main(argv=None):
         for t, name in which:
             print(pal.head('%s: %s' % (t, name)))
             try:
-                acme_order(store, t, name, who, lambda w: print('  ' + str(w)))
+                cli_acme_order_one(store, t, name, who, lambda w: print('  ' + str(w)))
                 print(pal.ok_line('the certificate of %s is made; the nodes put it in within a few '
                                   'seconds' % name))
             except (AcmeError, ValueError, OSError) as e:

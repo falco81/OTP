@@ -13,6 +13,10 @@ MFA_SEND_GAP_S = 30
 MFA_SEND_MOST = 5
 MFA_WRONG_MOST = 5          # wrong second-step codes of one sign-in, then the password again (1.0.252)
 MFA_LOCK = threading.Lock()
+# With the guard on (1.0.255): the account's second step in the database not as otp wrote it.
+MFA_BLOCKED_WORDS = ('the second step of this account in the database was not written by otp - '
+                     'nothing can be set up over it: another full administrator resets it '
+                     '(Accounts), or root with  otp --reset-2fa %s')
 
 
 def mfa_key(name):
@@ -105,14 +109,31 @@ def mfa_stage(store, name):
         # - by whoever had the password. Now that waits for a reset (the
         # accounts page, or otp --reset-2fa NAME as root).
         return 'check'
+    # With the guard on (1.0.255): a way set up and then taken away, or changed, by somebody who
+    # could write the database read as none - and the password alone set up one of theirs. Held
+    # until it is reset (the accounts page, or otp --reset-2fa NAME), as a way switched off is.
+    if dbguard_meta_gone(store.db, mfa_key(name)):
+        return 'blocked'
     return 'enrol'
 
 
-def mfa_pending(s):
+def mfa_pending(s, store=None):
     """The sign-in's second step, if it is still to be done."""
     if not CONFIG.get('admin_2fa'):
         return ''
-    return str(((s or {}).get('data') or {}).get('mfa') or '')
+    data = (s or {}).get('data') or {}
+    if data.get('mfa'):
+        return str(data['mfa'])
+    # Opened with the password alone while the second step was off (1.0.255): when it is on, the
+    # step is still to be given - on either node, whenever it learns it is on. The sign-ins ended as
+    # it was switched on were only those the database had then: one opened on the other node
+    # before it had read the settings again stayed whole.
+    if data.get('mfa_off') and not data.get('mfa_ok'):
+        try:
+            return mfa_stage(store, s['name']) if store is not None else 'check'
+        except Exception:                               # noqa: BLE001
+            return 'check'
+    return ''
 
 
 def _mfa_session(h):
@@ -156,6 +177,15 @@ def _mfa_send(h, s, kind, dest, field):
     if n >= MFA_SEND_MOST:
         raise ApiError(429, 'that is %d codes for this sign-in: sign in again for more'
                        % MFA_SEND_MOST)
+    # The place taken before the code goes (1.0.255), only while nobody else took it since this
+    # request read the sign-in: requests at once - on one node or both - each sent a code, past
+    # the gap and the most.
+    was = {'mfa_sent_at': data.get('mfa_sent_at'), 'mfa_sent': data.get('mfa_sent')}
+    took = h.store.session_merge(s['id'], {'mfa_sent_at': t, 'mfa_sent': n + 1}, expect=was)
+    if took is None:
+        raise ApiError(401, 'not signed in, or the sign-in has run out')
+    if took is False:
+        raise ApiError(429, 'a code went a moment ago - wait half a minute for another')
     code, salt = code_new(), secrets.token_hex(8)
     saved = {'hash': code_hash(salt, code), 'salt': salt,
              't': t, 'exp': t + int(CONFIG.get('code_ttl_s') or 300)}
@@ -165,12 +195,17 @@ def _mfa_send(h, s, kind, dest, field):
                          else 'admin', name=s['name'], display=acc.get('display') or '',
                          lang=mfa_lang(h))
     except (MailError, SmsError, ValueError) as e:
+        # The place given back (1.0.255): nothing went, so nothing is counted - as until now.
+        try:
+            h.store.session_merge(s['id'], was, expect={'mfa_sent_at': t, 'mfa_sent': n + 1})
+        except Exception:                               # noqa: BLE001
+            pass
         h.store.add_event('sign-ins', 'the code of the second step for %s could not be sent '
                           '(%s): %s' % (s['name'], kind, e), 'warn', who=s['name'])
         raise ApiError(502, 'the code could not be sent: %s' % e)
     # Kept only once it went: a refused one leaves the last code good.
     new = dict(saved, kind=kind, dest=dest) if field == 'mfa_new' else saved
-    h.store.session_merge(s['id'], {field: new, 'mfa_sent_at': t, 'mfa_sent': n + 1})
+    h.store.session_merge(s['id'], {field: new})
     log('the second step of %s: a code sent by %s to %s (%s)' % (
         s['name'], kind, dest_masked(kind, dest), said))
     return dest_masked(kind, dest)
@@ -181,7 +216,10 @@ def _mfa_done(h, s, how):
     one the password alone opened is ended, not made whole: whoever had seen
     its cookie had the pages once the code was given."""
     data = {k: v for k, v in odict(s.get('data')).items()
-            if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent')}
+            if k not in ('mfa', 'mfa_new', 'mfa_code', 'mfa_sent_at', 'mfa_sent', 'mfa_off')}
+    # Marked as one past the second step (1.0.255; signed with the guard on): a sign-in without
+    # the mark, opened while the step was off, gives it once it is on.
+    data['mfa_ok'] = 1
     hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
     h.store.session_drop(s['id'])
@@ -193,7 +231,7 @@ def _mfa_done(h, s, how):
 @route('GET', '/api/auth/mfa')
 def _mfa(h):
     s, acc = _mfa_session(h)
-    stage = mfa_pending(s)
+    stage = mfa_pending(s, h.store)
     rec = mfa_get(h.store, s['name']) or {}
     new = odict(s.get('data')).get('mfa_new') or {}
     return {'name': acc['name'], 'display': acc.get('display') or '', 'stage': stage,
@@ -203,15 +241,20 @@ def _mfa(h):
             'started': {'kind': new.get('kind'),
                         'dest': dest_masked(new.get('kind'), new.get('dest'))} if new else None,
             'digits': 6 if (stage == 'check' and rec.get('kind') == 'app') else
-            int(CONFIG.get('code_digits') or 6)}
+            int(CONFIG.get('code_digits') or 6),
+            # Why nothing can be set up (1.0.255), with the guard on.
+            'blocked': MFA_BLOCKED_WORDS % acc['name'] if stage == 'blocked' else ''}
 
 
 @route('POST', '/api/auth/mfa')
 def _mfa_do(h):
     s, acc = _mfa_session(h)
-    stage = mfa_pending(s)
+    stage = mfa_pending(s, h.store)
     if not stage:
         raise ApiError(409, 'this sign-in has no second step to give')
+    if stage == 'blocked' or (stage == 'enrol' and mfa_stage(h.store, acc['name']) == 'blocked'):
+        # Nothing set up over it (1.0.255): the way kept in the database is not otp's word.
+        raise ApiError(409, MFA_BLOCKED_WORDS % acc['name'])
     b = h.body()
     act = b.get('action')
     name = acc['name']

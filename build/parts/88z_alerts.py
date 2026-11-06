@@ -401,6 +401,15 @@ def alert_problems(store, lang='en'):
                             'No backup of %s went out in time' % n),
                         _al(lang, 'Poslední úspěšná: %s.', 'The last good one: %s.')
                         % (_al_when(ok[0]['at']) if ok else '–'), 'backup')
+            # Nodes whose backups are named alike (1.0.255): neither takes old ones away.
+            for g in rb_slug_clashes(names):
+                add('rbackup:name:' + g[0], 'warn', '',
+                    _al(lang, 'Zálohy uzlů %s se jmenují stejně' % ', '.join(g),
+                        'The backups of %s are named alike' % ', '.join(g)),
+                    _al(lang, 'Staré zálohy se neodmazávají a jedna se dá zaměnit za druhou - dejte '
+                        'jednomu z uzlů jiné jméno (node_name v config.json).',
+                        'Old backups are not taken away, and one can be taken for the other - give '
+                        'one of the nodes another name (node_name in config.json).'), 'backup')
         # The last try of a backup (1.0.169): one that cannot be put back.
         tried = rb_verified(store)
         for n in names:

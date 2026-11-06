@@ -1303,7 +1303,7 @@ class Console(object):
         elif what == 'delete':
             if self.confirm('Delete', 'The account %s is deleted. This cannot be undone.' % name,
                             'Delete it', danger=True):
-                self.act('--del-user', name)
+                self.act('--del-user', name, '--yes')
 
     def account_new(self):
         got = self.form('Make an account', [
@@ -1479,7 +1479,7 @@ class Console(object):
         elif what == 'delete' and self.confirm(
                 'Delete', 'The client %s (%s) is deleted - its requests are no longer '
                 'answered.' % (r['name'], r.get('address')), 'Delete it', danger=True):
-            self.act('--del-client', r['name'])
+            self.act('--del-client', r['name'], '--yes')
 
     def realm_edit(self, r):
         """A realm made, or changed (1.0.187): it could only be shown or deleted here."""
@@ -1545,7 +1545,7 @@ class Console(object):
         elif what == 'delete' and self.confirm(
                 'Delete', 'The realm %s is deleted - names of it no longer sign in.'
                 % r['name'], 'Delete it', danger=True):
-            self.act('--del-realm', r['name'])
+            self.act('--del-realm', r['name'], '--yes')
 
     def directory_do(self, r):
         what = self.choose(r['name'], [('test', 'Try it (and look somebody up)'),
@@ -1568,7 +1568,7 @@ class Console(object):
         elif what == 'delete' and self.confirm(
                 'Delete', 'The directory %s is deleted; the realms using it stop working.'
                 % r['name'], 'Delete it', danger=True):
-            self.act('--del-directory', r['name'])
+            self.act('--del-directory', r['name'], '--yes')
 
     # ---- 8 cluster --------------------------------------------------------------
     def _nodes(self):
@@ -2807,7 +2807,7 @@ class Console(object):
             which = self.choose('Take an SSH token away', [(r['name'], r['name']) for r in rows])
             if which is not None and self.confirm('Take it away', 'The SSH token of %s stops '
                                                   'working now.' % which, 'Take it away', danger=True):
-                self.act('--ssh-token-del', which)
+                self.act('--ssh-token-del', which, '--yes')
 
         def lockout_clear():
             rows = [r for r in (self.out('--lockouts') or []) if isinstance(r, dict)]

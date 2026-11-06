@@ -166,6 +166,31 @@ def realm_names(user, realm):
     return out
 
 
+def reply_too_long(pairs):
+    """Why an Accept with these pairs could not be sent, or '' (1.0.255): measured as the
+    answer is built - the header, a Message-Authenticator where one is sent - before the code
+    is used. The request's Proxy-State is added when it is sent, and checked again there."""
+    try:
+        size = 20 + (18 if CONFIG.get('radius_reply_ma', 1) else 0) + \
+            sum(len(attr_bytes(n, v)) for n, v in pairs)
+    except (RadiusError, ValueError, struct.error) as e:
+        return 'the answer cannot be built: %s' % e
+    if size > 4096:
+        return 'the answer would be %d bytes, more than a RADIUS packet may be' % size
+    return ''
+
+
+def chal_done(store, state, name):
+    """The question dropped after its code was taken (1.0.255): a database that fails it now
+    is written down, not raised - the code is used (the token's step, once_take), the person
+    let in, and the question runs out by itself."""
+    try:
+        chal_drop(store, state)
+    except Exception as e:                              # noqa: BLE001
+        log('a code for %s was right and is let in; the question it answered could not be '
+            'dropped: %s' % (name, e), 'warn')
+
+
 class Authenticator(object):
     """What the RADIUS server asks: may this person in, and with what."""
 
@@ -483,6 +508,10 @@ class Authenticator(object):
             if re.fullmatch(r'[0-9]{6,12}', code_typed(password), re.ASCII):
                 code = code_typed(password)     # as typed on the Czech row (1.0.226)
         elif mode == 'password_otp':
+            # Nothing after the code (1.0.255): "Heslo123456 " with a space or a newline the
+            # client left on it found no code, and the password went to the directory cut short.
+            # Only what comes after the code - a password's own spaces inside it stay.
+            password = password.rstrip()
             tok = self.store.token(d.token_name)
             digits = int((tok or {}).get('digits') or CONFIG.get('totp_digits') or 6)
             splits = []
@@ -520,8 +549,10 @@ class Authenticator(object):
                 if re.fullmatch(r'[0-9]{6,12}', t, re.ASCII) and all(x[0] != t or x[1] != password[:-ln]
                                                                     for x in digits_only + typed):
                     typed.append((t, password[:-ln]))
-            if digits_only or typed:
-                splits = digits_only + typed
+            # Only these, always (1.0.255): with neither, the tails that are no code at all -
+            # "Heslo" + "abcdef" - were tried, and the password cut short went to the directory
+            # (a wrong password counted there, the account locked out in the end).
+            splits = digits_only + typed
             if not splits:
                 d.step('the code', False, 'nothing after the password looks like a code')
                 d.otp = SAY_BAD
@@ -684,7 +715,26 @@ class Authenticator(object):
             except RadiusError as e:
                 d.step('the answer', False, str(e))
                 return d.refuse('the answer of the realm cannot be built: %s' % e)
+            # Measured before a code is sent (1.0.255), as for a code typed with the password.
+            long_by = reply_too_long(reply)
+            if long_by:
+                d.step('the answer', False, long_by)
+                return d.refuse('the answer would be longer than a RADIUS packet may be: too '
+                                'many reply attributes in the realm and its groups')
             return self.challenge_start(d, realm, tok, challenge, reply, client, src, rid)
+        # The answer, built and measured before the code is used (1.0.255): a realm's reply
+        # that cannot be built, or one too long for a packet with the groups', refused after
+        # the code was taken - the code used up for nothing, the VPN's retry refused as used.
+        try:
+            reply = reply_lines(realm.get('reply') or '') + d.reply
+        except RadiusError as e:
+            d.step('the answer', False, str(e))
+            return d.refuse('the answer of the realm cannot be built: %s' % e)
+        long_by = reply_too_long(reply)
+        if long_by:
+            d.step('the answer', False, long_by)
+            return d.refuse('the answer would be longer than a RADIUS packet may be: too many '
+                            'reply attributes in the realm and its groups')
         # ---- the code, last ----------------------------------------------
         if code is not None:
             t = time.time()
@@ -693,11 +743,7 @@ class Authenticator(object):
             d.step('the code for the token %s' % d.token_name, ok, said, t)
             if not ok:
                 return d.refuse('Denied by the token server: ' + said)
-        try:
-            d.reply = reply_lines(realm.get('reply') or '') + d.reply
-        except RadiusError as e:
-            d.step('the answer', False, str(e))
-            return d.refuse('the answer of the realm cannot be built: %s' % e)
+        d.reply = reply
         d.result = 'accept'
         d.step('let in', True, ', '.join('%s = %s' % p for p in d.reply))
         return d
@@ -834,8 +880,15 @@ class Authenticator(object):
                     hmac.compare_digest(code_hash(name, code), str(chal.get('code') or '')):
                 ok, said = True, 'Code sent by %s accepted' % ('mail' if kind == 'mail' else 'SMS')
                 if once_take(self.store, 'chal', name, hashlib.sha256(bytes(state)).hexdigest()):
-                    chal_drop(self.store, state)
-                    self.tokens.used_sent(name, kind)
+                    # The code is taken (1.0.255): what is written after it is bookkeeping, and
+                    # a database that fails it now no longer leaves the request unanswered -
+                    # the VPN's retry was refused as used. once_take keeps it from a second use.
+                    chal_done(self.store, state, name)
+                    try:
+                        self.tokens.used_sent(name, kind)
+                    except Exception as e:              # noqa: BLE001
+                        log('a code sent to %s was right and is let in; the token could not be '
+                            'marked used: %s' % (name, e), 'warn')
                     self.tokens._said(name, True, said, how, src, rid)
                 else:
                     ok, said = False, SAY_REUSED
@@ -844,7 +897,7 @@ class Authenticator(object):
                 # phone is, towards the lockout.
                 ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
                 if ok:
-                    chal_drop(self.store, state)
+                    chal_done(self.store, state, name)
         else:
             # The token as it is now (1.0.225), as for a code sent: switched to mail or SMS
             # while this question was open, the app's code counted three wrong tries on the
@@ -861,7 +914,7 @@ class Authenticator(object):
             # a try meanwhile - that refused the right code and used it up.
             ok, said, _f = self.tokens.check(name, code, how=how, src=src, rid=rid)
             if ok:
-                chal_drop(self.store, state)
+                chal_done(self.store, state, name)
         d.otp = said
         d.step('the code for the token %s' % name, ok, said, t)
         if ok:

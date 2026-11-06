@@ -68,7 +68,9 @@ DBGUARD_SINCE = {
                              'rbackup_keep_days', 'rbackup_verify', 'rbackup_password',
                              'acme_dns', 'acme_dns_url', 'acme_dns_key', 'acme_dns_user', 'acme_dns_server',
                              'acme_dns_token', 'acme_dns_tsig_alg', 'acme_dns_tsig_name', 'acme_dns_tsig_secret',
-                             'acme_desec_token', 'acme_desec_domain')}}
+                             'acme_desec_token', 'acme_desec_domain')},
+    # The signed marks of a sign-in's second step ('xm'): a node before 1.0.255 writes none.
+    '1.0.255': {}}
 # How long a node not heard from is still counted as one of the cluster's (1.0.251).
 DBGUARD_PEER_DAY_S = 86400
 DBGUARD_FILE = STATE_DIR / 'guard.json'
@@ -310,7 +312,8 @@ def dbguard_ok(db, kind, ident, value, quiet=False, early=True):
     if not quiet:
         log_sparing('guard:' + sid, 'a row of the database not written by otp is not acted on: %s '
                     '%s - %s' % ({'m': 'meta', 's': 'the setting', 'a': 'the account',
-                                  'x': 'a sign-in', 'd': 'the directory'}.get(kind, kind),
+                                  'x': 'a sign-in', 'xm': 'the second step of a sign-in',
+                                  'd': 'the directory'}.get(kind, kind),
                                  str(ident)[:120], why), 'error', every=600)
     return False
 
@@ -398,6 +401,68 @@ def dbguard_session_text(row):
                        '%.3f' % fnum(row.get('expires'))])
 
 
+# The marks of a sign-in's second step (1.0.255): signed too, as a signature of their own ('xm')
+# beside the one versions before sign ('x', kept as it was - a node of 1.0.254 in the cluster takes
+# the sign-ins of this one). The data of a session is not signed: one who could write the database
+# took the "second step to give" out of a sign-in opened with the password alone, and had the pages.
+SESSION_MARKS = ('mfa', 'mfa_ok', 'mfa_off')
+
+
+def dbguard_session_marks(row):
+    data = row.get('data')
+    if not isinstance(data, dict):
+        try:
+            data = json.loads(data or '{}')
+        except (TypeError, ValueError):
+            data = {}
+    data = data if isinstance(data, dict) else {}
+    return json.dumps([dbguard_session_text(row)] + [str(data.get(k) or '') for k in SESSION_MARKS])
+
+
+def dbguard_session_marks_ok(db, row):
+    """Whether the marks of the second step in an admin sign-in are as otp wrote them (1.0.255) -
+    asked only with the guard and the second step both on. A sign-in opened by 1.0.254 has none
+    signed: it is ended once, as its marks cannot be told from ones written by somebody else."""
+    if not dbguard_on() or not CONFIG.get('admin_2fa'):
+        return True
+    try:
+        none = not _dbguard_sigs(db, 'xm', row['token_hash'])
+    except Exception:                                   # noqa: BLE001
+        none = False
+    if none and '1.0.255' in (DBGUARD.get('behind') or ()):
+        # A node of 1.0.254 alive in the cluster: it signs no marks - every sign-in it opened was
+        # refused here, again each time the pages moved over. Taken as before while it is.
+        return True
+    if none:
+        # Not listed among the rows refused: every sign-in kept over the upgrade is one.
+        log_sparing('guard-xm-none', 'a sign-in to the pages with no signed marks of its second '
+                    'step (opened before 1.0.255, or changed by somebody else) is asked to sign in '
+                    'again', every=600)
+        return False
+    return dbguard_ok(db, 'xm', row['token_hash'], dbguard_session_marks(row))
+
+
+def dbguard_meta_gone(db, k):
+    """With the guard on, whether a signed row of meta reads as not there only because somebody
+    else changed it (1.0.255): there but not signed by otp, or taken away while its last signature
+    is of a value. Only the first since 1.0.255: a row not there is told from no reset of an older
+    version. False with the guard off, and for a row never signed (nothing to tell by)."""
+    if not dbguard_on():
+        return False
+    try:
+        raw = db.value('SELECT v FROM meta WHERE k = ?', (k,))
+        if raw is not None:
+            # Read again once, as get_meta does: the row and its signature are two reads.
+            return not dbguard_ok(db, 'm', k, raw, quiet=True) and \
+                not dbguard_ok(db, 'm', k, db.value('SELECT v FROM meta WHERE k = ?', (k,)))
+        # A row not there is not held: versions before 1.0.248 took it away unsigned (a reset, an
+        # account deleted and made again) and left its last signature behind - such an account
+        # was held, its administrator locked out until another one reset it.
+        return False
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def dbguard_node_ok(store, name):
     """Whether a node's heartbeat is otp's - before its address is let through the firewall,
     into nginx's lists, or taken for the VIP's and chrony's peer."""
@@ -475,6 +540,7 @@ def dbguard_resign(store, why=''):
         n += bool(dbguard_sign(db, 'd', str(r['name']).lower(), dbguard_row_text(r, DIRECTORY_SIGNED)))
     for r in db.rows("SELECT * FROM sessions WHERE kind = 'admin'"):
         n += bool(dbguard_sign(db, 'x', r['token_hash'], dbguard_session_text(r)))
+        dbguard_sign(db, 'xm', r['token_hash'], dbguard_session_marks(r))      # 1.0.255
     # What is seen from now on starts here: older ones put back are older than these.
     with DBGUARD['lock']:
         DBGUARD['seen'] = {}
@@ -631,10 +697,13 @@ def dbguard_adopt(store):
 def dbguard_tidy(store):
     """Signatures of sign-ins that are over."""
     try:
-        have = {_dbguard_sid('x', r['token_hash']) for r in store.db.rows(
-            "SELECT token_hash FROM sessions WHERE kind = 'admin'")}
-        for r in _dbguard_head_rows(store.db, 'sig:x:'):
-            if r['k'] not in have and r['k'].endswith(':' + node_name()):
+        hashes = [r['token_hash'] for r in store.db.rows(
+            "SELECT token_hash FROM sessions WHERE kind = 'admin'")]
+        have = {_dbguard_sid('x', t) for t in hashes}
+        # The marks' signatures (1.0.255) as the sign-ins' own.
+        have_m = {_dbguard_sid('xm', t) for t in hashes}
+        for r in _dbguard_head_rows(store.db, 'sig:x:') + _dbguard_head_rows(store.db, 'sig:xm:'):
+            if r['k'] not in have and r['k'] not in have_m and r['k'].endswith(':' + node_name()):
                 try:
                     if time.time() * 1000 - float((json.loads(r['v']) or {}).get('n') or 0) < 3600e3:
                         continue
@@ -644,11 +713,13 @@ def dbguard_tidy(store):
         # Their counts too (1.0.252): two for every sign-in to the pages, in memory and guard.json,
         # kept for ever.
         pre = {k.rsplit(':', 1)[0] for k in have}
+        pre = pre | {k.rsplit(':', 1)[0] for k in have_m}
         _dbguard_load()
         with DBGUARD['lock']:
             for m in ('seen', 'seen_h'):
                 d = DBGUARD.get(m) or {}
-                for k in [k for k in d if k.startswith('sig:x:') and k.rsplit(':', 1)[0] not in pre]:
+                for k in [k for k in d if k.startswith(('sig:x:', 'sig:xm:')) and
+                          k.rsplit(':', 1)[0] not in pre]:
                     d.pop(k, None)
                     DBGUARD['dirty'] = DBGUARD['dirty'] or time.time()
     except Exception:                                   # noqa: BLE001

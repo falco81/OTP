@@ -33,7 +33,11 @@ DBTLS_CA = STATE_DIR / 'db-ca.pem'
 DBTLS_EVERY = 300
 DBTLS_RENEW_DAYS = 45
 DBTLS_LOCK = threading.Lock()
-DBTLS_WORK = {'at': 0.0, 'rescue': 0.0, 'renew': None}
+DBTLS_WORK = {'at': 0.0, 'rescue': 0.0, 'renew': None, 'fails': 0}
+# How many looks in a row (10 s apart at least) must find the connection failing with TLS
+# and going without it before TLS is dropped (1.0.255): PostgreSQL restarting answered the
+# TLS try "starting up" and the plain one a moment later, and one look dropped TLS for good.
+DBTLS_RESCUE_AFTER = 2
 DBTLS_MODES = ('', 'require', 'verify-ca', 'verify-full')
 
 
@@ -413,20 +417,37 @@ def _dbtls_rescue(daemon):
         return
     DBTLS_WORK['rescue'] = now
     if dbtls_kind() not in ('local', 'replicated') or not CONFIG.get('db_tls'):
+        DBTLS_WORK['fails'] = 0
         return
     try:
         daemon.store.db.value('SELECT 1')
+        DBTLS_WORK['fails'] = 0
         return
-    except Exception:                                   # noqa: BLE001
-        pass
+    except Exception as e:                              # noqa: BLE001
+        first = str(e)
     mode, ca = str(CONFIG.get('db_tls') or ''), str(CONFIG.get('db_tls_ca') or '')
     p = dbtls_probe(mode, ca)
     if p['ok']:
+        DBTLS_WORK['fails'] = 0
         return                                          # it is back: a passing failure
+    why = p.get('said') or '?'
+    # PostgreSQL starting or stopping, or not listening (1.0.255): not TLS's matter.
+    # By the probe's own words only: the daemon's own error of a TLS that broke can read as a
+    # connection closed, and the rescue never came.
+    if peer_db_restarting(why):
+        DBTLS_WORK['fails'] = 0
+        return
     plain = dbtls_probe('', '')
     if not plain['ok']:
+        DBTLS_WORK['fails'] = 0
         return                                          # the database is down: not TLS's matter
-    why = p.get('said') or '?'
+    DBTLS_WORK['fails'] = int(DBTLS_WORK.get('fails') or 0) + 1
+    if DBTLS_WORK['fails'] < DBTLS_RESCUE_AFTER:
+        log_sparing('dbtls-rescue-wait', 'the connection to the database on this machine does '
+                    'not go with TLS (%s): looked at again before it goes without' % why, 'warn',
+                    every=600)
+        return
+    DBTLS_WORK['fails'] = 0
     if hisec_enforced('db:tls', daemon.store):
         log_sparing('dbtls-rescue', 'the connection to the database on this machine does not go '
                     'with TLS (%s) and high security keeps it so' % why, 'error', every=600)

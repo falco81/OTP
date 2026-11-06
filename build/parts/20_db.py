@@ -1131,27 +1131,70 @@ END $f$""")
             'SELECT column_name FROM information_schema.columns WHERE table_name = ? '
             'AND table_schema = current_schema()', (table,))]
 
-    def add_missing_columns(self):
+    def add_missing_columns(self, short_wait=False):
+        """short_wait (1.0.255): a column added while the database is in use - on the
+        other node, or tried again later - waits only a moment for the table: an ALTER
+        waiting its 10 s for a long read held every sign-in queued behind it (RADIUS
+        waits 2 s for a lock) and RADIUS failed meanwhile. Not got: tried again later
+        (columns_missing). The start, before RADIUS answers, waits as long as before."""
         with self.unlimited():
-            return self._add_missing_columns()
+            return self._add_missing_columns(short_wait)
 
     def add_columns_again(self):
         """A column that could not be added at the start (another node's pg_dump holding the table,
-        1.0.252) tried again: True once none is missing."""
+        1.0.252) tried again: True once none is missing. With RADIUS running: a short wait for
+        the table (1.0.255)."""
         if not getattr(self, 'columns_missing', False):
             return True
         self.columns_missing = False
         try:
             with self.unlimited():
-                self._add_missing_columns()
+                self._add_missing_columns(True)
         except Exception:                               # noqa: BLE001
             self.columns_missing = True
         return not self.columns_missing
 
-    def _add_missing_columns(self):
+    # How long a column added with the database in use waits for its table (1.0.255).
+    DDL_LOCK_WAIT_PG = '300ms'
+    DDL_LOCK_WAIT_MARIADB_S = 1
+
+    def _alter_short(self, sql):
+        """One ALTER that waits a moment for its table, not the connection's 10 s (1.0.255).
+        PostgreSQL: lock_timeout only for its own transaction (SET LOCAL)."""
+        if self.engine == 'postgres':
+            with self.transaction():
+                self.run(RawSql("SET LOCAL lock_timeout = '%s'" % self.DDL_LOCK_WAIT_PG))
+                self.run(sql)
+            return
+        self.run(sql)
+
+    def _add_missing_columns(self, short_wait=False):
         """A column added in a later version, added to a database made by an
         earlier one. Read off the CREATE statements above, so there is one
         place a column is declared."""
+        short_wait = bool(short_wait) and self.engine != 'sqlite'
+        if not short_wait or self.engine != 'mariadb':
+            return self._add_columns_now(short_wait)
+        # MariaDB (1.0.255): the wait for a table's metadata lock is the session's
+        # lock_wait_timeout - set short for these, put back to what it was after.
+        with self.lock:
+            was = None
+            try:
+                was = self.value('SELECT @@SESSION.lock_wait_timeout')
+                self.run(RawSql('SET SESSION lock_wait_timeout = %d'
+                                % self.DDL_LOCK_WAIT_MARIADB_S))
+            except Exception:                           # noqa: BLE001
+                was = None
+            try:
+                return self._add_columns_now(short_wait)
+            finally:
+                try:
+                    self.run(RawSql('SET SESSION lock_wait_timeout = %s' % (
+                        'DEFAULT' if was is None else int(float(was)))))
+                except Exception:                       # noqa: BLE001
+                    pass
+
+    def _add_columns_now(self, short_wait=False):
         types = TYPES[self.engine]
         for name, ddl in SCHEMA:
             have = set(c.lower() for c in self.columns(name))
@@ -1164,7 +1207,11 @@ END $f$""")
                 kind = piece.split(' ', 2)[1] if ' ' in piece else 'TEXT'
                 kind = re.sub(r'\s*(NOT NULL|UNIQUE|PRIMARY KEY).*$', '', piece.split(' ', 1)[1])
                 try:
-                    self.run('ALTER TABLE %s ADD COLUMN %s %s' % (name, col, kind))
+                    sql = 'ALTER TABLE %s ADD COLUMN %s %s' % (name, col, kind)
+                    if short_wait:
+                        self._alter_short(sql)
+                    else:
+                        self.run(sql)
                 except Exception as e:
                     # Remembered (1.0.252): the version's mark was written anyway, and the column
                     # was missing until the daemon started anew - it tries again (add_columns_again).

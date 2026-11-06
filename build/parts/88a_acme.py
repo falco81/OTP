@@ -450,8 +450,9 @@ class Acme(object):
 
 
 # ---- what is ordered, and when ----------------------------------------------------------
-def acme_name_of(store, target):
-    """The DNS name a target's certificate is for."""
+def acme_name_of(store, target, answered=False):
+    """The DNS name a target's certificate is for. `answered` (1.0.255): this node's own name
+    only once DNS has said it - '' before, not the short host name in its place."""
     if target == 'vip':
         return str(vip_conf(store).get('fqdn') or '').strip()
     k = 'acme_node_name@' + target
@@ -459,7 +460,9 @@ def acme_name_of(store, target):
     name = str(saved.get(k) or (CONFIG.get('acme_node_name') if target == node_name() else '')
                or '').strip()
     if not name and target == node_name():
-        name = fqdn_cached()
+        name = fqdn_cached(answered)
+        if not name:
+            return ''       # asked again once DNS has answered (1.0.255)
     if not name:
         # The name of the certificate it has now (1.0.170) - what Certificates
         # and TLS shows: otp2's card said "for -" beside otp2.example.cz.
@@ -481,7 +484,7 @@ def acme_name_of(store, target):
 FQDN_CACHE = {'name': '', 'at': 0.0, 'asking': False}
 
 
-def fqdn_cached():
+def fqdn_cached(answered=False):
     """This machine's full name, asked of DNS in a thread of its own and kept for
     ten minutes (1.0.207): socket.getfqdn() waits on a DNS that does not answer -
     20 s and more, twice a loop - and the main loop's heartbeat went late until
@@ -499,6 +502,8 @@ def fqdn_cached():
                 FQDN_CACHE['at'] = time.monotonic()
                 FQDN_CACHE['asking'] = False
         threading.Thread(target=ask, name='otp-fqdn', daemon=True).start()
+    if answered and not FQDN_CACHE['at']:
+        return ''           # DNS not asked to the end yet (1.0.255)
     return FQDN_CACHE['name'] or socket.gethostname()
 
 
@@ -583,9 +588,9 @@ def acme_host_publish(store):
     ACME_HOST['fqdn'] = fqdn
 
 
-def acme_targets(store):
+def acme_targets(store, answered=False):
     """[(target, name)] this node orders: the VIP address's on the lead, and
-    its own where asked."""
+    its own where asked. `answered`: its own left out while DNS has not said its name yet."""
     if not CONFIG.get('acme'):
         return []
     want = CONFIG.get('acme_for') or 'vip'
@@ -593,7 +598,7 @@ def acme_targets(store):
     if want in ('vip', 'both') and vip_conf(store).get('on') and alerts_lead(store):
         out.append(('vip', acme_name_of(store, 'vip')))
     if want in ('node', 'both') or (want == 'vip' and not vip_conf(store).get('on')):
-        out.append((node_name(), acme_name_of(store, node_name())))
+        out.append((node_name(), acme_name_of(store, node_name(), answered)))
     return [(t, n) for t, n in out if n and acme_care(store, t)]
 
 
@@ -828,7 +833,12 @@ def acme_tick(daemon):
         # a node's own is socket.getfqdn(), which waits on a DNS that does not
         # answer - the main loop with it.
         try:
-            due = [(t, n) for t, n in acme_targets(store) if acme_due(store, t, n)]
+            # Not for the short host name just after the start (1.0.255): DNS not answered yet,
+            # this node's own name read as socket.gethostname() - a certificate ordered for
+            # "otp1", refused, or put in for the wrong name. Looked at again in a minute.
+            due = [(t, n) for t, n in acme_targets(store, answered=True) if acme_due(store, t, n)]
+            if not FQDN_CACHE['at']:
+                ACME_WORK['at'] = min(ACME_WORK['at'], time.time() - ACME_EVERY + 60)
             if due and not ACME_WORK['busy']:
                 acme_start(store, due, 'otp (renewal)')
         except Exception as e:                          # noqa: BLE001
@@ -878,10 +888,13 @@ def acme_start(store, which, by):
             # A lease of another shape taken as none (1.0.250): it raised here before it was written
             # again - the certificate was never ordered again, and ran out.
             held = json_obj(store.get_meta(lease)) or {}
-            if held.get('node') and held['node'] != node_name() and \
+            # This node's own command line too (1.0.255): otp --acme-order holds the lease with
+            # 'by': 'cli', and a renewal of this daemon ordered beside it.
+            if held.get('node') and (held['node'] != node_name() or held.get('by') == 'cli') and \
                     fnum(held.get('until')) > time.time():
                 log('ACME: %s is being ordered on %s already - not ordered here too'
-                    % (n, held['node']), 'warn')
+                    % (n, held['node'] if held.get('by') != 'cli' else
+                       '%s (otp --acme-order)' % held['node']), 'warn')
                 return
             store.set_meta(lease, json.dumps({'node': node_name(), 'until': time.time() + 1800}))
             acme_order(store, t, n, by, acme_progress)
@@ -892,7 +905,8 @@ def acme_start(store, which, by):
             log('ACME: the order for %s stopped: %s' % (n, e), 'error')
         finally:
             try:
-                if (json_obj(store.get_meta(lease)) or {}).get('node') == node_name():
+                now_held = json_obj(store.get_meta(lease)) or {}
+                if now_held.get('node') == node_name() and now_held.get('by') != 'cli':
                     store.drop_meta(lease)
             except Exception:                           # noqa: BLE001
                 pass

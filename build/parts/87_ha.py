@@ -1410,19 +1410,33 @@ def _ha_rebuild(local, remote, my_slot, peer_slot, my_host, my_port, peer_host, 
             ha_sequences(local, my_slot)
         except Exception as e:                          # noqa: BLE001
             log('the numbering could not be set again: %s' % e, 'warn')
-        HA_REBUILDER[0] = None
-        HA_REBUILDING.clear()
         # Failed after its tables were emptied (1.0.94): the node stays out of
         # service, not back answering every person "no such token" with
-        # nothing replicating - until a rebuild goes through.
+        # nothing replicating - until a rebuild goes through. Written before the
+        # flag is cleared (1.0.255): after it, RADIUS answered from the emptied
+        # tables until the row was in - by this thread, the one the write guard
+        # lets through while the flag is up.
         store = HA_STORE.get('store')
+        failed_row = None
+        if store is not None and not done:
+            try:
+                failed_row = maintenance_set(store, True, HA_REBUILD_FAILED_WHY, 'the rebuild')
+                MAINT_CACHE['row'] = failed_row     # what RADIUS reads at once once the flag is down
+                MAINT_CACHE['at'] = time.monotonic()
+            except Exception as e:                      # noqa: BLE001
+                log('maintenance after the rebuild could not be written: %s' % e, 'error')
+        HA_REBUILDER[0] = None
+        HA_REBUILDING.clear()
         if store is not None:
             try:
-                row = maintenance_row(store)
-                if not done:
-                    maintenance_set(store, True, HA_REBUILD_FAILED_WHY, 'the rebuild')
-                elif row.get('on') and row.get('why') == HA_REBUILD_FAILED_WHY:
-                    maintenance_set(store, False, '', 'the rebuild')
+                if failed_row is not None:
+                    # Its event was not written with the flag up (add_event writes none then).
+                    store.add_event('starting and stopping', '%s: in maintenance - %s' % (
+                        node_name(), HA_REBUILD_FAILED_WHY), 'warn', who='the rebuild')
+                elif done:
+                    row = maintenance_row(store)
+                    if row.get('on') and row.get('why') == HA_REBUILD_FAILED_WHY:
+                        maintenance_set(store, False, '', 'the rebuild')
             except Exception as e:                      # noqa: BLE001
                 log('maintenance after the rebuild could not be written: %s' % e, 'error')
     rows = sum(int(local.value('SELECT COUNT(*) FROM %s' % t) or 0) for t in TABLES)
@@ -1469,22 +1483,39 @@ def ha_repl_state(store):
 
 
 def ha_peer_columns():
-    """Columns of a later version added to the other node's tables too."""
+    """Columns of a later version added to the other node's tables too. True once none is
+    missing there. The other node's RADIUS is answering: each ALTER waits only a moment
+    for its table (1.0.255) - its 10 s held every sign-in there queued behind it; one not
+    added is tried again (the start's thread a few times, then hourly)."""
     try:
         far = ha_peer_db()
     except Exception as e:                              # noqa: BLE001
         log('the other node\'s database could not be reached to add new columns: %s'
             % str(e).split('\n')[0][:200], 'warn')
-        return
+        return False
     try:
-        far.add_missing_columns()
+        far.add_missing_columns(short_wait=True)
+        return not getattr(far, 'columns_missing', False)
     except Exception as e:                              # noqa: BLE001
         log('new columns could not be added on the other node: %s' % e, 'warn')
+        return False
     finally:
         try:
             far.close()
         except Exception:                               # noqa: BLE001
             pass
+
+
+def ha_peer_columns_start(tries=5, gap_s=30):
+    """The start's ha_peer_columns, tried again a few times (1.0.255): with the short wait
+    for a table, one busy a moment no longer leaves replication to the other node stalled
+    until the hourly try."""
+    for i in range(max(1, int(tries))):
+        if ha_peer_columns():
+            return True
+        if i + 1 < tries:
+            time.sleep(gap_s)
+    return False
 
 
 # ---- used once, on either node (1.0.101) -------------------------------------

@@ -29,7 +29,11 @@ SPLIT_LOCK = threading.Lock()
 SPLIT = {'thread': None, 'peer_ok_at': 0.0, 'peer_err': '', 'peer_db': None, 'apart_since': 0.0,
          'role': 'serve', 'why': '', 'arb': [], 'arb_state': None, 'arb_at': 0.0,
          'together_at': 0.0, 'report_due': 0.0, 'written': 0.0, 'started': 0.0, 'gen': 0,
-         'last_apart_since': 0.0, 'tidied': 0.0}
+         'last_apart_since': 0.0, 'tidied': 0.0, 'apart_mono': 0.0}
+# On time.monotonic() (1.0.255): peer_ok_at, arb_at, report_due, written, tidied, apart_mono - a
+# clock stepped forward by NTP took the nodes for apart at once and this node stepped aside, one
+# stepped back held a real split off. On the wall clock, as written for the pages and compared
+# with the rows' times: apart_since, together_at, last_apart_since.
 SPLIT_STEP_S = 2.0
 SPLIT_SAY_SCRATCH = ('A recovery code cannot be used while the two servers cannot reach each '
                      'other - use the code of the app')
@@ -311,7 +315,7 @@ def split_tick(daemon):
         if t is not None and t.is_alive():
             return
         SPLIT['started'] = time.time()
-        SPLIT['peer_ok_at'] = time.time()           # given its time from the start
+        SPLIT['peer_ok_at'] = time.monotonic()      # given its time from the start
         t = threading.Thread(target=_split_loop, args=(daemon,), name='otp-split', daemon=True)
         SPLIT['thread'] = t
     t.start()
@@ -350,13 +354,16 @@ def split_aside():
 
 def split_step(store, now=None, peer=None, arbiter=None):
     """One look: the other node's database, the arbiter, what this node does. `peer` and
-    `arbiter` given only by the tests."""
+    `arbiter` given only by the tests - and `now`, then both clocks at once. How long the
+    other node has not answered on time.monotonic() (1.0.255); `now` (the wall clock) only
+    for what is written down."""
+    mono = time.monotonic() if now is None else now
     now = time.time() if now is None else now
     if not split_engaged():
         if SPLIT['apart_since'] or SPLIT['role'] != 'serve':
             SPLIT.update(apart_since=0.0, role='serve', why='')
             MAINT_CACHE['at'] = 0
-        SPLIT['peer_ok_at'] = now
+        SPLIT['peer_ok_at'] = mono
         # Whatever is chosen here (1.0.224): while the question before a code is let in is
         # held off - the other node's database did not answer, 20 s to 5 min - it is asked
         # every 2 s whether it answers again, and the hold is lifted at once. As until now, it
@@ -370,7 +377,7 @@ def split_step(store, now=None, peer=None, arbiter=None):
         return
     p = _split_peer_probe() if peer is None else peer
     if p is True:
-        SPLIT['peer_ok_at'], SPLIT['peer_err'] = now, ''
+        SPLIT['peer_ok_at'], SPLIT['peer_err'] = mono, ''
         # The other node's database answers: the question before a code is let in is asked
         # again at once - not after its back-off of up to five minutes, while recovery codes
         # would be refused and codes written down as let in unasked.
@@ -382,22 +389,26 @@ def split_step(store, now=None, peer=None, arbiter=None):
         SPLIT['peer_err'] = str(p)
     mode = split_mode()
     if arbiter is not None:
-        SPLIT.update(arb=[], arb_state=arbiter, arb_at=now)
-    elif mode == 'arbiter' or now - SPLIT['arb_at'] > 30:
+        SPLIT.update(arb=[], arb_state=arbiter, arb_at=mono)
+    elif mode == 'arbiter' or mono - SPLIT['arb_at'] > 30:
         got, verdict = split_arbiter_check()
-        SPLIT.update(arb=got, arb_state=verdict, arb_at=now)
+        SPLIT.update(arb=got, arb_state=verdict, arb_at=mono)
     after = max(5, int(CONFIG.get('split_after_s') or 20))
-    apart = now - SPLIT['peer_ok_at'] > after
+    silent = mono - SPLIT['peer_ok_at']
+    apart = silent > after
     was_apart = bool(SPLIT['apart_since'])
     if apart and not was_apart:
-        SPLIT['apart_since'] = SPLIT['peer_ok_at'] or now
+        # The wall-clock time it last answered, for the pages and the report.
+        SPLIT['apart_since'] = (now - silent) if SPLIT['peer_ok_at'] else now
+        SPLIT['apart_mono'] = SPLIT['peer_ok_at'] or mono
         log('ha: the other node\'s database has not answered for %d s (%s) - the nodes are '
-            'apart' % (now - SPLIT['peer_ok_at'], SPLIT['peer_err']), 'warn')
+            'apart' % (silent, SPLIT['peer_err']), 'warn')
         _split_event(store, 'bad', 'the nodes lost each other: the other node\'s database has not '
-                     'answered for %d s (%s)' % (now - SPLIT['peer_ok_at'], SPLIT['peer_err']))
+                     'answered for %d s (%s)' % (silent, SPLIT['peer_err']))
     elif not apart and was_apart:
-        took = now - SPLIT['apart_since']
-        SPLIT.update(apart_since=0.0, together_at=now, report_due=now + 30,
+        took = (mono - SPLIT['apart_mono']) if SPLIT.get('apart_mono') else \
+            now - SPLIT['apart_since']
+        SPLIT.update(apart_since=0.0, apart_mono=0.0, together_at=now, report_due=mono + 30,
                      last_apart_since=SPLIT['apart_since'])
         # The connections from before closed (1.0.222): the first question on one dead with
         # the link put the other node down for 20 s more, just after it came back - and codes
@@ -435,15 +446,15 @@ def split_step(store, now=None, peer=None, arbiter=None):
             _split_event(store, 'good', 'this node answers again%s' % (' - ' + why if why else ''))
     else:
         SPLIT['why'] = why
-    if now - SPLIT['written'] > 10 or apart != was_apart:
-        SPLIT['written'] = now
+    if mono - SPLIT['written'] > 10 or apart != was_apart:
+        SPLIT['written'] = mono
         try:
-            store.set_meta('split:state:' + node_name(), json.dumps(split_state_here(now)))
+            store.set_meta('split:state:' + node_name(), json.dumps(split_state_here(now, mono)))
         except Exception:                               # noqa: BLE001
             pass
-    if not apart and not SPLIT['report_due'] and now - SPLIT['tidied'] > 600:
+    if not apart and not SPLIT['report_due'] and mono - SPLIT['tidied'] > 600:
         # Codes let in unasked in a short outage, never apart (1.0.224): gone after an hour.
-        SPLIT['tidied'] = now
+        SPLIT['tidied'] = mono
         try:
             for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?",
                                    ('split:took:%s:%%' % node_name(),)):
@@ -466,8 +477,8 @@ def split_step(store, now=None, peer=None, arbiter=None):
                     store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
         except Exception:                               # noqa: BLE001
             pass
-    if SPLIT['report_due'] and now >= SPLIT['report_due'] and not apart and \
-            (peer is not None or split_peer_caught_up(store) or now > SPLIT['report_due'] + 600):
+    if SPLIT['report_due'] and mono >= SPLIT['report_due'] and not apart and \
+            (peer is not None or split_peer_caught_up(store) or mono > SPLIT['report_due'] + 600):
         # Only once the other node's rows are here (1.0.224): made 30 s after, the
         # replication was still catching up and the codes let in on both were not found.
         SPLIT['report_due'] = 0.0
@@ -548,14 +559,20 @@ def split_peer_caught_up(store):
     return False
 
 
-def split_state_here(now=None):
+def split_state_here(now=None, mono=None):
+    if mono is None:
+        mono = time.monotonic() if now is None else now
     now = time.time() if now is None else now
+
+    def wall(m):
+        # A time kept on time.monotonic() written as the wall clock's (1.0.255).
+        return (now - (mono - m)) if m else 0.0
     return {'at': now, 'node': node_name(), 'active': split_active(), 'engaged': split_engaged(),
             'mode': split_mode(),
             'apart': split_apart(), 'since': SPLIT['apart_since'],
-            'peer_ok_at': SPLIT['peer_ok_at'], 'peer_err': SPLIT['peer_err'],
+            'peer_ok_at': wall(SPLIT['peer_ok_at']), 'peer_err': SPLIT['peer_err'],
             'role': SPLIT['role'], 'why': SPLIT['why'], 'preferred': split_me_preferred(),
-            'arbiter': SPLIT['arb_state'], 'arbiter_at': SPLIT['arb_at'],
+            'arbiter': SPLIT['arb_state'], 'arbiter_at': wall(SPLIT['arb_at']),
             'arbiters': [{'target': t, 'ok': ok, 'how': how, 'words': w}
                          for t, ok, how, w in SPLIT['arb']],
             'gateway': default_gateway(), 'frozen': split_frozen(),

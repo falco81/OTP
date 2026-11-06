@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.254'
+__version__ = '1.0.255'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -197,6 +197,9 @@ DEFAULTS = {
     'portal_groups': '',
     # A one-time code before the first token (1.0.228): off - as until now.
     'portal_first_code': 'off',
+    # Where its SMS may go (1.0.255): '' - the mobile number as the directory's card reads it
+    # (mobile, telephoneNumber unless changed there), as until now.
+    'portal_first_sms_attr': '',
     'portal_confirm': 1,
     'portal_reissue': 1,
     'portal_show_secret': 1,
@@ -799,6 +802,7 @@ NAMES = {
     'portal_who': 'Who may enrol a token',
     'portal_groups': 'Groups that may enrol',
     'portal_first_code': 'A one-time code before the first token',
+    'portal_first_sms_attr': 'Its SMS only to a number in these attributes',
     'portal_confirm': 'A new token must be confirmed with a code',
     'portal_reissue': 'People may replace their own token',
     'portal_show_secret': 'Show the key as text beside the QR code',
@@ -1320,6 +1324,16 @@ SAYS = {
                          'number for cannot enrol here then; an administrator makes its token. '
                          'Needs the mail (Settings → Mail) or the SMS gateway (Settings → SMS) '
                          'set up. Somebody who has a token already signs in as before.',
+    'portal_first_sms_attr': 'The attributes of the directory the one-time code by SMS may go to - '
+                             'one to four names, such as extensionAttribute5 or employeeMobile: '
+                             'the first with a number is taken, read from the person\'s entry at the '
+                             'sign-in. Empty: the mobile number as the directory\'s card reads it '
+                             '(mobile, then telephoneNumber, unless changed there) - as until now. '
+                             'In Active Directory everybody may change mobile and telephoneNumber '
+                             'of their own account (Personal Information): somebody who found out a '
+                             'password could put their own number there first, and the code went to '
+                             'them. Name an attribute only the administrators write. The e-mail '
+                             'address is not affected.',
     'portal_confirm': 'A token made on the enrolment page is not in use until the person has '
                       'typed a code from it. Without this a QR code scanned badly - or not '
                       'at all - is a token that locks its owner out on the next sign-in.',
@@ -1710,7 +1724,8 @@ PANES = {
                'scratch_count', 'scratch_digits', 'token_names_case', 'names_czsk_letters',
                'names_any_letters'],
     'portal': ['portal', 'portal_title', 'portal_realm', 'portal_hint', 'portal_who',
-               'portal_groups', 'portal_first_code', 'portal_confirm', 'portal_reissue',
+               'portal_groups', 'portal_first_code', 'portal_first_sms_attr', 'portal_confirm',
+               'portal_reissue',
                'portal_show_secret',
                'portal_scratch', 'portal_codes_view', 'portal_session_min', 'portal_tries', 'portal_wait_min',
                'portal_help'],
@@ -1784,6 +1799,7 @@ ONLY_WHEN = {
     'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
     'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
     'portal_first_code': ['portal', '1'],
+    'portal_first_sms_attr': ['portal_first_code', 'off-not'],
     'portal_reissue': ['portal', '1'], 'portal_show_secret': ['portal', '1'],
     'portal_scratch': ['portal', '1'], 'portal_session_min': ['portal', '1'],
     'portal_help': ['portal', '1'], 'portal_tries': ['portal', '1'],
@@ -2003,6 +2019,14 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('portal_sso_from: %r is not an address or a network' % one)
+    if key == 'portal_first_sms_attr' and str(got).strip():
+        # Names of attributes (RFC 4512) or OIDs, four at most (1.0.255), as on a directory's card.
+        words = [w for w in re.split(r'[,;\s]+', str(got).strip()) if w]
+        if len(words) > 4:
+            raise BadSetting('portal_first_sms_attr: four attributes at most')
+        for w in words:
+            if not re.match(r'^(?:[A-Za-z][A-Za-z0-9-]{0,99}|[0-9]+(?:\.[0-9]+){1,40})\Z', w):
+                raise BadSetting('portal_first_sms_attr: %r is not the name of an attribute' % w)
     if key == 'portal_sso_header':
         # A header's name only (1.0.239); never one a browser or nginx sets itself.
         if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \

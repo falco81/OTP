@@ -56,8 +56,14 @@ def settings(**kw):
 
 HL.ok('the second step on, the passkey on', settings(admin_2fa=1, admin_2fa_passkey=1) == 200)
 for n in 'ab':
-    t = password(n)
-    st, got = call(n, '/api/auth/mfa', tok=t)
+    # the other node takes the setting at its next look (a few seconds, more under load)
+    for _ in range(30):
+        t = password(n)
+        st, got = call(n, '/api/auth/mfa', tok=t)
+        if 'passkey' in (got.get('methods') or []):
+            break
+        call(n, '/api/auth/logout', {}, tok=t)
+        time.sleep(1)
     HL.ok('node %s: the passkey offered after the password' % n, 'passkey' in (got.get('methods') or []) and got.get('stage') == 'enrol', got)
     st, got = call(n, '/api/auth/mfa', tok=t, host='192.168.40.10')
     HL.ok('node %s: by an address not offered' % n, 'passkey' not in (got.get('methods') or []), got)

@@ -12,9 +12,11 @@ def rb_tools():
 
 def rb_page(store):
     nodes = {}
-    for r in rb_history(store):
+    runs = rb_history(store)            # every node's rows, merged (1.0.255)
+    for r in runs:
         nodes.setdefault(r.get('node') or '?', r)
-    return {'targets': [rb_view(t) for t in rb_targets(store)], 'runs': rb_history(store)[:40],
+    return {'targets': [rb_view(t) for t in rb_with_status(store)], 'runs': runs[:40],
+            'name_clash': rb_slug_clash(store),
             'verified': rb_verified(store)[:20],
             'last_by_node': nodes, 'job': {k: v for k, v in RB_JOB.items()},
             'kinds': [{'kind': k, 'words': RB_KIND_WORDS[k], 'port': RB_PORTS.get(k)}
@@ -81,7 +83,7 @@ def _rbackup_do(h):
         if act == 'save':
             t = rb_save(h.store, dict(b.get('target') or {}, id=b.get('id') or
                                       odict(b.get('target')).get('id')), by)
-            return {'message': 'saved', 'target': rb_view(t)}
+            return {'message': 'saved', 'target': rb_view(rb_with_status(h.store, [t])[0])}
         if act == 'delete':
             rb_delete(h.store, b.get('id'), by)
             return {'message': 'taken away'}
@@ -95,9 +97,11 @@ def _rbackup_do(h):
             out = rb_try(t)
             h.store.add_event('settings', '%s tried the backup destination %s: %s' % (
                 by, t['name'], 'it works' if out['ok'] else out.get('error')), who=by)
-            if t.get('id') and rb_target(h.store, t['id']):
-                rb_set_fields(h.store, t['id'], '', '', tried={'at': time.time(), 'ok': out['ok'],
-                                                               'error': out.get('error') or ''})
+            if t.get('id'):
+                # This node's own row (1.0.255): rewritten into the destinations, a change saved
+                # on the other node meanwhile was lost.
+                rb_status_put(h.store, t['id'], 'tried', {'at': time.time(), 'ok': out['ok'],
+                                                          'error': out.get('error') or ''})
             return out
         if act == 'hostkey_scan':
             t = _rb_target_for(h, b)

@@ -289,7 +289,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             # and the database's addresses with every error.
             s = self.store.session_get(
                 token, 'admin', int(CONFIG.get('session_idle_min') or 120) * 60, touch=False)
-            return bool(s) and not mfa_pending(s)
+            return bool(s) and not mfa_pending(s, self.store)
         except Exception:                               # noqa: BLE001
             return False
 
@@ -324,7 +324,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         s['role'] = acc['role']
         # The second step first (1.0.125): until it is given, the sign-in may
         # do that and nothing else.
-        if mfa_pending(s) and getattr(self, 'route_path', '') not in MFA_ALLOWED:
+        if mfa_pending(s, self.store) and getattr(self, 'route_path', '') not in MFA_ALLOWED:
             raise ApiError(401, 'the second step of signing in is not done yet')
         if acc.get('must_change') and getattr(self, 'route_path', '') not in MUST_CHANGE_ALLOWED:
             raise ApiError(403, 'change the password first')
@@ -410,7 +410,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if name:
             # Counted per person, not per spelling (1.0.44): DOMAIN\\novak,
             # novak@anything and Novak are all novak here.
-            who = str(name).strip().lower()
+            # One spelling of the same letters (1.0.255): "Nová" typed composed and decomposed were
+            # two counts - and the directory takes both for one person.
+            who = unicodedata.normalize('NFC', str(name)).strip().lower()
             # "admin>person" (a test of somebody's sign-in) keeps its admin
             # (1.0.146): CORP\\novak made it novak alone, one count for all.
             # Only for those tests (1.0.147): a name typed at a sign-in is
@@ -534,6 +536,11 @@ LOCKOUT_KINDS = {
     'portal-confirm': 'confirming a token on the enrolment pages',
     'portal-reissue': 'a new token on the enrolment pages',
     'portal-codes': 'recovery codes shown on the enrolment pages',
+    # Counted since 1.0.228 / 1.0.239, never listed (1.0.255): shown by their key, and not cleared
+    # from the pages - "which lockout?".
+    'portal-gate': 'the one-time code before the first token (enrolment pages)',
+    'portal-sso': 'signing in by the load balancer, per name (enrolment pages)',
+    'portal-sso-peer': 'signing in by the load balancer, per address (enrolment pages)',
     # Kept in the database for the whole cluster (1.0.116), not in a node's
     # memory: codes sent to a person, and a token locked by wrong codes.
     'codes-sent': 'codes sent by e-mail or SMS',
@@ -1258,9 +1265,11 @@ def _login(h):
     # The second step, when it is asked for (1.0.125): the sign-in is made,
     # and may do nothing but give it.
     stage = mfa_stage(h.store, ok['name']) if CONFIG.get('admin_2fa') else ''
+    # Marked when opened with the second step off (1.0.255): switched on later - read by this node
+    # or the other - the sign-in gives it then (mfa_pending).
     token = h.store.session_new('admin', ok['name'], ok['role'], h.client_ip(),
                                 CONFIG.get('session_hours') or 12,
-                                data={'mfa': stage} if stage else None)
+                                data={'mfa': stage} if stage else {'mfa_off': 1})
     h.store.set_account(ok['name'], last_in=time.time(), last_from=h.client_ip())
     h.store.add_event('sign-ins', '%s signed in from %s%s' % (
         ok['name'], h.client_ip(), {'check': ' - the second step to give',
@@ -1406,11 +1415,12 @@ def _whoami(h):
     acc = h.store.account(s['name'])
     if not acc or acc.get('disabled'):
         return {'who': None}
-    if mfa_pending(s):
+    stage = mfa_pending(s, h.store)
+    if stage:
         # No role until the second step is given: the pages that ask who it
         # is (a database or a package sent) refuse it.
         return {'who': {'name': acc['name'], 'role': '', 'display': acc.get('display') or '',
-                        'mfa': mfa_pending(s)}}
+                        'mfa': stage}}
     prefs = json_obj(acc.get('prefs')) or {}
     # The page is drawn with the person's own layout of the tables from the
     # first frame, rather than as it comes and then again.
@@ -3530,7 +3540,10 @@ def _settings(h):
                        if r.get('suffix') and r['suffix'] != '*'],
             'isemon': h.d.shipper.state() if h.d.shipper else {},
             'node': node_name(), 'nodes': h.d.cluster_nodes(),
-            'cluster': bool(CONFIG.get('ha_mode')) or len(h.d.cluster_nodes()) > 1}
+            'cluster': bool(CONFIG.get('ha_mode')) or len(h.d.cluster_nodes()) > 1,
+            # Shown beside a setting where it is drawn (1.0.255).
+            'warnings': {k: v for k, v in (
+                ('portal_first_sms_attr', portal_first_sms_warning(h.store)),) if v}}
 
 
 @route('POST', '/api/settings')
@@ -3559,8 +3572,18 @@ def _settings_do(h):
     try:
         # The other sign-ins ended when the second step is switched on: in
         # save_settings, the one saving it kept.
-        return h.d.save_settings(asked, by=s['name'], node=b.get('node'),
-                                 drawn_by=b.get('drawn_by'), keep_session=s.get('id'))
+        was_2fa = bool(CONFIG.get('admin_2fa'))
+        got = h.d.save_settings(asked, by=s['name'], node=b.get('node'),
+                                drawn_by=b.get('drawn_by'), keep_session=s.get('id'))
+        if not was_2fa and CONFIG.get('admin_2fa'):
+            # Kept whole as it was (1.0.255): marked as past the step, else - opened while it was
+            # off - it would give the second step at its next request.
+            try:
+                h.store.session_marks(s['id'], {'mfa_ok': 1, 'mfa_off': None})
+            except Exception as e:                      # noqa: BLE001
+                log('the sign-in that switched the second step on could not be kept: %s' % e,
+                    'warn')
+        return got
     except NodeMoved as e:
         raise ApiError(409, str(e))
     except HiSecConflict as e:
@@ -4989,8 +5012,8 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
 
 
 # ---- the enrolment pages -------------------------------------------------------------
-def portal_me(h, gate_ok=False):
-    s = h.session('portal')
+def portal_me(h, gate_ok=False, s=None):
+    s = s or h.session('portal')
     if not s:
         raise ApiError(401, 'not signed in, or the sign-in has run out')
     # Switched off while somebody was signed in, it is off for them too (1.0.33).
@@ -5029,7 +5052,55 @@ def portal_gate_needed(store, tname):
     return not tok or tok.get('state') == 'pending'
 
 
-def portal_gate_where(entry):
+PORTAL_SELF_PHONES = ('mobile', 'telephonenumber', 'homephone', 'ipphone', 'pager', 'othermobile',
+                      'othertelephone', 'otherhomephone', 'otheripphone', 'otherpager')
+
+
+def portal_first_sms_attrs():
+    """The attributes the gate's SMS may go to (1.0.255), or () for the directory card's own."""
+    return tuple(w for w in re.split(r'[,;\s]+', str(CONFIG.get('portal_first_sms_attr') or '').strip())
+                 if w)[:4]
+
+
+def portal_first_sms_read(ad, entry, attrs):
+    """The number in the first of `attrs` that has one, read from the person's own entry."""
+    if ad is None or not entry.get('dn'):
+        return ''
+    rows = ad.asked(lambda link: link.search(entry['dn'], ldap_present('objectClass'), attrs,
+                                             scope=0, limit=1))
+    a = {k.lower(): v for k, v in (odict(rows[0].get('attrs')) if rows else {}).items()}
+    for attr in attrs:
+        for v in a.get(attr.lower()) or []:
+            if str(v).strip():
+                return str(v).strip()
+    return ''
+
+
+def portal_first_sms_warning(store=None):
+    """What the Settings page warns of (1.0.255): the gate's code by SMS going to a number the
+    person may write themselves in Active Directory. '' when not."""
+    ways = PORTAL_FIRST_WAYS.get(str(CONFIG.get('portal_first_code') or 'off')) or ()
+    if 'sms' not in ways:
+        return ''
+    attrs = portal_first_sms_attrs()
+    if not attrs:
+        attrs = ()
+        try:
+            for d in (store.directories() if store is not None else []):
+                attrs += dir_attr_list(d.get('mobile_attr'), DIR_MOBILE_DEFAULT)
+        except Exception:                               # noqa: BLE001
+            pass
+        attrs = attrs or DIR_MOBILE_DEFAULT
+    mine = sorted(set(a for a in attrs if a.lower() in PORTAL_SELF_PHONES), key=str.lower)
+    if not mine:
+        return ''
+    return ('The one-time code by SMS goes to %s - in Active Directory everybody may change these '
+            'on their own account, so a password found out is enough to put another number there '
+            'first. Name an attribute only the administrators write in "Its SMS only to a number '
+            'in these attributes".' % ', '.join(mine))
+
+
+def portal_gate_where(entry, ad=None):
     """Where the code goes, as the directory has it: (kind, address, ''), or (None, None, why)
     with why 'nothing' (no way of sending set up) or what the directory lacks."""
     ways = PORTAL_FIRST_WAYS.get(str(CONFIG.get('portal_first_code') or 'off')) or ()
@@ -5039,6 +5110,20 @@ def portal_gate_where(entry):
         if kind not in have:
             continue
         raw = str(entry.get('mail' if kind == 'mail' else 'mobile') or '').strip()
+        sms_attrs = portal_first_sms_attrs() if kind == 'sms' else ()
+        if sms_attrs:
+            # Only the attributes named (1.0.255): mobile and telephoneNumber are the person's own
+            # to write in Active Directory.
+            try:
+                raw = portal_first_sms_read(ad, entry, sms_attrs)
+            except LdapUnreachable:
+                raise ApiError(503, 'the directory cannot be reached just now')
+            except LdapError as e:
+                tried.append('the mobile number could not be read (%s): %s' % (', '.join(sms_attrs), e))
+                continue
+            if not raw:
+                tried.append('no mobile number in %s' % ', '.join(sms_attrs))
+                continue
         if not raw:
             tried.append('no %s' % ('e-mail address' if kind == 'mail' else 'mobile number'))
             continue
@@ -5484,7 +5569,7 @@ def portal_open(h, full, realm, ad, entry, key, lang, sso=False):
     # directory has - the password alone no longer makes anybody a token.
     gate = None
     if portal_gate_needed(h.store, tname):
-        kind, dest, why = portal_gate_where(entry)
+        kind, dest, why = portal_gate_where(entry, ad)
         if not kind:
             if why == 'nothing':
                 h.store.add_event('enrolment', '%s cannot enrol: a one-time code is needed first, '
@@ -5718,9 +5803,13 @@ def _portal_whoami(h):
     s = h.session('portal')
     if not s:
         return {'me': None}
-    if not CONFIG.get('portal'):
-        # Switched off meanwhile: nothing more of it shown (1.0.44).
-        h.store.session_end(h.headers.get('X-Otp-Session'))
+    # The checks of every other step (1.0.255), the sign-in ended as there: a sign-in by the
+    # balancer kept showing the person after it was switched off, and one kept open over a token
+    # taken away showed them as signed in - and only the next step said "sign in again".
+    # Switched off meanwhile: nothing more of it shown (1.0.44).
+    try:
+        portal_me(h, gate_ok=portal_gated(s), s=s)
+    except ApiError:
         return {'me': None}
     if portal_gated(s):
         # Waiting for its one-time code (1.0.228): nothing of the person shown yet.

@@ -388,9 +388,14 @@ def server_load(fresh=False):
         return out
 
 
+LOAD_BACK_S = 5                  # a reading older than the last by more: the clock was stepped back (1.0.255)
+
+
 def load_history(since=None, span=150):
     """The sampler's readings newer than `since` (this node's clock), oldest first."""
     now = time.time()
+    if since is not None and since > now + 1:
+        since = None                # a page's since later than now: this clock was stepped back (1.0.255)
     with LOAD_LOCK:
         return [dict(x) for x in LOAD_HIST if now - x['at'] <= span
                 and (since is None or x['at'] > since)]
@@ -434,6 +439,10 @@ def load_sample():
     for k in ('disk_rd', 'disk_wr', 'net_rx', 'net_tx'):
         one[k] = out.get(k) or 0
     with LOAD_LOCK:
+        # the clock stepped back (1.0.255): the readings before it would stand in the future of
+        # every new one - the history starts again
+        if LOAD_HIST and one['at'] < LOAD_HIST[-1]['at'] - LOAD_BACK_S:
+            del LOAD_HIST[:]
         LOAD_HIST.append(one)
         del LOAD_HIST[:-LOAD_HIST_KEEP]
 
@@ -525,8 +534,12 @@ def load_ha_tick(store):
             if was is None and not LOAD_HA['ticked']:
                 continue
             last = one['hist'][-1]['at'] if one['hist'] else 0
-            got = [x for x in d.get('hist') or [] if isinstance(x, dict)
-                   and isinstance(x.get('at'), (int, float)) and x['at'] > last]
+            fine = [x for x in d.get('hist') or [] if isinstance(x, dict) and isinstance(x.get('at'), (int, float))]
+            if fine and last and max(x['at'] for x in fine) < last - LOAD_BACK_S:
+                # that node's clock stepped back (1.0.255): what it had said before goes, or
+                # nothing it says would ever be newer than its last
+                one['hist'], last = [], 0
+            got = [x for x in fine if x['at'] > last]
             one['hist'] = (one['hist'] + got)[-LOAD_HIST_KEEP:]
             one['now'] = d.get('now') if isinstance(d.get('now'), dict) else None
             one['at'] = mono
@@ -569,8 +582,12 @@ def load_others(store, since):
         with LOAD_HA_LOCK:
             got = dict(LOAD_HA['peers'].get(n['name']) or {})
         late = not got.get('at') or time.monotonic() - got['at'] > LOAD_STALE_S
+        hist = got.get('hist') or []
+        after = since.get(n['name']) or 0
+        if hist and after > hist[-1]['at'] + LOAD_BACK_S:
+            after = 0               # a since later than all it said: that node's clock stepped back (1.0.255)
         out.append({'node': n['name'], 'late': late, 'now': got.get('now'),
-                    'hist': [x for x in got.get('hist') or [] if x['at'] > (since.get(n['name']) or 0)]})
+                    'hist': [x for x in hist if x['at'] > after]})
     return out
 
 

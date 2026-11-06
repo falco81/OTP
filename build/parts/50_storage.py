@@ -1084,6 +1084,9 @@ class Storage(object):
         with self.db.transaction():                 # with its signature (1.0.234)
             self.db.insert('sessions', row)
             dbguard_sign(self.db, 'x', row['token_hash'], dbguard_session_text(row))     # 1.0.231
+            # The marks of its second step too (1.0.255): signed apart from the row, as 1.0.254
+            # still reads the one above.
+            dbguard_sign(self.db, 'xm', row['token_hash'], dbguard_session_marks(row))
         return token
 
     def session_get(self, token, kind, idle_s, touch=True):
@@ -1096,6 +1099,8 @@ class Storage(object):
         if kind == 'admin' and dbguard_on() and \
                 not dbguard_ok(self.db, 'x', row['token_hash'], dbguard_session_text(row)):
             return None             # a sign-in otp did not open (1.0.231)
+        if kind == 'admin' and dbguard_on() and not dbguard_session_marks_ok(self.db, row):
+            return None             # its second step's marks not otp's (1.0.255)
         t = time.time()
         if row['expires'] < t or t - float(row['last'] or 0) > idle_s:
             self.db.run('DELETE FROM sessions WHERE id = ?', (row['id'],))
@@ -1150,6 +1155,19 @@ class Storage(object):
             if self.db.run('UPDATE sessions SET data = ? WHERE id = ? AND data = ?',
                            (json.dumps(data), ident, raw)):
                 return data
+        return data
+
+    def session_marks(self, ident, changes):
+        """The marks of an admin sign-in's second step changed (1.0.255), with their signature
+        in the same transaction - between the two the sign-in read as one changed by somebody
+        else. The data as it is now, None when the sign-in is gone."""
+        with self.db.transaction():
+            data = self.session_merge(ident, changes)
+            if data is None:
+                return None
+            row = self.db.row('SELECT * FROM sessions WHERE id = ?', (ident,))
+            if row and row.get('kind') == 'admin':
+                dbguard_sign(self.db, 'xm', row['token_hash'], dbguard_session_marks(row))
         return data
 
     def session_count_try(self, ident, field, code, most):

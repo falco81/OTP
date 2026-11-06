@@ -21,7 +21,13 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      # password or code is looked at (1.0.207): a disabled account's
                      # VPN reconnecting blocked everybody behind the same address.
                      'is disabled in the directory', 'has expired in the directory',
-                     'the account may not sign in', 'more than one account in')
+                     'the account may not sign in', 'more than one account in',
+                     # This server's own trouble (1.0.255): a token whose key this node
+                     # cannot open, a directory that could not say whether a name is
+                     # another account, a second window that ran out or was answered on
+                     # the other node - none of them a code tried, all of them counted.
+                     'cannot be opened on this machine', 'could not say whether',
+                     'asked for too long ago')
 
 
 def guard_on():
