@@ -213,6 +213,22 @@ async function lookNow(p) { return post(p, 'after', {action: 'check'}); }
   await cp.screenshot({ path: SHOTS + '/cs.png', fullPage: true });
   await post(cp, 'prefs', {lang: 'en'});
   await cctx.close();
+  // 1.0.260: Clear in the heading of DONE LATELY - the lines shown go, what is still to be done stays
+  await openUpgrade(p);
+  const beforeClear = (await get(p, 'after')).d;
+  const clr = await p.$('#after-lately .after-lately-head button.after-lately-clear');
+  /* the page's own tip takes the title over (title, or aria-label once it did) */
+  ok('Clear: in the heading of DONE LATELY, with its tip', !!clr && /what is still to be done stays/.test(((await clr.getAttribute('title')) || '') + ((await clr.getAttribute('aria-label')) || '')));
+  await clr.click();
+  await p.waitForTimeout(1500);
+  const afterClear = (await get(p, 'after')).d;
+  ok('Clear: DONE LATELY empty - no table, no heading, no Clear', !(afterClear.lately || []).length && !(await p.$('#after-lately table')) &&
+     !(await p.$('#after-lately .after-lately-head')), JSON.stringify(afterClear.lately));
+  ok('...what is still to be done untouched', (afterClear.items || []).length === (beforeClear.items || []).length &&
+     (await p.$$('#after-bands .after-band')).length === (afterClear.items || []).length);
+  const ev2 = (await get(p, 'events')).d;
+  ok('...written in the events', (ev2.rows || []).some(r => /"done lately" cleared by admin/.test(r.words || '')), JSON.stringify(ev2).slice(0, 200));
+  await p.screenshot({ path: SHOTS + '/cleared.png', fullPage: true });
   // taken away again
   hook(null);
   await lookNow(p);

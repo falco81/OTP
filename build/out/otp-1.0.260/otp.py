@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.259'
+__version__ = '1.0.260'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -41268,6 +41268,57 @@ def after_summary(store, fresh=False):
     return v
 
 
+# "Done lately" emptied (1.0.260): nothing is taken away - the 'Done' rows still hold what was
+# marked - the lines a page showed are only no longer shown. Each node writes its own row of
+# them ('after:cleared:NODE', one writer a row), every node's read together.
+AFTER_CLEARED_KEEP = 400
+
+
+def _after_line_key(x):
+    return (str(x.get('id') or ''), str(x.get('node') or ''), int(fnum(x.get('at'))))
+
+
+def after_cleared(store):
+    out = set()
+    try:
+        rows = store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'after:cleared:%'")
+    except Exception:                                   # noqa: BLE001
+        rows = []
+    for r in rows:
+        for one in odict(json_obj(r['v'])).get('lines') or []:
+            if isinstance(one, list) and len(one) == 3:
+                try:
+                    out.add((str(one[0]), str(one[1]), int(one[2])))
+                except (TypeError, ValueError):
+                    continue
+    return out
+
+
+def after_clear_lately(store, items, by, via='pages'):
+    """The lines of "Done lately" a page showed ([id, node, at] each), or all of it when none are
+    named (the command line), no longer shown. What is still to be done is not touched."""
+    shown = after_view(store).get('lately') or []
+    if items is None:
+        want = set(_after_line_key(x) for x in shown)
+    else:
+        want = set()
+        for one in list(items)[:300]:
+            if isinstance(one, (list, tuple)) and len(one) == 3:
+                try:
+                    want.add((str(one[0])[:48], str(one[1])[:64], int(float(one[2]))))
+                except (TypeError, ValueError):
+                    continue
+        want &= set(_after_line_key(x) for x in shown)      # only what is there to be cleared
+    k = 'after:cleared:' + node_name()
+    had = [x for x in odict(_meta_json(store, k)).get('lines') or [] if isinstance(x, list)]
+    lines = (had + [list(x) for x in sorted(want)])[-AFTER_CLEARED_KEEP:]
+    if want:
+        store.set_meta(k, json.dumps({'lines': lines, 'at': time.time()}))
+    store.add_event('settings', '"done lately" cleared by %s (%d)' % (
+        'the command line' if via == 'cli' else by, len(want)), who=by)
+    return len(want)
+
+
 def after_view(store, full=True):
     """Settings → Upgrades → To be done by hand: every node's, with what was done lately."""
     items = after_needed(store)
@@ -41288,6 +41339,8 @@ def after_view(store, full=True):
             lately.append({'id': i, 'node': n, 'title': a.get('title') or i, 'how': 'done',
                            'who': 'the command line' if a.get('via') == 'cli' else str(a.get('by') or ''),
                            'at': fnum(a.get('at'))})
+    gone = after_cleared(store)
+    lately = [x for x in lately if _after_line_key(x) not in gone]
     lately.sort(key=lambda x: -x['at'])
     return {'items': [{k: x.get(k) for k in ('id', 'node', 'level', 'ack', 'title', 'why', 'steps',
                                              'foot', 'since', 'checked', 'since_version', 'state')}
@@ -41339,6 +41392,10 @@ def after_done(store, ident, node, by, via='pages'):
 # ---- otp --after, otp --after-done (1.0.258) -----------------------------------------------
 def cli_after(args, pal, store):
     by = cli_who()
+    if getattr(args, 'after_clear', False):
+        n = after_clear_lately(store, None, by, 'cli')
+        print(pal.ok_line('"done lately" cleared (%d)' % n))
+        return 0
     if args.after_done:
         try:
             print(pal.ok_line(after_done(store, args.after_done, args.node or node_name(), by, 'cli')))
@@ -51880,6 +51937,11 @@ def _after_do(h):
                 raise ValueError('which one?')
             said = after_done(h.store, ident, node or node_name(), s['name'])
             return dict(after_view(h.store), message=said)
+        if act == 'clear_done':
+            # Clear (1.0.260): exactly the lines this page showed; a line come meanwhile stays
+            items = b.get('items') if isinstance(b.get('items'), list) else None
+            n = after_clear_lately(h.store, items, s['name'])
+            return dict(after_view(h.store), message='done lately cleared (%d)' % n)
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
@@ -59483,6 +59545,8 @@ def build_parser():
                    'by hand); this node looks again first')
     g.add_argument('--after-done', metavar='ID', help='mark one of --after as done (a manual one; '
                    'an automatic one too, logged as such) - with --node for another node\'s')
+    g.add_argument('--after-clear', action='store_true', help='empty "done lately" of --after (what '
+                   'is still to be done stays)')
     g.add_argument('--after-brief', action='store_true', help=argparse.SUPPRESS)
     g.add_argument('--upgrade-status', action='store_true', help='the package sent on the pages '
                    'and how an upgrade started there is going')
@@ -61118,7 +61182,7 @@ def cli_main(argv=None):
 
     cli_stage_files(args)
     store = cli_store()
-    if args.after or args.after_done:
+    if args.after or args.after_done or args.after_clear:
         return cli_after(args, pal, store)     # to be done by hand (1.0.258)
     if args.ha_compare:
         return cli_ha_compare(store, pal, args.json)

@@ -94,6 +94,11 @@ def _after_do(h):
                 raise ValueError('which one?')
             said = after_done(h.store, ident, node or node_name(), s['name'])
             return dict(after_view(h.store), message=said)
+        if act == 'clear_done':
+            # Clear (1.0.260): exactly the lines this page showed; a line come meanwhile stays
+            items = b.get('items') if isinstance(b.get('items'), list) else None
+            n = after_clear_lately(h.store, items, s['name'])
+            return dict(after_view(h.store), message='done lately cleared (%d)' % n)
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')

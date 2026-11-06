@@ -847,6 +847,8 @@ def build_parser():
                    'by hand); this node looks again first')
     g.add_argument('--after-done', metavar='ID', help='mark one of --after as done (a manual one; '
                    'an automatic one too, logged as such) - with --node for another node\'s')
+    g.add_argument('--after-clear', action='store_true', help='empty "done lately" of --after (what '
+                   'is still to be done stays)')
     g.add_argument('--after-brief', action='store_true', help=argparse.SUPPRESS)
     g.add_argument('--upgrade-status', action='store_true', help='the package sent on the pages '
                    'and how an upgrade started there is going')
@@ -2482,7 +2484,7 @@ def cli_main(argv=None):
 
     cli_stage_files(args)
     store = cli_store()
-    if args.after or args.after_done:
+    if args.after or args.after_done or args.after_clear:
         return cli_after(args, pal, store)     # to be done by hand (1.0.258)
     if args.ha_compare:
         return cli_ha_compare(store, pal, args.json)

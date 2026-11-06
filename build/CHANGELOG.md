@@ -4,6 +4,10 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.260 — 6 November 2026
+
+- **To be done by hand → Done lately → Clear** (Settings → Upgrades): a Clear in the heading of Done lately empties the list the page shows - exactly its lines, so one come meanwhile stays; what is still to be done is never touched (the Done marks stay as they hold). With nothing in it, Done lately is not drawn at all - no heading, no Clear. Said in the events (who, how many); `otp --after-clear` on the command line. Both nodes: each writes the lines it cleared in its own row (`after:cleared:NODE`), every node's read together.
+
 ## 1.0.259 — 6 November 2026
 
 The load balancer's guides publish the enrolment pages alone, at L7 or L4; the administration's
