@@ -1376,6 +1376,17 @@ class Daemon(object):
             if after.get('web_proxy') and not str(after.get('web_proxy_from') or '').split():
                 raise BadSetting('behind a load balancer or WAF: say which addresses are the '
                                  'balancers first (The load balancers and WAFs)')
+        if any(k in checked for k in ('web_proxy', 'web_proxy_header', 'web_proxy_port')):
+            # The PROXY protocol on the balancer's own port only (1.0.259): on 443 it would have
+            # shut out everybody who comes without it - the administrators, the VIP address, the
+            # other node, the health checks.
+            after = dict(CONFIG)
+            after.update(checked)
+            if after.get('web_proxy') and str(after.get('web_proxy_header') or '') == \
+                    'proxy_protocol' and not int(after.get('web_proxy_port') or 0):
+                raise BadSetting('the PROXY protocol (proxy_protocol as the header) only on the '
+                                 'balancer\'s own port: give it first (The balancer\'s own port '
+                                 'on the nodes, 8443 say)')
         if any(k in checked for k in ('portal_sso', 'portal_sso_from', 'portal_sso_key')):
             # Signed in by the balancer only from the balancers, with the key (1.0.239): on
             # without either, a header of anybody's would have been a sign-in.

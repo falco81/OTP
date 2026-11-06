@@ -8880,7 +8880,7 @@ var LB_UI = (function () {
   return st;
 })();
 function lbKeep() {
-  /* The shared secret is never kept in the browser (1.0.57). */
+  /* No secret is ever typed in here (1.0.259: the RADIUS one is always <the shared secret>). */
   try { localStorage.setItem('otp.lb', JSON.stringify(Object.assign({}, LB_UI, {secret: undefined}))); } catch (e) { /* not kept */ }
 }
 function lbCode(tpl, v) {
@@ -8908,85 +8908,181 @@ function lbBlock(tpl, v, title) {
 function lbServers(v, fmt) {
   return v.nodes.map(function (n, i) { return fmt(n, i); }).join('\n');
 }
+/* The paths the enrolment pages need - and through a balancer nothing else (1.0.259): the page
+   itself and its API (/?api=...), the files it loads, the icons. Exact, never a prefix: //admin/ or
+   /assets/../admin/ is the administration once the node's nginx has tidied the path. */
+var LB_PORTAL_RE = '^/((index\\.php|favicon\\.ico)|assets/(core\\.js|portal\\.js|i18n\\.js|otp\\.css|favicon\\.svg|apple-touch-icon\\.png)|apple-touch-icon(-precomposed)?(-[0-9]+x[0-9]+)?\\.png)?$';
+var LB_CIPHERS = 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305';
+var LB_SECRET = '<the shared secret>';
+var LB_LAYERS = [['l7', 'L7 - TLS ended on the balancer'], ['l4', 'L4 - TLS passed through, PROXY protocol'],
+                 ['snat', 'L4 - no client address (not advised)']];
+/* Each kind: key, name, what it carries, the layers it can do, the parts as [title, text]. */
 var LB_GUIDES = [
-  ['haproxy', 'HAProxy', 'pages', function (v) {
+  ['haproxy', 'HAProxy', 'pages', ['l7', 'l4', 'snat'], function (v) {
     var out = [];
-    if (v.tls === 'end') {
-      out.push(['/etc/haproxy/haproxy.cfg - TLS ended on HAProxy',
-        'frontend otp_https\n    bind {lb}:443 ssl crt /etc/haproxy/{name}.pem alpn h2,http/1.1\n    bind {lb}:80\n    mode http\n'
-        + '    http-request redirect scheme https unless { ssl_fc }\n    option forwardfor\n    timeout client 900s\n    default_backend otp_nodes\n\n'
-        + 'backend otp_nodes\n    mode http\n    balance roundrobin\n    timeout server 900s\n    option httpchk\n'
-        + '    http-check send meth GET uri {hc} ver HTTP/1.1 hdr Host {name}\n    http-check expect status 200\n'
-        + '    default-server inter 3s fall 2 rise 2 check ssl verify none\n'
-        + lbServers(v, function (n, i) { return '    server {n' + i + '} {a' + i + '}:443'; })]);
+    var defs = 'global\n    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets\n'
+      + '    ssl-default-bind-ciphers ' + LB_CIPHERS + '\n'
+      + '    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256\n\n'
+      + 'defaults\n    log global\n    timeout connect 5s\n    timeout client 130s\n    timeout server 130s\n    timeout http-request 10s\n\n';
+    var check = '    option httpchk\n    http-check send meth GET uri {hc} ver HTTP/1.1 hdr Host {name}\n    http-check expect status 200\n';
+    if (v.layer === 'l7') {
+      out.push(['/etc/haproxy/haproxy.cfg - TLS ended on HAProxy, the enrolment pages only',
+        defs + 'frontend otp_portal\n    mode http\n    option httplog\n    bind {lb}:80\n'
+        + '    bind {lb}:443 ssl crt /etc/haproxy/{name}.pem alpn h2,http/1.1\n'
+        + "    acl otp_portal path_reg '" + LB_PORTAL_RE + "'\n"
+        + '    http-request redirect scheme https code 301 unless { ssl_fc }\n'
+        + '    http-request deny deny_status 405 if !METH_GET !METH_POST\n'
+        + '    # only the enrolment pages: the administration, /metrics, /healthz end here\n'
+        + '    http-request deny deny_status 404 unless otp_portal\n'
+        + '    http-request del-header X-Otp-Sso-Key\n    http-request del-header X-Otp-Restore\n'
+        + '    http-request set-header {xffh} %[src]\n    http-request set-header X-Forwarded-Proto https\n'
+        + '    http-after-response set-header Strict-Transport-Security "max-age=63072000"\n'
+        + '    default_backend otp_nodes\n\n'
+        + 'backend otp_nodes\n    mode http\n    balance roundrobin\n' + check
+        + '    default-server inter 3s fall 2 rise 2 check port 443 ssl verify none\n'
+        + lbServers(v, function (n, i) { return '    server {n' + i + '} {a' + i + '}:{np}'; })]);
     } else {
-      out.push(['/etc/haproxy/haproxy.cfg - TLS passed through, the client\'s address in the PROXY protocol',
-        'frontend otp_https\n    bind {lb}:443\n    mode tcp\n    timeout client 900s\n    default_backend otp_nodes\n\n'
-        + 'backend otp_nodes\n    mode tcp\n    balance roundrobin\n    timeout server 900s\n    option httpchk\n'
-        + '    http-check send meth GET uri {hc} ver HTTP/1.1 hdr Host {name}\n    http-check expect status 200\n'
-        + '    default-server inter 3s fall 2 rise 2 check check-ssl verify none check-send-proxy send-proxy-v2\n'
-        + lbServers(v, function (n, i) { return '    server {n' + i + '} {a' + i + '}:443'; })]);
+      out.push(['/etc/haproxy/haproxy.cfg - TLS passed through to the nodes'
+        + (v.layer === 'l4' ? ', the client\'s address in the PROXY protocol' : ', no client address'),
+        defs + 'frontend otp_tls\n    mode tcp\n    option tcplog\n    bind {lb}:443\n'
+        + '    tcp-request inspect-delay 5s\n    tcp-request content accept if { req.ssl_hello_type 1 }\n'
+        + '    default_backend otp_nodes_tls\n\n'
+        + 'backend otp_nodes_tls\n    mode tcp\n    balance roundrobin\n' + check
+        + '    default-server inter 3s fall 2 rise 2 check port 443 check-ssl verify none' + (v.layer === 'l4' ? ' send-proxy-v2' : '') + '\n'
+        + lbServers(v, function (n, i) { return '    server {n' + i + '} {a' + i + '}:{np}'; }) + '\n\n'
+        + '# port 80 is plain HTTP, so it can be looked into: HTTPS, and the ACME CA\'s question only\n'
+        + 'frontend otp_http\n    mode http\n    bind {lb}:80\n    acl otp_acme path_beg /.well-known/acme-challenge/\n'
+        + '    http-request redirect scheme https code 301 unless otp_acme\n    default_backend otp_acme\n\n'
+        + 'backend otp_acme\n    mode http\n    balance roundrobin\n'
+        + lbServers(v, function (n, i) { return '    server {n' + i + '} {a' + i + '}:80 check'; })]);
     }
     out.push(['RADIUS: the open-source HAProxy does not balance UDP - give the VPN both nodes (Cisco ASA, FortiGate below) or use LVS.', '']);
     return out;
   }],
-  ['nginx', 'nginx', 'pages + RADIUS', function (v) {
-    return [['/etc/nginx/conf.d/otp-lb.conf - open-source nginx checks passively; nginx Plus can ask /healthz (the commented lines)',
-      'upstream otp_nodes {\n' + lbServers(v, function (n, i) { return '    server {a' + i + '}:443 max_fails=2 fail_timeout=10s;'; })
-      + '\n    keepalive 16;\n}\nserver {\n    listen {lb}:80;\n    server_name {name};\n    return 301 https://$host$request_uri;\n}\n'
-      + 'server {\n    listen {lb}:443 ssl;\n    http2 on;\n    server_name {name};\n'
-      + '    ssl_certificate     /etc/nginx/certs/{name}.pem;\n    ssl_certificate_key /etc/nginx/certs/{name}.key;\n'
-      + '    client_max_body_size 4g;\n    location / {\n        proxy_pass https://otp_nodes;\n        proxy_http_version 1.1;\n'
-      + '        proxy_set_header Connection "";\n        proxy_set_header Host $host;\n'
-      + '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto https;\n'
-      + '        proxy_read_timeout 900s;\n        proxy_next_upstream error timeout http_502 http_503 http_504;\n'
-      + '        # nginx Plus: health_check uri={hc} interval=3 fails=2 passes=2 match=otp_ok;\n    }\n}\n'
-      + '# nginx Plus: match otp_ok { status 200; body ~ "^ok "; }'],
-      ['/etc/nginx/nginx.conf - RADIUS over UDP (stream, outside http { })',
-      'stream {\n    upstream otp_radius {\n' + lbServers(v, function (n, i) { return '        server {a' + i + '}:{auth} max_fails=2 fail_timeout=10s;'; })
-      + '\n    }\n' + (v.acct ? '    upstream otp_accounting {\n' + lbServers(v, function (n, i) { return '        server {a' + i + '}:{acct};'; }) + '\n    }\n' : '')
+  ['nginx', 'nginx', 'pages + RADIUS', ['l7', 'l4', 'snat'], function (v) {
+    var radius = '    # RADIUS over UDP: the nodes then see this machine as the RADIUS client - add its address in Clients, with the shared secret\n'
+      + '    upstream otp_radius {\n        hash $remote_addr consistent;\n' + lbServers(v, function (n, i) { return '        server {a' + i + '}:{auth} max_fails=2 fail_timeout=10s;'; })
+      + '\n    }\n' + (v.acct ? '    upstream otp_accounting {\n        hash $remote_addr consistent;\n' + lbServers(v, function (n, i) { return '        server {a' + i + '}:{acct};'; }) + '\n    }\n' : '')
       + '    server { listen {lb}:{auth} udp; proxy_pass otp_radius; proxy_responses 1; proxy_timeout 10s; }\n'
-      + (v.acct ? '    server { listen {lb}:{acct} udp; proxy_pass otp_accounting; proxy_responses 1; proxy_timeout 10s; }\n' : '')
-      + '}\n# the nodes then see {lb} as the RADIUS client: add it in Clients, with the shared secret']];
+      + (v.acct ? '    server { listen {lb}:{acct} udp; proxy_pass otp_accounting; proxy_responses 1; proxy_timeout 10s; }\n' : '');
+    if (v.layer === 'l7') {
+      return [['/etc/nginx/conf.d/otp-lb.conf - TLS ended on nginx, the enrolment pages only (open-source nginx checks passively)',
+        'upstream otp_nodes {\n' + lbServers(v, function (n, i) { return '    server {a' + i + '}:{np} max_fails=2 fail_timeout=10s;'; })
+        + '\n    keepalive 16;\n}\nserver {\n    listen {lb}:80;\n    server_name {name};\n    return 301 https://$host$request_uri;\n}\n'
+        + 'server {\n    listen {lb}:443 ssl;\n    http2 on;                 # nginx older than 1.25.1: listen {lb}:443 ssl http2;\n    server_name {name};\n    server_tokens off;\n'
+        + '    ssl_certificate     /etc/nginx/certs/{name}.pem;\n    ssl_certificate_key /etc/nginx/certs/{name}.key;\n'
+        + '    ssl_protocols TLSv1.2 TLSv1.3;\n    ssl_ciphers ' + LB_CIPHERS + ';\n    ssl_session_tickets off;\n'
+        + '    add_header Strict-Transport-Security "max-age=63072000" always;\n    proxy_hide_header Strict-Transport-Security;\n'
+        + '    client_max_body_size 8m;\n    if ($request_method !~ ^(GET|HEAD|POST)$) { return 405; }\n'
+        + '    proxy_http_version 1.1;\n    proxy_set_header Connection "";\n    proxy_set_header Host $host;\n'
+        + '    proxy_set_header {xffh} $remote_addr;      # put in, not added to: what the client sent is dropped\n'
+        + '    proxy_set_header X-Forwarded-Proto https;\n    proxy_set_header X-Otp-Sso-Key "";\n    proxy_set_header X-Otp-Restore "";\n'
+        + '    proxy_read_timeout 130s;\n    proxy_next_upstream error timeout http_502 http_503 http_504;\n'
+        + '    location ~ ' + LB_PORTAL_RE + ' {\n        proxy_pass https://otp_nodes;\n    }\n'
+        + '    # nothing else: the administration, /metrics, /healthz\n    location / { return 404; }\n}'],
+        ['/etc/nginx/nginx.conf - RADIUS (stream, outside http { })', 'stream {\n' + radius + '}']];
+    }
+    return [['/etc/nginx/nginx.conf - TLS passed through (stream, outside http { })'
+      + (v.layer === 'l4' ? ', the client\'s address in the PROXY protocol (v1)' : ', no client address'),
+      'stream {\n    upstream otp_tls {\n' + lbServers(v, function (n, i) { return '        server {a' + i + '}:{np} max_fails=2 fail_timeout=10s;'; })
+      + '\n    }\n    server {\n        listen {lb}:443;\n        proxy_pass otp_tls;\n'
+      + (v.layer === 'l4' ? '        proxy_protocol on;\n' : '')
+      + '        proxy_connect_timeout 5s;\n        proxy_timeout 130s;\n    }\n' + radius + '}'],
+      ['/etc/nginx/conf.d/otp-lb.conf - port 80: HTTPS, and the ACME CA\'s question only',
+      'upstream otp_acme {\n' + lbServers(v, function (n, i) { return '    server {a' + i + '}:80;'; }) + '\n}\n'
+      + 'server {\n    listen {lb}:80;\n    server_name {name};\n'
+      + '    location ^~ /.well-known/acme-challenge/ { proxy_pass http://otp_acme; proxy_set_header Host $host; }\n'
+      + '    location / { return 301 https://$host$request_uri; }\n}']];
   }],
-  ['apache', 'Apache httpd', 'pages', function (v) {
-    return [['/etc/httpd/conf.d/otp-lb.conf - mod_proxy_balancer with mod_proxy_hcheck asking /healthz',
-      'ProxyHCExpr otp_ok {%{REQUEST_STATUS} == 200 && hc(\'body\') =~ /^ok /}\n\n<VirtualHost {lb}:443>\n    ServerName {name}\n'
-      + '    SSLEngine on\n    SSLCertificateFile    /etc/pki/tls/certs/{name}.crt\n    SSLCertificateKeyFile /etc/pki/tls/private/{name}.key\n'
-      + '    SSLProxyEngine on\n    SSLProxyVerify none\n    SSLProxyCheckPeerName off\n\n    <Proxy "balancer://otp">\n'
-      + lbServers(v, function (n, i) { return '        BalancerMember https://{a' + i + '} hcmethod=GET hcuri={hc} hcexpr=otp_ok hcinterval=3 hcpasses=2 hcfails=2'; })
-      + '\n        ProxySet lbmethod=byrequests\n    </Proxy>\n    ProxyPreserveHost On\n'
-      + '    ProxyPass        "/" "balancer://otp/" timeout=900\n    ProxyPassReverse "/" "balancer://otp/"\n    LimitRequestBody 0\n</VirtualHost>']];
+  ['apache', 'Apache httpd', 'pages', ['l7'], function (v) {
+    return [['/etc/httpd/conf.d/otp-lb.conf - mod_proxy_balancer with mod_proxy_hcheck asking /healthz, the enrolment pages only',
+      'ProxyHCExpr otp_ok {%{REQUEST_STATUS} == 200 && hc(\'body\') =~ /^ok /}\n\n'
+      + '<VirtualHost {lb}:80>\n    ServerName {name}\n    Redirect permanent / https://{name}/\n</VirtualHost>\n\n'
+      + '<VirtualHost {lb}:443>\n    ServerName {name}\n'
+      + '    SSLEngine on\n    SSLProtocol -all +TLSv1.2 +TLSv1.3\n    SSLCipherSuite ' + LB_CIPHERS + '\n    SSLHonorCipherOrder off\n    SSLSessionTickets off\n'
+      + '    SSLCertificateFile    /etc/pki/tls/certs/{name}.crt\n    SSLCertificateKeyFile /etc/pki/tls/private/{name}.key\n'
+      + '    SSLProxyEngine on\n    SSLProxyVerify none\n    SSLProxyCheckPeerName off\n'
+      + '    Header always set Strict-Transport-Security "max-age=63072000"\n'
+      + '    RequestHeader unset X-Forwarded-For early\n    RequestHeader unset X-Otp-Sso-Key early\n    RequestHeader unset X-Otp-Restore early\n'
+      + (v.xffh !== 'X-Forwarded-For' ? '    RequestHeader set {xffh} "%{REMOTE_ADDR}s"\n' : '')
+      + '    RequestHeader set X-Forwarded-Proto https\n'
+      + '    # only the enrolment pages: the administration, /metrics, /healthz refused here\n'
+      + '    <If "%{REQUEST_URI} !~ m#' + LB_PORTAL_RE + '#">\n        Require all denied\n    </If>\n'
+      + '    LimitRequestBody 8388608\n    ProxyTimeout 130\n\n    <Proxy "balancer://otp">\n'
+      + lbServers(v, function (n, i) { return '        BalancerMember https://{a' + i + '}:{np} hcmethod=GET hcuri={hc} hcexpr=otp_ok hcinterval=3 hcpasses=2 hcfails=2'; })
+      + '\n        ProxySet lbmethod=byrequests\n    </Proxy>\n    ProxyPreserveHost On\n    ProxyAddHeaders On\n'
+      + '    ProxyPass        "/" "balancer://otp/"\n    ProxyPassReverse "/" "balancer://otp/"\n</VirtualHost>']];
   }],
-  ['f5', 'F5 BIG-IP', 'pages + RADIUS', function (v) {
-    return [['tmsh - a monitor that reads /healthz, the pool, the virtual server (SSL offload, X-Forwarded-For)',
-      'create ltm monitor https otp_healthz defaults-from https interval 3 timeout 10 send "GET {hc} HTTP/1.1\\r\\nHost: {name}\\r\\nConnection: close\\r\\n\\r\\n" recv "^ok " recv-disable "maintenance"\n'
-      + 'create ltm monitor https otp_radius_health defaults-from https interval 3 timeout 10 send "GET /healthz?check=radius HTTP/1.1\\r\\nHost: {name}\\r\\nConnection: close\\r\\n\\r\\n" recv "^ok "\n'
-      + 'create ltm pool otp_https monitor otp_healthz load-balancing-mode round-robin members add { '
-      + v.nodes.map(function (n, i) { return '{a' + i + '}:443'; }).join(' ') + ' }\n'
-      + 'create ltm pool otp_radius monitor otp_radius_health members add { '
+  ['f5', 'F5 BIG-IP', 'pages + RADIUS', ['l7', 'l4', 'snat'], function (v) {
+    var mon = 'create ltm monitor https otp_healthz defaults-from https destination *:443 interval 3 timeout 10 send "GET {hc} HTTP/1.1\\r\\nHost: {name}\\r\\nConnection: close\\r\\n\\r\\n" recv "ok " recv-disable "maintenance"\n'
+      + 'create ltm monitor https otp_radius_health defaults-from https destination *:443 interval 3 timeout 10 send "GET /healthz?check=radius HTTP/1.1\\r\\nHost: {name}\\r\\nConnection: close\\r\\n\\r\\n" recv "ok "\n';
+    var rad = 'create ltm pool otp_radius monitor otp_radius_health members add { '
       + v.nodes.map(function (n, i) { return '{a' + i + '}:{auth}'; }).join(' ') + ' }\n'
-      + 'create ltm profile http otp_http insert-xforwarded-for enabled\n'
-      + 'create ltm virtual otp_vs destination {lb}:443 ip-protocol tcp pool otp_https profiles add { otp_http clientssl serverssl } source-address-translation { type automap }\n'
-      + 'create ltm virtual otp_radius_vs destination {lb}:{auth} ip-protocol udp pool otp_radius profiles add { udp } source-address-translation { type none }'],
-      ['Put your certificate for {name} into the clientssl profile. RADIUS without address translation keeps the concentrators\' addresses (their route back must go through the F5); with automap, add the self IPs in Clients.', '']];
+      + 'create ltm virtual otp_radius_vs destination {lb}:{auth} ip-protocol udp pool otp_radius profiles add { udp } source-address-translation { type none }';
+    var pool = function (p) {
+      return 'create ltm pool ' + p + ' monitor otp_healthz load-balancing-mode round-robin members add { '
+        + v.nodes.map(function (n, i) { return '{a' + i + '}:{np}'; }).join(' ') + ' }\n';
+    };
+    if (v.layer === 'l7') {
+      return [['tmsh - the monitors (asked on 443 whatever the pool\'s port), the pool, TLS 1.2 and 1.3, an iRule that lets the enrolment pages alone through',
+        mon + pool('otp_https')
+        + 'create ltm profile client-ssl otp_clientssl defaults-from clientssl cert-key-chain replace-all-with { otp { cert {name}.crt key {name}.key } } options { no-ssl no-tlsv1 no-tlsv1.1 }\n'
+        + 'create ltm rule otp_portal_only {\nwhen HTTP_REQUEST {\n'
+        + '    if { !([HTTP::method] eq "GET" || [HTTP::method] eq "HEAD" || [HTTP::method] eq "POST") } { HTTP::respond 405 noserver ; return }\n'
+        + '    # only the enrolment pages: the administration, /metrics, /healthz end here\n'
+        + '    if { ![regexp {' + LB_PORTAL_RE + '} [HTTP::path]] } { HTTP::respond 404 noserver ; return }\n'
+        + '    HTTP::header remove "{xffh}"\n    HTTP::header remove "X-Otp-Sso-Key"\n    HTTP::header remove "X-Otp-Restore"\n'
+        + '    HTTP::header insert "{xffh}" [IP::client_addr]\n    HTTP::header replace "X-Forwarded-Proto" "https"\n}\n'
+        + 'when HTTP_RESPONSE { HTTP::header replace "Strict-Transport-Security" "max-age=63072000" }\n}\n'
+        + 'create ltm virtual otp_vs destination {lb}:443 ip-protocol tcp pool otp_https profiles add { http otp_clientssl serverssl } rules { otp_portal_only } source-address-translation { type automap }\n'
+        + 'create ltm virtual otp_vs80 destination {lb}:80 ip-protocol tcp profiles add { tcp http } rules { _sys_https_redirect }\n' + rad],
+        ['The nodes see the self IPs with automap: those are the balancer\'s addresses for the nodes (floating and each unit\'s). With route domains, take %N off IP::client_addr. RADIUS without address translation keeps the concentrators\' addresses (their route back must go through the F5).', '']];
+    }
+    return [['tmsh - TLS passed through' + (v.layer === 'l4' ? ', the client\'s address in the PROXY protocol (v1, an iRule)' : ', no client address'),
+      mon + pool('otp_tls')
+      + (v.layer === 'l4' ? 'create ltm rule otp_proxy {\nwhen SERVER_CONNECTED {\n    TCP::respond "PROXY TCP[IP::version] [IP::client_addr] [IP::local_addr clientside] [TCP::client_port] [TCP::local_port clientside]\\r\\n"\n}\n}\n' : '')
+      + 'create ltm virtual otp_vs destination {lb}:443 ip-protocol tcp pool otp_tls profiles add { tcp }'
+      + (v.layer === 'l4' ? ' rules { otp_proxy }' : '') + ' source-address-translation { type automap }\n' + rad],
+      ['A standard TCP profile, not FastL4: the iRule needs it. The monitor asks 443 without the PROXY protocol.', '']];
   }],
-  ['netscaler', 'Citrix ADC / NetScaler', 'pages + RADIUS', function (v) {
-    return [['NetScaler CLI',
-      'add lb monitor otp_healthz HTTP-ECV -send "GET {hc}" -recv "ok " -secure YES -interval 3 -resptimeout 2 -downTime 5\n'
-      + lbServers(v, function (n, i) { return 'add server {n' + i + '} {a' + i + '}'; }) + '\n'
-      + 'add serviceGroup otp_https SSL -cip ENABLED X-Forwarded-For\n'
-      + lbServers(v, function (n, i) { return 'bind serviceGroup otp_https {n' + i + '} 443'; }) + '\n'
-      + 'bind serviceGroup otp_https -monitorName otp_healthz\n'
-      + 'add lb vserver otp_vs SSL {lb} 443 -lbMethod ROUNDROBIN -persistenceType NONE\n'
-      + 'bind lb vserver otp_vs otp_https\nbind ssl vserver otp_vs -certkeyName {name}\n\n'
-      + 'add lb monitor otp_radius_health HTTP-ECV -send "GET /healthz?check=radius" -recv "ok " -secure YES -destPort 443 -interval 3\n'
+  ['netscaler', 'Citrix ADC / NetScaler', 'pages + RADIUS', ['l7', 'l4', 'snat'], function (v) {
+    var mon = 'add lb monitor otp_healthz HTTP-ECV -send "GET {hc}" -customHeaders "Host: {name}\\r\\n" -recv "ok " -secure YES -destPort 443 -interval 3 -resptimeout 2 -downTime 5\n'
+      + lbServers(v, function (n, i) { return 'add server {n' + i + '} {a' + i + '}'; }) + '\n';
+    var rad = '\nadd lb monitor otp_radius_health HTTP-ECV -send "GET /healthz?check=radius" -customHeaders "Host: {name}\\r\\n" -recv "ok " -secure YES -destPort 443 -interval 3\n'
       + 'add serviceGroup otp_radius RADIUS -usip YES\n'
       + lbServers(v, function (n, i) { return 'bind serviceGroup otp_radius {n' + i + '} {auth}'; }) + '\n'
       + 'bind serviceGroup otp_radius -monitorName otp_radius_health\n'
-      + 'add lb vserver otp_radius_vs RADIUS {lb} {auth} -lbMethod ROUNDROBIN\nbind lb vserver otp_radius_vs otp_radius']];
+      + 'add lb vserver otp_radius_vs RADIUS {lb} {auth} -lbMethod ROUNDROBIN\nbind lb vserver otp_radius_vs otp_radius';
+    if (v.layer === 'l7') {
+      return [['NetScaler CLI - TLS ended on the ADC, the enrolment pages only, the client\'s address put in (never added to)',
+        mon + 'add serviceGroup otp_https SSL -cip DISABLED\n'
+        + lbServers(v, function (n, i) { return 'bind serviceGroup otp_https {n' + i + '} {np}'; }) + '\n'
+        + 'bind serviceGroup otp_https -monitorName otp_healthz\n'
+        + 'add lb vserver otp_vs SSL {lb} 443 -lbMethod ROUNDROBIN -persistenceType NONE -cltTimeout 130\n'
+        + 'bind lb vserver otp_vs otp_https\nbind ssl vserver otp_vs -certkeyName {name}\n'
+        + 'set ssl vserver otp_vs -ssl3 DISABLED -tls1 DISABLED -tls11 DISABLED -tls12 ENABLED -tls13 ENABLED -HSTS ENABLED -maxage 63072000\n'
+        + 'add responder action otp_404 respondwith "\\"HTTP/1.1 404 Not Found\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\\""\n'
+        + 'add responder policy otp_portal_only "!HTTP.REQ.URL.PATH.REGEX_MATCH(re#' + LB_PORTAL_RE + '#)" otp_404\n'
+        + 'bind lb vserver otp_vs -policyName otp_portal_only -priority 10 -gotoPriorityExpression END -type REQUEST\n'
+        + 'add rewrite action otp_drop_xff delete_http_header {xffh}\nadd rewrite action otp_drop_key delete_http_header X-Otp-Sso-Key\n'
+        + 'add rewrite action otp_drop_rst delete_http_header X-Otp-Restore\nadd rewrite action otp_put_xff insert_http_header {xffh} CLIENT.IP.SRC\n'
+        + 'add rewrite action otp_put_proto insert_http_header X-Forwarded-Proto "\\"https\\""\n'
+        + ['otp_drop_xff', 'otp_drop_key', 'otp_drop_rst', 'otp_put_xff', 'otp_put_proto'].map(function (a) { return 'add rewrite policy ' + a + '_p true ' + a; }).join('\n') + '\n'
+        + ['otp_drop_xff', 'otp_drop_key', 'otp_drop_rst', 'otp_put_xff', 'otp_put_proto'].map(function (a, i) {
+          return 'bind lb vserver otp_vs -policyName ' + a + '_p -priority ' + (100 + i * 10) + ' -gotoPriorityExpression ' + (i === 4 ? 'END' : 'NEXT') + ' -type REQUEST';
+        }).join('\n') + rad],
+        ['The nodes see the ADC\'s SNIP: that is the balancer\'s address for the nodes.', '']];
+    }
+    return [['NetScaler CLI - TLS passed through (SSL_BRIDGE)' + (v.layer === 'l4' ? ', the client\'s address in the PROXY protocol v2' : ', no client address'),
+      mon + (v.layer === 'l4' ? 'add netProfile otp_pp -proxyProtocol ENABLED -proxyProtocolVersion V2\n' : '')
+      + 'add serviceGroup otp_tls SSL_BRIDGE' + (v.layer === 'l4' ? ' -netProfile otp_pp' : '') + '\n'
+      + lbServers(v, function (n, i) { return 'bind serviceGroup otp_tls {n' + i + '} {np}'; }) + '\n'
+      + 'bind serviceGroup otp_tls -monitorName otp_healthz\n'
+      + 'add lb vserver otp_vs SSL_BRIDGE {lb} 443 -lbMethod ROUNDROBIN -persistenceType NONE -cltTimeout 130\n'
+      + 'bind lb vserver otp_vs otp_tls' + rad],
+      ['The monitor asks 443 without the PROXY protocol; the nodes see the SNIP.', '']];
   }],
-  ['lvs', 'keepalived + LVS', 'RADIUS', function (v) {
+  ['lvs', 'keepalived + LVS', 'RADIUS', null, function (v) {
     var vs = function (port) {
       return 'virtual_server {lb} ' + port + ' {\n    delay_loop 3\n    lb_algo rr\n    lb_kind NAT\n    protocol UDP\n'
         + lbServers(v, function (n, i) {
@@ -8998,21 +9094,46 @@ var LB_GUIDES = [
       vs('{auth}') + (v.acct ? '\n' + vs('{acct}') : '')],
       ['With lb_kind NAT the nodes see the concentrators\' own addresses; their route back must go through the balancer.', '']];
   }],
-  ['asa', 'Cisco ASA', 'RADIUS, no balancer', function (v) {
+  ['asa', 'Cisco ASA', 'RADIUS, no balancer', null, function (v) {
     return [['Both nodes in one server group: the ASA asks the first, and the second when it does not answer',
-      'aaa-server OTP protocol radius\n max-failed-attempts 2\n reactivation-mode timed\n dead-time 1\n'
+      'aaa-server OTP protocol radius\n max-failed-attempts 2\n reactivation-mode depletion deadtime 1\n'
       + lbServers(v, function (n, i) {
         return 'aaa-server OTP (inside) host {a' + i + '}\n key {secret}\n authentication-port {auth}\n'
           + (v.acct ? ' accounting-port {acct}\n' : '') + ' timeout 5';
       })]];
   }],
-  ['forti', 'FortiGate', 'RADIUS, no balancer', function (v) {
+  ['forti', 'FortiGate', 'RADIUS, no balancer', null, function (v) {
     return [['FortiOS CLI - the second node as the secondary server',
       'config user radius\n    edit "otp"\n        set server "{a0}"\n        set secret {secret}\n'
       + (v.nodes[1] ? '        set secondary-server "{a1}"\n        set secondary-secret {secret}\n' : '')
       + '        set auth-type pap\n        set radius-port {auth}\n        set timeout 5\n    next\nend']];
   }]
 ];
+/* Is the address in the network? IPv4 by its bits; IPv6 the same address only. */
+function lbIpIn(ip, net) {
+  var p = String(net || '').split('/');
+  if (ip.indexOf(':') >= 0 || p[0].indexOf(':') >= 0) return ip.toLowerCase() === p[0].toLowerCase();
+  var n = function (a) { var x = a.split('.'); return x.length === 4 ? ((+x[0] << 24) >>> 0) + (+x[1] << 16) + (+x[2] << 8) + (+x[3]) : NaN; };
+  var bits = p[1] === undefined ? 32 : +p[1];
+  var a = n(ip), b = n(p[0]);
+  if (isNaN(a) || isNaN(b)) return false;
+  if (bits === 0) return true;
+  var m = (0xffffffff << (32 - bits)) >>> 0;
+  return ((a & m) >>> 0) === ((b & m) >>> 0);
+}
+function lbListHas(list, ip) {
+  return !!list && (list.any || (list.from || []).some(function (n) { return lbIpIn(ip, n); }));
+}
+/* The settings line for the nodes, and whether they have it already. */
+function lbSetLine(v) {
+  var cidr = v.src + (v.src.indexOf(':') >= 0 ? '/128' : '/32');
+  if (v.layer === 'snat') return {line: 'otp --set web_proxy=0', ok: !v.wp.on};
+  var head = v.layer === 'l4' ? 'proxy_protocol' : v.xffh;
+  var ok = v.wp.on && (v.wp.from || []).some(function (n) { return n === cidr || lbIpIn(v.src, n); })
+    && v.wp.header === head && v.wp.port === v.pp && (v.layer === 'l4' || v.wp.recursive);
+  return {ok: ok, line: "otp --set web_proxy_from='" + cidr + "' --set web_proxy_header=" + head
+    + ' --set web_proxy_recursive=' + (v.layer === 'l4' ? '0' : '1') + ' --set web_proxy_port={pp} --set web_proxy=1'};
+}
 
 function drawHaLb(d) {
   var host = $('ha-lb');
@@ -9021,14 +9142,17 @@ function drawHaLb(d) {
   if (host.contains(document.activeElement) && liveControl(document.activeElement)) return;
   clear(host);
   var lb = d.lb || {};
+  var wp = lb.web_proxy || {on: false, from: [], header: 'X-Forwarded-For', recursive: true, port: 0};
   var nodes = (d.nodes || []).map(function (n) { return {name: n.name, address: n.address || ''}; });
   if (nodes.length < 2) nodes.push({name: 'otp2', address: '192.0.2.12'});
-  var trusted = (lb.trusted || [])[0] || '';
+  var trusted = (wp.from || [])[0] || (lb.trusted || [])[0] || '';
   var v0 = {
-    lb: LB_UI.lb || trusted.replace(/\/(32|128)$/, '') || '192.0.2.5',
+    lb: LB_UI.lb || '192.0.2.5',
+    src: LB_UI.src || trusted.replace(/\/(32|128)$/, '') || LB_UI.lb || '192.0.2.5',
     name: LB_UI.name || (lb.vip && lb.vip.fqdn) || lb.server_name || location.hostname,
-    tls: LB_UI.tls || 'end', hc: LB_UI.hc || '/healthz', secret: LB_UI.secret || '<the shared secret>'};
-  host.appendChild(el('p', 'note', 'Both nodes answer everything, so any balancer spreads the pages round robin, without sticky sessions. Each node says GET /healthz: 200 "ok NODE" while it really works (the daemon, its database), 503 in maintenance or an upgrade - so the balancer takes it out by itself. Pick yours below: the configuration is filled in with this cluster\'s own names, addresses and ports, marked in colour, and follows what you type here.'));
+    layer: LB_UI.layer || (wp.on && wp.header === 'proxy_protocol' ? 'l4' : 'l7'),
+    pp: LB_UI.pp || String(wp.port || 8443), hc: LB_UI.hc || '/healthz'};
+  host.appendChild(el('p', 'note', 'Both nodes answer everything, so any balancer spreads the pages round robin, without sticky sessions. Each node says GET /healthz: 200 "ok NODE" while it really works (the daemon, its database), 503 in maintenance or an upgrade - so the balancer takes it out by itself. Through the balancer only the enrolment pages are published - never the administration, /metrics or /healthz. Pick yours below: the configuration is filled in with this cluster\'s own names, addresses and ports, marked in colour, and follows what you type here.'));
   if (lb.vip && lb.vip.on) {
     host.appendChild(el('p', 'note warn', 'The built-in VIP address ' + lb.vip.address + ' is on: the pages need no balancer of yours. Use one or the other.'));
   }
@@ -9037,7 +9161,7 @@ function drawHaLb(d) {
   var field = function (words, key, ph, help) {
     var f = el('label', 'lb-f');
     f.appendChild(el('span', 'lb-f-k', words));
-    var i = key === 'secret' ? maskBox('', '', 'mono') : textBox('', '', 'mono');
+    var i = textBox('', '', 'mono');
     i.value = v0[key]; i.placeholder = ph; i.spellcheck = false;
     i.oninput = function () { LB_UI[key] = i.value.trim(); lbKeep(); paint(); };
     f.appendChild(i);
@@ -9045,14 +9169,16 @@ function drawHaLb(d) {
     form.appendChild(f);
   };
   field('The balancer\'s address', 'lb', '192.0.2.5', 'its virtual address, the one people go to');
+  field('The address it comes to the nodes from', 'src', '192.0.2.6', 'what the nodes see: its own address, the SNIP, the self IP');
   field('The name people use', 'name', 'otp.example.cz', 'in its certificate');
-  field('RADIUS shared secret', 'secret', '<the shared secret>', 'only put into the text here, never sent anywhere');
+  field('The nodes\' port for the balancer', 'pp', '8443', 'the enrolment pages only (web_proxy_port)');
   var segOf = function (words, key, opts) {
-    var f = el('div', 'lb-f');
+    var f = el('div', 'lb-f' + (key === 'layer' ? ' lb-layer' : ''));
     f.appendChild(el('span', 'lb-f-k', words));
     var seg = el('div', 'seg');
     opts.forEach(function (o) {
       var b = el('button', '', o[1]); b.type = 'button';
+      b.dataset.v = o[0];
       if (v0[key] === o[0]) b.classList.add('on');
       b.onclick = function () { v0[key] = LB_UI[key] = o[0]; lbKeep(); Array.prototype.forEach.call(seg.children, function (x) { x.classList.toggle('on', x === b); }); paint(); };
       seg.appendChild(b);
@@ -9060,7 +9186,7 @@ function drawHaLb(d) {
     f.appendChild(seg);
     form.appendChild(f);
   };
-  segOf('TLS', 'tls', [['end', 'Ended on the balancer'], ['pass', 'Passed through (PROXY)']]);
+  segOf('Layer', 'layer', LB_LAYERS);
   segOf('Health check', 'hc', [['/healthz', 'The pages'], ['/healthz?check=radius', '+ RADIUS listening']]);
   host.appendChild(form);
   /* The nodes as they are. */
@@ -9078,30 +9204,60 @@ function drawHaLb(d) {
   var list = el('div', 'lb-list');
   host.appendChild(list);
   function values() {
-    var v = {lb: LB_UI.lb || v0.lb, name: LB_UI.name || v0.name, hc: v0.hc, tls: v0.tls,
-             secret: LB_UI.secret || v0.secret, auth: lb.auth_port || 1812, acct: lb.acct_port || 0, nodes: nodes};
+    var pp = parseInt(LB_UI.pp || v0.pp, 10) || 8443;
+    var v = {lb: LB_UI.lb || v0.lb, src: LB_UI.src || v0.src, name: LB_UI.name || v0.name, hc: v0.hc, layer: v0.layer,
+             pp: pp, secret: LB_SECRET, auth: lb.auth_port || 1812, acct: lb.acct_port || 0, nodes: nodes, wp: wp,
+             xffh: wp.header && wp.header !== 'proxy_protocol' ? wp.header : 'X-Forwarded-For'};
+    v.np = v.layer === 'snat' ? 443 : pp;
     nodes.forEach(function (n, i) { v['n' + i] = n.name; v['a' + i] = n.address || '192.0.2.1' + (i + 1); });
     return v;
   }
+  function note(cls, words) { trust.appendChild(el('div', 'note ' + cls, words)); }
+  function toFw() {
+    var b = cmdButton('Settings → Firewall and access', 'shield', 'small');
+    b.onclick = function () { showPane('fw'); };
+    trust.appendChild(b);
+  }
   function paint() {
     var v = values();
-    /* The client's own address: are the nodes told the balancer's? */
+    var acc = lb.access || {};
     clear(trust);
-    var ok = (lb.trusted || []).some(function (t) { return t.replace(/\/(32|128)$/, '') === v.lb; });
-    if (v.tls === 'end') {
-      trust.appendChild(el('div', 'note ' + (ok ? 'good' : 'warn'), ok
-        ? 'The nodes already take the client\'s own address from X-Forwarded-For sent by ' + v.lb + '.'
-        : 'Tell the nodes the balancer\'s address, so that the allow lists, the sign-in pause and every log see the client and not the balancer: Settings → Firewall and access → Behind a load balancer or WAF (once, for every node) - or as root on each node:'));
-      if (!ok) trust.appendChild(lbBlock('otp --set web_proxy_from={lb}/' + (v.lb.indexOf(':') >= 0 ? '128' : '32') + ' --set web_proxy=1', v, ''));
+    var set = lbSetLine(v);
+    /* The nodes told who the balancer is, per layer. */
+    if (v.layer === 'l7') {
+      note(set.ok ? 'good' : 'warn', set.ok
+        ? 'The nodes take the client\'s own address from ' + v.xffh + ' sent by ' + v.src + ', on their port ' + v.pp + ' that serves the enrolment pages only.'
+        : 'Tell the nodes the balancer: the client\'s own address from ' + v.xffh + ' when it comes from ' + v.src + ', and their port ' + v.pp + ' for it, with the enrolment pages only - Settings → Firewall and access → Behind a load balancer or WAF, or as root on one node:');
+      note('', 'The balancer puts the client\'s address in, never adds to what the client sent; only the enrolment pages pass (an exact list of paths), everything else ends on the balancer with 404.');
+    } else if (v.layer === 'l4') {
+      note(set.ok ? 'good' : 'warn', set.ok
+        ? 'The nodes take the client\'s own address from the PROXY protocol sent by ' + v.src + ', on their port ' + v.pp + ' that serves the enrolment pages only.'
+        : 'Tell the nodes the balancer: the PROXY protocol from ' + v.src + ' on their port ' + v.pp + ', with the enrolment pages only - Settings → Firewall and access → Behind a load balancer or WAF, or as root on one node:');
+      note('warn', 'Passed through, the balancer cannot see the paths: what keeps the administration from the internet is the nodes themselves - their port ' + v.pp + ' serves the enrolment pages only, and Settings → Firewall and access → who may reach the administration pages must be your own networks only.');
     } else {
-      trust.appendChild(el('div', 'note', 'Passed through: in /etc/nginx/conf.d/otp.conf on both nodes, the PROXY protocol from the balancer only:'));
-      trust.appendChild(lbBlock('listen 443 ssl proxy_protocol;        # in place of: listen 443 ssl;\nset_real_ip_from {lb};\nreal_ip_header proxy_protocol;\n\nnginx -t && systemctl reload nginx', v, ''));
+      note(v.wp.on ? 'warn' : '', 'No client address: every client is ' + v.src + ' to the nodes. The administration must not be reachable from ' + v.src + ', the sign-in pause and the limit of sign-ins a minute are everybody\'s together, and the logs say the balancer. The PROXY protocol (the layer beside) is better.');
     }
+    if (!set.ok) trust.appendChild(lbBlock(set.line, v, ''));
+    /* The allow lists as they are. */
+    var adm = acc.admin || {any: true, from: []};
+    if (adm.any) note('bad', 'The administration pages are for everybody now: through the balancer' + (v.layer === 'l7' ? ' they are refused, but straight to the nodes they are not.' : ' that is the internet.'));
+    else if (lbListHas(adm, v.src) && v.layer !== 'l7') note('bad', 'Who may reach the administration pages takes ' + v.src + ' - the balancer: ' + (v.layer === 'snat' ? 'everybody through it is let in.' : 'take it out of the list.'));
+    else note('good', 'The administration pages: ' + (adm.from || []).join(', ') + ' only.');
+    var hl = acc.health;
+    if (hl && hl.set && !lbListHas(hl, v.src)) note('bad', 'Who may ask /healthz does not take ' + v.src + ': the balancer would take both nodes out.');
+    if (v.layer === 'snat' && acc.portal && acc.portal.set && !lbListHas(acc.portal, v.src)) note('bad', 'Who may reach the enrolment pages does not take ' + v.src + '.');
+    if (v.layer !== 'snat' && !lb.fw_managed) note('', 'otp does not look after this machine\'s firewall: open TCP ' + v.pp + ' from ' + v.src + ' on both nodes yourself (it opens it from the balancers alone where it does).');
+    toFw();
     clear(list);
-    LB_GUIDES.concat([['check', 'Check it', 'after', function () {
-      return [['From any machine: each node, then through the balancer; maintenance must take a node out',
+    LB_GUIDES.concat([['check', 'Check it', 'after', null, function () {
+      return [['From any machine: each node, then through the balancer - the enrolment pages answer, nothing else; maintenance must take a node out',
         lbServers(v, function (n, i) { return 'curl -sk https://{a' + i + '}{hc}            # ok {n' + i + '}'; })
-        + '\ncurl -sk https://{name}{hc}\n\n# on {n0}, as root:\notp --maintenance on --why "balancer test"\n'
+        + "\ncurl -sk -o /dev/null -w '%{http_code}\\n' https://{name}/              # 200 - the enrolment pages\n"
+        + "curl -sk -o /dev/null -w '%{http_code}\\n' https://{name}/admin/        # 404 (or refused) - the administration is not published\n"
+        + "curl -sk -o /dev/null -w '%{http_code}\\n' https://{name}//admin/       # 404 too\n"
+        + "curl -sk -o /dev/null -w '%{http_code}\\n' https://{name}/metrics       # 404\n"
+        + "curl -sk -o /dev/null -w '%{http_code}\\n' https://{name}/healthz       # 404 - the balancer's own question only\n"
+        + '\n# on {n0}, as root:\notp --maintenance on --why "balancer test"\n'
         + 'curl -sk https://{a0}/healthz             # 503 maintenance {n0} - the balancer sends everything to {n1}\notp --maintenance off']];
     }]]).forEach(function (g) {
       var det = el('details', 'lb-guide');
@@ -9110,10 +9266,14 @@ function drawHaLb(d) {
       sum.appendChild(el('b', '', g[1]));
       sum.appendChild(el('span', 'tag dim', g[2]));
       det.appendChild(sum);
-      g[3](v).forEach(function (part) {
-        if (part[1]) det.appendChild(lbBlock(part[1], v, part[0].replace(/\{name\}/g, v.name)));
-        else det.appendChild(el('p', 'note', part[0].replace(/\{name\}/g, v.name)));
-      });
+      if (g[3] && g[3].indexOf(v.layer) < 0) {
+        det.appendChild(el('p', 'note', g[1] + ' balances HTTP only: pick L7 above, or HAProxy, nginx, the F5 or the NetScaler for L4.'));
+      } else {
+        g[4](v).forEach(function (part) {
+          if (part[1]) det.appendChild(lbBlock(part[1], v, part[0].replace(/\{name\}/g, v.name)));
+          else det.appendChild(el('p', 'note', part[0].replace(/\{name\}/g, v.name)));
+        });
+      }
       det.open = !!open[g[0]];
       det.ontoggle = function () { open[g[0]] = det.open; };
       list.appendChild(det);
@@ -9179,9 +9339,10 @@ var SSO_GUIDES = [
         + 'bind lb vserver otp_portal_vs -policyName otp_user_p -priority 130 -gotoPriorityExpression NEXT -type REQUEST\n'
         + 'bind lb vserver otp_portal_vs -policyName otp_key_p -priority 140 -gotoPriorityExpression NEXT -type REQUEST\n'
         + 'bind lb vserver otp_portal_vs -policyName otp_xff_p -priority 150 -gotoPriorityExpression END -type REQUEST'],
-      ['4. Not the administration: /admin never through here',
-        'add responder policy otp_no_admin "HTTP.REQ.URL.PATH.SET_TEXT_MODE(IGNORECASE).STARTSWITH(\\"/admin\\")" DROP\n'
-        + 'bind lb vserver otp_portal_vs -policyName otp_no_admin -priority 10 -gotoPriorityExpression END -type REQUEST'],
+      ['4. The enrolment pages alone through here - an exact list of paths, so neither /admin nor //admin, /metrics or /healthz',
+        'add responder action otp_404 respondwith "\\"HTTP/1.1 404 Not Found\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\\""\n'
+        + 'add responder policy otp_portal_only "!HTTP.REQ.URL.PATH.REGEX_MATCH(re#' + LB_PORTAL_RE + '#)" otp_404\n'
+        + 'bind lb vserver otp_portal_vs -policyName otp_portal_only -priority 10 -gotoPriorityExpression END -type REQUEST'],
       ['5. The WAF (Web App Firewall) in front of the pages',
         'add appfw profile otp_waf -defaults basic\n'
         + 'add appfw policy otp_waf_p true otp_waf\n'
@@ -9191,10 +9352,10 @@ var SSO_GUIDES = [
   ['f5', 'F5 BIG-IP APM', 'access policy + iRule', function (v) {
     return [
       ['1. An access profile (Access → Profiles): Logon Page → AD Auth (or LDAP Auth) against the domain controllers → Allow. Its name below: otp_access.', ''],
-      ['2. The iRule - what the client sent taken away, then who signed in and the key, /admin refused',
+      ['2. The iRule - the enrolment pages alone (an exact list of paths), what the client sent taken away, then who signed in and the key',
         'when HTTP_REQUEST {\n'
-        + '    if { [string tolower [HTTP::path]] starts_with "/admin" } {\n'
-        + '        HTTP::respond 403 content "Not here."\n'
+        + '    if { ![regexp {' + LB_PORTAL_RE + '} [HTTP::path]] } {\n'
+        + '        HTTP::respond 404 noserver\n'
         + '        return\n'
         + '    }\n'
         + '    HTTP::header remove "{header}"\n'
@@ -9217,8 +9378,9 @@ var SSO_GUIDES = [
       'location /oauth2/ { proxy_pass http://127.0.0.1:4180; }\n'
       + 'location = /oauth2/auth {\n    proxy_pass http://127.0.0.1:4180;\n    proxy_pass_request_body off;\n'
       + '    proxy_set_header Content-Length "";\n}\n'
-      + 'location /admin { return 403; }\n'
-      + 'location / {\n    auth_request /oauth2/auth;\n    error_page 401 = /oauth2/sign_in;\n'
+      + '# the enrolment pages alone: an exact list of paths - never the administration, /metrics, /healthz\n'
+      + 'location / { return 404; }\n'
+      + 'location ~ ' + LB_PORTAL_RE + ' {\n    auth_request /oauth2/auth;\n    error_page 401 = /oauth2/sign_in;\n'
       + '    auth_request_set $otp_user $upstream_http_x_auth_request_preferred_username;\n'
       + '    proxy_set_header {header} $otp_user;\n'
       + '    proxy_set_header ' + v.key_header + ' "{key}";\n'
@@ -9309,7 +9471,7 @@ function drawSso() {
     return;
   }
   host.appendChild(el('h3', 'peek-h', 'On the balancer'));
-  host.appendChild(el('p', 'note', 'Pick yours: the configuration is filled in with what is set here, marked in colour, and follows what you type below. Whatever the balancer: it takes the client\'s own ' + d.header + ' and X-Otp-Sso-Key away first, puts in its own only after it signed the person in, and never passes /admin on.'));
+  host.appendChild(el('p', 'note', 'Pick yours: the configuration is filled in with what is set here, marked in colour, and follows what you type below. Whatever the balancer: it takes the client\'s own ' + d.header + ' and X-Otp-Sso-Key away first, puts in its own only after it signed the person in, and passes on the enrolment pages alone - an exact list of paths, never the administration, /metrics or /healthz.'));
   var ui = SSO.ui;
   var v0 = {name: ui.name || location.hostname, vip: ui.vip || '203.0.113.10', dc: ui.dc || 'dc1.example.cz',
             base: ui.base || 'DC=example,DC=cz', bind: ui.bind || 'CN=svc-netscaler,OU=Service,DC=example,DC=cz',

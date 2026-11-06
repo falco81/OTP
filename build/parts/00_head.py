@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.258'
+__version__ = '1.0.259'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -161,6 +161,8 @@ DEFAULTS = {
     'web_proxy_from': '',
     'web_proxy_header': 'X-Forwarded-For',
     'web_proxy_recursive': 1,
+    # The balancer's own port on each node (1.0.259): the enrolment pages only. 0: none, as before.
+    'web_proxy_port': 0,
     # --- the tokens ---------------------------------------------------------
     'totp_issuer': 'OTP',
     'totp_label': '{user}',
@@ -524,7 +526,7 @@ SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_passwo
 
 # Saved as a row even when equal to the default (1.0.238): what they were before tells "switched
 # off" from "never switched on".
-KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso')
+KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso', 'web_proxy_port')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -544,6 +546,7 @@ TUNABLE = {
     'radius_guard_window_min': (1, 1440), 'radius_guard_block_min': (1, 10080),
     'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
     'web_proxy': (0, 1), 'web_proxy_recursive': (0, 1), 'portal_sso': (0, 1),
+    'web_proxy_port': (0, 65535),
     'scratch_count': (0, 20), 'scratch_digits': (6, 12),
     'token_names_case': ('lower', 'as-typed'),
     'names_czsk_letters': (0, 1),
@@ -788,6 +791,7 @@ NAMES = {
     'web_proxy_from': 'The load balancers and WAFs',
     'web_proxy_header': 'The header with the client\'s address',
     'web_proxy_recursive': 'Through more than one of them',
+    'web_proxy_port': 'The balancer\'s own port on the nodes',
     'rate_limit_s': '...counted over (s)',
     'scratch_count': 'Recovery codes per token',
     'scratch_digits': 'Digits in a recovery code',
@@ -1258,6 +1262,15 @@ SAYS = {
     'web_proxy_recursive': 'On: in a chain (a WAF in front of a balancer), the last address in the '
                            'header that is not one of them is taken. Off: the last one, whoever '
                            'put it there.',
+    'web_proxy_port': 'A port of each node for the balancer alone (8443, say): it serves the '
+                      'enrolment pages and nothing else - not the administration, /metrics or '
+                      '/healthz - whatever the balancer passes on, and only to the addresses '
+                      'above (the firewall opens it to them alone, where otp looks after it). '
+                      'The header above is believed on it; proxy_protocol as the header: the '
+                      'balancer passes TLS through and says who the client is in the PROXY '
+                      'protocol (L4), on this port only. 443 stays as it is, for everybody '
+                      'else. SELinux lets nginx use 8443; another port needs semanage port -a '
+                      '-t http_port_t -p tcp PORT. 0: none, as before.',
     'fw_confirm_min': 'A change of the firewall or of who may reach the pages is put in - and '
                       'what was there before comes back by itself unless somebody presses Keep '
                       'it within these minutes: a rule that shuts SSH, the pages or RADIUS out '
@@ -1713,7 +1726,8 @@ PANES = {
               'dir_pw_tries', 'dir_pw_window_min'],
     # Where the change they take back is made (1.0.150), not under sign-ins.
     'network': ['net_confirm_min'],
-    'fw': ['fw_confirm_min', 'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive'],
+    'fw': ['fw_confirm_min', 'web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive',
+           'web_proxy_port'],
     'radius': ['radius_bind', 'radius_auth_port', 'radius_acct_port', 'radius_status_server',
                'radius_reply_ma', 'radius_dup_window_s', 'radius_workers',
                'radius_unknown_log', 'radius_reject_delay_ms', 'radius_reject_reason',
@@ -1794,7 +1808,7 @@ ONLY_WHEN = {
     'radius_guard_block_min': ['radius_guard', '1'],
     'radius_guard_trusted': ['radius_guard', '1'],
     'web_proxy_from': ['web_proxy', '1'], 'web_proxy_header': ['web_proxy', '1'],
-    'web_proxy_recursive': ['web_proxy', '1'],
+    'web_proxy_recursive': ['web_proxy', '1'], 'web_proxy_port': ['web_proxy', '1'],
     'portal_title': ['portal', '1'], 'portal_realm': ['portal', '1'],
     'portal_hint': ['portal', '1'], 'portal_who': ['portal', '1'],
     'portal_groups': ['portal_who', 'groups'], 'portal_confirm': ['portal', '1'],
@@ -2045,11 +2059,18 @@ def check_setting(key, value):
                      re.match(r'^/(?!/)', u)):
             raise BadSetting('portal_sso_logout: an https:// address or a path starting with /')
     if key == 'web_proxy_header':
-        # A header's name only (1.0.237) - it goes into nginx's configuration as it is.
-        if not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
+        # A header's name only (1.0.237) - it goes into nginx's configuration as it is. Or
+        # proxy_protocol (1.0.259): the PROXY protocol, on the balancer's own port only.
+        if str(got) != 'proxy_protocol' and not re.match(r'^[A-Za-z][A-Za-z0-9-]{0,63}\Z', str(got)) or \
                 str(got).lower() in ('host', 'cookie', 'authorization', 'content-length',
                                      'content-type', 'transfer-encoding', 'connection'):
-            raise BadSetting('web_proxy_header: the name of a header, as X-Forwarded-For or X-Real-IP')
+            raise BadSetting('web_proxy_header: the name of a header, as X-Forwarded-For or X-Real-IP, '
+                             'or proxy_protocol')
+    if key == 'web_proxy_port' and int(got):
+        p = int(got)
+        if p < 1024 or p in (int(CONFIG.get('api_port') or 9861), int(CONFIG.get('ssh_gate_port') or 0)):
+            raise BadSetting('web_proxy_port: 0, or a free TCP port from 1024 up (not the API\'s '
+                             'own, not the SSH gate\'s) - 8443, say')
     if key == 'radius_guard_trusted':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:

@@ -705,14 +705,49 @@ def realip_desired(store):
                     nets.append(str(ipaddress.ip_network(w, strict=False)))
                 except ValueError:
                     continue
+        head = str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For')
+        if nets and head == 'proxy_protocol':
+            # The PROXY protocol (1.0.259) only on the balancer's own port (lbport_desired): 443
+            # believes nobody's header - otp's own lines there taken out.
+            return {'from': [], 'header': '', 'recursive': False}
         if nets:
-            return {'from': nets, 'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+            return {'from': nets, 'header': head,
                     'recursive': bool(CONFIG.get('web_proxy_recursive', 1))}
     try:
         # Switched off: the row kept off (1.0.238) - or, switched off before that, the balancers
         # named are still there.
         if any(k.split('@', 1)[0].startswith('web_proxy') for k in saved_keys(store)):
             return {'from': [], 'header': '', 'recursive': False}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
+def web_proxy_nets():
+    nets = []
+    for w in re.split(r'[\s,;]+', str(CONFIG.get('web_proxy_from') or '')):
+        if w:
+            try:
+                nets.append(str(ipaddress.ip_network(w, strict=False)))
+            except ValueError:
+                continue
+    return nets
+
+
+def lbport_desired(store):
+    """The balancer's own port on this node (1.0.259): {'port', 'from', 'header', 'recursive'} -
+    a server of its own with the enrolment pages only; {'port': 0} takes it away again; None where
+    it was never set (nginx left as it is)."""
+    port = int(CONFIG.get('web_proxy_port') or 0)
+    nets = web_proxy_nets() if CONFIG.get('web_proxy') else []
+    if port and nets:
+        return {'port': port, 'from': nets,
+                'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+                'recursive': bool(CONFIG.get('web_proxy_recursive', 1))
+                if str(CONFIG.get('web_proxy_header') or '') != 'proxy_protocol' else False}
+    try:
+        if any(k.split('@', 1)[0] == 'web_proxy_port' for k in saved_keys(store)):
+            return {'port': 0}
     except Exception:                                   # noqa: BLE001
         pass
     return None
@@ -789,6 +824,10 @@ def web_desired(store):
     sp = sso_peer_desired(store)
     if sp is not None:
         out['sso_peer'] = sp
+    # The balancer's own port (1.0.259): the same - asked once set, or taken away after.
+    lp = lbport_desired(store)
+    if lp is not None:
+        out['lbport'] = lp
     if fw is not None:
         out['fw'] = fw
     if access is not None:
@@ -825,7 +864,8 @@ def web_tick(store):
     # Nothing ever asked and nothing to ask: no request at all.
     st = web_status()
     if not st and not desired['vip']['on'] and not desired['tls']['node'] and \
-            'fw' not in desired and 'access' not in desired and 'acme' not in desired:
+            'fw' not in desired and 'access' not in desired and 'acme' not in desired and \
+            'lbport' not in desired:
         return
     h = web_hash(desired)
     if st.get('hash') == h:
@@ -1489,6 +1529,12 @@ def fw_auto(store, node):
         # answers the CA's question and sends everything else to HTTPS.
         for f in (4, 6):
             web.append({'family': f, 'proto': 'tcp', 'port': '80', 'source': ''})
+    # The balancer's own port (1.0.259): from the balancers alone, whoever else the pages are for.
+    lp = lbport_desired(store) or {}
+    if lp.get('port'):
+        for n in lp.get('from') or []:
+            web.append({'family': _fam(n.split('/')[0]), 'proto': 'tcp', 'port': str(lp['port']),
+                        'source': n, 'note': 'the balancer\'s own port'})
     out.append({'key': 'web', 'title': 'HTTP / HTTPS', 'why': 'the enrolment and '
                 'administration pages and the health check; who sees which is under '
                 '"Who may reach the pages"', 'rules': web})

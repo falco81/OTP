@@ -631,7 +631,13 @@ def load_since(text):
 
 
 def load_now():
-    d = dict(server_load())
+    # While the sampler reads (1.0.259): its last reading, never one of the page's own - a page
+    # asking a moment before the sampler read the counters the sampler then found unchanged, and
+    # that second was missing from the graph.
+    with LOAD_LOCK:
+        last = LOAD_LAST['out'] if load_looked() and LOAD_LAST['out'] and \
+            time.time() - LOAD_LAST['at'] < 3 * LOAD_STEP else None
+    d = dict(last or server_load())
     return {k: d.get(k) for k in ('at', 'cpu', 'cores', 'mem_total', 'mem_used', 'swap_used', 'load',
                                   'disk_rd', 'disk_wr', 'net_rx', 'net_tx', 'over_s')}
 

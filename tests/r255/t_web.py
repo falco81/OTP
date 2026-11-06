@@ -202,10 +202,13 @@ function api(what, body) { sends++; return API(body); }
 var API = function () { return new Promise(function () {}); };
 function mfaCodeForm(box, d, action, words) { var f = mk('form'); f.action = action; box.appendChild(f); forms.push(f); return f; }
 function mfaOut() { return mk('button'); }
+/* 1.0.259: what the newer helpers use of a page */
+document.createTextNode = function (t) { var n = mk('span', '', t); return n; };
+document.body = {contains: function () { return true; }};
 function pkCan() { return false; }
 var MFA_WORDS = {app: 'app', mail: 'mail', sms: 'sms'};
 var setTimeout = function (f) { f(); };
-''' + func(CORE, 'mfaWay') + func(CORE, 'mfaDraw') + r'''
+''' + ''.join(func(CORE, f) for f in ('mmss', 'mfaSendPaint', 'mfaSentSay') if 'function ' + f + '(' in CORE) + func(CORE, 'mfaWay') + func(CORE, 'mfaDraw') + r'''
 function find(n, pred) { if (pred(n)) return n; for (var i = 0; i < (n.children || []).length; i++) { var x = find(n.children[i], pred); if (x) return x; } return null; }
 '''
 js = STUB6 + r'''

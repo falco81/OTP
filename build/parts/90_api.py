@@ -14,10 +14,13 @@ ROLE_RANK = {'readonly': 1, 'tokenadmin': 2, 'fulladmin': 3}
 
 
 class ApiError(Exception):
-    def __init__(self, status, words, detail=''):
+    def __init__(self, status, words, detail='', extra=None):
         Exception.__init__(self, words)
         self.status = status
         self.detail = detail
+        # More of the answer beside the words (1.0.259): when the next code may go, how many are
+        # left - never a secret.
+        self.extra = extra if isinstance(extra, dict) else None
 
 
 def api_token(make=False):
@@ -223,7 +226,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             detail = e.detail if self._signed_in() else None
             if e.detail and not detail:
                 log('%s %s: %s (%s)' % (method, path, e, e.detail), 'info')
-            self.send_json({'ok': False, 'error': str(e), 'detail': detail}, e.status)
+            said = {'ok': False, 'error': str(e), 'detail': detail}
+            for k, v in (e.extra or {}).items():
+                said.setdefault(k, v)
+            self.send_json(said, e.status)
         except (ValueError, BadSetting, RadiusError) as e:
             said = str(e)
             if said.startswith(('invalid literal for int()', 'could not convert string to float',
@@ -6565,6 +6571,14 @@ def _hatls_view_safe(store):
         return {'error': str(e)[:200]}
 
 
+def _lb_fw_on(store):
+    try:
+        c = fw_conf(store)
+        return bool(c.get('set') and c.get('on'))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def lb_facts(store):
     """What the load balancer guides on the pages fill in (1.0.52): the real
     names, addresses and ports of this installation."""
@@ -6585,7 +6599,22 @@ def lb_facts(store):
     v = vip_conf(store)
     clients = [{'name': c.get('name'), 'address': c.get('address')} for c in store.clients()
                if c.get('enabled')][:20]
+    # What the guides check their advice against (1.0.259): behind a balancer as set, who may
+    # reach which pages, the sign-in by the balancer. Addresses and switches only - no secret.
+    try:
+        acc = access_desired(store) or {}
+    except Exception:                                   # noqa: BLE001
+        acc = {}
+    access = {k: {'any': bool((acc.get(k) or {}).get('any', True)),
+                  'from': list((acc.get(k) or {}).get('from') or [])[:50],
+                  'set': k in acc} for k in ('portal', 'admin', 'health')}
     return {'server_name': server_name, 'trusted': proxies,
+            'web_proxy': {'on': bool(CONFIG.get('web_proxy')), 'from': web_proxy_nets(),
+                          'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
+                          'recursive': bool(CONFIG.get('web_proxy_recursive', 1)),
+                          'port': int(CONFIG.get('web_proxy_port') or 0)},
+            'access': access, 'portal_sso': bool(CONFIG.get('portal_sso')),
+            'fw_managed': _lb_fw_on(store),
             'auth_port': int(CONFIG.get('radius_auth_port') or 1812),
             'acct_port': int(CONFIG.get('radius_acct_port') or 0),
             'vip': {'on': bool(v.get('on')), 'address': v.get('address') or '',

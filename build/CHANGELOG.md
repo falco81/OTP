@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.259 — 6 November 2026
+
+The load balancer's guides publish the enrolment pages alone, at L7 or L4; the administration's
+second step by e-mail or SMS sends its first code by itself and counts down to the next.
+
+- **Only the enrolment pages through the balancer**: every configuration lets an exact list of the portal's paths through and answers 404 to everything else - the administration, /metrics, /healthz - so neither //admin/ nor /assets/../admin/ gets past (the guides before 1.0.259 passed everything on, the administration with it - look at a balancer set up by them). The client's address is put in, never added to; the client's X-Otp-Sso-Key and X-Otp-Restore are taken away; TLS 1.2 and 1.3, HSTS, the portal's 8 MB and 130 s. The sign-in by the balancer's guides do the same (they blocked /admin as a prefix).
+- **The load balancer, L7 or L4** (Settings → High availability → The load balancer): a Layer switch - TLS ended on the balancer with X-Forwarded-For, TLS passed through with the PROXY protocol, or passed through with no client address (not advised) - for HAProxy, nginx, the F5 and the NetScaler (Apache L7 only). The address the balancer comes from is its own field; the settings line, the notes and the checks (/admin/ through the balancer must be 404) follow it.
+- **The nodes' own port for the balancer** (`web_proxy_port`, Firewall and access → Behind a load balancer or WAF; 0 = none, as before): a server of its own on each node with the enrolment pages alone, the X-Forwarded-For or the PROXY protocol believed there from the balancers alone (`web_proxy_header=proxy_protocol`, only with the port), the firewall opening it to them alone. 443 stays as it was.
+- **Fixed in the generated configurations**: the F5 monitors (`recv "ok "`, asked on 443), the ASA's `reactivation-mode depletion deadtime 1`, HAProxy's missing timeouts; the RADIUS secret field is gone - always `<the shared secret>`. The page warns when the administration is reachable from the balancer, when the balancer may not ask /healthz, and when the firewall is not otp's.
+- **The performance meter: no second missing** - a page asking a moment before the sampler read the counters made the sampler find them unchanged, and that second was left out of the graph; the page takes the sampler's last reading while it reads.
+- **The administration's second step by e-mail or SMS**: the first code goes by itself when the step is shown (once a sign-in - F5 sends nothing again and says how long the code is still good for); "Send another" counts down to the next one allowed (30 s) and says how many more may go (5 a sign-in); at the fifth the button itself becomes Sign in again and the note says why. The API says it all in `send` (GET, send, enrol_start and both 429s).
+
 ## 1.0.258 — 6 November 2026
 
 To be done by hand: one place for what an update cannot do itself.

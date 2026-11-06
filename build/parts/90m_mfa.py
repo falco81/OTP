@@ -168,15 +168,40 @@ def _mfa_wrong(h, s, key, words):
     raise ApiError(400, words)
 
 
+def mfa_send_state(data, field='mfa_code', now=None):
+    """Where the codes of this sign-in stand (1.0.259), for the page's countdown: how many went,
+    how many more may, in how many seconds the next one may, how long the last one is good for.
+    Seconds from now, not times: the node's clock and the browser's need not agree."""
+    data = data or {}
+    t = time.time() if now is None else now
+    at = fnum(data.get('mfa_sent_at'))
+    n = int(data.get('mfa_sent') or 0)
+    left = max(0, MFA_SEND_MOST - n)
+    # Clamped to the gap: the other node's clock a little ahead is not a longer wait.
+    wait = min(MFA_SEND_GAP_S, max(0, int(math.ceil(MFA_SEND_GAP_S - (t - at))))) if at else 0
+    saved = data.get(field) or {}
+    ttl = int(CONFIG.get('code_ttl_s') or 300)
+    code_left = max(0, min(ttl, int(fnum(saved.get('exp')) - t))) if saved.get('exp') else 0
+    return {'sent': n, 'most': MFA_SEND_MOST, 'left': left, 'gap_s': MFA_SEND_GAP_S,
+            'wait_s': wait if left else 0, 'can': bool(left and not wait),
+            'why': 'most' if not left else ('gap' if wait else ''),
+            'code_left_s': code_left, 'code_ttl_s': ttl, 'auto': not at}
+
+
+def mfa_wait_words(wait):
+    return 'a code went a moment ago - another in %d s' % max(1, int(wait))
+
+
 def _mfa_send(h, s, kind, dest, field):
     data = s.get('data') or {}
     t = time.time()
-    if t - fnum(data.get('mfa_sent_at')) < MFA_SEND_GAP_S:
-        raise ApiError(429, 'a code went a moment ago - wait half a minute for another')
+    st = mfa_send_state(data, field, t)
+    if st['why'] == 'gap':
+        raise ApiError(429, mfa_wait_words(st['wait_s']), extra={'send': st})
     n = int(data.get('mfa_sent') or 0)
     if n >= MFA_SEND_MOST:
         raise ApiError(429, 'that is %d codes for this sign-in: sign in again for more'
-                       % MFA_SEND_MOST)
+                       % MFA_SEND_MOST, extra={'send': st})
     # The place taken before the code goes (1.0.255), only while nobody else took it since this
     # request read the sign-in: requests at once - on one node or both - each sent a code, past
     # the gap and the most.
@@ -185,7 +210,9 @@ def _mfa_send(h, s, kind, dest, field):
     if took is None:
         raise ApiError(401, 'not signed in, or the sign-in has run out')
     if took is False:
-        raise ApiError(429, 'a code went a moment ago - wait half a minute for another')
+        # Another request took the place a moment ago (a second tab, the other node).
+        st = mfa_send_state({'mfa_sent_at': t, 'mfa_sent': n + 1}, field, t)
+        raise ApiError(429, mfa_wait_words(st['wait_s']), extra={'send': st})
     code, salt = code_new(), secrets.token_hex(8)
     saved = {'hash': code_hash(salt, code), 'salt': salt,
              't': t, 'exp': t + int(CONFIG.get('code_ttl_s') or 300)}
@@ -208,6 +235,9 @@ def _mfa_send(h, s, kind, dest, field):
     h.store.session_merge(s['id'], {field: new})
     log('the second step of %s: a code sent by %s to %s (%s)' % (
         s['name'], kind, dest_masked(kind, dest), said))
+    # Where they stand now (1.0.259): this one counted, its time the gap's start.
+    h._mfa_send_st = mfa_send_state(dict(data, mfa_sent_at=t, mfa_sent=n + 1, **{field: saved}),
+                                    field, t)
     return dest_masked(kind, dest)
 
 
@@ -243,7 +273,11 @@ def _mfa(h):
             'digits': 6 if (stage == 'check' and rec.get('kind') == 'app') else
             int(CONFIG.get('code_digits') or 6),
             # Why nothing can be set up (1.0.255), with the guard on.
-            'blocked': MFA_BLOCKED_WORDS % acc['name'] if stage == 'blocked' else ''}
+            'blocked': MFA_BLOCKED_WORDS % acc['name'] if stage == 'blocked' else '',
+            # The codes sent in this sign-in (1.0.259): the countdown, how many more, the first
+            # one sent by itself once.
+            'send': mfa_send_state(odict(s.get('data')), 'mfa_code' if stage == 'check' else 'mfa_new')
+            if (stage == 'check' and rec.get('kind') in ('mail', 'sms')) or stage == 'enrol' else None}
 
 
 @route('POST', '/api/auth/mfa')
@@ -295,7 +329,8 @@ def _mfa_do(h):
             dest = dest_checked(kind, b.get('dest'))
         except ValueError as e:
             raise ApiError(400, str(e))
-        return {'kind': kind, 'sent_to': _mfa_send(h, s, kind, dest, 'mfa_new')}
+        to = _mfa_send(h, s, kind, dest, 'mfa_new')
+        return {'kind': kind, 'sent_to': to, 'send': getattr(h, '_mfa_send_st', None)}
     if act == 'enrol_confirm':
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
@@ -353,7 +388,13 @@ def _mfa_do(h):
                                 'administrator resets your second step (Accounts), or root '
                                 'with  otp --reset-2fa %s' % ('mail' if rec['kind'] == 'mail'
                                                               else 'SMS', name))
-        return {'sent_to': _mfa_send(h, s, rec['kind'], rec.get('dest'), 'mfa_code')}
+        if b.get('auto') and odict(s.get('data')).get('mfa_sent_at'):
+            # The first code by itself (1.0.259) once a sign-in: a code went already - after a
+            # reload, in another tab, from the other node - so none goes now.
+            return {'sent_to': dest_masked(rec['kind'], rec.get('dest')), 'skipped': True,
+                    'send': mfa_send_state(odict(s.get('data')), 'mfa_code')}
+        to = _mfa_send(h, s, rec['kind'], rec.get('dest'), 'mfa_code')
+        return {'sent_to': to, 'send': getattr(h, '_mfa_send_st', None)}
     if act == 'pk_begin':
         # The question for the account's passkey (1.0.254), kept with this sign-in.
         if stage != 'check':
