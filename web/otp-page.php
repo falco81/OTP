@@ -17,7 +17,7 @@ if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME'])
     exit;
 }
 
-const OTP_VERSION = '1.0.253';
+const OTP_VERSION = '1.0.254';
 const OTP_LANG_CODE = '/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/';
 
 header('Cache-Control: no-cache, no-store, must-revalidate');
@@ -242,8 +242,10 @@ function otp_guard_post(): void
     }
 }
 
-/** The head of a page: the language, the words-swapper, the style. */
-function otp_head(string $title, string $lang, bool $load, string $nonce, string $base): void
+/** The head of a page: the language, the words-swapper, the style; the icon and the name of a
+    shortcut on a home screen (1.0.254: Safari on an iPad took a picture of the page). */
+function otp_head(string $title, string $lang, bool $load, string $nonce, string $base,
+                  string $short = 'otp'): void
 {
     $langs = otp_langs();
     $v = OTP_VERSION . '-' . (int) @filemtime(__DIR__ . '/assets/otp.css')
@@ -252,6 +254,9 @@ function otp_head(string $title, string $lang, bool $load, string $nonce, string
     echo "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n";
     echo '<title>' . h($title) . "</title>\n";
     echo '<link rel="icon" href="' . h($base) . 'assets/favicon.svg" type="image/svg+xml">' . "\n";
+    echo '<link rel="apple-touch-icon" href="' . h($base) . 'assets/apple-touch-icon.png?v=' . h(OTP_VERSION) . '">' . "\n";
+    echo '<meta name="apple-mobile-web-app-title" content="' . h(preg_match('/^.{1,24}/us', $short, $m) ? $m[0] : 'otp') . '">' . "\n";
+    echo '<meta name="theme-color" content="#0d1117">' . "\n";
     if ($load) {
         echo '<script nonce="' . h($nonce) . '" src="?api=lang&amp;code=' . h(rawurlencode($lang))
            . '&amp;v=' . (int) ($langs[$lang]['mtime'] ?? 0) . '"></script>' . "\n";

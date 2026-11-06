@@ -219,7 +219,7 @@ if ($title_ours) {
 <!doctype html>
 <html lang="<?= h($lang) ?>" class="app-shell-root<?= $load ? ' i18n-wait' : '' ?>">
 <head>
-<?php otp_head($title, $lang, $load, $nonce, '/'); ?>
+<?php otp_head($title, $lang, $load, $nonce, '/', $title_ours ? 'OTP' : $title); ?>
 </head>
 <body class="app-shell">
 <div class="wrap portal">
