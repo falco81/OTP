@@ -1623,6 +1623,7 @@ class Daemon(object):
             'database': {'engine': self.store.db.engine, 'where': self.store.db.where()},
             'lang': CONFIG.get('ui_lang') or 'cs', 'php': php_state(), 'admin_show_key': bool(CONFIG.get('admin_show_key')),
             'high_security': bool(CONFIG.get('high_security')),
+            'perf_meter': bool(CONFIG.get('perf_meter')),
             'hisec_waived': sorted(hisec_waived(self.store)),
             'default_realm': CONFIG.get('default_realm') or '',
             'node': node_name(),
@@ -1796,6 +1797,10 @@ class Daemon(object):
         # A connection on this machine broken by its TLS mended (1.0.170) -
         # its own thread: the loop below waits for the database.
         threading.Thread(target=dbtls_watch, args=(self,), name='dbtls-watch', daemon=True).start()
+        # The performance meter (1.0.253): a reading a second, and its row for the other node, only
+        # while a page looks; nobody looking, or off, they wait and read nothing.
+        threading.Thread(target=load_sampler, args=(self,), name='load-sample', daemon=True).start()
+        threading.Thread(target=load_ha_watch, args=(self,), name='load-ha', daemon=True).start()
         try:
             upgrade_tick(self)
         except Exception as e:                          # noqa: BLE001

@@ -1358,7 +1358,7 @@ def _load_tables_held(db, src, keep_logs, say, gzip):
 # The machines' own state, not the data (1.0.211: the database server's tuning, the
 # encryption to it, what a page asked of every node and a restart going on - put
 # back from a copy, both nodes took the copy's).
-META_TRANSIENT = ('db_job:', 'node:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:',
+META_TRANSIENT = ('db_job:', 'node:', 'load:', 'maint:', 'upgrade:', 'radtest:', 'hatls:node:',
                   'tune_before:', 'tune_last:', 'tune_probe:', 'dbtls:', 'ask:', 'db_restart:',
                   # acme push's nonces seen (1.0.217): a copy's older list put back let a
                   # request of the last minutes be sent again once.

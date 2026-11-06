@@ -4,7 +4,8 @@
 # sent by mail or SMS. The first time the account chooses how and proves it
 # (enrol); after that it gives the code each time (check). The way chosen is
 # the account's own - not a VPN token - kept in meta 'adm2fa:<name>':
-#   {'kind': 'app'|'mail'|'sms', 'secret': sealed (app), 'dest': (mail/sms),
+#   {'kind': 'app'|'mail'|'sms'|'passkey', 'secret': sealed (app), 'dest': (mail/sms),
+#    'keys': [the passkeys' public halves] (passkey, 1.0.254: 90w_webauthn.py),
 #    'at', 'step': the last app code's step, used once}
 # Accounts → Reset the second step and otp --reset-2fa NAME take it away.
 MFA_ALLOWED = ('/api/auth/mfa', '/api/auth/logout', '/api/auth/whoami')
@@ -32,8 +33,12 @@ def mfa_all(store):
         v = json_obj(r['v'])
         if v is None:
             continue
-        out[r['k'][len('adm2fa:'):]] = {'kind': v.get('kind'), 'at': v.get('at'),
-                                        'dest': dest_masked(v.get('kind'), v.get('dest'))}
+        dest = dest_masked(v.get('kind'), v.get('dest')) if v.get('kind') in ('mail', 'sms') else ''
+        if v.get('kind') == 'passkey':
+            # which device, for which name of the pages (1.0.254)
+            dest = ', '.join('%s · %s' % (k.get('name') or 'a device', k.get('host') or '?')
+                             for k in v.get('keys') or [] if isinstance(k, dict))
+        out[r['k'][len('adm2fa:'):]] = {'kind': v.get('kind'), 'at': v.get('at'), 'dest': dest}
     return out
 
 
@@ -47,7 +52,8 @@ def mfa_reset(store, name, by):
 
 
 MFA_KIND_WORDS = {'app': 'an authenticator app', 'mail': 'a code by e-mail',
-                  'sms': 'a code by SMS'}
+                  'sms': 'a code by SMS', 'passkey': 'a passkey (Face ID, Touch ID, Windows Hello)'}
+MFA_KINDS = ('app', 'mail', 'sms', 'passkey')
 
 
 def mfa_lang(h):
@@ -60,8 +66,9 @@ def mfa_lang(h):
     return got if got in CODE_TEXTS else None
 
 
-def mfa_methods():
-    """The ways offered when an account sets up its second step."""
+def mfa_methods(h=None):
+    """The ways offered when an account sets up its second step. A passkey (1.0.254) only
+    where it can be: the pages opened by a name (asked from a page: h)."""
     out = []
     ch = code_channels()
     if CONFIG.get('admin_2fa_app', 1):
@@ -70,12 +77,14 @@ def mfa_methods():
         out.append('mail')
     if CONFIG.get('admin_2fa_sms', 1) and 'sms' in ch:
         out.append('sms')
+    if CONFIG.get('admin_2fa_passkey') and (h is None or wa_host_ok(h)):
+        out.append('passkey')
     return out or ['app']
 
 
 def mfa_stage(store, name):
     rec = mfa_get(store, name)
-    if rec and rec.get('kind') in ('app', 'mail', 'sms'):
+    if rec and rec.get('kind') in MFA_KINDS:
         # A way switched off since is still the account's, and the only one
         # (1.0.136): mail or SMS that can no longer be sent was set up anew
         # - by whoever had the password. Now that waits for a reset (the
@@ -173,7 +182,8 @@ def _mfa(h):
     rec = mfa_get(h.store, s['name']) or {}
     new = odict(s.get('data')).get('mfa_new') or {}
     return {'name': acc['name'], 'display': acc.get('display') or '', 'stage': stage,
-            'methods': mfa_methods(), 'kind': rec.get('kind') if stage == 'check' else '',
+            'methods': mfa_methods(h), 'kind': rec.get('kind') if stage == 'check' else '',
+            'hosts': sorted(set(k.get('host') for k in rec.get('keys') or [])) if stage == 'check' else [],
             'dest': dest_masked(rec.get('kind'), rec.get('dest')) if stage == 'check' else '',
             'started': {'kind': new.get('kind'),
                         'dest': dest_masked(new.get('kind'), new.get('dest'))} if new else None,
@@ -201,8 +211,17 @@ def _mfa_do(h):
         if stage != 'enrol':
             raise ApiError(409, 'this account has its second step set up already')
         kind = str(b.get('kind') or '')
-        if kind not in mfa_methods():
+        if kind not in mfa_methods(h):
             raise ApiError(400, 'that way is not offered here')
+        if kind == 'passkey':
+            # The question for the device (1.0.254): kept with this sign-in, so either node
+            # takes the answer.
+            try:
+                saved, opts = wa_register_options(h, name, acc.get('display') or '')
+            except ValueError as e:
+                raise ApiError(400, str(e))
+            h.store.session_merge(s['id'], {'mfa_new': dict(saved, kind='passkey')})
+            return dict(opts, kind='passkey')
         if kind == 'app':
             secret = b32_new(20)
             h.store.session_merge(s['id'], {'mfa_new': {
@@ -225,9 +244,18 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = code_typed(b.get('code') or '')
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
-        if new['kind'] == 'app':
+        code = code_typed(b.get('code') or '') if new['kind'] != 'passkey' else ''
+        if new['kind'] == 'passkey':
+            try:
+                pk = wa_register_finish(new, b)
+            except (ValueError, TypeError, KeyError) as e:
+                h.failed(key)
+                raise ApiError(400, 'the passkey was not taken: %s' % e)
+            if not h.store.session_take(s['id'], 'mfa_new'):
+                raise ApiError(409, 'that answer was taken already - start again')
+            rec['keys'] = [pk]
+        elif new['kind'] == 'app':
             secret = unseal_secret(new.get('secret'), 'adm2fa-new:' + name.lower())
             step = totp_match(secret, code, clock_now('codes'), digits=6, window=mfa_window()) \
                 if secret else None
@@ -248,21 +276,36 @@ def _mfa_do(h):
         token = _mfa_done(h, s, 'set up now: %s' % MFA_KIND_WORDS.get(rec['kind']))
         h.store.add_event('accounts', '%s set up the second step of signing in: %s%s' % (
             name, MFA_KIND_WORDS.get(rec['kind']),
-            ' (%s)' % dest_masked(rec['kind'], rec.get('dest')) if rec.get('dest') else ''),
-            who=name)
+            ' (%s)' % dest_masked(rec['kind'], rec.get('dest')) if rec.get('dest') else
+            ' (%s, for https://%s/)' % (rec['keys'][0].get('name') or 'a device', rec['keys'][0]['host'])
+            if rec.get('keys') else ''), who=name)
         return {'message': 'the second step is set up', 'done': True, 'token': token}
     if act == 'send':
         if stage != 'check':
             raise ApiError(409, 'set the second step up first')
         rec = mfa_get(h.store, name) or {}
         if rec.get('kind') not in ('mail', 'sms'):
-            raise ApiError(400, 'the code comes from the app - nothing is sent')
+            raise ApiError(400, 'the second step is %s - nothing is sent'
+                           % MFA_KIND_WORDS.get(rec.get('kind'), 'the app'))
         if rec['kind'] not in code_channels():
             raise ApiError(503, 'codes by %s cannot be sent from here now: another full '
                                 'administrator resets your second step (Accounts), or root '
                                 'with  otp --reset-2fa %s' % ('mail' if rec['kind'] == 'mail'
                                                               else 'SMS', name))
         return {'sent_to': _mfa_send(h, s, rec['kind'], rec.get('dest'), 'mfa_code')}
+    if act == 'pk_begin':
+        # The question for the account's passkey (1.0.254), kept with this sign-in.
+        if stage != 'check':
+            raise ApiError(409, 'set the second step up first')
+        rec = mfa_get(h.store, name) or {}
+        if rec.get('kind') != 'passkey':
+            raise ApiError(400, 'the second step of this account is not a passkey')
+        try:
+            saved, opts = wa_login_options(h, rec.get('keys') or [])
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        h.store.session_merge(s['id'], {'mfa_pk': saved})
+        return opts
     if act == 'check':
         if stage != 'check':
             raise ApiError(409, 'set the second step up first')
@@ -270,7 +313,30 @@ def _mfa_do(h):
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
                          what='wrong codes')
-        code = code_typed(b.get('code') or '')
+        code = code_typed(b.get('code') or '') if rec.get('kind') != 'passkey' else ''
+        if rec.get('kind') == 'passkey':
+            saved = data.get('mfa_pk') or {}
+            # The question once (as a code is), here and on the other node.
+            if not saved or not h.store.session_take(s['id'], 'mfa_pk') or \
+                    not once_take(h.store, 'chal', 'adm2fa-pk:' + name.lower(),
+                                  str(saved.get('challenge') or '')):
+                _mfa_wrong(h, s, key, 'that answer is to an old question - try again')
+            with MFA_LOCK:
+                rec = mfa_get(h.store, name) or {}
+                try:
+                    used = wa_login_finish(saved, rec.get('keys') or [], b)
+                except PermissionError as e:
+                    h.store.add_event('sign-ins', '%s: the passkey was refused - %s' % (name, e),
+                                      'bad', who=name)
+                    _mfa_wrong(h, s, key, str(e))
+                except (ValueError, TypeError, KeyError) as e:
+                    h.store.add_event('sign-ins', '%s: the passkey was refused - %s' % (name, e),
+                                      'warn', who=name)
+                    _mfa_wrong(h, s, key, str(e))
+                rec['keys'] = [used if k.get('id') == used['id'] else k for k in rec.get('keys') or []]
+                h.store.set_meta(mfa_key(name), json.dumps(rec))
+            token = _mfa_done(h, s, 'a passkey (%s)' % (used.get('name') or 'a device'))
+            return {'message': 'signed in', 'done': True, 'token': token}
         if rec.get('kind') == 'app':
             # Read, checked and written under one lock (1.0.136): two requests
             # with the same code at once both passed the check.

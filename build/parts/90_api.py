@@ -1464,6 +1464,13 @@ def _prefs(h):
         if str(b['lang']) not in ('cs', 'en'):
             raise ApiError(400, 'no such language here')
         prefs['lang'] = str(b['lang'])
+    # The performance meter's looks (1.0.253), checked as a file of settings is.
+    look = {k: b[k] for k in ('hload', 'hpanel') if k in b}
+    if look:
+        try:
+            prefs.update(h.store.clean_prefs(look))
+        except ValueError as e:
+            raise ApiError(400, str(e))
     h.store.set_account(acc['name'], prefs=json.dumps(prefs))
     return {'prefs': prefs}
 

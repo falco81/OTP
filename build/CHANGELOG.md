@@ -4,6 +4,35 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.253 — 5 November 2026
+
+The performance meter (from the server-load package), off until switched on.
+
+- **Settings → About → The performance meter in the header** (off by default): how busy the
+  server is - the processor, the memory, the disks and the network - beside the state at the top
+  of every page, for full administrators. Pointed at (or tapped), each part opens its details:
+  each core with its frequency and temperature, the disks and the filesystems, the network
+  cards, the processes taking most. Off, nothing is read or written for it on any node, and the
+  pages ask nothing.
+- **Smooth graphs**: the daemon reads once a second, at an even pace, only while a page looks
+  (it stops 10 s after the last ask); the graphs are drawn by the time of each reading and moved
+  on by one CSS animation each - nothing redrawn by a timer, no jump when a panel opens or two
+  tabs ask. A time nobody looked stays empty. **F5** draws the last two and a half minutes at
+  once.
+- **Both nodes of a cluster**, each in a group with its name: one small row of meta for each
+  node (`load:<node>`), written every 5 s only while a page looks - its readings of a second
+  each, so the other node's graph is as smooth. A page closed: both nodes stop within 45 s.
+  The other node's panel shows its numbers and its two minutes; its cores, disks and processes
+  on its own pages. A node not heard is said so. Standalone: no row.
+- **The looks**, chosen by each administrator under the account's name (kept with the account,
+  in the settings file too): graphs, pills, one line, rings or not shown; the details as tiles,
+  a table, a map of the cores, one wide panel or a short tip. What fits the header is shown at
+  each width.
+- Temperatures from every sensor the kernel reads (coretemp, k10temp, drivetemp...), each core
+  with its own (physical package and core id); filesystems of the kernel only (no FUSE, NFS,
+  CIFS or FAT - a hung mount never stalls the page).
+- Czech: every text of the meter.
+
 ## 1.0.252 — 5 November 2026
 
 Three rounds of looking for bugs and security holes, in HA, standalone, the root helper, the pages

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.252'
+__version__ = '1.0.253'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -226,6 +226,8 @@ DEFAULTS = {
     'admin_2fa_app': 1,
     'admin_2fa_mail': 1,
     'admin_2fa_sms': 1,
+    # A passkey as the second step (1.0.254): Face ID, Touch ID, Windows Hello - off until set.
+    'admin_2fa_passkey': 0,
     # --- isemon ---------------------------------------------------------------
     'isemon': 0,
     'isemon_targets': '',
@@ -464,6 +466,8 @@ DEFAULTS = {
     'ha_tls_ca': '',
     'site_name': '',
     'ui_lang': 'cs',
+    # The performance meter in the header (1.0.253): off, nothing is read.
+    'perf_meter': False,
     'api_port': 9861,
     'debug': False,
     'debug_radius': 1,
@@ -486,6 +490,10 @@ FILE_ONLY_KEYS = DB_KEYS + ('node_name', 'ha_mode', 'ha_slot', 'ha_peer', 'ha_pe
 # The address RADIUS listens on is this machine's own, and so are the port
 # the pages ask the daemon on, the name it greets mail servers with, the
 # name isemon files its lines under and the debug switches.
+# The looks of the performance meter (1.0.253), kept with each account.
+LOAD_LOOKS = ('graphs', 'pills', 'line', 'rings', 'off')
+LOAD_PANELS = ('tiles', 'table', 'map', 'wide', 'off')
+
 NODE_KEYS = ('radius_bind', 'radius_auth_port', 'radius_acct_port', 'api_port', 'mail_helo',
              'isemon_hostname', 'siem_hostname', 'acme_node_name', 'backup_daily', 'backup_at', 'backup_keep', 'debug',
              'debug_radius', 'debug_ldap', 'debug_api', 'debug_codes', 'snmp_bind',
@@ -544,7 +552,7 @@ TUNABLE = {
     'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
-    'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1),
+    'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
     'ssh_gate_port': (1025, 65535),
@@ -817,6 +825,7 @@ NAMES = {
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
     'admin_2fa_sms': '...with a code by SMS',
+    'admin_2fa_passkey': '...with Face ID, Touch ID or Windows Hello (a passkey)',
     'isemon': 'Send the logs to isemon',
     'isemon_targets': 'isemon’s syslog receivers',
     'isemon_hostname': 'The name this machine is written under',
@@ -987,6 +996,7 @@ NAMES = {
     'node_name': 'The name of this node',
     'site_name': 'What to call this installation',
     'ui_lang': 'Language of the pages',
+    'perf_meter': 'The performance meter in the header',
     'api_port': 'API port (localhost)',
     'debug': 'Debug log',
     'debug_radius': '...every RADIUS request step by step',
@@ -1364,14 +1374,21 @@ SAYS = {
     'admin_group_readonly': 'Members may look at everything and change nothing.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
-                 'and sets it up (an authenticator app, or a code sent to an address or a phone '
-                 'it proves it has). Accounts → Reset the second step, or otp --reset-2fa NAME, '
+                 'and sets it up (an authenticator app, a code sent to an address or a phone '
+                 'it proves it has, or a passkey - Face ID, Touch ID, Windows Hello). Accounts → Reset the second step, or otp --reset-2fa NAME, '
                  'makes it choose again. Sign-ins already open stay open.',
     'admin_2fa_app': 'Offered when the second step is set up: a code from an app (Google or '
                      'Microsoft Authenticator…). With nothing else on, it is offered anyway.',
     'admin_2fa_mail': 'Offered only while mail is set up (Settings → Mail).',
     'admin_2fa_sms': 'Offered only while sending SMS is set up (Settings → Codes by e-mail and '
                      'SMS).',
+    'admin_2fa_passkey': 'The face, a finger or the PIN of the device, after the password - never '
+                         'instead of it: the device keeps the key (an iPad and an iPhone in the '
+                         'iCloud Keychain, so on the person\'s other Apple devices too), this '
+                         'server only its public half. Offered on these pages opened by a name '
+                         'with a certificate the browser trusts (https://name/), not by an '
+                         'address; the passkey works on that name only. Set up at the next '
+                         'sign-in, as the other ways; reset the same way.',
     'isemon': 'Send every check of a code and every RADIUS packet to isemon, as syslog, in '
               'the very shape a totpcgi token server and its FreeRADIUS write - so isemon '
               'reads it with what it already has (<i>Settings → The OTP logs</i>, with '
@@ -1648,6 +1665,12 @@ SAYS = {
                  'own name.',
     'ui_lang': 'The language every page opens in until somebody chooses another for '
                'themselves.',
+    'perf_meter': 'How busy the server is - the processor, the memory, the disks and the '
+                  'network - beside the state at the top of every page, for full '
+                  'administrators; pointed at, each part shows its details. In a cluster both '
+                  'nodes, each with its name. Each administrator chooses how it looks under '
+                  'the account\'s name at the top right. Off, nothing is read or written for it, '
+                  'on any node.',
     'api_port': 'The port on 127.0.0.1 the web pages ask this daemon on. The pages read it '
                 'from <code>/run/otp/api-port</code>, written when the daemon starts.',
     'debug': 'Write everything into <code>/var/log/otp/otp.log</code>. Loud: for finding '
@@ -1698,7 +1721,7 @@ PANES = {
                'isemon_events', 'isemon_max_bytes', 'isemon_verify', 'isemon_mtls',
                'isemon_ca', 'ship_files'],
     'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
-               'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms',
+               'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms', 'admin_2fa_passkey',
                'admin_directory', 'admin_group_full', 'admin_group_token',
                'admin_group_readonly'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
@@ -1742,7 +1765,7 @@ PANES = {
              'mail_from_name', 'mail_reply_to', 'mail_helo', 'mail_lang', 'mail_codes',
              'mail_retry_hours', 'mail_keep_days'],
     'upgrade': ['upgrade_check', 'upgrade_url', 'upgrade_downgrade'],
-    'about': ['site_name', 'ui_lang', 'api_port', 'debug', 'debug_radius', 'debug_ldap',
+    'about': ['site_name', 'ui_lang', 'perf_meter', 'api_port', 'debug', 'debug_radius', 'debug_ldap',
               'debug_api', 'debug_codes'],
 }
 
@@ -1781,6 +1804,7 @@ ONLY_WHEN = {
     'admin_group_readonly': ['admin_directory', '*'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
+    'admin_2fa_passkey': ['admin_2fa', '1'],
     'db_host': ['db_engine', 'sqlite-not'], 'db_port': ['db_engine', 'sqlite-not'],
     'db_name': ['db_engine', 'sqlite-not'], 'db_user': ['db_engine', 'sqlite-not'],
     'db_password': ['db_engine', 'sqlite-not'], 'db_timeout_s': ['db_engine', 'sqlite-not'],

@@ -1045,6 +1045,12 @@ class Storage(object):
             if str(prefs['lang']) not in ('cs', 'en'):
                 raise ValueError('no such language here: %s' % prefs['lang'])
             out['lang'] = str(prefs['lang'])
+        # The performance meter's looks (1.0.253).
+        for k, kinds in (('hload', LOAD_LOOKS), ('hpanel', LOAD_PANELS)):
+            if k in prefs:
+                if str(prefs[k]) not in kinds:
+                    raise ValueError('no such look of the performance meter: %s' % prefs[k])
+                out[k] = str(prefs[k])
         return out
 
     def user_prefs(self, name):
