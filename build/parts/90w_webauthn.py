@@ -147,7 +147,8 @@ def wa_es256_ok(x, y, msg, sig):
 
 def wa_rs256_ok(n, e, msg, sig):
     k = (n.bit_length() + 7) // 8
-    if n.bit_length() < 2048 or len(sig) != k:
+    # 1.0.262: bounded both ways - a huge n or e would hold the interpreter for minutes (RADIUS too)
+    if n.bit_length() < 2048 or n.bit_length() > 8192 or e < 3 or e.bit_length() > 32 or len(sig) != k:
         return False
     m = pow(int.from_bytes(sig, 'big'), e, n).to_bytes(k, 'big')
     info = bytes.fromhex('3031300d060960864801650304020105000420') + hashlib.sha256(msg).digest()
@@ -170,6 +171,9 @@ def wa_cose(key):
         n, e = key.get(-1), key.get(-2)
         if not (isinstance(n, bytes) and isinstance(e, bytes)) or len(n) * 8 < 2048:
             raise ValueError('an RSA key under 2048 bits')
+        nb, ev = int.from_bytes(n, 'big').bit_length(), int.from_bytes(e, 'big')
+        if nb < 2048 or nb > 8192 or len(e) > 4 or ev < 3 or not ev & 1:
+            raise ValueError('an RSA key of 2048 to 8192 bits with a small odd exponent is taken here')
         return alg, wa_b64(e) + '.' + wa_b64(n)
     if alg == -8 and kty == 1 and key.get(-1) == 6:
         x = key.get(-2)

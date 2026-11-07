@@ -54,7 +54,7 @@ def copy_read_through(path, key=None, sample=50, child=False):
         return got
     import gzip
     counts, table, admins = {}, None, 0
-    tried = opened = 0
+    tried = opened = secrets_n = 0
     with gzip.open(str(path), 'rt', encoding='utf-8') as f:
         head = json.loads(f.readline() or '{}')
         if 'otp' not in head and 'opt' not in head:
@@ -70,12 +70,15 @@ def copy_read_through(path, key=None, sample=50, child=False):
             counts[table] += 1
             if table == 'accounts' and got.get('role') == 'fulladmin' and not got.get('disabled'):
                 admins += 1
+            if table == 'tokens' and got.get('secret'):
+                secrets_n += 1
             if table == 'tokens' and key and tried < sample and got.get('secret'):
                 ok = _seal_tag_ok(key, got['secret'], token_bind(got.get('name')))
                 if ok is not None:
                     tried += 1
                     opened += 1 if ok else 0
-    return {'head': head, 'counts': counts, 'admins': admins, 'tried': tried, 'opened': opened}
+    return {'head': head, 'counts': counts, 'admins': admins, 'tried': tried, 'opened': opened,
+            'secrets': secrets_n}
 
 
 def rb_verify_file(path, password, work, made_here=True):
@@ -183,8 +186,13 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
             path = DUMP_DIR / d['name']
             if d['kind'] == 'copy':
                 got = copy_read_through(path, sealing_key())
-                ok = got['tried'] > 0 and got['tried'] == got['opened']
-                said = '%s, %d tokens' % (d['name'], got['counts'].get('tokens', 0))
+                # A copy with no token to try (none yet, or none sealed) reads all the same
+                # (1.0.262): it was "cannot be put back" on a new server with no token.
+                # ...but tokens with keys none of which could be tried (no secrets.key here) is not
+                # a copy known to be good.
+                ok = got['tried'] == got['opened'] and (got['tried'] > 0 or not got.get('secrets'))
+                said = '%s, %d tokens%s' % (d['name'], got['counts'].get('tokens', 0),
+                                            '' if got['tried'] else ', no tokens to try')
             elif d['kind'] == 'sqlite' and not str(d['name']).endswith('.gz'):
                 got, why = _peek_sqlite(str(path))
                 ok = bool(got)

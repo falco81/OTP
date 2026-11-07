@@ -370,7 +370,7 @@ def osup_clear(store, by):
 
 
 def osup_check_ask(store, nodes, by):
-    nodes = [n for n in host_nodes(store) if n in (nodes or [])]
+    nodes = [n for n in host_nodes(store) if n in node_list(nodes)]
     if not nodes:
         raise ValueError('which node?')
     for n in nodes:
@@ -392,7 +392,7 @@ def osup_start(store, nodes, reboot, by, security=False):
         raise ValueError('%s - wait for it to end' % busy)
     known = host_nodes(store)
     alive = host_alive(store)
-    nodes = [n for n in known if n in (nodes or known)]
+    nodes = [n for n in known if n in (node_list(nodes) or known)]
     if not nodes:
         raise ValueError('which node?')
     gone = [n for n in nodes if not alive.get(n)]

@@ -250,6 +250,7 @@ def _mfa_done(h, s, how):
     # Marked as one past the second step (1.0.255; signed with the guard on): a sign-in without
     # the mark, opened while the step was off, gives it once it is on.
     data['mfa_ok'] = 1
+    data['mfa_at'] = int(time.time())       # 1.0.262: a passkey is added only soon after this
     hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
     token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
     h.store.session_drop(s['id'])
@@ -489,6 +490,9 @@ def mfa_window():
 PK_MAX = 10
 
 
+PK_ADD_FRESH = int(os.environ.get('OTP_PK_ADD_FRESH') or 900)
+
+
 def _pk_own(h):
     s = h.me('readonly')
     if not CONFIG.get('admin_2fa') or not CONFIG.get('admin_2fa_passkey'):
@@ -518,6 +522,10 @@ def _pk_list(h):
             % ', '.join(mfa_old_nodes(h.store))
     elif mine and len(rec.get('keys') or []) >= PK_MAX:
         why = 'This account has %d passkeys, as many as it may.' % PK_MAX
+    elif mine and time.time() - fnum(odict(s.get('data')).get('mfa_at')) > PK_ADD_FRESH:
+        # Said before the button is pressed (1.0.262), not only after.
+        why = 'A passkey is added within %d minutes of signing in - sign in again to add one.' % (
+            PK_ADD_FRESH // 60)
     return {'on': on, 'mine': mine, 'kind': rec.get('kind') or '',
             'keys': [_pk_row(k) for k in rec.get('keys') or []] if mine else [],
             'can_add': mine and not why, 'why': why, 'max': PK_MAX}
@@ -536,6 +544,11 @@ def _pk_do(h):
         keys = rec.get('keys') or []
         if len(keys) >= PK_MAX:
             raise ApiError(409, 'this account has %d passkeys, as many as it may' % PK_MAX)
+        # 1.0.262: not on the cookie alone - a passkey outlives the sign-in, so it is added only
+        # within a quarter of an hour of the second step given (sign in again otherwise).
+        if time.time() - fnum(odict(s.get('data')).get('mfa_at')) > PK_ADD_FRESH:
+            raise ApiError(409, 'a passkey is added within %d minutes of signing in - sign in again '
+                                'and add it then' % (PK_ADD_FRESH // 60))
         acc = s.get('account') or {}
         try:
             saved, opts = wa_register_options(h, name, acc.get('display') or '',
@@ -546,7 +559,7 @@ def _pk_do(h):
         h.store.session_merge(s['id'], {'pk_add': saved})
         return opts
     if act == 'add_finish':
-        saved = odict((s.get('data') or {}).get('pk_add'))
+        saved = odict(odict(s.get('data')).get('pk_add'))
         if not saved:
             raise ApiError(409, 'that answer is to an old question - press the button again')
         try:

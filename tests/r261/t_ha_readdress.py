@@ -23,6 +23,7 @@ and a code let in through it, RADIUS through the VIP address unanswered for a sh
 most, no maintenance left on, no bad event, no alert left, nothing new in To be done by hand,
 the job's steps all good.
 
+  --extra (1.0.262) the extra cases instead of the change, one sandbox: see EXTRA below.
   --all   the 24 cases, each in a process of its own on a fresh sandbox: one line a case, then
           ALL n / m (cases passed). Logs: /tmp/claude-0/f261/logs/.
 The kernel of the test machine may have no IPv6 at all: the dual-stack cases then check what the
@@ -45,6 +46,10 @@ ap.add_argument('--which', default='a', choices=('a', 'b', 'both'))
 ap.add_argument('--all', action='store_true')
 ap.add_argument('--only', default='', help='with --all: a regex the case name must match')
 ap.add_argument('--keep-sandbox', action='store_true', help='leave the daemons running at the end')
+ap.add_argument('--extra', action='store_true',
+                help='1.0.262 round 3: instead of the change, the extra cases on one sandbox (a gateway '
+                     'kept, a trial let go back, refused while the other is in maintenance / allowed '
+                     'while its daemon is stopped, both asked at once); not in --all')
 A = ap.parse_args()
 VER = A.version
 
@@ -438,6 +443,216 @@ def readdress(n):
             STEPS_BAD.append('%s: %s' % (n, s_.get('what', '')[:200]))
     DONE.add(n)
     return job.get('state') == 'done'
+
+
+# ---- EXTRA (1.0.262, --extra): the cases the round-3 review found ---------------------------
+#  (a) a gateway alone changed on trial, then Keep on node a: b's pg_hba.conf still lets a in,
+#      and a's subscription takes b's rows again after ALTER SUBSCRIPTION ... DISABLE; ENABLE;
+#  (b) a new address on trial let go back (no Keep): the old address everywhere - the profile,
+#      a's ha_address, b's ha_peer, b's pg_hba.conf - the going back done, no maintenance;
+#  (c) refused while b is in maintenance; asked once b's daemon is stopped (b not heard from);
+#  (d) both: b asked while a is restarting / on trial - refused; asked once a is done.
+def ex_job(via, n):
+    try:
+        j = (net_node(via, n).get('job') or {})
+    except Exception:                                   # noqa: BLE001
+        j = {}
+    try:
+        return j or json.loads(dbq(via, "SELECT v FROM meta WHERE k = 'net:job:%s'" % NAME[n]) or '{}')
+    except Exception:                                   # noqa: BLE001
+        return {}
+
+
+def ex_ask(via, n, want):
+    st_, got = call(via, '/api/net', {'action': 'apply', 'node': NAME[n], 'want': want})
+    return st_, got
+
+
+def ex_read(via, n):
+    t_read = time.time()
+    call(via, '/api/net', {'action': 'read', 'node': NAME[n]})
+    for _ in range(60):
+        now = net_node(via, n).get('now') or {}
+        if float(now.get('at') or 0) > t_read:
+            return now.get('data') or {}
+        time.sleep(1)
+    return {}
+
+
+def ex_follow(via, n, jid, keep, power_seen, until=('done', 'failed'), during=None, secs=1500):
+    """The job jid of node n followed (restarts done as the machine's); Keep pressed on trial
+    when keep. A going back: the job asked by the node itself followed after it. -> its last row."""
+    power = '%s/%s/power' % (S, n)
+    seen, t0, last, kept, back_id, job = power_seen, time.time(), None, False, None, {}
+    while time.time() - t0 < secs:
+        lines = open(power).read().splitlines()
+        if len(lines) > seen:
+            seen = len(lines)
+            time.sleep(8)
+            reboot(n)
+        j = ex_job(via, n)
+        if during:
+            during(j)
+        if j.get('id') not in (jid, back_id):
+            if back_id is None and job.get('state') in ('trial', 'going back') and j.get('rollback'):
+                back_id = j.get('id')
+            else:
+                time.sleep(2)
+                continue
+        job = j
+        cur = (j.get('state'), (j.get('steps') or [{}])[-1].get('what', '')[:160])
+        if cur != last:
+            print(time.strftime('%H:%M:%S'), NAME[n], *cur, flush=True)
+            last = cur
+        if j.get('state') == 'trial' and keep and not kept:
+            st_, kg = call(via, '/api/trial', {'kind': 'net', 'node': NAME[n], 'action': 'keep'})
+            ok('%s: Keep it (%s)' % (n, st_), st_ == 200, kg)
+            kept = True
+        if j.get('state') in until and (keep or j.get('id') == back_id or j.get('state') == 'failed'):
+            break
+        time.sleep(2)
+    return job, seen
+
+
+def ex_power_seen(n):
+    return len(open('%s/%s/power' % (S, n)).read().splitlines())
+
+
+def ex_hba_has(n, addr):
+    return any(a == addr + '/32' for _k, a in hba_lines(n))
+
+
+def ex_maint(n):
+    m = dbq('a', "SELECT v FROM meta WHERE k = 'maint:%s'" % NAME[n])
+    return bool(json.loads(m or '{}').get('on'))
+
+
+if A.extra:
+    def wait_for(fn, secs, every=3):
+        end = time.time() + secs
+        while True:
+            try:
+                v = fn()
+            except Exception:                           # noqa: BLE001
+                v = None
+            if v or time.time() >= end:
+                return v
+            time.sleep(every)
+
+    def hba_lines(n):
+        out = []
+        for l in open('/etc/postgresql/16/%s/pg_hba.conf' % CLUSTER[n]).read().splitlines():
+            f = l.split()
+            if len(f) >= 5 and f[0] in ('host', 'hostssl') and f[1] == DB:
+                out.append((f[0], f[3]))
+        return out
+
+    # (a) the gateway alone, kept
+    data = ex_read('b', 'a')
+    want = page_want(data, 'a')
+    want['ipv4']['addr'] = IP4['a'] + '/24'
+    if DUAL:
+        want['ipv6']['addr'] = IP6['a'] + '/64'
+    want['ipv4']['gw'] = '10.99.0.254' if want['ipv4']['gw'] != '10.99.0.254' else '10.99.0.253'
+    seen = ex_power_seen('a')
+    st_, got = ex_ask('b', 'a', want)
+    ok('(a) a: the gateway alone changed, asked on the pages of b (%s)' % st_, st_ == 200, got)
+    job, _ = ex_follow('b', 'a', got.get('id'), True, seen)
+    ok('(a) a: kept and done (%s)' % job.get('state'), job.get('state') == 'done' and job.get('kept'),
+       job.get('error'))
+    time.sleep(15)                      # readdress_dropold_tick on b, were it asked
+    ok('(a) b: pg_hba.conf still lets a in at %s' % IP4['a'], ex_hba_has('b', IP4['a']), hba_lines('b'))
+    sub = psql(PGP['a'], 'SELECT subname FROM pg_subscription', DB).strip().split('\n')[0]
+    psql(PGP['a'], 'ALTER SUBSCRIPTION %s DISABLE' % sub, DB)
+    time.sleep(2)
+    psql(PGP['a'], 'ALTER SUBSCRIPTION %s ENABLE' % sub, DB)
+    ok('(a) after DISABLE; ENABLE of %s on a: replication b -> a' % sub, replicates('b', 'a', 'ex-a-ba', 120))
+    ok('(a) ... and a -> b', replicates('a', 'b', 'ex-a-ab', 120))
+
+    # (c) refused while b is in maintenance; asked once b's daemon is stopped
+    st_, got = call('a', '/api/upgrade', {'action': 'maintenance', 'node': NAME['b'], 'on': True,
+                                          'why': 'test'})
+    ok('(c) b in maintenance (%s)' % st_, st_ == 200, got)
+    data = ex_read('a', 'a')
+    want = page_want(data, 'a')
+    want['ipv4']['addr'] = IP4['a'] + '/24'
+    if DUAL:
+        want['ipv6']['addr'] = IP6['a'] + '/64'
+    want['ipv4']['gw'] = '10.99.0.253' if want['ipv4']['gw'] != '10.99.0.253' else '10.99.0.252'
+    st_, got = ex_ask('a', 'a', want)
+    ok('(c) a: a new network refused while b is in maintenance (%s)' % st_,
+       st_ != 200 and 'does not answer now' in json.dumps(got), got)
+    st_, got = call('a', '/api/upgrade', {'action': 'maintenance', 'node': NAME['b'], 'on': False})
+    ok('(c) b out of maintenance (%s)' % st_, st_ == 200, got)
+    stop('b')
+    time.sleep(60)                      # b's heartbeat old (3 x 15 s)
+    seen = ex_power_seen('a')
+    st_, got = ex_ask('a', 'a', want)
+    ok('(c) a: asked while b\'s daemon is stopped - a dead partner does not block (%s)' % st_,
+       st_ == 200, got)
+    if st_ == 200:
+        job, _ = ex_follow('a', 'a', got.get('id'), True, seen)
+        ok('(c) a: kept and done (%s)' % job.get('state'), job.get('state') == 'done', job.get('error'))
+    start('b')
+    login('b')
+    ok('(c) b back', up('b') and login('b'))
+
+    # (b) a new address on trial, let go back
+    data = ex_read('b', 'a')
+    want = page_want(data, 'a')
+    seen = ex_power_seen('a')
+    st_, got = ex_ask('b', 'a', want)
+    ok('(b) a: a new address asked, not to be kept (%s)' % st_, st_ == 200, got)
+    job, _ = ex_follow('b', 'a', got.get('id'), False, seen, secs=2400)
+    ok('(b) a: went back, the going back done (%s, rollback %s)' % (job.get('state'), job.get('rollback')),
+       job.get('state') == 'done' and job.get('rollback'), job.get('error'))
+    ok('(b) a: its profile at %s again (%s)' % (IP4['a'], prof('a').get('ipv4.addresses')),
+       prof('a').get('ipv4.addresses', '').split(',')[0].split('/')[0] == IP4['a'])
+    ok('(b) a: ha_address %s (%s)' % (IP4['a'], cfg('a').get('ha_address')),
+       cfg('a').get('ha_address') in (IP4['a'], '', None))
+    good = wait_for(lambda: cfg('b').get('ha_peer') == IP4['a'] and ex_hba_has('b', IP4['a']), 180)
+    ok('(b) b: ha_peer and pg_hba.conf at %s (%s, %s)' % (IP4['a'], cfg('b').get('ha_peer'), hba_lines('b')),
+       good)
+    ok('(b) no maintenance left on', wait_for(lambda: not ex_maint('a') and not ex_maint('b'), 120))
+    ok('(b) replication a -> b', replicates('a', 'b', 'ex-b-ab', 120))
+    ok('(b) replication b -> a', replicates('b', 'a', 'ex-b-ba', 120))
+
+    # (d) both at once: b refused while a restarts or waits to be kept
+    data = ex_read('b', 'a')
+    want = page_want(data, 'a')
+    dw = page_want(ex_read('a', 'b'), 'b')
+    seen = ex_power_seen('a')
+    st_, got = ex_ask('b', 'a', want)
+    ok('(d) a: a new address asked (%s)' % st_, st_ == 200, got)
+    TRIED = {'n': 0, 'bad': []}
+
+    def ask_b_meanwhile(j):
+        if j.get('state') in ('rebooting', 'trial') and TRIED['n'] < 3 and up('b', 1):
+            s2, g2 = ex_ask('b', 'b', dw)
+            TRIED['n'] += 1
+            print('   (d) b asked while a is %s: %s %s' % (j.get('state'), s2, str(g2)[:160]), flush=True)
+            if s2 == 200:
+                TRIED['bad'].append((j.get('state'), g2))
+    job, _ = ex_follow('b', 'a', got.get('id'), True, seen, during=ask_b_meanwhile)
+    ok('(d) b refused while a was restarting / on trial (%d asked)' % TRIED['n'],
+       TRIED['n'] > 0 and not TRIED['bad'], TRIED['bad'])
+    ok('(d) a: kept and done (%s)' % job.get('state'), job.get('state') == 'done', job.get('error'))
+    seen = ex_power_seen('b')
+    st_, got = ex_ask('a', 'b', page_want(ex_read('a', 'b'), 'b'))
+    ok('(d) b: asked once a is done (%s)' % st_, st_ == 200, got)
+    if st_ == 200:
+        job, _ = ex_follow('a', 'b', got.get('id'), True, seen)
+        ok('(d) b: kept and done (%s)' % job.get('state'), job.get('state') == 'done', job.get('error'))
+    ok('(d) replication a -> b', replicates('a', 'b', 'ex-d-ab', 180))
+    ok('(d) replication b -> a', replicates('b', 'a', 'ex-d-ba', 180))
+    if not A.keep_sandbox:
+        stop_all()
+        for a in ('10.99.0.1', '10.99.0.2', '10.99.0.3'):
+            sh('ip addr add %s/24 dev lo' % a)
+        for a in ('10.99.0.4', '10.99.0.11', '10.99.0.12'):
+            sh('ip addr del %s/24 dev lo' % a)
+    done()
+    sys.exit(0 if all(halib.R) else 1)
 
 
 DONE = set()

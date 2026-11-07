@@ -157,6 +157,17 @@ def alerts_quiet(store, names):
             if (maintenance_row(store, n) or {}).get('on'):
                 why = '%s in maintenance' % n
                 break
+        # A new network being put in, or a node away on purpose (1.0.262), as maintenance: the
+        # node is told the new address and restarts before its maintenance row comes over.
+        if not why:
+            for n in names:
+                if net_job_active(_meta_json(store, 'net:job:' + n)):
+                    why = '%s is changing its network' % n
+                    break
+        if not why:
+            away = ha_planned_away(store) or {}
+            if away:
+                why = away[sorted(away)[0]]
         if not why:
             up = upgrade_plan(store) or {}
             if up.get('id') and up.get('state') not in ('done', 'failed') and \
@@ -181,6 +192,25 @@ def alerts_quiet(store, names):
     return ''
 
 
+
+# The problems held while the cluster is worked on (1.0.194; a node's silence too since 1.0.262):
+# not looked at then, they are not "right again" either - the mails and the SNMP traps alike.
+ALERTS_HELD = ('repl', 'db:', 'vip:', 'node:')
+
+
+def alert_node_away(store, name, away=None):
+    """Why a node not heard from is away on purpose, or '' (1.0.262)."""
+    try:
+        if (away or {}).get(name):
+            return away[name]
+        if (maintenance_row(store, name) or {}).get('on'):
+            return '%s in maintenance' % name
+        if net_job_active(_meta_json(store, 'net:job:' + name)):
+            return '%s is changing its network' % name
+    except Exception:                                   # noqa: BLE001
+        pass
+    return ''
+
 def alert_problems(store, lang='en'):
     """What is wrong now, every node together: {key: {level, node, title, said, pane}}."""
     out = {}
@@ -201,8 +231,17 @@ def alert_problems(store, lang='en'):
     health = {n: _meta_json(store, 'host:health:' + n) or {} for n in names}
     # The nodes, RADIUS, the replication, the database.
     if CONFIG.get('alerts_nodes', 1):
+        # Not mailed as gone while it is away on purpose (1.0.262): in maintenance, restarting
+        # as asked, putting in a new network - its silence then is what was asked for. Said
+        # again if it does not come back (the time after the work is held as quiet).
+        try:
+            away = ha_planned_away(store) or {}
+        except Exception:                               # noqa: BLE001
+            away = {}
         for n in nodes:
             if not n.get('me') and not n.get('alive'):
+                if alert_node_away(store, n['name'], away):
+                    continue
                 add('node:' + n['name'], 'bad', n['name'],
                     _al(lang, 'Uzel %s neodpovídá' % n['name'], '%s is not heard from' % n['name']),
                     _al(lang, 'Naposledy se ozval před %s. RADIUS obsluhuje druhý uzel - je-li '
@@ -961,7 +1000,7 @@ def _alerts_evaluate(store, force=False):
     # Held while the cluster is worked on (1.0.194): the database's and the VIP
     # address's, not looked at then, are not "over" - kept as they were, the
     # time they were said too, until they are looked at again.
-    held = ('repl', 'db:', 'vip:')
+    held = ALERTS_HELD
     quiet = alerts_quiet_until(store) > now
     for k in list(known):
         if k not in cur:
@@ -973,25 +1012,28 @@ def _alerts_evaluate(store, force=False):
     # Events: a source blocked for guessing, as it happens.
     events = []
     last_event = st.get('event_id')
+    # The cursors begun anew first, if they are to be (1.0.262), then kept to be put back: taken
+    # before, a mail held put back the stale ones, and what a node of a version before had said
+    # went out again.
+    alert_event_cursors(st)
+    last_events = dict(st['event_ids']) if isinstance(st.get('event_ids'), dict) else None
     # What is said as it happens (1.0.242: a table of them; the blocked sources since 1.0.162).
     rules = [r for r in ALERT_EVENTS if CONFIG.get(r[0], DEFAULTS.get(r[0]))]
     if rules:
-        last = int(st.get('event_id') or 0)
-        try:
-            rows = store.db.rows("SELECT id, ts, kind, words, node FROM events WHERE id > ? "
-                                 "ORDER BY id LIMIT 200", (last,))
-        except Exception:                               # noqa: BLE001
-            rows = []
         # Where they begin, once (1.0.242: by its being there - with no event yet it stayed 0,
         # and every turn began again, so nothing was ever said).
-        if 'event_id' not in st:
+        first = 'event_id' not in st
+        if first:
             try:
                 st['event_id'] = int(store.db.value('SELECT MAX(id) FROM events', (), 0) or 0)
             except Exception:                           # noqa: BLE001
                 st['event_id'] = 0
-            rows = []
+        rows = [] if first else alert_event_rows(store, st)
         for r in rows:
             st['event_id'] = max(int(st.get('event_id') or 0), int(r['id']))
+            n_ = str(r.get('node') or '')
+            st['event_ids'][n_] = max(int(st['event_ids'].get(n_) or 0), int(r['id']))
+            st['event_ids_at'] = st['event_id']
             words = str(r.get('words') or '')
             for _key, kind, bits, cs, en, pane, level in rules:
                 if r.get('kind') == kind and any(b in words for b in bits):
@@ -1011,6 +1053,12 @@ def _alerts_evaluate(store, force=False):
             known[p['key']] = p
         if last_event is not None:
             st['event_id'] = last_event
+        if last_events is not None:
+            st['event_ids'] = last_events
+            st['event_ids_at'] = last_event
+        else:
+            st.pop('event_ids', None)
+            st.pop('event_base', None)
         gone, events = [], []
     st['problems'] = known
     st['checked'] = now
@@ -1040,9 +1088,72 @@ def _alerts_evaluate(store, force=False):
                 st['problems'].setdefault(p['key'], p)
             if last_event is not None:
                 st['event_id'] = last_event
+            if last_events is not None:
+                st['event_ids'] = last_events
+                st['event_ids_at'] = last_event
+            else:
+                st.pop('event_ids', None)
+                st.pop('event_base', None)
             store.set_meta('alerts:state', json.dumps(st))
     return {'now': cur, 'new': len(new), 'still': len(still), 'over': len(gone),
             'events': len(events)}
+
+
+
+def alert_event_cursors(st):
+    """The cursors begun anew where they are to be (1.0.262): none yet, or a node of a version
+    before moved the one cursor since (its own turn as the one that mails) - left as they were,
+    they would say again what it said."""
+    if not isinstance(st.get('event_ids'), dict) or \
+            st.get('event_ids_at') is None or \
+            int(st.get('event_ids_at') or 0) != int(st.get('event_id') or 0):
+        st['event_ids'] = {}
+        st['event_base'] = int(st.get('event_id') or 0)
+        st['event_ids_at'] = st['event_base']
+
+
+def alert_event_rows(store, st):
+    """The events not looked at yet, a cursor for each node (1.0.262). The ids of a cluster are
+    each node's own (odd on one, even on the other) and a row of the other node comes by
+    replication late: one cursor for all had gone past it, and it was never said. st['event_id']
+    stays the highest seen, for a node of a version before reading the same row; a node first
+    seen begins where that one cursor was when the cursors began (st['event_base'])."""
+    alert_event_cursors(st)
+    base = int(st.get('event_base') or 0)
+    try:
+        nodes = set(host_nodes(store))
+        # A node no longer of the cluster (forgotten, renamed) is read no more: its cursor
+        # never moved, and each turn read from where it began.
+        for gone in [n for n in st['event_ids'] if n and n not in nodes]:
+            st['event_ids'].pop(gone, None)
+    except Exception:                                   # noqa: BLE001
+        nodes = {node_name()} | set(st['event_ids'])
+    # The rows written with no node's name (an event the node's name could not be had for):
+    # read only while there are any since the cursors began.
+    blank = '' in st['event_ids']
+    if not blank:
+        try:
+            blank = bool(store.db.rows("SELECT id FROM events WHERE (node IS NULL OR node = '') "
+                                       "AND id > ? LIMIT 1", (base,)))
+        except Exception:                               # noqa: BLE001
+            blank = False
+    if blank:
+        nodes.add('')
+    rows = []
+    for n in sorted(nodes):
+        last = int(st['event_ids'].get(n) or base)
+        try:
+            if n:
+                got = store.db.rows("SELECT id, ts, kind, words, node FROM events WHERE node = ? "
+                                    "AND id > ? ORDER BY id LIMIT 200", (n, last))
+            else:
+                got = store.db.rows("SELECT id, ts, kind, words, node FROM events WHERE "
+                                    "(node IS NULL OR node = '') AND id > ? ORDER BY id LIMIT 200",
+                                    (last,))
+        except Exception:                               # noqa: BLE001
+            got = []
+        rows += got
+    return rows             # each node's in the order of its ids: a cursor never passes one
 
 
 # -- the report ------------------------------------------------------------------------------

@@ -559,7 +559,10 @@ class Authenticator(object):
                 return d.refuse('Denied by the token server: ' + SAY_BAD)
             code, ad_password = splits[0]
             if len(splits) > 1:
-                guessed = splits[1][1] if (len(password) > sd and sd != digits) else False
+                # Only when a split of a recovery code's length was among them (1.0.262): a
+                # password ending in digits gives several splits of the code's own length.
+                guessed = next((rest for c, rest in splits[1:] if len(c) == sd), False) \
+                    if (len(password) > sd and sd != digits) else False
                 # Which one: the code that is right now, found with a dry
                 # check that counts nothing and writes nothing - so one
                 # password costs the directory one try, not two.
@@ -922,7 +925,10 @@ class Authenticator(object):
             d.result = 'accept'
             d.step('let in', True, ', '.join('%s = %s' % p for p in d.reply))
             return d
-        if said == SAY_REUSED or chal['tries'] >= limit or self.tokens.blocked(name):
+        # This server's own trouble (1.0.262) ends the question too: asked again, the person
+        # typed a code that could never pass, and each time counted as a guess.
+        if said in (SAY_REUSED, SAY_LOST, SAY_NONE) or chal['tries'] >= limit or \
+                self.tokens.blocked(name):
             chal_take(self.store, state, raw)
             return d.refuse('Denied by the token server: ' + said)
         d.state = state

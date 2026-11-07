@@ -547,8 +547,9 @@ def run_job(root_says):
 
 job = run_job("'example.cz.' is not a domain")
 ok('N3 root refused: the job failed', job['state'] == 'failed')
+# 1.0.262: radius_bind is saved only once root took the network - nothing to put back then.
 ok('N3 root refused: settings put back', CONFIG['radius_bind'] == '192.0.2.10' and
-   SAVED[-1] == {'radius_bind': '192.0.2.10'}, (CONFIG.get('radius_bind'), SAVED))
+   (not SAVED or SAVED[-1] == {'radius_bind': '192.0.2.10'}), (CONFIG.get('radius_bind'), SAVED))
 ok('N3 root refused: config.json put back', FILE_CONFIG.get('db_host') == '192.0.2.10', FILE_CONFIG)
 ok('N3 root refused: said that nothing changed',
    'nothing of the network was changed' in job['steps'][-1]['what'], job['steps'][-1])

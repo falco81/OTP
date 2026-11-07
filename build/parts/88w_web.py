@@ -645,6 +645,69 @@ def vip_plain(addr, like=''):
     return ''
 
 
+def vip_of_family(addr, vip_address):
+    """Whether addr is a plain address of the VIP address's family (1.0.262)."""
+    try:
+        return ipaddress.ip_address(str(addr or '')).version == \
+            ipaddress.ip_interface(str(vip_address or '')).version
+    except ValueError:
+        return False
+
+
+def vip_pick(cands, vip_address, skip=()):
+    """The first of cands of the VIP address's family - one in its network first - or ''."""
+    try:
+        net = ipaddress.ip_interface(str(vip_address or ''))
+    except ValueError:
+        return ''
+    good = []
+    for c in cands:
+        try:
+            a = ipaddress.ip_address(str(c or '').split('/')[0].split('%')[0])
+        except ValueError:
+            continue
+        if a.version != net.version or a.is_loopback or a.is_link_local or a.is_unspecified or \
+                str(a) in skip or a == net.ip or str(a) in good:
+            continue
+        good.append(str(a))
+    for a in good:
+        if ipaddress.ip_address(a) in net.network:
+            return a
+    return good[0] if good else ''
+
+
+def vip_family_fix(store, vip):
+    """This node's and the other node's address told keepalived of the VIP address's family
+    (1.0.262): a cluster on IPv6 with an IPv4 VIP address (or the other way round) sent root a
+    pair of the other family - refused whole, at every turn: no certificate, keepalived or
+    firewall rule reached this node again. Another address of the family taken - this machine's
+    own, the other node's from its heartbeat or what it says its network is; none, '' (the VIP
+    address waits, said so)."""
+    addr = vip.get('address')
+    skip = set()
+    for x in (addr, vip.get('address6')):
+        try:
+            skip.add(str(ipaddress.ip_interface(str(x)).ip))
+        except ValueError:
+            pass
+    if vip.get('own') and not vip_of_family(vip['own'], addr):
+        try:
+            mine = sorted(local_addresses())
+        except Exception:                               # noqa: BLE001
+            mine = []
+        vip['own'] = vip_pick([node_address()] + mine, addr, skip)
+    if vip.get('peer') and not vip_of_family(vip['peer'], addr):
+        me = node_name()
+        cands = [vip_plain(CONFIG.get('ha_peer'), addr), vip_plain(vip_peer_seen(store), addr)]
+        for n in ha_nodes(store):
+            if n['name'] == me:
+                continue
+            live = odict(odict((_meta_json(store, 'net:now:' + n['name']) or {}).get('data')).get('live'))
+            cands += [odict(a).get('addr') for a in (live.get('addrs4') or []) + (live.get('addrs6') or [])]
+        vip['peer'] = vip_pick(cands, addr, skip | {vip.get('own') or ''})
+    return vip
+
+
 def vip_peer_seen(store):
     """The other node's address as its heartbeat says, when ha_peer is not set
     (a cluster of one shared database)."""
@@ -653,6 +716,42 @@ def vip_peer_seen(store):
         if n['name'] != me and n.get('address') and dbguard_node_ok(store, n['name']):
             return n['address']
     return ''
+
+
+def vip_peer_published(store, like='', most=600):
+    """The other node's ha_address as it publishes it itself (its 'net:now' row, 1.0.262), from
+    a row of the last ten minutes only (written when the pages read the network, a job or a
+    trial - an old one names an address it had), and of the VIP address's family - '' else."""
+    me = node_name()
+    for n in ha_nodes(store):
+        if n['name'] == me or not dbguard_node_ok(store, n['name']):
+            continue
+        row = _meta_json(store, 'net:now:' + n['name']) or {}
+        got = str(row.get('ha_address') or '').strip()
+        if not got or abs(time.time() - fnum(row.get('at'))) > most:
+            continue
+        if like:
+            got = vip_plain(got, like)          # a host name by its address of that family
+            if not vip_of_family(got, like):
+                continue
+        return got
+    return ''
+
+
+def vip_peer_want(store, like=''):
+    """The other node's address told keepalived. A cluster of one shared database (1.0.262):
+    the ha_address the other node publishes, fresh and of the VIP's family, where it differs
+    from ha_peer - written once, at the join, ha_peer stayed on the old address after the other
+    node's was changed, and keepalived looked for it there (both held the VIP address). Its
+    heartbeat's address is not taken: that is the source of its default route, on a pair with
+    two networks not the one VRRP goes over. Else ha_peer, as before. Replicating: ha_peer, as
+    before - it is moved with the address (ha_readdress)."""
+    peer = str(CONFIG.get('ha_peer') or '')
+    if CONFIG.get('ha_mode') == 'shared':
+        said = vip_peer_published(store, like)
+        if said and _cert_name_key(said) != _cert_name_key(peer):
+            return said
+    return peer or vip_peer_seen(store)
 
 
 VIP_LAST_FILE = STATE_DIR / 'vip-last.json'
@@ -776,9 +875,13 @@ def web_desired(store):
                'address6': v.get('address6') or '',
                'vrid': int(v.get('vrid') or 51), 'auth': vip_auth(),
                'own': vip_plain(CONFIG.get('ha_address') or node_address(), v.get('address')),
-               'peer': vip_plain(CONFIG.get('ha_peer') or vip_peer_seen(store), v.get('address')),
+               'peer': vip_plain(vip_peer_want(store, v.get('address')), v.get('address')),
                'iface': odict(v.get('ifaces')).get(me, '')}
+        vip_family_fix(store, vip)
         last = vip_last(v.get('address'))
+        if last and not (vip_of_family(last.get('own'), vip['address']) and
+                         vip_of_family(last.get('peer'), vip['address'])):
+            last = None                 # one of another family is never told root (1.0.262)
         if vip['own'] and vip['peer']:
             vip_last_keep(v.get('address'), vip['own'], vip['peer'])
         elif last:
@@ -992,8 +1095,10 @@ def web_state(store):
     except (OSError, IndexError):
         pass
     v = vip_conf(store)
-    return {'cert_now': cert_now('/etc/nginx/certs/otp.pem'),
-            'vip_cert_now': cert_now('/etc/nginx/certs/otp-vip.pem'),
+    # Where root writes them (1.0.262): the fixed paths read nothing on a machine whose nginx
+    # keeps its certificates elsewhere (OTP_VIP_CERT_DIR).
+    return {'cert_now': cert_now(NGINX_CERT_FILES['node']),
+            'vip_cert_now': cert_now(NGINX_CERT_FILES['vip']),
             'state': st.get('state') or '', 'said': (st.get('said') or [])[-6:],
             'at': st.get('at'), 'current': bool(st) and st.get('hash') == desired_hash,
             'waiting': (WEB_DIR / 'request.json').exists(),

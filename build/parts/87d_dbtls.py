@@ -207,11 +207,26 @@ def _dbtls_server_cert(store, by):
     """This machine's PostgreSQL given a certificate from otp's authority
     (kind local): for localhost, 127.0.0.1 and its names; ssl switched on with
     a reload, no restart."""
-    with HATLS_LOCK:
-        ca = hatls_ca(store)
-        if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
-                HATLS_CA_ROLL_DAYS * 86400:
-            hatls_ca_make(store, by)
+    # One node makes the authority (1.0.262): replicating with none yet, both nodes in this
+    # phase made one - two INSERTs of the one row 'hatls:ca', and replication stopped on it for
+    # good. The lead makes it (or rolls it); the other waits for it to come over.
+    end = time.time() + 60
+    while True:
+        with HATLS_LOCK:
+            ca = hatls_ca(store)
+            roll = not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
+                HATLS_CA_ROLL_DAYS * 86400
+            if not roll:
+                break
+            if CONFIG.get('ha_mode') != 'replicated' or ha_lead(store):
+                hatls_ca_make(store, by)
+                break
+            if ca['cas'] and float(ca['cas'][0].get('end') or 0) > time.time():
+                break                   # rolled by the other node; this one good meanwhile
+        if time.time() > end:
+            raise ValueError('the cluster\'s authority has not come over from the other node yet '
+                             '- try again in a minute')
+        time.sleep(3)
     names = hatls_names()
     key, crt = hatls_issue(store, names)
     got = _dbtls_helper({'do': 'server', 'cert': crt, 'key': key,

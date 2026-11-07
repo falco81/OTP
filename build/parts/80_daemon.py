@@ -1310,6 +1310,42 @@ class Daemon(object):
         except Exception:                               # noqa: BLE001
             return [node_name()]
 
+    def api_bind_failed(self, e):
+        """The API could not take its port at the start: said, and tried again until it can."""
+        port = int(CONFIG.get('api_port') or 9861)
+        log('the API could not listen on 127.0.0.1:%d: %s - RADIUS answers on, the pages do not '
+            'until the port is free (otp --set api_port=PORT and a restart, or free it); tried '
+            'again every 30 s' % (port, e), 'error')
+        try:
+            self.store.add_event('starting and stopping', 'the API could not listen on '
+                                 '127.0.0.1:%d (%s): the pages cannot reach this node until the port '
+                                 'is free' % (port, e), 'bad')
+        except Exception:                               # noqa: BLE001
+            pass
+
+        # One thread trying, never two (1.0.262).
+        if getattr(self, '_api_again', None) is not None and self._api_again.is_alive():
+            return
+
+        def again():
+            while not self.stop_flag.wait(30):
+                if getattr(self.api, 'httpd', None) is not None:
+                    return
+                try:
+                    self.api.start()
+                except Exception as ex:                 # noqa: BLE001
+                    log_sparing('api-again', 'the API still cannot listen on 127.0.0.1:%d: %s'
+                                % (port, ex), 'warn', every=600)
+                    continue
+                try:
+                    self.store.add_event('starting and stopping', 'the API listens on '
+                                         '127.0.0.1:%d now' % port, 'info')
+                except Exception:                       # noqa: BLE001
+                    pass
+                return
+        self._api_again = threading.Thread(target=again, name='api-again', daemon=True)
+        self._api_again.start()
+
     def save_settings(self, changes, by='', node=None, drawn_by=None, keep_session=None):
         checked = {}
         was_2fa = bool(CONFIG.get('admin_2fa'))
@@ -1368,6 +1404,27 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        # The balancer's port on the nodes clashes with nothing (1.0.262), the batch as saved
+        others = None
+        if many and any(k in checked for k in ('web_proxy', 'web_proxy_port') + NODE_KEYS):
+            # The other nodes' own ports too (1.0.262): the balancer's port is the cluster's.
+            held_ = self.store.settings_saved()
+            others = {}
+            for n in set(self.cluster_nodes()) - {node_name()}:
+                own = {k: held_.get(k + '@' + n, held_.get(k)) for k in NODE_KEYS}
+                if cluster_wide or n == node:
+                    own.update({k: v for k, v in checked.items() if k in NODE_KEYS})
+                others[n] = {k: v for k, v in own.items() if v is not None}
+        why = web_proxy_port_problem(checked, probe=(node == node_name() and not cluster_wide),
+                                     others=others)
+        if why:
+            raise BadSetting(why)
+        # The API's port, and the UDP ports, clash with nothing either (1.0.262): an API port
+        # taken by PostgreSQL stopped the daemon at its next start, again and again.
+        why = api_port_problem(checked, probe=(node == node_name() and not cluster_wide)) or \
+            udp_port_problem(checked)
+        if why:
+            raise BadSetting(why)
         if any(k in checked for k in ('web_proxy', 'web_proxy_from')):
             # Never on without the balancers named (1.0.237): the header of anybody would be the
             # client's address - the sign-in pause and the allow lists fooled by one line.
@@ -1771,7 +1828,13 @@ class Daemon(object):
                              daemon=True).start()
         self.radius.start()
         self.api = ApiServer(self)
-        self.api.start()
+        try:
+            self.api.start()
+        except ApiBindError as e:
+            # The API's port taken by something else (1.0.262): the daemon stopped here - RADIUS
+            # with it, started again by systemd and stopped again. RADIUS answers on; the pages
+            # wait, and the port is tried again every half minute.
+            self.api_bind_failed(e)
         HA_STORE['store'] = self.store
         node_name_check(self.store)             # renamed since the last start? (1.0.48)
         self.store.add_event('starting and stopping', 'otp %s started on %s, RADIUS on %s'

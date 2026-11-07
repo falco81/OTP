@@ -405,7 +405,45 @@ def after_item(e, f, det):
             'steps': steps, 'foot': _after_words(e.get('foot'), en)[:400],
             'cs': {'title': _after_words(e.get('title_cs') or e['title'], cs)[:300],
                    'why': _after_words(e.get('why_cs') or e['why'], cs)[:1500]},
-            'sig': str(det.get('sig') or '')[:80], 'grows': bool(det.get('grows'))}
+            'sig': str(det.get('sig') or '')[:80], 'grows': bool(det.get('grows')),
+            # 1.0.262: what it was filled in with, so a reading node can write it again itself
+            'args': {str(k)[:40]: str(v)[:300] for k, v in list(args.items())[:20]},
+            'det_level': det.get('level') if det.get('level') in AFTER_LEVELS else ''}
+
+
+AFTER_SAFE_ARG = re.compile(r'^[\w .,:/@=+%-]{0,300}\Z', re.UNICODE)
+
+
+def after_trusted(it, node, row, cluster):
+    """With the database guard on (1.0.262), a row of the database is not trusted to say what
+    root is to run: an item this node knows is written again from its own entry, with only plain
+    words taken from the row; one it does not know (a newer node's) keeps its words but no
+    command - look on that node."""
+    e = next((x for x in AFTER if x['id'] == it.get('id')), None)
+    if e is None:
+        steps = [{k: v for k, v in odict(st).items() if k != 'cmd'} for st in it.get('steps') or []
+                 if isinstance(st, dict)]
+        for st in steps:
+            if st.get('where') == 'root':
+                st['lead'] = 'Not shown here (the database guard is on) - otp --after on %s says it.' % node
+        return dict(it, steps=steps)
+    if 'args' not in it:
+        # Written by a node before 1.0.262: its words as they are, without a command.
+        return dict(after_trusted(dict(it, id='\0' + str(it.get('id'))), node, row, cluster), id=it.get('id'))
+    # The node's own words (where the files are, which node, the lead) are never the row's: only
+    # the names an entry's check fills in, plain, and none of them an option (1.0.262).
+    own = ('version', 'node', 'on', 'lib', 'file', 'lead', 'lead_what')
+    args = {str(k): str(v) for k, v in odict(it.get('args')).items()
+            if (str(k)[:-3] if str(k).endswith('_cs') else str(k)) not in own and AFTER_SAFE_ARG.match(str(v))
+            and not str(v).lstrip().startswith('-')}
+    f = {'node': node, 'cluster': cluster, 'version': str(odict(row).get('version') or '')[:40]}
+    lv = it.get('det_level') if it.get('det_level') in AFTER_LEVELS else \
+        (it.get('level') if it.get('level') in AFTER_LEVELS else None)
+    again = after_item(e, f, {'args': args, 'level': lv, 'sig': it.get('sig'), 'grows': it.get('grows')})
+    for k in ('since', 'state', 'id', 'node', 'checked'):
+        if k in it:
+            again[k] = it[k]
+    return again
 
 
 def after_acks(store):
@@ -528,14 +566,22 @@ def after_needed(store, names=None):
     acks = after_acks(store)
     rows = after_rows(store)
     out = []
+    guarded = False
+    try:
+        guarded = bool(dbguard_on())
+    except Exception:                                   # noqa: BLE001
+        guarded = True
+    cluster = bool(len(after_nodes(store)) > 1)
     for n in (names or after_nodes(store)):
         for i, it in odict(odict(rows.get(n)).get('items')).items():
             if not isinstance(it, dict) or it.get('level') not in AFTER_LEVELS:
                 continue
             if after_acked(acks.get((str(it.get('id') or i), n)), it):
                 continue
-            out.append(dict(it, id=str(it.get('id') or i), node=n,
-                            checked=fnum(odict(rows.get(n)).get('at'))))
+            one = dict(it, id=str(it.get('id') or i), node=n, checked=fnum(odict(rows.get(n)).get('at')))
+            if guarded:
+                one = after_trusted(one, n, rows.get(n), cluster)
+            out.append(one)
     out.sort(key=lambda x: (AFTER_LEVELS.index(x['level']), x['node'], -fnum(x.get('since'))))
     return out
 
@@ -585,9 +631,11 @@ def after_cleared(store):
 def after_clear_lately(store, items, by, via='pages'):
     """The lines of "Done lately" a page showed ([id, node, at] each), or all of it when none are
     named (the command line), no longer shown. What is still to be done is not touched."""
+    every = set(_after_line_key(x) for x in _after_lately_all(store))
     shown = after_view(store).get('lately') or []
     if items is None:
-        want = set(_after_line_key(x) for x in shown)
+        # 1.0.262: all of it - not only the 20 a page shows (older ones came back after)
+        want = every - after_cleared(store)
     else:
         want = set()
         for one in list(items)[:300]:
@@ -599,6 +647,14 @@ def after_clear_lately(store, items, by, via='pages'):
         want &= set(_after_line_key(x) for x in shown)      # only what is there to be cleared
     k = 'after:cleared:' + node_name()
     had = [x for x in odict(_meta_json(store, k)).get('lines') or [] if isinstance(x, list)]
+    # Only lines that still could be shown are kept (1.0.262): the cut of the oldest no longer
+    # brings back a cleared Done.
+    def _key(x):
+        try:
+            return (str(x[0]), str(x[1]), int(x[2]))
+        except (TypeError, ValueError, IndexError):
+            return None
+    had = [x for x in had if _key(x) in every]
     lines = (had + [list(x) for x in sorted(want)])[-AFTER_CLEARED_KEEP:]
     if want:
         store.set_meta(k, json.dumps({'lines': lines, 'at': time.time()}))
@@ -615,6 +671,22 @@ def after_view(store, full=True):
         return {'count': len(items), 'level': worst,
                 'nodes': sorted({x['node'] for x in items})}
     rows = after_rows(store)
+    lately = _after_lately_all(store, rows)
+    gone = after_cleared(store)
+    lately = [x for x in lately if _after_line_key(x) not in gone]
+    lately.sort(key=lambda x: -x['at'])
+    return {'items': [{k: x.get(k) for k in ('id', 'node', 'level', 'ack', 'title', 'why', 'steps',
+                                             'foot', 'since', 'checked', 'since_version', 'state')}
+                      for x in items],
+            'count': len(items), 'level': worst, 'lately': lately[:AFTER_LOG_KEEP],
+            'nodes': [{'name': n, 'checked': fnum(odict(rows.get(n)).get('at')),
+                       'version': odict(rows.get(n)).get('version') or ''} for n in after_nodes(store)],
+            'me': node_name(), 'cluster': bool(in_cluster(store))}
+
+
+def _after_lately_all(store, rows=None):
+    """Every line "Done lately" could show, before the cleared ones are taken out and the cut."""
+    rows = after_rows(store) if rows is None else rows
     lately = []
     for n, row in rows.items():
         for x in row.get('log') or []:
@@ -627,16 +699,7 @@ def after_view(store, full=True):
             lately.append({'id': i, 'node': n, 'title': a.get('title') or i, 'how': 'done',
                            'who': 'the command line' if a.get('via') == 'cli' else str(a.get('by') or ''),
                            'at': fnum(a.get('at'))})
-    gone = after_cleared(store)
-    lately = [x for x in lately if _after_line_key(x) not in gone]
-    lately.sort(key=lambda x: -x['at'])
-    return {'items': [{k: x.get(k) for k in ('id', 'node', 'level', 'ack', 'title', 'why', 'steps',
-                                             'foot', 'since', 'checked', 'since_version', 'state')}
-                      for x in items],
-            'count': len(items), 'level': worst, 'lately': lately[:AFTER_LOG_KEEP],
-            'nodes': [{'name': n, 'checked': fnum(odict(rows.get(n)).get('at')),
-                       'version': odict(rows.get(n)).get('version') or ''} for n in after_nodes(store)],
-            'me': node_name(), 'cluster': bool(in_cluster(store))}
+    return lately
 
 
 def after_look(store, node, by):

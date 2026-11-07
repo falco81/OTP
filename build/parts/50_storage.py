@@ -1082,9 +1082,28 @@ class Storage(object):
         self.db.update('accounts', one['id'], {'prefs': json.dumps(kept)})
         return kept
 
-    def fulladmins_left(self, but=''):
+    def fulladmins_left(self, but='', dirs=None):
+        """Full administrators other than `but` who can still sign in. One from the directory
+        only while `admin_directory` names a directory there is (1.0.262) - as the sign-in
+        decides: with it emptied or the directory gone, the last local one was taken away and
+        nobody could sign in. `dirs` is the daemon's directories read (name -> Directory); the
+        command line, without one, goes by the directories switched on in the database."""
+        dname = str(CONFIG.get('admin_directory') or '').strip().lower()
+        dir_ok = False
+        if dname:
+            if dirs is not None:
+                dir_ok = dname in dirs
+            else:
+                dir_ok = any(d['name'].lower() == dname and d.get('enabled', 1)
+                             for d in self.directories())
+            if dir_ok:
+                try:
+                    dir_ok = dbguard_directory_ok(self.db, dname)
+                except Exception:                       # noqa: BLE001
+                    pass
         return sum(1 for a in self.accounts() if a['role'] == 'fulladmin' and not a['disabled']
-                   and a['name'].lower() != str(but).lower())
+                   and a['name'].lower() != str(but).lower()
+                   and (a.get('source') != 'directory' or dir_ok))
 
     # ---- sessions ----------------------------------------------------------
     def session_new(self, kind, name, role, ip, hours, data=None):
@@ -1637,6 +1656,18 @@ class Storage(object):
                 raise ValueError('the realm %s reads another directory (%s): its people are '
                                  'not this realm\'s' % (other['name'],
                                                          other.get('directory') or 'none'))
+            if (other.get('token_name') == 'bare') != (token_name == 'bare'):
+                # Its tokens kept one way, this realm's the other (1.0.262): novak (bare) is
+                # not found as novak@this.cz, nor novak@old.cz as novak - its people would
+                # lose their tokens, and moving them is not offered for that.
+                raise ValueError('the realm %s keeps its tokens under %s and this one under %s: '
+                                 'taken into this one, its tokens would not be found any more - '
+                                 'keep it a realm of its own' % (
+                                     other['name'],
+                                     'the part before the @' if other.get('token_name') == 'bare'
+                                     else 'the whole name',
+                                     'the part before the @' if token_name == 'bare'
+                                     else 'the whole name'))
             for a in [osuf] + list(other.get('aliases') or []):
                 if a != suffix and a not in aliases:
                     aliases.append(a)

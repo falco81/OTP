@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.261'
+__version__ = '1.0.262'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1961,6 +1961,192 @@ SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isem
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
 
+# The ports the balancer's own port (web_proxy_port) may not take (1.0.262): otp's own and its
+# databases'. RADIUS and the SSH gate are UDP, but the one number for two things confused anybody
+# reading a firewall's rules - kept apart, as the API's port was already.
+WEB_PROXY_PORT_CLASHES = (('api_port', 'the API\'s port'), ('ha_peer_port', 'the other node\'s database port'),
+                          ('db_port', 'the database\'s port'), ('radius_auth_port', 'the RADIUS sign-ins\' port'),
+                          ('radius_acct_port', 'the RADIUS accounting port'),
+                          ('ssh_gate_port', 'the SSH gate\'s port'))
+
+
+def db_host_local(host):
+    """Whether the database is on this machine (1.0.262): no host, a loopback name or address,
+    or a socket's folder."""
+    host = str(host or '').strip().lower()
+    return host in ('', 'localhost', '127.0.0.1', '::1', '[::1]') or host.startswith('/')
+
+
+def web_proxy_port_clash(port, conf, keys=None):
+    """What else the port is in conf (CONFIG, or CONFIG with a batch of changes over it), or ''.
+    keys: only these of WEB_PROXY_PORT_CLASHES (another node's own values)."""
+    try:
+        port = int(port or 0)
+    except (TypeError, ValueError):
+        return ''
+    if not port:
+        return ''
+    if port in (5432, 3306):
+        return 'a database\'s usual port'
+    for k, what in WEB_PROXY_PORT_CLASHES:
+        if keys is not None and k not in keys:
+            continue
+        if k == 'db_port' and not db_host_local(conf.get('db_host')):
+            # The database's port on another machine (1.0.262): nothing listens on it here.
+            continue
+        try:
+            v = int(conf.get(k) if conf.get(k) is not None else DEFAULTS.get(k) or 0)
+        except (TypeError, ValueError):
+            continue
+        if v and v == port:
+            return what
+    return ''
+
+
+def web_proxy_port_problem(checked, conf=None, probe=False, others=None):
+    """Why a batch of settings being saved together cannot be (1.0.262), or '': the balancer's own
+    port against every other port as they will be after the batch - not only against the ones
+    kept now. probe: the port, when it changes, also tried on 127.0.0.1 (a short connect) - in
+    use by something else, it is refused; the same value as before is nginx's own and not tried.
+    others (1.0.262): {node: its own values} of the other nodes of a cluster - the balancer's port
+    is the cluster's, their API and RADIUS ports their own."""
+    keys = ('web_proxy_port', 'web_proxy') + tuple(k for k, _ in WEB_PROXY_PORT_CLASHES)
+    if not any(k in (checked or {}) for k in keys):
+        return ''
+    before = conf if conf is not None else CONFIG
+    after = dict(before)
+    after.update(checked or {})
+    try:
+        port = int(after.get('web_proxy_port') or 0)
+    except (TypeError, ValueError):
+        return ''
+    if not port:
+        return ''
+    # A port kept from before, with the balancer off and the batch not touching it, is nginx's
+    # nothing: not a reason to refuse the API's port (the old behaviour).
+    if 'web_proxy_port' not in (checked or {}) and not after.get('web_proxy'):
+        return ''
+    clash = web_proxy_port_clash(port, after)
+    if not clash:
+        for n in sorted(others or {}):
+            clash = web_proxy_port_clash(port, others[n], keys=NODE_KEYS)
+            if clash:
+                clash = '%s on %s' % (clash, n)
+                break
+    if clash:
+        if 'web_proxy_port' in (checked or {}):
+            return ('web_proxy_port: %d is %s - give a port of its own (8443, say)' % (port, clash))
+        if 'web_proxy' in (checked or {}) and not any(k in (checked or {}) for k, _ in
+                                                      WEB_PROXY_PORT_CLASHES):
+            # Switched on over a port kept from before that clashes (1.0.262).
+            return ('web_proxy_port: %d, kept from before, is %s - give the balancer\'s own port '
+                    'a port of its own (8443, say) before switching it on' % (port, clash))
+        return ('%d is the balancer\'s own port on the nodes (web_proxy_port) - give another '
+                'one, or change that first' % port)
+    try:
+        was = int(before.get('web_proxy_port') or 0)
+    except (TypeError, ValueError):
+        was = 0
+    if probe and 'web_proxy_port' in (checked or {}) and port != was:
+        s = None
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            busy = s.connect_ex(('127.0.0.1', port)) == 0
+        except OSError:
+            busy = False
+        finally:
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        if busy:
+            return ('web_proxy_port: something on this node listens on %d already - give a free '
+                    'port (8443, say)' % port)
+    return ''
+
+
+# What the API's port (TCP on 127.0.0.1) may not be (1.0.262): a port taken by PostgreSQL, MariaDB,
+# the balancer's nginx or RADIUS left the API unbound at the next start - the daemon stopped there,
+# was started again, stopped again.
+API_PORT_CLASHES = (('ha_peer_port', 'the other node\'s database port'), ('db_port', 'the database\'s port'),
+                    ('web_proxy_port', 'the balancer\'s own port on the nodes'),
+                    ('radius_auth_port', 'the RADIUS sign-ins\' port'),
+                    ('radius_acct_port', 'the RADIUS accounting port'))
+
+
+def _port_probe_busy(port, timeout=0.3):
+    """Something answers on 127.0.0.1:port (TCP) - a short connect, nothing sent."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        return s.connect_ex(('127.0.0.1', int(port))) == 0
+    except (OSError, ValueError, TypeError):
+        return False
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
+def _port_of(conf, k):
+    try:
+        return int(conf.get(k) if conf.get(k) is not None else DEFAULTS.get(k) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def api_port_problem(checked, conf=None, probe=False):
+    """Why api_port, saved in this batch, cannot be (1.0.262), or '': against the other ports as
+    they will be after the batch. probe: a new value tried on 127.0.0.1 first."""
+    if 'api_port' not in (checked or {}):
+        return ''
+    before = conf if conf is not None else CONFIG
+    after = dict(before)
+    after.update(checked or {})
+    port = _port_of(after, 'api_port') or 9861
+    if port in (5432, 3306):
+        return 'api_port: %d is a database\'s usual port - give a port of its own (9861, say)' % port
+    for k, what in API_PORT_CLASHES:
+        if k == 'web_proxy_port' and 'web_proxy_port' not in (checked or {}) and not after.get('web_proxy'):
+            continue                    # kept from before with the balancer off: nginx's nothing
+        v = _port_of(after, k)
+        if v and v == port:
+            return 'api_port: %d is %s - give a port of its own (9861, say)' % (port, what)
+    was = _port_of(before, 'api_port') or 9861
+    if probe and port != was and _port_probe_busy(port):
+        return ('api_port: something on this node listens on %d already - give a free port '
+                '(9861, say)' % port)
+    return ''
+
+
+def udp_port_problem(checked, conf=None):
+    """Why RADIUS's ports, SNMP's and the SSH gate's, saved in this batch, cannot be (1.0.262), or
+    '': two of them on one UDP port, and one of them did not start. SNMP's only while SNMP is on."""
+    keys = ('radius_auth_port', 'radius_acct_port', 'snmp_port', 'snmp', 'ssh_gate_port')
+    if not any(k in (checked or {}) for k in keys):
+        return ''
+    after = dict(conf if conf is not None else CONFIG)
+    after.update(checked or {})
+    others = [('ssh_gate_port', 'the SSH gate\'s port')]
+    if after.get('snmp'):
+        others.append(('snmp_port', 'SNMP\'s port'))
+    for rk, rwhat in (('radius_auth_port', 'the RADIUS sign-ins\' port'),
+                      ('radius_acct_port', 'the RADIUS accounting port')):
+        r = _port_of(after, rk)
+        if not r:
+            continue
+        for ok_, owhat in others:
+            o = _port_of(after, ok_)
+            if o and o == r and (rk in checked or ok_ in checked or 'snmp' in checked):
+                return '%s and %s cannot be one UDP port (%d)' % (rwhat, owhat, r)
+    return ''
+
+
 def check_setting(key, value):
     """The value as it will be kept, or BadSetting saying why not."""
     if key not in DEFAULTS:
@@ -2068,9 +2254,13 @@ def check_setting(key, value):
                              'or proxy_protocol')
     if key == 'web_proxy_port' and int(got):
         p = int(got)
-        if p < 1024 or p in (int(CONFIG.get('api_port') or 9861), int(CONFIG.get('ssh_gate_port') or 0)):
-            raise BadSetting('web_proxy_port: 0, or a free TCP port from 1024 up (not the API\'s '
-                             'own, not the SSH gate\'s) - 8443, say')
+        # The value alone here (1.0.262): what it clashes with - the API's port, the SSH gate's,
+        # RADIUS's, the databases' - is asked of the whole save (web_proxy_port_problem), the
+        # batch as it will be: {api_port: 9862, web_proxy_port: 9861} in one save was refused
+        # here over the API's port of before, and a configuration import over a stale one.
+        if p < 1024 or p in (5432, 3306):
+            raise BadSetting('web_proxy_port: 0, or a free TCP port from 1024 up (not a '
+                             'database\'s usual one) - 8443, say')
     if key == 'radius_guard_trusted':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:

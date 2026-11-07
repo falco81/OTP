@@ -126,7 +126,7 @@ def _osup_do(h):
                 h.store.set_meta('host:osup:seen', str(plan['id']))
             return osup_view(h.store)
         if act == 'reboot':
-            nodes = [n for n in host_nodes(h.store) if n in (b.get('nodes') or [])]
+            nodes = [n for n in host_nodes(h.store) if n in node_list(b.get('nodes'))]
             plan = power_ask(h.store, 'reboot', nodes, 'rolling' if len(nodes) > 1 else 'one',
                              s['name'])
             return {'message': 'restarting %s, one at a time' % ', '.join(nodes), 'plan': plan}

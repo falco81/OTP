@@ -4,6 +4,74 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.262 — 7 November 2026
+
+Bug hunt, three rounds (the whole application, with the HA re-addressing of 1.0.261 looked at again each time, and each round's own fixes looked at again by the next).
+
+HA and re-addressing
+- **Split mode "priority": RADIUS kept while the preferred node changes its network**: the other node took the preferred one's silence (its new address not there yet) for a split and stepped aside - with the preferred one rebooting, nobody answered. A node changing its network, or away as planned, is now a reason to stay.
+- **A new network is refused while no other node serves** (the other one in maintenance, restoring, stepped aside): both were silent for minutes. Looked at again just before the node goes into maintenance; then it stops with nothing of the network changed.
+- **`radius_bind` carried over** to the new IPv6 address (or to all addresses when IPv6 goes off), and from any specific address not kept to all addresses - RADIUS no longer stays unbound after the restart.
+- **Two addresses where one starts like the other** (192.168.1.1 and 192.168.1.10) were refused as "one address" - compared whole now.
+- **Second IPv4 addresses are kept** when the first one changes (they were dropped), and the other node is told the new address only when replication runs on the one that changed (`ha_address` empty or the old one).
+- **Going back after a trial** is no longer refused for an old network whose gateway is outside its subnet (cloud machines with /32): the old network is put back as it was.
+- **Shared database (ha_mode shared) with the VIP**: keepalived's peer follows the other node's fresh heartbeat address after it changed its network.
+- **Alerts quiet while a node changes its network** (as for maintenance and upgrades): a slow reboot no longer mailed "the replication is down".
+- **A machine without a static host name** takes its short name too (the root helper read it as empty).
+- **The certificate shown in Settings → Web** is read where root writes it (`OTP_VIP_CERT_DIR`).
+- **A new network is refused only when the other node would come back while this one restarts**: alive but in maintenance or stepped aside, or its own new network on trial. A partner gone for good (or a node made standalone) never blocks it.
+- **`radius_bind` is rewritten only for an address the change takes away**: a bind on a second interface, the VIP or an address kept is left as it is.
+- **Shared database: keepalived's peer is the other node's own HA address** as it publishes it (not the address of its default route); a node that does not publish it keeps `ha_peer`.
+- **A VIP of one address family with nodes of the other** (a cluster joined over IPv6 with an IPv4 VIP, or the other way round): the nodes' addresses of the VIP's family are used - root refused the whole web request, for good (no certificates, keepalived or firewall changes).
+- **The database's encryption on a cluster whose link was never encrypted**: only the lead node makes the cluster's authority - both made it at once and replication stopped for good.
+- **The preferred node of split mode is not changed while the nodes cannot reach each other**: changed on one half only, both could step aside (a mode or an arbiter set on each half is taken as before).
+- **A renewal of the link's certificate while the other node was down** no longer stays "failed" for ever: it finishes when the other node answers.
+- **`otp --ha-forget`** no longer takes away the maintenance and upgrade rows of a node that is still running.
+- **The clock guard** counts the other node as able to take over only when its own clock is right.
+- **The daily look for a new version** is made by one node of a replicated cluster (both could write its first row at once and stop replication).
+- **Keep after a change that did not move the address** (only the gateway, DNS, the host name or IPv6) no longer takes the node's own line out of the other node's `pg_hba.conf` - replication broke at its next reconnect.
+- **A daemon restarted in the middle of a network change** puts back what it had changed (`radius_bind`, the database's address, the web certificate) - the job failed, but the settings stayed on the new address.
+- **The order of a network change in a cluster**: the node goes into maintenance and the VIP leaves it before the other node is told the new address (keepalived was rewritten on both while this node still held the VIP). `radius_bind` takes its new value only once root has taken the new network.
+- **A trial not kept in time waits to go back** (at most 30 minutes) while the other node is out of service, so the two are not down at once; the other node is told the address back by itself once it is reached again.
+- **Shared database with an empty `ha_mode`** (clusters from before 1.0.213): the node is taken out of maintenance after its network change.
+- **Replication over IPv6**: a change of that IPv6 address is refused with what to do (it was not told to the other node).
+- **`ha_address` as a host name** that names the old address: the other node is told again, as in 1.0.261.
+- **The split card can be saved while the nodes are apart** when its rule itself is not changed.
+- **Power off, restart and OS updates of named nodes** take a list of names only: a name given as text was matched by its letters (`otp2` took in `otp` too).
+- **"Not heard from" is not mailed** for a node in maintenance, changing its network or restarting as asked.
+
+Security
+- **Passkeys**: an RSA key of more than 8192 bits or with a large exponent is refused (one sign-in with it held the daemon - RADIUS too - for minutes). A passkey is added only within 15 minutes of the second step given, not on the sign-in's cookie alone.
+- **The enrolment pages: a code sent to the old token is proof only while its codes go to the same place** - an administrator sending them elsewhere (a phone stolen) now ends what the code sent to the old place could do. A replacement of the token is taken by one request only (two tabs replaced the key twice).
+- **Configuration import "exactly the file"** no longer lowers high security's settings by dropping them to their defaults; a node's own setting refused in an import is said, not left out silently.
+- **The enrolment pages in a cluster of two versions**: the proof from the old token is kept in both forms, so a code sent by one version is taken by the other.
+- **Passkeys**: Your account says beforehand that a passkey is added within 15 minutes of signing in.
+- **Accounts from the directory**: their role and password are refused (they came back from the directory's groups within minutes); "the last full administrator" counts them only while the directory they sign in through is set up.
+- **Read-only administrators** no longer see the access lists and trusted balancers in High availability's load balancer card.
+- **A remote backup fetched back** is downloaded only where token keys may be shown (`admin_show_key`), as one made now.
+- **To be done by hand under the database guard**: the commands shown to run as root are written by the reading node from its own entries, never taken from a row of the database; an entry of a newer node is shown without its command.
+
+RADIUS
+- A second-window code typed just after it ran out, and a recovery code while the servers are apart, are no longer counted as guesses against the place; the second window ends at once on this server's own trouble (a key that cannot be opened, a token gone) instead of asking again for a code that can never pass. A password ending in digits no longer counts towards stopping the person's recovery codes.
+
+The rest
+- **The load balancer's guides keep one person on one node** (source address or cookie persistence): the enrolment page's sign-in is kept on the node that made it until it is copied to the other. The Apache guide no longer asks `/healthz` on the balancer's port (it is not served there, every node was taken out).
+- **Ports that cannot work are refused**: the API's port on a database's or another service's port, a RADIUS port on SNMP's or the SSH gate's - the next restart stopped the daemon in a loop. An API that cannot listen is said and tried again every 30 s; RADIUS answers on.
+- **Alerts of events in a replicated cluster** are read per node: the quieter node's events were missed.
+- **A remote backup restored from the pages** binds the tokens and keeps the names as every other restore does.
+- **The balancer's port on the nodes (`web_proxy_port`)** is refused when it is the port of something else (the API, the databases, RADIUS, the SSH gate, 5432/3306) or already in use, and SELinux is asked to label it as a web port where it is not 80/443/8443.
+- **`otp --acme-order`** waits for the machine's full DNS name instead of using the short one (and marking the certificate as ACME's on the way).
+- **The console** has To be done by hand in Upgrades: show, mark one done, clear "done lately". `otp --after-clear` clears all of "done lately", not only the 20 lines shown.
+- **The load balancer's port on an SELinux enforcing node**: labelled for nginx before it is written, and a reload nginx did not take (or a port nobody listens on after it) is said as failed, with nginx put back - it was "done" and nginx kept its old configuration. `install.sh --upgrade` labels it too and no longer stops on a failed nginx restart.
+- **A failed upgrade from the pages on a node alone** puts it back in service (it stayed in maintenance and RADIUS answered nobody); in a cluster with another node serving, as before. The upgrade's check also looks that the API listens.
+- **Going back below 1.0.259** is refused while the balancer has its own port on the nodes.
+- **A realm taken into another** is refused when one keeps its tokens under the part before the @ and the other under the whole name: its people's tokens would not be found any more.
+- **Long lists of the pages** (enrolment, overview, codes) are read on the reading connection; the enrolment list without dates asked shows the last 30 days (All shows everything).
+- **An API that could listen but not start** closes its port and is tried again with the reason said.
+- **The nightly copy's check** with no active tokens to try is no longer "cannot be restored".
+- **Settings → Upgrades: "What changed" for a package sent** is there again - from 1.0.253 to 1.0.261 the package carried this list as it was at 1.0.252, so a new version had no section in it and nothing was shown. It now shows every version between the one running and the one sent ("What changed since 1.0.259"), not only the newest.
+- **This file in the package** is the whole history again: from 1.0.253 to 1.0.261 the package carried the list as it was at 1.0.252.
+
 ## 1.0.261 — 7 November 2026
 
 The re-addressing of a node from the pages, tried in every way: IPv4 and dual stack, the link

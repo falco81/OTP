@@ -170,9 +170,17 @@ def net_check(store, node, want, rollback=False):
         try:
             g = ipaddress.ip_address(gw)
         except ValueError:
-            raise ValueError('the gateway is one IPv4 address')
-        if g.version != 4 or g not in a4.network or g == a4.ip:
+            if not rollback:
+                raise ValueError('the gateway is one IPv4 address')
+            g = None
+        # Going back takes the gateway NetworkManager had (1.0.262), as its DNS servers: one
+        # outside the subnet (an on-link route) refused the going back, and the trial stayed.
+        # One that is no gateway at all is left out, as root would not take it.
+        bad = g is None or g.version != 4 or g == a4.ip
+        if not rollback and (bad or g not in a4.network):
             raise ValueError('the gateway %s is not another address in %s' % (g, a4.network))
+        if rollback and bad:
+            gw = ''
     dns = _net_list(v4.get('dns'))
     if rollback:
         # Going back is never refused for what NetworkManager had (1.0.255): what root would
@@ -199,6 +207,7 @@ def net_check(store, node, want, rollback=False):
     on6 = bool(v6.get('on'))
     mode6 = 'off'
     a6 = None
+    g6 = ''
     if on6:
         mode6 = 'manual' if str(v6.get('mode') or 'manual') == 'manual' else 'auto'
         if mode6 == 'manual':
@@ -213,10 +222,13 @@ def net_check(store, node, want, rollback=False):
         g6 = str(v6.get('gw') or '').strip()
         if g6:
             try:
-                if plain_ip(g6, 'address').version != 6:      # no zone id, as root (1.0.255)
-                    raise ValueError
+                good6 = plain_ip(g6, 'address').version == 6    # no zone id, as root (1.0.255)
             except ValueError:
+                good6 = False
+            if not good6 and not rollback:
                 raise ValueError('the IPv6 gateway is one IPv6 address')
+            if not good6:
+                g6 = ''     # going back: left out, as its DNS servers (1.0.262)
     dns6 = _net_list(v6.get('dns')) if on6 else []
     if rollback:
         dns6 = [x for x in dns6 if _net_dns_ok(x)]
@@ -250,6 +262,10 @@ def net_check(store, node, want, rollback=False):
             raise ValueError('the VIP address %s is not in %s: the node could not hold it. '
                              'Change the VIP address first (High availability), or tick that '
                              'it is meant to be so' % (vnet.ip, a4.network))
+    if many and CONFIG.get('ha_mode') == 'replicated' and not rollback:
+        why6 = net_ha6_lost(store, node, now, on6, mode6, a6)
+        if why6:
+            raise ValueError(why6)
     plan = []
     ip_changed = bool(old_ip) and old_ip != new_ip
     host_old = str(d.get('hostname') or '')
@@ -291,7 +307,7 @@ def net_check(store, node, want, rollback=False):
                                      if x.get('con') == con), ''),
             'ipv4': {'addr': str(a4), 'gw': gw, 'dns': dns, 'search': search},
             'ipv6': {'on': on6, 'mode': mode6, 'addr': str(a6) if a6 else '',
-                     'gw': str(v6.get('gw') or '').strip() if on6 else '', 'dns': dns6},
+                     'gw': g6 if on6 else '', 'dns': dns6},
             'hostname': host, 'old_ip': old_ip, 'new_ip': new_ip, 'old_hostname': host_old,
             # The IPv6 addresses set by hand before (1.0.261): the node's own certificate named
             # the old one beside the new after a change of a dual-stack node.
@@ -336,6 +352,55 @@ def cluster_busy(store, skip=()):
     return ''
 
 
+def net_ha6_lost(store, node, now, on6, mode6, a6):
+    """Why an IPv6 change of `node` is refused, or '' (1.0.262): the nodes replicate over IPv6
+    (its ha_address, or the address the other one reaches it by) and that address would go -
+    the other node is told a new IPv4 address only, and was left on one gone."""
+    if node == node_name():
+        own = [CONFIG.get('ha_address')]
+        unknown6 = not str(CONFIG.get('ha_address') or '').strip() and \
+            ':' in _cert_name_key(CONFIG.get('ha_peer'))
+    else:
+        own = [(now or {}).get('ha_address'), CONFIG.get('ha_peer')]
+        unknown6 = False
+    six = [k for k in (_cert_name_key(r) for r in own if r) if ':' in k]
+    if not six and not unknown6:
+        return ''
+    conf = odict(odict((now or {}).get('data')).get('conf'))
+    had = [_cert_name_key(str(a).split('/')[0]) for a in conf.get('ipv6_addresses') or []] \
+        if conf.get('ipv6_method') == 'manual' else []
+    keep = _cert_name_key(str(a6.ip)) if (on6 and mode6 == 'manual' and a6 is not None) else ''
+    lost = [k for k in six if not on6 or (k in had and k != keep)]
+    if unknown6 and (not on6 or (had and keep not in had)):
+        lost.append('IPv6')
+    if lost:
+        return ('the nodes replicate over IPv6 (%s): a change of that address is not told '
+                'the other node from here. Change the addresses of the two nodes first '
+                '(High availability - The addresses of the two nodes), or keep the IPv6 '
+                'address' % lost[0])
+    return ''
+
+
+def net_ha_on_old(ha_address, old_ip):
+    """Whether the nodes reach this one at the address changed (1.0.262): ha_address empty, the
+    old address however written, or a host name that resolves to it."""
+    ha = str(ha_address or '').strip()
+    if not ha:
+        return True
+    old = _cert_name_key(old_ip)
+    if _cert_name_key(ha) == old:
+        return True
+    try:
+        ipaddress.ip_address(ha.strip('[]'))
+        return False                    # another address
+    except ValueError:
+        pass
+    try:
+        return any(_cert_name_key(str(a).split('%')[0]) == old for a in addresses_cached(ha))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     """The page asks: written for the node, which does it. `rollback`: the
     old network asked back by the node itself - not put on trial again."""
@@ -349,6 +414,10 @@ def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
         busy = cluster_busy(store, skip=('power',))
         if busy:
             raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
+    if not rollback and in_cluster(store):
+        why = net_others_held(store, node)
+        if why:
+            raise ValueError(why)
     checked = net_check(store, node, want, rollback=rollback)
     ask = {'id': secrets.token_hex(6), 'node': node, 'want': checked, 'by': by,
            'at': time.time(), 'from': node_name(), 'rollback': bool(rollback),
@@ -357,6 +426,52 @@ def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     store.add_event('settings', '%s asked %s for a new network: %s' % (
         by, node, '; '.join(checked['plan'])), 'warn', who=by)
     return ask
+
+
+def net_others_held(store, node):
+    """Why a new network of `node` would leave nobody answering, or '' (1.0.262): another node
+    heard from (a fresh heartbeat) but out of service - in maintenance, stepped aside by itself -
+    or its own new network waiting to be kept (going back restarts it, as power_ask says). The
+    node restarts, the other one comes back after it, and both were down at once. A node not
+    heard from at all (dead, or this one made standalone with --ha-standalone) holds nothing:
+    refused, its partner could never be given a new network again."""
+    me = node_name()
+    for n in ha_nodes(store):
+        name = n['name']
+        if name == node:
+            continue
+        if net_job_on_trial(_meta_json(store, 'net:job:' + name)):
+            return 'the new network of %s waits to be kept - keep it or let it go back first' % name
+        if not (n.get('alive') or name == me):
+            continue
+        if (maintenance_row(store, name) or {}).get('on') or node_stepped_aside(store, name):
+            return ('%s does not answer now (in maintenance or stepped aside): a new network '
+                    'restarts %s and both nodes would be down at once - bring %s back into '
+                    'service first' % (name, node, name))
+    return ''
+
+def net_bind_after(rb, w):
+    """radius_bind for the network asked for (1.0.262). Every address (0.0.0.0, ::) as before:
+    '::' with IPv6 on, '0.0.0.0' with it off. A specific address only when it is one this change
+    takes away: the old IPv4 address becomes the new one, an old IPv6 address set by hand the new
+    IPv6 one (every address when there is none) - left, RADIUS listened on an address that was
+    gone. Any other (a second network card, the VIP address with ip_nonlocal_bind, an automatic
+    IPv6 address, a second IPv4 address root keeps) is left as it is."""
+    rb = str(rb or '').strip() or '0.0.0.0'
+    v6 = w.get('ipv6') or {}
+    on6 = bool(v6.get('on'))
+    new6 = str(v6.get('addr') or '').split('/')[0] if on6 else ''
+    if rb == '0.0.0.0':
+        return '::' if on6 else rb
+    if rb == '::':
+        return rb if on6 else '0.0.0.0'
+    key = _cert_name_key(rb)
+    if w.get('ip_changed') and w.get('old_ip') and key == _cert_name_key(w.get('old_ip')):
+        return str(w.get('new_ip') or '0.0.0.0')
+    if ':' in key and key in [_cert_name_key(a) for a in w.get('old_ip6') or []] and \
+            key != _cert_name_key(new6):
+        return new6 or ('::' if on6 else '0.0.0.0')
+    return rb
 
 
 # ---- the job, on the node it is about -------------------------------------------------
@@ -560,6 +675,9 @@ def net_job_run(daemon, ask):
     # What this node has before anything is written (1.0.255): put back if the job stops before
     # the network changed. Kept here, not in 'net:undo' - a going back may need that one again.
     before = net_undo_now(store)
+    # On this machine too (1.0.262): a restart of the service half way lost it, and the job
+    # failed as stopped with this node's settings on an address it never had.
+    net_before_keep(ask['id'], before)
     applied = False
     # Maintenance put on by the job it goes back from: taken off by this one.
     if ask.get('maint'):
@@ -578,8 +696,29 @@ def net_job_run(daemon, ask):
             CONFIG['node_name'] = me
             _job_put(store, job, 'the node\'s name %s kept in config.json, whatever the host '
                      'name' % me, 8)
-        # 2. The other node told the new address.
-        if w['ip_changed'] and CONFIG.get('ha_mode') == 'replicated':
+        # 2. Out of the way first (1.0.262): the VIP address to the other node before it is told
+        # the new address - told first, its keepalived looked for this node at an address it did
+        # not have yet while this one still held the VIP address. Nothing told yet, a stop here
+        # needs nothing told back.
+        if many:
+            held = '' if job.get('rollback') else net_others_held(store, me)
+            if held:
+                # Asked while the other node answered, out of service since (1.0.262): stopped
+                # here, before anything of the network changed - put back as it was.
+                raise ValueError(held)
+            if not (maintenance_row(store) or {}).get('on'):
+                maintenance_set(store, True, 'the network is being changed', by)
+                job['maint'] = True
+            _job_put(store, job, 'maintenance on - the VIP address goes to the other node', 10)
+            v = vip_conf(store)
+            end = time.time() + 30
+            while v.get('on') and vip_here(v.get('address')) and time.time() < end:
+                time.sleep(1)
+        # 3. The other node told the new address.
+        # Only where the nodes reach each other at the address changed (1.0.262): replication
+        # over another address of this node (a second one, kept) stays where it is.
+        ha_on_old = net_ha_on_old(CONFIG.get('ha_address'), w['old_ip'])
+        if w['ip_changed'] and CONFIG.get('ha_mode') == 'replicated' and ha_on_old:
             _job_put(store, job, 'telling the other node %s' % w['new_ip'], 12)
             # From here the other node (and ha_address) may have the new one:
             # stopped before the network changed, they are told back (1.0.146).
@@ -611,27 +750,30 @@ def net_job_run(daemon, ask):
                 _job_put(store, job, 'the other node expects %s now%s' % (
                     w['new_ip'], '' if done else ' (it had not said so yet - it does it by '
                     'itself)'), 25)
-        elif w['ip_changed'] and CONFIG.get('ha_address'):
+        elif w['ip_changed'] and CONFIG.get('ha_address') and ha_on_old and \
+                CONFIG.get('ha_mode') != 'replicated':
             write_file_settings({'ha_address': w['new_ip']})
             CONFIG['ha_address'] = w['new_ip']
-        # 3. This node's own settings that name the old address or name.
+        # 4. This node's own settings that name the old address or name.
         changes = {}
         rb = str(CONFIG.get('radius_bind') or '0.0.0.0')
         if undo:
             # Back to the values it had, as they were.
             changes = {k: v for k, v in odict(undo.get('settings')).items()
                        if str(CONFIG.get(k) or '') != str(v or '')}
-        elif w['ip_changed'] and rb == w['old_ip']:
-            changes['radius_bind'] = w['new_ip']
-        elif w['ipv6']['on'] and rb in ('0.0.0.0', ''):
-            changes['radius_bind'] = '::'
-        elif not w['ipv6']['on'] and rb == '::':
-            changes['radius_bind'] = '0.0.0.0'
+        else:
+            nb = net_bind_after(rb, w)
+            if nb != rb:
+                changes['radius_bind'] = nb
         if not undo and w['hostname'] and w['old_hostname'] and \
                 w['hostname'] != w['old_hostname']:
             for k in ('mail_helo', 'isemon_hostname'):
                 if str(CONFIG.get(k) or '') in (w['old_hostname'], w['old_hostname'].split('.')[0]):
                     changes[k] = w['hostname']
+        # RADIUS's address once root has taken the network (1.0.262): saved here, RADIUS listened
+        # at once on an address the machine did not have yet.
+        bind_later = changes.pop('radius_bind', None)
+        job['bind_later'] = bind_later
         if changes:
             daemon.save_settings(changes, by=by, node=me)
             _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
@@ -647,7 +789,7 @@ def net_job_run(daemon, ask):
         elif w['ip_changed'] and str(CONFIG.get('db_host') or '') == w['old_ip']:
             write_file_settings({'db_host': w['new_ip']})
             _job_put(store, job, 'db_host = %s' % w['new_ip'], 37)
-        # 4. Its own certificate - going back, the one it had.
+        # 5. Its own certificate - going back, the one it had.
         if undo and undo.get('tls') is not None:
             if (store.get_meta('web:tls:' + me) or '') != undo['tls']:
                 if undo['tls']:
@@ -663,16 +805,6 @@ def net_job_run(daemon, ask):
             except ValueError as e:
                 _job_put(store, job, 'this node\'s certificate could not be made again: %s' % e,
                          45, ok=False)
-        # 5. Out of the way: the VIP address to the other node.
-        if many:
-            if not (maintenance_row(store) or {}).get('on'):
-                maintenance_set(store, True, 'the network is being changed', by)
-                job['maint'] = True
-            _job_put(store, job, 'maintenance on - the VIP address goes to the other node', 55)
-            v = vip_conf(store)
-            end = time.time() + 30
-            while v.get('on') and vip_here(v.get('address')) and time.time() < end:
-                time.sleep(1)
         # 6. The network, the name - and the reboot.
         job['down_at'] = time.time()
         job['wait_from'] = time.time()      # how long the restart is waited for (1.0.147)
@@ -696,6 +828,14 @@ def net_job_run(daemon, ask):
                             'snapshot': job.get('snap') or '',
                             'rollback': bool(ask.get('rollback'))}, 90)
         applied = True
+        if bind_later is not None and str(CONFIG.get('radius_bind') or '') != str(bind_later):
+            try:
+                daemon.save_settings({'radius_bind': bind_later}, by=by, node=me)
+                job['bind_later'] = None
+                _job_put(store, job, 'this node\'s settings: radius_bind = %s' % bind_later, 75)
+            except Exception as e:                      # noqa: BLE001
+                _job_put(store, job, 'radius_bind could not be set to %s: %s' % (bind_later, e),
+                         75, ok=False)
         job['before'] = got.get('before') or {}
         job['down_at'] = time.time() + 8
         _job_put(store, job, '; '.join(got.get('said') or []) or 'set', 80)
@@ -723,6 +863,13 @@ def net_job_run(daemon, ask):
             except Exception as e2:                     # noqa: BLE001
                 _job_put(store, job, 'this node\'s settings could not be put back as they '
                          'were: %s' % e2, job.get('pct'), ok=False)
+        elif job.get('bind_later') is not None:
+            # Root stopped half way (1.0.262): the network may have changed - RADIUS's address
+            # goes with db_host and the certificate, as before it was saved with them.
+            try:
+                daemon.save_settings({'radius_bind': job['bind_later']}, by=by, node=me)
+            except Exception:                           # noqa: BLE001
+                pass
         if job.get('maint'):
             try:
                 maintenance_set(store, False, '', by)
@@ -731,6 +878,7 @@ def net_job_run(daemon, ask):
         _job_put(store, job, 'stopped: %s - nothing of the network was changed' % e
                  if unchanged else 'stopped: %s' % e, job.get('pct'),
                  ok=False, state='failed')
+        net_before_drop()
         store.add_event('settings', 'the new network of %s was not put in: %s' % (me, e),
                         'bad', who=by)
 
@@ -742,8 +890,19 @@ def net_job_after(daemon, job):
     me = node_name()
     w = job.get('want') or {}
     by = '%s (network)' % (job.get('by') or 'otp')
-    many = bool(CONFIG.get('ha_mode'))
+    # As the job judged it (1.0.262): a cluster of one shared database with ha_mode empty (set up
+    # before 1.0.211) was put in maintenance by the job and never taken out of it here.
+    many = in_cluster(store)
     _job_put(store, job, '%s is back up' % me, 88)
+    if job.get('bind_later') is not None and \
+            str(CONFIG.get('radius_bind') or '') != str(job['bind_later']):
+        # Root did not answer in time before the restart: RADIUS's address set now.
+        try:
+            daemon.save_settings({'radius_bind': job['bind_later']}, by=by, node=me)
+            _job_put(store, job, 'this node\'s settings: radius_bind = %s' % job['bind_later'], 88)
+        except Exception as e:                          # noqa: BLE001
+            _job_put(store, job, 'radius_bind could not be set: %s' % e, 88, ok=False)
+        job['bind_later'] = None
     have = set(a for a in local_addresses() if not a.startswith('fe80'))
     if w.get('new_ip') and w['new_ip'] not in have:
         if job.get('trial_min') and job.get('back'):
@@ -772,6 +931,12 @@ def net_job_after(daemon, job):
     if job.get('tell_after') and CONFIG.get('ha_mode') == 'replicated':
         d2, l2 = readdress_tell(str(CONFIG.get('ha_peer') or ''), w.get('new_ip') or '', by)
         _job_put(store, job, '; '.join(d2 + l2), 91, ok=not l2)
+        if l2:
+            # Not reached now: tried again until it is (1.0.262) - tried once, the other node
+            # kept the trial's address for good and replication from this node stayed refused.
+            net_tell_pending_set(store, job.get('id'), w.get('new_ip') or '', by)
+            _job_put(store, job, 'the other node is told again by itself until it is reached', 91,
+                     ok=False)
     if CONFIG.get('ha_mode') == 'replicated':
         hatls_check_soon()
         good = net_repl_wait(store, 240)
@@ -806,9 +971,10 @@ def net_job_after(daemon, job):
         _job_put(store, job, 'the VIP address (keepalived) set up for %s: %s' % (
             w.get('new_ip') or me, said) if ok else 'the VIP address (keepalived) on this node: %s - '
             'Settings → High availability, Try again' % said, 97, ok=ok)
-    if many and job.get('maint'):
+    if job.get('maint'):
         maintenance_set(store, False, '', by)
         _job_put(store, job, 'out of maintenance - the VIP address may come back', 98)
+    net_before_drop()
     if job.get('trial_min') and job.get('back'):
         net_trial_start(store, job, by)
         return
@@ -875,11 +1041,58 @@ def _net_thread(fn, *args):
 
 
 NET_REBOOT_GIVE_UP_S = 3600
+# This node's settings, config.json's and certificate before a job (1.0.262): on this machine
+# alone (0600, never on the pages - the certificate's row may hold its key, sealed), so that a
+# job stopped by a restart of the service puts them back as one stopped by an error does.
+NET_BEFORE_FILE = STATE_DIR / 'net-before.json'
+
+
+def net_before_keep(job_id, before):
+    try:
+        write_replacing(NET_BEFORE_FILE, json.dumps({'id': job_id, 'before': before}), 0o600)
+    except Exception as e:                              # noqa: BLE001
+        log('network: what this node had before the change not kept on this machine: %s' % e,
+            'warn')
+
+
+def net_before_get(job_id):
+    try:
+        got = json.loads(NET_BEFORE_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    if isinstance(got, dict) and job_id and got.get('id') == job_id and \
+            isinstance(got.get('before'), dict):
+        return got['before']
+    return None
+
+
+def net_before_drop():
+    try:
+        NET_BEFORE_FILE.unlink()
+    except OSError:
+        pass
+
+
+def net_job_put_back(daemon, job, by):
+    """A job stopped before the network changed: this node's own settings put back as they were
+    before it (1.0.262), from what was kept on this machine."""
+    before = net_before_get(job.get('id'))
+    if before is None:
+        return
+    try:
+        said = net_undo_put_back(daemon, before, by)
+        if said:
+            _job_put(daemon.store, job, 'put back as it was: %s' % '; '.join(said),
+                     job.get('pct'))
+    except Exception as e:                              # noqa: BLE001
+        _job_put(daemon.store, job, 'this node\'s settings could not be put back as they were: '
+                 '%s' % e, job.get('pct'), ok=False)
 
 
 def net_job_stalled(daemon, job, by):
     store = daemon.store
     net_job_undo_told(daemon, job, by)
+    net_job_put_back(daemon, job, by)
     if job.get('maint'):
         try:
             maintenance_set(store, False, '', by)
@@ -888,6 +1101,7 @@ def net_job_stalled(daemon, job, by):
     _job_put(store, job, 'it stopped half way (the service restarted?)%s' % (
         ' - out of maintenance' if job.get('maint') else ''), job.get('pct'),
         ok=False, state='failed')
+    net_before_drop()
 
 
 def net_job_give_up(daemon, job):
@@ -903,11 +1117,13 @@ def net_job_give_up(daemon, job):
     by = '%s (network)' % (job.get('by') or 'otp')
     store = daemon.store
     net_job_undo_told(daemon, job, by)
+    net_job_put_back(daemon, job, by)
     if job.get('maint'):
         try:
             maintenance_set(store, False, '', by)
         except Exception:                               # noqa: BLE001
             pass
+    net_before_drop()
     _job_put(store, job, 'the machine did not restart in an hour and the new address is not '
              'on it: the other node was given this one\'s address back%s' % (
                  ' and maintenance ended' if job.get('maint') else ''), job.get('pct'),
@@ -983,6 +1199,49 @@ def net_local_trial_lost():
         log('network: the network kept before could not be put back: %s' % e, 'error')
 
 
+NET_TELL = {'at': 0.0}
+
+
+def net_tell_pending_set(store, job_id, mine, by):
+    store.set_meta('readdress:tell:' + node_name(), json.dumps(
+        {'id': job_id, 'mine': mine, 'by': by, 'at': time.time(), 'tries': 0}))
+
+
+def net_tell_pending_try(store, row):
+    me = node_name()
+    d2, l2 = readdress_tell(str(CONFIG.get('ha_peer') or ''), row['mine'], row.get('by') or 'otp')
+    if not l2:
+        store.drop_meta('readdress:tell:' + me)
+        log('network: the other node was told this node\'s address %s: %s' % (
+            row['mine'], '; '.join(d2)), 'info')
+        store.add_event('ha', 'the other node was told %s\'s address %s (asked again after the '
+                        'network went back)' % (me, row['mine']), 'info')
+        return
+    row.update(tries=int(row.get('tries') or 0) + 1, tried=time.time())
+    store.set_meta('readdress:tell:' + me, json.dumps(row))
+    log_sparing('net-tell', 'network: the other node still cannot be told this node\'s address '
+                '%s: %s' % (row['mine'], '; '.join(l2)), 'warn', every=1800)
+
+
+def net_tell_pending_tick(daemon):
+    """An address the other node could not be told after going back (1.0.262): told again -
+    every minute while its heartbeat is fresh here, every five minutes else - until it is."""
+    store = daemon.store
+    me = node_name()
+    row = _meta_json(store, 'readdress:tell:' + me)
+    if not row:
+        return
+    if CONFIG.get('ha_mode') != 'replicated' or not row.get('mine') or \
+            str(CONFIG.get('ha_address') or row['mine']) != row['mine']:
+        store.drop_meta('readdress:tell:' + me)        # moved on since: nothing to tell
+        return
+    fresh = any(n.get('alive') for n in ha_nodes(store) if not n.get('me'))
+    if time.time() - NET_TELL['at'] < (60 if fresh else 300):
+        return
+    NET_TELL['at'] = time.time()
+    _net_thread(net_tell_pending_try, store, row)
+
+
 def net_tick(daemon):
     """Every few seconds: something asked of this node, a job to finish after
     a reboot, the network said again now and then."""
@@ -991,6 +1250,10 @@ def net_tick(daemon):
     net_local_trial_tick(daemon)
     store = daemon.store
     me = node_name()
+    try:
+        net_tell_pending_tick(daemon)
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('net-tell-tick', 'network: telling the other node again: %s' % e, 'warn')
     job = _meta_json(store, 'net:job:' + me)
     ask = _meta_json(store, 'net:want:' + me)
     if job and job.get('state') == 'trial':
@@ -1059,6 +1322,16 @@ def power_busy(store):
     return False
 
 
+def node_list(x, what='nodes'):
+    """Names of nodes as a list (1.0.262): a string was matched by its letters - "otp2" took in
+    "otp" too, and both nodes were powered off."""
+    if x is None:
+        return []
+    if not isinstance(x, (list, tuple)) or not all(isinstance(n, str) for n in x):
+        raise ValueError('%s is a list of node names' % what)
+    return list(x)
+
+
 def power_ask(store, how, targets, order, by, keep_service=False, from_osup=False):
     """`keep_service` (1.0.165): a node goes down only while another one
     answers - asked of every restart one after the other, on a schedule and
@@ -1066,7 +1339,7 @@ def power_ask(store, how, targets, order, by, keep_service=False, from_osup=Fals
     if how not in ('reboot', 'poweroff'):
         raise ValueError('reboot or poweroff')
     known = [node_name()] + [n['name'] for n in ha_nodes(store) if n['name'] != node_name()]
-    targets = [t for t in known if t in (targets or [])]
+    targets = [t for t in known if t in node_list(targets, 'targets')]
     if not targets:
         raise ValueError('which node?')
     if order not in ('one', 'rolling', 'together'):

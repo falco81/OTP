@@ -5,6 +5,7 @@ set -euo pipefail
 v=${1:?version}
 cd /home/claude/build
 (cd /home/claude/i18n && python3 make_cs.py >/dev/null)
+cp CHANGELOG.md "out/otp-$v/CHANGELOG.md"     # the one kept beside the parts, every time (1.0.262)
 bash sign.sh "out/otp-$v"
 rm -f "out/otp-$v.tar.gz"
 (cd out && tar --owner=0 --group=0 -czf "otp-$v.tar.gz" "otp-$v")

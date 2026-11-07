@@ -208,7 +208,7 @@ def upgrade_store_package(store, path, info, by):
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, one))
     meta = {'sha': sha, 'version': info['version'], 'bytes': len(raw), 'pieces': len(pieces),
             'signed_by': info.get('signed_by'), 'changelog': info.get('changelog', ''),
-            'by': by, 'at': time.time()}
+            'since': info.get('installed') or '', 'by': by, 'at': time.time()}
     store.set_meta('upgrade:pkg', json.dumps(meta))
     return meta
 
@@ -543,6 +543,11 @@ def upgrade_tick(daemon):
             trouble.append('the database: %s' % e)
         if not getattr(getattr(daemon, 'radius', None), 'bound', None):
             trouble.append('RADIUS is not listening')
+        # The pages' way in (1.0.262): its port taken, the daemon runs on without it.
+        api_ = getattr(daemon, 'api', None)
+        if api_ is not None and getattr(api_, 'httpd', True) is None:
+            trouble.append('the API is not listening')
+        own = bool(trouble)             # the daemon's own, not install.sh's (1.0.262)
         got = _helper_status()
         if got.get('id') == plan['id'] and got.get('state') == 'running':
             if now - float(turn.get('at') or now) < 600:
@@ -555,7 +560,7 @@ def upgrade_tick(daemon):
         if CONFIG.get('ha_mode') == 'replicated':
             ha_refresh_tables(store)
         if trouble:
-            _upgrade_failed(store, plan, turn, '; '.join(trouble), tail=got.get('tail'))
+            _upgrade_failed(store, plan, turn, '; '.join(trouble), tail=got.get('tail'), own=own)
             return
         if not turn.get('was_maint'):
             maintenance_set(store, False, by=plan.get('by') or '')
@@ -648,13 +653,24 @@ def now_minus(at):
         return 0.0
 
 
-def _upgrade_failed(store, plan, turn, said, tail=None):
+def _upgrade_failed(store, plan, turn, said, tail=None, own=True):
     # Already running the new version and its checks failed (1.0.59): kept
     # in maintenance - it is the broken version that would be put in service.
     # Only once it has started again as that version (1.0.61): the same
     # version put in again, failing before anything was installed, left a
     # working node out.
+    # `own` (1.0.262): the daemon's own checks failed (the database, RADIUS, the API) - not only
+    # install.sh's end. A node alone (none other in service) whose new version answers is put back
+    # in service after a failure of install.sh alone: kept out, nobody signed in to the VPN at all.
     broken_new = __version__ == plan.get('version') and turn.get('state') == 'checking'
+    if broken_new and not own:
+        try:
+            broken_new = bool(others_in_service(store))
+        except Exception:                               # noqa: BLE001
+            broken_new = True
+        if not broken_new:
+            said = '%s - back in service: it runs %s and answers, the only node there is; ' \
+                'what install.sh did not finish: journalctl -u otp-upgrade' % (said, __version__)
     if broken_new:
         said = '%s - left in maintenance: it runs %s, which did not pass its checks' % (
             said, __version__)

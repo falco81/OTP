@@ -14,6 +14,19 @@ SE_REPORT_MOST = 4 * 1024 * 1024
 SE_EVERY = 1800
 
 
+# The TCP ports the policy gives a type httpd (nginx) may bind already (1.0.262): http_port_t
+# and http_cache_port_t. Root asks semanage only for a port of no type: one of another type
+# (8080 is http_cache_port_t) was refused as "another service's" at every look, for good. The
+# root helper says only whether a port has the type asked, not which one it has - so the policy's
+# own list, as Fedora/RHEL ship it.
+SE_HTTPD_TCP = ((80, 81), (443, 443), (488, 488), (8008, 8009), (8443, 8443), (9000, 9000),
+                (8080, 8080), (8118, 8118), (8123, 8123), (10001, 10010))
+
+
+def selinux_httpd_bindable(port):
+    return any(lo <= port <= hi for lo, hi in SE_HTTPD_TCP)
+
+
 def selinux_want(store):
     """What otp needs of SELinux on this node: the booleans and the ports, and why."""
     bools = [{'name': 'httpd_can_network_connect',
@@ -45,8 +58,30 @@ def selinux_want(store):
     if eng == 'postgres' and host in ('', '127.0.0.1', 'localhost', '::1') and dp not in (0, 5432):
         ports.append({'port': dp, 'proto': 'tcp', 'type': 'postgresql_port_t',
                       'why': 'PostgreSQL of this node listens on it'})
+    # The balancer's own port (1.0.259) is nginx's: a port httpd may not bind leaves nginx down
+    # on an enforcing node. One of a type httpd binds already is not asked (1.0.262).
+    try:
+        wp = int(CONFIG.get('web_proxy_port') or 0)
+    except (TypeError, ValueError):
+        wp = 0
+    # Asked only of root's helper from 1.0.262 on (root-facts.json's installer): one before
+    # refused the whole request over a port type it does not know - the booleans and the other
+    # ports with it.
+    if wp and CONFIG.get('web_proxy') and not selinux_httpd_bindable(wp) and se_helper_knows_http():
+        ports.append({'port': wp, 'proto': 'tcp', 'type': 'http_port_t',
+                      'why': 'nginx serves the enrolment pages to the load balancer on it'})
     return {'booleans': bools, 'ports': ports, 'node': node_name(), 'facts': selinux_facts(store)}
 
+
+
+def se_helper_knows_http():
+    """Root's helper here is from install.sh 1.0.262 or newer (root-facts.json says): it labels
+    http_port_t. Not known - False, nothing asked of it."""
+    try:
+        had = str((root_facts() or {}).get('installer') or '')
+        return bool(re.match(r'^\d+\.\d+\.\d+\Z', had)) and _ver_tuple(had) >= (1, 0, 262)
+    except Exception:                                   # noqa: BLE001
+        return False
 
 def selinux_facts(store):
     """What otp uses on this node, for the report (1.0.236): switches and ports only - nothing

@@ -225,7 +225,11 @@ def clock_decide(mode, ref, aside_s, codes_fixed, dir_ok, health_dir, peer, asid
             return 'aside', 'this node\'s clock is %+.1f s off the time servers - the other node answers' % (-ref)
         return 'serve', 'this node\'s clock is off, but the other node cannot take over - it answers'
     if health_dir and dir_ok is False:
-        if peer_well and (peer or {}).get('dir_ok') is True:
+        # Its clock good too (1.0.262): one off the time servers, serving only because this node
+        # could not take over, was left the sign-ins - codes refused there, and this node aside.
+        pr = (peer or {}).get('ref')
+        peer_clock_ok = pr is None or abs(pr) <= aside_s
+        if peer_well and peer_clock_ok and (peer or {}).get('dir_ok') is True:
             return 'aside', 'this node cannot reach the directory - the other node answers'
         return 'serve', 'the directory cannot be reached, but neither can the other node take over'
     return 'serve', ''
@@ -247,6 +251,9 @@ def clock_dir_failover(store):
     if not p or not p.get('fresh') or p.get('role') != 'serve' or p.get('maintenance') or \
             p.get('dir_ok') is not True:
         return ''
+    pr = p.get('ref')
+    if pr is not None and abs(fnum(pr)) > float(CONFIG.get('clock_aside_s') or 20):
+        return ''           # its clock off: not left the sign-ins (1.0.262, as clock_decide)
     return 'the directory cannot be reached from this node - the other node answers'
 
 

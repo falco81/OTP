@@ -314,6 +314,11 @@ def _rb_restore_job(h, b, by):
                 daemon.reload_all('a backup was put back')
             except Exception:                           # noqa: BLE001
                 pass
+            # As every other road a database is put back by (1.0.262): the tokens of the copy
+            # taken as they are, bound to this machine's key, and an old copy's names in one form.
+            BIND_STRICT['tokens'] = False
+            bind_tokens(store, trusted=True)
+            names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
             return got
         finally:
             if tmp:
@@ -386,6 +391,11 @@ def _rbackup_download(h):
     fetched from a destination."""
     s = h.me('fulladmin')
     tid, name = h.arg('id'), h.arg('name')
+    # Only where keys may be shown (1.0.256), as the database's download with its key: a backup
+    # holds the key that opens every token's key - one fetched from a destination too (1.0.262),
+    # it went to the browser with the keys switched off.
+    if not CONFIG.get('admin_show_key'):
+        raise ApiError(403, 'showing the keys of tokens is switched off (Settings - Tokens)')
     work = Path(tempfile.mkdtemp(prefix='otp-dl-', dir=str(STATE_DIR)))
     os.chmod(str(work), 0o700)
     try:
@@ -397,11 +407,6 @@ def _rbackup_download(h):
                               'warn', who=s['name'])
             h.send_file(work / name, name)
             return None
-        # Only where keys may be shown (1.0.256), as the database's download with its key: the
-        # backup made now holds the key that opens every token's key, locked with a password a
-        # full administrator sets.
-        if not CONFIG.get('admin_show_key'):
-            raise ApiError(403, 'showing the keys of tokens is switched off (Settings - Tokens)')
         if not rb_password():
             # Locked always (1.0.136): unlocked it holds every token's key.
             raise ApiError(403, 'without a password of the backups the file would hold every '

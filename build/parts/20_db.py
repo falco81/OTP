@@ -112,6 +112,9 @@ INDEXES = [
     'CREATE INDEX IF NOT EXISTS radius_log_client_ts ON radius_log (client, ts)',
     'CREATE INDEX IF NOT EXISTS sessions_kind_last ON sessions (kind, last)',
     'CREATE INDEX IF NOT EXISTS token_once_ts ON token_once (ts)',
+    # 1.0.262: the alerts read the events a cursor for each node - a node that writes nothing
+    # (gone, forgotten, the rows with no node) read from where it began, every turn, by id alone.
+    'CREATE INDEX IF NOT EXISTS events_node_id ON events (node, id)',
 ]
 
 TYPES = {

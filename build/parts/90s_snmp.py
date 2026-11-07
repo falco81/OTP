@@ -803,7 +803,7 @@ def snmp_traps_tick(daemon, cur):
     # Held while the cluster is worked on, as the mails hold them (1.0.249): a "right again"
     # sent in the middle of the maintenance the manager watched.
     quiet = alerts_quiet_until(store) > time.time()
-    for k in [k for k in known if k not in cur and not (quiet and k.startswith(('repl', 'db:', 'vip:')))]:
+    for k in [k for k in known if k not in cur and not (quiet and k.startswith(ALERTS_HELD))]:
         p = known.pop(k)
         changed = True
         if p.get('sent'):

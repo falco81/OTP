@@ -151,7 +151,8 @@ def ha_readdress(store, mine='', peer='', by='', root_now=False, tell=True, daem
     if not mine and not peer:
         return {'message': 'nothing to change: both addresses are as this node has them',
                 'done': [], 'left': []}
-    if peer and peer in (mine or had_mine):
+    # One address against one (1.0.262): `in` on the text took 10.0.0.1 for a part of 10.0.0.12.
+    if peer and _cert_name_key(peer) == _cert_name_key(mine or had_mine):
         raise ValueError('the two nodes cannot have one address')
     done, left = [], []
     with READDRESS_LOCK:

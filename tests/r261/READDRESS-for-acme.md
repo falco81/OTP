@@ -323,7 +323,7 @@ everything is as before.
 
 | file | function(s) | problem |
 |---|---|---|
-| `deploy/otp_web.py` (root helper) | `net_checked()`, new `net_static_hostname()` | 1 |
+| `deploy/otp_web.py` (root helper) | `net_checked()`, new `net_static_hostname()` (its fallback changed in 1.0.262, fix 9) | 1 |
 | `parts/88w_web.py` | new `ha_planned_away()`, `ha_watch_tick()` | 2 |
 | `parts/87n_net.py` | `net_check()` (`old_ip6`), new `_cert_name_key()`, `_cert_names_swap()`, `net_cert_again()` | 3 |
 | `parts/88w_web.py` | `NGINX_CERT_FILES` from `OTP_VIP_CERT_DIR` | 4 |
@@ -336,10 +336,11 @@ nothing is planned and the folder is not moved).
 
 ## 3. What works as designed (checked, nothing to port)
 
-* The order of a re-addressing: the other node told first (`ha_readdress` → `readdress_tell` →
-  the other node's `readdress_tick`), `pg_hba.conf` keeping the old address beside the new one while
+* The order of a re-addressing (as of 1.0.262, round 3 R3-6: maintenance and the VIP leaving come
+  first): the other node told (`ha_readdress` → `readdress_tell` → the other node's `readdress_tick`), `pg_hba.conf` keeping the old address beside the new one while
   on trial (`keep_old`), the old line dropped once kept (`readdress:dropold:NODE`,
-  `readdress_dropold_tick`).
+  `readdress_dropold_tick`) - in 1.0.261 also when the address had not changed, which dropped the
+  node's own line (fixed in 1.0.262, R3-1).
 * The link's TLS after a new address: `ha_readdress` calls `hatls_check_soon()`; `hatls_check()`
   sees that the node's PostgreSQL certificate does not name its new `ha_address` and makes a new one
   (both as IP and DNS SAN, for libpq 13) before the restart; after the restart `net_job_after()`
@@ -347,20 +348,20 @@ nothing is planned and the folder is not moved).
 * The database's TLS alone (link off): the node's PostgreSQL certificate from `dbtls:server` is made
   again for the new address by `dbtls_tick()` (its names differ from `hatls_names()`).
 * keepalived: both files rewritten with the new `unicast_src_ip` / `unicast_peer` from
-  `ha_address` / `ha_peer`; the VIP address moved to the other node for the change and back after.
+  `ha_address` / `ha_peer`; the VIP address moved to the other node for the change (and back after
+  only with the VIP's "back" preference).
   RADIUS through the VIP address: at most one probe lost (about 2 s) while the address moved.
 * A failure half way is put back (problem 1 showed it): the other node told the old address
-  again, settings, `config.json` and the certificate as they were, out of maintenance.
+  again, settings, `config.json` and the certificate as they were, out of maintenance. In 1.0.261
+  only for a failure inside the job; after a daemon restart in the middle, or the one-hour give-up,
+  the settings stayed on the new address (fixed in 1.0.262, R3-2).
 
 ## 4. Left open / notes
 
 * **IPv6 traffic not tested** (no IPv6 in our test kernel): the IPv6 VIP address
   (`virtual_ipaddress_excluded`) and RADIUS on `::` are only checked as written. Replication stays
   on IPv4 by design (the network page says so).
-* **Secondary IPv4 addresses**: `net_apply()` sets `ipv4.addresses` to the one new address; other
-  addresses of the profile (our sandbox has `10.99.0.11/24` beside `10.99.0.1/24`) are dropped. The
-  page shows and asks for one address only, and going back restores the whole profile – we left it,
-  but say it on the plan in acme if your installations use secondaries.
+* **Secondary IPv4 addresses**: fixed in otp 1.0.262 - see section 5, fix 5.
 * **The old address stays "needed" in the link's certificate**: `hatls_needs()` takes the other
   node's `peer_host` from that node's TLS state row, written when its steps last ran – after a
   re-addressing it still names the old address, so the renewed certificate names the old and the
@@ -368,3 +369,199 @@ nothing is planned and the folder is not moved).
 * With the database's TLS off, the daemon's own connection uses libpq's default `sslmode=prefer`:
   where PostgreSQL has a certificate (the link's), it is encrypted, unchecked. Expected; the test
   only checks that `db_tls` is as set.
+
+## 5. Found after the matrix: otp 1.0.262 (three bug-hunt rounds over the HA and re-addressing code)
+
+A code review of the same code the matrix ran, looking for what the matrix does not cover:
+split mode *priority*, the other node out of service, `radius_bind` on a specific address,
+addresses where one is the start of the other, secondary addresses, going back after a trial on
+/32 cloud networks, shared-database clusters, reboots longer than the alert delay, machines with
+no static host name. Round 1's fixes are listed first; rounds 2 and 3 corrected some of them (marked "replaced") and found more - their
+list follows. Everything is in otp 1.0.262; the matrix (24 cases) and the new `--extra` cases were run on it.
+Unit tests: `tests/r262/t_ha_fix.py` (pure Python, the functions taken out of the parts).
+
+### Fix 1 — Split brain rule: preferred node re-addressed (87y_split.py split_preferred_unable)
+- Problem: with split_mode=priority the non-preferred node steps aside whenever the nodes are apart.
+  While the preferred node was being re-addressed (told the new address, then rebooting) it was silent
+  too, so neither node answered RADIUS.
+- Fix: a fresh net job for the preferred node (net_job_active of 'net:job:NAME') or ha_planned_away()
+  naming it counts as "the preferred node is known not to serve", so the other node keeps serving.
+
+### Fix 2 (replaced by round 2 A) — Re-address with nobody else serving (87n_net.py net_ask, net_job_run step 5)
+- Problem: a network change in a cluster puts the node in maintenance and reboots it, but it was asked
+  even when the other node was down or in maintenance, so the whole service stopped.
+- Fix: net_ask refuses a non-rollback change unless net_others_serving(store, node) is non-empty
+  (others_in_service when the node is this one; this node counted when it is the other one).
+- The job checks others_in_service() again just before maintenance_set; if nobody answers, it fails
+  before the network is touched, and the usual undo (other node told back, settings put back) runs.
+- Rollback is never refused.
+
+### Fix 3 (replaced by round 2 B) — radius_bind carried over to the new network (87n_net.py net_bind_after)
+- Problem: only an exact old-IPv4 bind moved to the new IPv4. A bind on the old IPv6 address, or on any
+  address the machine would no longer have, stayed, and RADIUS listened on an address that was gone.
+- Fix: 0.0.0.0/:: as before; old IPv4 becomes new IPv4; old manual IPv6 becomes new IPv6 ('::' if IPv6
+  is automatic, '0.0.0.0' if IPv6 goes off); any other specific address not among the new ones (new
+  IPv4, new IPv6, secondary IPv4 kept) becomes '0.0.0.0' ('::' if it was IPv6 and IPv6 stays on).
+
+### Fix 4 — Address equality in ha_readdress (87u_readdress.py)
+- Problem: `peer in (mine or had_mine)` was a substring test on strings: 10.0.0.1 "was in" 10.0.0.12,
+  and a valid readdress was refused with "the two nodes cannot have one address".
+- Fix: compare one normalised address to the other (_cert_name_key(peer) == _cert_name_key(mine)).
+
+### Fix 5 — Secondary IPv4 addresses kept (otp_web.py net_apply, 87n_net.py step 2)
+- Problem: root's nmcli call set ipv4.addresses to the new address alone, so a second address
+  (e.g. one used for replication) vanished; and the other node was told the new primary address even
+  when replication ran over the secondary one.
+- Fix (root): net_addrs4_after() keeps the manual addresses after the first; only the first (the old
+  primary) is replaced. DHCP before: the new address alone, as before.
+- Fix (daemon): ha_readdress(mine=new_ip) only when CONFIG ha_address is '' or the old primary;
+  ha_address == primary (the usual case) works exactly as before.
+
+### Fix 6 — Rollback refused for its gateway (87n_net.py net_check, otp_web.py net_checked)
+- Problem: going back re-checked the old gateway; an on-link gateway outside the subnet, or an IPv6
+  gateway root does not take, refused the rollback and the untested network stayed.
+- Fix: on rollback the subnet check is skipped (root accepts it too with rollback), and a gateway that
+  is not an address at all is left out, as DNS servers and search domains already were.
+
+### Fix 7 (replaced by round 2 C and round 3 M) — keepalived peer in a shared-database cluster (88w_web.py vip_peer_want)
+- Problem: ha_peer is written once at the join; after the other node's address changed keepalived kept
+  unicasting to the old address and both nodes could hold the VIP.
+- Fix: with ha_mode=shared, a fresh heartbeat address of the other node (< 2 min old) wins over ha_peer
+  when they differ. Replicated mode unchanged (ha_peer is moved by ha_readdress).
+
+### Fix 8 — Alerts during a re-address (88z_alerts.py alerts_quiet)
+- Problem: only maintenance rows, upgrades, OS updates and restarts quieted alerts; a node being told a
+  new address and rebooting raised failure alerts before its maintenance row replicated.
+- Fix: an active net job of any node, or ha_planned_away() naming one, quiets alerts as maintenance does
+  (and for the usual 10 minutes after).
+
+### Fix 9 — Short host name check without hostnamectl (otp_web.py net_static_hostname)
+- Problem: when `hostnamectl --static` printed nothing or failed, '' was returned and a machine with a
+  short name could not keep it in a network change, while net_read reported the kernel name.
+- Fix: fall back to os.uname().nodename, lower-cased, trailing dot removed - as net_read does.
+
+### Fix 10 — Certificate state from the configured nginx path (88w_web.py web_state)
+- Problem: cert_now/vip_cert_now read /etc/nginx/certs/otp*.pem even when OTP_VIP_CERT_DIR moved them.
+- Fix: read NGINX_CERT_FILES['node'] / ['vip'], the same paths root writes and web_drift reads.
+
+### Round 2 (a review of round 1 and the rest of HA)
+
+#### A — Re-address refusal (replaces fix 2)
+- The round-1 rule (refuse unless another node serves) blocked for good a node whose partner died,
+  or one made standalone with --ha-standalone (in_cluster stays true).
+- Now net_others_held(): refuse only when another node is heard from (fresh heartbeat) but out of
+  service (maintenance, stepped aside), or any other node's network is on trial (as power_ask). A
+  dead or absent partner never blocks. The job re-checks the same thing before maintenance_set.
+
+#### B — radius_bind (replaces fix 3)
+- The round-1 rule widened specific binds to 0.0.0.0 for addresses outside the change (second NIC,
+  the VIP with ip_nonlocal_bind, SLAAC IPv6).
+- Now rewritten only when the bind is an address the change removes: old_ip -> new_ip, an old
+  manual IPv6 -> the new IPv6 (or ::/0.0.0.0). Anything else is left exactly as it was.
+
+#### C — keepalived peer in shared mode (replaces fix 7)
+- The heartbeat carries node_address() (default-route source), not the VRRP link's address.
+- Now the other node's ha_address as it publishes it in 'net:now:NAME' wins over ha_peer; a node
+  that does not publish one (1.0.261) keeps ha_peer. Replicated mode unchanged.
+
+#### F — VIP address family
+- own/peer of another family than the VIP (IPv6 cluster + IPv4 VIP, or the other way round) made
+  root refuse the whole web request forever. vip_family_fix() picks addresses of the VIP's family
+  (this machine's own; the other node's heartbeat or its published live addresses, in the VIP's
+  subnet first); none -> the VIP waits (existing log), never a mismatched pair; a remembered pair
+  of the other family is dropped.
+
+#### G — Cluster CA made twice
+- Replicated, no 'hatls:ca' yet: both nodes in the dbtls server phase made one -> two INSERTs of
+  the one row, replication stopped. Only ha_lead makes (or rolls) it; the other waits up to 60 s for
+  it to replicate (or keeps its still-valid one when only a roll is due).
+
+#### H — Split rule changed while apart
+- While the nodes are apart, each side keeps its own change; the preferred node changed on one
+  side only made each take the other for it - both stepped aside. Changing split_prefer is refused
+  while apart (409). A mode or an arbiter set on each half is still taken: that is how the halves
+  are run while apart (the HA split test does exactly that; refusing it broke the test and left the
+  test's split mode on).
+
+#### I — Link TLS failed only waiting for the peer
+- A 'failed' state with failed_step 'link' and nothing wrong locally waited an hour. hatls_check now
+  puts it back to step 'link' with link_since reset, so it finishes once the peer passes.
+
+#### J — otp --ha-forget
+- An extra DELETE of maint:/upgrade:node: rows removed them even for a node still answering;
+  ha_forget already removes them only when the node is not alive. Dropped the extra DELETE.
+
+#### K — Directory failover and the peer's clock
+- A node stepped aside for the directory toward a peer whose clock was off (serving only because
+  this node could not take over). Now the peer's clock must be within clock_aside_s too (not measured
+  = as before), in clock_decide and clock_dir_failover.
+
+#### L — upgrade:online written by both nodes
+- Both nodes' daily look could INSERT the first 'upgrade:online' row -> replication stopped. In
+  replicated mode only ha_lead looks (the other takes over when it hears no other).
+
+### Round 3 (the whole re-addressing flow again, step by step)
+
+#### R3-1 — Keep dropped the node's own pg_hba line
+- Keep wrote readdress:dropold whenever the trial had keep_old, also for a gateway/DNS/name change
+  or replication on another address; the other node then removed "the old" line = the current one.
+- Now only when the other node was told (job 'told'), the IPv4 address changed and old != new; the
+  root helper's pgtls_peer also treats old == new as nothing to drop (patch r3_otpweb_patch.py).
+
+#### R3-2 — Restart of the service mid-job left settings on the new address
+- `before` (net_undo_now) is kept at the job's start in STATE_DIR/net-before.json (0600, never on the
+  pages; the certificate row may hold sealed key material). net_job_stalled and net_job_give_up put
+  it back with net_undo_put_back; the file goes when the job ends (done/trial/failed).
+
+#### R3-3 — Maintenance never ended for legacy shared clusters
+- net_job_after judged the cluster by bool(ha_mode) while net_job_run used in_cluster(); with an
+  empty ha_mode the maintenance it set stayed. Now in_cluster(), and maintenance ends whenever the job
+  set it (job['maint']).
+
+#### R3-4 — Trial time-out while nobody else answers
+- On time-out only, going back (a reboot) waits up to 30 min while another node is heard but out of
+  service (net_others_held) or no other node answers in a cluster; the reason is written as a job
+  step. Keep / "go back now" are not delayed. Trade-off: a network that cut the node off also goes
+  back up to 30 min later.
+
+#### R3-5 — tell_after tried once
+- After going back from an address the other node could not reach, a failed tell is kept in
+  'readdress:tell:NODE' and retried from net_tick (every minute with a fresh heartbeat of the other
+  node, every 5 min otherwise) until it succeeds; dropped if ha_address moved on meanwhile.
+
+#### R3-6 — Order: maintenance before telling the other node
+- The held check, maintenance and waiting for the VIP to leave now come before ha_readdress, so the
+  other node's keepalived is re-pointed while it already holds the VIP. Undo paths are unchanged
+  (nothing told yet if it stops there; maintenance taken off as before).
+
+#### R3-7 — radius_bind saved too early
+- The new radius_bind is saved once root has accepted the apply (just before the reboot); pending
+  in job['bind_later'] and set by net_job_after if root's answer came late; on a half-way root
+  failure it is saved with db_host as before. A root refusal leaves it untouched.
+
+#### R3-8 — Replication over IPv6
+- ha_readdress tells only the new IPv4. net_check refuses (not on rollback) an IPv6 change that
+  removes the IPv6 address the nodes replicate over (ha_address / ha_peer IPv6), with a message to
+  change the addresses of the two nodes first.
+
+#### M — Shared-mode keepalived peer (refines C)
+- The published ha_address ('net:now:NAME') is used only if the row is < 10 min old, of the VIP's
+  family (a host name resolved in it) and differs from ha_peer; otherwise ha_peer. vip_family_fix
+  tries ha_peer first among the peer candidates.
+
+#### N — ha_address given as a host name
+- "Replication is on the address changed" also when ha_address is a name resolving to the old IP
+  (net_ha_on_old, compared normalised).
+
+#### O — Split card saves while apart (refines H)
+- The card always sends split_mode and split_prefer; only a split_prefer that differs from the kept
+  one (numbers normalised) counts as a change.
+
+### What the test runs now beside the matrix (`t_ha_readdress.py VER --extra`)
+
+* (a) a gateway-only change of node a on trial, Keep: node b's `pg_hba.conf` still has a's line, and replication
+  runs both ways after `ALTER SUBSCRIPTION … DISABLE; ENABLE` on a (round 3, R3-1).
+* (b) a new address not kept - the trial goes back: the profile, a's `ha_address`, b's `ha_peer` and `pg_hba.conf`
+  on the old address, no maintenance left, replication both ways.
+* (c) the change refused while b is in maintenance; accepted, and run to its end, while b's daemon is stopped.
+* (d) b asked while a is rebooting or on trial - refused; accepted once a's change is kept.

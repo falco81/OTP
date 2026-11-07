@@ -27,7 +27,10 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      # another account, a second window that ran out or was answered on
                      # the other node - none of them a code tried, all of them counted.
                      'cannot be opened on this machine', 'could not say whether',
-                     'asked for too long ago')
+                     'asked for too long ago',
+                     # 1.0.262: a second window answered in the minute after it ran out, and
+                     # a recovery code while the servers are apart - neither a guess
+                     'the code ran out', 'cannot be used while the two servers')
 
 
 def guard_on():

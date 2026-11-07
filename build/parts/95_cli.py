@@ -1613,6 +1613,23 @@ def cli_rbackup_busy(older=6 * 3600):
     return ''
 
 
+def cli_fqdn_wait(limit=20.0):
+    """This machine's full name asked of DNS to the end (1.0.262), `limit` seconds at most: a
+    command line process starts with nothing in FQDN_CACHE. True once DNS has answered."""
+    fqdn_cached()
+    end = time.monotonic() + limit
+    while not FQDN_CACHE.get('at') and time.monotonic() < end:
+        time.sleep(0.1)
+    return bool(FQDN_CACHE.get('at'))
+
+
+def cli_full_name(name):
+    """A DNS name with a domain (otp1.example.com) - not the short host name (1.0.262)."""
+    n = str(name or '').strip().lower().rstrip('.')
+    return '.' in n and bool(re.match(
+        r'^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})\Z', n))
+
+
 def cli_acme_order_one(store, t, name, who, say):
     """One order from the command line, as the pages order it (1.0.255): the
     lease acme:busy:TARGET taken first - ordered here while a node renewed it,
@@ -2599,9 +2616,9 @@ def cli_main(argv=None):
             raise SystemExit('otp: that is this node')
         if not store.get_meta('node:' + args.ha_forget):
             raise SystemExit('otp: there is no node called %s in the list' % args.ha_forget)
+        # Its maintenance and upgrade rows by ha_forget alone (1.0.262): taken here too, a node
+        # still answering lost its own maintenance - RADIUS and the VIP back on it mid-work.
         ha_forget(store, args.ha_forget)
-        store.db.run('DELETE FROM meta WHERE k IN (?, ?)',
-                     ('maint:' + args.ha_forget, 'upgrade:node:' + args.ha_forget))
         store.add_event('settings', '%s was taken off the list of nodes on the command line'
                         % args.ha_forget, 'warn', who=cli_who())
         print(pal.ok_line('%s is off the list (if it still runs, it writes itself back within '
@@ -4032,23 +4049,37 @@ def cli_main(argv=None):
     if args.acme_order:
         if not CONFIG.get('acme'):
             raise SystemExit('otp: certificates by ACME are off - otp --set acme=1 (and acme_* ) first')
+        # A process of its own has asked DNS nothing yet (1.0.262): fqdn_cached() gave the short
+        # host name in its place, a certificate was ordered for "otp1" and ACME looked after it
+        # from then on. DNS waited for here, and only a full name ordered.
+        cli_fqdn_wait()
         if args.acme_order == 'all':
-            which = acme_targets(store)
+            which = acme_targets(store, answered=True)
             if not which:
                 raise SystemExit('otp: this node looks after no certificate by ACME (otp --acme)')
         else:
             t = args.acme_order
             if t not in tls_targets(store) or (t == 'vip' and not vip_conf(store).get('address')):
                 raise SystemExit('otp: there is no such certificate: %s' % ', '.join(tls_targets(store)))
-            name = acme_name_of(store, t)
+            name = acme_name_of(store, t, answered=True)
             if not name:
                 raise SystemExit('otp: the name of this certificate is not known - give it on the pages '
                                  '(Its name...) or otp --set acme_node_name=NAME --node %s' % t)
+            if not cli_full_name(name):
+                raise SystemExit('otp: %s is not a full DNS name (as otp1.example.com) - give the '
+                                 'certificate\'s name on the pages (Its name...) or otp --set '
+                                 'acme_node_name=NAME --node %s' % (name, t))
             # Ordered by hand, ACME looks after it from now on - as on the pages.
             acme_care_set(store, t, True, who, 'ordered by hand')
             which = [(t, name)]
         bad = 0
         for t, name in which:
+            if not cli_full_name(name):
+                bad += 1
+                print(pal.bad_line('%s: %s is not a full DNS name (as otp1.example.com) - not ordered; '
+                                   'give its name on the pages (Its name...) or otp --set '
+                                   'acme_node_name=NAME --node %s' % (t, name, t)))
+                continue
             print(pal.head('%s: %s' % (t, name)))
             try:
                 cli_acme_order_one(store, t, name, who, lambda w: print('  ' + str(w)))

@@ -1418,9 +1418,19 @@ def _whoami(h):
     s = h.session('admin')
     if not s:
         return {'who': None}
-    acc = h.store.account(s['name'])
+    # As h.me() decides (1.0.262): an account row not as otp wrote it, or one the directory no
+    # longer gives a role, is nobody here - the PHP pages' gates (a database or a package sent)
+    # ask this, and let in what every API call refused.
+    acc = h.store.account(s['name'], checked=True)
     if not acc or acc.get('disabled'):
         return {'who': None}
+    if acc.get('source') == 'directory':
+        try:
+            acc = h.directory_recheck(acc)
+        except ApiError as e:
+            if e.status == 401:
+                return {'who': None}
+            raise
     stage = mfa_pending(s, h.store)
     if stage:
         # No role until the second step is given: the pages that ask who it
@@ -1631,7 +1641,8 @@ def _mailq_do(h):
 @route('GET', '/api/dashboard')
 def _dashboard(h):
     h.me()
-    return h.store.overview(h.num('hours', 24, 1, 24 * 400),
+    # On the long lists' own connection (1.0.262): a month counted held the one RADIUS shares.
+    return h.reader.overview(h.num('hours', 24, 1, 24 * 400),
                             since=h.num('since', 0, 0, 10 ** 11) or None,
                             until=h.num('until', 0, 0, 10 ** 11) or None)
 
@@ -1783,7 +1794,7 @@ def _radius_row(h):
 def _otp(h):
     h.me()
     ok = h.arg('ok')
-    rows, total = h.store.otp_rows(hours=h.num('hours', 24, 1, 24 * 3650), q=h.arg('q'),
+    rows, total = h.reader.otp_rows(hours=h.num('hours', 24, 1, 24 * 3650), q=h.arg('q'),
                                    ok=None if ok == '' else ok == '1',
                                    limit=h.num('limit', 100, 1, 1000),
                                    offset=h.num('offset', 0), name=h.arg('name'))
@@ -3805,8 +3816,15 @@ def _users_do(h):
         raise ApiError(400, 'which account?')                          # 1.0.103
     if not acc:
         raise ApiError(404, 'there is no account called %s' % name)
+    if acc.get('source') == 'directory' and act in ('role', 'password'):
+        # Put back by the directory at its next look (directory_recheck), and a password is
+        # never asked of one (1.0.262): said, not saved and silently undone.
+        raise ApiError(400, 'the role of a directory account comes from its groups in the '
+                            'directory' if act == 'role' else
+                       'the password of a directory account is the one in the directory')
     if act in ('delete', 'disable') or (act == 'role' and b.get('role') != 'fulladmin'):
-        if acc['role'] == 'fulladmin' and not h.store.fulladmins_left(but=name):
+        if acc['role'] == 'fulladmin' and not h.store.fulladmins_left(
+                but=name, dirs=getattr(h.d, 'dirs', None)):
             raise ApiError(400, 'that is the last full administrator who can sign in')
     if act == 'delete':
         h.store.drop_account(name)
@@ -3909,10 +3927,14 @@ def _enrolment(h):
     if bad:
         return {'rows': [], 'total': 0, 'q_error': bad, 'counts': {}, 'on': True}
     t_from, t_to = time_span(h, lq)
-    rows, total = h.store.enrolment(h.num('limit', 100, 1, 1000), h.num('offset', 0),
-                                    lq.words, h.arg('step'), since, extra=(lq.sql, lq.args))
+    if not since and not t_from and not t_to and h.arg('all') != '1':
+        # No window asked: the last 30 days (1.0.262), not the whole log counted twice; the
+        # page's "all of it" asks with all=1.
+        since = 30 * 86400
+    rows, total = h.reader.enrolment(h.num('limit', 100, 1, 1000), h.num('offset', 0),
+                                     lq.words, h.arg('step'), since, extra=(lq.sql, lq.args))
     return {'rows': rows, 'total': total,
-            'counts': h.store.enrolment_counts(since, t_from, t_to),
+            'counts': h.reader.enrolment_counts(since, t_from, t_to),
             'on': bool(CONFIG.get('portal'))}
 
 
@@ -4894,8 +4916,12 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     imported_keys.add('%s@%s' % (base, node))
                     if '%s@%s' % (base, node) not in store.settings_saved():
                         imported_keys.add(base)
-                except BadSetting:
-                    pass            # a node this cluster does not have
+                except BadSetting as e:
+                    # A node this cluster does not have: left out without a word, as before. Any
+                    # other refusal said (1.0.262) - it was swallowed with the rest, and the
+                    # import said "settings" over a value that was never saved.
+                    if not str(e).startswith('there is no node'):
+                        said['settings left out: %s@%s (%s)' % (base, node, str(e)[:160])] += 1
         for a in conf.get('accounts') or []:
             name = str(a.get('name') or '').strip()
             if not name or name.lower() == str(keep_account or '').lower():
@@ -5045,6 +5071,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                         said['accounts taken away'] += 1
             if 'settings' in conf:
                 have = set(str(k) for k in odict(conf.get('settings'))) | imported_keys
+                drops = []
                 for k in list(store.settings_saved()):
                     base = k.split('@', 1)[0]
                     if base in keep_dir_keys:
@@ -5056,8 +5083,19 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                         continue
                     if k not in have and base in DEFAULTS and base not in FILE_ONLY_KEYS and \
                             not (base in SEALED_KEYS and conf.get('secrets') is not True):
-                        store.drop_setting(k)
-                        said['settings back to default'] += 1
+                        drops.append(k)
+                # Back to the defaults only as high security lets them (1.0.262): "Exactly the
+                # file" took a setting it stands against back to a default it refuses - the pages
+                # and otp --set were refused the same value.
+                back = {k: FILE_CONFIG.get(k, DEFAULTS[k]) for k in drops}
+                try:
+                    hisec_guard_settings(store, back)
+                except BadSetting as e:
+                    raise BadSetting('the settings not in the file were not taken back to their '
+                                     'defaults: %s' % e)
+                for k in drops:
+                    store.drop_setting(k)
+                    said['settings back to default'] += 1
     except (ValueError, BadSetting) as e:
         if said:
             raise ApiError(400, '%s - imported before it stopped: %s' % (e, ', '.join(
@@ -5689,27 +5727,44 @@ def portal_open(h, full, realm, ad, entry, key, lang, sso=False):
 
 
 def portal_token_mark(tok):
-    """What the token proven on the page is (1.0.224): its id and a hash of its sealed key."""
+    """What the token proven on the page is (1.0.224): its id and a hash of its sealed key. The
+    form every version reads - kept beside portal_token_mark2 for a cluster of two versions."""
     if not tok:
         return None
     return '%s:%s' % (tok.get('id'), hashlib.sha256(str(tok.get('secret') or tok.get('dest') or '')
                                                      .encode('utf-8')).hexdigest()[:24])
 
 
+def portal_token_mark2(tok):
+    """The same with where its codes go in it (1.0.262): a mail or SMS token keeps its key when
+    an administrator sends its codes elsewhere (a phone stolen), and the code sent to the old
+    place still replaced it."""
+    if not tok:
+        return None
+    return '%s:%s' % (tok.get('id'), hashlib.sha256(('%s|%s|%s' % (
+        tok.get('secret') or '', token_kind(tok), tok.get('dest') or '')).encode('utf-8')).hexdigest()[:24])
+
+
 def portal_old_same(h, s, old):
     """Whether the code sent to the old token is for the token there now (1.0.252)."""
-    return not old.get('mark') or old.get('mark') == portal_token_mark(h.store.token(s['name']))
+    tok = h.store.token(s['name'])
+    if old.get('mark2'):
+        return old.get('mark2') == portal_token_mark2(tok)
+    return not old.get('mark') or old.get('mark') == portal_token_mark(tok)
 
 
 def portal_may_replace(h, s):
     """Whether this session proved the token there is now - not one an administrator put in
     its place meanwhile (1.0.224: a phone stolen, the token made again by an administrator,
     and the old session went on and replaced it with its own key)."""
-    mark = odict(s.get('data')).get('may_replace')
+    data = odict(s.get('data'))
+    mark, mark2 = data.get('may_replace'), data.get('may_replace2')
     if not mark:
         return False
-    if mark is True or mark != portal_token_mark(h.store.token(s['name'])):
-        portal_data_set(h, s, may_replace=None)
+    tok = h.store.token(s['name'])
+    if mark is True or (mark2 and mark2 != portal_token_mark2(tok)) or \
+            (not mark2 and mark != portal_token_mark(tok)):
+        portal_data_set(h, s, may_replace=None, may_replace2=None)
         return False
     return True
 
@@ -5984,7 +6039,7 @@ def _portal_enroll(h):
     may_replace = portal_may_replace(h, s)
     if may_replace and h.d.tokens.blocked(s['name']):
         # Switched off or locked meanwhile (1.0.94).
-        portal_data_set(h, s, may_replace=None)
+        portal_data_set(h, s, may_replace=None, may_replace2=None)
         raise ApiError(403, 'the token cannot be replaced here: %s' % h.d.tokens.blocked(s['name']))
     if kind in ('mail', 'sms'):
         # A code sent by mail or SMS (1.0.76): the address or the number is
@@ -6049,10 +6104,13 @@ def _portal_enroll(h):
     confirm = bool(CONFIG.get('portal_confirm'))
     if may_replace and h.store.token(s['name']):
         # The old one proven on this page (a recovery code, or a code sent
-        # to it): a new app token beside it until a code confirms it.
+        # to it): a new app token beside it until a code confirms it. Taken by one request
+        # only (1.0.262): two at once (two tabs) replaced the key twice.
+        if not h.store.session_take(s['id'], 'may_replace'):
+            raise ApiError(409, 'that was done already - load the page again')
         got = (h.d.tokens.stage_replacement(s['name'], 'self') if confirm
                else h.d.tokens.enroll(s['name'], 'self', pending=False))
-        portal_data_set(h, s, may_replace=None)
+        portal_data_set(h, s, may_replace=None, may_replace2=None)
         if str(b.get('lang') or '') in ('cs', 'en'):
             h.store.token_write(s['name'], {'lang': str(b.get('lang'))})
         h.store.add_event('enrolment', '%s is replacing their token with the app' % s['name'],
@@ -6114,13 +6172,13 @@ def _portal_verify(h):
         portal_data_set(h, s, verify=None)
         raise ApiError(409, 'there is a token already; it can be replaced with a code from it')
     if may_replace and h.d.tokens.blocked(s['name']):
-        portal_data_set(h, s, verify=None, may_replace=None)
+        portal_data_set(h, s, verify=None, may_replace=None, may_replace2=None)
         raise ApiError(403, 'the token cannot be replaced here: %s'
                        % h.d.tokens.blocked(s['name']))
     got = h.d.tokens.enroll_sent(s['name'], 'self', ver['kind'], ver['dest'],
                                  display=data.get('display') or '', lang=ver.get('lang') or None,
                                  mail_fmt=ver.get('mail_fmt') or None)
-    portal_data_set(h, s, verify=None, may_replace=None)
+    portal_data_set(h, s, verify=None, may_replace=None, may_replace2=None)
     h.store.add_event('enrolment', '%s set up their sign-in: codes by %s to %s' % (
         s['name'], 'mail' if ver['kind'] == 'mail' else 'SMS', ver['dest']), who=s['name'])
     made = {'kind': got['kind'], 'dest': got['dest'],
@@ -6161,6 +6219,7 @@ def _portal_sendold(h):
     # The token it was sent for, beside it (1.0.252): replaced or sent elsewhere meanwhile by an
     # administrator, the code of the old phone was still proof - and took over the new token.
     portal_data_set(h, s, old={'code': code_hash(s['name'], code), 'mark': portal_token_mark(tok),
+                                   'mark2': portal_token_mark2(tok),
                                'exp': time.time() + int(CONFIG.get('code_ttl_s') or 300)})
     return {'sent_to': dest_masked(kind, tok.get('dest'))}
 
@@ -6288,7 +6347,8 @@ def portal_reissue_rest(h, s, b, key):
     if want != 'totp' or token_kind(h.store.token(s['name'])) != 'totp':
         # Another way, or away from one (1.0.76): the page asks which, and
         # the old token goes on working until the new one is made.
-        portal_data_set(h, s, may_replace=portal_token_mark(h.store.token(s['name'])))
+        now_tok = h.store.token(s['name'])
+        portal_data_set(h, s, may_replace=portal_token_mark(now_tok), may_replace2=portal_token_mark2(now_tok))
         h.store.add_event('enrolment', '%s proved their token and may set up another way'
                           % s['name'], who=s['name'])
         return {'choose': True, 'me': portal_state(h, s)}
@@ -6306,7 +6366,7 @@ def _portal_cancel(h):
     if odict(s.get('data')).get('verify') or odict(s.get('data')).get('may_replace'):
         # An address being checked, or a new way being chosen (1.0.76): given
         # up, and the token there is (if any) stays as it is.
-        portal_data_set(h, s, verify=None, may_replace=None, old=None)
+        portal_data_set(h, s, verify=None, may_replace=None, may_replace2=None, old=None)
         return {'me': portal_state(h, s)}
     with h.d.tokens.lock_of(norm_name(s['name'])):      # with confirm (1.0.59)
         tok = h.store.token(s['name'])
@@ -6359,6 +6419,10 @@ class ApiHttpServer(ThreadingHTTPServer):
             self.slots.release()
 
 
+class ApiBindError(OSError):
+    """The API's port could not be taken (1.0.262) - not any other trouble of its start."""
+
+
 class ApiServer(object):
     def __init__(self, daemon):
         self.daemon = daemon
@@ -6368,11 +6432,25 @@ class ApiServer(object):
         port = int(CONFIG.get('api_port') or 9861)
         # The port first, the key after (1.0.61): somebody else's program on
         # the port would otherwise have been handed the new key by the pages.
-        self.httpd = ApiHttpServer(('127.0.0.1', port), ApiHandler)
-        api_token(make=True)
-        self.httpd.daemon_threads = True
-        self.httpd.daemon = self.daemon
-        threading.Thread(target=self.httpd.serve_forever, name='api', daemon=True).start()
+        try:
+            httpd = ApiHttpServer(('127.0.0.1', port), ApiHandler)
+        except OSError as e:
+            raise ApiBindError(e.errno, '127.0.0.1:%d: %s' % (port, e.strerror or e))
+        # Whatever fails after the bind (1.0.262: the key not written, no thread) lets the port
+        # go again and leaves no half server behind - the next try would find its own port taken.
+        try:
+            api_token(make=True)
+            httpd.daemon_threads = True
+            httpd.daemon = self.daemon
+            threading.Thread(target=httpd.serve_forever, name='api', daemon=True).start()
+        except BaseException:
+            try:
+                httpd.server_close()
+            except Exception:                           # noqa: BLE001
+                pass
+            self.httpd = None
+            raise
+        self.httpd = httpd
         # Said beside the key (1.0.59): the pages read the port from here, so
         # api_port changed in the settings no longer leaves them asking 9861.
         try:
@@ -6556,7 +6634,8 @@ def _ha(h):
             'checks': ha_checks(h.store), 'engine': h.store.db.engine,
             'mode': CONFIG.get('ha_mode') or '',
             'db_where': h.store.db.where(), 'db_host': CONFIG.get('db_host') or '',
-            'config_file': str(CONFIG_FILE), 'version': __version__, 'lb': lb_facts(h.store),
+            'config_file': str(CONFIG_FILE), 'version': __version__,
+            'lb': lb_unmapped(lb_facts(h.store), me),
             'errbase': _json_meta(h.store, 'ha:errbase:' + node_name()) or {},
             # How the link between the databases is protected (1.0.101), and
             # where the button that protects it is (1.0.104).
@@ -6797,6 +6876,18 @@ def _ha_do(h):
 
 
 # ---- TLS and the cluster's VIP address (1.0.47) ------------------------------------
+def lb_unmapped(lb, me):
+    """The balancer guide's facts without who may reach which pages, the proxies trusted and
+    the balancer's networks for an account that only reads (1.0.262) - kept from it as
+    web_unmapped keeps the access lists and the firewall's rules."""
+    if (me or {}).get('role') in ('fulladmin', 'tokenadmin') or not isinstance(lb, dict):
+        return lb
+    out = {k: v for k, v in lb.items() if k not in ('access', 'trusted')}
+    if isinstance(out.get('web_proxy'), dict):
+        out['web_proxy'] = {k: v for k, v in out['web_proxy'].items() if k != 'from'}
+    return out
+
+
 def web_unmapped(web, me):
     """A node's web state without the firewall's rules and the access lists for
     an account that only reads (1.0.205): /api/firewall keeps them from it as

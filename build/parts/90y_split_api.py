@@ -41,6 +41,16 @@ def _split_post(h):
     if want.get('split_mode') == 'arbiter' and b.get('checked') is not True:
         raise ApiError(409, 'try the arbiter from every node first (Try it): a node that cannot '
                             'reach its arbiter would step aside the moment the other is away')
+    held = h.store.settings_saved()
+
+    def arb_now(n):
+        if n == node_name():
+            return str(CONFIG.get('split_arbiter') or '').strip()
+        return str(held.get('split_arbiter@' + n, held.get('split_arbiter')) or '').strip()
+    refused = split_change_refused(want, {n: v for n, v in arb.items()
+                                          if str(v or '').strip() != arb_now(n)})
+    if refused:
+        raise ApiError(409, refused)
     many = len(names) > 1
     if want:
         h.d.save_settings(want, by=s['name'], node='*' if many else None)

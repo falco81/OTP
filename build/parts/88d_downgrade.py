@@ -86,6 +86,19 @@ def downgrade_why_not(store, version):
                        'older versions do not know: reset %s second step first (Accounts, or otp '
                        '--reset-2fa NAME)' % (', '.join(pk), 's' if len(pk) == 1 else '',
                                                'its' if len(pk) == 1 else 'their'))
+    # Not below 1.0.259 while the balancer has its own port on the nodes (1.0.262): an older
+    # version does not know web_proxy_port - nginx's server for it stayed, with nobody to take it
+    # away or change it again, and the PROXY protocol with it.
+    if v < (1, 0, 259):
+        try:
+            held = [k for k, val in store.settings_saved().items()
+                    if k.split('@', 1)[0] == 'web_proxy_port' and str(val or 0).strip() not in ('', '0')]
+        except Exception:                               # noqa: BLE001
+            held = []
+        if held:
+            why.append('older than 1.0.259 while the balancer has its own port on the nodes, '
+                       'which older versions do not know: otp --set web_proxy_port=0 first '
+                       '(Settings - The load balancers and WAFs)')
     floor, by = downgrade_db_floor(store)
     if v < _ver_tuple(floor):
         why.append('older than %s: otp %s, which ran on this database, wrote what older '

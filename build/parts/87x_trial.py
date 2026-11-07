@@ -113,7 +113,12 @@ def net_trial_tick(daemon, job):
         store.add_event('settings', '%s kept the new network of %s' % (keep.get('by'), me),
                         who=keep.get('by'))
         w = job.get('want') or {}
-        if job.get('keep_old') and w.get('old_ip') and w.get('new_ip'):
+        # Only where the other node was told the new address beside the old one, and the
+        # address did change (1.0.262): a Keep of a new gateway, DNS or name - or replication on
+        # another address - asked it to take out "the old" one, its own line, and replication
+        # from this node was refused.
+        if job.get('keep_old') and job.get('told') and w.get('ip_changed') and \
+                w.get('old_ip') and w.get('new_ip') and w['old_ip'] != w['new_ip']:
             # The other node may let only the new address in again.
             store.set_meta('readdress:dropold:' + me, json.dumps({
                 'id': job.get('id'), 'from': me, 'old': w['old_ip'], 'new': w['new_ip'],
@@ -123,7 +128,36 @@ def net_trial_tick(daemon, job):
         net_go_back(daemon, job, 'put back by %s' % back.get('by'))
         return
     if time.time() > fnum(job.get('trial_until')):
+        wait = net_trial_back_wait(store, job)
+        if wait:
+            if job.get('back_wait') != wait:
+                job['back_wait'] = wait
+                _job_put(store, job, 'not kept in time - going back waits (at most %d min more): '
+                         '%s' % (NET_TRIAL_BACK_WAIT_S // 60, wait), job.get('pct'), ok=False)
+            return
         net_go_back(daemon, job, 'not kept within %d min' % int(job.get('trial_min') or 0))
+
+
+# Going back after the time ran out waits this long at most for another node to answer
+# (1.0.262).
+NET_TRIAL_BACK_WAIT_S = 30 * 60
+
+
+def net_trial_back_wait(store, job):
+    """Why going back (it restarts this node) waits now, or '' (1.0.262): run out while no other
+    node answers - one heard from but out of service, or none heard from at all - both nodes
+    were down at once. Only on time-out, and for 30 minutes at most: a network that cut this node
+    off goes back all the same, later."""
+    if not in_cluster(store):
+        return ''
+    if time.time() > fnum(job.get('trial_until')) + NET_TRIAL_BACK_WAIT_S:
+        return ''
+    held = net_others_held(store, node_name())
+    if held:
+        return held
+    if not others_in_service(store):
+        return 'no other node answers now - going back restarts this one'
+    return ''
 
 
 def net_trial_answer(store, node, act, by):

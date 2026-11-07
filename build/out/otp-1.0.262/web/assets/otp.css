@@ -2072,6 +2072,8 @@ table td.mono, table td > .mono, table td > span.mono, .fields dd{white-space:no
 .me-pk-t td.me-pk-act .iconbtn+.iconbtn{margin-left:6px}
 .me-pk-name input{width:100%;max-width:260px}
 .me-pk-add{margin-top:4px}
+.me-pk-w{margin:6px 0 10px}
+.me-pk-w .me-pk-t{margin:0;min-width:460px}
 .me-sec h3 .me-count{color:var(--tx-mut);font-weight:600;letter-spacing:0}
 .modal .me-kv{grid-template-columns:170px minmax(0,1fr)}
 

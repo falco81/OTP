@@ -243,7 +243,11 @@ ok('web_proxy_port: its name, its help, in the fw pane, only with web_proxy on',
    and 'web_proxy_port' in g['PANES']['fw'] and g['ONLY_WHEN'].get('web_proxy_port') == ['web_proxy', '1'])
 for v, want in ((0, 0), (8443, 8443), ('4443', 4443)):
     ok('web_proxy_port %r taken' % (v,), cs('web_proxy_port', v) == want)
-for v in (80, 443, 1023, 9861, 18129, 70000, -1):
+# 9861 (the API) and 18129 (the SSH gate) are refused by the save of the whole batch since 1.0.262
+# (web_proxy_port_problem), so a save that moves both in one go works
+ok('web_proxy_port: the API and the SSH gate refused at the save', g['web_proxy_port_problem']({'web_proxy_port': 9861, 'web_proxy': 1}, {'api_port': 9861, 'ssh_gate_port': 18129}) != '' and
+   g['web_proxy_port_problem']({'web_proxy_port': 18129, 'web_proxy': 1}, {'api_port': 9861, 'ssh_gate_port': 18129}) != '')
+for v in (80, 443, 1023, 70000, -1):
     try:
         cs('web_proxy_port', v)
         ok('web_proxy_port %r refused' % v, False)

@@ -539,6 +539,13 @@ def split_preferred_unable(store):
         fresh = time.time() - (fnum(row.get('at')) - sk) < 32
         if row.get('role') == 'aside' and recent and fresh:
             return 'the preferred node stepped aside for its clock'
+        # Away on purpose (1.0.262): a new address being put in (told before it has it, then
+        # rebooting) or a restart asked for - silent meanwhile, and this node stepping aside
+        # as well left nobody to answer RADIUS.
+        if net_job_active(_meta_json(store, 'net:job:' + name)):
+            return 'the preferred node is changing its network'
+        if (ha_planned_away(store) or {}).get(name):
+            return 'the preferred node is away on purpose'
         for n in ha_nodes(store):
             if n['name'] == name and n.get('maintenance'):
                 return 'the preferred node is in maintenance'
@@ -693,6 +700,32 @@ def split_report(store, now=None):
 # ---- the card ----------------------------------------------------------------------------
 SPLIT_KEYS = ('split_mode', 'split_prefer', 'split_after_s', 'split_scratch', 'split_halve',
               'split_freeze', 'split_report')
+
+
+def split_change_refused(want, arbiters=None):
+    """Why the rule is not changed now, or '' (1.0.262): while the nodes are apart each one
+    keeps the change in its own database only - the preferred node or the mode changed on one
+    side, both nodes could take themselves for the one to step aside. Switching it off is
+    always taken; a mode or an arbiter is taken too."""
+    if not split_apart():
+        return ''
+    want = want or {}
+    if str(want.get('split_mode') or '') == 'off':
+        return ''
+    # Changed only (1.0.262): the card sends the mode and the preferred node with every save -
+    # the same values as kept are no change, and any save of the card was refused while apart.
+    def norm(v):
+        v = '' if v is None else str(v).strip()
+        return str(int(v)) if re.match(r'^-?\d+$', v) else v
+    # Only the preferred node itself: a mode or an arbiter set on each half alone is how the
+    # two are run while apart (each keeps serving or steps aside by its own rule), but the
+    # preferred one changed on one side made each take the other for it - both stepped aside.
+    touched = [k for k in ('split_prefer',) if k in want and norm(want[k]) != norm(CONFIG.get(k))]
+    if not touched:
+        return ''
+    return ('the nodes cannot reach each other now: the rule (%s) is not changed while they are '
+            'apart - each would keep its own, and both could step aside. Change it once they '
+            'reach each other again, or switch it off' % ', '.join(touched))
 
 
 def split_view(store):

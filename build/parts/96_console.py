@@ -3212,6 +3212,33 @@ class Console(object):
                     danger=True):
                 return
             self.live(lambda: self.show_live('--downgrade', ver, '--yes'))
+
+        def after_done():
+            # One of "To be done by hand" marked done (1.0.262), as Settings → Upgrades does it.
+            self.working('working…  looking at what is to be done by hand')
+            got = self.out('--after')
+            if not isinstance(got, dict):
+                self.note('Mark one as done', 'What is to be done by hand could not be read - '
+                          'otp --after says why.', 'bad')
+                return
+            items = [x for x in (got.get('items') or []) if isinstance(x, dict) and x.get('id')]
+            if not items:
+                self.note('Mark one as done', 'Nothing is to be done by hand.', 'ok')
+                return
+            many = bool(got.get('cluster'))
+            pick = self.choose('Mark one as done', [
+                (str(i), '%s%s' % (x.get('title') or x['id'], ('   [%s]' % x.get('node')) if many and
+                                   x.get('node') else ''))
+                for i, x in enumerate(items)], 'Which one is done?')
+            if pick is None or not str(pick).isdigit() or int(pick) >= len(items):
+                return
+            it = items[int(pick)]
+            self.act('--after-done', it['id'], '--node', it.get('node') or node_name())
+
+        def after_clear():
+            if self.confirm('Clear "done lately"', 'The list of what was done lately is emptied; '
+                            'what is still to be done stays.', 'Clear'):
+                self.act('--after-clear')
         return self.sub('Upgrades', [
             ('1', 'How it stands', lambda: self.act('--upgrade-status')),
             ('2', 'Look for a new version on the web now', lambda: self.act('--upgrade-check')),
@@ -3221,6 +3248,9 @@ class Console(object):
             ('5', 'Upgrade this node from a package file', install),
             ('6', 'Stop an upgrade going on', cancel),
             ('7', 'Go back to an older version (only a safe one)', back),
+            ('8', 'To be done by hand (after an update, on every node)', lambda: self.act('--after')),
+            ('9', 'To be done by hand: mark one as done', after_done),
+            ('10', 'To be done by hand: clear "done lately"', after_clear),
         ])
 
     # ---- 11 the service ---------------------------------------------------------
