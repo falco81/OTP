@@ -1079,6 +1079,58 @@ def acme_into(main, names):
     return main[:where[0]] + new + main[where[1]:] if new != block else main
 
 
+def lbport_selinux(port):
+    """The balancer's own port let to nginx where SELinux is on (1.0.262), or Refused on an
+    enforcing node where it cannot be: written without it, nginx could not bind it - reloaded,
+    the port stayed shut; restarted (an upgrade), nginx did not start at all. A port http_port_t
+    or http_cache_port_t has already is left as it is."""
+    mode = se_mode()
+    if mode in ('absent', 'Disabled'):
+        return ''
+    enforcing = mode == 'Enforcing'
+    known = se_ports()
+    if known is None:
+        if enforcing:
+            raise Refused('SELinux is enforcing and semanage is not on this machine, so nginx '
+                          'cannot be let listen on the balancer\'s port %d (dnf install '
+                          'policycoreutils-python-utils)' % port)
+        return ''
+    if se_port_has(known, 'http_port_t', 'tcp', port) or \
+            se_port_has(known, 'http_cache_port_t', 'tcp', port):
+        return ''
+    got = _se_run(['semanage', 'port', '-a', '-t', 'http_port_t', '-p', 'tcp', str(port)], 300)
+    if got is not None and got.returncode == 0:
+        return 'SELinux lets nginx listen on the balancer\'s port %d' % port
+    if got is not None and 'already defined' in (got.stderr or ''):
+        why = ('port %d/tcp is another service\'s in the SELinux policy - choose another port for '
+               'the balancer (web_proxy_port)' % port)
+    else:
+        why = 'semanage port %d/tcp: %s' % (port, ((got.stderr or '') if got else '').strip()[-200:])
+    if enforcing:
+        raise Refused(why)
+    return 'SELinux (permissive): %s' % why
+
+
+def lbport_listening(port, wait=5.0):
+    """nginx answers on the balancer's own port (a TCP connect to 127.0.0.1 - it listens on
+    every address), `wait` seconds at most."""
+    import socket
+    end = time.time() + wait
+    while True:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        try:
+            if s.connect_ex(('127.0.0.1', int(port))) == 0:
+                return True
+        except OSError:
+            pass
+        finally:
+            s.close()
+        if time.time() >= end:
+            return False
+        time.sleep(0.25)
+
+
 def nginx_part(r, last):
     """This node's server and the web address's, with their TLS."""
     said, dh = [], {}
@@ -1205,14 +1257,27 @@ def nginx_part(r, last):
                         'node\'s certificate)')
         # The balancer's own port (1.0.259): made from this node's server as it is now.
         lp = r.get('lbport')
+        lb_look = 0
         if lp is not None and lp.get('port'):
             text = LB_HEAD + lbport_server(main[:where[0]] + block + main[where[1]:], lp)
             if snap.get(NGINX_LB) is None or snap[NGINX_LB][0].decode() != text:
+                # Let to nginx by SELinux first (1.0.262), or refused before anything is written.
+                w = lbport_selinux(int(lp['port']))
+                if w:
+                    said.append(w)
                 write_root(NGINX_LB, text, 0o644)
                 changed = True
+                lb_look = int(lp['port'])
                 said.append('nginx: the balancer\'s own port %d - the enrolment pages only, for %s%s'
                             % (lp['port'], ', '.join(lp['from']),
                                ' (the PROXY protocol)' if lp['header'] == 'proxy_protocol' else ''))
+            elif not NO_SERVICES and not lbport_listening(int(lp['port']), 0):
+                # Written by 1.0.259-1.0.261 without its label: nginx never listened there.
+                w = lbport_selinux(int(lp['port']))
+                if w:
+                    said.append(w)
+                    changed = True
+                    lb_look = int(lp['port'])
         elif lp is not None and os.path.exists(NGINX_LB):
             os.unlink(NGINX_LB)
             changed = True
@@ -1228,8 +1293,29 @@ def nginx_part(r, last):
             if t.returncode != 0:
                 raise Refused('nginx does not take it, so it is as it was: %s'
                               % ((t.stderr or '').strip().splitlines() or ['?'])[-1][:300])
-            subprocess.run(['systemctl', 'reload', 'nginx'], capture_output=True)
+            rl = subprocess.run(['systemctl', 'reload', 'nginx'], capture_output=True, text=True)
+            if rl.returncode != 0:
+                # nginx not run by systemd here (started by hand, a container): its own signal
+                rl2 = subprocess.run(['nginx', '-s', 'reload'], capture_output=True, text=True)
+                if rl2.returncode == 0:
+                    rl = rl2
+            if rl.returncode != 0:
+                # Said, not "reloaded" (1.0.262): the files put back (nginx runs what it ran).
+                raise Refused('nginx could not be reloaded, so it is as it was: %s'
+                              % (((rl.stderr or '').strip().splitlines() or ['?'])[-1][:300]))
             said.append('nginx reloaded')
+            if lb_look and not lbport_listening(lb_look):
+                # nginx not run by systemd (a systemctl that answers without reloading it): its
+                # own signal, and a look again
+                subprocess.run(['nginx', '-s', 'reload'], capture_output=True)
+            if lb_look and not lbport_listening(lb_look):
+                # Reloaded, and the balancer's port still shut (SELinux, another program on it):
+                # everything put back and nginx read again - refused, not "done".
+                put_back(snap)
+                subprocess.run(['systemctl', 'reload', 'nginx'], capture_output=True)
+                raise Refused('nginx does not listen on the balancer\'s port %d after the reload '
+                              '(SELinux: ausearch -m avc -ts recent; or another program has it) - '
+                              'nginx is as it was' % lb_look)
     except BaseException:
         put_back(snap)
         raise
@@ -2077,7 +2163,10 @@ def pgtls_peer(r):
     def ours(f):
         return len(f) >= 5 and f[0] in ('host', 'hostssl') and f[1] == r['db'] and \
             f[2] == r['user']
-    olds = bool(old) and not old.startswith('127.') and old != '::1/128'
+    # The old one the same as the new (1.0.262): nothing old to take out - a Keep of a network whose
+    # IPv4 address did not change (its gateway, DNS, name) asked drop_old, and the node's own line
+    # went, replication from it refused.
+    olds = bool(old) and old != net and not old.startswith('127.') and old != '::1/128'
     there = any(ours(line.split()) and line.split()[3] == net for line in lines)
     if r.get('keep_old'):
         # On trial (1.0.137): the new address let in beside the old one.
@@ -2332,7 +2421,9 @@ def net_checked(r):
             g = plain(gw, 'address')
         except ValueError:
             raise Refused('the gateway is one IPv4 address')
-        if g.version != 4 or g not in a4.network:
+        # Going back (1.0.262): the gateway the machine had, outside the subnet too (an on-link
+        # route) - refused, the network of a trial not kept stayed.
+        if g.version != 4 or (g not in a4.network and not r.get('rollback')):
             raise Refused('the gateway %s is not in %s' % (g, a4.network))
         out['gw4'] = str(g)
     else:
@@ -2403,11 +2494,18 @@ def net_checked(r):
 
 
 def net_static_hostname():
-    """The machine's static host name as it is now, lower case ('' unknown) (1.0.261)."""
+    """The machine's static host name as it is now, lower case ('' unknown) (1.0.261) - the
+    kernel's when hostnamectl says none or fails (1.0.262), as net_read() tells the daemon."""
     try:
-        return run([HOSTNAMECTL, '--static'], 'hostnamectl').strip().rstrip('.').lower()
+        got = run([HOSTNAMECTL, '--static'], 'hostnamectl').strip()
     except (Refused, OSError):
-        return ''
+        got = ''
+    if not got:
+        try:
+            got = os.uname().nodename
+        except OSError:
+            got = ''
+    return str(got or '').strip().rstrip('.').lower()
 
 
 def hosts_lines(text, n):
@@ -2449,6 +2547,20 @@ def power_after(what, secs):
     return '%s in %d s' % (what, secs)
 
 
+def net_addrs4_after(before, addr4):
+    """The IPv4 addresses the connection gets (1.0.262): the first one (the address changed)
+    replaced by the new one, the others set by hand before kept - all of them were replaced,
+    and a second address (replication, a service of its own) went away with the change."""
+    out = [addr4]
+    if str(before.get('ipv4.method') or '') != 'manual':
+        return out
+    new_ip = addr4.split('/')[0]
+    for a in nm_list(before.get('ipv4.addresses'))[1:8]:
+        if a.split('/')[0] != new_ip and a not in out:
+            out.append(a)
+    return out
+
+
 def net_apply(n):
     if not shutil.which(NMCLI):
         raise Refused('NetworkManager (nmcli) is not on this machine: set the network by hand')
@@ -2477,7 +2589,7 @@ def net_apply(n):
     if n.get('snapshot'):
         said.append(net_snapshot(n['con'], n['snapshot']))
     args = [NMCLI, 'connection', 'modify', n['con'],
-            'ipv4.method', 'manual', 'ipv4.addresses', n['addr4'],
+            'ipv4.method', 'manual', 'ipv4.addresses', ','.join(net_addrs4_after(before, n['addr4'])),
             'ipv4.gateway', n['gw4'], 'ipv4.dns', ','.join(n['dns4']),
             'ipv4.dns-search', ','.join(n['search']), 'ipv4.ignore-auto-dns', 'yes']
     if n['mode6'] == 'off':
@@ -5527,7 +5639,7 @@ SE_LABELS = (('/run/otp', 'httpd_var_run_t', 'the folder of the API token'),
              ('/usr/libexec/keepalived/otp-vip-check', 'keepalived_unconfined_script_exec_t',
               'keepalived\'s check of this node'))
 SE_BOOLEANS = ('httpd_can_network_connect', 'authlogin_radius')
-SE_PORT_TYPES = ('radius_port_t', 'postgresql_port_t', 'ssh_port_t')
+SE_PORT_TYPES = ('radius_port_t', 'postgresql_port_t', 'ssh_port_t', 'http_port_t')
 # The programs whose refusals are otp's business.
 SE_DOMAINS = ('httpd_t', 'keepalived_t', 'keepalived_unconfined_script_t', 'sshd_t',
               'chronyd_t', 'postgresql_t', 'syslogd_t', 'logrotate_t', 'unconfined_service_t',
@@ -5776,8 +5888,10 @@ def se_allowed_now(lines):
     return sorted(now)
 
 
-def se_want_checked(r):
-    """What the daemon says otp needs here: booleans and ports, checked against what may be."""
+def se_want_checked(r, left_out=None):
+    """What the daemon says otp needs here: booleans and ports, checked against what may be.
+    left_out (1.0.262): a list a port of a type this helper does not set is said in and left
+    out - a newer daemon's need refused the whole request, the booleans and the other ports too."""
     bools = []
     for b in (r.get('booleans') or [])[:8]:
         if not isinstance(b, dict) or b.get('name') not in SE_BOOLEANS:
@@ -5785,6 +5899,14 @@ def se_want_checked(r):
         bools.append({'name': b['name'], 'why': str(b.get('why') or '')[:120]})
     ports = []
     for p in (r.get('ports') or [])[:16]:
+        if left_out is not None and isinstance(p, dict) and p.get('proto') in ('tcp', 'udp') and \
+                p.get('type') not in SE_PORT_TYPES and \
+                re.match(r'^[a-z][a-z0-9_]{0,40}_port_t\Z', str(p.get('type') or '')):
+            left_out.append('port %s/%s (%s) left out: this helper does not set %s - install.sh of '
+                            'the daemon\'s version puts in one that does'
+                            % (str(p.get('port'))[:6], p['proto'], str(p.get('why') or '')[:80],
+                               p['type']))
+            continue
         if not isinstance(p, dict) or p.get('type') not in SE_PORT_TYPES or \
                 p.get('proto') not in ('tcp', 'udp'):
             raise Refused('a port type otp does not set')
@@ -5800,7 +5922,8 @@ def se_want_checked(r):
 
 
 def se_check(r):
-    bools, ports = se_want_checked(r)
+    left = []
+    bools, ports = se_want_checked(r, left)
     mode = se_mode()
     conf = se_config()
     out = {'mode': mode, 'config': conf['mode'], 'policy': conf['type'],
@@ -5809,7 +5932,8 @@ def se_check(r):
                      'ausearch': bool(shutil.which('ausearch')),
                      'semodule': bool(shutil.which('semodule'))},
            'module': None, 'labels': [], 'booleans': [], 'ports': [],
-           'denials': {'tool': False, 'total': 0, 'groups': []}, 'problems': []}
+           'denials': {'tool': False, 'total': 0, 'groups': []}, 'problems': [],
+           'left_out': left}
     if mode == 'absent':
         out['ready'] = False
         return out
@@ -5934,8 +6058,9 @@ def se_apply(bools, ports, said, mark=True):
 
 def se_do(r):
     do = r.get('do')
-    bools, ports = se_want_checked(r)
-    said = []
+    left = []
+    bools, ports = se_want_checked(r, left)
+    said = list(left)
     if do == 'check':
         return se_check(r)
     if do == 'report':

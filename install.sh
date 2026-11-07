@@ -916,7 +916,8 @@ PY
             fail "nginx does not read its configuration; sort that out and run this again"
         fi
         run systemctl enable nginx >/dev/null 2>&1 || true
-        run systemctl restart nginx
+        lbport_selinux_label
+        run systemctl restart nginx || warn "nginx could not be started again - systemctl status nginx; journalctl -u nginx -n 30"
     fi
 
     nginx_upload_guard
@@ -929,6 +930,35 @@ PY
         command -v restorecon >/dev/null && run restorecon -R "$WEB_DIR" 2>/dev/null || true
         good "the pages may talk to the daemon on 127.0.0.1"
         note "If the pages say the token is unreadable: ausearch -m avc -ts recent | audit2allow -M otp-local"
+    fi
+}
+
+# The balancer's own port (1.0.259) let to nginx where SELinux is on (1.0.262): the pages write
+# otp_lbport.conf, and a port that is neither http_port_t nor http_cache_port_t kept nginx from
+# starting on an enforcing node - at the restart of an upgrade, which stopped there. Labelled
+# only when it is not yet; never taken from another service (semanage -a only).
+lbport_selinux_label() {
+    local f=/etc/nginx/conf.d/otp_lbport.conf port
+    [[ -f "$f" ]] || return 0
+    command -v getenforce >/dev/null 2>&1 || return 0
+    [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] || return 0
+    port="$(sed -nE 's/^[[:space:]]*listen[[:space:]]+([0-9]+)([[:space:]][^;]*)?;.*$/\1/p' "$f" | head -n1)"
+    [[ "$port" =~ ^[0-9]+$ ]] || return 0
+    if ! command -v semanage >/dev/null 2>&1; then
+        warn "SELinux: semanage is not here, so the balancer's port $port may be shut to nginx (dnf install policycoreutils-python-utils)"
+        return 0
+    fi
+    if semanage port -l 2>/dev/null | awk -v p="$port" '
+            ($1 == "http_port_t" || $1 == "http_cache_port_t") && $2 == "tcp" {
+                for (i = 3; i <= NF; i++) { v = $i; gsub(/,/, "", v); n = split(v, r, "-")
+                    if (p + 0 >= r[1] + 0 && p + 0 <= (n > 1 ? r[2] : r[1]) + 0) f = 1 } }
+            END { exit f ? 0 : 1 }'; then
+        return 0
+    fi
+    if run semanage port -a -t http_port_t -p tcp "$port" >/dev/null 2>&1; then
+        good "SELinux: nginx may listen on the balancer's port $port"
+    else
+        warn "SELinux: port $port could not be labelled http_port_t (another service's?) - nginx may not listen there; choose another port for the balancer (web_proxy_port)"
     fi
 }
 

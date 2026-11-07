@@ -4,6 +4,276 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.262 — 7 November 2026
+
+Bug hunt, three rounds (the whole application, with the HA re-addressing of 1.0.261 looked at again each time, and each round's own fixes looked at again by the next).
+
+HA and re-addressing
+- **Split mode "priority": RADIUS kept while the preferred node changes its network**: the other node took the preferred one's silence (its new address not there yet) for a split and stepped aside - with the preferred one rebooting, nobody answered. A node changing its network, or away as planned, is now a reason to stay.
+- **A new network is refused while no other node serves** (the other one in maintenance, restoring, stepped aside): both were silent for minutes. Looked at again just before the node goes into maintenance; then it stops with nothing of the network changed.
+- **`radius_bind` carried over** to the new IPv6 address (or to all addresses when IPv6 goes off), and from any specific address not kept to all addresses - RADIUS no longer stays unbound after the restart.
+- **Two addresses where one starts like the other** (192.168.1.1 and 192.168.1.10) were refused as "one address" - compared whole now.
+- **Second IPv4 addresses are kept** when the first one changes (they were dropped), and the other node is told the new address only when replication runs on the one that changed (`ha_address` empty or the old one).
+- **Going back after a trial** is no longer refused for an old network whose gateway is outside its subnet (cloud machines with /32): the old network is put back as it was.
+- **Shared database (ha_mode shared) with the VIP**: keepalived's peer follows the other node's fresh heartbeat address after it changed its network.
+- **Alerts quiet while a node changes its network** (as for maintenance and upgrades): a slow reboot no longer mailed "the replication is down".
+- **A machine without a static host name** takes its short name too (the root helper read it as empty).
+- **The certificate shown in Settings → Web** is read where root writes it (`OTP_VIP_CERT_DIR`).
+- **A new network is refused only when the other node would come back while this one restarts**: alive but in maintenance or stepped aside, or its own new network on trial. A partner gone for good (or a node made standalone) never blocks it.
+- **`radius_bind` is rewritten only for an address the change takes away**: a bind on a second interface, the VIP or an address kept is left as it is.
+- **Shared database: keepalived's peer is the other node's own HA address** as it publishes it (not the address of its default route); a node that does not publish it keeps `ha_peer`.
+- **A VIP of one address family with nodes of the other** (a cluster joined over IPv6 with an IPv4 VIP, or the other way round): the nodes' addresses of the VIP's family are used - root refused the whole web request, for good (no certificates, keepalived or firewall changes).
+- **The database's encryption on a cluster whose link was never encrypted**: only the lead node makes the cluster's authority - both made it at once and replication stopped for good.
+- **The preferred node of split mode is not changed while the nodes cannot reach each other**: changed on one half only, both could step aside (a mode or an arbiter set on each half is taken as before).
+- **A renewal of the link's certificate while the other node was down** no longer stays "failed" for ever: it finishes when the other node answers.
+- **`otp --ha-forget`** no longer takes away the maintenance and upgrade rows of a node that is still running.
+- **The clock guard** counts the other node as able to take over only when its own clock is right.
+- **The daily look for a new version** is made by one node of a replicated cluster (both could write its first row at once and stop replication).
+- **Keep after a change that did not move the address** (only the gateway, DNS, the host name or IPv6) no longer takes the node's own line out of the other node's `pg_hba.conf` - replication broke at its next reconnect.
+- **A daemon restarted in the middle of a network change** puts back what it had changed (`radius_bind`, the database's address, the web certificate) - the job failed, but the settings stayed on the new address.
+- **The order of a network change in a cluster**: the node goes into maintenance and the VIP leaves it before the other node is told the new address (keepalived was rewritten on both while this node still held the VIP). `radius_bind` takes its new value only once root has taken the new network.
+- **A trial not kept in time waits to go back** (at most 30 minutes) while the other node is out of service, so the two are not down at once; the other node is told the address back by itself once it is reached again.
+- **Shared database with an empty `ha_mode`** (clusters from before 1.0.213): the node is taken out of maintenance after its network change.
+- **Replication over IPv6**: a change of that IPv6 address is refused with what to do (it was not told to the other node).
+- **`ha_address` as a host name** that names the old address: the other node is told again, as in 1.0.261.
+- **The split card can be saved while the nodes are apart** when its rule itself is not changed.
+- **Power off, restart and OS updates of named nodes** take a list of names only: a name given as text was matched by its letters (`otp2` took in `otp` too).
+- **"Not heard from" is not mailed** for a node in maintenance, changing its network or restarting as asked.
+
+Security
+- **Passkeys**: an RSA key of more than 8192 bits or with a large exponent is refused (one sign-in with it held the daemon - RADIUS too - for minutes). A passkey is added only within 15 minutes of the second step given, not on the sign-in's cookie alone.
+- **The enrolment pages: a code sent to the old token is proof only while its codes go to the same place** - an administrator sending them elsewhere (a phone stolen) now ends what the code sent to the old place could do. A replacement of the token is taken by one request only (two tabs replaced the key twice).
+- **Configuration import "exactly the file"** no longer lowers high security's settings by dropping them to their defaults; a node's own setting refused in an import is said, not left out silently.
+- **The enrolment pages in a cluster of two versions**: the proof from the old token is kept in both forms, so a code sent by one version is taken by the other.
+- **Passkeys**: Your account says beforehand that a passkey is added within 15 minutes of signing in.
+- **Accounts from the directory**: their role and password are refused (they came back from the directory's groups within minutes); "the last full administrator" counts them only while the directory they sign in through is set up.
+- **Read-only administrators** no longer see the access lists and trusted balancers in High availability's load balancer card.
+- **A remote backup fetched back** is downloaded only where token keys may be shown (`admin_show_key`), as one made now.
+- **To be done by hand under the database guard**: the commands shown to run as root are written by the reading node from its own entries, never taken from a row of the database; an entry of a newer node is shown without its command.
+
+RADIUS
+- A second-window code typed just after it ran out, and a recovery code while the servers are apart, are no longer counted as guesses against the place; the second window ends at once on this server's own trouble (a key that cannot be opened, a token gone) instead of asking again for a code that can never pass. A password ending in digits no longer counts towards stopping the person's recovery codes.
+
+The rest
+- **The load balancer's guides keep one person on one node** (source address or cookie persistence): the enrolment page's sign-in is kept on the node that made it until it is copied to the other. The Apache guide no longer asks `/healthz` on the balancer's port (it is not served there, every node was taken out).
+- **Ports that cannot work are refused**: the API's port on a database's or another service's port, a RADIUS port on SNMP's or the SSH gate's - the next restart stopped the daemon in a loop. An API that cannot listen is said and tried again every 30 s; RADIUS answers on.
+- **Alerts of events in a replicated cluster** are read per node: the quieter node's events were missed.
+- **A remote backup restored from the pages** binds the tokens and keeps the names as every other restore does.
+- **The balancer's port on the nodes (`web_proxy_port`)** is refused when it is the port of something else (the API, the databases, RADIUS, the SSH gate, 5432/3306) or already in use, and SELinux is asked to label it as a web port where it is not 80/443/8443.
+- **`otp --acme-order`** waits for the machine's full DNS name instead of using the short one (and marking the certificate as ACME's on the way).
+- **The console** has To be done by hand in Upgrades: show, mark one done, clear "done lately". `otp --after-clear` clears all of "done lately", not only the 20 lines shown.
+- **The load balancer's port on an SELinux enforcing node**: labelled for nginx before it is written, and a reload nginx did not take (or a port nobody listens on after it) is said as failed, with nginx put back - it was "done" and nginx kept its old configuration. `install.sh --upgrade` labels it too and no longer stops on a failed nginx restart.
+- **A failed upgrade from the pages on a node alone** puts it back in service (it stayed in maintenance and RADIUS answered nobody); in a cluster with another node serving, as before. The upgrade's check also looks that the API listens.
+- **Going back below 1.0.259** is refused while the balancer has its own port on the nodes.
+- **A realm taken into another** is refused when one keeps its tokens under the part before the @ and the other under the whole name: its people's tokens would not be found any more.
+- **Long lists of the pages** (enrolment, overview, codes) are read on the reading connection; the enrolment list without dates asked shows the last 30 days (All shows everything).
+- **An API that could listen but not start** closes its port and is tried again with the reason said.
+- **The nightly copy's check** with no active tokens to try is no longer "cannot be restored".
+- **Settings → Upgrades: "What changed" for a package sent** is there again - from 1.0.253 to 1.0.261 the package carried this list as it was at 1.0.252, so a new version had no section in it and nothing was shown. It now shows every version between the one running and the one sent ("What changed since 1.0.259"), not only the newest.
+- **This file in the package** is the whole history again: from 1.0.253 to 1.0.261 the package carried the list as it was at 1.0.252.
+
+## 1.0.261 — 7 November 2026
+
+The re-addressing of a node from the pages, tried in every way: IPv4 and dual stack, the link
+between the databases encrypted or not, each node's connection to its own database encrypted or
+not, node A, node B and both - with the VIP address (VRRP) and RADIUS through it all the while.
+
+- **A node's new address from the pages, with a short host name**: Settings → Network → Change it and restart, with the host name left as the machine has it (`otp1`, not `otp1.example.cz`), was refused by the root helper ("the host name is the whole name") after the other node had been told the new address; it was put back, but the change could never be made. Root now takes a short name when it is the one the machine has; a new short name is still refused.
+- **A planned change is not a failure**: while a node changes its network or restarts as asked, the other node says its silence and the replication from it stopping meanwhile as expected (warn, "expected while … is changing its network"), and maintenance is no longer said as the node "not healthy" with level bad - none of it mailed as a failure any more. Unplanned, as before.
+- **Dual stack: the node's own certificate made again for the new IPv6 address**: a node's self-signed certificate named the old IPv6 address beside the new one after its addresses changed; the old one is now replaced (taken out when IPv6 is switched off), addresses compared whatever way they are written.
+- **"The certificate nginx has … is not the one saved"** no longer said after every certificate made again where root puts the certificates elsewhere (`OTP_VIP_CERT_DIR`): the daemon looks where root writes them.
+
+## 1.0.260 — 6 November 2026
+
+- **To be done by hand → Done lately → Clear** (Settings → Upgrades): a Clear in the heading of Done lately empties the list the page shows - exactly its lines, so one come meanwhile stays; what is still to be done is never touched (the Done marks stay as they hold). With nothing in it, Done lately is not drawn at all - no heading, no Clear. Said in the events (who, how many); `otp --after-clear` on the command line. Both nodes: each writes the lines it cleared in its own row (`after:cleared:NODE`), every node's read together.
+
+## 1.0.259 — 6 November 2026
+
+The load balancer's guides publish the enrolment pages alone, at L7 or L4; the administration's
+second step by e-mail or SMS sends its first code by itself and counts down to the next.
+
+- **Only the enrolment pages through the balancer**: every configuration lets an exact list of the portal's paths through and answers 404 to everything else - the administration, /metrics, /healthz - so neither //admin/ nor /assets/../admin/ gets past (the guides before 1.0.259 passed everything on, the administration with it - look at a balancer set up by them). The client's address is put in, never added to; the client's X-Otp-Sso-Key and X-Otp-Restore are taken away; TLS 1.2 and 1.3, HSTS, the portal's 8 MB and 130 s. The sign-in by the balancer's guides do the same (they blocked /admin as a prefix).
+- **The load balancer, L7 or L4** (Settings → High availability → The load balancer): a Layer switch - TLS ended on the balancer with X-Forwarded-For, TLS passed through with the PROXY protocol, or passed through with no client address (not advised) - for HAProxy, nginx, the F5 and the NetScaler (Apache L7 only). The address the balancer comes from is its own field; the settings line, the notes and the checks (/admin/ through the balancer must be 404) follow it.
+- **The nodes' own port for the balancer** (`web_proxy_port`, Firewall and access → Behind a load balancer or WAF; 0 = none, as before): a server of its own on each node with the enrolment pages alone, the X-Forwarded-For or the PROXY protocol believed there from the balancers alone (`web_proxy_header=proxy_protocol`, only with the port), the firewall opening it to them alone. 443 stays as it was.
+- **Fixed in the generated configurations**: the F5 monitors (`recv "ok "`, asked on 443), the ASA's `reactivation-mode depletion deadtime 1`, HAProxy's missing timeouts; the RADIUS secret field is gone - always `<the shared secret>`. The page warns when the administration is reachable from the balancer, when the balancer may not ask /healthz, and when the firewall is not otp's.
+- **The performance meter: no second missing** - a page asking a moment before the sampler read the counters made the sampler find them unchanged, and that second was left out of the graph; the page takes the sampler's last reading while it reads.
+- **The administration's second step by e-mail or SMS**: the first code goes by itself when the step is shown (once a sign-in - F5 sends nothing again and says how long the code is still good for); "Send another" counts down to the next one allowed (30 s) and says how many more may go (5 a sign-in); at the fifth the button itself becomes Sign in again and the note says why. The API says it all in `send` (GET, send, enrol_start and both 429s).
+
+## 1.0.258 — 6 November 2026
+
+To be done by hand: one place for what an update cannot do itself.
+
+- **Settings → Upgrades → To be done by hand**: what an update cannot do itself - a step as root on the command line, what the installer left (SELinux, the firewall, a package) - as one band a thing and a node: what and why, the command in a box with Copy, when it was first seen; Look again (this node at once, the other within a minute) and Done (for what otp cannot check; for what it can, marked by hand and written in the events). DONE LATELY: what, how (done, by itself, taken back), who, when. With nothing to do, "Nothing is to be done by hand."
+- **The count beside Upgrades** in the settings menu and on the Settings tab - red for a bad one, amber otherwise. Nothing else at the top of the pages changes.
+- **What there is to do, checked by each node itself**: otp newer than the parts root installs (copied by hand, an install.sh --upgrade that stopped half way), upgrades from the pages not installed, nginx refusing the additions or the upload guard, SELinux's module not the one of this version, SELinux refusing otp something (never "switch it off"), PHP without the php2shell fix, no firewall opened at the install. A new version adds one entry and every place says it.
+- **install.sh writes /usr/local/lib/otp/root-facts.json** (root's, readable, no secret): which version put the root parts in, what nginx, SELinux and the firewall made of it - before the daemon starts; at its end it says what is still to be done by hand.
+- **The performance meter, the other node** (a cluster): its panel shows its own cores, disks,
+  filesystems, cards and processes, as this node's, under its name - asked of it through its row
+  only while that panel is open (it said "shown on its own pages").
+- **Both nodes' graphs together**: the other node's readings reach the page up to 12 s after they
+  were read (its row every 5 s, this node reading it every 5 s, the page asking every 2 s) - the
+  right edge of both graphs now stands 14 s back, and the other node's graph no longer grows by
+  jumps at the edge.
+- **No holes while the page is behind other tabs**: it goes on asking every 30 s (drawing nothing),
+  and the daemons go on reading for 75 s after each ask - a browser lets a page in the background
+  ask once a minute only. Back in front, the graphs are whole. A page closed: both nodes stop
+  within 75 s (10 s for one in front, as before).
+- **The alerts mail them** (An upgrade of otp, in Czech and English); `otp --after` (`--json`), `otp --after-done ID [--node N]`; a line in `otp --status` and `otp --check` (which fails on a bad one); the console's first screen. Both nodes: each writes its own row; RADIUS never waits for any of it.
+
+## 1.0.257 — 6 November 2026
+
+Your account lists the passkeys of the account; the performance meter draws a cluster's nodes in
+rows, on one time.
+
+- **Your account → Passkeys - Face ID, Touch ID** (the administration's pages, while the second
+  step by a passkey is on and it is this account's): a table of the account's passkeys - the
+  device, the name of the pages it is for, when it was added and last used. The pencil names one
+  in its row (Enter saves, Escape leaves it), the bin takes one away (asked twice, as everything
+  that destroys); the last one cannot be - it is the second step itself, reset by another full
+  administrator. **Add a passkey of this device** adds another (an iPhone beside the iPad, a
+  second Windows computer), up to 10: by an address, or while a node runs a version before
+  1.0.254, the page says why it cannot. Every passkey of the account signs in. Both nodes: the
+  question kept with the sign-in, the passkeys in the account's own row. In the events.
+- **The performance meter in a cluster**: the nodes one under the other, a row each with its
+  name, the same four chips in the same places - as acme draws them - and no more hidden for want
+  of room than a single node's.
+- **Both nodes' graphs on one time**: this node's right edge stood 3.5 s back, the other's 10 s,
+  so the same moment was 6.5 s apart in the two graphs; both now 10 s, moving together.
+- **The numbers at once when a page looks again**: the other node's last numbers are shown while
+  it wakes up to the page (it was "does not answer", with dashes, for the first seconds of every
+  look); a node that does not answer keeps its last numbers, dimmed.
+
+## 1.0.256 — 6 November 2026
+
+The third round of looking for faults (the tokens and their files, the cluster's rows, the
+administration's panes), each put right.
+
+- An exported .totp file names its owner inside (`" OTP_NAME`); an import refuses an entry of a locked ZIP whose file name says another owner, since in a locked ZIP the names of the files are not locked - a renamed entry gave one person's key to another's token. Files not locked are imported by their names as before (renamed on purpose, into a realm); exports of earlier versions as before too, with a word that the owner is read from the file name only.
+- Token names cannot be switched from "as typed" back to small letters while tokens named with capitals are there (Settings, the command line and a configuration import): they would have been found by nobody. Rename them first - the token's window - Move to now takes a change of letters alone.
+- Two nodes: the waiting recovery codes and the name of a token changed alone could be put back by the other node's older row; they are now stamped with the key.
+- The database download with the key that opens its tokens is refused where showing the keys of tokens is switched off (and so under high security), as the token exports are.
+- Pages: a token administrator is no longer offered what the API refuses them on a token in use - replacing it (New QR code, The app instead), changing where its codes go, taking it away - nor moving a token to another name, which is a full administrator's; a waiting token keeps them all.
+- Pages: the "In the directory" buttons are shown only to token and full administrators - a read-only account's press ended in a refusal.
+- Accounts: switching an account off asks first; switching off your own account, or changing your own role, asks with a warning that only another full administrator can undo it.
+- Test: the test made on this node names it, as on the other one - behind a shared address the test could reach the node that was not asked.
+- Database: on a node of a cluster the buttons that move or set up the database stay shut whichever kind is chosen in the list.
+- Settings: the dots saying whether both nodes have the settings keep coming back after a failed look (retried after 15 s, 30 s, 60 s, then every 2 min) instead of stopping until the page is opened again.
+- Settings: the card "When the nodes lose each other" and "Take my own picture away" are shown to full administrators only.
+- Czech: taking a certificate out of the mail server's or the SMS gateway's trust no longer reads "u adresáře"; a few texts that stayed in English (time servers set, tokens left out of an export, a user's SSH key taken away, a group put in a role, the mail queue's "tried until") are in Czech.
+- Remote backups: *Download one made now*, which holds the key that opens the tokens, is refused too where showing the keys of tokens is switched off.
+- Database: the download "with its key" is shut on the page where showing the keys of tokens is
+  switched off, and says why.
+
+## 1.0.255 — 6 November 2026
+
+Two rounds of looking for faults over the whole of otp (RADIUS, the sign-ins and the second step,
+the enrolment pages, the cluster, the network, backups, certificates, the command line, the
+console and the installer), each put right.
+
+- RADIUS: in a realm where the password is followed by the code, nothing that is not a code is any longer taken off the password - the directory never gets a password cut short (a wrong password counted there, the account locked out in the end) - and a space or line end typed after the code no longer refuses the code.
+- RADIUS: a code by mail or SMS, or from the app in the second window, that was right is let in even when the database fails to drop the question or mark the token used afterwards; this is logged, and the VPN's retry is no longer refused as a used code.
+- RADIUS: the realm's and the groups' reply is built and measured before the code is used (or sent): a reply that cannot be built, or too long for a packet, is refused without using up the code.
+- Sign-in protection: a token key this node cannot open, a directory that could not say whether a name is another account, and an answer to a second window that ran out are no longer counted as guesses from the place they came from.
+- Performance meter: a page left open for more than a day keeps its graphs moving (the animation's start is moved to now before its 24 h run ends).
+- Performance meter: the chip with the keyboard focus keeps it across the redraw every 2 s, and an open panel keeps its scroll position.
+- Performance meter: a node whose clock is stepped back no longer leaves its graphs blank - the page and the daemon (its own history and the other node's) start that node's readings again, and a since later than now is ignored.
+- Performance meter: the other node's network rate reads "received ↓ / sent ↑" instead of the generic "down / up" (in Czech it said "nefunguje").
+- Performance meter: the previews in My account no longer add tab stops inside their picker buttons.
+- Second step by e-mail or SMS: after a reload, or a send refused as too soon, the box for the code is still shown; during setup, a way already sent a code reopens with its box.
+- Czech: the load balancer sign-in throttle message and "that request did not come from this page".
+- The console's Delete for an account, a client, a realm, a directory and an SSH token works again: the command it ran refused for want of --yes, though the console had asked already.
+- An upgrade no longer loses every nginx addition on a machine whose nginx has no auth_request: the admin block's 32 MB limit was taken as missing, a second one was put in, and nginx refused the file.
+- otp --acme-order takes the same lease as the pages and the renewals, and looks names up with ACME's DNS servers: ordered while a node renewed it, both spent the CA's limit.
+- otp --rbackup-now tries the backup afterwards when rbackup_verify=after, as the pages do, refuses while a backup is being made on this node (--yes over it), and with --rbackup-all asks the other nodes to make theirs too.
+- otp --status asks whether the RADIUS ports are listened on with the address family of radius_bind, and only a port in use counts as listened on.
+- The installer no longer prints the secret of the test client for 127.0.0.1, nor a radtest command line with it.
+- Settings - SSH keys refuses to write an authorized_keys longer than the 1 MiB read of it: the keys past that were dropped.
+- Settings - Time recognises the file's own server, pool and other chrony lines separated by tabs or several spaces: they were left in beside otp's block.
+- A column added while the daemon runs (tried again after a busy start, or on the other node of a replicated pair) waits only a moment for its table (PostgreSQL 300 ms, MariaDB 1 s) and is tried again later: its 10 s wait held every sign-in queued behind it, and RADIUS failed meanwhile.
+- The daemon's main loop no longer waits on the root helper: the link's TLS steps try again at the next pass while a request before them is unread (one left unread for 3 min is written over, as before), and taking the other node's old address out of pg_hba.conf runs in a thread of its own. Up to 90 s there held the heartbeat back, and the other node took this one for gone.
+- A rebuild from the other node that fails after the tables were emptied puts the node in maintenance before it leaves the rebuild: for a moment it answered RADIUS from the emptied tables.
+- The connection to a database on the same machine goes back to no TLS only after two failures in a row with TLS alone, and never while PostgreSQL is starting, stopping or refusing: a restart of PostgreSQL dropped TLS for good.
+- Watching whether the nodes lost each other is timed on the monotonic clock: a clock stepped forward by NTP made a node step aside at once, and one stepped back held off a real split.
+- Backups to other machines: the list of backups sent and each destination's last send and Try it are kept per node (`rbackup:runs:NODE`, `rbackup:last:NODE:ID`, `rbackup:tried:NODE:ID`) and read merged. In a cluster one node's write no longer takes away the other's, a destination changed meanwhile is no longer lost, and the row is no longer made by both nodes at once. The list kept by versions before is still read, and is still written while a node of one is in the cluster.
+- Backups to other machines: "this node's backup" means this node of this site. Another site's node of the same name is no longer verified, put back or taken as its own. Two nodes whose names give the same backup file name are reported in the alerts, and their old backups are not taken away.
+- Backups to other machines: the room check counts PostgreSQL and MariaDB too, by the size of the node's last backup (before the first one, as until now).
+- Backups to other machines: trying a destination named on its card works while it is switched off.
+- Automatic certificates: right after the start, the renewal check waits for DNS to say the node's full name. A certificate is no longer ordered for the short host name.
+- Network: going back from a new network that was not kept is no longer refused on a cluster sharing one database, nor while a restart or power-off is under way. A restart or power-off is refused while a node's new network waits to be kept or is going back.
+- Network: search domains and DNS servers are checked as the root helper checks them (no dot at the end, no zone id). When the change stops before the network was touched, the node's settings, config.json and certificate are put back as they were.
+- With db_guard on, the marks of the administration's second step in a sign-in are signed too: a sign-in opened with the password alone could no longer be made whole by changing its row in the database (sign-ins opened by 1.0.254 sign in again once while the second step is on; while a node of 1.0.254 is in the cluster, its sign-ins are taken as before).
+- With db_guard on, an account whose second step was changed in the database by somebody else (a row otp did not write) is held until it is reset, instead of setting up a new one with the password alone.
+- Switching the second step on ended password-only sign-ins only where the database had them at that moment: one opened on the other node before it read the settings again stayed whole. Such sign-ins now give the second step on either node.
+- Two requests at once could each send a second-step code past the 30-second gap and the limit per sign-in; the slot is now taken before the code goes and given back if it fails.
+- New setting "Its SMS only to a number in these attributes" (portal_first_sms_attr): which directory attributes the one-time code before the first token may be sent to by SMS; empty works as before. Settings shows a warning when the code goes to mobile or telephoneNumber, which every user may change on their own account in Active Directory.
+- Lockouts of the one-time code before the first token and of sign-ins by the load balancer are now named on the Locked out page and can be cleared there.
+- The sign-in throttle counted a name typed with composed and decomposed accents as two people.
+- `/api/portal/me` now runs the same checks as every other step of the enrolment pages: a sign-in by the balancer after SSO was switched off, or one that now needs the one-time code, is ended instead of shown as signed in.
+- The second step held (with the guard against writes to the database on) says so on the page,
+  with the way out (a reset by another full administrator), instead of offering a way to set up.
+- `otp --acme-order` and a renewal by this node's daemon no longer order the same certificate
+  together: the daemon leaves a name the command line holds.
+
+## 1.0.254 — 6 November 2026
+
+A passkey (Face ID, Touch ID, Windows Hello) as the second step of the administration, and an
+icon for a shortcut on a home screen.
+
+- **Settings → Accounts → "...with Face ID, Touch ID or Windows Hello (a passkey)"** (off by
+  default), beside the app, e-mail and SMS: the second step of signing in to these pages, never
+  instead of the password - the password is always asked first. An account sets it up at its
+  first sign-in, as e-mail and SMS are; more ways allowed, it chooses. A full administrator
+  resets it as the others (Accounts, or `otp --reset-2fa NAME`); the account sets one up again.
+  Accounts shows "a passkey", of which device for which name of the pages.
+- **The checks of the server**: ES256, RS256 and EdDSA signatures checked by otp itself (no
+  library, nothing run); the question used once, on either node of a cluster; the origin and the
+  name of the pages checked; the device must check who it is (the face, a finger, the PIN); its
+  counter may not go back (a copied passkey refused, said in the events); wrong answers counted
+  as wrong codes are. No attestation asked: the server keeps only the public half.
+- **A passkey is for a name**: offered on these pages opened by a name over HTTPS
+  (`https://otp.firma.cz/`); opened by an address it is not offered, and the page says why. Set
+  up for one name, it works on that name.
+- **Both nodes**: the question kept with the sign-in, so one node asks and the other takes the
+  answer.
+- **Older versions do not know a passkey** (they read it as no second step set up, and the
+  password alone would set up another): no passkey is offered or set up while another node of
+  the cluster runs a version before 1.0.254 (the page says which), and going back below 1.0.254
+  is refused while an account signs in with one (reset its second step first). With the guard
+  against writes to the database on, the setting is signed as its siblings are. A browser answer
+  nested too deep is a wrong answer, not an error of the server.
+- **The icon of a shortcut on an iPad's or iPhone's home screen** (Safari → Share → Add to Home
+  Screen): the shield, 180 × 180, with the name of the installation under it.
+  `/apple-touch-icon.png` answers (nginx, added to an existing configuration on update).
+
+## 1.0.253 — 5 November 2026
+
+The performance meter (from the server-load package), off until switched on.
+
+- **Settings → About → The performance meter in the header** (off by default): how busy the
+  server is - the processor, the memory, the disks and the network - beside the state at the top
+  of every page, for full administrators. Pointed at (or tapped), each part opens its details:
+  each core with its frequency and temperature, the disks and the filesystems, the network
+  cards, the processes taking most. Off, nothing is read or written for it on any node, and the
+  pages ask nothing.
+- **Smooth graphs**: the daemon reads once a second, at an even pace, only while a page looks
+  (it stops 10 s after the last ask); the graphs are drawn by the time of each reading and moved
+  on by one CSS animation each - nothing redrawn by a timer, no jump when a panel opens or two
+  tabs ask. A time nobody looked stays empty. **F5** draws the last two and a half minutes at
+  once.
+- **Both nodes of a cluster**, each in a group with its name: one small row of meta for each
+  node (`load:<node>`), written every 5 s only while a page looks - its readings of a second
+  each, so the other node's graph is as smooth. A page closed: both nodes stop within 45 s.
+  The other node's panel shows its numbers and its two minutes; its cores, disks and processes
+  on its own pages. A node not heard is said so. Standalone: no row.
+- **The looks**, chosen by each administrator under the account's name (kept with the account,
+  in the settings file too): graphs, pills, one line, rings or not shown; the details as tiles,
+  a table, a map of the cores, one wide panel or a short tip. What fits the header is shown at
+  each width.
+- Temperatures from every sensor the kernel reads (coretemp, k10temp, drivetemp...), each core
+  with its own (physical package and core id); filesystems of the kernel only (no FUSE, NFS,
+  CIFS or FAT - a hung mount never stalls the page).
+- Czech: every text of the meter.
+
 ## 1.0.252 — 5 November 2026
 
 Three rounds of looking for bugs and security holes, in HA, standalone, the root helper, the pages

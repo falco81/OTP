@@ -99,6 +99,19 @@ def version_tuple(v):
     return tuple(int(x) for x in str(v).split('.'))
 
 
+def changelog_since(text, have, want, most=60000):
+    """The sections of CHANGELOG.md newer than `have` up to `want`, newest first."""
+    out = []
+    for mm in re.finditer(r'^## ([0-9]+(?:\.[0-9]+)+)\b.*?(?=^## |\Z)', text, re.M | re.S):
+        try:
+            v = version_tuple(mm.group(1))
+            if version_tuple(have) < v <= version_tuple(want):
+                out.append(mm.group(0).strip())
+        except (ValueError, TypeError):
+            continue
+    return '\n\n'.join(out)[:most]
+
+
 def installed_version():
     try:
         with open(os.path.join(LIB_DIR, 'otp.py'), encoding='utf-8') as f:
@@ -237,6 +250,7 @@ def inspect(path, extract_to=None):
                     (' - not signed: ' + ', '.join(extra)) if extra else '',
                     (' - missing: ' + ', '.join(missing)) if missing else ''))
             changelog = ''
+            changelog_text = ''
             otp_version = ''
             for rel in sorted(have):
                 h = hashlib.sha256()
@@ -256,8 +270,8 @@ def inspect(path, extract_to=None):
                     mm = re.search(rb"^__version__ = '([0-9.]+)'", b''.join(body), re.M)
                     otp_version = mm.group(1).decode() if mm else ''
                 if rel == 'CHANGELOG.md':
-                    text = b''.join(body).decode('utf-8', 'replace')
-                    mm = re.search(r'^## %s\b.*?(?=^## |\Z)' % re.escape(version), text,
+                    changelog_text = b''.join(body).decode('utf-8', 'replace')
+                    mm = re.search(r'^## %s\b.*?(?=^## |\Z)' % re.escape(version), changelog_text,
                                    re.M | re.S)
                     changelog = mm.group(0).strip()[:20000] if mm else ''
             if otp_version != version:
@@ -276,6 +290,10 @@ def inspect(path, extract_to=None):
         finally:
             shutil.rmtree(work, ignore_errors=True)
     have_v = installed_version()
+    # Every version between the one running and this one (1.0.262): a node a few versions behind
+    # was shown only the newest one's changes.
+    if changelog_text and have_v:
+        changelog = changelog_since(changelog_text, have_v, version) or changelog
     return {'version': version, 'top': top, 'files': len(have), 'signed_by': who,
             'bytes': size, 'changelog': changelog, 'installed': have_v,
             'newer': not have_v or version_tuple(version) > version_tuple(have_v),
