@@ -2376,8 +2376,12 @@ def net_checked(r):
         else:
             out['gw6'] = ''
     host = str(r.get('hostname') or '').strip().rstrip('.').lower()
-    # Going back may ask for a short name again - the one the machine had.
-    if host and (not NAME_RE.match(host) or ('.' not in host and not r.get('rollback'))):
+    # Going back may ask for a short name again - the one the machine had. So may a change
+    # that keeps the name the machine has now (1.0.261): the daemon lets a short name as it is
+    # through (net_check, 1.0.139), and root refused it here - a machine named "otp1" could not
+    # be given a new address from the pages at all, and the other node had been told it.
+    if host and (not NAME_RE.match(host) or ('.' not in host and not r.get('rollback') and
+                                             host != net_static_hostname())):
         raise Refused('the host name is the whole name: otp1.example.cz')
     out['hostname'] = host
     snap = str(r.get('snapshot') or '')
@@ -2396,6 +2400,14 @@ def net_checked(r):
     except (TypeError, ValueError):
         out['reboot_in'] = 0
     return out
+
+
+def net_static_hostname():
+    """The machine's static host name as it is now, lower case ('' unknown) (1.0.261)."""
+    try:
+        return run([HOSTNAMECTL, '--static'], 'hostnamectl').strip().rstrip('.').lower()
+    except (Refused, OSError):
+        return ''
 
 
 def hosts_lines(text, n):
