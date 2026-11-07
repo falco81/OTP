@@ -397,6 +397,12 @@ class Authenticator(object):
         d = Decision()
         d.user = self.full_name(user, client_realm or CONFIG.get('default_realm') or '')
         if not d.user:
+            if str(user or '').count('@') > 1:
+                # A suffix added to a name that had one (1.0.264): UAG's Name ID suffix on a
+                # UPN typed whole - said so, not "no User-Name".
+                d.step('a name', False, 'the name has more than one @ - a suffix added twice?')
+                return d.refuse('the name has more than one @ (a suffix added to a name that had '
+                                'one already?)')
             d.step('a name', False, 'the request carries no User-Name, or only a realm')
             return d.refuse('the request carries no User-Name')
         bad = name_letters_problem(d.user)

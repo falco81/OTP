@@ -1340,10 +1340,10 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="card full">
       <h2>On the VPN</h2>
       <p class="note">Cisco ASA: <code>aaa-server OTP protocol radius</code>, the server with
-        <code>timeout 60</code>, and the tunnel group's <code>authentication-server-group OTP</code>.
+        <code>timeout 15</code>, and the tunnel group's <code>authentication-server-group OTP</code>.
         Leave <code>password-management</code> off on the tunnel group: with it the ASA asks with
         MS-CHAPv2, and a code can only travel as PAP. FTD (FMC): a RADIUS Server Group with the
-        timeout 60 s, the connection profile's AAA - authentication only - with that group.
+        timeout 15 s, the connection profile's AAA - authentication only - with that group.
         The second window needs nothing on the clients.</p>
     </div>
   </div>

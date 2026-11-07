@@ -77,6 +77,7 @@ And the real thing, from anywhere a client is allowed:
 - [docs/sign-in-protection.md](docs/sign-in-protection.md) - guessing from one place blocked (RADIUS), and network and firewall changes that go back by themselves unless kept
 - [docs/firewall.md](docs/firewall.md) - the firewall (iptables / ip6tables) and who may reach which pages, from Settings
 - [docs/reply-attributes.md](docs/reply-attributes.md) - what an Access-Accept can carry, product by product (Cisco ASA, FortiGate, Palo Alto, NetScaler, F5, Horizon UAG and more)
+- [docs/vpn-testing-ftd-uag.md](docs/vpn-testing-ftd-uag.md) - a checklist for testing on the real devices: Cisco FTD (FMC, Secure Client) and Omnissa Horizon UAG - what to set, which scenarios to run, what to check in otp and on the device
 
 Installing it: [INSTALL.md](INSTALL.md).
 Bringing the old totpcgi + FreeRADIUS server over: [docs/migration-from-totpcgi.md](docs/migration-from-totpcgi.md).

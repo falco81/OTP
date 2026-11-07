@@ -4,6 +4,15 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.264 — 7 November 2026
+
+otp tried against a Cisco FTD (Secure Client) and an Omnissa UAG (Horizon) as their second factor - emulated at the wire (the appliances themselves are not in the test lab): every packet as those boxes send it, every answer's authenticators checked.
+
+- **New: `docs/vpn-testing-ftd-uag.md`** - what to set on the FMC and the UAG, the scenarios to try on the real boxes (right and wrong code, password and code together, the second window with the app, mail and SMS, a recovery code, a locked account, a node down, the group policy, accounting), and for each what otp's Log and Events say and what to look at on the box (`show vpn-sessiondb`, `debug radius all`, `test aaa-server`; UAG's log archive and RADIUS test).
+- **The RADIUS timeout recommended for ASA/FTD is 15 s, not 60 s**: otp answers the second window at once and sends the code after it, so a slow mail or SMS gateway never held the answer; 60 s only made the first sign-in after a node went silent wait that long before the other node was asked - longer than Secure Client waits.
+- **A name with two @** (UAG's *Name ID suffix* added to a name typed whole: `novak@corpnet.cz@corpnet.cz`) is said as such in the Log - it read "the request carries no User-Name".
+- Tests: `tests/r264/t_ftd_uag.py` - two daemons, a mock AD, a slow directory, mail and SMS; FTD flows (password and code together, the second window with app/mail/SMS/recovery codes, retransmissions answered once, a slow directory within FTD's timeout, accounting, the second server of the group) and UAG flows (passcode alone, AD password then challenge, CHAP and MS-CHAP refused with the reason, name forms, repeated attempts and lockout, NAS-IP/NAS-Identifier, an unknown source).
+
 ## 1.0.263 — 7 November 2026
 
 The daemon's connection to its own database and the link between the databases (two gaps found in acme, which runs the same code):
