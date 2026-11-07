@@ -4,6 +4,13 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.263 — 7 November 2026
+
+The daemon's connection to its own database and the link between the databases (two gaps found in acme, which runs the same code):
+
+- **A connection rescued to no TLS goes back to TLS by itself**: when the daemon's connection to its PostgreSQL stopped because of its TLS (a certificate run out, the authority file not yet rewritten, a PostgreSQL put back without its certificate), it was moved to no TLS - right, it never leaves the machine - but it stayed so until somebody ran the wizard again, even after the link had put its certificate right. Now what it went back from is kept (`dbtls:rescued:NODE`), tried every 10 minutes apart, and moved back as the wizard moves it once it goes ("otp (it works with TLS again)"). Set by hand since (the wizard, or switched off on purpose), it is left as it is. The page says "rescued" after a restart of the daemon too. Under high security nothing is moved, as before.
+- **One renewal of the one certificate**: with the database's encryption set up before the link's, its old row made Settings → The database renew PostgreSQL's certificate at the same moment as the link did, with fewer names - the link then made it again ("put right by itself" at every renewal). The database's own renewal now stays out while the link is set on, also while the link's steps run; it takes over when the link is switched off.
+
 ## 1.0.262 — 7 November 2026
 
 Bug hunt, three rounds (the whole application, with the HA re-addressing of 1.0.261 looked at again each time, and each round's own fixes looked at again by the next).

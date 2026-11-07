@@ -17,7 +17,7 @@ directory; L one node looks for new versions."""
 import os, sys, re, json, time, threading, types
 from pathlib import Path
 PARTS = '/home/claude/build/parts'
-ROOT_HELPER = '/home/claude/build/out/otp-1.0.262/deploy/otp_web.py'
+ROOT_HELPER = '/home/claude/build/out/otp-%s/deploy/otp_web.py' % (sys.argv[1] if len(sys.argv) > 1 else '1.0.262')
 R = []
 HEAD = ('import os, re, json, time, threading, socket, secrets, ipaddress, subprocess, shutil, '
         'hashlib\nfrom pathlib import Path\n')

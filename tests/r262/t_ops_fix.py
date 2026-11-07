@@ -9,6 +9,7 @@ port bound on 127.0.0.1 by the test itself (an ephemeral one) for the listening 
     python3 t_ops_fix.py
 """
 import ast, json, os, re, socket, sys, tempfile, threading, time, types
+_OUTV = __import__('sys').argv[1] if len(__import__('sys').argv) > 1 else '1.0.262'
 from pathlib import Path
 
 PARTS = '/home/claude/build/parts'
@@ -740,7 +741,7 @@ ok('R3-3 a value of another shape: no crash', isinstance(dg['downgrade_why_not']
 # ---- R3-1 / R3-4: the patch of otp_web.py, on a copy ---------------------------------------------------
 import subprocess
 WORK = Path(tempfile.mkdtemp(prefix='t-ops-r3-'))
-web_src = '/home/claude/build/out/otp-1.0.262/deploy/otp_web.py'
+web_src = '/home/claude/build/out/otp-%s/deploy/otp_web.py' % _OUTV
 PATCH_W = '/tmp/claude-0/h262/r3_ops_otpweb_patch.py'
 cp = WORK / 'otp_web.py'
 cp.write_text(open(web_src).read())
@@ -850,7 +851,7 @@ ok('R3-4 helper: se_do says what was left out, se_check shows it',
 # ---- R3-1: the patch of install.sh, on a copy -----------------------------------------------------------
 PATCH_I = '/tmp/claude-0/h262/r3_ops_install_patch.py'
 ic = WORK / 'install.sh'
-ic.write_text(open('/home/claude/build/out/otp-1.0.262/install.sh').read())
+ic.write_text(open('/home/claude/build/out/otp-%s/install.sh' % _OUTV).read())
 r_ = subprocess.run([sys.executable, '-I', PATCH_I, str(ic)], capture_output=True, text=True)
 ok('R3-1 the install.sh patch applies, bash -n', r_.returncode == 0 and
    subprocess.run(['bash', '-n', str(ic)]).returncode == 0, r_.stderr)

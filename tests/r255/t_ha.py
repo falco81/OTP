@@ -337,7 +337,7 @@ gd = {'log': log, 'log_sparing': log_sparing, 'CONFIG': {'db_tls': 'verify-full'
       'dbtls_kind': lambda: 'local', 'hisec_enforced': lambda k, s: False}
 i = dt_src.index('DBTLS_WORK = {')
 j = dt_src.index('DBTLS_MODES')
-exec('import threading, time\nDBTLS_LOCK = threading.Lock()\n' + dt_src[i:j], gd)
+exec('import os, threading, time\nDBTLS_LOCK = threading.Lock()\n' + dt_src[i:j], gd)
 gd['time'] = time
 exec(block(dt_src, 'def _dbtls_rescue('), gd)
 exec(block(ha_src, 'def peer_db_restarting('), gd)

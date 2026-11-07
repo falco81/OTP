@@ -8,8 +8,9 @@ temporary otp.py, loaded as a module over SQLite - no daemon, no ports.
     python3 t_api_fix.py
 """
 import importlib.util, json, os, re, shutil, subprocess, sys, tempfile, time, atexit
+_OUTV = __import__('sys').argv[1] if len(__import__('sys').argv) > 1 else '1.0.262'
 BUILD = '/home/claude/build'
-ASSETS = BUILD + '/out/otp-1.0.262/web/assets/admin.js'
+ASSETS = BUILD + '/out/otp-%s/web/assets/admin.js' % _OUTV
 R = []
 
 
