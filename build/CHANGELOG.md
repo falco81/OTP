@@ -4,6 +4,17 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.261 — 7 November 2026
+
+The re-addressing of a node from the pages, tried in every way: IPv4 and dual stack, the link
+between the databases encrypted or not, each node's connection to its own database encrypted or
+not, node A, node B and both - with the VIP address (VRRP) and RADIUS through it all the while.
+
+- **A node's new address from the pages, with a short host name**: Settings → Network → Change it and restart, with the host name left as the machine has it (`otp1`, not `otp1.example.cz`), was refused by the root helper ("the host name is the whole name") after the other node had been told the new address; it was put back, but the change could never be made. Root now takes a short name when it is the one the machine has; a new short name is still refused.
+- **A planned change is not a failure**: while a node changes its network or restarts as asked, the other node says its silence and the replication from it stopping meanwhile as expected (warn, "expected while … is changing its network"), and maintenance is no longer said as the node "not healthy" with level bad - none of it mailed as a failure any more. Unplanned, as before.
+- **Dual stack: the node's own certificate made again for the new IPv6 address**: a node's self-signed certificate named the old IPv6 address beside the new one after its addresses changed; the old one is now replaced (taken out when IPv6 is switched off), addresses compared whatever way they are written.
+- **"The certificate nginx has … is not the one saved"** no longer said after every certificate made again where root puts the certificates elsewhere (`OTP_VIP_CERT_DIR`): the daemon looks where root writes them.
+
 ## 1.0.260 — 6 November 2026
 
 - **To be done by hand → Done lately → Clear** (Settings → Upgrades): a Clear in the heading of Done lately empties the list the page shows - exactly its lines, so one come meanwhile stays; what is still to be done is never touched (the Done marks stay as they hold). With nothing in it, Done lately is not drawn at all - no heading, no Clear. Said in the events (who, how many); `otp --after-clear` on the command line. Both nodes: each writes the lines it cleared in its own row (`after:cleared:NODE`), every node's read together.

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.260'
+__version__ = '1.0.261'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -29375,7 +29375,12 @@ def web_tick(store):
 
 WEB_ASKED = {'hash': '', 'at': 0.0}
 WEB_DRIFT = {'at': 0.0}
-NGINX_CERT_FILES = {'node': '/etc/nginx/certs/otp.pem', 'vip': '/etc/nginx/certs/otp-vip.pem'}
+# Where root puts them - the same OTP_VIP_CERT_DIR as otp_web.py reads (1.0.261): two nodes on one
+# test machine looked at the machine's own nginx and said after every certificate made again that
+# nginx held another one. /etc/nginx/certs unless set, as before.
+_NGINX_CERT_DIR = os.environ.get('OTP_VIP_CERT_DIR') or '/etc/nginx/certs'
+NGINX_CERT_FILES = {'node': os.path.join(_NGINX_CERT_DIR, 'otp.pem'),
+                    'vip': os.path.join(_NGINX_CERT_DIR, 'otp-vip.pem')}
 
 
 def _first_pem(text):
@@ -30180,6 +30185,31 @@ def _ha_change(store, key, now, words, level='warn'):
     return True
 
 
+def ha_planned_away(store):
+    """{node: why} of the other nodes away on purpose now (1.0.261): a new network being put in
+    (told the new address before it has it, then restarting), or a restart asked for. Their
+    silence, and replication from them stopping meanwhile, is said as expected ('warn') - it was
+    'bad', mailed as a failure, at every change of a node's address from the pages."""
+    out = {}
+    try:
+        me = node_name()
+        plan = power_plan(store)
+        for n in ha_nodes(store):
+            name = n['name']
+            if name == me:
+                continue
+            if net_job_active(_meta_json(store, 'net:job:' + name)):
+                out[name] = '%s is changing its network' % name
+                continue
+            row = _meta_json(store, 'power:node:' + name) or {}
+            if plan and row.get('id') == plan.get('id') and row.get('state') == 'going' and \
+                    time.time() - fnum(row.get('moved')) < 900:
+                out[name] = '%s is restarting' % name
+    except Exception:                                   # noqa: BLE001
+        return {}
+    return out
+
+
 def ha_watch_tick(store):
     me = node_name()
     if not CONFIG.get('ha_mode'):
@@ -30200,21 +30230,26 @@ def ha_watch_tick(store):
                        (' (%s)' % role if role else ''))))
         ok = VIP_HEALTH.get('ok')
         if ok is not None:
+            # Maintenance asked for is no failure (1.0.261): a node's new network, a restart, an
+            # upgrade put it on - each said 'bad' (and mailed) that the node was not healthy.
             _ha_change(store, 'health', 'ok' if ok else 'bad',
                        ('%s is healthy again: the VIP address may come back to it' % me) if ok
                        else ('%s is not healthy - %s: the VIP address leaves it' % (me, why or '?')),
-                       'info' if ok else 'bad')
+                       'info' if ok else ('warn' if why == 'in maintenance' else 'bad'))
     else:
         HA_SEEN.pop('vip', None)
         HA_SEEN.pop('health', None)
+    planned = ha_planned_away(store)
     for n in ha_nodes(store):
         if n['me']:
             continue
         _ha_change(store, 'node:' + n['name'], 'alive' if n.get('alive') else 'gone',
                    ('%s answers again (seen from %s)' % (n['name'], me)) if n.get('alive')
-                   else ('%s stopped answering (seen from %s, last heard %d s ago)'
-                         % (n['name'], me, int(n.get('age') or 0))),
-                   'info' if n.get('alive') else 'bad')
+                   else ('%s stopped answering (seen from %s, last heard %d s ago)%s'
+                         % (n['name'], me, int(n.get('age') or 0),
+                            (' - expected: %s' % planned[n['name']]) if n['name'] in planned
+                            else '')),
+                   'info' if n.get('alive') else ('warn' if n['name'] in planned else 'bad'))
         m = bool((n.get('maintenance')))
         _ha_change(store, 'maint:' + n['name'], 'on' if m else 'off',
                    '%s %s maintenance' % (n['name'], 'went into' if m else 'came out of'), 'info')
@@ -30226,12 +30261,16 @@ def ha_watch_tick(store):
     for x in r.get('incoming') or []:
         name = x.get('name')
         state = 'running' if x.get('running') else ('paused' if not x.get('enabled') else 'stopped')
+        why_planned = '; '.join(planned.values())
         _ha_change(store, 'in:' + name, state,
                    'replication coming in (%s): %s' % (name, {
                        'running': 'running again', 'paused': 'paused',
-                       'stopped': 'stopped - the other node or its PostgreSQL is not reached, or '
-                                  'an error stops it'}[state]),
-                   {'running': 'info', 'paused': 'warn'}.get(state, 'bad'))
+                       'stopped': ('stopped - expected while %s; it starts again by itself once '
+                                   'that is over' % why_planned) if why_planned else
+                                  ('stopped - the other node or its PostgreSQL is not reached, '
+                                   'or an error stops it')}[state]),
+                   {'running': 'info', 'paused': 'warn'}.get(state, 'warn' if why_planned
+                                                             else 'bad'))
         errs = int(x.get('apply_errors') or 0) + int(x.get('sync_errors') or 0)
         was = HA_SEEN.get('err:' + name)
         HA_SEEN['err:' + name] = errs
@@ -33434,6 +33473,10 @@ def net_check(store, node, want, rollback=False):
             'ipv6': {'on': on6, 'mode': mode6, 'addr': str(a6) if a6 else '',
                      'gw': str(v6.get('gw') or '').strip() if on6 else '', 'dns': dns6},
             'hostname': host, 'old_ip': old_ip, 'new_ip': new_ip, 'old_hostname': host_old,
+            # The IPv6 addresses set by hand before (1.0.261): the node's own certificate named
+            # the old one beside the new after a change of a dual-stack node.
+            'old_ip6': [a.split('/')[0] for a in conf.get('ipv6_addresses') or []
+                        if conf.get('ipv6_method') == 'manual'][:4],
             'ip_changed': ip_changed, 'was6': was6, 'plan': plan}
 
 
@@ -33510,12 +33553,24 @@ def _job_put(store, job, words=None, pct=None, ok=True, state=None):
     store.set_meta('net:job:' + node_name(), json.dumps(job))
 
 
+def _cert_name_key(n):
+    """A name of a certificate as it is compared (1.0.261): an address in one form whatever way
+    it is written - openssl says FD99:0:0:0:0:0:0:1 for fd99::1 - a name in lower case."""
+    n = str(n or '').strip()
+    try:
+        return str(ipaddress.ip_address(n.strip('[]')))
+    except ValueError:
+        return n.lower()
+
+
 def _cert_names_swap(names, swap):
-    out = []
+    swap = {_cert_name_key(k): v for k, v in swap.items()}
+    out, seen = [], set()
     for n in names:
-        n = swap.get(n, n)
-        if n and n not in out:
+        n = swap.get(_cert_name_key(n), n)
+        if n and _cert_name_key(n) not in seen:
             out.append(n)
+            seen.add(_cert_name_key(n))
     return out
 
 
@@ -33540,12 +33595,19 @@ def net_cert_again(store, w, by):
     if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
         swap[w['old_hostname']] = w['hostname']
         swap[w['old_hostname'].split('.')[0]] = w['hostname'].split('.')[0]
-    if not any(k in names or k == cn for k in swap):
+    # The IPv6 address set by hand changed too (1.0.261): the old one swapped for the new - left,
+    # the certificate named an address the machine no longer has; IPv6 off, it goes.
+    new6 = w['ipv6'].get('addr', '').split('/')[0] if w['ipv6'].get('on') else ''
+    for o6 in w.get('old_ip6') or []:
+        if _cert_name_key(o6) != _cert_name_key(new6) and (new6 or not w['ipv6'].get('on')):
+            swap[o6] = new6
+    have = set(_cert_name_key(x) for x in names + [cn])
+    if not any(_cert_name_key(k) in have for k in swap):
         return ''
     if not info.get('self_signed'):
         return ('this node\'s certificate is from an authority and names %s - get one for %s'
-                % (', '.join(k for k in swap if k in names or k == cn),
-                   ', '.join(swap[k] for k in swap if k in names or k == cn)))
+                % (', '.join(k for k in swap if _cert_name_key(k) in have),
+                   ', '.join(swap[k] or '(none)' for k in swap if _cert_name_key(k) in have)))
     kind = 'rsa2048'
     k = str(info.get('key') or '')
     if k.startswith('EC'):
@@ -33555,11 +33617,10 @@ def net_cert_again(store, w, by):
     elif '3072' in k:
         kind = 'rsa3072'
     new_names = _cert_names_swap(names, swap)
-    if w['ipv6'].get('addr'):
-        ip6 = w['ipv6']['addr'].split('/')[0]
-        if ip6 not in new_names:
-            new_names.append(ip6)
-    new_cn = swap.get(cn, cn) or w['hostname']
+    if new6 and _cert_name_key(new6) not in set(_cert_name_key(x) for x in new_names):
+        new_names.append(new6)
+    new_cn = {_cert_name_key(k): v for k, v in swap.items()}.get(_cert_name_key(cn), cn) or \
+        w['hostname']
     key, crt = make_selfsigned(new_cn, [x for x in new_names if x != new_cn], 825, kind)
     got = cert_bundle(crt, key)
     prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],

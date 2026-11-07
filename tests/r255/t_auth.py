@@ -98,15 +98,15 @@ class DB(object):
 
 
 class ApiError(Exception):
-    def __init__(self, status, msg, detail=None):
-        Exception.__init__(self, msg); self.status = status; self.msg = msg
+    def __init__(self, status, msg, detail=None, extra=None):  # extra: 1.0.259
+        Exception.__init__(self, msg); self.status = status; self.msg = msg; self.extra = extra or {}
 
 
 TMP = tempfile.mkdtemp()
 CONFIG = {'db_guard': 0, 'admin_2fa': 0, 'code_ttl_s': 300, 'portal': 1, 'portal_sso': 0,
           'portal_first_code': 'off', 'portal_first_sms_attr': ''}
 LOGS = []
-g = {'__name__': 'auth', 'CONFIG': CONFIG, 'STATE_DIR': pathlib.Path(TMP), 'json': json, 'time': time,
+g = {'__name__': 'auth', 'math': __import__('math'), 'CONFIG': CONFIG, 'STATE_DIR': pathlib.Path(TMP), 'json': json, 'time': time,
      'hmac': hmac, 'hashlib': hashlib, 'secrets': secrets, 're': re, 'threading': threading,
      'unicodedata': unicodedata, 'os': os,
      'fnum': lambda x, d=0.0: float(x or d), 'node_name': lambda: 'otp1',

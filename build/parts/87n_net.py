@@ -293,6 +293,10 @@ def net_check(store, node, want, rollback=False):
             'ipv6': {'on': on6, 'mode': mode6, 'addr': str(a6) if a6 else '',
                      'gw': str(v6.get('gw') or '').strip() if on6 else '', 'dns': dns6},
             'hostname': host, 'old_ip': old_ip, 'new_ip': new_ip, 'old_hostname': host_old,
+            # The IPv6 addresses set by hand before (1.0.261): the node's own certificate named
+            # the old one beside the new after a change of a dual-stack node.
+            'old_ip6': [a.split('/')[0] for a in conf.get('ipv6_addresses') or []
+                        if conf.get('ipv6_method') == 'manual'][:4],
             'ip_changed': ip_changed, 'was6': was6, 'plan': plan}
 
 
@@ -369,12 +373,24 @@ def _job_put(store, job, words=None, pct=None, ok=True, state=None):
     store.set_meta('net:job:' + node_name(), json.dumps(job))
 
 
+def _cert_name_key(n):
+    """A name of a certificate as it is compared (1.0.261): an address in one form whatever way
+    it is written - openssl says FD99:0:0:0:0:0:0:1 for fd99::1 - a name in lower case."""
+    n = str(n or '').strip()
+    try:
+        return str(ipaddress.ip_address(n.strip('[]')))
+    except ValueError:
+        return n.lower()
+
+
 def _cert_names_swap(names, swap):
-    out = []
+    swap = {_cert_name_key(k): v for k, v in swap.items()}
+    out, seen = [], set()
     for n in names:
-        n = swap.get(n, n)
-        if n and n not in out:
+        n = swap.get(_cert_name_key(n), n)
+        if n and _cert_name_key(n) not in seen:
             out.append(n)
+            seen.add(_cert_name_key(n))
     return out
 
 
@@ -399,12 +415,19 @@ def net_cert_again(store, w, by):
     if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
         swap[w['old_hostname']] = w['hostname']
         swap[w['old_hostname'].split('.')[0]] = w['hostname'].split('.')[0]
-    if not any(k in names or k == cn for k in swap):
+    # The IPv6 address set by hand changed too (1.0.261): the old one swapped for the new - left,
+    # the certificate named an address the machine no longer has; IPv6 off, it goes.
+    new6 = w['ipv6'].get('addr', '').split('/')[0] if w['ipv6'].get('on') else ''
+    for o6 in w.get('old_ip6') or []:
+        if _cert_name_key(o6) != _cert_name_key(new6) and (new6 or not w['ipv6'].get('on')):
+            swap[o6] = new6
+    have = set(_cert_name_key(x) for x in names + [cn])
+    if not any(_cert_name_key(k) in have for k in swap):
         return ''
     if not info.get('self_signed'):
         return ('this node\'s certificate is from an authority and names %s - get one for %s'
-                % (', '.join(k for k in swap if k in names or k == cn),
-                   ', '.join(swap[k] for k in swap if k in names or k == cn)))
+                % (', '.join(k for k in swap if _cert_name_key(k) in have),
+                   ', '.join(swap[k] or '(none)' for k in swap if _cert_name_key(k) in have)))
     kind = 'rsa2048'
     k = str(info.get('key') or '')
     if k.startswith('EC'):
@@ -414,11 +437,10 @@ def net_cert_again(store, w, by):
     elif '3072' in k:
         kind = 'rsa3072'
     new_names = _cert_names_swap(names, swap)
-    if w['ipv6'].get('addr'):
-        ip6 = w['ipv6']['addr'].split('/')[0]
-        if ip6 not in new_names:
-            new_names.append(ip6)
-    new_cn = swap.get(cn, cn) or w['hostname']
+    if new6 and _cert_name_key(new6) not in set(_cert_name_key(x) for x in new_names):
+        new_names.append(new6)
+    new_cn = {_cert_name_key(k): v for k, v in swap.items()}.get(_cert_name_key(cn), cn) or \
+        w['hostname']
     key, crt = make_selfsigned(new_cn, [x for x in new_names if x != new_cn], 825, kind)
     got = cert_bundle(crt, key)
     prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
