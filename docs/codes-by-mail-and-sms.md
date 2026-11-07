@@ -236,12 +236,12 @@ the administrator makes new ones.
 aaa-server OTP protocol radius
 aaa-server OTP (inside) host 10.0.0.50
  key <the shared secret>
- timeout 60
+ timeout 15
  authentication-port 1812
  accounting-port 1813
 aaa-server OTP (inside) host 10.0.0.51
  key <the shared secret>
- timeout 60
+ timeout 15
 
 tunnel-group VPN-USERS general-attributes
  authentication-server-group OTP
@@ -250,14 +250,17 @@ tunnel-group VPN-USERS general-attributes
 - **Leave `password-management` off** on the tunnel group: with it the ASA
   asks with MS-CHAPv2 and a code can only travel as PAP; the second window
   breaks.
-- `timeout 60` - a mail or an SMS gateway can take a while; the RADIUS
-  timeout is for the first answer.
+- `timeout 15` - otp answers the second window at once and sends the code
+  after it (a slow mail or SMS gateway does not hold the answer). A long
+  timeout (60 s, recommended here before 1.0.264) only made the first sign-in
+  after a node went silent wait that long before the other node was asked -
+  longer than Secure Client waits.
 - UDP 1812/1813 from the ASA to both nodes.
 
 ## Cisco FTD (FMC)
 
 1. Objects → Object Management → AAA Server → RADIUS Server Group: both
-   nodes, the shared secret, timeout 60 s.
+   nodes, the shared secret, timeout 15 s (see above).
 2. Devices → Remote Access → Connection Profile → AAA: Authentication
    Method *AAA Only*, Authentication Server that group.
 3. Deploy. Secure Client shows the second window by itself.
