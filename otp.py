@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.264'
+__version__ = '1.0.265'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1171,7 +1171,8 @@ SAYS = {
                            'again rather than a second check of the code - which would '
                            'fail, because a code works only once.',
     'radius_workers': 'How many requests are worked on side by side. A request that waits '
-                      'for a slow domain controller does not hold up the others.',
+                      'for a slow domain controller does not hold up the others. A change '
+                      'starts or stops workers at once, no restart needed.',
     'radius_unknown_log': 'A request from an address that is not one of the clients is '
                           'dropped without an answer, as RADIUS says it must be. Switched '
                           'on, it is also written down - once a minute per address - so '
@@ -2553,6 +2554,8 @@ def write_replacing(path, text, mode=0o640, owner=None):
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(text)
         os.replace(tmp, str(path))
+        if path.name == 'secrets.key':
+            sealing_key_forget()        # the key just written taken at once (1.0.265)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -2638,6 +2641,15 @@ def sealing_key_path():
 
 _KEY_CACHE = {}
 _KEY_LOCK = threading.Lock()
+# The key file looked at again (its stat) at most once a second (1.0.265): a stat for every
+# secret opened - several for each RADIUS request - was a share of what a sign-in cost. A key
+# written by this process (write_replacing) is taken at once; one changed by hand within a
+# second.
+KEY_LOOK_S = 1.0
+
+
+def sealing_key_forget():
+    _KEY_CACHE.clear()
 
 
 def sealing_key(make=False):
@@ -2647,6 +2659,9 @@ def sealing_key(make=False):
     there is none, and then with O_EXCL, so two processes starting at once
     cannot each make one of their own."""
     path = sealing_key_path()
+    got = _KEY_CACHE.get(str(path))
+    if got and time.monotonic() - got[2] < KEY_LOOK_S:
+        return got[1]
     try:
         st = os.stat(str(path))
         stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
@@ -2655,8 +2670,8 @@ def sealing_key(make=False):
     except OSError:
         stamp = 'unreadable'
     if stamp is not None and stamp != 'unreadable':
-        got = _KEY_CACHE.get(str(path))
         if got and got[0] == stamp:
+            _KEY_CACHE[str(path)] = (stamp, got[1], time.monotonic())
             return got[1]
     try:
         key = bytes.fromhex(path.read_text(encoding='ascii').strip())
@@ -2666,8 +2681,11 @@ def sealing_key(make=False):
         key = b''
     if key and len(key) == 32:
         if stamp and stamp != 'unreadable':
-            _KEY_CACHE[str(path)] = (stamp, key)
+            _KEY_CACHE[str(path)] = (stamp, key, time.monotonic())
+        else:
+            _KEY_CACHE.pop(str(path), None)
         return key
+    _KEY_CACHE.pop(str(path), None)
     if not make:
         return b''
     if key is not None:
@@ -2747,6 +2765,7 @@ def sealing_key_for_write():
     with another one (1.0.205 for secrets; 1.0.227 for recovery codes too: `otp --scratch` on
     a node without its key file made a new one silently, and the codes it gave opened nowhere
     else, those before them gone)."""
+    sealing_key_forget()        # a write looks at the file itself (1.0.265), not the second's cache
     key = sealing_key()
     if key:
         return key
@@ -3947,8 +3966,14 @@ class Db(object):
         # second, and one row held by a lock stopped them all. Each RADIUS
         # thread keeps to one of them. SQLite writes one at a time anyway.
         key = 'radius'
-        if self.engine != 'sqlite' and self.RADIUS_LANES > 1:
-            tail = threading.current_thread().name.rsplit('-', 1)[-1]
+        tname = threading.current_thread().name
+        if tname.startswith('radius-acct'):
+            # Accounting on a lane of its own (1.0.265): on the main one, a page's long query
+            # held every Accounting-Response behind it (p99 3.6 s under load). Its own, not
+            # the sign-ins': a NAS restarted sends thousands of Stops at once.
+            key = 'radius-acct'
+        elif self.engine != 'sqlite' and self.RADIUS_LANES > 1:
+            tail = tname.rsplit('-', 1)[-1]
             key = 'radius%d' % ((int(tail) if tail.isdigit() else 0) % self.RADIUS_LANES)
         lane = self._lanes.get(key)
         if lane is None:
@@ -5190,6 +5215,16 @@ def _load_tables(db, src, keep_logs, say, gzip):
 # anything that would change a directory.
 LDAP_TIMEOUT = 12.0
 LDAP_MAX_MESSAGE = 8 * 1024 * 1024
+# The time this thread spent waiting on the directory itself (1.0.265): connecting, TLS, and
+# each send and read off the socket - summed up while Directory.held() measures it (LDAP_IO.s
+# set), so this node's own work and its waits for the CPU are not taken for a slow directory.
+LDAP_IO = threading.local()
+
+
+def _ldap_io(began):
+    v = getattr(LDAP_IO, 's', None)
+    if v is not None:
+        LDAP_IO.s = v + max(0.0, time.monotonic() - began)
 
 # The result codes worth telling apart.
 LDAP_OK = 0
@@ -5641,9 +5676,10 @@ class LdapUnreachable(LdapError):
 class Ldap(object):
     """One conversation with a directory.
 
-    Opened, asked, closed. Nothing is kept between sign-ins: a pooled
-    connection to a domain controller that has been restarted is a sign-in
-    that fails for no reason anybody can see.
+    Opened, asked, closed. The reading account's connections are kept a
+    little by Directory (1.0.265) - each looked at before it is used, and a
+    kept one that fails is asked again on a new one, so a domain controller
+    restarted is not a sign-in failed; a person's own bind never is kept.
     """
 
     # How many pages one search may take. A directory of a hundred thousand
@@ -5671,14 +5707,21 @@ class Ldap(object):
     def open(self):
         if not self.host:
             raise LdapError('no directory server has been given')
+        began = time.monotonic()
         try:
             self.sock = socket.create_connection((self.host, self.port), self.timeout)
         except OSError as e:
             raise LdapError('%s:%d could not be reached: %s'
                             % (self.host, self.port, str(e)[:120]))
+        finally:
+            _ldap_io(began)
         self.sock.settimeout(self.timeout)
         if self.tls == 'ldaps':
-            self.sock = self._wrap(self.sock)
+            began = time.monotonic()
+            try:
+                self.sock = self._wrap(self.sock)
+            finally:
+                _ldap_io(began)
         elif self.tls == 'starttls':
             self._start_tls()
         if debugging('ldap'):
@@ -5778,7 +5821,11 @@ class Ldap(object):
                 pass
             raise LdapError('%s sent %d byte(s) in the clear after agreeing to TLS, '
                             'which is not something a directory does' % (self.host, many))
-        self.sock = self._wrap(self.sock)
+        began = time.monotonic()
+        try:
+            self.sock = self._wrap(self.sock)
+        finally:
+            _ldap_io(began)
         self.buffer = b''
 
     def close(self):
@@ -5839,11 +5886,15 @@ class Ldap(object):
                             'StartTLS. Nothing was sent.')
         mid = self.next_id
         self.next_id += 1
+        wire = _ber(0x30, _ber_int(mid) + op + controls)
+        began = time.monotonic()
         try:
-            self.sock.sendall(_ber(0x30, _ber_int(mid) + op + controls))
+            self.sock.sendall(wire)
         except OSError as e:
             # The line gone, not the directory saying no (1.0.44).
             raise LdapUnreachable('the connection to %s failed: %s' % (self.host, str(e)[:100]))
+        finally:
+            _ldap_io(began)
         return mid
 
     def _read_message(self):
@@ -5885,6 +5936,7 @@ class Ldap(object):
             if getattr(self, '_deadline', 0) and left <= 0:
                 raise LdapUnreachable('%s did not finish answering within %d s'
                                 % (self.host, int(self.timeout * 3)))
+            began = time.monotonic()
             try:
                 if getattr(self, '_deadline', 0):
                     self.sock.settimeout(max(0.05, min(self.timeout, left)))
@@ -5895,6 +5947,8 @@ class Ldap(object):
             except OSError as e:
                 raise LdapUnreachable('the connection to %s failed: %s'
                                       % (self.host, str(e)[:100]))
+            finally:
+                _ldap_io(began)
             if not more:
                 raise LdapUnreachable('%s closed the connection' % self.host)
             if len(self.buffer) + len(more) > LDAP_MAX_MESSAGE:
@@ -8958,7 +9012,40 @@ class Storage(object):
         out['locked_until'] = lu if lu > time.time() else None
         return out
 
+    # The counts of the tokens kept a few seconds (1.0.265), for every page and every tab alike:
+    # four full looks at the table on each status every 5 s of each open page, and on each list
+    # of the tokens, held RADIUS (one process) behind them under load. Made again at once when a
+    # token is made, deleted or its state changed here; a use of it (used in 30 days) or a change
+    # on the other node shows within TOKEN_COUNTS_S.
+    TOKEN_COUNTS_S = 5.0
+    TOKEN_COUNTS = {'db': None, 'at': 0.0, 'gen': 0, 'got': None}
+    TOKEN_COUNTS_LOCK = threading.Lock()
+
+    @classmethod
+    def token_counts_stale(cls):
+        """The kept counts made again at the next look."""
+        cls.TOKEN_COUNTS['gen'] += 1
+        cls.TOKEN_COUNTS['at'] = 0.0
+
     def token_counts(self):
+        c = self.TOKEN_COUNTS
+        db = id(self.db)
+        got = c['got']
+        if got is not None and c['db'] == db and 0 <= time.time() - c['at'] < self.TOKEN_COUNTS_S:
+            return dict(got)
+        # One look at a time: the pages asking together wait for it and take its answer.
+        with self.TOKEN_COUNTS_LOCK:
+            got = c['got']
+            if got is not None and c['db'] == db and \
+                    0 <= time.time() - c['at'] < self.TOKEN_COUNTS_S:
+                return dict(got)
+            gen, at = c['gen'], time.time()
+            got = self._token_counts()
+            if c['gen'] == gen:             # not made stale while it was counted
+                c.update(db=db, at=at, got=got)
+            return dict(got)
+
+    def _token_counts(self):
         out = {'all': 0, 'active': 0, 'pending': 0, 'disabled': 0}
         for r in self.db.rows('SELECT state, COUNT(*) AS n FROM tokens GROUP BY state'):
             out[r['state'] or 'active'] = int(r['n'])
@@ -8979,38 +9066,55 @@ class Storage(object):
             old = self.token(name)
             if old:
                 self.db.update('tokens', old['id'], fields)
+                if 'state' in fields:
+                    self.token_counts_stale()
                 return old['id']
             # A new one only with letters this server takes (1.0.154).
             bad = name_letters_problem(name)
             if bad:
                 raise ValueError(bad)
-            row = {'name': name, 'state': 'active', 'last_step': 0, 'failures': 0,
-                   'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
-                   'created': time.time(), 'window_steps': -1}
-            row.update(fields)
+            # One more: the kept counts made again once it is written (1.0.265).
             try:
-                return self.db.insert('tokens', row)
-            except Exception as e:
-                # Made on the other node a moment ago, and come over between the look and
-                # the INSERT (1.0.214): a raw "duplicate key" error for the admin. Changed
-                # instead, as a token there was is.
-                said = str(e).lower()
-                if not ('duplicate' in said or 'unique' in said):
-                    raise
-                old = self.token(name)
-                if not old:
-                    raise
-                self.db.update('tokens', old['id'], fields)
-                return old['id']
+                return self._token_new(name, fields)
+            finally:
+                self.token_counts_stale()
+
+    def _token_new(self, name, fields):
+        """A new token's row written (the part of token_write that makes one)."""
+        row = {'name': name, 'state': 'active', 'last_step': 0, 'failures': 0,
+               'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
+               'created': time.time(), 'window_steps': -1}
+        row.update(fields)
+        try:
+            return self.db.insert('tokens', row)
+        except Exception as e:
+            # Made on the other node a moment ago, and come over between the look and
+            # the INSERT (1.0.214): a raw "duplicate key" error for the admin. Changed
+            # instead, as a token there was is.
+            said = str(e).lower()
+            if not ('duplicate' in said or 'unique' in said):
+                raise
+            old = self.token(name)
+            if not old:
+                raise
+            self.db.update('tokens', old['id'], fields)
+            return old['id']
 
     def token_update(self, ident, fields):
         """Fields changed on the token that was read, by its id, and never a
         token made: a check whose token was deleted meanwhile wrote a new,
         empty one back under the name (1.0.36)."""
-        return self.db.update('tokens', ident, fields)
+        try:
+            return self.db.update('tokens', ident, fields)
+        finally:
+            if 'state' in fields:
+                self.token_counts_stale()   # 1.0.265
 
     def token_drop(self, name):
-        return self.db.run('DELETE FROM tokens WHERE name = ?', (norm_name(name),))
+        try:
+            return self.db.run('DELETE FROM tokens WHERE name = ?', (norm_name(name),))
+        finally:
+            self.token_counts_stale()       # 1.0.265
 
     # ---- the logs ------------------------------------------------------------
     def radius_add(self, row):
@@ -9305,7 +9409,9 @@ DBGUARD_META_PREFIXES = (
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
     'host:sshkeys:want:', 'host:rootkey:', 'host:osup:checkwant:', 'sshotp:u:', 'sshotp:port:',
     'console:want:', 'acme_push:key:', 'adm2fa:', 'host:selinux:want:',
-    'host:users:want:', 'host:keep:', 'host:putback:', 'rbackup:now:')
+    'host:users:want:', 'host:keep:', 'host:putback:', 'rbackup:now:',
+    # The system's trusted roots each node puts in as root (1.0.265): the set wanted.
+    'oscerts:want:')
 # Settings whose word reaches root, or who may sign in to these pages.
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
@@ -10210,7 +10316,9 @@ class Directory(object):
         if not threading.current_thread().name.startswith('radius'):
             yield                       # the pages and the command line: not counted
             return
-        workers = int(CONFIG.get('radius_workers') or 16)
+        # The workers running, not the setting (1.0.265): changed on the page, the setting
+        # counted 64 workers while 16 ran - a slow directory took them all.
+        workers = int(RADIUS_WORKERS_RUNNING[0] or CONFIG.get('radius_workers') or 16)
         most = max(2, workers // 2)
         key = self.name.lower()
         # A place waited for (1.0.222), a little: refused the moment 8 were inside, a
@@ -10236,13 +10344,24 @@ class Directory(object):
                 left = until - time.monotonic()
                 if left <= 0 or not quick or (not waited and sum(self.BUSY_WAITING.values()) >=
                                               max(1, workers // 4)):
-                    if n >= most:
+                    many = n if n >= most else total
+                    if quick:
+                        # The directory answers quickly; the requests wait here - for this
+                        # node's CPU, its database (1.0.265). Said so, not "answering slowly".
+                        e = LdapUnreachable('this node is busy: %d requests wait for the directory '
+                                            '%s already - this one is not added to them'
+                                            % (many, self.name))
+                    elif n >= most:
                         e = LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
                                             'this one is not added to them' % (self.name, n))
                     else:
                         e = LdapUnreachable('the directories are answering slowly: %d requests wait '
                                             'on them already - this one is not added to them' % total)
                     e.held = True       # this node's own limit - not the directory gone (1.0.224)
+                    # The refusal's reason (1.0.265): no longer "LDAP server(s) have gone away".
+                    e.busy_said = 'this node is busy: %d requests wait for the directory %s%s' % (
+                        many, self.name, '' if quick else ', which answers slowly (%d ms a request)'
+                        % int(self.BUSY_TOOK.get(key, 0.0) * 1000))
                     if waited:
                         # Given back (1.0.226): kept, four refused waits stopped every wait after
                         # them until a restart.
@@ -10259,11 +10378,17 @@ class Directory(object):
             if waited:
                 self.BUSY_WAITING[key] = max(0, self.BUSY_WAITING.get(key, 1) - 1)
             self.BUSY[key] = n + 1
-        began = time.monotonic()
+        # Only the time spent waiting on the directory itself is its own (1.0.265): measured
+        # from the start to the end, this node's own work - TLS, reading the answers, the
+        # other threads holding the CPU - counted as the directory slow, and past 0.5 s
+        # every request beyond the limit was refused at once.
+        was_io = getattr(LDAP_IO, 's', None)
+        LDAP_IO.s = 0.0
         try:
             yield
         finally:
-            took = time.monotonic() - began
+            took = float(getattr(LDAP_IO, 's', 0.0) or 0.0)
+            LDAP_IO.s = was_io
             with self.BUSY_FREED:
                 self.BUSY[key] = max(0, self.BUSY.get(key, 1) - 1)
                 was = self.BUSY_TOOK.get(key)
@@ -10294,6 +10419,132 @@ class Directory(object):
             if len(self.DEAD) > 1000:
                 self.DEAD.clear()
             self.DEAD[str(host).lower()] = time.time() + self.DEAD_S
+        self._pool_drop(host)
+
+    # ---- the reading account's connections kept (1.0.265) -----------------------------
+    # A new TCP connection, TLS and a bind of the reading account for every look-up was most
+    # of what a sign-in cost the directory and this node. A few are kept a server, signed in
+    # as the reading account only (a person's password is always checked on a connection of
+    # its own, closed after it): taken by one request at a time, given back only after an
+    # answer read whole, looked at before each use (closed by the server, data nobody asked
+    # for: thrown away), and closed after 30 s unused or 5 min of age - a domain controller
+    # restarted, a new certificate, the order of the servers are not missed for long. A kept
+    # one that fails is not the server down: the same server is asked again on a new one.
+    POOL = {}
+    POOL_LOCK = threading.Lock()
+    POOL_MOST = 8
+    POOL_IDLE_S = 30.0
+    POOL_AGE_S = 300.0
+    POOL_SWEPT = [0.0]
+
+    def _pool_key(self, host):
+        h, p = self._hostport(host)
+        return (h.lower(), p, self.tls, hashlib.sha256(self.ca.encode('utf-8')).hexdigest(),
+                self.verify, self.weak, self.timeout, self.bind_dn,
+                hashlib.sha256(str(self.bind_pw).encode('utf-8')).hexdigest())
+
+    @staticmethod
+    def _link_fresh(link):
+        sock = getattr(link, 'sock', None)
+        if sock is None or link.buffer:
+            return False
+        try:
+            if isinstance(sock, ssl.SSLSocket) and sock.pending():
+                return False
+            readable, _w, _x = select.select([sock], [], [], 0)
+            # Anything to read before a question is the server closing, or a notice of
+            # disconnection - not to be read as the answer to the next one.
+            return not readable
+        except (OSError, ValueError):
+            return False
+
+    @classmethod
+    def _pool_sweep(cls, force=False):
+        t = time.monotonic()
+        if not force and t - cls.POOL_SWEPT[0] < 10:
+            return
+        cls.POOL_SWEPT[0] = t
+        old = []
+        with cls.POOL_LOCK:
+            for key in list(cls.POOL):
+                keep = []
+                for one in cls.POOL[key]:
+                    (old if t - one[1] > cls.POOL_IDLE_S or t - one[2] > cls.POOL_AGE_S
+                     else keep).append(one)
+                if keep:
+                    cls.POOL[key] = keep
+                else:
+                    del cls.POOL[key]
+        for one in old:
+            one[0].close()
+
+    def _pool_take(self):
+        """A kept connection to the first server that would be asked, or None. Nothing is
+        marked or probed here: link() does that when there is none."""
+        order = [h for h in self.hosts if h]
+        if self.last_good in order:
+            order.remove(self.last_good)
+            order.insert(0, self.last_good)
+        t = time.time()
+        with self.DEAD_LOCK:
+            live = [h for h in order if self.DEAD.get(h.lower(), 0) <= t]
+        if not live:
+            return None
+        self._pool_sweep()
+        key = self._pool_key(live[0])
+        m = time.monotonic()
+        while True:
+            with self.POOL_LOCK:
+                got = self.POOL.get(key)
+                one = got.pop() if got else None
+                if got is not None and not got:
+                    self.POOL.pop(key, None)
+            if one is None:
+                return None
+            link, put_at, born = one
+            if m - put_at <= self.POOL_IDLE_S and m - born <= self.POOL_AGE_S and \
+                    self._link_fresh(link):
+                link.otp_host = live[0]
+                link.otp_pooled = born
+                return link
+            link.close()
+
+    def _pool_give(self, link):
+        """Kept for the next request - only whole and clean."""
+        host = getattr(link, 'otp_host', None)
+        if not host or getattr(link, 'sock', None) is None or link.buffer:
+            link.close()
+            return
+        try:
+            link.sock.settimeout(link.timeout)
+        except (OSError, ValueError):
+            link.close()
+            return
+        link._deadline = 0
+        link.__dict__.pop('PAGES_MOST', None)       # a search's own page cap, not the next one's
+        m = time.monotonic()
+        born = getattr(link, 'otp_pooled', None) or m
+        if m - born > self.POOL_AGE_S:
+            link.close()
+            return
+        key = self._pool_key(host)
+        with self.POOL_LOCK:
+            got = self.POOL.setdefault(key, [])
+            if len(got) < self.POOL_MOST:
+                got.append((link, m, born))
+                return
+        link.close()
+
+    def _pool_drop(self, host):
+        """Every kept connection to `host` closed - it failed or was found closed."""
+        h, p = self._hostport(host)
+        gone = []
+        with self.POOL_LOCK:
+            for key in list(self.POOL):
+                if key[0] == h.lower() and key[1] == p:
+                    gone += self.POOL.pop(key)
+        for one in gone:
+            one[0].close()
 
     def _up(self, host):
         with self.DEAD_LOCK:
@@ -10361,22 +10612,42 @@ class Directory(object):
 
     def _asked(self, do):
         last = None
-        for _ in range(max(1, len(self.hosts))):
-            link = self.link()
+        tries = max(1, len(self.hosts))
+        stale = 0
+        while tries > 0:
+            # A kept connection first (1.0.265), a new one where there is none.
+            link = self._pool_take() if stale < 2 else None
+            pooled = link is not None
+            if link is None:
+                link = self.link()
             host = getattr(link, 'otp_host', None)
+            done = False
             try:
-                return do(link)
+                got = do(link)
+                done = True
+                return got
             except (LdapError, OSError) as e:
                 if isinstance(e, LdapError) and not (isinstance(e, LdapUnreachable) or
                                                      e.code in LDAP_TRY_ANOTHER):
                     raise
+                if pooled and isinstance(e, (LdapUnreachable, OSError)):
+                    # Closed by the server while it was kept: asked again on a new one, the
+                    # server not marked down for it.
+                    stale += 1
+                    if host:
+                        self._pool_drop(host)
+                    continue
                 last = e
                 if host:
                     self._down(host)
                     if self.last_good == host:
                         self.last_good = None
             finally:
-                link.close()
+                if done:
+                    self._pool_give(link)
+                else:
+                    link.close()
+            tries -= 1
         raise last if isinstance(last, LdapUnreachable) else LdapUnreachable(str(last))
 
     def find_user(self, name, how='upn'):
@@ -10445,11 +10716,19 @@ class Directory(object):
                      'phone': first('telephoneNumber'),
                      'pw_set': ad_time(first('pwdLastSet')),
                      'many': len(rows) > 1}
-        with self.lock:
-            self.cache[key] = (time.time(), entry)
-            if len(self.cache) > 5000:
-                self.cache.clear()
+        self._cache_put(key, entry)
         return entry
+
+    CACHE_MOST = 5000
+
+    def _cache_put(self, key, value):
+        """Kept, the oldest let go past CACHE_MOST (1.0.265) - not the whole cache cleared at
+        once, every person's next sign-in then asking the directory again together."""
+        with self.lock:
+            self.cache.pop(key, None)       # to the end: the order is the order written
+            self.cache[key] = (time.time(), value)
+            while len(self.cache) > self.CACHE_MOST:
+                del self.cache[next(iter(self.cache))]
 
     def groups_of(self, entry, nested=True):
         """[(dn, cn)] of every group the account is in - with the groups
@@ -10474,10 +10753,7 @@ class Directory(object):
                                ('cn',), scope=2, limit=5000, paged=True)
         rows = self.asked(do)
         out = [(r['dn'], (r['attrs'].get('cn') or [cn_of(r['dn'])])[0]) for r in rows]
-        with self.lock:
-            if len(self.cache) > 5000:            # as find_user keeps it (1.0.209)
-                self.cache.clear()
-            self.cache[key] = (time.time(), out)
+        self._cache_put(key, out)                 # as find_user keeps it (1.0.209, 1.0.265)
         return out
 
     def domain_root(self):
@@ -10524,10 +10800,7 @@ class Directory(object):
             log_sparing('group-many-' + said.lower(), 'the group %s named without its place '
                         'answers to %d groups in %s (%s): none of them is taken - give it as '
                         'its full DN' % (said, len(pick), self.name, '; '.join(pick[:4])), 'warn')
-        with self.lock:
-            if len(self.cache) > 5000:
-                self.cache.clear()
-            self.cache[key] = (time.time(), out)
+        self._cache_put(key, out)
         return out
 
     def password_ok(self, entry, password):
@@ -11968,7 +12241,14 @@ class Shipper(object):
         path = LOG_DIR / name
         f = self.files.get(name)
         try:
-            if f is not None:
+            # Looked at for a rotation once a second a file (1.0.265), not at every line - two
+            # stats a line for each request were a tenth of what writing a request cost.
+            now = time.monotonic()
+            looked = getattr(self, 'files_looked', None)
+            if looked is None:
+                looked = self.files_looked = {}
+            if f is not None and (f.closed or now - looked.get(name, 0.0) >= 1.0):
+                looked[name] = now
                 try:
                     if f.closed or os.fstat(f.fileno()).st_ino != os.stat(path).st_ino:
                         raise OSError('rotated')
@@ -11980,9 +12260,14 @@ class Shipper(object):
                     self.files.pop(name, None)
                     f = None
             if f is None:
-                LOG_DIR.mkdir(parents=True, exist_ok=True)
-                f = open(path, 'a', encoding='utf-8')
+                try:
+                    f = open(path, 'a', encoding='utf-8')
+                except FileNotFoundError:
+                    # The folder made only when it is not there (1.0.265), not before each open.
+                    LOG_DIR.mkdir(parents=True, exist_ok=True)
+                    f = open(path, 'a', encoding='utf-8')
                 self.files[name] = f
+                looked[name] = now
             f.write(line + '\n')
             f.flush()
             if self.trouble:
@@ -13803,9 +14088,32 @@ def code_send_now(store, kind, to, code, purpose='signin', name='', lang=None, f
 
 
 CODE_LOCK = threading.Lock()
-CODE_SENDING = threading.BoundedSemaphore(8)
-CODE_WAITING = [0]
+# Each way of sending its own 8 at a time and 200 waiting (1.0.265): mail and SMS shared them,
+# and a mail server that hung held every SMS code behind its mails too.
+CODE_CHANNELS = ('mail', 'sms')
+CODE_SENDING_BY = {k: threading.BoundedSemaphore(8) for k in CODE_CHANNELS}
+CODE_WAITING_BY = {k: 0 for k in CODE_CHANNELS}
 CODE_WAITING_MOST = 200
+CODE_SENDING = CODE_SENDING_BY['mail']      # the names before 1.0.265
+CODE_WAITING = [0]                          # every way together, as before
+
+
+def code_channel(kind):
+    return kind if kind in CODE_CHANNELS else 'mail'
+
+
+def code_not_sent(store, kind, name, rid, said):
+    """A code not sent: its place among the codes sent given back, and said where it is
+    looked for (1.0.225)."""
+    try:
+        node_key_give_back(store, 'codesent', name)
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        store.otp_add({'ts': time.time(), 'name': name, 'ok': 0, 'said': said,
+                       'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120], 'step_off': None})
+    except Exception:                                   # noqa: BLE001
+        pass
 
 
 def code_send_later(store, kind, to, code, name, rid=''):
@@ -13813,32 +14121,46 @@ def code_send_later(store, kind, to, code, name, rid=''):
     rather than after a slow mail server. At most 8 at a time, and no more
     than 200 waiting (1.0.136): a mail server that hung kept a thread per
     code for minutes, without end."""
+    chan = code_channel(kind)
+    asked = time.time()
     with CODE_LOCK:
-        if CODE_WAITING[0] >= CODE_WAITING_MOST:
-            log_sparing('code-send-full', 'codes to send: %d are waiting already - the code '
-                        'for %s is not sent' % (CODE_WAITING[0], name), 'warn', every=60)
+        if CODE_WAITING_BY[chan] >= CODE_WAITING_MOST:
+            log_sparing('code-send-full:' + chan, 'codes to send by %s: %d are waiting already - '
+                        'the code for %s is not sent' % ('mail' if chan == 'mail' else 'SMS',
+                                                         CODE_WAITING_BY[chan], name),
+                        'warn', every=60)
             full = True
         else:
             full = False
+            CODE_WAITING_BY[chan] += 1
             CODE_WAITING[0] += 1
     if full:
         # Said where it is looked for, and not counted as sent (1.0.225): the person was left
         # with no trace of why no code came, and shut out by the limit of codes sent.
-        try:
-            node_key_give_back(store, 'codesent', name)
-            store.otp_add({'ts': time.time(), 'name': name, 'ok': 0,
-                           'said': 'The code was not sent: too many codes are waiting to be sent',
-                           'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120], 'step_off': None})
-        except Exception:                               # noqa: BLE001
-            pass
+        code_not_sent(store, kind, name, rid,
+                      'The code was not sent: too many codes are waiting to be sent')
         return False
 
     def go():
         try:
-            with CODE_SENDING:
+            with CODE_SENDING_BY[chan]:
+                # Its turn come only after the code ran out (1.0.265): not sent - a code that
+                # no longer works, arriving minutes late, sent the person back to type it.
+                ttl = int(CONFIG.get('code_ttl_s') or 300)
+                waited = time.time() - asked
+                if waited > ttl:
+                    log_sparing('code-send-late:' + chan, 'a code for %s was not sent by %s: it '
+                                'waited %d s for its turn, longer than a code is good for (%d s)'
+                                % (name, 'mail' if chan == 'mail' else 'SMS', int(waited), ttl),
+                                'warn', every=60)
+                    code_not_sent(store, kind, name, rid,
+                                  'The code was not sent: it waited %d s to be sent, longer than '
+                                  'a code is good for' % int(waited))
+                    return
                 send()
         finally:
             with CODE_LOCK:
+                CODE_WAITING_BY[chan] -= 1
                 CODE_WAITING[0] -= 1
 
     def send():
@@ -13878,6 +14200,7 @@ def code_send_later(store, kind, to, code, name, rid=''):
         threading.Thread(target=go, name='code-send', daemon=True).start()
     except RuntimeError as e:
         with CODE_LOCK:
+            CODE_WAITING_BY[chan] -= 1
             CODE_WAITING[0] -= 1
         log_sparing('code-send-thread', 'the code for %s could not be sent: %s' % (name, e),
                     'warn', every=60)
@@ -14226,6 +14549,11 @@ class Authenticator(object):
             clock_dir_failover(self.store)
         if why:
             d.silent = why
+        if getattr(e, 'held', False):
+            # This node's own limit of requests at the directory at once (1.0.265), said as
+            # such: "gone away" sent people looking at a directory answering in milliseconds.
+            return d.refuse(getattr(e, 'busy_said', '') or
+                            'this node is busy: requests wait for the directory')
         return d.refuse('LDAP server(s) have gone away')
 
     @staticmethod
@@ -14916,6 +15244,122 @@ class SentReply(bytes):
 
 # Each RADIUS socket's receive buffer (1.0.214): a burst of a few thousand requests held.
 RADIUS_RCVBUF = 8 << 20
+RCVBUF_SAID = set()             # the sockets whose smaller buffer was written down (1.0.265)
+
+# How long a request may wait in the queue before a worker takes it (1.0.265): 4 s, not 10.
+# Only an overloaded or stalled node has requests waiting that long, and a VPN waits 3 to 10 s
+# for an answer: the older ones were answered after it had given up - and a code checked for an
+# answer nobody reads is used up, so the VPN's next try (here or on the other node) was refused
+# as used. Not a setting (radius_stale_s is in no DEFAULTS: config.json and the pages never set
+# it); a CONFIG value of it, where one is put in by hand in code, is taken within 1-60 s.
+RADIUS_STALE_S = 4
+# The worker threads running now (1.0.265): what Directory.held() counts against, not the
+# setting - changed on the page, the setting said 64 while 16 ran.
+RADIUS_WORKERS_RUNNING = [0]
+
+
+def radius_stale_s():
+    try:
+        v = float(CONFIG.get('radius_stale_s') or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return min(60.0, max(1.0, v)) if v > 0 else float(RADIUS_STALE_S)
+
+
+def radius_fair_key(data, ip):
+    """Whose turn a request waits in (1.0.265): the client's address and the realm the
+    User-Name names (after its @, or before a backslash) - read off the raw packet, nothing
+    parsed or checked yet. Anything that does not read is the address alone."""
+    try:
+        end = min(len(data), int.from_bytes(data[2:4], 'big'))
+        at = 20
+        while at + 2 <= end:
+            t, ln = data[at], data[at + 1]
+            if ln < 2:
+                break
+            if t == 1:
+                name = bytes(data[at + 2:at + ln])
+                if b'@' in name:
+                    realm = name.rpartition(b'@')[2]
+                elif b'\\' in name:
+                    realm = name.partition(b'\\')[0]
+                else:
+                    realm = b''
+                return '%s|%s' % (ip, realm[:64].decode('utf-8', 'replace').lower())
+            at += ln
+    except (IndexError, TypeError, ValueError):
+        pass
+    return str(ip)
+
+
+class RadiusQueue(object):
+    """The sign-ins waiting for a worker, taken in turn by where they come from (1.0.265):
+    one queue of 5000 in arrival order let one client or realm in trouble (a burst, a slow
+    directory) hold every other one behind it. Each client address and realm has its own line,
+    first in first out; the workers take from each line in turn. One line holds at most half
+    of the whole, and past KEYS_MOST lines the rest share one."""
+
+    KEYS_MOST = 256
+
+    def __init__(self, maxsize=5000):
+        self.maxsize = int(maxsize)
+        self.per_key = max(1, self.maxsize // 2)
+        self.lines = collections.OrderedDict()
+        self.n = 0
+        self.cv = threading.Condition(threading.Lock())
+
+    def qsize(self):
+        return self.n
+
+    def empty(self):
+        return not self.n
+
+    def full(self):
+        return self.n >= self.maxsize
+
+    def put_nowait(self, item, key=''):
+        with self.cv:
+            if self.n >= self.maxsize:
+                raise queue.Full
+            line = self.lines.get(key)
+            if line is None:
+                if len(self.lines) >= self.KEYS_MOST:
+                    key = '*'
+                    line = self.lines.get(key)
+                if line is None:
+                    line = self.lines[key] = collections.deque()
+            if len(line) >= self.per_key:
+                raise queue.Full
+            line.append(item)
+            self.n += 1
+            self.cv.notify()
+
+    def put(self, item, block=True, timeout=None, key=''):
+        self.put_nowait(item, key)
+
+    def get(self, block=True, timeout=None):
+        with self.cv:
+            if not self.n:
+                if not block:
+                    raise queue.Empty
+                self.cv.wait(timeout)
+                if not self.n:
+                    raise queue.Empty
+            key, line = next(iter(self.lines.items()))
+            item = line.popleft()
+            self.n -= 1
+            if line:
+                self.lines.move_to_end(key)
+            else:
+                del self.lines[key]
+            return item
+
+    def get_nowait(self):
+        return self.get(False)
+
+    def lines_now(self):
+        with self.cv:
+            return len(self.lines)
 
 
 class RadiusServer(object):
@@ -14925,10 +15369,12 @@ class RadiusServer(object):
     def __init__(self, daemon):
         self.d = daemon
         self.socks = {}
-        self.jobs = queue.Queue(maxsize=5000)
+        # Taken in turn by client and realm (1.0.265), not in one line for everybody.
+        self.jobs = RadiusQueue(maxsize=5000)
         # Accounting apart (1.0.186): a NAS restarted sends thousands of Stops
         # and Interim-Updates at once; in the same queue and workers they held
-        # the sign-ins behind them. Their own workers, on the main connection.
+        # the sign-ins behind them. Their own workers, on a database lane of their
+        # own (radius-acct-N, 1.0.265 - on the main one a page's query held them).
         self.acct_jobs = queue.Queue(maxsize=5000)
         # duplicate key -> (time, reply or None), oldest first, never more
         # than SEEN_MAX: a flood fills it to the brim and no further (1.0.33).
@@ -14954,6 +15400,9 @@ class RadiusServer(object):
         self.late_wake = threading.Event()
         self.late_thread = None
         self.workers = []
+        self.auth_workers = []          # (thread, its own stop) of the sign-in workers (1.0.265)
+        self.workers_lock = threading.Lock()
+        self.rcvbuf = {}
         self.readers = []
         self.stop_flag = False
         self.counts = collections.Counter()
@@ -14977,17 +15426,63 @@ class RadiusServer(object):
     def start(self):
         self.stop_flag = False
         self.open_sockets()
-        for i in range(int(CONFIG.get('radius_workers') or 16)):
-            t = threading.Thread(target=self.work, name='radius-%d' % i, daemon=True)
-            t.start()
-            self.workers.append(t)
+        self.resize_workers()
         for i in range(4):
-            t = threading.Thread(target=self.work, args=(self.acct_jobs,), name='acct-%d' % i,
+            # radius-acct-N (1.0.265): the database gives these a lane of their own (Db._pick);
+            # named acct-N they ran on the main connection, behind the pages.
+            t = threading.Thread(target=self.work, args=(self.acct_jobs,), name='radius-acct-%d' % i,
                                  daemon=True)
             t.start()
             self.workers.append(t)
 
+    def workers_running(self):
+        """How many sign-in workers run now."""
+        with self.workers_lock:
+            return len([1 for t, quit in self.auth_workers if t.is_alive() and not quit.is_set()])
+
+    def resize_workers(self, n=None):
+        """As many sign-in workers as radius_workers says (1.0.265): read at the start only
+        before - a change on the page did nothing until a restart, while the directories'
+        limits already counted with the new number. More are started at once; those beyond
+        it finish the request in hand and end."""
+        try:
+            n = int(n if n is not None else (CONFIG.get('radius_workers') or 16))
+        except (TypeError, ValueError):
+            n = 16
+        n = max(1, min(256, n))
+        with self.workers_lock:
+            live = [(t, q) for t, q in self.auth_workers if t.is_alive() and not q.is_set()]
+            while len(live) > n:
+                _t, q = live.pop()
+                q.set()
+            used = {t.name for t in self.workers if t.is_alive()}
+            i = 0
+            while len(live) < n:
+                while 'radius-%d' % i in used:
+                    i += 1
+                q = threading.Event()
+                t = threading.Thread(target=self.work, kwargs={'quit': q}, name='radius-%d' % i,
+                                     daemon=True)
+                t.start()
+                live.append((t, q))
+                used.add(t.name)
+                self.workers.append(t)
+            self.auth_workers = live
+            self.workers = [t for t in self.workers if t.is_alive()]
+            RADIUS_WORKERS_RUNNING[0] = len(live)
+        return n
+
     def open_sockets(self):
+        self._open_sockets()
+        # The number of workers follows the setting on every reload (1.0.265).
+        if self.auth_workers and not self.stop_flag:
+            try:
+                self.resize_workers()
+            except RuntimeError as e:           # no thread could be started
+                log_sparing('radius-workers', 'radius: the workers could not be changed: %s'
+                            % e, 'warn')
+
+    def _open_sockets(self):
         want = self.want()
         if [(k, b, p) for k, (b, p, _s) in sorted(self.socks.items())] == sorted(want):
             return
@@ -15054,6 +15549,7 @@ class RadiusServer(object):
                     break
                 except OSError:
                     continue
+            self.rcvbuf_check(kind, sock)
             radius_pktinfo_on(sock, fam, bind)
             sock.settimeout(1.0)
             self.socks[kind] = (bind, port, sock)
@@ -15067,6 +15563,30 @@ class RadiusServer(object):
             self.d.store.add_event('radius', self.trouble, 'bad')
         else:
             log('RADIUS listening on %s' % ', '.join(self.bound))
+
+    def rcvbuf_check(self, kind, sock):
+        """The buffer the kernel gave, read back (1.0.265): as the otp account SO_RCVBUFFORCE
+        is refused and SO_RCVBUF is cut to net.core.rmem_max (208 KB unless raised) without a
+        word - the 8 MB were never there. Written down once a socket kind."""
+        try:
+            got = int(sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF))
+        except (OSError, ValueError):
+            return None
+        self.rcvbuf[kind] = got
+        # Linux keeps (and reports) twice what was asked for, for its own bookkeeping.
+        want = RADIUS_RCVBUF * (2 if sys.platform.startswith('linux') else 1)
+        if got < want and kind not in RCVBUF_SAID:
+            RCVBUF_SAID.add(kind)
+            try:
+                most = open('/proc/sys/net/core/rmem_max').read().strip()
+            except OSError:
+                most = '?'
+            log('radius: the receive buffer of the %s socket is %d KB, not the %d KB asked for '
+                '(net.core.rmem_max is %s) - a burst of requests larger than it is dropped by the '
+                'kernel. install.sh sets net.core.rmem_max in /etc/sysctl.d/90-otp.conf; '
+                '"sysctl --system" applies it, then restart otp'
+                % (kind, got // 1024, want // 1024, most), 'warn')
+        return got
 
     def stop(self):
         self.stop_flag = True
@@ -15101,14 +15621,17 @@ class RadiusServer(object):
             if self.socks.get(kind, (None, None, None))[2] is not sock:
                 return
             try:
-                (self.acct_jobs if kind == 'acct' else self.jobs).put_nowait(
-                    (kind, via, data, peer, time.time()))
+                if kind == 'acct':
+                    self.acct_jobs.put_nowait((kind, via, data, peer, time.time()))
+                else:
+                    self.jobs.put_nowait((kind, via, data, peer, time.time()),
+                                         key=radius_fair_key(data, peer[0]))
             except queue.Full:
                 self.counts['overflow'] += 1
 
-    def work(self, jobs=None):
+    def work(self, jobs=None, quit=None):
         jobs = jobs if jobs is not None else self.jobs
-        while not self.stop_flag:
+        while not self.stop_flag and not (quit is not None and quit.is_set()):
             try:
                 kind, sock, data, peer, arrived = jobs.get(timeout=1.0)
             except queue.Empty:
@@ -15118,8 +15641,9 @@ class RadiusServer(object):
             # directory binds and its code used up, ahead of the new ones.
             # 10 s (1.0.149): past what a VPN waits for an answer before it asks
             # again or asks the other node - 15 s worked on requests long given
-            # up behind a slow directory, each using its code up.
-            if time.time() - arrived > int(CONFIG.get('radius_stale_s') or 10):
+            # up behind a slow directory, each using its code up. 4 s (1.0.265):
+            # see RADIUS_STALE_S.
+            if time.time() - arrived > radius_stale_s():
                 self.counts['stale'] += 1
                 with self.unknown_lock:
                     self.quiet['too old to answer'] += 1
@@ -15274,7 +15798,8 @@ class RadiusServer(object):
             try:
                 sock.sendto(reply, peer)
             except OSError as e:
-                log('the answer to %s could not be sent: %s' % (ip, e), 'warn')
+                log_sparing('radius-send:%s' % ip, 'the answer to %s could not be sent: %s' % (ip, e),
+                            'warn', every=300)   # one line a place in 5 min (1.0.265), not one a reply
         if window:
             with self.seen_lock:
                 # A refusal still waiting out its delay is not handed to a
@@ -15412,11 +15937,12 @@ class RadiusServer(object):
             self.ma_asked.clear()
         self.ma_asked[(cid, ip)] = t
         try:
-            want = ':%s:%s' % (cid, ip)
-            for r in self.d.store.db.rows("SELECT k FROM meta WHERE k LIKE 'maseen:%' AND "
-                                          "substr(k, length(k) - ? + 1) = ?",
-                                          (len(want), want)):
-                if r['k'].split(':', 2)[-1] == want[1:]:
+            # Each known node's own key looked up by itself (1.0.265), not every maseen: row
+            # read with LIKE for each unsigned request of a new address.
+            keys = ['maseen:%s:%s:%s' % (n, cid, ip) for n in self.ma_nodes()]
+            for r in self.d.store.db.rows('SELECT k FROM meta WHERE k IN (%s)'
+                                          % ', '.join('?' for _ in keys), keys):
+                if r['k'] in keys:
                     self.ma_seen.add((cid, ip))
                     return True
         except Exception as e:                          # noqa: BLE001
@@ -15427,6 +15953,32 @@ class RadiusServer(object):
             self.ma_asked.pop((cid, ip), None)
             raise DbError('whether %s signs its requests could not be read: %s' % (ip, e))
         return False
+
+    MA_NODES_S = 60             # the nodes' names read again after this
+    MA_NODES_ALL_S = 600        # and the names in the maseen: keys themselves after this
+
+    def ma_nodes(self):
+        """The names of the nodes a maseen: key may be under (1.0.265): this node's, those
+        with a heartbeat, and - read every 10 min - every name the keys carry (a node renamed
+        or gone keeps its keys). Raises where the database cannot say."""
+        t = time.time()
+        got = getattr(self, '_ma_nodes', None)
+        if got is None or t - got[0] > self.MA_NODES_S:
+            names = {node_name()}
+            names.update(str(n.get('name') or '') for n in ha_nodes(self.d.store))
+            every_at, every = (got[2], got[3]) if got else (0.0, set())
+            if t - every_at > self.MA_NODES_ALL_S:
+                every = set()
+                for r in self.d.store.db.rows("SELECT k FROM meta WHERE k LIKE 'maseen:%'"):
+                    parts = str(r['k']).split(':', 3)
+                    if len(parts) == 4:
+                        every.add(parts[1])
+                every_at = t
+            names.update(every)
+            names.discard('')
+            got = (t, sorted(names)[:200], every_at, every)
+            self._ma_nodes = got
+        return got[1]
 
     def status(self, pkt, client, ip, port, secret):
         if not CONFIG.get('radius_status_server', 1):
@@ -15633,7 +16185,8 @@ class RadiusServer(object):
                 if sock is not None:
                     sock.sendto(bytes(reply), peer)
             except OSError as e:
-                log('the answer to %s could not be sent: %s' % (ip, e), 'warn')
+                log_sparing('radius-send:%s' % ip, 'the answer to %s could not be sent: %s' % (ip, e),
+                            'warn', every=300)   # one line a place in 5 min (1.0.265), not one a reply
             if remember is not None:
                 remember(bytes(reply))
         reply.sent = True
@@ -15799,7 +16352,8 @@ class RadiusServer(object):
 
     def state(self):
         return {'listening': self.bound, 'trouble': self.trouble, 'counts': dict(self.counts),
-                'queued': self.jobs.qsize() + self.acct_jobs.qsize()}
+                'queued': self.jobs.qsize() + self.acct_jobs.qsize(),
+                'workers': RADIUS_WORKERS_RUNNING[0], 'rcvbuf': dict(self.rcvbuf)}
 # ---- RADIUS: guessing from one place held back (1.0.137) -----------------------------
 # Every token counts its own wrong codes and locks itself (lockout_after), and
 # that is all there was: from one place - one address behind the VPN - a
@@ -15832,7 +16386,11 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      'asked for too long ago',
                      # 1.0.262: a second window answered in the minute after it ran out, and
                      # a recovery code while the servers are apart - neither a guess
-                     'the code ran out', 'cannot be used while the two servers')
+                     'the code ran out', 'cannot be used while the two servers',
+                     # a suffix added to a name that had one (1.0.265): no guess either
+                     'more than one @',
+                     # this node's own limit of requests at the directory (1.0.265)
+                     'this node is busy')
 
 
 def guard_on():
@@ -17068,6 +17626,11 @@ def php_state():
 # ---------------------------------------------------------------------------
 # The daemon
 # ---------------------------------------------------------------------------
+
+class ReaderBusy(Exception):
+    """The connection of the pages' lists did not come free in time (1.0.265)."""
+
+
 class Daemon(object):
     def __init__(self, store, serve=True):
         self.store = store
@@ -17602,19 +18165,45 @@ class Daemon(object):
         return out
 
     # ---- what it is doing ------------------------------------------------------
+    # The day's counts and the last request kept a few seconds (1.0.265), for every page and tab
+    # alike: counted again on each status every 5 s of each open page, 24 h of the log each time,
+    # they held RADIUS (one process) behind them under load. What tells a page to draw again
+    # (the serial) is read each time.
+    STATUS_DB_S = 5.0
+    STATUS_DB = {'db': None, 'at': 0.0, 'got': None}
+    STATUS_DB_LOCK = threading.Lock()
+
+    def _status_db(self):
+        c, db = self.STATUS_DB, id(self.store.db)
+        got = c['got']
+        if got is not None and c['db'] == db and 0 <= time.time() - c['at'] < self.STATUS_DB_S:
+            return got
+        with self.STATUS_DB_LOCK:
+            got = c['got']
+            if got is not None and c['db'] == db and \
+                    0 <= time.time() - c['at'] < self.STATUS_DB_S:
+                return got
+            at = time.time()
+            last = self.store.db.row("SELECT ts, result, username FROM radius_log WHERE packet = "
+                                     "'Access-Request' ORDER BY ts DESC LIMIT 1")
+            day = at - 86400
+            # Sign-ins only, as the Overview's chart counts them (1.0.252): a packet of a stranger
+            # or of another kind dropped made the card say one more than the line under it.
+            acc = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                                          "packet = 'Access-Request' AND result = 'accept'",
+                                          (day,), 0) or 0)
+            rej = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                                          "packet = 'Access-Request' AND result IN "
+                                          "('reject', 'drop')", (day,), 0) or 0)
+            got = {'last': last, 'acc': acc, 'rej': rej}
+            c.update(db=db, at=at, got=got)
+            return got
+
     def status(self):
         c = self.store.token_counts()
-        last = self.store.db.row("SELECT ts, result, username FROM radius_log WHERE packet = "
-                                 "'Access-Request' ORDER BY ts DESC LIMIT 1")
-        day = time.time() - 86400
-        # Sign-ins only, as the Overview's chart counts them (1.0.252): a packet of a stranger or of
-        # another kind dropped made the card say one more than the line under it.
-        acc = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "packet = 'Access-Request' AND result = 'accept'",
-                                      (day,), 0) or 0)
-        rej = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "packet = 'Access-Request' AND result IN ('reject', 'drop')",
-                                      (day,), 0) or 0)
+        kept = self._status_db()
+        last = kept['last']
+        acc, rej = kept['acc'], kept['rej']
         serial = self.store.db.value('SELECT MAX(id) AS n FROM radius_log', (), 0) or 0
         ev = self.store.db.value('SELECT MAX(id) AS n FROM events', (), 0) or 0
         r = self.radius.state() if self.radius else {}
@@ -17631,8 +18220,8 @@ class Daemon(object):
         si = self.siem.state() if self.siem else {}
         if si.get('trouble'):
             problems.extend('syslog %s: %s' % kv for kv in sorted(si['trouble'].items()))
-        lost = int(self.store.db.value('SELECT COUNT(*) AS n FROM tokens', (), 0) or 0) and \
-            not sealing_key()
+        # From the counts just taken (1.0.265): one more look at the whole table it was.
+        lost = int(c.get('all') or 0) and not sealing_key()
         if lost:
             problems.append('the key that opens the tokens (%s) is missing: no code can be '
                             'checked' % sealing_key_path())
@@ -17796,10 +18385,11 @@ class Daemon(object):
         self.api = ApiServer(self)
         try:
             self.api.start()
-        except ApiBindError as e:
-            # The API's port taken by something else (1.0.262): the daemon stopped here - RADIUS
+        except Exception as e:                          # noqa: BLE001
+            # The API's port taken by something else (1.0.262), or anything else at its start
+            # (1.0.265: its token file not written, /run full): the daemon stopped here - RADIUS
             # with it, started again by systemd and stopped again. RADIUS answers on; the pages
-            # wait, and the port is tried again every half minute.
+            # wait, and the API is tried again every half minute.
             self.api_bind_failed(e)
         HA_STORE['store'] = self.store
         node_name_check(self.store)             # renamed since the last start? (1.0.48)
@@ -17989,6 +18579,11 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
+                    osroots_tick(self)          # the system's trusted roots (1.0.265)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('osroots-tick', 'the system\'s trusted roots: %s' % e, 'warn',
+                                every=600)
+                try:
                     osu_tick(self)              # the local users of the machines (1.0.243)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osu-tick', 'the local users: %s' % e, 'warn', every=600)
@@ -18136,33 +18731,46 @@ class Daemon(object):
         busy[name] = t
         t.start()
 
-    def reader(self):
+    def reader(self, wait=None):
         """The database as the pages' long lists read it (1.0.101): the Log
         searched over months, the suggestions under a search box - on a
         connection of their own, with a limit of 20 s a statement. On the one
         every sign-in shares, four such searches at once held RADIUS for
-        seconds and the health check failed."""
+        seconds and the health check failed. `wait`: how long a page waits for
+        it while it is being opened (1.0.265) - ReaderBusy past that, never a
+        page held for the whole time a database that does not answer takes."""
         main = self.store.db
         if main.engine == 'sqlite':
             return self.store
+        if wait is not None:
+            if not self._reader_lock.acquire(timeout=max(0.0, float(wait))):
+                raise ReaderBusy('the connection of the lists is busy')
+            try:
+                return self._reader_open(main)
+            finally:
+                self._reader_lock.release()
         with self._reader_lock:
-            r = self._reader
-            if r is not None and r.db.where() != main.where():
-                try:
-                    r.db.close()
-                except Exception:                       # noqa: BLE001
-                    pass
-                r = self._reader = None
-            if r is None:
-                try:
-                    r = self._reader = Storage.view(
-                        db_open({k: CONFIG.get(k) for k in DB_KEYS}, statement_s=20))
-                except Exception as e:                  # noqa: BLE001
-                    log_sparing('reader-db', 'the lists of the pages read through the shared '
-                                'connection: their own could not be opened (%s)'
-                                % str(e).split('\n')[0][:200], 'warn')
-                    return self.store
-            return r
+            return self._reader_open(main)
+
+    def _reader_open(self, main):
+        """The lists' own connection, opened when it is not (under _reader_lock)."""
+        r = self._reader
+        if r is not None and r.db.where() != main.where():
+            try:
+                r.db.close()
+            except Exception:                       # noqa: BLE001
+                pass
+            r = self._reader = None
+        if r is None:
+            try:
+                r = self._reader = Storage.view(
+                    db_open({k: CONFIG.get(k) for k in DB_KEYS}, statement_s=20))
+            except Exception as e:                  # noqa: BLE001
+                log_sparing('reader-db', 'the lists of the pages read through the shared '
+                            'connection: their own could not be opened (%s)'
+                            % str(e).split('\n')[0][:200], 'warn')
+                return self.store
+        return r
 
     def hourly(self):
         if CONFIG.get('ha_mode') == 'replicated' and self.store.db.engine == 'postgres':
@@ -40059,6 +40667,21 @@ def selinux_want(store):
     if eng == 'postgres' and host in ('', '127.0.0.1', 'localhost', '::1') and dp not in (0, 5432):
         ports.append({'port': dp, 'proto': 'tcp', 'type': 'postgresql_port_t',
                       'why': 'PostgreSQL of this node listens on it'})
+    # The other node's PostgreSQL (1.0.265): this node's subscription is PostgreSQL's own worker
+    # (postgresql_t), which may connect only to a port labelled postgresql_port_t here - the
+    # other node on a port other than this one's stops replication under enforcing
+    # ("postgresql_t -> unreserved_port_t tcp_socket { name_connect }"). Asked last: a port of
+    # another service is refused and stops the ports after it.
+    try:
+        pp = int(CONFIG.get('ha_peer_port') or 5432)
+    except (TypeError, ValueError):
+        pp = 5432
+    peer_port = None
+    if eng == 'postgres' and CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer') and \
+            pp != 5432 and 1 <= pp <= 65535 and \
+            not any(p['port'] == pp and p['proto'] == 'tcp' for p in ports):
+        peer_port = {'port': pp, 'proto': 'tcp', 'type': 'postgresql_port_t',
+                     'why': 'PostgreSQL of this node replicates from the other node\'s on it'}
     # The balancer's own port (1.0.259) is nginx's: a port httpd may not bind leaves nginx down
     # on an enforcing node. One of a type httpd binds already is not asked (1.0.262).
     try:
@@ -40071,6 +40694,8 @@ def selinux_want(store):
     if wp and CONFIG.get('web_proxy') and not selinux_httpd_bindable(wp) and se_helper_knows_http():
         ports.append({'port': wp, 'proto': 'tcp', 'type': 'http_port_t',
                       'why': 'nginx serves the enrolment pages to the load balancer on it'})
+    if peer_port:
+        ports.append(peer_port)
     return {'booleans': bools, 'ports': ports, 'node': node_name(), 'facts': selinux_facts(store)}
 
 
@@ -42996,8 +43621,14 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     @property
     def reader(self):
-        """The long lists' own connection (1.0.101)."""
-        return self.server.daemon.reader()
+        """The long lists' own connection (1.0.101) - "busy" past READER_WAIT_S (1.0.265),
+        rather than a page held behind the others for the 20 s a statement may take."""
+        try:
+            r = self.server.daemon.reader(wait=READER_WAIT_S)
+        except ReaderBusy:
+            raise ApiError(503, BUSY_WORDS, extra={'busy': True})
+        reader_free_or_busy(r)
+        return r
 
     def client_ip(self):
         said = str(self.headers.get('X-Otp-Client') or '').strip()
@@ -43126,7 +43757,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self.send_json({'ok': False, 'error': frozen, 'split': True}, 409)
         self._held = None
         self._failed = False
+        slot = None
         try:
+            # The heavy pages a few at a time (1.0.265): a hundred open pages asking together held
+            # RADIUS (the same process) behind them. The rest wait for a place, then hear "busy".
+            slot = page_slot(method, path)
             got = fn(self)
             if got is not None:
                 self.send_json(got if 'ok' in got else dict(ok=True, **got))
@@ -43192,6 +43827,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json({'ok': False, 'error': 'it broke - the reason is in the log of the '
                                                   'service (/var/log/otp/otp.log)'}, 500)
         finally:
+            if slot is not None:
+                slot.release()
             self._release()
 
     def _signed_in(self):
@@ -43423,6 +44060,48 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._held = None
 
 
+# ---- the heavy pages a few at a time (1.0.265) ---------------------------------------
+# Every page's lists and counts are worked out in this process, beside RADIUS: a hundred pages
+# open at once (each asking every 5 s) took four in five of its time, and right sign-ins were
+# refused. At most PAGE_SLOTS_N of them at once; the rest wait up to PAGE_SLOT_WAIT_S for a place,
+# then hear "busy" (503, busy: true) - the pages ask again later. Never counted: the health check,
+# signing in and its second step, the enrolment pages, the metrics, the performance meter, the
+# ACME challenge, the downloads (a link, held for the whole file) - and every change (POST).
+PAGE_SLOTS_N = 4
+PAGE_SLOT_WAIT_S = 6.0
+READER_WAIT_S = 5.0
+PAGE_SLOTS = threading.BoundedSemaphore(PAGE_SLOTS_N)
+BUSY_WORDS = 'the server is busy - try again in a moment'
+PAGE_FREE = frozenset(('/api/health', '/api/auth/whoami', '/api/auth/mfa', '/api/auth/settings',
+                       '/api/auth/passkeys', '/api/console-login', '/api/portal-sso',
+                       '/api/metrics', '/api/load', '/api/acme/challenge', '/api/db/download',
+                       '/api/rbackup/download'))
+
+
+def page_slot(method, path):
+    """A place for a heavy page (the semaphore, to be released by the caller), None for a request
+    that needs none; ApiError 503 busy when none came free in time."""
+    if method != 'GET' or path in PAGE_FREE or path.startswith('/api/portal/'):
+        return None
+    if not PAGE_SLOTS.acquire(timeout=PAGE_SLOT_WAIT_S):
+        log_sparing('api-busy', 'the pages ask more than this server works out at once: some '
+                    'were told "busy"', 'info')
+        raise ApiError(503, BUSY_WORDS, extra={'busy': True})
+    return PAGE_SLOTS
+
+
+def reader_free_or_busy(r):
+    """The lists' connection taken by another page's statement for READER_WAIT_S: "busy" now
+    (1.0.265), rather than queued behind it for up to its 20 s."""
+    try:
+        lock = r.db._lanes['main'].lock
+    except (AttributeError, KeyError, TypeError):
+        return
+    if not lock.acquire(timeout=READER_WAIT_S):
+        raise ApiError(503, BUSY_WORDS, extra={'busy': True})
+    lock.release()
+
+
 ROUTES = {}
 # What an administrator who still has to change their password may do.
 MUST_CHANGE_ALLOWED = ('/api/auth/password', '/api/auth/logout', '/api/auth/whoami')
@@ -43494,8 +44173,15 @@ def lockouts_view(d):
                 # place stayed for good - 50 000 /64s were 45 MB, and the
                 # list published every few seconds 18 MB.
                 if t - fnum(info.get('at')) > span and t - until > span:
-                    d.login_fails.pop(key, None)
-                    d.login_info.pop(key, None)
+                    # Under the lock the RADIUS guard counts with (1.0.265), looked at again
+                    # there: a refusal come meanwhile was dropped with it.
+                    with ApiHandler.THROTTLE_LOCK:
+                        now_info = odict(d.login_info.get(key))
+                        if not [x for x in d.login_fails.get(key) or [] if t - x < span] and \
+                                fnum(now_info.get('blocked_until')) <= t and \
+                                t - fnum(now_info.get('at')) > span:
+                            d.login_fails.pop(key, None)
+                            d.login_info.pop(key, None)
                 continue
             names = [n for n, ts in odict(info.get('names')).items() if t - ts < span]
             last = max(fails[-1] if fails else 0, fnum(info.get('blocked_at')))
@@ -44142,8 +44828,11 @@ def _login(h):
     # No account has a longer name (1.0.146): megabytes typed went into the log.
     name = str(b.get('name') or '').strip()[:190]
     password = str(b.get('password') or '')
-    key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
-                     int(CONFIG.get('login_wait_min') or 15), name=name)
+    # The address more loosely than the name (1.0.265): a whole office behind one NAT address
+    # was locked out of the pages by a few typos of one person. The name's count stays.
+    tries = int(CONFIG.get('login_tries') or 5)
+    key = h.throttle('admin', tries, int(CONFIG.get('login_wait_min') or 15), name=name,
+                     ip_tries=max(50, tries * 10))
     acc = h.store.account(name, checked=True) or (h.store.account(admin_name_parts(name)[0], checked=True)
                                                   if CONFIG.get('admin_directory') else None)
     ok = None
@@ -44492,7 +45181,9 @@ def _mailq(h):
         rows = [rows[i] for i in sorted(keep)]
     limit, offset = h.num('limit', 100, 1, 1000), h.num('offset', 0)
     counts = collections.Counter(r.get('state') for r in every)
-    MAILQ_COUNT_CACHE[0] = 0
+    # The badge's count taken from this very look (1.0.265), not thrown away: every list of the
+    # mail asked made the next status of every open page count the whole queue again.
+    MAILQ_COUNT_CACHE[:] = [time.time(), {k: int(counts.get(k, 0)) for k in MAILQ_STATES}]
     return {'rows': [mailq_view(r) for r in rows[offset:offset + limit]], 'total': len(rows),
             'counts': {k: int(counts.get(k, 0)) for k in MAILQ_STATES},
             'node': node_name(), 'retry_hours': int(CONFIG.get('mail_retry_hours') or 24),
@@ -47145,6 +47836,20 @@ def _db_download_ticket(h, s, b):
 @route('POST', '/api/db/restore')
 def _db_restore(h):
     s = h.me('fulladmin')
+    # Room for the file and its opening, as for a copy sent to Backups (1.0.265): up to 4 GB went
+    # beside the live database with no look at the disk, and a full disk stopped the database.
+    try:
+        want = int(h.headers.get('Content-Length') or 0)
+    except ValueError:
+        want = 0                        # said by body_to_file below
+    try:
+        free = shutil.disk_usage(str(STATE_DIR)).free
+    except OSError:
+        free = None
+    if free is not None and want > 0 and free < 2 * want + BACKUP_ROOM_MIN:
+        raise ApiError(507, 'there is no room for it in %s: %d MB free, %d MB needed so that '
+                            'the disk is not filled under the database'
+                       % (STATE_DIR, free >> 20, (2 * want + BACKUP_ROOM_MIN) >> 20))
     fd, tmp = tempfile.mkstemp(prefix='otp-upload-', dir=str(STATE_DIR))
     os.close(fd)
     tmp = Path(tmp)
@@ -48460,8 +49165,11 @@ def _portal_login(h):
     b = h.body()
     name = str(b.get('name') or '').strip()
     password = str(b.get('password') or '')
-    key = h.throttle('portal', int(CONFIG.get('portal_tries') or 5),
-                     int(CONFIG.get('portal_wait_min') or 15), name=name)
+    # The address more loosely than the name (1.0.265), as the other steps of the portal: a
+    # whole office behind one NAT address was locked out by a few typos. The name's count stays.
+    tries = int(CONFIG.get('portal_tries') or 5)
+    key = h.throttle('portal', tries, int(CONFIG.get('portal_wait_min') or 15), name=name,
+                     ip_tries=max(50, tries * 10))
     full = Authenticator.full_name(name, CONFIG.get('portal_realm') or
                                    CONFIG.get('default_realm') or '')
     if full and name_letters_problem(full):
@@ -50935,6 +51643,7 @@ def _mfa_do(h):
             raise ApiError(400, 'choose a way first')
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
+                         ip_tries=max(50, int(CONFIG.get('login_tries') or 5) * 10),
                          what='wrong codes')
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
         code = code_typed(b.get('code') or '') if new['kind'] != 'passkey' else ''
@@ -51010,6 +51719,7 @@ def _mfa_do(h):
         rec = mfa_get(h.store, name) or {}
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
+                         ip_tries=max(50, int(CONFIG.get('login_tries') or 5) * 10),
                          what='wrong codes')
         code = code_typed(b.get('code') or '') if rec.get('kind') != 'passkey' else ''
         if rec.get('kind') == 'passkey':
@@ -52334,6 +53044,501 @@ def _sshd_do(h):
     except ValueError as e:
         raise ApiError(400, str(e))
     raise ApiError(400, 'no such thing to do')
+# ---- the system's trusted roots, on every node (1.0.265) ------------------------------
+# Settings → Certificates and TLS → Trusted roots of the system: certificate authorities of
+# one's own (a company's root, an intermediate) put into the trust of the operating system as a
+# whole - curl, dnf, LDAPS to a domain controller, SMTP, syslog over TLS and otp's own
+# connections. Each node's root helper (otp_web.py, osroots.ask) puts them where the system
+# itself takes local additions from (the anchors folder of RHEL, /usr/local/share/ca-certificates
+# of Debian) and runs the system's own tool; the distribution's list is never touched and keeps
+# coming with the system's updates, these beside it.
+#
+# The set wanted is the cluster's: each node writes only a row of its own,
+# 'oscerts:want:NODE' = {v, certs, by, at} - the newest v of all of them is the set (v counted
+# above every v seen, so the order does not hang on the clocks); signed by the database guard,
+# as every row that reaches root. Each node's daemon has its root helper bring the machine to that
+# set - when it changes, at its start, every half hour - and says how it went, with what the
+# machine has, in 'oscerts:node:NODE'. 'oscerts:again:NODE' asks every node to read again.
+OSR_MAX = 50
+OSR_PEM_MAX = 16384
+OSR_RESYNC_S = 1800
+OSR_RETRY_S = 600
+OSR_LATE_S = 300
+OSR = {'busy': False, 'since': 0.0, 'done_hash': None, 'done_at': 0.0, 'fail_hash': None,
+       'fail_at': 0.0, 'again_seen': None}
+OSR_LOCK = threading.Lock()
+OSR_BLOCK_RE = re.compile(r'-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*?)-----END CERTIFICATE-----')
+OSR_PY = {'fixed': ''}
+OSR_SYSTEM_BUNDLES = ('/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+                      '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt')
+
+
+# -- otp's own connections and the system's trust ----------------------------------------
+def osr_python_fix():
+    """otp's own TLS clients (the directory, mail, syslog, SMS, ACME, isemon, the remote backups)
+    make their contexts with ssl.create_default_context(), which is OpenSSL's default places -
+    the system's list on a Python of the distribution. A Python built with an OpenSSL of its own
+    (install.sh --python PATH) may look where there is nothing: then every connection that checks
+    a certificate failed - and the system's trusted roots never reached otp. Pointed at the
+    system's list then, and only then; a SSL_CERT_FILE or SSL_CERT_DIR given stays as given."""
+    if os.environ.get('SSL_CERT_FILE') or os.environ.get('SSL_CERT_DIR'):
+        return
+    try:
+        p = ssl.get_default_verify_paths()
+    except Exception:                                   # noqa: BLE001
+        return
+    if p.cafile and os.path.isfile(p.cafile):
+        return
+    try:
+        if p.capath and os.path.isdir(p.capath) and any(
+                n.endswith('.0') for n in os.listdir(p.capath)):
+            return
+    except OSError:
+        pass
+    for f in OSR_SYSTEM_BUNDLES:
+        if os.path.isfile(f):
+            os.environ['SSL_CERT_FILE'] = f
+            OSR_PY['fixed'] = f
+            return
+
+
+osr_python_fix()
+
+
+def osr_python_trust():
+    """Where otp's own connections look for the authorities they trust, and whether that is the
+    system's list - the one these additions go into."""
+    try:
+        p = ssl.get_default_verify_paths()
+    except Exception:                                   # noqa: BLE001
+        return {}
+    cafile = os.environ.get('SSL_CERT_FILE') or p.cafile or ''
+    capath = os.environ.get('SSL_CERT_DIR') or p.capath or ''
+    sysf = [f for f in OSR_SYSTEM_BUNDLES if os.path.isfile(f)]
+    real = os.path.realpath(cafile) if cafile else ''
+    system = bool(real and any(os.path.realpath(f) == real for f in sysf)) or \
+        bool(capath and os.path.realpath(capath) in ('/etc/ssl/certs', '/etc/pki/tls/certs'))
+    return {'cafile': cafile, 'capath': capath, 'system': system, 'fixed': OSR_PY['fixed'],
+            'openssl': getattr(ssl, 'OPENSSL_VERSION', '')}
+
+
+# -- a certificate read ------------------------------------------------------------------
+def osr_blocks(text):
+    """Each certificate of a text as (pem, der); a private key, or no certificate, refused."""
+    text = str(text or '')
+    if re.search(r'PRIVATE KEY|BEGIN ENCRYPTED|BEGIN PKCS7|BEGIN TRUSTED CERTIFICATE', text):
+        raise ValueError('no private key and nothing but certificates (-----BEGIN CERTIFICATE-----)')
+    out = []
+    for body in OSR_BLOCK_RE.findall(text):
+        try:
+            der = base64.b64decode(re.sub(r'\s+', '', body), validate=True)
+        except ValueError:
+            raise ValueError('a certificate that is not base64')
+        if not der or len(der) > OSR_PEM_MAX * 3 // 4:
+            raise ValueError('a certificate of %d bytes - one is a few kB at most' % len(der))
+        enc = base64.b64encode(der).decode('ascii')
+        out.append(('-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' % '\n'.join(
+            enc[i:i + 64] for i in range(0, len(enc), 64)), der))
+    if not out:
+        raise ValueError('no certificate in it (-----BEGIN CERTIFICATE-----)')
+    return out
+
+
+def osr_text(raw):
+    """A file as it came - PEM, or one certificate in DER (.cer) - as PEM text."""
+    if isinstance(raw, str):
+        raw = raw.encode('utf-8', 'replace')
+    if b'-----BEGIN' in raw:
+        return raw.decode('ascii', 'replace')
+    if raw[:1] == b'\x30':
+        try:
+            return _openssl(['x509', '-inform', 'DER'], data=raw, what='not a certificate in DER').decode('ascii')
+        except ValueError:
+            pass
+    raise ValueError('neither PEM (-----BEGIN CERTIFICATE-----) nor one certificate in DER')
+
+
+def _osr_time(s):
+    import calendar
+    try:
+        return calendar.timegm(time.strptime(re.sub(r'\s+', ' ', s.strip()), '%b %d %H:%M:%S %Y %Z'))
+    except ValueError:
+        return 0
+
+
+def osr_facts(pem, der):
+    """As the root helper reads it (otp_web.py osroots_facts - the same words): the names, the
+    time, the key, whether it is an authority; `refused` what stands against it, `warn` what is
+    to be known."""
+    txt = _openssl(['x509', '-noout', '-text', '-nameopt', 'RFC2253'], data=pem.encode('ascii'),
+                   what='not a certificate openssl reads').decode('utf-8', 'replace')
+
+    def one(rx):
+        m = re.search(rx, txt, re.M)
+        return m.group(1).strip() if m else ''
+    f = {'fp': hashlib.sha256(der).hexdigest(), 'subject': one(r'^\s*Subject: ?(.*)$')[:400],
+         'issuer': one(r'^\s*Issuer: ?(.*)$')[:400],
+         'not_before': _osr_time(one(r'Not Before\s*: (.*)$')),
+         'not_after': _osr_time(one(r'Not After\s*: (.*)$')),
+         'sig': one(r'Signature Algorithm: (\S+)')[:60]}
+    cn = re.search(r'(?:^|,)CN=((?:\\.|[^,])*)', f['subject'])
+    f['cn'] = (cn.group(1) if cn else f['subject'])[:200]
+    alg = one(r'Public Key Algorithm: (\S+)')
+    bits = one(r'Public-Key: \((\d+) bit\)')
+    curve = one(r'NIST CURVE: (\S+)') or one(r'ASN1 OID: (\S+)')
+    f['key'] = ('RSA %s' % bits) if alg == 'rsaEncryption' else \
+        ('EC %s' % (curve or bits)) if alg == 'id-ecPublicKey' else \
+        (alg.replace('ED25519', 'Ed25519').replace('ED448', 'Ed448')[:40] if alg else '?')
+    f['bits'] = int(bits) if bits.isdigit() else 0
+    bc = re.search(r'X509v3 Basic Constraints:.*\n\s*(CA:(TRUE|FALSE))', txt)
+    f['ca'] = bool(bc and bc.group(2) == 'TRUE')
+    ku = re.search(r'X509v3 Key Usage:.*\n\s*(.*)', txt)
+    f['ku_sign'] = None if not ku else ('Certificate Sign' in ku.group(1))
+    f['root'] = f['subject'] == f['issuer']
+    f['kind'] = 'root' if f['root'] else 'intermediate'
+    refused, warn = [], []
+    now = time.time()
+    if not bc:
+        refused.append('it says nothing of being an authority (no basicConstraints CA:TRUE) - '
+                       'only a certificate authority goes here')
+    elif not f['ca']:
+        refused.append('it is not a certificate authority (CA:FALSE) - a server\'s own certificate '
+                       'does not go here')
+    if f['ku_sign'] is False:
+        refused.append('its key usage does not let it sign certificates (no keyCertSign)')
+    if f['not_after'] and f['not_after'] < now:
+        warn.append('it ran out on %s - nothing it signed is trusted' % time.strftime(
+            '%Y-%m-%d', time.gmtime(f['not_after'])))
+    if f['not_before'] and f['not_before'] > now + 300:
+        warn.append('it is valid only from %s' % time.strftime('%Y-%m-%d', time.gmtime(f['not_before'])))
+    if not f['root'] and re.match(r'(?i)(sha1|md5|md2)', f['sig']):
+        warn.append('it is signed with %s - the system\'s crypto policy (DEFAULT) refuses it, and '
+                    'every chain through it' % f['sig'])
+    if f['key'].startswith('RSA') and 0 < f['bits'] < 2048:
+        warn.append('its key has %d bits - the system\'s crypto policy (DEFAULT) refuses fewer '
+                    'than 2048' % f['bits'])
+    f['refused'], f['warn'] = refused, warn
+    return f
+
+
+# -- the set wanted ----------------------------------------------------------------------
+def osr_hash(certs):
+    return hashlib.sha256(','.join(sorted(str(c.get('fp') or '') for c in certs or [])).encode()).hexdigest()[:24]
+
+
+def osr_rows(store, head):
+    try:
+        rows = store.db.rows("SELECT k, v FROM meta WHERE k LIKE ?", (head + '%',))
+    except Exception:                                   # noqa: BLE001
+        return []
+    return [r for r in dbguard_rows(store.db, rows) if str(r['k']).startswith(head)]
+
+
+def osr_want(store):
+    """The set wanted of the cluster - the newest of every node's row - or None while none was
+    ever written (or none is otp's own: the guard leaves out a row written by somebody else)."""
+    best = None
+    for r in osr_rows(store, 'oscerts:want:'):
+        got = json_obj(r['v'])
+        if not isinstance(got, dict) or not isinstance(got.get('certs'), list):
+            continue
+        try:
+            v = int(got.get('v') or 0)
+        except (TypeError, ValueError):
+            continue
+        key = (v, r['k'])
+        if best is None or key > best[0]:
+            best = (key, got, r['k'][len('oscerts:want:'):])
+    if best is None:
+        return None
+    got = best[1]
+    certs = [c for c in got['certs'] if isinstance(c, dict) and isinstance(c.get('pem'), str)
+             and re.match(r'^[0-9a-f]{64}\Z', str(c.get('fp') or ''))][:OSR_MAX]
+    return {'v': best[0][0], 'certs': certs, 'by': str(got.get('by') or ''), 'at': fnum(got.get('at')),
+            'node': best[2], 'what': str(got.get('what') or ''), 'hash': osr_hash(certs)}
+
+
+def osr_save(store, certs, by, what):
+    vs = [0]
+    for r in osr_rows(store, 'oscerts:want:'):
+        try:
+            vs.append(int((json_obj(r['v']) or {}).get('v') or 0))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    v = max(int(time.time() * 1000), max(vs) + 1)
+    row = {'v': v, 'certs': certs, 'by': by, 'at': time.time(), 'what': what}
+    store.set_meta('oscerts:want:' + node_name(), json.dumps(row))
+    store.add_event('settings', '%s %s - the system\'s trusted roots of every node' % (by, what),
+                    'warn', who=by)
+    return row
+
+
+def osr_read_text(text):
+    """Every certificate of a text (one, or a chain file of several), read: [facts with pem]."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError('the certificates: PEM text, or a file')
+    if len(text) > OSR_MAX * OSR_PEM_MAX:
+        raise ValueError('that is far more than %d certificates' % OSR_MAX)
+    blocks = osr_blocks(osr_text(text))
+    if len(blocks) > OSR_MAX:
+        raise ValueError('%d certificates in it - %d at most' % (len(blocks), OSR_MAX))
+    out = []
+    for pem, der in blocks:
+        out.append(dict(osr_facts(pem, der), pem=pem))
+    return out
+
+
+def osr_check(store, text):
+    """What adding this text would do - nothing written."""
+    want = osr_want(store) or {'certs': []}
+    have = {c['fp'] for c in want['certs']}
+    subjects = {c.get('subject') for c in want['certs']}
+    got = osr_read_text(text)
+    subjects |= {f['subject'] for f in got if not f['refused']}
+    for f in got:
+        f['already'] = f['fp'] in have
+        # An intermediate whose root is nowhere here: trusted by itself only where a partial
+        # chain is taken (curl, Python 3.13 on) - most other programs want its root too.
+        if not f['root'] and not f['refused'] and f['issuer'] not in subjects:
+            f['warn'] = f['warn'] + ['an intermediate without its root here: programs that take '
+                                     'a partial chain (curl, Python 3.13 on) trust it by itself, '
+                                     'others want its root too - add the root as well, unless '
+                                     'the system\'s list has it']
+    return got
+
+
+def osr_add(store, text, by):
+    got = osr_check(store, text)
+    want = osr_want(store) or {'certs': []}
+    certs = list(want['certs'])
+    added = [f for f in got if not f['refused'] and not f['already']]
+    seen = set()
+    added = [f for f in added if not (f['fp'] in seen or seen.add(f['fp']))]
+    refused = [{'cn': f['cn'], 'fp': f['fp'], 'why': '; '.join(f['refused'])} for f in got if f['refused']]
+    if not added:
+        if refused:
+            raise ValueError('nothing added: %s' % '; '.join('%s - %s' % (r['cn'], r['why']) for r in refused))
+        raise ValueError('nothing added: every certificate in it is there already')
+    if len(certs) + len(added) > OSR_MAX:
+        raise ValueError('%d certificates at most - %d are there, %d more asked' % (
+            OSR_MAX, len(certs), len(added)))
+    for f in added:
+        certs.append({'pem': f['pem'], 'fp': f['fp'], 'cn': f['cn'], 'kind': f['kind'],
+                      'by': by, 'at': time.time()})
+    osr_save(store, certs, by, 'added %s' % ', '.join('%s (%s, SHA-256 %s)' % (f['cn'], f['kind'], f['fp'][:16])
+                                                      for f in added))
+    return {'added': [{k: f[k] for k in ('cn', 'fp', 'kind', 'warn')} for f in added],
+            'refused': refused, 'already': [f['cn'] for f in got if f['already']],
+            'message': 'added %d - every node puts %s into its system\'s trust within a minute' % (
+                len(added), 'it' if len(added) == 1 else 'them')}
+
+
+def osr_find(certs, fp):
+    fp = re.sub(r'[^0-9a-f]', '', str(fp or '').lower())
+    if len(fp) < 12:
+        raise ValueError('the SHA-256 fingerprint - 12 characters of it at least')
+    hit = [c for c in certs if c['fp'].startswith(fp)]
+    if not hit:
+        raise ValueError('otp has added no certificate with that fingerprint')
+    if len(hit) > 1:
+        raise ValueError('more than one certificate begins with that - give more of it')
+    return hit[0]
+
+
+def osr_remove(store, fp, by):
+    want = osr_want(store) or {'certs': []}
+    c = osr_find(want['certs'], fp)
+    certs = [x for x in want['certs'] if x['fp'] != c['fp']]
+    osr_save(store, certs, by, 'took away %s (SHA-256 %s)' % (c.get('cn') or '?', c['fp'][:16]))
+    return {'message': 'taken away - every node takes it out of its system\'s trust within a minute'}
+
+
+def osr_again(store, by=''):
+    store.set_meta('oscerts:again:' + node_name(), repr(time.time()))
+
+
+# -- each node ---------------------------------------------------------------------------
+def _osr_state(data):
+    """What the helper said of the machine, as it is kept: without the PEMs."""
+    keep = {}
+    for k in ('ours', 'others', 'system', 'flavour', 'dir', 'tool', 'tool_there'):
+        if k in data:
+            keep[k] = data[k]
+    keep['ours'] = [x for x in (keep.get('ours') or []) if isinstance(x, dict)][:OSR_MAX + 10]
+    keep['others'] = [x for x in (keep.get('others') or []) if isinstance(x, dict)][:200]
+    return keep
+
+
+def osroots_tick(daemon):
+    if HA_REBUILDING.is_set() or not WEB_DIR.is_dir():
+        return
+    store = daemon.store
+    with OSR_LOCK:
+        if OSR['busy'] and time.time() - OSR['since'] < 900:
+            return
+    want = osr_want(store)
+    h = want['hash'] if want else None
+    again = ''
+    for r in osr_rows(store, 'oscerts:again:'):
+        again = max(again, str(r['v'] or ''))
+    now = time.time()
+    due = now - OSR['done_at'] > OSR_RESYNC_S
+    if want is not None and h != OSR['done_hash'] and \
+            not (h == OSR['fail_hash'] and now - OSR['fail_at'] < OSR_RETRY_S):
+        due = True
+    if again != OSR['again_seen']:
+        first = OSR['again_seen'] is None
+        OSR['again_seen'] = again
+        if again and not first:
+            due = True
+    if not due:
+        return
+    with OSR_LOCK:
+        if OSR['busy'] and time.time() - OSR['since'] < 900:
+            return
+        OSR['busy'], OSR['since'] = True, time.time()
+    me = node_name()
+
+    def go():
+        row = {'at': time.time(), 'v': want['v'] if want else 0, 'hash': h or '', 'ok': False,
+               'error': '', 'said': [], 'refused': [], 'python': osr_python_trust()}
+        old = _meta_json(store, 'oscerts:node:' + me) or {}
+        try:
+            if want is None:
+                data = root_ask('osroots.ask', 'osroots.json', {'do': 'list'}, 120)
+            else:
+                data = root_ask('osroots.ask', 'osroots.json',
+                                {'do': 'sync', 'certs': [c['pem'] for c in want['certs']]}, 300)
+            row.update(ok=True, said=[str(x)[:200] for x in data.get('said') or []][:120],
+                       refused=[x for x in data.get('refused') or [] if isinstance(x, dict)][:OSR_MAX],
+                       state=_osr_state(data))
+            OSR.update(done_hash=h, done_at=time.time(), fail_hash=None)
+            if row['said']:
+                log('the system\'s trusted roots: %s' % '; '.join(row['said']))
+                store.add_event('settings', '%s: the system\'s trusted roots - %s' % (me, '; '.join(row['said'])),
+                                'info')
+        except Exception as e:                          # noqa: BLE001
+            row.update(error=str(e)[:400] or e.__class__.__name__, state=old.get('state') or {})
+            OSR.update(done_hash=None, done_at=time.time(), fail_hash=h, fail_at=time.time())
+            # Only read (nothing of otp's wanted): said quietly - a node whose helper is of a version
+            # before (an upgrade under way) has nothing to put in anyway.
+            log_sparing('osroots', 'the system\'s trusted roots: %s' % e, 'warn' if want else 'info',
+                        every=900 if want else 3600)
+        try:
+            store.set_meta('oscerts:node:' + me, json.dumps(row))
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('osroots-row', 'the system\'s trusted roots: %s' % e, 'warn', every=900)
+        finally:
+            with OSR_LOCK:
+                OSR['busy'] = False
+    threading.Thread(target=go, name='otp-osroots', daemon=True).start()
+
+
+def osr_node_status(want, row, alive):
+    """(status, words): applied, waiting, failed - or 'none' while nothing was ever asked."""
+    if want is None:
+        if row.get('error'):
+            return 'failed', str(row['error'])
+        return 'none', ''
+    if row.get('at') and row.get('hash') == want['hash']:
+        if not row.get('ok'):
+            return 'failed', str(row.get('error') or 'the root helper said no')
+        if row.get('refused'):
+            return 'failed', '; '.join('%s - %s' % (r.get('cn') or '?', r.get('why') or '?')
+                                       for r in row['refused'])
+        return 'applied', ''
+    if not alive:
+        return 'waiting', 'not answering'
+    if time.time() - fnum(want.get('at')) > OSR_LATE_S:
+        return 'waiting', ('asked more than five minutes ago and not done - is it of this version, '
+                           'and is otp-web.path running there?') + (
+                               (' (last: %s)' % row['error']) if row.get('error') else '')
+    return 'waiting', ''
+
+
+OSR_FACTS = {}
+
+
+def osr_facts_kept(pem):
+    """A certificate of the set read once (the view is asked every few seconds)."""
+    key = hashlib.sha256(pem.encode('utf-8', 'replace')).hexdigest()
+    got = OSR_FACTS.get(key)
+    if got is None:
+        try:
+            p, der = osr_blocks(pem)[0]
+            got = osr_facts(p, der)
+        except ValueError as e:
+            got = {'cn': '?', 'warn': [], 'refused': [str(e)]}
+        if len(OSR_FACTS) > 400:
+            OSR_FACTS.clear()
+        OSR_FACTS[key] = got
+    return got
+
+
+def osr_view(store):
+    want = osr_want(store)
+    alive = host_alive(store)
+    nodes = []
+    for n in host_nodes(store):
+        row = _meta_json(store, 'oscerts:node:' + n) or {}
+        status, why = osr_node_status(want, row, alive.get(n, False))
+        st = row.get('state') if isinstance(row.get('state'), dict) else {}
+        nodes.append({'name': n, 'me': n == node_name(), 'alive': alive.get(n, False),
+                      'status': status, 'why': why, 'at': row.get('at'), 'said': row.get('said') or [],
+                      'error': row.get('error') or '', 'ours': st.get('ours') or [],
+                      'others': st.get('others') or [], 'system': st.get('system') or {},
+                      'flavour': st.get('flavour') or '', 'dir': st.get('dir') or '',
+                      'tool': st.get('tool') or '', 'tool_there': st.get('tool_there'),
+                      'python': row.get('python') or {}})
+    certs = []
+    facts = [(c, osr_facts_kept(c['pem'])) for c in (want or {}).get('certs') or []]
+    subjects = {f.get('subject') for _c, f in facts}
+    for c, f in facts:
+        warn = list(f.get('warn') or [])
+        if f.get('kind') == 'intermediate' and f.get('issuer') not in subjects:
+            warn.append('its root is not among these - trusted by itself only where a partial chain '
+                        'is taken (curl, Python 3.13 on), unless the system\'s list has the root')
+        on = {}
+        for n in nodes:
+            hit = [x for x in n['ours'] if x.get('fp') == c['fp']]
+            on[n['name']] = (hit[0].get('in_bundle') is not False) if hit else False
+        certs.append({'fp': c['fp'], 'pem': c['pem'], 'cn': f.get('cn'), 'subject': f.get('subject'),
+                      'issuer': f.get('issuer'), 'not_before': f.get('not_before'),
+                      'not_after': f.get('not_after'), 'key': f.get('key'), 'kind': f.get('kind'),
+                      'sig': f.get('sig'), 'warn': warn, 'by': c.get('by') or '',
+                      'at': c.get('at'), 'on': on})
+    return {'certs': certs, 'nodes': nodes, 'cluster': len(nodes) > 1, 'max': OSR_MAX,
+            'want': {k: want[k] for k in ('v', 'by', 'at', 'node', 'what', 'hash')} if want else None,
+            'python': osr_python_trust()}
+
+
+@route('GET', '/api/osroots')
+def _osroots(h):
+    h.me()          # read-only may see: certificates of authorities are nothing secret
+    return osr_view(h.store)
+
+
+@route('POST', '/api/osroots')
+def _osroots_do(h):
+    s = h.me('fulladmin')
+    b = h.body()
+    act = str(b.get('action') or '')
+    try:
+        if act == 'check':
+            got = osr_check(h.store, b.get('text'))
+            return {'certs': [{k: f[k] for k in ('fp', 'cn', 'subject', 'issuer', 'not_before', 'not_after',
+                                                   'key', 'kind', 'sig', 'warn', 'refused', 'already')}
+                              for f in got]}
+        if act == 'add':
+            return osr_add(h.store, b.get('text'), s['name'])
+        if act == 'remove':
+            return osr_remove(h.store, b.get('fp'), s['name'])
+        if act == 'refresh':
+            osr_again(h.store, s['name'])
+            return {'message': 'asked: every node reads its trusted roots again within a minute'}
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    raise ApiError(400, 'check, add, remove or refresh')
 
 # ---- the local users of the machines (1.0.243) -----------------------------------------
 # Settings -> Local users: the users of each node (root and those of the normal range), made and
@@ -59545,6 +60750,8 @@ class Console(object):
              lambda: self.act('--sso-key', '--yes') if self.confirm(
                  'A new key for the balancer', 'The one the balancer sends now is no longer taken '
                  '- put the new one into the balancer.', yes='Make it', no='Cancel') else None),
+            ('22', 'The system\'s trusted roots (certificate authorities) of each node',
+             lambda: self.act('--os-roots')),
         ])
 
     def m_upgrades(self):
@@ -60369,6 +61576,89 @@ def cli_api(daemon, who, method, path, body=None, args=None):
         raise SystemExit('otp: %s' % e)
 
 
+def cli_os_roots(args, pal, api, out):
+    """otp --os-roots, --os-roots-add FILE, --os-roots-remove FINGERPRINT (1.0.265): Settings ->
+    Certificates and TLS -> Trusted roots of the system, on the command line."""
+    if args.os_roots_add:
+        try:
+            with open(args.os_roots_add, 'rb') as f:
+                raw = f.read(OSR_MAX * OSR_PEM_MAX + 1)
+        except OSError as e:
+            raise SystemExit('otp: %s' % e)
+        try:
+            text = osr_text(raw)
+        except ValueError as e:
+            raise SystemExit('otp: %s: %s' % (args.os_roots_add, e))
+        got = api('POST', '/api/osroots', {'action': 'check', 'text': text})['certs']
+        for c in got:
+            print('  %s  %s  %s' % (pal.head(c['cn'] or '?'), c['kind'], pal.dim('SHA-256 ' + c['fp'])))
+            print(pal.dim('    issued by %s; valid %s - %s; %s' % (
+                c['issuer'], stamp(c['not_before']) if c['not_before'] else '?',
+                stamp(c['not_after']) if c['not_after'] else '?', c['key'])))
+            for w in c['refused']:
+                print(pal.bad_line('    not taken: %s' % w))
+            for w in c['warn']:
+                print(pal.warn_line('    %s' % w))
+            if c['already']:
+                print(pal.dim('    there already'))
+        if not any(not c['refused'] and not c['already'] for c in got):
+            raise SystemExit('otp: nothing to add')
+        cli_sure(args, 'every program of every node will trust what these sign')
+        r = api('POST', '/api/osroots', {'action': 'add', 'text': text})
+        if args.json:
+            out(r)
+        else:
+            print(pal.ok_line(r['message']))
+        return 0
+    if args.os_roots_remove:
+        cli_sure(args, 'what %s signs is no longer trusted by the system of any node' % args.os_roots_remove)
+        r = api('POST', '/api/osroots', {'action': 'remove', 'fp': args.os_roots_remove})
+        if args.json:
+            out(r)
+        else:
+            print(pal.ok_line(r['message']))
+        return 0
+    v = api('GET', '/api/osroots')
+    if args.json:
+        out(v)
+        return 0
+    print(pal.head('the system\'s trusted roots - otp\'s additions (%d of %d at most)' % (len(v['certs']), v['max'])))
+    names = [n['name'] for n in v['nodes']]
+    print(table([[c['cn'] or '?', c['kind'] or '?', c['fp'][:16],
+                  stamp(c['not_after']) if c.get('not_after') else '?', c.get('key') or '?'] +
+                 (['yes' if c['on'].get(n) else 'no' for n in names] if len(names) > 1 else [])
+                 for c in v['certs']],
+                ['name', 'kind', 'sha-256', 'valid until', 'key'] + (names if len(names) > 1 else [])))
+    for c in v['certs']:
+        for w in c.get('warn') or []:
+            print(pal.warn_line('  %s: %s' % (c['cn'], w)))
+    for n in v['nodes']:
+        s = n['system'] or {}
+        print(pal.head('%s%s' % (n['name'], ' (this one)' if n['me'] else '')))
+        say = {'applied': pal.ok_line, 'failed': pal.bad_line}.get(n['status'], pal.warn_line)
+        print(say('  %s%s' % ({'applied': 'as wanted', 'waiting': 'waiting', 'failed': 'failed',
+                               'none': 'nothing added by otp'}.get(n['status'], n['status']),
+                              (': ' + n['why']) if n['why'] else '')))
+        if n.get('dir'):
+            print(pal.dim('  local additions in %s, made into the system\'s list by %s' % (n['dir'], n['tool'])))
+        if s:
+            print(pal.dim('  the system\'s own list: %s certificates in %s%s' % (
+                s.get('count', '?'), s.get('path', '?'),
+                ('; package %s' % s['package']) if s.get('package') else '')))
+        others = [o for o in n.get('others') or []]
+        if others:
+            print(pal.dim('  added by somebody else (otp leaves them as they are):'))
+            for o in others:
+                cs = o.get('certs') or []
+                print('    %s  %s' % (o.get('file'), ', '.join('%s (%s)' % (c.get('cn'), c.get('kind')) for c in cs)
+                                      or ('a link to %s' % o['link'] if o.get('link') else 'no certificate read')))
+        py = n.get('python') or {}
+        if py and not py.get('system'):
+            print(pal.warn_line('  otp\'s own connections trust %s - not the system\'s list' % (
+                py.get('cafile') or py.get('capath') or '?')))
+    return 0
+
+
 def cli_ask_wait(store, kind, asked, secs=90, say=None):
     """What every node answered to an ask (asked = {'id', 'nodes'}): waited for
     until all have, or secs. {node: answer or None}."""
@@ -60834,6 +62124,14 @@ def build_parser():
     g.add_argument('--ntp', action='store_true', help='the time: each node\'s servers and how far off')
     g.add_argument('--ntp-sync', action='store_true', help='set the clock of this node (--node: '
                    'another) from its servers now')
+    g.add_argument('--os-roots', action='store_true', help='the system\'s trusted roots of every '
+                   'node: the certificate authorities otp added, those added by somebody else, the '
+                   'system\'s own list and its package')
+    g.add_argument('--os-roots-add', metavar='FILE', help='put the certificate authorities of FILE '
+                   '(PEM - one or a chain - or one in DER) into the trust of the system of every node '
+                   '(asked first unless --yes)')
+    g.add_argument('--os-roots-remove', metavar='FINGERPRINT', help='take one otp added out of it '
+                   'again (its SHA-256 fingerprint, 12 characters of it at least)')
     g.add_argument('--net', action='store_true', help='each node\'s network as it read it')
     g.add_argument('--hisec', action='store_true', help='high security: every rule, kept or not, '
                    'and its exceptions')
@@ -62195,6 +63493,8 @@ def cli_stage_files(args):
             args.downgrade = stage(args.downgrade)
         if getattr(args, 'ca', None):
             args.ca = stage(args.ca)
+        if getattr(args, 'os_roots_add', None):
+            args.os_roots_add = stage(args.os_roots_add)     # in /root too (1.0.265)
         if getattr(args, 'export_config', None) and args.export_config != '-':
             mode = 0o600 if getattr(args, 'with_secrets', False) else 0o640
             # Emptied only when written (1.0.249): a passphrase typed twice wrong, a refusal,
@@ -64418,6 +65718,8 @@ def cli_main(argv=None):
         return shown(api('GET', '/api/ntp'))
     if args.ntp_sync:
         return shown(api('POST', '/api/ntp', {'action': 'sync', 'node': only or node_name()}))
+    if args.os_roots or args.os_roots_add or args.os_roots_remove:
+        return cli_os_roots(args, pal, api, out)
     if args.net:
         return shown(api('GET', '/api/net'))
     if args.hisec:

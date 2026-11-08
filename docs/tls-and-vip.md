@@ -8,6 +8,9 @@ administrator, or the command line. From 1.0.47.
   address's name: upload a certificate (PEM, PFX / PKCS#12, with or without a
   password), make a request (CSR) here, or make a self-signed one; choose the
   protocols, the ciphers, the DH parameters and HSTS.
+- **Trusted roots of the system** (1.0.265): certificate authorities of your
+  own put into the trust of the operating system of every node, beside the
+  distribution's list (see below).
 - **The VIP address**: in a cluster of two, one more IP address for
   the pages and the administration that is on one node at a time
   (active/standby) and moves to the other node by itself when the node
@@ -160,6 +163,75 @@ otp --tls-preset intermediate --tls-dh ffdhe2048 --tls-hsts 31536000 --tls-for o
 
 *Stop looking after it* (the bin on a card): otp no longer changes that
 node's TLS; nginx keeps the files it has.
+
+
+### Trusted roots of the system (1.0.265)
+
+*Settings → Certificates and TLS → Trusted roots of the system* puts certificate
+authorities of your own - your company's root, an intermediate - into the trust of
+the **operating system as a whole**, on every node: curl, dnf, LDAPS to a domain
+controller, SMTP, syslog over TLS, otp's own connections - every program that uses
+the system's trust. Everyone may see the card; a full administrator adds and takes
+away.
+
+It never touches the distribution's list. It uses the way the system itself takes
+local additions:
+
+| System | otp writes | then runs | the result |
+|---|---|---|---|
+| RHEL, AlmaLinux, Rocky | `/etc/pki/ca-trust/source/anchors/otp-<sha256>.pem` | `update-ca-trust extract` | `/etc/pki/ca-trust/extracted/` |
+| Debian, Ubuntu | `/usr/local/share/ca-certificates/otp-<sha256>.crt` | `update-ca-certificates` | `/etc/ssl/certs/` |
+
+**The system's updates go on as before.** The `ca-certificates` package brings
+the distribution's list and runs the same tool when it is updated; the tool always
+merges that list with the folder of local additions. So a package update keeps
+otp's additions, and otp's additions keep the package's list - each complements
+the other. The card shows each node's list (how many authorities, when it was
+made last) and the package's version, so you see the updates arriving.
+
+- **Only otp's own files**: otp lists, writes and removes only `otp-*` files
+  in that folder. Anything else there (put by you, or by a configuration tool)
+  is shown as *added by somebody else* and left as it is.
+- **What is taken**: PEM pasted, or a `.pem`, `.crt` or `.cer` (DER) file; a
+  chain adds every authority in it. Only certificate authorities
+  (`basicConstraints CA:TRUE`, allowed to sign certificates) - a server's own
+  certificate and anything with a private key in it are refused. 50 at most.
+- **Warned, still taken**: an authority that ran out or is not valid yet; an
+  intermediate signed with SHA-1 or a key under 2048 bits (the system's
+  crypto policy DEFAULT refuses them); an intermediate without its root - only
+  programs that take a partial chain (curl, Python 3.13 on) trust it alone, so
+  add its root too unless the system's list has it.
+- **Both nodes**: the set wanted is the cluster's. Each node's daemon has its
+  root helper (`otp_web.py`, through `otp-web.path`) bring its machine to that
+  set within seconds of a change, at every start and every half hour; the card
+  says per node *as wanted*, *waiting* or *failed* with the tool's words. A
+  standalone server is a cluster of one.
+- **Labels**: files are written root's, `0644`; SELinux labels them `cert_t`
+  as every file of that folder (`restorecon`) - nothing new in otp's module.
+- **The database guard** signs the set wanted (`oscerts:want:NODE`): with
+  `db_guard` on, a set written into the database by somebody else is not put in.
+
+**otp's own connections** (the directory, mail, syslog/SIEM, isemon, SMS, ACME,
+the remote backups) make their TLS contexts with Python's
+`ssl.create_default_context()`, which reads OpenSSL's default places - on the
+distribution's Python (the one install.sh chooses) that is the system's list
+above, so an authority added here reaches them at their next connection. The
+database connection does so with *the system's authorities* chosen in
+Encryption to the database server. A Python built with an OpenSSL of its own
+(`install.sh --python PATH`) that looks where there is nothing is pointed at the
+system's list at the start; the card says which list otp's connections use. An
+authority imported into a directory, the SMS gateway or isemon is still used
+there as before (the gateway's: alone; the others': beside the system's).
+
+```bash
+otp --os-roots                          # what otp added, what others did, each node's list
+otp --os-roots-add /root/corp-ca.pem    # one, or a chain: shown, then asked (--yes)
+otp --os-roots-remove 43e0734e943ad2b1 --yes
+```
+
+Taking one away takes it out of every node's trust: whatever relied on it
+(LDAPS, mail, syslog…) fails from its next connection - unless the system's own
+list has it too.
 
 ---
 

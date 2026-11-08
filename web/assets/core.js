@@ -190,13 +190,29 @@ function toast(words, kind) {
    last filter landed after the fast one to the new filter and drew rows that
    did not match what was asked. An older one ends as "stopped". */
 var LATEST = {};
+/* The one of each list still on its way (1.0.265): a new one stops it (a GET - the browser lets
+   it go, the server's answer is not waited for), and the live updates start none while it is
+   still out - under load each tick piled another refresh on the ones not yet answered. */
+var LATEST_OUT = {};
 function apiLatest(key, what, body) {
   var n = LATEST[key] = (LATEST[key] || 0) + 1;
-  return api(what, body).then(function (d) {
-    if (LATEST[key] !== n) { var e = new Error('superseded'); e.stopped = true; throw e; }
+  var before = LATEST_OUT[key];
+  if (before && body === undefined && before.stop) before.stop();
+  var ctl = LATEST_OUT[key] = {};
+  var done = function () { if (LATEST_OUT[key] === ctl) delete LATEST_OUT[key]; };
+  var stopped = function () { var e = new Error('superseded'); e.stopped = true; return e; };
+  return api(what, body, undefined, ctl).then(function (d) {
+    done();
+    if (LATEST[key] !== n) throw stopped();
     return d;
+  }, function (e) {
+    done();
+    if (LATEST[key] !== n) throw stopped();
+    throw e;
   });
 }
+/** Whether the list of this key is still being asked for. */
+function apiLatestOut(key) { return !!LATEST_OUT[key]; }
 function oops(e) {
   if (e && e.stopped) return;           /* somebody stopped it: not a fault */
   /* An account that must set its own password first: every page answers
@@ -1160,8 +1176,14 @@ function signedOutNow() {
   }
   throw new Error('signed out');
 }
-function api(what, body, wait) {
+/* ctl (optional): {stop()} is put on it - the request let go, its answer an error with .stopped.
+   A daemon too busy for one more page says so (503, busy: 1.0.265): a GET is asked once more a
+   moment later, then the error has .busy (and .unreachable - whatever asks every few seconds asks
+   again, nothing broke). */
+function api(what, body, wait, ctl) {
   var opts = {credentials: 'same-origin'};
+  var stoppedErr = function () { var e = new Error('superseded'); e.stopped = true; return e; };
+  if (ctl && ctl.stopped) return Promise.reject(stoppedErr());
   if (body !== undefined && body !== null) {
     opts.method = 'POST';
     opts.headers = {'Content-Type': 'application/json'};
@@ -1173,8 +1195,10 @@ function api(what, body, wait) {
     opts.signal = ac.signal;
     timer = setTimeout(function () { late = true; ac.abort(); }, limit * 1000);
   }
+  if (ctl) ctl.stop = function () { ctl.stopped = true; if (ac) ac.abort(); };
   return fetch('?api=' + what, opts).catch(function (e) {
     clearTimeout(timer);
+    if (ctl && ctl.stopped) throw stoppedErr();
     var err = new Error(late ? 'the server did not answer in ' + limit + ' s'
                              : 'the server could not be reached');
     err.unreachable = true;
@@ -1209,6 +1233,22 @@ function api(what, body, wait) {
         }
         if (r.status === 413) throw new Error('that is more than the server takes');
         throw new Error('the page got something that is not an answer');
+      }
+      if (r.status === 503 && data && data.busy) {
+        if (ctl && ctl.stopped) throw stoppedErr();
+        if (!opts.method && !(ctl && ctl.retried)) {
+          /* Once more, a little later (spread so that the pages do not come back together). */
+          var again = ctl || {};
+          again.retried = true;
+          return new Promise(function (ok) { setTimeout(ok, 1500 + Math.random() * 1500); })
+            .then(function () { return api(what, body, wait, again); });
+        }
+        var tired = new Error(data.error || 'the server is busy - try again in a moment');
+        tired.status = 503;
+        tired.busy = true;
+        tired.unreachable = true;
+        tired.data = data;
+        throw tired;
       }
       if (!r.ok || data.ok === false) {
         var err = new Error(data.error || ('HTTP ' + r.status));

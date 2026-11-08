@@ -331,7 +331,7 @@ if (isset($_GET['api'])) {
         'selinux' => '/api/selinux',
         'portal-sso' => '/api/portal-sso',
         'mfa' => '/api/auth/mfa', 'passkeys' => '/api/auth/passkeys',
-        'sshkeys' => '/api/sshkeys', 'osusers' => '/api/osusers', 'settings-nodes' => '/api/settings/nodes', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osroots' => '/api/osroots', 'osusers' => '/api/osusers', 'settings-nodes' => '/api/settings/nodes', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
@@ -353,7 +353,7 @@ if (isset($_GET['api'])) {
         'selinux' => '/api/selinux',
         'portal-sso' => '/api/portal-sso',
         'mfa' => '/api/auth/mfa', 'passkeys' => '/api/auth/passkeys',
-        'sshkeys' => '/api/sshkeys', 'osusers' => '/api/osusers', 'settings-nodes' => '/api/settings/nodes', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
+        'sshkeys' => '/api/sshkeys', 'osroots' => '/api/osroots', 'osusers' => '/api/osusers', 'settings-nodes' => '/api/settings/nodes', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
         'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
@@ -418,7 +418,8 @@ $host    = (string) ($_SERVER['HTTP_HOST'] ?? php_uname('n'));
 $site    = (string) ($initial['site'] ?? '');
 $title   = $site !== '' ? $site . ' · OTP' : 'otp';
 $lang    = otp_lang_pick($me, (string) ($health['lang'] ?? 'cs'));
-$load    = $lang !== 'en' && otp_lang_pack($lang) !== null;
+// Listed is enough (1.0.265): the whole pack was read and decoded on every page drawn.
+$load    = $lang !== 'en' && isset(otp_langs()[$lang]);
 if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     setcookie('otp_lang', $lang, ['expires' => time() + 365 * 86400, 'path' => '/',
               'secure' => otp_https(), 'httponly' => false, 'samesite' => 'Strict']);
@@ -1719,6 +1720,19 @@ otp --ha-join /root/otp-join-otp1.json --node-name otp2</pre>
         an upload above keeps it, and the Automatic certificates leave it alone from then on. Off until switched
         on; acme's address must be among those that may reach these pages.</p>
       <div id="web-push"></div>
+    </div>
+    <!-- The system's trusted roots (1.0.265): certificate authorities of one's own put into the
+         trust of the operating system of every node, beside the distribution's list. -->
+    <div class="card full" id="osr-card">
+      <h2>Trusted roots of the system</h2>
+      <p class="note">Certificate authorities of your own - your company's root, an intermediate -
+        trusted by the operating system of every node as a whole: curl, dnf, LDAPS to a domain
+        controller, SMTP, syslog over TLS, otp's own connections - every program that uses the
+        system's trust. The distribution's own list stays as it is and keeps coming with the
+        system's updates; these are added beside it, the way the system itself takes local
+        additions (update-ca-trust on RHEL, AlmaLinux and Rocky, update-ca-certificates on Debian
+        and Ubuntu), and stay there through those updates.</p>
+      <div id="osr-host"></div>
     </div>
 
   </div>

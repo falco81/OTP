@@ -208,7 +208,8 @@ if ($gate !== null) {
     $me = null;
 }
 $lang = otp_lang_pick(null, (string) ($info['lang'] ?? 'cs'));
-$load = $lang !== 'en' && otp_lang_pack($lang) !== null;
+// Listed is enough (1.0.265): the whole pack was read and decoded on every page drawn.
+$load = $lang !== 'en' && isset(otp_langs()[$lang]);
 $title = (string) ($info['title'] ?? '');
 // No title of the site's own: a heading of the page's own, in the page's language.
 $title_ours = $title === '';

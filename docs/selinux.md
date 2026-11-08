@@ -13,16 +13,20 @@ things the system's policy does not say by itself:
 
 | What | Why | How |
 |---|---|---|
-| `/run/otp` and the API token labelled `httpd_var_run_t` | the pages (php-fpm, `httpd_t`) read the token; systemd makes `/run/otp` as `var_run_t`, which `httpd_t` may not read | otp's module **`otp_server`** (`/usr/local/lib/otp/otp_server.cil`): file labels only, no rule of its own - for `/run/otp` and `/var/run/otp` both (1.0.234), as the policy reads one as the other (`file_contexts.subs_dist`: `/run` ↔ `/var/run`) |
+| `/run/otp` and the API token labelled `httpd_var_run_t` | the pages (php-fpm, `httpd_t`) read the token; systemd makes `/run/otp` as `var_run_t`, which `httpd_t` may not read | otp's module **`otp_server`** (`/usr/local/lib/otp/otp_server.cil`): file labels first, a narrow rule only where no label or boolean does it (the two rows marked *a rule of `otp_server`*) - for `/run/otp` and `/var/run/otp` both (1.0.234), as the policy reads one as the other (`file_contexts.subs_dist`: `/run` ↔ `/var/run`) |
 | `httpd_can_network_connect` on | the pages ask the daemon on `127.0.0.1:9861` (`api_port`) | a boolean |
 | `authlogin_radius` on | SSH asks otp for the code (pam_radius in `sshd_t`) - only with *SSH with a code* | a boolean |
 | the SSH gate's port as `radius_port_t` | pam_radius sends to it (18129 and up by default) | `semanage port` |
 | sshd's port as `ssh_port_t` | sshd on a port other than 22 | `semanage port` |
 | PostgreSQL's port as `postgresql_port_t` | a local PostgreSQL on a port other than 5432 | `semanage port` |
+| the other node's PostgreSQL port as `postgresql_port_t` (1.0.265) | a cluster: the subscription of this node is PostgreSQL's own worker (`postgresql_t`), which connects only to a port of that type - the other node on a port other than 5432 (`ha_peer_port`) | `semanage port` |
+| PostgreSQL may read the certificates' folder (1.0.265) | the link between the databases encrypted: the worker reads the authorities (`sslrootcert` - `/etc/pki/otp/ha-ca.pem`, `cert_t`), which the targeted policy lets `postgresql_t` read only with `authlogin_nsswitch_use_ldap` on - else `postgresql_t → cert_t file { read }` and replication stops | a rule of `otp_server`: read only, as other services read certificates |
+| the balancer's port as `http_port_t` (1.0.262) | nginx serves the enrolment pages to the load balancer on `web_proxy_port`; a port of neither `http_port_t` nor `http_cache_port_t` keeps nginx from starting | `semanage port` |
 | systemd may change the owner of what is in `/run/otp` | before every command of the unit (`systemctl reload otp` too) systemd hands `/run/otp` back to the service's account - seen on a node as `init_t → httpd_var_run_t file { setattr }` | a rule of `otp_server` (1.0.237): owner and mode only, nothing read or written |
 | `/var/www/otp`, `/usr/libexec/keepalived/otp-vip-check` | the pages; keepalived's check, which may run unconfined from there | the system's own labels (`restorecon`) |
 
-`install.sh` and every upgrade copy the module beside the program, and put it into the
+`install.sh` and every upgrade copy the module beside the program - on a node without the
+pages too (1.0.265) - and put it into the
 policy where SELinux is on (only when it changed - `semodule` takes its time), and say so
 when the policy still does not label `/run/otp` for the pages (`matchpathcon /run/otp`).
 Where SELinux is disabled they do nothing more. `--uninstall` takes the module out; the mode,

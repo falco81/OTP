@@ -41,6 +41,8 @@ WEB_SERVICE_UNIT="/etc/systemd/system/otp-web.service"
 UNIT_FILE="/etc/systemd/system/otp.service"
 LOGROTATE_FILE="/etc/logrotate.d/otp"
 CONSOLE_SYSCTL="/etc/sysctl.d/80-otp-console.conf"
+RCVBUF_SYSCTL="/etc/sysctl.d/90-otp.conf"
+RCVBUF_MAX=16777216
 
 DRY_RUN=""
 ASSUME_YES=""
@@ -399,7 +401,7 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     [[ -e /etc/nginx/conf.d/otp_vip.conf ]] && run rm -f /etc/nginx/conf.d/otp_vip.conf
     [[ -e /etc/nginx/conf.d/otp_lbport.conf ]] && run rm -f /etc/nginx/conf.d/otp_lbport.conf
     [[ -e /usr/libexec/keepalived/otp-vip-check ]] && run rm -f /usr/libexec/keepalived/otp-vip-check
-    for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$CONSOLE_SYSCTL" "$NGINX_CONF" "$BIN_LINK" \
+    for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$CONSOLE_SYSCTL" "$RCVBUF_SYSCTL" "$NGINX_CONF" "$BIN_LINK" \
                "$UPGRADE_PATH_UNIT" "$UPGRADE_SERVICE_UNIT" "$WEB_PATH_UNIT" "$WEB_SERVICE_UNIT" \
                /etc/polkit-1/rules.d/49-otp-database.rules "$CONFIG_DIR/may-restart-database" \
                /etc/php-fpm.d/otp.conf /etc/php/*/fpm/pool.d/otp.conf /etc/profile.d/zz-otp-console.sh /etc/otp-console-login; do
@@ -1177,6 +1179,7 @@ install_program() {
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp.service" "$UNIT_FILE"
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp.logrotate" "$LOGROTATE_FILE"
     console_quiet
+    rcvbuf_max
     install_upgrader
     run systemctl daemon-reload
     if [[ -f "$UPGRADE_PATH_UNIT" ]]; then
@@ -1218,6 +1221,35 @@ console_quiet() {
         'kernel.printk = 4 4 1 7' > "$CONSOLE_SYSCTL"
     chmod 0644 "$CONSOLE_SYSCTL"
     sysctl -q -p "$CONSOLE_SYSCTL" >/dev/null 2>&1 || true
+}
+
+# RADIUS's receive buffer (1.0.265): the daemon asks for 8 MB on each RADIUS socket - a burst
+# of a few thousand requests (a NAS reconnecting its VPN users) held until a worker takes it.
+# Running as the otp account it gets no more than net.core.rmem_max, 208 KB by default, and
+# the kernel dropped the rest unseen. 16 MB allowed here (the kernel counts twice what is
+# asked for). Never lowered: a value set elsewhere in sysctl.d, or one already higher, is
+# left as it is. Taken away with --uninstall.
+rcvbuf_max() {
+    local own now
+    own=$(grep -ls '^[[:space:]]*net\.core\.rmem_max' /etc/sysctl.d/*.conf /etc/sysctl.conf 2>/dev/null | grep -v "^$RCVBUF_SYSCTL\$" || true)
+    if [[ -n "$own" ]]; then
+        say "net.core.rmem_max is set by hand ($own): left as it is"
+        return 0
+    fi
+    now=$(cat /proc/sys/net/core/rmem_max 2>/dev/null || echo 0)
+    if [[ ! -e "$RCVBUF_SYSCTL" && "$now" =~ ^[0-9]+$ && "$now" -ge "$RCVBUF_MAX" ]]; then
+        return 0
+    fi
+    if [[ -n "$DRY_RUN" ]]; then
+        say "would write $RCVBUF_SYSCTL (net.core.rmem_max = $RCVBUF_MAX: RADIUS's receive buffer)"
+        return 0
+    fi
+    printf '%s\n' '# Written by otp (install.sh): room for RADIUS'"'"'s receive buffer - the daemon asks' \
+        '# for 8 MB on each RADIUS socket and gets no more than this allows. Removed by' \
+        '# install.sh --uninstall.' \
+        "net.core.rmem_max = $RCVBUF_MAX" > "$RCVBUF_SYSCTL"
+    chmod 0644 "$RCVBUF_SYSCTL"
+    sysctl -q -p "$RCVBUF_SYSCTL" >/dev/null 2>&1 || warn "sysctl -p $RCVBUF_SYSCTL did not go: RADIUS keeps a smaller receive buffer until the next boot"
 }
 
 install_upgrader() {
@@ -2089,7 +2121,10 @@ step "The service"
 root_facts_write
 restart_daemon
 
-if [[ -n "$WITH_WEB" ]]; then install_pages; fi
+if [[ -n "$WITH_WEB" ]]; then install_pages
+# otp's SELinux module on a node without the pages too (1.0.265): its rules are not only the
+# pages' - PostgreSQL reading the authorities of the encrypted link between the databases.
+else selinux_module; fi
 open_firewall
 # Again (1.0.258): the pages, SELinux and the firewall were done after the daemon started.
 root_facts_write
