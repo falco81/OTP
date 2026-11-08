@@ -1,0 +1,164 @@
+{
+ "rows": [
+  {
+   "phase": "B ref RADIUS alone 140/s",
+   "stream": "auth/pw",
+   "offered": 140.0,
+   "done": 139.99971220287568,
+   "n": 6300,
+   "p50": 3.109455108642578,
+   "p95": 10.197877883911133,
+   "p99": 17.76289939880371,
+   "max": 45.3031063079834,
+   "timeouts": 0,
+   "wrong": 0,
+   "fresh_rej": 0,
+   "double": 0,
+   "short": 0
+  },
+  {
+   "phase": "B RADIUS 140/s + http 100",
+   "stream": "auth/pw",
+   "offered": 140.0,
+   "done": 139.9998082587431,
+   "n": 12600,
+   "p50": 3.1235218048095703,
+   "p95": 18.344640731811523,
+   "p99": 355.29613494873047,
+   "max": 803.215503692627,
+   "timeouts": 0,
+   "wrong": 0,
+   "fresh_rej": 0,
+   "double": 0,
+   "short": 0
+  },
+  {
+   "phase": "B RADIUS 140/s + http 100 flood (said only)",
+   "stream": "auth/pw",
+   "offered": 140.0,
+   "done": 120.06647137320459,
+   "n": 5403,
+   "p50": 4049.2615699768066,
+   "p95": 4330.859422683716,
+   "p99": 4422.939777374268,
+   "max": 4549.200534820557,
+   "timeouts": 897,
+   "wrong": 0,
+   "fresh_rej": 11,
+   "double": 0,
+   "short": 0
+  }
+ ],
+ "checks": [
+  [
+   "B RADIUS 140/s + http 100: RADIUS all answered, right, none twice",
+   true,
+   {
+    "timeouts": 0,
+    "refused right": 0,
+    "wrong": []
+   }
+  ],
+  [
+   "B RADIUS 140/s + http 100: RADIUS p99 < 50 ms while the pages are hammered (alone 17.8, with HTTP 355.3)",
+   false,
+   ""
+  ],
+  [
+   "B RADIUS 140/s + http 100: HTTP load does not multiply RADIUS p99 (with/alone 20.0x <= 3x or +10 ms)",
+   false,
+   ""
+  ],
+  [
+   "B RADIUS 140/s + http 100: accounting p99 < 50 ms (9.1)",
+   true,
+   ""
+  ],
+  [
+   "B RADIUS 140/s + http 100: no 5xx and no failed connection",
+   true,
+   ""
+  ],
+  [
+   "the whole run: no code let in twice (21874 codes let in)",
+   true,
+   []
+  ],
+  [
+   "the daemon's own log: no token let in twice for one 30 s step (otp_log)",
+   true,
+   []
+  ],
+  [
+   "the daemon dropped nothing for a full queue (overflow) or as too old (stale)",
+   false,
+   {
+    "overflow": 0,
+    "stale": 897,
+    "no_database": 0,
+    "repeated": 0
+   }
+  ]
+ ],
+ "knee": {},
+ "db": "/var/lib/otp/otp.db (SQLite 3.45.1)",
+ "sys": {
+  "B ref RADIUS alone 140/s": {
+   "d_rss0": 250768,
+   "d_rss1": 250764,
+   "d_rss_max": 250780,
+   "d_th0": 37,
+   "d_th1": 37,
+   "d_th_max": 37,
+   "d_fds0": 21,
+   "d_fds1": 18,
+   "d_fds_max": 21,
+   "d_cpu_avg": 50.93084144085701,
+   "d_cpu_max": 60.78567140236626,
+   "sys_busy_avg": 18.471630792414302,
+   "fpm_n_max": 23,
+   "fpm_rss_max": 400156,
+   "ngx_rss0": 42684,
+   "ngx_rss1": 42684,
+   "ngx_fds_max": 61
+  },
+  "B RADIUS 140/s + http 100": {
+   "d_rss0": 250764,
+   "d_rss1": 250836,
+   "d_rss_max": 250836,
+   "d_th0": 37,
+   "d_th1": 38,
+   "d_th_max": 39,
+   "d_fds0": 18,
+   "d_fds1": 18,
+   "d_fds_max": 23,
+   "d_cpu_avg": 54.426602873744805,
+   "d_cpu_max": 100.64838010937152,
+   "sys_busy_avg": 21.969182926493676,
+   "fpm_n_max": 24,
+   "fpm_rss_max": 414260,
+   "ngx_rss0": 42684,
+   "ngx_rss1": 42940,
+   "ngx_fds_max": 163
+  },
+  "B RADIUS 140/s + http 100 flood (said only)": {
+   "d_rss0": 250836,
+   "d_rss1": 251104,
+   "d_rss_max": 251520,
+   "d_th0": 38,
+   "d_th1": 38,
+   "d_th_max": 62,
+   "d_fds0": 18,
+   "d_fds1": 22,
+   "d_fds_max": 49,
+   "d_cpu_avg": 105.21412070870282,
+   "d_cpu_max": 208.3341923218021,
+   "sys_busy_avg": 89.15826224702673,
+   "fpm_n_max": 24,
+   "fpm_rss_max": 416604,
+   "ngx_rss0": 42940,
+   "ngx_rss1": 43484,
+   "ngx_fds_max": 238
+  }
+ }
+}

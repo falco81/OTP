@@ -86,8 +86,14 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     @property
     def reader(self):
-        """The long lists' own connection (1.0.101)."""
-        return self.server.daemon.reader()
+        """The long lists' own connection (1.0.101) - "busy" past READER_WAIT_S (1.0.265),
+        rather than a page held behind the others for the 20 s a statement may take."""
+        try:
+            r = self.server.daemon.reader(wait=READER_WAIT_S)
+        except ReaderBusy:
+            raise ApiError(503, BUSY_WORDS, extra={'busy': True})
+        reader_free_or_busy(r)
+        return r
 
     def client_ip(self):
         said = str(self.headers.get('X-Otp-Client') or '').strip()
@@ -216,7 +222,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self.send_json({'ok': False, 'error': frozen, 'split': True}, 409)
         self._held = None
         self._failed = False
+        slot = None
         try:
+            # The heavy pages a few at a time (1.0.265): a hundred open pages asking together held
+            # RADIUS (the same process) behind them. The rest wait for a place, then hear "busy".
+            slot = page_slot(method, path)
             got = fn(self)
             if got is not None:
                 self.send_json(got if 'ok' in got else dict(ok=True, **got))
@@ -282,6 +292,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json({'ok': False, 'error': 'it broke - the reason is in the log of the '
                                                   'service (/var/log/otp/otp.log)'}, 500)
         finally:
+            if slot is not None:
+                slot.release()
             self._release()
 
     def _signed_in(self):
@@ -513,6 +525,48 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._held = None
 
 
+# ---- the heavy pages a few at a time (1.0.265) ---------------------------------------
+# Every page's lists and counts are worked out in this process, beside RADIUS: a hundred pages
+# open at once (each asking every 5 s) took four in five of its time, and right sign-ins were
+# refused. At most PAGE_SLOTS_N of them at once; the rest wait up to PAGE_SLOT_WAIT_S for a place,
+# then hear "busy" (503, busy: true) - the pages ask again later. Never counted: the health check,
+# signing in and its second step, the enrolment pages, the metrics, the performance meter, the
+# ACME challenge, the downloads (a link, held for the whole file) - and every change (POST).
+PAGE_SLOTS_N = 4
+PAGE_SLOT_WAIT_S = 6.0
+READER_WAIT_S = 5.0
+PAGE_SLOTS = threading.BoundedSemaphore(PAGE_SLOTS_N)
+BUSY_WORDS = 'the server is busy - try again in a moment'
+PAGE_FREE = frozenset(('/api/health', '/api/auth/whoami', '/api/auth/mfa', '/api/auth/settings',
+                       '/api/auth/passkeys', '/api/console-login', '/api/portal-sso',
+                       '/api/metrics', '/api/load', '/api/acme/challenge', '/api/db/download',
+                       '/api/rbackup/download'))
+
+
+def page_slot(method, path):
+    """A place for a heavy page (the semaphore, to be released by the caller), None for a request
+    that needs none; ApiError 503 busy when none came free in time."""
+    if method != 'GET' or path in PAGE_FREE or path.startswith('/api/portal/'):
+        return None
+    if not PAGE_SLOTS.acquire(timeout=PAGE_SLOT_WAIT_S):
+        log_sparing('api-busy', 'the pages ask more than this server works out at once: some '
+                    'were told "busy"', 'info')
+        raise ApiError(503, BUSY_WORDS, extra={'busy': True})
+    return PAGE_SLOTS
+
+
+def reader_free_or_busy(r):
+    """The lists' connection taken by another page's statement for READER_WAIT_S: "busy" now
+    (1.0.265), rather than queued behind it for up to its 20 s."""
+    try:
+        lock = r.db._lanes['main'].lock
+    except (AttributeError, KeyError, TypeError):
+        return
+    if not lock.acquire(timeout=READER_WAIT_S):
+        raise ApiError(503, BUSY_WORDS, extra={'busy': True})
+    lock.release()
+
+
 ROUTES = {}
 # What an administrator who still has to change their password may do.
 MUST_CHANGE_ALLOWED = ('/api/auth/password', '/api/auth/logout', '/api/auth/whoami')
@@ -584,8 +638,15 @@ def lockouts_view(d):
                 # place stayed for good - 50 000 /64s were 45 MB, and the
                 # list published every few seconds 18 MB.
                 if t - fnum(info.get('at')) > span and t - until > span:
-                    d.login_fails.pop(key, None)
-                    d.login_info.pop(key, None)
+                    # Under the lock the RADIUS guard counts with (1.0.265), looked at again
+                    # there: a refusal come meanwhile was dropped with it.
+                    with ApiHandler.THROTTLE_LOCK:
+                        now_info = odict(d.login_info.get(key))
+                        if not [x for x in d.login_fails.get(key) or [] if t - x < span] and \
+                                fnum(now_info.get('blocked_until')) <= t and \
+                                t - fnum(now_info.get('at')) > span:
+                            d.login_fails.pop(key, None)
+                            d.login_info.pop(key, None)
                 continue
             names = [n for n, ts in odict(info.get('names')).items() if t - ts < span]
             last = max(fails[-1] if fails else 0, fnum(info.get('blocked_at')))
@@ -1232,8 +1293,11 @@ def _login(h):
     # No account has a longer name (1.0.146): megabytes typed went into the log.
     name = str(b.get('name') or '').strip()[:190]
     password = str(b.get('password') or '')
-    key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
-                     int(CONFIG.get('login_wait_min') or 15), name=name)
+    # The address more loosely than the name (1.0.265): a whole office behind one NAT address
+    # was locked out of the pages by a few typos of one person. The name's count stays.
+    tries = int(CONFIG.get('login_tries') or 5)
+    key = h.throttle('admin', tries, int(CONFIG.get('login_wait_min') or 15), name=name,
+                     ip_tries=max(50, tries * 10))
     acc = h.store.account(name, checked=True) or (h.store.account(admin_name_parts(name)[0], checked=True)
                                                   if CONFIG.get('admin_directory') else None)
     ok = None
@@ -1582,7 +1646,9 @@ def _mailq(h):
         rows = [rows[i] for i in sorted(keep)]
     limit, offset = h.num('limit', 100, 1, 1000), h.num('offset', 0)
     counts = collections.Counter(r.get('state') for r in every)
-    MAILQ_COUNT_CACHE[0] = 0
+    # The badge's count taken from this very look (1.0.265), not thrown away: every list of the
+    # mail asked made the next status of every open page count the whole queue again.
+    MAILQ_COUNT_CACHE[:] = [time.time(), {k: int(counts.get(k, 0)) for k in MAILQ_STATES}]
     return {'rows': [mailq_view(r) for r in rows[offset:offset + limit]], 'total': len(rows),
             'counts': {k: int(counts.get(k, 0)) for k in MAILQ_STATES},
             'node': node_name(), 'retry_hours': int(CONFIG.get('mail_retry_hours') or 24),
@@ -4235,6 +4301,20 @@ def _db_download_ticket(h, s, b):
 @route('POST', '/api/db/restore')
 def _db_restore(h):
     s = h.me('fulladmin')
+    # Room for the file and its opening, as for a copy sent to Backups (1.0.265): up to 4 GB went
+    # beside the live database with no look at the disk, and a full disk stopped the database.
+    try:
+        want = int(h.headers.get('Content-Length') or 0)
+    except ValueError:
+        want = 0                        # said by body_to_file below
+    try:
+        free = shutil.disk_usage(str(STATE_DIR)).free
+    except OSError:
+        free = None
+    if free is not None and want > 0 and free < 2 * want + BACKUP_ROOM_MIN:
+        raise ApiError(507, 'there is no room for it in %s: %d MB free, %d MB needed so that '
+                            'the disk is not filled under the database'
+                       % (STATE_DIR, free >> 20, (2 * want + BACKUP_ROOM_MIN) >> 20))
     fd, tmp = tempfile.mkstemp(prefix='otp-upload-', dir=str(STATE_DIR))
     os.close(fd)
     tmp = Path(tmp)
@@ -5550,8 +5630,11 @@ def _portal_login(h):
     b = h.body()
     name = str(b.get('name') or '').strip()
     password = str(b.get('password') or '')
-    key = h.throttle('portal', int(CONFIG.get('portal_tries') or 5),
-                     int(CONFIG.get('portal_wait_min') or 15), name=name)
+    # The address more loosely than the name (1.0.265), as the other steps of the portal: a
+    # whole office behind one NAT address was locked out by a few typos. The name's count stays.
+    tries = int(CONFIG.get('portal_tries') or 5)
+    key = h.throttle('portal', tries, int(CONFIG.get('portal_wait_min') or 15), name=name,
+                     ip_tries=max(50, tries * 10))
     full = Authenticator.full_name(name, CONFIG.get('portal_realm') or
                                    CONFIG.get('default_realm') or '')
     if full and name_letters_problem(full):

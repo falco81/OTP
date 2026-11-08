@@ -271,7 +271,8 @@ ok('Clear puts each time picker to its own default', 'tp._set(tp._start ||' in J
 ok('the lockouts timer not stopped by a hidden tab', "if (document.hidden) return;" in JS)
 ok('the SELinux report waited for by the nodes\' own clocks', "Number(reps[n].at) > (before[n] || 0)" in JS)
 ok('a slot with no space is one word (i18n)', "/\\S\\s+\\S/.test(m[i] || '')" in I18NJS)
-ok('the status counts sign-ins only', "packet = 'Access-Request' AND result IN ('reject', 'drop')" in SRC)
+ok('the status counts sign-ins only', "packet = 'Access-Request' AND result IN ('reject', 'drop')" in SRC or
+   ("packet = 'Access-Request' AND result IN \"" in SRC and "\"('reject', 'drop')" in SRC))   # wrapped in 1.0.265
 
 # ---- Czech -----------------------------------------------------------------------------------------------
 cs = V + '/web/lang/cs.json'

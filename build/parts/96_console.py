@@ -3072,6 +3072,8 @@ class Console(object):
              lambda: self.act('--sso-key', '--yes') if self.confirm(
                  'A new key for the balancer', 'The one the balancer sends now is no longer taken '
                  '- put the new one into the balancer.', yes='Make it', no='Cancel') else None),
+            ('22', 'The system\'s trusted roots (certificate authorities) of each node',
+             lambda: self.act('--os-roots')),
         ])
 
     def m_upgrades(self):

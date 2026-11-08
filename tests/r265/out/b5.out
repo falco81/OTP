@@ -1,0 +1,67 @@
+t_load.py 1.0.265 full - 2026-11-08 10:06:02
+setup: 34000 tokens in 6.4 s; the database: /var/lib/otp/otp.db (SQLite 3.45.1)
+daemon at start: {'rss': 250768, 'th': 37, 'fds': 21, 'cpu': 33262} | radius counters {'packets': 66309, 'accounting': 18000, 'accept': 43420, 'reject': 4889, 'stale': 2091} | rows {'radius_log': 234, 'otp_log': 243, 'events': 10866, 'tokens': 34001, 'sessions': 5}
+B ref RADIUS alone 140 auth/pw                      140     140    6300     3.1    10.2    17.8       45     0     0     0   0
+  B ref RADIUS alone 140/s daemon cpu avg    51% max    61%  rss  244.9-> 244.9 MB (max  244.9)  threads 37->37 (max 37)  fds 21->18  | machine busy  18% | php-fpm otp children max 23 (rss 391 MB) | nginx fds max 61
+B RADIUS 140/s + http  auth/pw                      140     140   12600     3.1    18.3   355.3      803     0     0     0   0
+  HTTP B RADIUS 140/s + http 100: 200:6289 401:60 429:179
+    admin:activity         n=    66  200:66                                       ok p50   24.2 p95   66.5 p99  133.0 ms
+    admin:dashboard        n=    66  200:66                                       ok p50    3.2 p95  210.6 p99  290.7 ms
+    admin:events           n=    66  200:66                                       ok p50    4.5 p95   20.3 p99   38.8 ms
+    admin:load             n=    64  200:64                                       ok p50    3.5 p95    6.8 p99   11.9 ms
+    admin:login            n=     5  200:5                                        ok p50  277.6 p95  316.6 p99  316.6 ms
+    admin:status           n=   123  200:123                                      ok p50    5.7 p95   33.0 p99   50.6 ms
+    admin:tokens           n=    64  200:64                                       ok p50   24.9 p95   53.4 p99   68.5 ms
+    portal:page            n=  1376  200:1376                                     ok p50    3.1 p95   39.2 p99  230.0 ms
+    portal:signin          n=   239  401:60 429:179                               ok p50      - p95      - p99      - ms
+    static                 n=  4459  200:4459                                     ok p50    1.3 p95   15.9 p99   19.2 ms
+  B RADIUS 140/s + http 100 daemon cpu avg    54% max   101%  rss  244.9-> 245.0 MB (max  245.0)  threads 37->38 (max 39)  fds 18->18  | machine busy  22% | php-fpm otp children max 24 (rss 405 MB) | nginx fds max 163
+  ok   B RADIUS 140/s + http 100: RADIUS all answered, right, none twice   [{'timeouts': 0, 'refused right': 0, 'wrong': []}]
+  FAIL B RADIUS 140/s + http 100: RADIUS p99 < 50 ms while the pages are hammered (alone 17.8, with HTTP 355.3)
+  FAIL B RADIUS 140/s + http 100: HTTP load does not multiply RADIUS p99 (with/alone 20.0x <= 3x or +10 ms)
+  ok   B RADIUS 140/s + http 100: accounting p99 < 50 ms (9.1)
+  ok   B RADIUS 140/s + http 100: no 5xx and no failed connection
+B RADIUS 140/s + http  auth/pw                      140     120    5403  4049.3  4330.9  4422.9     4549   897     0    11   0
+  HTTP B RADIUS 140/s + http 100 flood (said only): 200:37292 429:1081
+    admin:activity         n=   422  200:422                                      ok p50  666.8 p95 1021.1 p99 1162.0 ms
+    admin:dashboard        n=   422  200:422                                      ok p50  448.5 p95 1179.3 p99 1447.3 ms
+    admin:events           n=   420  200:420                                      ok p50  690.7 p95 1049.4 p99 1164.4 ms
+    admin:load             n=   403  200:403                                      ok p50  365.9 p95  601.6 p99  697.1 ms
+    admin:login            n=    40  200:22 429:18                                ok p50  886.1 p95 1393.7 p99 1395.1 ms
+    admin:login-again      n=    18  200:18                                       ok p50      - p95      - p99      - ms
+    admin:status           n=   786  200:786                                      ok p50  505.5 p95  893.6 p99 1145.3 ms
+    admin:tokens           n=   414  200:414                                      ok p50  705.4 p95 1116.3 p99 1215.4 ms
+    portal:page            n=  2605  200:2605                                     ok p50  370.8 p95  621.4 p99  815.2 ms
+    portal:signin          n=  1063  429:1063                                     ok p50      - p95      - p99      - ms
+    static                 n= 31780  200:31780                                    ok p50   13.3 p95   51.1 p99   73.9 ms
+  B RADIUS 140/s + http 100 flood (said only) daemon cpu avg   105% max   208%  rss  245.0-> 245.2 MB (max  245.6)  threads 38->38 (max 62)  fds 18->22  | machine busy  89% | php-fpm otp children max 24 (rss 407 MB) | nginx fds max 238
+  flood: refused right codes, by reason: {'this node is busy: 8 requests wait for the directory zz-r265-dir': 11}
+  ok   the whole run: no code let in twice (21874 codes let in)
+  ok   the daemon's own log: no token let in twice for one 30 s step (otp_log)
+daemon radius counters, start -> end: {'packets': 66309, 'accounting': 18000, 'accept': 43420, 'reject': 4889, 'stale': 2091} -> {'packets': 99612, 'accounting': 27000, 'accept': 65294, 'reject': 7318, 'stale': 2988}
+  FAIL the daemon dropped nothing for a full queue (overflow) or as too old (stale)   [{'overflow': 0, 'stale': 897, 'no_database': 0, 'repeated': 0}]
+php-fpm log lines during the run: 3; max_children reached: 1
+    [08-Nov-2026 10:07:05] WARNING: [pool otp] server reached max_children setting (24), consider raising it
+    [08-Nov-2026 10:07:58] NOTICE: [pool otp] child 16207 exited with code 0 after 291.855939 seconds from start
+    [08-Nov-2026 10:07:58] NOTICE: [pool otp] child 28311 started
+daemon at end: {'rss': 251104, 'th': 38, 'fds': 22, 'cpu': 46240}
+the database: /var/lib/otp/otp.db (SQLite 3.45.1) (PostgreSQL not run: the live install is a standalone SQLite one; moving it to PostgreSQL is the HA wizard, not a switch - t_latency.py VERSION postgres measures the engine on a private daemon)
+
+==== SUMMARY (latency ms; tmo = unanswered in 5 s; wrong = a wrong answer; rej! = a right code refused; 2x = a code let in twice)
+phase                  stream                   offered  done/s       n     p50     p95     p99      max   tmo wrong  rej!  2x
+B ref RADIUS alone 140 auth/pw                      140     140    6300     3.1    10.2    17.8       45     0     0     0   0
+B RADIUS 140/s + http  auth/pw                      140     140   12600     3.1    18.3   355.3      803     0     0     0   0
+B RADIUS 140/s + http  auth/pw                      140     120    5403  4049.3  4330.9  4422.9     4549   897     0    11   0
+KNEE: {}
+cleanup ...
+  removed: {'tokens': 34000, 'radius_log': 33303, 'otp_log': 24278}
+  --del-realm zz-r265-otp: ok
+  --del-realm zz-r265-pw: ok
+  --del-realm zz-r265-ch: ok
+  --del-client zz-r265-nas: ok
+  --del-directory zz-r265-dir: ok
+
+RESULT: FAIL - 5 of 8 checks passed
+  FAIL B RADIUS 140/s + http 100: RADIUS p99 < 50 ms while the pages are hammered (alone 17.8, with HTTP 355.3) 
+  FAIL B RADIUS 140/s + http 100: HTTP load does not multiply RADIUS p99 (with/alone 20.0x <= 3x or +10 ms) 
+  FAIL the daemon dropped nothing for a full queue (overflow) or as too old (stale) {'overflow': 0, 'stale': 897, 'no_database': 0, 'repeated': 0}

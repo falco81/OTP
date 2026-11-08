@@ -1,0 +1,303 @@
+<?php
+/**
+ * index.php — the enrolment pages: where people make their own token.
+ *
+ * Signed in with their directory name and password, somebody sees whether
+ * they have a token, makes one (a QR code to scan and the recovery codes to
+ * keep), proves it was scanned by typing a code from it, and can replace it
+ * with a code from the old one. Nothing is decided here: every answer comes
+ * from the otp daemon, and this page holds nothing but a cookie the browser
+ * cannot read.
+ */
+declare(strict_types=1);
+
+define('OTP_COOKIE', 'otp_portal');
+define('OTP_COOKIE_PATH', '/');
+require_once __DIR__ . '/otp-page.php';
+require_once __DIR__ . '/otp-api.php';
+require_once __DIR__ . '/otp-art.php';
+
+/* ---- signed in by the load balancer or WAF in front (1.0.239) --------------
+   Off unless switched on in the administration: then /api/portal/info names the header the
+   balancer puts the name it signed in into. The name, the key it sends with it, and the
+   address of the machine the request really came from (nginx's $realip_remote_addr, as
+   OTP_PEER - never the client's address from X-Forwarded-For) go to the daemon, which decides. */
+define('OTP_SSO_HOLD', 'otp_sso_off');
+
+function otp_sso_hold(bool $on): void
+{
+    setcookie(OTP_SSO_HOLD, $on ? '1' : '', [
+        'expires'  => $on ? 0 : time() - 3600,
+        'path'     => OTP_COOKIE_PATH,
+        'secure'   => otp_https(),
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
+    if ($on) {
+        $_COOKIE[OTP_SSO_HOLD] = '1';
+    } else {
+        unset($_COOKIE[OTP_SSO_HOLD]);
+    }
+}
+
+/** Signed in by the balancer, when it sent who: '' when nothing was to be done or it went
+    well, the words of the refusal otherwise. */
+function otp_sso_sign_in(array $info): string
+{
+    $sso = $info['sso'] ?? null;
+    if (!is_array($sso) || empty($info['on']) || !empty($_COOKIE[OTP_SSO_HOLD])) {
+        return '';
+    }
+    $head = (string) ($sso['header'] ?? '');
+    if (!preg_match('/^[A-Za-z][A-Za-z0-9-]{0,63}$/', $head)) {
+        return '';
+    }
+    $who = (string) ($_SERVER['HTTP_' . strtoupper(str_replace('-', '_', $head))] ?? '');
+    if ($who === '') {
+        return '';
+    }
+    $extra = [];
+    $peer = preg_replace('/[^0-9a-fA-F:.]/', '', (string) ($_SERVER['OTP_PEER'] ?? ''));
+    if ($peer !== '') {
+        $extra[] = 'X-Otp-Peer: ' . substr($peer, 0, 64);
+    }
+    [$status, $body] = otp_call('/api/portal/sso', 'POST', [
+        'name' => substr($who, 0, 300),
+        'key'  => substr((string) ($_SERVER['HTTP_X_OTP_SSO_KEY'] ?? ''), 0, 300),
+        'lang' => preg_replace('/[^a-z]/', '', (string) ($_COOKIE['otp_lang'] ?? '')),
+    ], 60.0, $extra);
+    if ($status === 0) {
+        return 'the server is not answering - try again in a while';
+    }
+    $data = json_decode($body, true);
+    if ($status === 200 && is_array($data)) {
+        if (!empty($data['token'])) {
+            otp_set_session((string) $data['token']);
+            $_COOKIE[OTP_COOKIE] = (string) $data['token'];
+        }
+        return '';
+    }
+    if ($status === 401 || $status === 403) {
+        // Not this person's any more: whoever was signed in here before is not shown.
+        otp_clear_session();
+        unset($_COOKIE[OTP_COOKIE]);
+    }
+    return is_array($data) && !empty($data['error']) ? (string) $data['error']
+        : 'the sign-in through the load balancer was not taken here';
+}
+
+if (isset($_GET['api'])) {
+    $what = (string) $_GET['api'];
+    $post = $_SERVER['REQUEST_METHOD'] === 'POST';
+    if ($what === 'lang' && !$post) {
+        otp_serve_lang();
+    }
+    if ($what === 'logo' && !$post) {
+        otp_serve_logo();
+    }
+    if ($post) {
+        otp_guard_post();
+    }
+    if ($what === 'login' && $post) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        $sent = sent_body();
+        [$status, $body] = otp_call('/api/portal/login', 'POST', [
+            'name'     => (string) ($sent['name'] ?? ''),
+            'password' => (string) ($sent['password'] ?? ''),
+            'lang'     => (string) ($sent['lang'] ?? ''),
+        ], 60.0);
+        if ($status === 0) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' => 'the server is not answering - try again in a while']);
+            exit;
+        }
+        $data = json_decode($body, true);
+        if ($status === 200 && is_array($data) && !empty($data['token'])) {
+            otp_set_session((string) $data['token']);
+            unset($data['token']);
+            echo json_encode($data);
+            exit;
+        }
+        http_response_code($status === 200 ? 400 : $status);
+        echo json_encode(is_array($data) ? $data : ['ok' => false, 'error' => 'sign-in failed']);
+        exit;
+    }
+    if ($what === 'logout' && $post) {
+        $sent = sent_body();
+        otp_call('/api/portal/logout', 'POST', [], 10.0);
+        otp_clear_session();
+        header('Content-Type: application/json; charset=utf-8');
+        /* Signed in by the balancer (1.0.239): its own sign-out next, or - with none set - no
+           sign-in by it again until asked, or Sign out would sign the person straight back in. */
+        $go = '';
+        if (!empty($sent['sso'])) {
+            $inf = otp_get('/api/portal/info', 5.0);
+            $go = is_array($inf) && is_array($inf['sso'] ?? null) ? (string) ($inf['sso']['logout'] ?? '') : '';
+            if ($go === '') {
+                otp_sso_hold(true);
+            }
+        }
+        echo json_encode(['ok' => true, 'go' => $go]);
+        exit;
+    }
+    $reads = ['me' => '/api/portal/me', 'info' => '/api/portal/info'];
+    $writes = ['enroll' => '/api/portal/enroll', 'confirm' => '/api/portal/confirm',
+               'reissue' => '/api/portal/reissue', 'cancel' => '/api/portal/cancel',
+               'verify' => '/api/portal/verify', 'sendold' => '/api/portal/sendold',
+               'codes' => '/api/portal/codes',
+               // The one-time code before the first token (1.0.228).
+               'gate' => '/api/portal/gate', 'gate_again' => '/api/portal/gate/again'];
+    if ($what === 'gate' && $post) {
+        /* The one-time code given (1.0.249): the daemon ends the sign-in the password opened and
+           hands a new one, as the administrators' second step - its cookie set here, the token
+           never shown to the page. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$status, $body] = otp_call('/api/portal/gate', 'POST', sent_json(), 60.0);
+        if ($status === 0) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' =>
+                'the daemon is not answering — is otp.service running?']);
+            exit;
+        }
+        $data = json_decode($body, true);
+        if (is_array($data) && !empty($data['token'])) {
+            if ($status === 200) {
+                otp_set_session((string) $data['token']);
+            }
+            unset($data['token']);
+            $body = json_encode($data);
+        }
+        http_response_code($status);
+        echo $body;
+        exit;
+    }
+    if ($post && isset($writes[$what])) {
+        otp_relay($writes[$what], 'POST', sent_json(), 60.0);
+        exit;
+    }
+    if (!$post && isset($reads[$what])) {
+        otp_relay($reads[$what], 'GET', null, 30.0);
+        exit;
+    }
+    http_response_code(404);
+    header('Content-Type: application/json');
+    echo json_encode(['ok' => false, 'error' => 'unknown endpoint']);
+    exit;
+}
+
+/* ---- the page ------------------------------------------------------------ */
+$info  = otp_get('/api/portal/info', 5.0);
+$alive = is_array($info);
+// Sign in through the balancer again, after Sign out held it (1.0.239).
+if (isset($_GET['sso'])) {
+    otp_sso_hold(false);
+    header('Location: /', true, 303);
+    exit;
+}
+$sso_said = $alive ? otp_sso_sign_in($info) : '';
+$me    = null;
+if ($alive && otp_session() !== '') {
+    $got = otp_get('/api/portal/me', 8.0);
+    $me = is_array($got) ? ($got['me'] ?? null) : null;
+}
+// Signed in, the one-time code not typed yet (1.0.228): the sign-in page, asking for it.
+$gate = (is_array($me) && !empty($me['gate'])) ? $me['gate'] : null;
+if ($gate !== null) {
+    $me = null;
+}
+$lang = otp_lang_pick(null, (string) ($info['lang'] ?? 'cs'));
+// Listed is enough (1.0.265): the whole pack was read and decoded on every page drawn.
+$load = $lang !== 'en' && isset(otp_langs()[$lang]);
+$title = (string) ($info['title'] ?? '');
+// No title of the site's own: a heading of the page's own, in the page's language.
+$title_ours = $title === '';
+if ($title_ours) {
+    $title = 'One-time passwords';
+}
+?>
+<!doctype html>
+<html lang="<?= h($lang) ?>" class="app-shell-root<?= $load ? ' i18n-wait' : '' ?>">
+<head>
+<?php otp_head($title, $lang, $load, $nonce, '/', $title_ours ? 'OTP' : $title); ?>
+</head>
+<body class="app-shell">
+<div class="wrap portal">
+<?php if (!$me): ?>
+<div class="signin">
+  <div class="signbox">
+    <!-- What this is, in one picture - the one picked in the administration (1.0.71). -->
+    <?= otp_art_for(is_array($info) ? ($info['art'] ?? null) : null, 'portal', $title) ?>
+    <div class="card">
+      <h1<?= $title_ours ? '' : ' data-no-i18n' ?>><?= h($title) ?></h1>
+      <p class="lede">Sign in to make the token for your phone, or to replace it.</p>
+      <?php if (!$alive): ?>
+        <div class="offline">The server is not answering just now. Try again in a while, or tell
+          the administrator.</div>
+      <?php elseif (empty($info['on'])): ?>
+        <div class="offline">Making a token here is switched off. Ask the administrator.</div>
+      <?php endif; ?>
+      <?php if ($sso_said !== ''): ?>
+        <div class="offline" id="sso-said"><?= h($sso_said) ?></div>
+      <?php endif; ?>
+      <?php if ($alive && is_array($info['sso'] ?? null) && !empty($_COOKIE[OTP_SSO_HOLD])): ?>
+        <p class="note small" id="sso-again">You signed out. <a href="/?sso=1">Sign in through the company sign-in again</a>, or with your name and password below.</p>
+      <?php endif; ?>
+      <form id="signin-form" autocomplete="on">
+        <input type="text" id="in-name" name="username" placeholder="name" autocomplete="username"
+               autocapitalize="none" spellcheck="false" required>
+        <input type="password" id="in-pass" name="password" placeholder="password"
+               autocomplete="current-password" required>
+        <?php if (!empty($info['hint'])): ?>
+          <p class="muted small" style="margin:-4px 0 10px">Your name is written as <b class="mono" data-no-i18n><?= h($info['hint']) ?></b></p>
+        <?php endif; ?>
+        <button class="btn primary cmd" type="submit" id="in-go"><svg
+          viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+          stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+          ><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M14 12h7"/><path
+          d="M18 9l3 3-3 3"/></svg><span>Sign in</span></button>
+        <div class="said" id="in-said"></div>
+      </form>
+      <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
+        <span class="muted small">otp <?= h(OTP_VERSION) ?> · <a class="muted" href="/admin/">Administration</a></span>
+        <span class="langpick" id="langpick"></span>
+      </div>
+    </div>
+    <?php if (!empty($info['help'])): ?>
+    <div class="card help" id="help-card"><div id="help-text" data-help="<?= h($info['help']) ?>"></div></div>
+    <?php endif; ?>
+  </div>
+</div>
+<script nonce="<?= h($nonce) ?>" src="/assets/core.js?v=<?= h(OTP_VERSION) ?>"></script>
+<script nonce="<?= h($nonce) ?>" src="/assets/portal.js?v=<?= h(OTP_VERSION) ?>"></script>
+<script nonce="<?= h($nonce) ?>">var PORTAL_GATE = <?= json_encode($gate, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;</script>
+<script nonce="<?= h($nonce) ?>">portalDoor();</script>
+<?php else: ?>
+<header>
+  <h1<?= $title_ours ? '' : ' data-no-i18n' ?>><?= h($title) ?></h1>
+  <div class="spacer"></div>
+  <div class="btnrow">
+    <span class="langpick" id="langpick"></span>
+    <button type="button" class="btn small mebtn" id="mebtn" data-no-i18n><?= h($me['display'] ?: $me['name']) ?></button>
+    <button class="btn small" id="signout" data-icon="out">Sign out</button>
+  </div>
+</header>
+<div id="portal"></div>
+<div class="modal" id="modal" hidden>
+  <div class="box" id="modal-box">
+    <div class="head"><h3 id="modal-title">…</h3>
+      <button class="xbtn" id="modal-x" data-icon="close" aria-label="Close"></button></div>
+    <div class="body" id="modal-body"></div>
+    <div class="foot" id="modal-foot"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script nonce="<?= h($nonce) ?>">var PORTAL_ME = <?= json_encode($me, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;</script>
+<script nonce="<?= h($nonce) ?>" src="/assets/core.js?v=<?= h(OTP_VERSION) ?>"></script>
+<script nonce="<?= h($nonce) ?>" src="/assets/portal.js?v=<?= h(OTP_VERSION) ?>"></script>
+<script nonce="<?= h($nonce) ?>">portalApp(PORTAL_ME);</script>
+<?php endif; ?>
+</div>
+</body>
+</html>

@@ -260,8 +260,14 @@ class Db(object):
         # second, and one row held by a lock stopped them all. Each RADIUS
         # thread keeps to one of them. SQLite writes one at a time anyway.
         key = 'radius'
-        if self.engine != 'sqlite' and self.RADIUS_LANES > 1:
-            tail = threading.current_thread().name.rsplit('-', 1)[-1]
+        tname = threading.current_thread().name
+        if tname.startswith('radius-acct'):
+            # Accounting on a lane of its own (1.0.265): on the main one, a page's long query
+            # held every Accounting-Response behind it (p99 3.6 s under load). Its own, not
+            # the sign-ins': a NAS restarted sends thousands of Stops at once.
+            key = 'radius-acct'
+        elif self.engine != 'sqlite' and self.RADIUS_LANES > 1:
+            tail = tname.rsplit('-', 1)[-1]
             key = 'radius%d' % ((int(tail) if tail.isdigit() else 0) % self.RADIUS_LANES)
         lane = self._lanes.get(key)
         if lane is None:

@@ -266,6 +266,11 @@ class Authenticator(object):
             clock_dir_failover(self.store)
         if why:
             d.silent = why
+        if getattr(e, 'held', False):
+            # This node's own limit of requests at the directory at once (1.0.265), said as
+            # such: "gone away" sent people looking at a directory answering in milliseconds.
+            return d.refuse(getattr(e, 'busy_said', '') or
+                            'this node is busy: requests wait for the directory')
         return d.refuse('LDAP server(s) have gone away')
 
     @staticmethod
@@ -956,6 +961,122 @@ class SentReply(bytes):
 
 # Each RADIUS socket's receive buffer (1.0.214): a burst of a few thousand requests held.
 RADIUS_RCVBUF = 8 << 20
+RCVBUF_SAID = set()             # the sockets whose smaller buffer was written down (1.0.265)
+
+# How long a request may wait in the queue before a worker takes it (1.0.265): 4 s, not 10.
+# Only an overloaded or stalled node has requests waiting that long, and a VPN waits 3 to 10 s
+# for an answer: the older ones were answered after it had given up - and a code checked for an
+# answer nobody reads is used up, so the VPN's next try (here or on the other node) was refused
+# as used. Not a setting (radius_stale_s is in no DEFAULTS: config.json and the pages never set
+# it); a CONFIG value of it, where one is put in by hand in code, is taken within 1-60 s.
+RADIUS_STALE_S = 4
+# The worker threads running now (1.0.265): what Directory.held() counts against, not the
+# setting - changed on the page, the setting said 64 while 16 ran.
+RADIUS_WORKERS_RUNNING = [0]
+
+
+def radius_stale_s():
+    try:
+        v = float(CONFIG.get('radius_stale_s') or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return min(60.0, max(1.0, v)) if v > 0 else float(RADIUS_STALE_S)
+
+
+def radius_fair_key(data, ip):
+    """Whose turn a request waits in (1.0.265): the client's address and the realm the
+    User-Name names (after its @, or before a backslash) - read off the raw packet, nothing
+    parsed or checked yet. Anything that does not read is the address alone."""
+    try:
+        end = min(len(data), int.from_bytes(data[2:4], 'big'))
+        at = 20
+        while at + 2 <= end:
+            t, ln = data[at], data[at + 1]
+            if ln < 2:
+                break
+            if t == 1:
+                name = bytes(data[at + 2:at + ln])
+                if b'@' in name:
+                    realm = name.rpartition(b'@')[2]
+                elif b'\\' in name:
+                    realm = name.partition(b'\\')[0]
+                else:
+                    realm = b''
+                return '%s|%s' % (ip, realm[:64].decode('utf-8', 'replace').lower())
+            at += ln
+    except (IndexError, TypeError, ValueError):
+        pass
+    return str(ip)
+
+
+class RadiusQueue(object):
+    """The sign-ins waiting for a worker, taken in turn by where they come from (1.0.265):
+    one queue of 5000 in arrival order let one client or realm in trouble (a burst, a slow
+    directory) hold every other one behind it. Each client address and realm has its own line,
+    first in first out; the workers take from each line in turn. One line holds at most half
+    of the whole, and past KEYS_MOST lines the rest share one."""
+
+    KEYS_MOST = 256
+
+    def __init__(self, maxsize=5000):
+        self.maxsize = int(maxsize)
+        self.per_key = max(1, self.maxsize // 2)
+        self.lines = collections.OrderedDict()
+        self.n = 0
+        self.cv = threading.Condition(threading.Lock())
+
+    def qsize(self):
+        return self.n
+
+    def empty(self):
+        return not self.n
+
+    def full(self):
+        return self.n >= self.maxsize
+
+    def put_nowait(self, item, key=''):
+        with self.cv:
+            if self.n >= self.maxsize:
+                raise queue.Full
+            line = self.lines.get(key)
+            if line is None:
+                if len(self.lines) >= self.KEYS_MOST:
+                    key = '*'
+                    line = self.lines.get(key)
+                if line is None:
+                    line = self.lines[key] = collections.deque()
+            if len(line) >= self.per_key:
+                raise queue.Full
+            line.append(item)
+            self.n += 1
+            self.cv.notify()
+
+    def put(self, item, block=True, timeout=None, key=''):
+        self.put_nowait(item, key)
+
+    def get(self, block=True, timeout=None):
+        with self.cv:
+            if not self.n:
+                if not block:
+                    raise queue.Empty
+                self.cv.wait(timeout)
+                if not self.n:
+                    raise queue.Empty
+            key, line = next(iter(self.lines.items()))
+            item = line.popleft()
+            self.n -= 1
+            if line:
+                self.lines.move_to_end(key)
+            else:
+                del self.lines[key]
+            return item
+
+    def get_nowait(self):
+        return self.get(False)
+
+    def lines_now(self):
+        with self.cv:
+            return len(self.lines)
 
 
 class RadiusServer(object):
@@ -965,10 +1086,12 @@ class RadiusServer(object):
     def __init__(self, daemon):
         self.d = daemon
         self.socks = {}
-        self.jobs = queue.Queue(maxsize=5000)
+        # Taken in turn by client and realm (1.0.265), not in one line for everybody.
+        self.jobs = RadiusQueue(maxsize=5000)
         # Accounting apart (1.0.186): a NAS restarted sends thousands of Stops
         # and Interim-Updates at once; in the same queue and workers they held
-        # the sign-ins behind them. Their own workers, on the main connection.
+        # the sign-ins behind them. Their own workers, on a database lane of their
+        # own (radius-acct-N, 1.0.265 - on the main one a page's query held them).
         self.acct_jobs = queue.Queue(maxsize=5000)
         # duplicate key -> (time, reply or None), oldest first, never more
         # than SEEN_MAX: a flood fills it to the brim and no further (1.0.33).
@@ -994,6 +1117,9 @@ class RadiusServer(object):
         self.late_wake = threading.Event()
         self.late_thread = None
         self.workers = []
+        self.auth_workers = []          # (thread, its own stop) of the sign-in workers (1.0.265)
+        self.workers_lock = threading.Lock()
+        self.rcvbuf = {}
         self.readers = []
         self.stop_flag = False
         self.counts = collections.Counter()
@@ -1017,17 +1143,63 @@ class RadiusServer(object):
     def start(self):
         self.stop_flag = False
         self.open_sockets()
-        for i in range(int(CONFIG.get('radius_workers') or 16)):
-            t = threading.Thread(target=self.work, name='radius-%d' % i, daemon=True)
-            t.start()
-            self.workers.append(t)
+        self.resize_workers()
         for i in range(4):
-            t = threading.Thread(target=self.work, args=(self.acct_jobs,), name='acct-%d' % i,
+            # radius-acct-N (1.0.265): the database gives these a lane of their own (Db._pick);
+            # named acct-N they ran on the main connection, behind the pages.
+            t = threading.Thread(target=self.work, args=(self.acct_jobs,), name='radius-acct-%d' % i,
                                  daemon=True)
             t.start()
             self.workers.append(t)
 
+    def workers_running(self):
+        """How many sign-in workers run now."""
+        with self.workers_lock:
+            return len([1 for t, quit in self.auth_workers if t.is_alive() and not quit.is_set()])
+
+    def resize_workers(self, n=None):
+        """As many sign-in workers as radius_workers says (1.0.265): read at the start only
+        before - a change on the page did nothing until a restart, while the directories'
+        limits already counted with the new number. More are started at once; those beyond
+        it finish the request in hand and end."""
+        try:
+            n = int(n if n is not None else (CONFIG.get('radius_workers') or 16))
+        except (TypeError, ValueError):
+            n = 16
+        n = max(1, min(256, n))
+        with self.workers_lock:
+            live = [(t, q) for t, q in self.auth_workers if t.is_alive() and not q.is_set()]
+            while len(live) > n:
+                _t, q = live.pop()
+                q.set()
+            used = {t.name for t in self.workers if t.is_alive()}
+            i = 0
+            while len(live) < n:
+                while 'radius-%d' % i in used:
+                    i += 1
+                q = threading.Event()
+                t = threading.Thread(target=self.work, kwargs={'quit': q}, name='radius-%d' % i,
+                                     daemon=True)
+                t.start()
+                live.append((t, q))
+                used.add(t.name)
+                self.workers.append(t)
+            self.auth_workers = live
+            self.workers = [t for t in self.workers if t.is_alive()]
+            RADIUS_WORKERS_RUNNING[0] = len(live)
+        return n
+
     def open_sockets(self):
+        self._open_sockets()
+        # The number of workers follows the setting on every reload (1.0.265).
+        if self.auth_workers and not self.stop_flag:
+            try:
+                self.resize_workers()
+            except RuntimeError as e:           # no thread could be started
+                log_sparing('radius-workers', 'radius: the workers could not be changed: %s'
+                            % e, 'warn')
+
+    def _open_sockets(self):
         want = self.want()
         if [(k, b, p) for k, (b, p, _s) in sorted(self.socks.items())] == sorted(want):
             return
@@ -1094,6 +1266,7 @@ class RadiusServer(object):
                     break
                 except OSError:
                     continue
+            self.rcvbuf_check(kind, sock)
             radius_pktinfo_on(sock, fam, bind)
             sock.settimeout(1.0)
             self.socks[kind] = (bind, port, sock)
@@ -1107,6 +1280,30 @@ class RadiusServer(object):
             self.d.store.add_event('radius', self.trouble, 'bad')
         else:
             log('RADIUS listening on %s' % ', '.join(self.bound))
+
+    def rcvbuf_check(self, kind, sock):
+        """The buffer the kernel gave, read back (1.0.265): as the otp account SO_RCVBUFFORCE
+        is refused and SO_RCVBUF is cut to net.core.rmem_max (208 KB unless raised) without a
+        word - the 8 MB were never there. Written down once a socket kind."""
+        try:
+            got = int(sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF))
+        except (OSError, ValueError):
+            return None
+        self.rcvbuf[kind] = got
+        # Linux keeps (and reports) twice what was asked for, for its own bookkeeping.
+        want = RADIUS_RCVBUF * (2 if sys.platform.startswith('linux') else 1)
+        if got < want and kind not in RCVBUF_SAID:
+            RCVBUF_SAID.add(kind)
+            try:
+                most = open('/proc/sys/net/core/rmem_max').read().strip()
+            except OSError:
+                most = '?'
+            log('radius: the receive buffer of the %s socket is %d KB, not the %d KB asked for '
+                '(net.core.rmem_max is %s) - a burst of requests larger than it is dropped by the '
+                'kernel. install.sh sets net.core.rmem_max in /etc/sysctl.d/90-otp.conf; '
+                '"sysctl --system" applies it, then restart otp'
+                % (kind, got // 1024, want // 1024, most), 'warn')
+        return got
 
     def stop(self):
         self.stop_flag = True
@@ -1141,14 +1338,17 @@ class RadiusServer(object):
             if self.socks.get(kind, (None, None, None))[2] is not sock:
                 return
             try:
-                (self.acct_jobs if kind == 'acct' else self.jobs).put_nowait(
-                    (kind, via, data, peer, time.time()))
+                if kind == 'acct':
+                    self.acct_jobs.put_nowait((kind, via, data, peer, time.time()))
+                else:
+                    self.jobs.put_nowait((kind, via, data, peer, time.time()),
+                                         key=radius_fair_key(data, peer[0]))
             except queue.Full:
                 self.counts['overflow'] += 1
 
-    def work(self, jobs=None):
+    def work(self, jobs=None, quit=None):
         jobs = jobs if jobs is not None else self.jobs
-        while not self.stop_flag:
+        while not self.stop_flag and not (quit is not None and quit.is_set()):
             try:
                 kind, sock, data, peer, arrived = jobs.get(timeout=1.0)
             except queue.Empty:
@@ -1158,8 +1358,9 @@ class RadiusServer(object):
             # directory binds and its code used up, ahead of the new ones.
             # 10 s (1.0.149): past what a VPN waits for an answer before it asks
             # again or asks the other node - 15 s worked on requests long given
-            # up behind a slow directory, each using its code up.
-            if time.time() - arrived > int(CONFIG.get('radius_stale_s') or 10):
+            # up behind a slow directory, each using its code up. 4 s (1.0.265):
+            # see RADIUS_STALE_S.
+            if time.time() - arrived > radius_stale_s():
                 self.counts['stale'] += 1
                 with self.unknown_lock:
                     self.quiet['too old to answer'] += 1
@@ -1314,7 +1515,8 @@ class RadiusServer(object):
             try:
                 sock.sendto(reply, peer)
             except OSError as e:
-                log('the answer to %s could not be sent: %s' % (ip, e), 'warn')
+                log_sparing('radius-send:%s' % ip, 'the answer to %s could not be sent: %s' % (ip, e),
+                            'warn', every=300)   # one line a place in 5 min (1.0.265), not one a reply
         if window:
             with self.seen_lock:
                 # A refusal still waiting out its delay is not handed to a
@@ -1452,11 +1654,12 @@ class RadiusServer(object):
             self.ma_asked.clear()
         self.ma_asked[(cid, ip)] = t
         try:
-            want = ':%s:%s' % (cid, ip)
-            for r in self.d.store.db.rows("SELECT k FROM meta WHERE k LIKE 'maseen:%' AND "
-                                          "substr(k, length(k) - ? + 1) = ?",
-                                          (len(want), want)):
-                if r['k'].split(':', 2)[-1] == want[1:]:
+            # Each known node's own key looked up by itself (1.0.265), not every maseen: row
+            # read with LIKE for each unsigned request of a new address.
+            keys = ['maseen:%s:%s:%s' % (n, cid, ip) for n in self.ma_nodes()]
+            for r in self.d.store.db.rows('SELECT k FROM meta WHERE k IN (%s)'
+                                          % ', '.join('?' for _ in keys), keys):
+                if r['k'] in keys:
                     self.ma_seen.add((cid, ip))
                     return True
         except Exception as e:                          # noqa: BLE001
@@ -1467,6 +1670,32 @@ class RadiusServer(object):
             self.ma_asked.pop((cid, ip), None)
             raise DbError('whether %s signs its requests could not be read: %s' % (ip, e))
         return False
+
+    MA_NODES_S = 60             # the nodes' names read again after this
+    MA_NODES_ALL_S = 600        # and the names in the maseen: keys themselves after this
+
+    def ma_nodes(self):
+        """The names of the nodes a maseen: key may be under (1.0.265): this node's, those
+        with a heartbeat, and - read every 10 min - every name the keys carry (a node renamed
+        or gone keeps its keys). Raises where the database cannot say."""
+        t = time.time()
+        got = getattr(self, '_ma_nodes', None)
+        if got is None or t - got[0] > self.MA_NODES_S:
+            names = {node_name()}
+            names.update(str(n.get('name') or '') for n in ha_nodes(self.d.store))
+            every_at, every = (got[2], got[3]) if got else (0.0, set())
+            if t - every_at > self.MA_NODES_ALL_S:
+                every = set()
+                for r in self.d.store.db.rows("SELECT k FROM meta WHERE k LIKE 'maseen:%'"):
+                    parts = str(r['k']).split(':', 3)
+                    if len(parts) == 4:
+                        every.add(parts[1])
+                every_at = t
+            names.update(every)
+            names.discard('')
+            got = (t, sorted(names)[:200], every_at, every)
+            self._ma_nodes = got
+        return got[1]
 
     def status(self, pkt, client, ip, port, secret):
         if not CONFIG.get('radius_status_server', 1):
@@ -1673,7 +1902,8 @@ class RadiusServer(object):
                 if sock is not None:
                     sock.sendto(bytes(reply), peer)
             except OSError as e:
-                log('the answer to %s could not be sent: %s' % (ip, e), 'warn')
+                log_sparing('radius-send:%s' % ip, 'the answer to %s could not be sent: %s' % (ip, e),
+                            'warn', every=300)   # one line a place in 5 min (1.0.265), not one a reply
             if remember is not None:
                 remember(bytes(reply))
         reply.sent = True
@@ -1839,4 +2069,5 @@ class RadiusServer(object):
 
     def state(self):
         return {'listening': self.bound, 'trouble': self.trouble, 'counts': dict(self.counts),
-                'queued': self.jobs.qsize() + self.acct_jobs.qsize()}
+                'queued': self.jobs.qsize() + self.acct_jobs.qsize(),
+                'workers': RADIUS_WORKERS_RUNNING[0], 'rcvbuf': dict(self.rcvbuf)}

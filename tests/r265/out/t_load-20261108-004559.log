@@ -1,0 +1,13 @@
+setup: 34000 tokens in 4.9 s; the database: /var/lib/otp/otp.db (SQLite 3.45.1)
+  HTTP smoke: 200:1034 404:8 503:11
+    admin:activity         n=    60  200:60                                       ok p50    3.3 p95   42.1 p99   76.6 ms
+    admin:dashboard        n=    60  200:60                                       ok p50    3.3 p95   15.8 p99   25.1 ms
+    admin:events           n=    60  200:60                                       ok p50    3.6 p95   31.5 p99   54.2 ms
+    admin:load             n=    60  200:52 404:8                                 ok p50   12.5 p95   29.0 p99   34.7 ms
+    admin:login            n=     4  200:4                                        ok p50  136.4 p95  153.5 p99  153.5 ms
+    admin:status           n=   116  200:116                                      ok p50   80.1 p95  119.9 p99  156.2 ms
+    admin:tokens           n=    60  200:60                                       ok p50   62.8 p95  102.6 p99  113.5 ms
+    portal:page            n=   166  200:166                                      ok p50   21.2 p95   58.9 p99   68.6 ms
+    portal:signin          n=    11  503:11                                       ok p50      - p95      - p99      - ms
+    static                 n=   456  200:456                                      ok p50    1.0 p95   10.3 p99   14.8 ms
+    !! err_said:portal:signin:503:{"ok":false,"error":"the directory cannot be reached just now","detail":null} x11

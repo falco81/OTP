@@ -30,7 +30,11 @@ GUARD_NOT_GUESSES = ('gone away', 'could not decide', 'cannot be built', 'is not
                      'asked for too long ago',
                      # 1.0.262: a second window answered in the minute after it ran out, and
                      # a recovery code while the servers are apart - neither a guess
-                     'the code ran out', 'cannot be used while the two servers')
+                     'the code ran out', 'cannot be used while the two servers',
+                     # a suffix added to a name that had one (1.0.265): no guess either
+                     'more than one @',
+                     # this node's own limit of requests at the directory (1.0.265)
+                     'this node is busy')
 
 
 def guard_on():

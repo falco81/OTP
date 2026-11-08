@@ -340,6 +340,7 @@ def _mfa_do(h):
             raise ApiError(400, 'choose a way first')
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
+                         ip_tries=max(50, int(CONFIG.get('login_tries') or 5) * 10),
                          what='wrong codes')
         rec = {'kind': new['kind'], 'at': time.time(), 'by': name}
         code = code_typed(b.get('code') or '') if new['kind'] != 'passkey' else ''
@@ -415,6 +416,7 @@ def _mfa_do(h):
         rec = mfa_get(h.store, name) or {}
         key = h.throttle('admin', int(CONFIG.get('login_tries') or 5),
                          int(CONFIG.get('login_wait_min') or 15), name=name,
+                         ip_tries=max(50, int(CONFIG.get('login_tries') or 5) * 10),
                          what='wrong codes')
         code = code_typed(b.get('code') or '') if rec.get('kind') != 'passkey' else ''
         if rec.get('kind') == 'passkey':

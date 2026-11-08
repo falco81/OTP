@@ -1,0 +1,39 @@
+; otp - what SELinux needs for otp that the system's policy does not say (1.0.233).
+; Installed by install.sh and by every upgrade (semodule -i otp_server.cil), taken away with
+; semodule -r otp_server. Labels first; a narrow rule only where no label or boolean does it
+; (1.0.237: systemd's /run/otp; 1.0.265: PostgreSQL reading the certificates' folder), each in
+; a block of its own.
+;
+; /run/otp holds the daemon's API token and port. The pages (php-fpm, httpd_t) read them;
+; made by systemd as var_run_t, httpd_t may not read it. Labelled as the web server's own
+; run files, which httpd_t reads; the daemon (unconfined_service_t) writes it as before.
+;
+; Both spellings (1.0.234): the policy reads a path through file_contexts.subs_dist first -
+; on RHEL 8 "/run" is looked up as "/var/run", on newer policies the other way round - so a
+; rule for one of them alone may never be matched. The one never looked up does nothing.
+(filecon "/run/otp" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/run/otp/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/var/run/otp" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/var/run/otp/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
+
+; systemd hands /run/otp back to the service's account before every command of the unit -
+; ExecReload too (`systemctl reload otp`): it may change the owner and the mode of what is in it
+; (1.0.237). Under enforcing the reload failed - seen on a node in permissive as
+; "init_t -> httpd_var_run_t file { setattr } (kill)". Only that: no read, no write. In a block
+; of its own, so that a policy without one of the types still takes the rest of the module.
+(optional otp_server_systemd_runtime
+    (allow init_t httpd_var_run_t (dir (getattr setattr search open read)))
+    (allow init_t httpd_var_run_t (file (getattr setattr))))
+
+; The link between the databases of a cluster encrypted (1.0.265): the subscription's worker is
+; PostgreSQL itself (postgresql_t), and libpq there reads the authorities named by sslrootcert -
+; /etc/pki/otp/ha-ca.pem (or the system's bundle), cert_t. The targeted policy lets postgresql_t
+; read cert_t only with authlogin_nsswitch_use_ldap on: under enforcing the worker fails with
+; "could not read root certificate file ... Permission denied" and replication stops -
+; "postgresql_t -> cert_t dir { search } / file { read open }". Read only: what
+; miscfiles_read_generic_certs() gives other services (the reference policy gives it to
+; postgresql_t itself). A key in /etc/pki stays root's 0600.
+(optional otp_server_postgresql_certs
+    (allow postgresql_t cert_t (dir (getattr search open read)))
+    (allow postgresql_t cert_t (file (getattr open read ioctl lock)))
+    (allow postgresql_t cert_t (lnk_file (getattr read))))

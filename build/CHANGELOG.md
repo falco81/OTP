@@ -4,6 +4,31 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.265 — 8 November 2026
+
+SELinux looked at for enforcing, a bug hunt, otp under load over RADIUS and HTTPS - and the system's trusted roots.
+
+New
+- **Settings → Certificates and TLS → Trusted roots of the system**: certificate authorities of your own (a root or an intermediate; PEM, a chain, or a DER `.cer`) put into the trust of the operating system of every node - for curl, dnf, LDAPS, SMTP, syslog over TLS and otp's own connections. Added the way the system takes local additions (`/etc/pki/ca-trust/source/anchors` + `update-ca-trust extract`; Debian/Ubuntu `/usr/local/share/ca-certificates` + `update-ca-certificates`): the distribution's list is not touched and keeps coming with `ca-certificates` updates, the two together. Only otp's own `otp-*` files are touched; anything else there is shown read-only. Per node: as wanted / waiting / failed, the system list's size and the package's version. Only certificate authorities are taken (CA:TRUE, allowed to sign certificates), never a private key, at most 50; expired, SHA-1-signed, RSA under 2048 bits or an intermediate without its root are warned of. HA: the wanted set is the cluster's (each node writes its own row, the newest wins; signed by the database guard), each node brings its machine to it after a change, at its start and every half hour. `otp --os-roots`, `--os-roots-add FILE`, `--os-roots-remove FINGERPRINT`; the console lists them. otp's own TLS clients use the system's list (a Python whose OpenSSL looks where there is nothing - `install.sh --python PATH` - is pointed at it at the start).
+
+SELinux (enforcing)
+- **The encrypted link between the databases under enforcing**: PostgreSQL may read the cluster's authority (`/etc/pki/otp/ha-ca.pem`, `cert_t`) - RHEL's policy allows it only with an LDAP boolean on, and replication would have stopped. A rule of its own in otp's module.
+- **The other node's PostgreSQL port** is labelled `postgresql_port_t` where it is not the usual one (asked by "Put in what otp needs").
+- **A node installed without the pages** (`--no-web`) gets otp's module too.
+
+Under load (a new test: `tests/r265/t_load.py` - RADIUS ramp, mixed, challenges, accounting, retransmissions, 100 HTTPS clients, both at once, a 10-minute soak; no wrong answer, no code let in twice, no growth found)
+- **Accounting has a database connection of its own**: it waited behind the pages' one - its p99 over a 10-minute soak went from 3.8 s to under 10 ms.
+- **The pages' status and counts are kept 5 s** for every tab together (four scans of the tokens and a day of requests on every poll before); a few heavy page requests at once at most - more are told "busy" and asked again, a page never piles requests on the reading connection, the 5 s refresh waits for the one before it.
+- **The directory's reading connection is kept and used again** (not opened, bound and closed for every request); its time is measured as the directory's own - this node's own waiting no longer counts as a slow directory, and a refusal for it says "this node is busy" (it said "LDAP server(s) have gone away").
+- **Requests that waited longer than 4 s are dropped** (the VPN has given up on them; answering used the code up) and a burst from one place no longer starves the others (a queue per client and realm).
+- **RADIUS's receive buffer**: `install.sh` raises `net.core.rmem_max` (a file in `/etc/sysctl.d`), as the daemon (not root) could not get its 8 MB; it says when it got less.
+- **`radius_workers` changed** starts or stops workers at once.
+- **Mail and SMS codes are sent from queues of their own**, and a code that waited longer than it is good for is not sent.
+- **The enrolment and administration sign-in** no longer lock out a whole office behind one address after a few typos (per address 50, per name as before).
+- **php-fpm**: 24 workers, not 12.
+- A database restore checks the free space first; an unsigned request no longer scans the meta table; the user cache of a directory drops its oldest, not everything; a reply that cannot be sent is logged once in 5 minutes, not once a reply; a failure of the API at its start never stops RADIUS; the sign-in protection no longer counts a name with two @ as a guess.
+- **Measured** (4 CPUs, SQLite): password + code about 200 sign-ins a second, code only 200-300; with 100 people and admin tabs at the pages as they really ask, RADIUS stays as it is. A flood of pages from 100 clients asking as fast as they can still slows RADIUS - one Python process works both.
+
 ## 1.0.264 — 7 November 2026
 
 otp tried against a Cisco FTD (Secure Client) and an Omnissa UAG (Horizon) as their second factor - emulated at the wire (the appliances themselves are not in the test lab): every packet as those boxes send it, every answer's authenticators checked.

@@ -400,7 +400,7 @@ ok('R1 the save asks both, probing on this node only',
    "why = api_port_problem(checked, probe=(node == node_name() and not cluster_wide)) or" in dm[i:] and
    'udp_port_problem(checked)' in dm[i:])
 # ---- R1c: the API's port taken at the start --------------------------------------------------------
-ok('R1c the start catches the bind error alone', re.search(r"try:\n\s+self\.api\.start\(\)\n\s+except ApiBindError as e:\n"
+ok('R1c the start catches the bind error (any error since 1.0.265)', re.search(r"try:\n\s+self\.api\.start\(\)\n\s+except (?:ApiBindError|Exception) as e:[^\n]*\n"
                                                           r"(?:\s+#.*\n)*\s+self\.api_bind_failed\(e\)", dm) is not None)
 LOGS = []
 SPARE = []

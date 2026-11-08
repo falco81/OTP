@@ -1995,7 +1995,40 @@ class Storage(object):
         out['locked_until'] = lu if lu > time.time() else None
         return out
 
+    # The counts of the tokens kept a few seconds (1.0.265), for every page and every tab alike:
+    # four full looks at the table on each status every 5 s of each open page, and on each list
+    # of the tokens, held RADIUS (one process) behind them under load. Made again at once when a
+    # token is made, deleted or its state changed here; a use of it (used in 30 days) or a change
+    # on the other node shows within TOKEN_COUNTS_S.
+    TOKEN_COUNTS_S = 5.0
+    TOKEN_COUNTS = {'db': None, 'at': 0.0, 'gen': 0, 'got': None}
+    TOKEN_COUNTS_LOCK = threading.Lock()
+
+    @classmethod
+    def token_counts_stale(cls):
+        """The kept counts made again at the next look."""
+        cls.TOKEN_COUNTS['gen'] += 1
+        cls.TOKEN_COUNTS['at'] = 0.0
+
     def token_counts(self):
+        c = self.TOKEN_COUNTS
+        db = id(self.db)
+        got = c['got']
+        if got is not None and c['db'] == db and 0 <= time.time() - c['at'] < self.TOKEN_COUNTS_S:
+            return dict(got)
+        # One look at a time: the pages asking together wait for it and take its answer.
+        with self.TOKEN_COUNTS_LOCK:
+            got = c['got']
+            if got is not None and c['db'] == db and \
+                    0 <= time.time() - c['at'] < self.TOKEN_COUNTS_S:
+                return dict(got)
+            gen, at = c['gen'], time.time()
+            got = self._token_counts()
+            if c['gen'] == gen:             # not made stale while it was counted
+                c.update(db=db, at=at, got=got)
+            return dict(got)
+
+    def _token_counts(self):
         out = {'all': 0, 'active': 0, 'pending': 0, 'disabled': 0}
         for r in self.db.rows('SELECT state, COUNT(*) AS n FROM tokens GROUP BY state'):
             out[r['state'] or 'active'] = int(r['n'])
@@ -2016,38 +2049,55 @@ class Storage(object):
             old = self.token(name)
             if old:
                 self.db.update('tokens', old['id'], fields)
+                if 'state' in fields:
+                    self.token_counts_stale()
                 return old['id']
             # A new one only with letters this server takes (1.0.154).
             bad = name_letters_problem(name)
             if bad:
                 raise ValueError(bad)
-            row = {'name': name, 'state': 'active', 'last_step': 0, 'failures': 0,
-                   'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
-                   'created': time.time(), 'window_steps': -1}
-            row.update(fields)
+            # One more: the kept counts made again once it is written (1.0.265).
             try:
-                return self.db.insert('tokens', row)
-            except Exception as e:
-                # Made on the other node a moment ago, and come over between the look and
-                # the INSERT (1.0.214): a raw "duplicate key" error for the admin. Changed
-                # instead, as a token there was is.
-                said = str(e).lower()
-                if not ('duplicate' in said or 'unique' in said):
-                    raise
-                old = self.token(name)
-                if not old:
-                    raise
-                self.db.update('tokens', old['id'], fields)
-                return old['id']
+                return self._token_new(name, fields)
+            finally:
+                self.token_counts_stale()
+
+    def _token_new(self, name, fields):
+        """A new token's row written (the part of token_write that makes one)."""
+        row = {'name': name, 'state': 'active', 'last_step': 0, 'failures': 0,
+               'fail_times': '[]', 'scratch': '[]', 'scratch_left': 0,
+               'created': time.time(), 'window_steps': -1}
+        row.update(fields)
+        try:
+            return self.db.insert('tokens', row)
+        except Exception as e:
+            # Made on the other node a moment ago, and come over between the look and
+            # the INSERT (1.0.214): a raw "duplicate key" error for the admin. Changed
+            # instead, as a token there was is.
+            said = str(e).lower()
+            if not ('duplicate' in said or 'unique' in said):
+                raise
+            old = self.token(name)
+            if not old:
+                raise
+            self.db.update('tokens', old['id'], fields)
+            return old['id']
 
     def token_update(self, ident, fields):
         """Fields changed on the token that was read, by its id, and never a
         token made: a check whose token was deleted meanwhile wrote a new,
         empty one back under the name (1.0.36)."""
-        return self.db.update('tokens', ident, fields)
+        try:
+            return self.db.update('tokens', ident, fields)
+        finally:
+            if 'state' in fields:
+                self.token_counts_stale()   # 1.0.265
 
     def token_drop(self, name):
-        return self.db.run('DELETE FROM tokens WHERE name = ?', (norm_name(name),))
+        try:
+            return self.db.run('DELETE FROM tokens WHERE name = ?', (norm_name(name),))
+        finally:
+            self.token_counts_stale()       # 1.0.265
 
     # ---- the logs ------------------------------------------------------------
     def radius_add(self, row):

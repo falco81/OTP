@@ -9,6 +9,16 @@
 # anything that would change a directory.
 LDAP_TIMEOUT = 12.0
 LDAP_MAX_MESSAGE = 8 * 1024 * 1024
+# The time this thread spent waiting on the directory itself (1.0.265): connecting, TLS, and
+# each send and read off the socket - summed up while Directory.held() measures it (LDAP_IO.s
+# set), so this node's own work and its waits for the CPU are not taken for a slow directory.
+LDAP_IO = threading.local()
+
+
+def _ldap_io(began):
+    v = getattr(LDAP_IO, 's', None)
+    if v is not None:
+        LDAP_IO.s = v + max(0.0, time.monotonic() - began)
 
 # The result codes worth telling apart.
 LDAP_OK = 0
@@ -460,9 +470,10 @@ class LdapUnreachable(LdapError):
 class Ldap(object):
     """One conversation with a directory.
 
-    Opened, asked, closed. Nothing is kept between sign-ins: a pooled
-    connection to a domain controller that has been restarted is a sign-in
-    that fails for no reason anybody can see.
+    Opened, asked, closed. The reading account's connections are kept a
+    little by Directory (1.0.265) - each looked at before it is used, and a
+    kept one that fails is asked again on a new one, so a domain controller
+    restarted is not a sign-in failed; a person's own bind never is kept.
     """
 
     # How many pages one search may take. A directory of a hundred thousand
@@ -490,14 +501,21 @@ class Ldap(object):
     def open(self):
         if not self.host:
             raise LdapError('no directory server has been given')
+        began = time.monotonic()
         try:
             self.sock = socket.create_connection((self.host, self.port), self.timeout)
         except OSError as e:
             raise LdapError('%s:%d could not be reached: %s'
                             % (self.host, self.port, str(e)[:120]))
+        finally:
+            _ldap_io(began)
         self.sock.settimeout(self.timeout)
         if self.tls == 'ldaps':
-            self.sock = self._wrap(self.sock)
+            began = time.monotonic()
+            try:
+                self.sock = self._wrap(self.sock)
+            finally:
+                _ldap_io(began)
         elif self.tls == 'starttls':
             self._start_tls()
         if debugging('ldap'):
@@ -597,7 +615,11 @@ class Ldap(object):
                 pass
             raise LdapError('%s sent %d byte(s) in the clear after agreeing to TLS, '
                             'which is not something a directory does' % (self.host, many))
-        self.sock = self._wrap(self.sock)
+        began = time.monotonic()
+        try:
+            self.sock = self._wrap(self.sock)
+        finally:
+            _ldap_io(began)
         self.buffer = b''
 
     def close(self):
@@ -658,11 +680,15 @@ class Ldap(object):
                             'StartTLS. Nothing was sent.')
         mid = self.next_id
         self.next_id += 1
+        wire = _ber(0x30, _ber_int(mid) + op + controls)
+        began = time.monotonic()
         try:
-            self.sock.sendall(_ber(0x30, _ber_int(mid) + op + controls))
+            self.sock.sendall(wire)
         except OSError as e:
             # The line gone, not the directory saying no (1.0.44).
             raise LdapUnreachable('the connection to %s failed: %s' % (self.host, str(e)[:100]))
+        finally:
+            _ldap_io(began)
         return mid
 
     def _read_message(self):
@@ -704,6 +730,7 @@ class Ldap(object):
             if getattr(self, '_deadline', 0) and left <= 0:
                 raise LdapUnreachable('%s did not finish answering within %d s'
                                 % (self.host, int(self.timeout * 3)))
+            began = time.monotonic()
             try:
                 if getattr(self, '_deadline', 0):
                     self.sock.settimeout(max(0.05, min(self.timeout, left)))
@@ -714,6 +741,8 @@ class Ldap(object):
             except OSError as e:
                 raise LdapUnreachable('the connection to %s failed: %s'
                                       % (self.host, str(e)[:100]))
+            finally:
+                _ldap_io(began)
             if not more:
                 raise LdapUnreachable('%s closed the connection' % self.host)
             if len(self.buffer) + len(more) > LDAP_MAX_MESSAGE:

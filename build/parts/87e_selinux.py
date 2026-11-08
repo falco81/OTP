@@ -58,6 +58,21 @@ def selinux_want(store):
     if eng == 'postgres' and host in ('', '127.0.0.1', 'localhost', '::1') and dp not in (0, 5432):
         ports.append({'port': dp, 'proto': 'tcp', 'type': 'postgresql_port_t',
                       'why': 'PostgreSQL of this node listens on it'})
+    # The other node's PostgreSQL (1.0.265): this node's subscription is PostgreSQL's own worker
+    # (postgresql_t), which may connect only to a port labelled postgresql_port_t here - the
+    # other node on a port other than this one's stops replication under enforcing
+    # ("postgresql_t -> unreserved_port_t tcp_socket { name_connect }"). Asked last: a port of
+    # another service is refused and stops the ports after it.
+    try:
+        pp = int(CONFIG.get('ha_peer_port') or 5432)
+    except (TypeError, ValueError):
+        pp = 5432
+    peer_port = None
+    if eng == 'postgres' and CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer') and \
+            pp != 5432 and 1 <= pp <= 65535 and \
+            not any(p['port'] == pp and p['proto'] == 'tcp' for p in ports):
+        peer_port = {'port': pp, 'proto': 'tcp', 'type': 'postgresql_port_t',
+                     'why': 'PostgreSQL of this node replicates from the other node\'s on it'}
     # The balancer's own port (1.0.259) is nginx's: a port httpd may not bind leaves nginx down
     # on an enforcing node. One of a type httpd binds already is not asked (1.0.262).
     try:
@@ -70,6 +85,8 @@ def selinux_want(store):
     if wp and CONFIG.get('web_proxy') and not selinux_httpd_bindable(wp) and se_helper_knows_http():
         ports.append({'port': wp, 'proto': 'tcp', 'type': 'http_port_t',
                       'why': 'nginx serves the enrolment pages to the load balancer on it'})
+    if peer_port:
+        ports.append(peer_port)
     return {'booleans': bools, 'ports': ports, 'node': node_name(), 'facts': selinux_facts(store)}
 
 

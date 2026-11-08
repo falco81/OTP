@@ -1421,9 +1421,32 @@ def code_send_now(store, kind, to, code, purpose='signin', name='', lang=None, f
 
 
 CODE_LOCK = threading.Lock()
-CODE_SENDING = threading.BoundedSemaphore(8)
-CODE_WAITING = [0]
+# Each way of sending its own 8 at a time and 200 waiting (1.0.265): mail and SMS shared them,
+# and a mail server that hung held every SMS code behind its mails too.
+CODE_CHANNELS = ('mail', 'sms')
+CODE_SENDING_BY = {k: threading.BoundedSemaphore(8) for k in CODE_CHANNELS}
+CODE_WAITING_BY = {k: 0 for k in CODE_CHANNELS}
 CODE_WAITING_MOST = 200
+CODE_SENDING = CODE_SENDING_BY['mail']      # the names before 1.0.265
+CODE_WAITING = [0]                          # every way together, as before
+
+
+def code_channel(kind):
+    return kind if kind in CODE_CHANNELS else 'mail'
+
+
+def code_not_sent(store, kind, name, rid, said):
+    """A code not sent: its place among the codes sent given back, and said where it is
+    looked for (1.0.225)."""
+    try:
+        node_key_give_back(store, 'codesent', name)
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        store.otp_add({'ts': time.time(), 'name': name, 'ok': 0, 'said': said,
+                       'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120], 'step_off': None})
+    except Exception:                                   # noqa: BLE001
+        pass
 
 
 def code_send_later(store, kind, to, code, name, rid=''):
@@ -1431,32 +1454,46 @@ def code_send_later(store, kind, to, code, name, rid=''):
     rather than after a slow mail server. At most 8 at a time, and no more
     than 200 waiting (1.0.136): a mail server that hung kept a thread per
     code for minutes, without end."""
+    chan = code_channel(kind)
+    asked = time.time()
     with CODE_LOCK:
-        if CODE_WAITING[0] >= CODE_WAITING_MOST:
-            log_sparing('code-send-full', 'codes to send: %d are waiting already - the code '
-                        'for %s is not sent' % (CODE_WAITING[0], name), 'warn', every=60)
+        if CODE_WAITING_BY[chan] >= CODE_WAITING_MOST:
+            log_sparing('code-send-full:' + chan, 'codes to send by %s: %d are waiting already - '
+                        'the code for %s is not sent' % ('mail' if chan == 'mail' else 'SMS',
+                                                         CODE_WAITING_BY[chan], name),
+                        'warn', every=60)
             full = True
         else:
             full = False
+            CODE_WAITING_BY[chan] += 1
             CODE_WAITING[0] += 1
     if full:
         # Said where it is looked for, and not counted as sent (1.0.225): the person was left
         # with no trace of why no code came, and shut out by the limit of codes sent.
-        try:
-            node_key_give_back(store, 'codesent', name)
-            store.otp_add({'ts': time.time(), 'name': name, 'ok': 0,
-                           'said': 'The code was not sent: too many codes are waiting to be sent',
-                           'how': 'send-' + kind, 'src': '', 'rid': str(rid)[:120], 'step_off': None})
-        except Exception:                               # noqa: BLE001
-            pass
+        code_not_sent(store, kind, name, rid,
+                      'The code was not sent: too many codes are waiting to be sent')
         return False
 
     def go():
         try:
-            with CODE_SENDING:
+            with CODE_SENDING_BY[chan]:
+                # Its turn come only after the code ran out (1.0.265): not sent - a code that
+                # no longer works, arriving minutes late, sent the person back to type it.
+                ttl = int(CONFIG.get('code_ttl_s') or 300)
+                waited = time.time() - asked
+                if waited > ttl:
+                    log_sparing('code-send-late:' + chan, 'a code for %s was not sent by %s: it '
+                                'waited %d s for its turn, longer than a code is good for (%d s)'
+                                % (name, 'mail' if chan == 'mail' else 'SMS', int(waited), ttl),
+                                'warn', every=60)
+                    code_not_sent(store, kind, name, rid,
+                                  'The code was not sent: it waited %d s to be sent, longer than '
+                                  'a code is good for' % int(waited))
+                    return
                 send()
         finally:
             with CODE_LOCK:
+                CODE_WAITING_BY[chan] -= 1
                 CODE_WAITING[0] -= 1
 
     def send():
@@ -1496,6 +1533,7 @@ def code_send_later(store, kind, to, code, name, rid=''):
         threading.Thread(target=go, name='code-send', daemon=True).start()
     except RuntimeError as e:
         with CODE_LOCK:
+            CODE_WAITING_BY[chan] -= 1
             CODE_WAITING[0] -= 1
         log_sparing('code-send-thread', 'the code for %s could not be sent: %s' % (name, e),
                     'warn', every=60)

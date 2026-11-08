@@ -1,0 +1,227 @@
+t_load.py 1.0.265 full - 2026-11-08 01:54:28
+setup: 34000 tokens in 4.9 s; the database: /var/lib/otp/otp.db (SQLite 3.45.1)
+daemon at start: {'rss': 258408, 'th': 39, 'fds': 14, 'cpu': 181228} | radius counters {'packets': 363323, 'repeated': 2064, 'accept': 239236, 'accounting': 93810, 'reject': 23401, 'challenge': 4812, 'stale': 7160} | rows {'radius_log': 234, 'otp_log': 243, 'events': 8048, 'tokens': 34001, 'sessions': 17}
+R pw 50/s              auth/pw                       50      50    3000     3.2     4.6     7.8       16     0     0     0   0
+  R pw 50/s              daemon cpu avg    16% max    22%  rss  252.4-> 252.3 MB (max  252.4)  threads 39->38 (max 39)  fds 14->14  | machine busy   8% | php-fpm otp children max 12 (rss 221 MB) | nginx fds max 61
+  ok   R pw 50/s: no wrong answer, no code let in twice
+R pw 100/s             auth/pw                      100     100    6000     2.7     4.3     9.6       30     0     0     0   0
+  R pw 100/s             daemon cpu avg    27% max    38%  rss  252.3-> 252.3 MB (max  252.3)  threads 38->37 (max 38)  fds 14->14  | machine busy   9% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   R pw 100/s: no wrong answer, no code let in twice
+R pw 200/s             auth/pw                      200     200   12000     2.4    12.2    21.3       40     0     0     0   0
+  R pw 200/s             daemon cpu avg    51% max    93%  rss  252.3-> 252.3 MB (max  252.3)  threads 37->36 (max 37)  fds 14->14  | machine busy  17% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   R pw 200/s: no wrong answer, no code let in twice
+R pw 300/s             auth/pw                      300     190   11409  1193.2  3964.6  4761.1     5020  6591     0     0   0
+  R pw 300/s             daemon cpu avg   105% max   113%  rss  252.3-> 252.3 MB (max  252.3)  threads 37->38 (max 38)  fds 14->15  | machine busy  33% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   R pw 300/s: no wrong answer, no code let in twice
+  -> past the knee (timeouts 6591, refused right codes 0, p99 4761.1 ms, 190/s done)
+KNEE pw: 200 requests a second (the highest level with every request answered, every right code let in, p99 < 100 ms)
+R otp 50/s             auth/otp                      50      50    3000     1.2     1.7     3.0       17     0     0     0   0
+  R otp 50/s             daemon cpu avg    10% max    13%  rss  252.3-> 252.3 MB (max  252.3)  threads 38->39 (max 39)  fds 14->14  | machine busy   5% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   R otp 50/s: no wrong answer, no code let in twice
+R otp 100/s            auth/otp                     100     100    6000     1.0     1.5     4.7       20     0     0     0   0
+  R otp 100/s            daemon cpu avg    16% max    19%  rss  252.3-> 252.3 MB (max  252.3)  threads 39->38 (max 39)  fds 14->14  | machine busy   6% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   R otp 100/s: no wrong answer, no code let in twice
+R otp 200/s            auth/otp                     200     200   12000     1.0     3.1    10.9       34     0     0     0   0
+  R otp 200/s            daemon cpu avg    31% max    42%  rss  252.3-> 252.3 MB (max  252.3)  threads 38->37 (max 38)  fds 14->14  | machine busy  12% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   R otp 200/s: no wrong answer, no code let in twice
+R otp 300/s            auth/otp                     300     300   18000     0.9    10.2   271.2      556     0     0     0   0
+  R otp 300/s            daemon cpu avg    45% max    72%  rss  252.3-> 252.3 MB (max  252.3)  threads 37->37 (max 37)  fds 14->14  | machine busy  12% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   R otp 300/s: no wrong answer, no code let in twice
+  -> past the knee (timeouts 0, refused right codes 0, p99 271.2 ms, 300/s done)
+KNEE otp: 200 requests a second (the highest level with every request answered, every right code let in, p99 < 100 ms)
+  auth/pw counts: {'double_accept': 0, 'fresh:accept': 6319, 'replay:reject': 909, 'sent': 9000, 'wrong:reject': 1772}
+  chal/ch counts: {'chal1:challenge': 900, 'chal2:accept': 900, 'double_accept': 0, 'sent': 1800}
+  acct/acct counts: {'double_accept': 0, 'interim:acct-ok': 13508, 'sent': 27000, 'start:acct-ok': 6845, 'stop:acct-ok': 6647}
+  retr/otp counts: {'double_accept': 0, 'retr_after:accept': 227, 'retr_now:accept': 223, 'retr_replies_1': 223, 'retr_replies_2': 227, 'sent': 450}
+  auth/otp counts: {'double_accept': 0, 'fresh:accept': 1801, 'sent': 2250, 'wrong:reject': 449}
+phase                  stream                   offered  done/s       n     p50     p95     p99      max   tmo wrong  rej!  2x
+M mixed 100/s          auth/pw                      100     100    9000     4.2   194.3   351.3      581     0     0     0   0
+M mixed 100/s          auth/pw:fresh                100      70    6319     3.2   122.4   249.5      402     0     0     0   0
+M mixed 100/s          auth/pw:replay               100      10     909     4.9   244.2   329.2      540     0     0     0   0
+M mixed 100/s          auth/pw:wrong                100      20    1772     6.5   334.3   490.5      581     0     0     0   0
+M mixed 100/s          chal/ch                       10      20    1800     4.7   112.4   204.2      368     0     0     0   0
+M mixed 100/s          chal/ch:chal1                 10      10     900     6.0   116.8   246.1      368     0     0     0   0
+M mixed 100/s          chal/ch:chal2                 10      10     900     3.1   108.1   186.1      344     0     0     0   0
+M mixed 100/s          acct/acct                    300     300   27000     0.7     3.9   505.2     1052     0     0     0   0
+M mixed 100/s          acct/acct:interim            300     150   13508     0.7     4.1   594.8     1049     0     0     0   0
+M mixed 100/s          acct/acct:start              300      76    6845     0.6     3.3   369.5     1051     0     0     0   0
+M mixed 100/s          acct/acct:stop               300      74    6647     0.7     3.6   421.9     1052     0     0     0   0
+M mixed 100/s          retr/otp                       5       5     450     1.4    82.7   224.4      337     0     0     0   0
+M mixed 100/s          retr/otp:retr_after            5       3     227     1.3    70.5   228.7      337     0     0     0   0
+M mixed 100/s          retr/otp:retr_now              5       2     223     1.4    92.5   164.3      285     0     0     0   0
+M mixed 100/s          auth/otp                      25      25    2250     1.3    97.9   224.5      340     0     0     0   0
+M mixed 100/s          auth/otp:fresh                25      20    1801     1.0    94.9   224.5      340     0     0     0   0
+M mixed 100/s          auth/otp:wrong                25       5     449     1.8   119.0   189.2      319     0     0     0   0
+  M mixed 100/s          daemon cpu avg    67% max   119%  rss  252.3-> 252.3 MB (max  252.3)  threads 37->38 (max 38)  fds 14->14  | machine busy  21% | php-fpm otp children max 1 (rss 17 MB) | nginx fds max 61
+  ok   M mixed 100/s: no wrong answer (wrong codes and replays refused, retransmissions answered alike)
+  ok   M mixed 100/s: no code let in twice
+  ok   M mixed 100/s: nothing unanswered (auth, challenge, accounting)   [{'auth/pw': 0, 'chal/ch': 0, 'acct/acct': 0, 'retr/otp': 0, 'auth/otp': 0}]
+  ok   M mixed 100/s: every right code let in   [{'auth/pw': 0, 'chal/ch': 0, 'acct/acct': 0, 'retr/otp': 0, 'auth/otp': 0}]
+  FAIL M mixed 100/s: accounting p99 < 50 ms (505.2)
+  FAIL M mixed 100/s: password+code p99 < 50 ms with accounting flood + challenges (351.3)
+  HTTP H http 20 clients: 200:16052 401:15 429:225
+    admin:activity         n=   224  200:224                                      ok p50  240.4 p95  334.9 p99 1159.3 ms
+    admin:dashboard        n=   224  200:224                                      ok p50   13.5 p95 1774.5 p99 2109.4 ms
+    admin:events           n=   219  200:219                                      ok p50   85.2 p95  222.5 p99  296.8 ms
+    admin:load             n=   216  200:216                                      ok p50   56.8 p95  107.5 p99  138.4 ms
+    admin:login            n=     8  200:8                                        ok p50  452.1 p95  889.4 p99  889.4 ms
+    admin:status           n=   432  200:432                                      ok p50  343.3 p95  502.9 p99  615.6 ms
+    admin:tokens           n=   216  200:216                                      ok p50  244.4 p95  326.0 p99  361.6 ms
+    portal:page            n=  1222  200:1222                                     ok p50  121.9 p95  222.5 p99  814.1 ms
+    portal:signin          n=   240  401:15 429:225                               ok p50      - p95      - p99      - ms
+    static                 n= 13291  200:13291                                    ok p50    1.5 p95   12.2 p99   18.0 ms
+  H http 20 clients      daemon cpu avg    96% max   103%  rss  252.3-> 253.0 MB (max  253.1)  threads 38->40 (max 51)  fds 14->15  | machine busy  52% | php-fpm otp children max 12 (rss 248 MB) | nginx fds max 97
+  php-fpm said: [08-Nov-2026 02:05:21] WARNING: [pool otp] server reached max_children setting (12), consider raising it (x1)
+  ok   H http 20 clients: no 5xx and no failed connection
+  ok   H http 20 clients: the RADIUS probe beside it (10/s): all answered, right, p99 < 50 ms (14.1)
+  HTTP H http 50 clients: 200:31854 401:35 429:403
+    admin:activity         n=   213  200:213                                      ok p50  525.6 p95  965.7 p99 1300.3 ms
+    admin:dashboard        n=   217  200:217                                      ok p50  378.9 p95 2570.5 p99 3246.0 ms
+    admin:events           n=   212  200:212                                      ok p50  372.0 p95  694.1 p99  862.6 ms
+    admin:load             n=   205  200:205                                      ok p50  358.0 p95  708.4 p99 1032.8 ms
+    admin:login            n=    20  200:20                                       ok p50  472.0 p95 1473.8 p99 1473.8 ms
+    admin:status           n=   398  200:398                                      ok p50  831.5 p95 1127.0 p99 1613.6 ms
+    admin:tokens           n=   206  200:206                                      ok p50  589.7 p95  832.6 p99  906.9 ms
+    portal:page            n=  1048  200:1048                                     ok p50  469.9 p95  877.2 p99 2382.8 ms
+    portal:signin          n=   438  401:35 429:403                               ok p50      - p95      - p99      - ms
+    static                 n= 29335  200:29335                                    ok p50    2.3 p95   17.2 p99   25.7 ms
+  H http 50 clients      daemon cpu avg    88% max   116%  rss  253.0-> 253.1 MB (max  253.1)  threads 39->51 (max 52)  fds 14->27  | machine busy  70% | php-fpm otp children max 12 (rss 254 MB) | nginx fds max 155
+  ok   H http 50 clients: no 5xx and no failed connection
+  ok   H http 50 clients: the RADIUS probe beside it (10/s): all answered, right, p99 < 50 ms (22.9)
+  HTTP H http 100 clients: 200:46284 401:75 429:344
+    admin:activity         n=   200  200:200                                      ok p50 1173.6 p95 1799.4 p99 1885.9 ms
+    admin:dashboard        n=   200  200:200                                      ok p50  887.4 p95 1700.3 p99 2168.2 ms
+    admin:events           n=   200  200:200                                      ok p50 1039.1 p95 1772.1 p99 2698.0 ms
+    admin:load             n=   200  200:200                                      ok p50 1025.6 p95 1612.8 p99 1733.9 ms
+    admin:login            n=    40  200:40                                       ok p50  833.9 p95 1423.1 p99 1448.0 ms
+    admin:status           n=   383  200:383                                      ok p50 1757.8 p95 2244.7 p99 2617.0 ms
+    admin:tokens           n=   200  200:200                                      ok p50 1399.5 p95 2764.2 p99 2926.2 ms
+    portal:page            n=   890  200:890                                      ok p50 1324.8 p95 1944.7 p99 2584.2 ms
+    portal:signin          n=   419  401:75 429:344                               ok p50      - p95      - p99      - ms
+    static                 n= 43971  200:43971                                    ok p50    7.0 p95   30.1 p99   45.1 ms
+  H http 100 clients     daemon cpu avg    83% max   193%  rss  252.9-> 253.0 MB (max  253.1)  threads 38->39 (max 51)  fds 14->14  | machine busy  85% | php-fpm otp children max 12 (rss 274 MB) | nginx fds max 244
+  ok   H http 100 clients: no 5xx and no failed connection
+  ok   H http 100 clients: the RADIUS probe beside it (10/s): all answered, right, p99 < 50 ms (22.5)
+B ref RADIUS alone 140 auth/pw                      140     140    6300     2.7     8.3    15.7       64     0     0     0   0
+  B ref RADIUS alone 140/s daemon cpu avg    44% max    65%  rss  253.0-> 252.9 MB (max  253.0)  threads 39->39 (max 40)  fds 14->14  | machine busy  19% | php-fpm otp children max 12 (rss 218 MB) | nginx fds max 61
+B RADIUS 140/s + http  auth/pw                      140     140   12600    24.4   244.3   397.5      778     0     0   178   0
+  HTTP B RADIUS 140/s + http 100: 200:84918 429:569
+    admin:activity         n=   240  200:240                                      ok p50 1896.0 p95 2529.6 p99 2659.8 ms
+    admin:dashboard        n=   240  200:240                                      ok p50 1781.7 p95 5690.5 p99 6082.1 ms
+    admin:events           n=   239  200:239                                      ok p50 1500.8 p95 2319.8 p99 2649.2 ms
+    admin:load             n=   236  200:236                                      ok p50 1699.3 p95 2373.1 p99 2610.5 ms
+    admin:login            n=    40  200:40                                       ok p50  949.0 p95 2148.7 p99 2348.5 ms
+    admin:status           n=   449  200:449                                      ok p50 2583.4 p95 4849.3 p99 6057.1 ms
+    admin:tokens           n=   239  200:239                                      ok p50 1938.5 p95 2901.4 p99 3005.2 ms
+    portal:page            n=  1085  200:1085                                     ok p50 1893.0 p95 4978.9 p99 5650.2 ms
+    portal:signin          n=   569  429:569                                      ok p50      - p95      - p99      - ms
+    static                 n= 82150  200:82150                                    ok p50    7.6 p95   34.4 p99   50.6 ms
+  B RADIUS 140/s + http 100 daemon cpu avg   108% max   216%  rss  252.9-> 253.1 MB (max  253.1)  threads 39->48 (max 51)  fds 14->25  | machine busy  90% | php-fpm otp children max 12 (rss 257 MB) | nginx fds max 245
+  refused right codes, by reason: {'LDAP server(s) have gone away': 178}
+  FAIL B RADIUS 140/s + http 100: RADIUS all answered, right, none twice   [{'timeouts': 0, 'refused right': 178, 'wrong': []}]
+  FAIL B RADIUS 140/s + http 100: RADIUS p99 < 50 ms while the pages are hammered (alone 15.7, with HTTP 397.5)
+  FAIL B RADIUS 140/s + http 100: HTTP load does not multiply RADIUS p99 (with/alone 25.4x <= 3x or +10 ms)
+  FAIL B RADIUS 140/s + http 100: accounting p99 < 50 ms (3617.5)
+  ok   B RADIUS 140/s + http 100: no 5xx and no failed connection
+phase                  stream                   offered  done/s       n     p50     p95     p99      max   tmo wrong  rej!  2x
+S soak 600s            auth/pw                       80      80   48000     4.4    18.4    51.1      715     0     0     0   0
+S soak 600s            chal/ch                        5      10    6000     4.0    17.8    33.9      527     0     0     0   0
+S soak 600s            acct/acct                     50      50   30000    52.4  2778.3  3758.3     4528     0     0     0   0
+S soak 600s            retr/otp                       2       2    1200     3.0    12.9    27.0      588     0     0     0   0
+  HTTP S soak 600s: 200:198764 429:3414
+    admin:activity         n=  1968  200:1968                                     ok p50  412.3 p95  651.8 p99 1392.6 ms
+    admin:dashboard        n=  1968  200:1968                                     ok p50   18.2 p95 3465.0 p99 4651.6 ms
+    admin:events           n=  1965  200:1965                                     ok p50  130.2 p95  389.7 p99  472.9 ms
+    admin:load             n=  1960  200:1960                                     ok p50   69.1 p95  134.3 p99  197.5 ms
+    admin:login            n=     8  200:8                                        ok p50  352.6 p95  387.3 p99  387.3 ms
+    admin:status           n=  3920  200:3920                                     ok p50  470.2 p95  679.3 p99  813.6 ms
+    admin:tokens           n=  1961  200:1961                                     ok p50  326.0 p95  461.4 p99  539.8 ms
+    portal:page            n= 11991  200:11991                                    ok p50  163.3 p95  386.5 p99 1568.1 ms
+    portal:signin          n=  3414  429:3414                                     ok p50      - p95      - p99      - ms
+    static                 n=173023  200:173023                                   ok p50    1.6 p95   13.3 p99   19.0 ms
+  S soak 600s            daemon cpu avg   119% max   130%  rss  252.9-> 253.1 MB (max  253.2)  threads 37->50 (max 52)  fds 14->26  | machine busy  58% | php-fpm otp children max 12 (rss 250 MB) | nginx fds max 96
+  database rows gained: {'radius_log': 85200, 'otp_log': 51687, 'events': 333, 'tokens': 0, 'sessions': 0} for 85200 RADIUS requests (1.00 radius_log rows / request)
+  soak daemon rss MB      first    253.1  last    253.2
+  soak daemon threads     first     47.3  last     50.3
+  soak daemon fds         first     24.6  last     25.9
+  soak php-fpm rss MB     first    235.5  last    233.6
+  soak php-fpm children   first     12.0  last     12.0
+  soak nginx rss MB       first     45.1  last     45.6
+  soak nginx fds          first     90.6  last     93.0
+  soak daemon rss over the second half: 253.1 -> 253.1 MB
+  ok   S soak 600s: daemon memory bounded (last minute <= first minute + 25% + 30 MB)   [(253.07194010416666, 253.15104166666666)]
+  ok   S soak 600s: daemon threads bounded (+10 at most)   [(47.333333333333336, 50.333333333333336)]
+  ok   S soak 600s: daemon FDs bounded (+50 at most)   [(24.583333333333332, 25.916666666666668)]
+  ok   S soak 600s: nginx/php-fpm memory bounded   [((45.123697916666664, 45.5771484375), (235.5068359375, 233.6328125))]
+  ok   S soak 600s: RADIUS no wrong answer, none twice, nothing unanswered   [{'auth/pw': (0, 0, 0), 'chal/ch': (0, 0, 0), 'acct/acct': (0, 0, 0), 'retr/otp': (0, 0, 0)}]
+  FAIL S soak 600s: password+code p99 < 50 ms over the whole soak (51.1)
+  FAIL S soak 600s: accounting p99 < 50 ms (3758.3)
+  ok   S soak 600s: no 5xx and no failed connection
+  ok   the whole run: no code let in twice (141637 codes let in)
+  ok   the daemon's own log: no token let in twice for one 30 s step (otp_log)
+daemon radius counters, start -> end: {'packets': 363323, 'repeated': 2064, 'accept': 239236, 'accounting': 93810, 'reject': 23401, 'challenge': 4812, 'stale': 7160} -> {'packets': 595667, 'repeated': 3714, 'accept': 387457, 'accounting': 157560, 'reject': 38224, 'challenge': 8712, 'stale': 7166}
+  FAIL the daemon dropped nothing for a full queue (overflow) or as too old (stale)   [{'overflow': 0, 'stale': 6, 'no_database': 0, 'repeated': 1650}]
+php-fpm log lines during the run: 126; max_children reached: 2
+    [08-Nov-2026 02:18:07] NOTICE: [pool otp] child 31425 started
+    [08-Nov-2026 02:20:07] NOTICE: [pool otp] child 25586 exited with code 0 after 148.525165 seconds from start
+    [08-Nov-2026 02:20:07] NOTICE: [pool otp] child 23832 started
+    [08-Nov-2026 02:20:08] NOTICE: [pool otp] child 26680 exited with code 0 after 143.797694 seconds from start
+    [08-Nov-2026 02:20:08] NOTICE: [pool otp] child 23905 started
+daemon at end: {'rss': 259032, 'th': 37, 'fds': 14, 'cpu': 303823}
+the database: /var/lib/otp/otp.db (SQLite 3.45.1) (PostgreSQL not run: the live install is a standalone SQLite one; moving it to PostgreSQL is the HA wizard, not a switch - t_latency.py VERSION postgres measures the engine on a private daemon)
+
+==== SUMMARY (latency ms; tmo = unanswered in 5 s; wrong = a wrong answer; rej! = a right code refused; 2x = a code let in twice)
+phase                  stream                   offered  done/s       n     p50     p95     p99      max   tmo wrong  rej!  2x
+R pw 50/s              auth/pw                       50      50    3000     3.2     4.6     7.8       16     0     0     0   0
+R pw 100/s             auth/pw                      100     100    6000     2.7     4.3     9.6       30     0     0     0   0
+R pw 200/s             auth/pw                      200     200   12000     2.4    12.2    21.3       40     0     0     0   0
+R pw 300/s             auth/pw                      300     190   11409  1193.2  3964.6  4761.1     5020  6591     0     0   0
+R otp 50/s             auth/otp                      50      50    3000     1.2     1.7     3.0       17     0     0     0   0
+R otp 100/s            auth/otp                     100     100    6000     1.0     1.5     4.7       20     0     0     0   0
+R otp 200/s            auth/otp                     200     200   12000     1.0     3.1    10.9       34     0     0     0   0
+R otp 300/s            auth/otp                     300     300   18000     0.9    10.2   271.2      556     0     0     0   0
+M mixed 100/s          auth/pw                      100     100    9000     4.2   194.3   351.3      581     0     0     0   0
+M mixed 100/s          auth/pw:fresh                100      70    6319     3.2   122.4   249.5      402     0     0     0   0
+M mixed 100/s          auth/pw:replay               100      10     909     4.9   244.2   329.2      540     0     0     0   0
+M mixed 100/s          auth/pw:wrong                100      20    1772     6.5   334.3   490.5      581     0     0     0   0
+M mixed 100/s          chal/ch                       10      20    1800     4.7   112.4   204.2      368     0     0     0   0
+M mixed 100/s          chal/ch:chal1                 10      10     900     6.0   116.8   246.1      368     0     0     0   0
+M mixed 100/s          chal/ch:chal2                 10      10     900     3.1   108.1   186.1      344     0     0     0   0
+M mixed 100/s          acct/acct                    300     300   27000     0.7     3.9   505.2     1052     0     0     0   0
+M mixed 100/s          acct/acct:interim            300     150   13508     0.7     4.1   594.8     1049     0     0     0   0
+M mixed 100/s          acct/acct:start              300      76    6845     0.6     3.3   369.5     1051     0     0     0   0
+M mixed 100/s          acct/acct:stop               300      74    6647     0.7     3.6   421.9     1052     0     0     0   0
+M mixed 100/s          retr/otp                       5       5     450     1.4    82.7   224.4      337     0     0     0   0
+M mixed 100/s          retr/otp:retr_after            5       3     227     1.3    70.5   228.7      337     0     0     0   0
+M mixed 100/s          retr/otp:retr_now              5       2     223     1.4    92.5   164.3      285     0     0     0   0
+M mixed 100/s          auth/otp                      25      25    2250     1.3    97.9   224.5      340     0     0     0   0
+M mixed 100/s          auth/otp:fresh                25      20    1801     1.0    94.9   224.5      340     0     0     0   0
+M mixed 100/s          auth/otp:wrong                25       5     449     1.8   119.0   189.2      319     0     0     0   0
+H http 20 clients      auth/otp                      10      10     450     1.8     6.1    14.1       24     0     0     0   0
+H http 50 clients      auth/otp                      10      10     450     2.2     9.1    22.9       33     0     0     0   0
+H http 100 clients     auth/otp                      10      10     450     2.9    13.3    22.5       48     0     0     0   0
+B ref RADIUS alone 140 auth/pw                      140     140    6300     2.7     8.3    15.7       64     0     0     0   0
+B RADIUS 140/s + http  auth/pw                      140     140   12600    24.4   244.3   397.5      778     0     0   178   0
+S soak 600s            auth/pw                       80      80   48000     4.4    18.4    51.1      715     0     0     0   0
+S soak 600s            chal/ch                        5      10    6000     4.0    17.8    33.9      527     0     0     0   0
+S soak 600s            acct/acct                     50      50   30000    52.4  2778.3  3758.3     4528     0     0     0   0
+S soak 600s            retr/otp                       2       2    1200     3.0    12.9    27.0      588     0     0     0   0
+KNEE: {'pw': 200, 'otp': 200}
+cleanup ...
+  removed: {'tokens': 34000, 'radius_log': 230694, 'otp_log': 162279}
+  --del-realm zz-r265-otp: ok
+  --del-realm zz-r265-pw: ok
+  --del-realm zz-r265-ch: ok
+  --del-client zz-r265-nas: ok
+  --del-directory zz-r265-dir: ok
+
+RESULT: FAIL - 27 of 36 checks passed
+  FAIL M mixed 100/s: accounting p99 < 50 ms (505.2) 
+  FAIL M mixed 100/s: password+code p99 < 50 ms with accounting flood + challenges (351.3) 
+  FAIL B RADIUS 140/s + http 100: RADIUS all answered, right, none twice {'timeouts': 0, 'refused right': 178, 'wrong': []}
+  FAIL B RADIUS 140/s + http 100: RADIUS p99 < 50 ms while the pages are hammered (alone 15.7, with HTTP 397.5) 
+  FAIL B RADIUS 140/s + http 100: HTTP load does not multiply RADIUS p99 (with/alone 25.4x <= 3x or +10 ms) 
+  FAIL B RADIUS 140/s + http 100: accounting p99 < 50 ms (3617.5) 
+  FAIL S soak 600s: password+code p99 < 50 ms over the whole soak (51.1) 
+  FAIL S soak 600s: accounting p99 < 50 ms (3758.3) 
+  FAIL the daemon dropped nothing for a full queue (overflow) or as too old (stale) {'overflow': 0, 'stale': 6, 'no_database': 0, 'repeated': 1650}

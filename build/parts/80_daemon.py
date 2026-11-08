@@ -1102,6 +1102,11 @@ def php_state():
 # ---------------------------------------------------------------------------
 # The daemon
 # ---------------------------------------------------------------------------
+
+class ReaderBusy(Exception):
+    """The connection of the pages' lists did not come free in time (1.0.265)."""
+
+
 class Daemon(object):
     def __init__(self, store, serve=True):
         self.store = store
@@ -1636,19 +1641,45 @@ class Daemon(object):
         return out
 
     # ---- what it is doing ------------------------------------------------------
+    # The day's counts and the last request kept a few seconds (1.0.265), for every page and tab
+    # alike: counted again on each status every 5 s of each open page, 24 h of the log each time,
+    # they held RADIUS (one process) behind them under load. What tells a page to draw again
+    # (the serial) is read each time.
+    STATUS_DB_S = 5.0
+    STATUS_DB = {'db': None, 'at': 0.0, 'got': None}
+    STATUS_DB_LOCK = threading.Lock()
+
+    def _status_db(self):
+        c, db = self.STATUS_DB, id(self.store.db)
+        got = c['got']
+        if got is not None and c['db'] == db and 0 <= time.time() - c['at'] < self.STATUS_DB_S:
+            return got
+        with self.STATUS_DB_LOCK:
+            got = c['got']
+            if got is not None and c['db'] == db and \
+                    0 <= time.time() - c['at'] < self.STATUS_DB_S:
+                return got
+            at = time.time()
+            last = self.store.db.row("SELECT ts, result, username FROM radius_log WHERE packet = "
+                                     "'Access-Request' ORDER BY ts DESC LIMIT 1")
+            day = at - 86400
+            # Sign-ins only, as the Overview's chart counts them (1.0.252): a packet of a stranger
+            # or of another kind dropped made the card say one more than the line under it.
+            acc = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                                          "packet = 'Access-Request' AND result = 'accept'",
+                                          (day,), 0) or 0)
+            rej = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
+                                          "packet = 'Access-Request' AND result IN "
+                                          "('reject', 'drop')", (day,), 0) or 0)
+            got = {'last': last, 'acc': acc, 'rej': rej}
+            c.update(db=db, at=at, got=got)
+            return got
+
     def status(self):
         c = self.store.token_counts()
-        last = self.store.db.row("SELECT ts, result, username FROM radius_log WHERE packet = "
-                                 "'Access-Request' ORDER BY ts DESC LIMIT 1")
-        day = time.time() - 86400
-        # Sign-ins only, as the Overview's chart counts them (1.0.252): a packet of a stranger or of
-        # another kind dropped made the card say one more than the line under it.
-        acc = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "packet = 'Access-Request' AND result = 'accept'",
-                                      (day,), 0) or 0)
-        rej = int(self.store.db.value("SELECT COUNT(*) AS n FROM radius_log WHERE ts >= ? AND "
-                                      "packet = 'Access-Request' AND result IN ('reject', 'drop')",
-                                      (day,), 0) or 0)
+        kept = self._status_db()
+        last = kept['last']
+        acc, rej = kept['acc'], kept['rej']
         serial = self.store.db.value('SELECT MAX(id) AS n FROM radius_log', (), 0) or 0
         ev = self.store.db.value('SELECT MAX(id) AS n FROM events', (), 0) or 0
         r = self.radius.state() if self.radius else {}
@@ -1665,8 +1696,8 @@ class Daemon(object):
         si = self.siem.state() if self.siem else {}
         if si.get('trouble'):
             problems.extend('syslog %s: %s' % kv for kv in sorted(si['trouble'].items()))
-        lost = int(self.store.db.value('SELECT COUNT(*) AS n FROM tokens', (), 0) or 0) and \
-            not sealing_key()
+        # From the counts just taken (1.0.265): one more look at the whole table it was.
+        lost = int(c.get('all') or 0) and not sealing_key()
         if lost:
             problems.append('the key that opens the tokens (%s) is missing: no code can be '
                             'checked' % sealing_key_path())
@@ -1830,10 +1861,11 @@ class Daemon(object):
         self.api = ApiServer(self)
         try:
             self.api.start()
-        except ApiBindError as e:
-            # The API's port taken by something else (1.0.262): the daemon stopped here - RADIUS
+        except Exception as e:                          # noqa: BLE001
+            # The API's port taken by something else (1.0.262), or anything else at its start
+            # (1.0.265: its token file not written, /run full): the daemon stopped here - RADIUS
             # with it, started again by systemd and stopped again. RADIUS answers on; the pages
-            # wait, and the port is tried again every half minute.
+            # wait, and the API is tried again every half minute.
             self.api_bind_failed(e)
         HA_STORE['store'] = self.store
         node_name_check(self.store)             # renamed since the last start? (1.0.48)
@@ -2023,6 +2055,11 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
                 try:
+                    osroots_tick(self)          # the system's trusted roots (1.0.265)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('osroots-tick', 'the system\'s trusted roots: %s' % e, 'warn',
+                                every=600)
+                try:
                     osu_tick(self)              # the local users of the machines (1.0.243)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('osu-tick', 'the local users: %s' % e, 'warn', every=600)
@@ -2170,33 +2207,46 @@ class Daemon(object):
         busy[name] = t
         t.start()
 
-    def reader(self):
+    def reader(self, wait=None):
         """The database as the pages' long lists read it (1.0.101): the Log
         searched over months, the suggestions under a search box - on a
         connection of their own, with a limit of 20 s a statement. On the one
         every sign-in shares, four such searches at once held RADIUS for
-        seconds and the health check failed."""
+        seconds and the health check failed. `wait`: how long a page waits for
+        it while it is being opened (1.0.265) - ReaderBusy past that, never a
+        page held for the whole time a database that does not answer takes."""
         main = self.store.db
         if main.engine == 'sqlite':
             return self.store
+        if wait is not None:
+            if not self._reader_lock.acquire(timeout=max(0.0, float(wait))):
+                raise ReaderBusy('the connection of the lists is busy')
+            try:
+                return self._reader_open(main)
+            finally:
+                self._reader_lock.release()
         with self._reader_lock:
-            r = self._reader
-            if r is not None and r.db.where() != main.where():
-                try:
-                    r.db.close()
-                except Exception:                       # noqa: BLE001
-                    pass
-                r = self._reader = None
-            if r is None:
-                try:
-                    r = self._reader = Storage.view(
-                        db_open({k: CONFIG.get(k) for k in DB_KEYS}, statement_s=20))
-                except Exception as e:                  # noqa: BLE001
-                    log_sparing('reader-db', 'the lists of the pages read through the shared '
-                                'connection: their own could not be opened (%s)'
-                                % str(e).split('\n')[0][:200], 'warn')
-                    return self.store
-            return r
+            return self._reader_open(main)
+
+    def _reader_open(self, main):
+        """The lists' own connection, opened when it is not (under _reader_lock)."""
+        r = self._reader
+        if r is not None and r.db.where() != main.where():
+            try:
+                r.db.close()
+            except Exception:                       # noqa: BLE001
+                pass
+            r = self._reader = None
+        if r is None:
+            try:
+                r = self._reader = Storage.view(
+                    db_open({k: CONFIG.get(k) for k in DB_KEYS}, statement_s=20))
+            except Exception as e:                  # noqa: BLE001
+                log_sparing('reader-db', 'the lists of the pages read through the shared '
+                            'connection: their own could not be opened (%s)'
+                            % str(e).split('\n')[0][:200], 'warn')
+                return self.store
+        return r
 
     def hourly(self):
         if CONFIG.get('ha_mode') == 'replicated' and self.store.db.engine == 'postgres':

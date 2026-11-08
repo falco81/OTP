@@ -1,0 +1,12 @@
+setup: 34000 tokens in 4.9 s; the database: /var/lib/otp/otp.db (SQLite 3.45.1)
+  HTTP smoke: 200:1105 401:5 429:8
+    admin:activity         n=    66  200:66                                       ok p50   11.3 p95   49.6 p99   83.4 ms
+    admin:dashboard        n=    67  200:67                                       ok p50    4.5 p95   17.9 p99   21.6 ms
+    admin:events           n=    64  200:64                                       ok p50    5.7 p95   42.5 p99   58.9 ms
+    admin:load             n=    64  200:64                                       ok p50    7.2 p95   21.2 p99   35.2 ms
+    admin:login            n=     4  200:4                                        ok p50  140.6 p95  140.7 p99  140.7 ms
+    admin:status           n=   127  200:127                                      ok p50   60.6 p95  106.9 p99  123.9 ms
+    admin:tokens           n=    64  200:64                                       ok p50   56.2 p95   90.4 p99  110.8 ms
+    portal:page            n=   161  200:161                                      ok p50   18.9 p95   57.1 p99   70.0 ms
+    portal:signin          n=    13  401:5 429:8                                  ok p50      - p95      - p99      - ms
+    static                 n=   488  200:488                                      ok p50    0.9 p95   10.1 p99   10.7 ms

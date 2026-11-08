@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.264'
+__version__ = '1.0.265'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1171,7 +1171,8 @@ SAYS = {
                            'again rather than a second check of the code - which would '
                            'fail, because a code works only once.',
     'radius_workers': 'How many requests are worked on side by side. A request that waits '
-                      'for a slow domain controller does not hold up the others.',
+                      'for a slow domain controller does not hold up the others. A change '
+                      'starts or stops workers at once, no restart needed.',
     'radius_unknown_log': 'A request from an address that is not one of the clients is '
                           'dropped without an answer, as RADIUS says it must be. Switched '
                           'on, it is also written down - once a minute per address - so '
@@ -2553,6 +2554,8 @@ def write_replacing(path, text, mode=0o640, owner=None):
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(text)
         os.replace(tmp, str(path))
+        if path.name == 'secrets.key':
+            sealing_key_forget()        # the key just written taken at once (1.0.265)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -2638,6 +2641,15 @@ def sealing_key_path():
 
 _KEY_CACHE = {}
 _KEY_LOCK = threading.Lock()
+# The key file looked at again (its stat) at most once a second (1.0.265): a stat for every
+# secret opened - several for each RADIUS request - was a share of what a sign-in cost. A key
+# written by this process (write_replacing) is taken at once; one changed by hand within a
+# second.
+KEY_LOOK_S = 1.0
+
+
+def sealing_key_forget():
+    _KEY_CACHE.clear()
 
 
 def sealing_key(make=False):
@@ -2647,6 +2659,9 @@ def sealing_key(make=False):
     there is none, and then with O_EXCL, so two processes starting at once
     cannot each make one of their own."""
     path = sealing_key_path()
+    got = _KEY_CACHE.get(str(path))
+    if got and time.monotonic() - got[2] < KEY_LOOK_S:
+        return got[1]
     try:
         st = os.stat(str(path))
         stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
@@ -2655,8 +2670,8 @@ def sealing_key(make=False):
     except OSError:
         stamp = 'unreadable'
     if stamp is not None and stamp != 'unreadable':
-        got = _KEY_CACHE.get(str(path))
         if got and got[0] == stamp:
+            _KEY_CACHE[str(path)] = (stamp, got[1], time.monotonic())
             return got[1]
     try:
         key = bytes.fromhex(path.read_text(encoding='ascii').strip())
@@ -2666,8 +2681,11 @@ def sealing_key(make=False):
         key = b''
     if key and len(key) == 32:
         if stamp and stamp != 'unreadable':
-            _KEY_CACHE[str(path)] = (stamp, key)
+            _KEY_CACHE[str(path)] = (stamp, key, time.monotonic())
+        else:
+            _KEY_CACHE.pop(str(path), None)
         return key
+    _KEY_CACHE.pop(str(path), None)
     if not make:
         return b''
     if key is not None:
@@ -2747,6 +2765,7 @@ def sealing_key_for_write():
     with another one (1.0.205 for secrets; 1.0.227 for recovery codes too: `otp --scratch` on
     a node without its key file made a new one silently, and the codes it gave opened nowhere
     else, those before them gone)."""
+    sealing_key_forget()        # a write looks at the file itself (1.0.265), not the second's cache
     key = sealing_key()
     if key:
         return key

@@ -17,8 +17,8 @@ def ok(n, c, m=''):
 
 
 tmp = tempfile.mkdtemp(prefix='t_r263_')
-os.environ.setdefault('OTP_CONFIG', tmp + '/otp.conf')
-os.environ.setdefault('OTP_STATE_DIR', tmp + '/state')
+os.environ['OTP_CONFIG'] = tmp + '/otp.conf'
+os.environ['OTP_STATE'] = tmp + '/state'          # never the live /var/lib/otp
 spec = importlib.util.spec_from_file_location('otpmod', OUT + '/otp.py')
 m = importlib.util.module_from_spec(spec)
 sys.argv = ['otp']

@@ -203,7 +203,9 @@ class Directory(object):
         if not threading.current_thread().name.startswith('radius'):
             yield                       # the pages and the command line: not counted
             return
-        workers = int(CONFIG.get('radius_workers') or 16)
+        # The workers running, not the setting (1.0.265): changed on the page, the setting
+        # counted 64 workers while 16 ran - a slow directory took them all.
+        workers = int(RADIUS_WORKERS_RUNNING[0] or CONFIG.get('radius_workers') or 16)
         most = max(2, workers // 2)
         key = self.name.lower()
         # A place waited for (1.0.222), a little: refused the moment 8 were inside, a
@@ -229,13 +231,24 @@ class Directory(object):
                 left = until - time.monotonic()
                 if left <= 0 or not quick or (not waited and sum(self.BUSY_WAITING.values()) >=
                                               max(1, workers // 4)):
-                    if n >= most:
+                    many = n if n >= most else total
+                    if quick:
+                        # The directory answers quickly; the requests wait here - for this
+                        # node's CPU, its database (1.0.265). Said so, not "answering slowly".
+                        e = LdapUnreachable('this node is busy: %d requests wait for the directory '
+                                            '%s already - this one is not added to them'
+                                            % (many, self.name))
+                    elif n >= most:
                         e = LdapUnreachable('%s is answering slowly: %d requests wait on it already - '
                                             'this one is not added to them' % (self.name, n))
                     else:
                         e = LdapUnreachable('the directories are answering slowly: %d requests wait '
                                             'on them already - this one is not added to them' % total)
                     e.held = True       # this node's own limit - not the directory gone (1.0.224)
+                    # The refusal's reason (1.0.265): no longer "LDAP server(s) have gone away".
+                    e.busy_said = 'this node is busy: %d requests wait for the directory %s%s' % (
+                        many, self.name, '' if quick else ', which answers slowly (%d ms a request)'
+                        % int(self.BUSY_TOOK.get(key, 0.0) * 1000))
                     if waited:
                         # Given back (1.0.226): kept, four refused waits stopped every wait after
                         # them until a restart.
@@ -252,11 +265,17 @@ class Directory(object):
             if waited:
                 self.BUSY_WAITING[key] = max(0, self.BUSY_WAITING.get(key, 1) - 1)
             self.BUSY[key] = n + 1
-        began = time.monotonic()
+        # Only the time spent waiting on the directory itself is its own (1.0.265): measured
+        # from the start to the end, this node's own work - TLS, reading the answers, the
+        # other threads holding the CPU - counted as the directory slow, and past 0.5 s
+        # every request beyond the limit was refused at once.
+        was_io = getattr(LDAP_IO, 's', None)
+        LDAP_IO.s = 0.0
         try:
             yield
         finally:
-            took = time.monotonic() - began
+            took = float(getattr(LDAP_IO, 's', 0.0) or 0.0)
+            LDAP_IO.s = was_io
             with self.BUSY_FREED:
                 self.BUSY[key] = max(0, self.BUSY.get(key, 1) - 1)
                 was = self.BUSY_TOOK.get(key)
@@ -287,6 +306,132 @@ class Directory(object):
             if len(self.DEAD) > 1000:
                 self.DEAD.clear()
             self.DEAD[str(host).lower()] = time.time() + self.DEAD_S
+        self._pool_drop(host)
+
+    # ---- the reading account's connections kept (1.0.265) -----------------------------
+    # A new TCP connection, TLS and a bind of the reading account for every look-up was most
+    # of what a sign-in cost the directory and this node. A few are kept a server, signed in
+    # as the reading account only (a person's password is always checked on a connection of
+    # its own, closed after it): taken by one request at a time, given back only after an
+    # answer read whole, looked at before each use (closed by the server, data nobody asked
+    # for: thrown away), and closed after 30 s unused or 5 min of age - a domain controller
+    # restarted, a new certificate, the order of the servers are not missed for long. A kept
+    # one that fails is not the server down: the same server is asked again on a new one.
+    POOL = {}
+    POOL_LOCK = threading.Lock()
+    POOL_MOST = 8
+    POOL_IDLE_S = 30.0
+    POOL_AGE_S = 300.0
+    POOL_SWEPT = [0.0]
+
+    def _pool_key(self, host):
+        h, p = self._hostport(host)
+        return (h.lower(), p, self.tls, hashlib.sha256(self.ca.encode('utf-8')).hexdigest(),
+                self.verify, self.weak, self.timeout, self.bind_dn,
+                hashlib.sha256(str(self.bind_pw).encode('utf-8')).hexdigest())
+
+    @staticmethod
+    def _link_fresh(link):
+        sock = getattr(link, 'sock', None)
+        if sock is None or link.buffer:
+            return False
+        try:
+            if isinstance(sock, ssl.SSLSocket) and sock.pending():
+                return False
+            readable, _w, _x = select.select([sock], [], [], 0)
+            # Anything to read before a question is the server closing, or a notice of
+            # disconnection - not to be read as the answer to the next one.
+            return not readable
+        except (OSError, ValueError):
+            return False
+
+    @classmethod
+    def _pool_sweep(cls, force=False):
+        t = time.monotonic()
+        if not force and t - cls.POOL_SWEPT[0] < 10:
+            return
+        cls.POOL_SWEPT[0] = t
+        old = []
+        with cls.POOL_LOCK:
+            for key in list(cls.POOL):
+                keep = []
+                for one in cls.POOL[key]:
+                    (old if t - one[1] > cls.POOL_IDLE_S or t - one[2] > cls.POOL_AGE_S
+                     else keep).append(one)
+                if keep:
+                    cls.POOL[key] = keep
+                else:
+                    del cls.POOL[key]
+        for one in old:
+            one[0].close()
+
+    def _pool_take(self):
+        """A kept connection to the first server that would be asked, or None. Nothing is
+        marked or probed here: link() does that when there is none."""
+        order = [h for h in self.hosts if h]
+        if self.last_good in order:
+            order.remove(self.last_good)
+            order.insert(0, self.last_good)
+        t = time.time()
+        with self.DEAD_LOCK:
+            live = [h for h in order if self.DEAD.get(h.lower(), 0) <= t]
+        if not live:
+            return None
+        self._pool_sweep()
+        key = self._pool_key(live[0])
+        m = time.monotonic()
+        while True:
+            with self.POOL_LOCK:
+                got = self.POOL.get(key)
+                one = got.pop() if got else None
+                if got is not None and not got:
+                    self.POOL.pop(key, None)
+            if one is None:
+                return None
+            link, put_at, born = one
+            if m - put_at <= self.POOL_IDLE_S and m - born <= self.POOL_AGE_S and \
+                    self._link_fresh(link):
+                link.otp_host = live[0]
+                link.otp_pooled = born
+                return link
+            link.close()
+
+    def _pool_give(self, link):
+        """Kept for the next request - only whole and clean."""
+        host = getattr(link, 'otp_host', None)
+        if not host or getattr(link, 'sock', None) is None or link.buffer:
+            link.close()
+            return
+        try:
+            link.sock.settimeout(link.timeout)
+        except (OSError, ValueError):
+            link.close()
+            return
+        link._deadline = 0
+        link.__dict__.pop('PAGES_MOST', None)       # a search's own page cap, not the next one's
+        m = time.monotonic()
+        born = getattr(link, 'otp_pooled', None) or m
+        if m - born > self.POOL_AGE_S:
+            link.close()
+            return
+        key = self._pool_key(host)
+        with self.POOL_LOCK:
+            got = self.POOL.setdefault(key, [])
+            if len(got) < self.POOL_MOST:
+                got.append((link, m, born))
+                return
+        link.close()
+
+    def _pool_drop(self, host):
+        """Every kept connection to `host` closed - it failed or was found closed."""
+        h, p = self._hostport(host)
+        gone = []
+        with self.POOL_LOCK:
+            for key in list(self.POOL):
+                if key[0] == h.lower() and key[1] == p:
+                    gone += self.POOL.pop(key)
+        for one in gone:
+            one[0].close()
 
     def _up(self, host):
         with self.DEAD_LOCK:
@@ -354,22 +499,42 @@ class Directory(object):
 
     def _asked(self, do):
         last = None
-        for _ in range(max(1, len(self.hosts))):
-            link = self.link()
+        tries = max(1, len(self.hosts))
+        stale = 0
+        while tries > 0:
+            # A kept connection first (1.0.265), a new one where there is none.
+            link = self._pool_take() if stale < 2 else None
+            pooled = link is not None
+            if link is None:
+                link = self.link()
             host = getattr(link, 'otp_host', None)
+            done = False
             try:
-                return do(link)
+                got = do(link)
+                done = True
+                return got
             except (LdapError, OSError) as e:
                 if isinstance(e, LdapError) and not (isinstance(e, LdapUnreachable) or
                                                      e.code in LDAP_TRY_ANOTHER):
                     raise
+                if pooled and isinstance(e, (LdapUnreachable, OSError)):
+                    # Closed by the server while it was kept: asked again on a new one, the
+                    # server not marked down for it.
+                    stale += 1
+                    if host:
+                        self._pool_drop(host)
+                    continue
                 last = e
                 if host:
                     self._down(host)
                     if self.last_good == host:
                         self.last_good = None
             finally:
-                link.close()
+                if done:
+                    self._pool_give(link)
+                else:
+                    link.close()
+            tries -= 1
         raise last if isinstance(last, LdapUnreachable) else LdapUnreachable(str(last))
 
     def find_user(self, name, how='upn'):
@@ -438,11 +603,19 @@ class Directory(object):
                      'phone': first('telephoneNumber'),
                      'pw_set': ad_time(first('pwdLastSet')),
                      'many': len(rows) > 1}
-        with self.lock:
-            self.cache[key] = (time.time(), entry)
-            if len(self.cache) > 5000:
-                self.cache.clear()
+        self._cache_put(key, entry)
         return entry
+
+    CACHE_MOST = 5000
+
+    def _cache_put(self, key, value):
+        """Kept, the oldest let go past CACHE_MOST (1.0.265) - not the whole cache cleared at
+        once, every person's next sign-in then asking the directory again together."""
+        with self.lock:
+            self.cache.pop(key, None)       # to the end: the order is the order written
+            self.cache[key] = (time.time(), value)
+            while len(self.cache) > self.CACHE_MOST:
+                del self.cache[next(iter(self.cache))]
 
     def groups_of(self, entry, nested=True):
         """[(dn, cn)] of every group the account is in - with the groups
@@ -467,10 +640,7 @@ class Directory(object):
                                ('cn',), scope=2, limit=5000, paged=True)
         rows = self.asked(do)
         out = [(r['dn'], (r['attrs'].get('cn') or [cn_of(r['dn'])])[0]) for r in rows]
-        with self.lock:
-            if len(self.cache) > 5000:            # as find_user keeps it (1.0.209)
-                self.cache.clear()
-            self.cache[key] = (time.time(), out)
+        self._cache_put(key, out)                 # as find_user keeps it (1.0.209, 1.0.265)
         return out
 
     def domain_root(self):
@@ -517,10 +687,7 @@ class Directory(object):
             log_sparing('group-many-' + said.lower(), 'the group %s named without its place '
                         'answers to %d groups in %s (%s): none of them is taken - give it as '
                         'its full DN' % (said, len(pick), self.name, '; '.join(pick[:4])), 'warn')
-        with self.lock:
-            if len(self.cache) > 5000:
-                self.cache.clear()
-            self.cache[key] = (time.time(), out)
+        self._cache_put(key, out)
         return out
 
     def password_ok(self, entry, password):
@@ -1961,7 +2128,14 @@ class Shipper(object):
         path = LOG_DIR / name
         f = self.files.get(name)
         try:
-            if f is not None:
+            # Looked at for a rotation once a second a file (1.0.265), not at every line - two
+            # stats a line for each request were a tenth of what writing a request cost.
+            now = time.monotonic()
+            looked = getattr(self, 'files_looked', None)
+            if looked is None:
+                looked = self.files_looked = {}
+            if f is not None and (f.closed or now - looked.get(name, 0.0) >= 1.0):
+                looked[name] = now
                 try:
                     if f.closed or os.fstat(f.fileno()).st_ino != os.stat(path).st_ino:
                         raise OSError('rotated')
@@ -1973,9 +2147,14 @@ class Shipper(object):
                     self.files.pop(name, None)
                     f = None
             if f is None:
-                LOG_DIR.mkdir(parents=True, exist_ok=True)
-                f = open(path, 'a', encoding='utf-8')
+                try:
+                    f = open(path, 'a', encoding='utf-8')
+                except FileNotFoundError:
+                    # The folder made only when it is not there (1.0.265), not before each open.
+                    LOG_DIR.mkdir(parents=True, exist_ok=True)
+                    f = open(path, 'a', encoding='utf-8')
                 self.files[name] = f
+                looked[name] = now
             f.write(line + '\n')
             f.flush()
             if self.trouble:
