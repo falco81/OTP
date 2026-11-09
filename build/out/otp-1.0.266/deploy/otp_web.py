@@ -6208,9 +6208,15 @@ def se_report_parts(r):
                 lab.append(_se_out(['ls', '-Za', p], 20, light=False).rstrip())
             lab.append('  policy says: ' + _se_out(['matchpathcon', p], 20, light=False).strip())
     parts['labels.txt'] = '\n'.join(lab) + '\n'
-    ps = _se_out(['ps', '-eZo', 'label,user,pid,comm,args'], 60, light=False)
+    # -o label, not -Z with -o (1.0.266): procps-ng refuses that pair ("can not use output
+    # modifiers with user-defined output") on stderr, which the filter below took away whole -
+    # processes.txt came out empty on every node.
+    ps = _se_out(['ps', '-eo', 'label,user,pid,comm,args'], 60, light=False)
     keep = [x for x in ps.splitlines() if x.startswith('LABEL') or
             any(c in x for c in SE_REPORT_COMMS)]
+    if not any(x.startswith('LABEL') for x in keep):
+        # ps said something else than its table: kept as it said it, not an empty file.
+        keep = ['(ps did not give the table of processes:)'] + ps.splitlines()[:40]
     # Arguments cut to 200: what runs, not every word it was given.
     parts['processes.txt'] = '\n'.join(x[:200] for x in keep) + '\n'
     ports = _se_out(['semanage', 'port', '-l'], 300)

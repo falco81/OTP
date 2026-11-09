@@ -210,11 +210,15 @@ with _tf.open(fileobj=_io.BytesIO(data), mode='r:gz') as tf:
     avc_txt = tf.extractfile('se1/avc-raw.txt').read().decode()
     readme = tf.extractfile('se1/README.txt').read().decode()
     otpj = json.loads(tf.extractfile('se1/otp.json').read().decode())
+    procs = tf.extractfile('se1/processes.txt').read().decode()
 ok('the report: every part in one folder of the node (%d)' % len(names),
    all('se1/%s' % n in names for n in ('check.json', 'avc-raw.txt', 'avc.txt', 'audit2why.txt', 'audit2allow.te',
                                        'system.txt', 'labels.txt', 'processes.txt', 'ports.txt', 'booleans.txt',
                                        'modules.txt', 'otp.json', 'README.txt')), names)
 ok('...what SELinux refused in it, and what otp uses', 'php-fpm' in avc_txt and otpj['facts'].get('db_engine') == 'sqlite')
+# 1.0.266: ps -eZo was refused by procps-ng (stderr) and the filter left processes.txt empty.
+ok('...the processes with their domains: ps\'s table, not an empty file (1.0.266)',
+   procs.startswith('LABEL') and 'python' in procs, procs[:300])
 ok('...it says to look through the command lines before sending it on', 'command lines' in readme)
 ok('...and nothing was changed to make it', open(FAKE + '/mode').read() == mode_before and not any(
    x.startswith(('setenforce', 'setsebool', 'semodule -i', 'semanage port -a')) for x in open(FAKE + '/calls').read().splitlines()[calls_n:]),

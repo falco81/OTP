@@ -42,6 +42,13 @@ const seed = s => execFileSync('python3', [__dirname + '/ui_selinux_seed.py', s]
       if (lang === 'cs') ok(tag + 'in Czech', /Na enforcing zatím není připraveno/.test(tv) && /Od startu stroje nic neodepřeno/.test(t2) && /API token, který čtou stránky/.test(tv), tv.slice(0, 300));
       const scroll = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
       ok(tag + 'no horizontal scroll', !scroll);
+      // 1.0.266: the refusals' table ran out of the node's box ("table td.mono" kept them on one line).
+      await vm.locator('details.se-avc summary').click();
+      await p.waitForTimeout(300);
+      const avcOver = await vm.evaluate(e => { const R = e.getBoundingClientRect().right;
+        return Math.max(e.scrollWidth - e.clientWidth, ...[...e.querySelectorAll('.se-avc-t td')].map(td => Math.round(td.getBoundingClientRect().right - R))); });
+      ok(tag + 'the refusals stay inside the node\'s box (1.0.266)', avcOver <= 0, avcOver);
+      await vm.locator('details.se-avc summary').click();
       await o2.locator('button').click();
       await p.waitForTimeout(600);
       const modal = p.locator('.modal');

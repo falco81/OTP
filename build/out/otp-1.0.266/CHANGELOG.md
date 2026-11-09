@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.266 — 8 November 2026
+
+Two fixes found in a real SELinux report from a cluster (AlmaLinux 9.8, both nodes ready for enforcing).
+
+Fixed
+- **The SELinux report's `processes.txt` was empty on every node**: it ran `ps -eZo …`, which procps-ng refuses ("can not use output modifiers with user-defined output"), and the refusal was filtered away with the rest. Now `ps -eo label,user,pid,comm,args` - the processes with their SELinux domains; should ps say anything else, that is kept in the file instead of nothing.
+- **Settings → High security → SELinux, "What was refused"**: the table ran out of the node's box (on a phone by half its width) - the general rule keeping monospace cells on one line won over the card's own. The refusals wrap inside the box now; on a narrow screen the program and file go under the refusal.
+
 ## 1.0.265 — 8 November 2026
 
 SELinux looked at for enforcing, a bug hunt, otp under load over RADIUS and HTTPS - and the system's trusted roots.
