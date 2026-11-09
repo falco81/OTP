@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.267 — 9 November 2026
+
+Ready for domain controllers on Windows Server 2025 (otp checked against what they change: LDAP signing, TLS 1.2+, a new certificate on every controller, channel binding, no RC4, no NTLMv1, no SMB1) - [docs/active-directory-2025.md](docs/active-directory-2025.md).
+
+Better
+- **A controller asking for LDAP signing is said as such**: a sign-in over plain LDAP refused with result 8 (*strongerAuthRequired*, the default of Windows Server 2025) read "the directory said 8"; now "the domain controller wants a signed or encrypted connection (LDAP signing ...): reach the directory by LDAPS or STARTTLS". Result 13 too.
+- **Settings → Directories**: a directory over plain LDAP says that Windows Server 2025 controllers refuse it; a server given by its IP address while the certificate is checked is pointed out - a new controller's certificate usually carries its name only, and the check of the name would refuse it. The security check lists both; `otp --directories` says them too (`--json`: `ip_hosts`).
+
 ## 1.0.266 — 8 November 2026
 
 Two fixes found in a real SELinux report from a cluster (AlmaLinux 9.8, both nodes ready for enforcing).

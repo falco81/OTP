@@ -299,6 +299,22 @@ def hisec_findings(store, conf=None):
     for n in host_nodes(store):
         for p in selinux_problems(store, n)[:6]:
             warn.append(_hs_item('check', 'SELinux on %s: %s' % (n, p), 'SELinux', 'hisec'))
+    # Domain controllers given by their address while their certificate is checked (1.0.267):
+    # a controller replaced (Windows Server 2025) comes with a certificate of its name only.
+    for d in store.directories():
+        if d.get('enabled', 1):
+            if d.get('tls') == 'none':
+                warn.append(_hs_item('check', 'the directory %s is reached over plain LDAP - domain '
+                                     'controllers of Windows Server 2025 refuse a sign-in over it '
+                                     '(LDAP signing, their default)' % d['name'],
+                                     'LDAPS or STARTTLS', 'dir'))
+            ips = ldap_ip_hosts(d)
+            if ips:
+                warn.append(_hs_item('check', 'the directory %s names its servers by address (%s) - '
+                                     'the certificate is checked against the server\'s name, and a '
+                                     'new domain controller\'s certificate usually carries its name '
+                                     'only' % (d['name'], ', '.join(ips)),
+                                     'its servers by name (FQDN)', 'dir'))
     # The security check (1.0.169): what is not as it should be now - as the
     # alerts see it, and the rest. It never stops high security.
     if not fw_conf(store).get('on'):

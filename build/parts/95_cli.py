@@ -3587,12 +3587,25 @@ def cli_main(argv=None):
     if args.directories:
         rows = store.directories()
         if args.json:
+            for d in rows:
+                d['ip_hosts'] = ldap_ip_hosts(d)
             out(rows)
             return 0
         print(table([(d['name'], d['hosts'], '%s/%s' % (d['tls'], d['port']), d['base'],
                       d['bind_dn'], 'checked' if d['verify'] else 'NOT checked')
                      for d in rows], ['name', 'servers', 'how', 'base', 'reads as',
                                       'certificate']))
+        # What a domain controller of Windows Server 2025 refuses (1.0.267), as the card says it.
+        for d in rows:
+            if d.get('tls') == 'none':
+                print(pal.warn_line('%s: plain LDAP - domain controllers of Windows Server 2025 refuse a '
+                               'sign-in over it (LDAP signing): LDAPS or STARTTLS' % d['name']))
+            ips = ldap_ip_hosts(d)
+            if ips:
+                print(pal.warn_line('%s: servers given by address (%s) while the certificate is checked '
+                               'against the name - a new domain controller\'s certificate usually '
+                               'carries its name only: give them by name (FQDN)'
+                               % (d['name'], ', '.join(ips))))
         return 0
 
     if args.add_directory:

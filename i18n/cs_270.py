@@ -67,6 +67,16 @@ S270 = {
     'asked more than five minutes ago and not done - is it of this version, and is otp-web.path running there?':
         'požádáno před víc než pěti minutami a neprovedeno – je ve stejné verzi a běží tam otp-web.path?',
     "The system's trusted roots (certificate authorities) of each node": 'Důvěryhodné kořenové certifikáty systému (certifikační autority) každého nodu',
+    # 1.0.267: domain controllers on Windows Server 2025.
+    'the domain controller wants a signed or encrypted connection (LDAP signing, the default of Windows Server 2025): reach the directory by LDAPS or STARTTLS':
+        'řadič domény vyžaduje podepsané nebo šifrované spojení (LDAP signing, výchozí u Windows Serveru 2025): připojte adresář přes LDAPS nebo STARTTLS',
+    'the directory wants this over an encrypted connection: reach it by LDAPS or STARTTLS':
+        'adresář to vyžaduje přes šifrované spojení: připojte ho přes LDAPS nebo STARTTLS',
+    'Plain LDAP: domain controllers of Windows Server 2025 refuse a sign-in over it (LDAP signing is their default). Reach this directory by LDAPS or STARTTLS.':
+        'Nešifrovaný LDAP: řadiče domény s Windows Serverem 2025 přihlášení přes něj odmítnou (LDAP signing je u nich výchozí). Připojte tento adresář přes LDAPS nebo STARTTLS.',
+    'Given by its address, while the certificate is checked against the server’s name - a new domain controller’s certificate (Windows Server 2025) usually carries its name only. Give the name (FQDN) instead:':
+        'Zadáno IP adresou, přitom se certifikát ověřuje proti jménu serveru – certifikát nového řadiče domény (Windows Server 2025) obvykle obsahuje jen jeho jméno. Zadejte místo toho jméno (FQDN):',
+    'its servers by name (FQDN)': 'jeho servery jménem (FQDN)',
 }
 P270 = {
     'this node is busy: {0} requests wait for the directory {1}': 'tento nod je vytížený: na adresář {1} čeká {0} požadavků',
@@ -94,4 +104,9 @@ P270 = {
     '{0} certificates at most - {1} are there, {2} more asked': 'nejvýš {0} certifikátů – {1} už tam je, žádá se o {2} další',
     "What <b>{0}</b> (SHA-256 <code>{1}…</code>) signs is no longer trusted by {2} - unless the system's own list has it. Connections that rely on it (LDAPS, mail, syslog…) fail from their next start.":
         'Tomu, co podepisuje <b>{0}</b> (SHA-256 <code>{1}…</code>), už {2} nedůvěřuje – pokud ji nemá vlastní seznam systému. Spojení, která na ní závisejí (LDAPS, pošta, syslog…), od svého dalšího startu selžou.',
+    # 1.0.267: domain controllers on Windows Server 2025.
+    'the directory {0} is reached over plain LDAP - domain controllers of Windows Server 2025 refuse a sign-in over it (LDAP signing, their default)':
+        'adresář {0} se připojuje nešifrovaným LDAPem – řadiče domény s Windows Serverem 2025 přihlášení přes něj odmítnou (LDAP signing, jejich výchozí nastavení)',
+    "the directory {0} names its servers by address ({1}) - the certificate is checked against the server's name, and a new domain controller's certificate usually carries its name only":
+        'adresář {0} zadává své servery IP adresou ({1}) – certifikát se ověřuje proti jménu serveru a certifikát nového řadiče domény obvykle obsahuje jen jeho jméno',
 }

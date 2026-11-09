@@ -3039,6 +3039,8 @@ def _dirs(h):
         for d in dirs:
             if d.get('bind_pw'):
                 d['bind_pw'] = '••••••'
+    for d in dirs:
+        d['ip_hosts'] = ldap_ip_hosts(d)     # given by address, the name checked (1.0.267)
     return {'directories': dirs, 'may_change': s['role'] == 'fulladmin'}
 
 

@@ -1,0 +1,120 @@
+Removed stale pid file.
+Removed stale pid file.
+== rtests ALL 40 / 40 ALL 45 / 45 ALL 48 / 48 ALL 35 / 35 ALL 66 / 66 ALL 23 / 23 ALL 46 / 46 ALL 12 / 12 ALL 29 / 29 ALL 10 / 10 
+== r255 ALL 68 / 68 ALL 69 / 69 ALL 42 / 42 ALL 77 / 77 ALL 29 / 29 ALL 10 / 10 ALL 42 / 42 ALL 32 / 32 ALL 94 / 94 ALL 115 / 115 ALL 135 / 135 ALL 45 / 45 ALL 138 / 138 ALL 24 / 24 ALL 10 / 10 ALL 161 / 161  (67 s) ALL 20 / 20 
+all checks passed
+== load/t_latency.py FAIL alone, 300 a second: all answered and right, p99 under 40 ms ((2361.453056335449, [])) ALL 14 / 15 
+== acme/t_acme.py 
+== isemon/t_isemontls.py ALL 22 / 22 
+== isemon/t_isetest.py ALL 7 / 7 
+== metrics/t_metrics.py ALL 27 / 27 
+== snmp/t_snmp.py ALL 32 / 32 
+== ask/t_ask.py ALL 8 / 8 
+== verify/t_verify.py ALL 14 / 14 
+== hisec/t_hisec.py ALL 43 / 43 
+== exp/t_totpzip.py ALL 25 / 25 
+== siem/t_siem.py ALL 54 / 54 
+== alerts/t_alerts.py ALL 21 / 21 
+== power/t_power.py ALL 9 / 9 
+== host/t_host.py ALL 51 / 51 
+== sshd/t_sshd.py ALL 24 / 24 
+== sshd/t_pamradius.py ALL 38 / 38 
+== sshd/t_sshotp_api.py ALL 15 / 15 
+== chal/t_chal.py 20/20 
+== cz/t_cz.py ALL 37 / 37 
+== adm/t_admin_groups.py ALL 16 / 16 
+== cli/t_cli.py ALL 175 / 175 
+== round/t_round1.py ALL 29 / 29 
+== round/t_round2.py ALL 23 / 23 
+== round/t_round3.py ALL 29 / 29 
+== round/t_round4.py ALL 18 / 18 
+== round/t_round5.py ALL 29 / 29 
+== round/t_round6.py ALL 29 / 29 
+== round/t_round7.py ALL 20 / 20 
+== round/t_round8.py ALL 15 / 15 
+== round/t_round9.py ALL 7 / 7 
+== round/t_round10.py ALL 12 / 12 
+== round/t_round11.py ALL 12 / 12 
+== round/t_round12.py ALL 12 / 12 
+== round/t_round13.py ALL 23 / 23 
+== round/t_round14.py ALL 21 / 21 
+== portal/t_firstcode.py ALL 32 / 32 
+== dirmap/t_dirmap.py ALL 27 / 27 
+== dirpw/t_dirpw.py ALL 47 / 47 
+== dbguard/t_dbguard.py ALL 47 / 47 
+== dbguard/t_dbguard_host.py ALL 11 / 11 
+== fullrestore/t_fullrestore.py ALL 20 / 20 
+== acmepush/t_acmepush.py ALL 27 / 27 
+== split/t_split.py ALL 49 / 49 
+== clock/t_clock.py 87/87 
+== dg/t_down.py ALL 16 / 16 
+== dg/t_root.py ALL 5 / 5 
+== rundir/t_rundir.py == rundir ALL 13 / 13 
+== selinux/t_selinux.py ALL 71 / 71 
+== realip/t_realip.py ALL 22 / 22 
+== sso/t_sso.py ALL 65 / 65 
+== users/t_users.py ALL 63 / 63 
+== tlsdual/t_tlsdual.py ALL 27 / 27 
+== alerts/t_alerts2.py ALL 38 / 38 
+== hisec/t_hisec_sshcode.py ALL 5 / 5 
+== users/t_osusers.py ALL 53 / 53 
+== cli/t_get.py ALL 26 / 26 
+== users/t_pwpolicy.py ALL 50 / 50 
+2026/11/09 13:44:03 [notice] 20046#20046: signal process started
+== acme alone ALL 77 / 77 
+== HA auth (push off) ALL 57 / 57 
+== HA ops (push off) ALL 17 / 17 
+== HA maint (push off) ALL 14 / 14 
+== HA alerts (push off) ALL 13 / 13 
+== HA tls (push off) FAIL nothing left from a run before (the authority years from its end, both nodes done) ALL 32 / 33 
+== HA push (push off) ALL 13 / 13 
+== HA split (push off) ALL 23 / 23 
+== HA clock (push off) ALL 20 / 20 
+== HA vipname (push off) ALL 26 / 26 
+== HA osusers (push off) ALL 12 / 12 
+== HA pwpolicy (push off) ALL 9 / 9 
+== HA setnodes (push off) ALL 11 / 11 
+== HA perf ALL 21 / 21 
+== HA passkey ALL 34 / 34 
+== full restore (guard on) ALL 21 / 21 
+== HA dbguard ALL 18 / 18 
+== vip reply ALL 8 / 8 
+== ui clock ALL 23 / 23 
+== ui sso ALL 74 / 74 
+== osusers cli 
+== ui osusers ALL 40 / 40 
+== ui hslights ALL 6 / 6 
+== ui pwpolicy ALL 25 / 25 
+== ui dbtile ALL 16 / 16 
+== ui setnodes ALL 48 / 48 
+== ui split ALL 17 / 17 
+== ui perf ALL 26 / 26 
+== ui perf ha ALL 10 / 10 
+== ui passkey ALL 19 / 19 
+== ui passkeys of the account ALL 18 / 18 
+== ui after ALL 37 / 37 
+== ui lb ALL 30 / 30 
+== ui mfa send ALL 33 / 33 
+== HA dbguard (on, keep) ALL 16 / 16 
+== HA auth (guard on) ALL 57 / 57 
+== HA ops (guard on) ALL 17 / 17 
+== HA maint (guard on) ALL 14 / 14 
+== HA alerts (guard on) ALL 13 / 13 
+== HA tls (guard on) ALL 32 / 32 
+== HA push (guard on) ALL 13 / 13 
+== HA split (guard on) ALL 23 / 23 
+== HA clock (guard on) ALL 20 / 20 
+== HA vipname (guard on) ALL 26 / 26 
+== HA osusers (guard on) ALL 13 / 13 
+== HA pwpolicy (guard on) ALL 11 / 11 
+== HA setnodes (guard on) ALL 11 / 11 
+== vip reply (guard on) ALL 8 / 8 
+== HA dbguard (then off) ALL 18 / 18 
+== HA readdress matrix ALL 24 / 24 
+== HA readdress extra ALL 44 / 44 
+== ui selinux ALL 38 / 38 
+== ui ad2025 ALL 18 / 18 
+== ui sweep ALL 172 / 172 
+== heartbeat refused (node: rows): 0
+== DR (restore + HA again) ALL 69 / 69 
+== DONE
