@@ -3639,6 +3639,17 @@ table.split-scen{table-layout:fixed;width:100%;min-width:760px}
 .se-avc-t{width:100%;border-collapse:collapse;margin-top:6px}
 .se-avc-t td{padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
 .se-avc-t td.num{white-space:nowrap;text-align:right;color:var(--crit)}
+/* The refusals stay inside the node's box (1.0.266): with the automatic layout the table took the
+   width of its longest words and ran out of the box - by a little on a wide screen, by half on a phone. */
+.se-avc{min-width:0}
+.se-avc-t{table-layout:fixed}
+/* table.se-avc-t td.mono: above "table td.mono{white-space:nowrap}", which kept the long ones on one line. */
+table.se-avc-t td,table.se-avc-t td.mono{white-space:normal;word-break:break-word;overflow-wrap:anywhere;min-width:0}
+.se-avc-t td.num{width:3.4em}
+.se-avc-t td:nth-child(3){width:34%}
+@media (max-width:600px){.se-avc-t tr{display:grid;grid-template-columns:3.4em minmax(0,1fr)}
+  .se-avc-t td{border-bottom:0}.se-avc-t td:nth-child(3){grid-column:2;width:auto;padding-top:0}
+  .se-avc-t tr{border-bottom:1px solid var(--line)}}
 .se-verdict{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel);font-size:13px}
 .se-verdict.good{border-color:rgba(63,185,80,.5);background:var(--ok-bg)}
 .se-verdict.ready{border-color:rgba(88,166,255,.5);background:var(--info-bg)}
