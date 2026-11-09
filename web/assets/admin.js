@@ -4317,6 +4317,16 @@ function loadDirs() {
       fact('The e-mail address from', a.mail_attr || 'mail', true);
       fact('The mobile number from', a.mobile_attr || 'mobile, telephoneNumber', true);
       card.appendChild(facts);
+      /* What a domain controller of Windows Server 2025 refuses (1.0.267): plain LDAP (LDAP
+         signing is their default), and a server given by its address while the certificate is
+         checked - a new controller's certificate carries its name only. */
+      if (a.tls === 'none') card.appendChild(el('p', 'note warn small', 'Plain LDAP: domain controllers of Windows Server 2025 refuse a sign-in over it (LDAP signing is their default). Reach this directory by LDAPS or STARTTLS.'));
+      if ((a.ip_hosts || []).length) {
+        var ipn = el('p', 'note warn small dir-ip');
+        ipn.appendChild(el('span', '', 'Given by its address, while the certificate is checked against the server’s name - a new domain controller’s certificate (Windows Server 2025) usually carries its name only. Give the name (FQDN) instead:'));
+        a.ip_hosts.forEach(function (h) { ipn.appendChild(document.createTextNode(' ')); ipn.appendChild(noI18n(el('span', 'chip mono', h))); });
+        card.appendChild(ipn);
+      }
       if (ADMIN) card.onclick = function () { editDir(a); };
       list.appendChild(card);
     });

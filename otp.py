@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.266'
+__version__ = '1.0.267'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -5232,9 +5232,16 @@ LDAP_NO_SUCH_OBJECT = 32
 LDAP_BAD_CREDENTIALS = 49
 # busy, unavailable, unwilling to answer now, other: another server may (1.0.59)
 LDAP_TRY_ANOTHER = (51, 52, 80)
+# Said in these words before the directory's own (1.0.267).
+LDAP_SAY_FIRST = (8, 13)
 LDAP_SAYS = {
     0: 'success',
     1: 'the directory had an operations error',
+    # Windows Server 2025 domain controllers ask for LDAP signing by default (1.0.267): a simple
+    # bind over plain LDAP is answered with 8 - said as what to do, not as a number.
+    8: 'the domain controller wants a signed or encrypted connection (LDAP signing, the default '
+       'of Windows Server 2025): reach the directory by LDAPS or STARTTLS',
+    13: 'the directory wants this over an encrypted connection: reach it by LDAPS or STARTTLS',
     32: 'there is no such object under that base',
     34: 'the distinguished name is not well formed',
     48: 'that server will not take this kind of authentication',
@@ -5243,6 +5250,31 @@ LDAP_SAYS = {
     53: 'the server is unwilling to do that (a blank password, or an account '
         'that must change it)',
 }
+
+def ldap_ip_hosts(row):
+    """The servers of a directory given by their address where the certificate is checked
+    (1.0.267): the name in a domain controller's certificate is its name - a new one (Windows
+    Server 2025: a new certificate with every controller put in) rarely carries the address too,
+    and the check of the server's name then refuses it."""
+    if str(row.get('tls') or 'none') not in ('ldaps', 'starttls') or not row.get('verify', 1):
+        return []
+    out = []
+    for h in re.split(r'[,;\s]+', str(row.get('hosts') or '')):
+        h = h.strip()
+        if not h:
+            continue
+        bare = h
+        if bare.startswith('['):
+            bare = bare[1:].split(']', 1)[0]
+        elif bare.count(':') == 1:
+            bare = bare.split(':', 1)[0]
+        try:
+            ipaddress.ip_address(bare)
+        except ValueError:
+            continue
+        out.append(h)
+    return out
+
 
 # Active Directory answers every one of these with the same code 49 and the
 # same sentence, with the reason hidden in a hex number at the end of it:
@@ -6010,7 +6042,10 @@ class Ldap(object):
             raise LdapError('the server did not answer the sign-in')
         code, said = self._result_of(body)
         if code != LDAP_OK:
-            plain = ad_reason(said) or LDAP_SAYS.get(code, 'the directory said %d' % code)
+            # LDAP signing asked for (8, 13): what to do first, the controller's own words in
+            # the detail (1.0.267) - its "integrity checking if SSL\\TLS..." said nothing of LDAPS.
+            plain = LDAP_SAYS[code] if code in LDAP_SAY_FIRST else \
+                (ad_reason(said) or LDAP_SAYS.get(code, 'the directory said %d' % code))
             raise LdapError(plain, code,
                             detail='%s (result %d)' % (said, code) if said else '')
         return True
@@ -6138,6 +6173,9 @@ class Ldap(object):
                 elif tag == 0x65:                      # searchResDone
                     code, said = self._result_of(body)
                     if code not in (LDAP_OK, 4, LDAP_NO_SUCH_OBJECT):
+                        if code in LDAP_SAY_FIRST:      # LDAP signing asked for (1.0.267)
+                            raise LdapError(LDAP_SAYS[code], code, detail='%s (result %d)' % (said, code)
+                                            if said else '')
                         raise LdapError(said or LDAP_SAYS.get(
                             code, 'the directory said %d' % code), code)
                     cookie = self._paging_cookie(self.last_controls) if paged else b''
@@ -28924,6 +28962,22 @@ def hisec_findings(store, conf=None):
     for n in host_nodes(store):
         for p in selinux_problems(store, n)[:6]:
             warn.append(_hs_item('check', 'SELinux on %s: %s' % (n, p), 'SELinux', 'hisec'))
+    # Domain controllers given by their address while their certificate is checked (1.0.267):
+    # a controller replaced (Windows Server 2025) comes with a certificate of its name only.
+    for d in store.directories():
+        if d.get('enabled', 1):
+            if d.get('tls') == 'none':
+                warn.append(_hs_item('check', 'the directory %s is reached over plain LDAP - domain '
+                                     'controllers of Windows Server 2025 refuse a sign-in over it '
+                                     '(LDAP signing, their default)' % d['name'],
+                                     'LDAPS or STARTTLS', 'dir'))
+            ips = ldap_ip_hosts(d)
+            if ips:
+                warn.append(_hs_item('check', 'the directory %s names its servers by address (%s) - '
+                                     'the certificate is checked against the server\'s name, and a '
+                                     'new domain controller\'s certificate usually carries its name '
+                                     'only' % (d['name'], ', '.join(ips)),
+                                     'its servers by name (FQDN)', 'dir'))
     # The security check (1.0.169): what is not as it should be now - as the
     # alerts see it, and the rest. It never stops high security.
     if not fw_conf(store).get('on'):
@@ -46574,6 +46628,8 @@ def _dirs(h):
         for d in dirs:
             if d.get('bind_pw'):
                 d['bind_pw'] = '••••••'
+    for d in dirs:
+        d['ip_hosts'] = ldap_ip_hosts(d)     # given by address, the name checked (1.0.267)
     return {'directories': dirs, 'may_change': s['role'] == 'fulladmin'}
 
 
@@ -64801,12 +64857,25 @@ def cli_main(argv=None):
     if args.directories:
         rows = store.directories()
         if args.json:
+            for d in rows:
+                d['ip_hosts'] = ldap_ip_hosts(d)
             out(rows)
             return 0
         print(table([(d['name'], d['hosts'], '%s/%s' % (d['tls'], d['port']), d['base'],
                       d['bind_dn'], 'checked' if d['verify'] else 'NOT checked')
                      for d in rows], ['name', 'servers', 'how', 'base', 'reads as',
                                       'certificate']))
+        # What a domain controller of Windows Server 2025 refuses (1.0.267), as the card says it.
+        for d in rows:
+            if d.get('tls') == 'none':
+                print(pal.warn_line('%s: plain LDAP - domain controllers of Windows Server 2025 refuse a '
+                               'sign-in over it (LDAP signing): LDAPS or STARTTLS' % d['name']))
+            ips = ldap_ip_hosts(d)
+            if ips:
+                print(pal.warn_line('%s: servers given by address (%s) while the certificate is checked '
+                               'against the name - a new domain controller\'s certificate usually '
+                               'carries its name only: give them by name (FQDN)'
+                               % (d['name'], ', '.join(ips))))
         return 0
 
     if args.add_directory:
