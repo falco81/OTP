@@ -4305,8 +4305,17 @@ def keep_read():
             got = subprocess.run(['getsebool', b], capture_output=True, text=True)
             if got.returncode == 0:
                 sel[b] = got.stdout.strip().endswith('on')
+    # SELinux's mode as well (1.0.268): a machine installed anew and put back from a backup comes
+    # up as its system has it - the page says it was enforcing here, and how to get it back.
+    se_mode = ''
+    if shutil.which('getenforce'):
+        try:
+            se_mode = subprocess.run(['getenforce'], capture_output=True, text=True,
+                                     timeout=30).stdout.strip()[:20]
+        except (OSError, subprocess.SubprocessError):
+            se_mode = ''
     return {'users': users[:500], 'keys': keys, 'root_keys': root, 'selinux': sel,
-            'admin_group': admin, 'at': time.time()}
+            'selinux_mode': se_mode, 'admin_group': admin, 'at': time.time()}
 
 
 def keep_lines_short(lines):

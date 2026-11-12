@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.267'
+__version__ = '1.0.268'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -5143,6 +5143,39 @@ META_TRANSIENT = ('db_job:', 'node:', 'load:', 'maint:', 'upgrade:', 'radtest:',
                   'held:')
 
 
+COPY_SAW = {}
+
+
+def se_was_from_copy(db, k, v):
+    """A node's row left out of a copy put back (1.0.268), what it says of the cluster kept:
+    SELinux's mode as it was then (a machine installed anew comes up as its system has it, and
+    To be done by hand says that SELinux was enforcing there); and from a copy made before 1.0.268,
+    which has no wish for the connections to the databases, the mode its nodes had (each node then
+    encrypts its connection again as it was)."""
+    k = str(k or '')
+    if k.startswith('dbtls:node:'):
+        try:
+            row = json.loads(v or '{}') or {}
+            mode = str(row.get('mode') or '')
+            if mode in ('require', 'verify-ca', 'verify-full') and row.get('kind') in ('local', 'replicated'):
+                # Written once the copy's key is in place (signed then, with the guard on).
+                COPY_SAW['dbtls'] = mode
+        except Exception:                               # noqa: BLE001
+            pass
+        return
+    if not k.startswith('host:selinux:now:'):
+        return
+    try:
+        mode = str((json.loads(v or '{}').get('data') or {}).get('mode') or '')
+        if mode not in ('Enforcing', 'Permissive'):
+            return
+        was = 'host:selinux:was:' + k[len('host:selinux:now:'):]
+        db.run('DELETE FROM meta WHERE k = ?', (was,))
+        db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (was, json.dumps({'mode': mode, 'at': time.time()})))
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 def _load_tables(db, src, keep_logs, say, gzip):
     counts = {}
     batch, keys, table, have = [], None, None, set()
@@ -5193,6 +5226,7 @@ def _load_tables(db, src, keep_logs, say, gzip):
                 # a job stayed grey. Heartbeats, maintenance and upgrades
                 # are of the machine that wrote them, too.
                 if str(row.get('k') or '').startswith(META_TRANSIENT):
+                    se_was_from_copy(db, row.get('k'), row.get('v'))
                     continue
                 db.run('DELETE FROM meta WHERE k = ?', (row.get('k'),))
             these = sorted(row.keys())
@@ -9449,7 +9483,11 @@ DBGUARD_META_PREFIXES = (
     'console:want:', 'acme_push:key:', 'adm2fa:', 'host:selinux:want:',
     'host:users:want:', 'host:keep:', 'host:putback:', 'rbackup:now:',
     # The system's trusted roots each node puts in as root (1.0.265): the set wanted.
-    'oscerts:want:')
+    'oscerts:want:',
+    # The cluster's wish for each node's connection to its database (1.0.268): a node without
+    # it - one put back from a backup, one joined anew - asks root for its PostgreSQL's
+    # certificate by it.
+    'dbtls_want')
 # Settings whose word reaches root, or who may sign in to these pages.
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',
@@ -20647,6 +20685,7 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     except Exception:                                   # noqa: BLE001
         live_once = None
     c = _db_conf()
+    COPY_SAW.clear()
     if kind == 'copy':
         load_tables(store.db, path)
     elif kind == 'sqlite':
@@ -20699,8 +20738,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     store.db.make_tables()
     if kind in ('mariadb', 'postgres') and live_transient is not None:
         try:
-            for r in store.db.rows('SELECT k FROM meta'):
+            for r in store.db.rows('SELECT k, v FROM meta'):
                 if str(r.get('k') or '').startswith(META_TRANSIENT):
+                    se_was_from_copy(store.db, r['k'], r.get('v'))
                     store.drop_meta(r['k'])
             for r in live_transient:
                 store.set_meta(r['k'], r['v'])
@@ -20778,6 +20818,16 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
                                 'bad', who=by)
         except Exception as e:                          # noqa: BLE001
             log('the tokens put back could not be tried with the key: %s' % e, 'warn')
+    # A copy of before 1.0.268 had no wish for the connections to the databases: the mode its
+    # nodes had, written now that its key is in place (signed with it, the guard on).
+    if COPY_SAW.get('dbtls'):
+        try:
+            if not store.db.value("SELECT COUNT(*) FROM meta WHERE k = 'dbtls_want'"):
+                sealing_key_forget()
+                store.set_meta('dbtls_want', json.dumps({'mode': COPY_SAW['dbtls'], 'at': time.time(),
+                                                         'by': 'otp (as the backup had it)'}))
+        except Exception as e:                          # noqa: BLE001
+            log('putting back: the wish for the connections to the databases: %s' % e, 'warn')
     bump(store)
     store.add_event('backups', '%s put the database back from %s (%s); what it replaced is in %s'
                     % (by, from_name or 'a file', DUMP_WORDS.get(kind, kind), safety.name),
@@ -24232,9 +24282,12 @@ def rb_restore_md(m):
             '  login, the password policy - and what the backup kept of that node\'s machine: its',
             '  local users (passwords, aging, sudo), the SSH keys of root and of them, SELinux\'s',
             '  booleans (only what is missing is added; `otp --machine-kept` says what is kept).',
-            '  The guard of root\'s actions is on again where it was. By hand still: SELinux\'s mode',
-            '  (Settings -> High security -> SELinux) and the encryption to a database on another',
-            '  machine (Settings -> The database), if it was used.',
+            '  The guard of root\'s actions is on again where it was, and each node\'s connection',
+            '  to its own database is encrypted again as the cluster had it (1.0.268). By hand',
+            '  still: SELinux\'s mode - Settings -> Upgrade -> To be done by hand says it on each',
+            '  node that was enforcing (Settings -> High security -> SELinux: make it ready, restart,',
+            '  then enforcing) - and the encryption to a database on another machine (Settings ->',
+            '  The database), if it was used.',
             '- Each node sends its own backups; either node\'s newest is the whole cluster\'s data.',
             '',
         ]
@@ -39997,6 +40050,109 @@ def _dbtls_again(daemon):
                     '%s' % e, 'warn', every=3600)
 
 
+# ---- the cluster's wish for the connections (1.0.268) ------------------------------------------
+# The connection of each node to its database lives in that machine's config.json - and a machine
+# installed anew keeps its own: put back from a backup, or joined to the pair again, its daemon
+# reached its database without TLS (sslmode prefer: encrypted where the server offers it, never
+# checked) while the cluster had it verify-full. The wizard writes what it set in a row of the
+# cluster's, 'dbtls_want' (in every backup; signed with the guard on), and a node whose own
+# connection is not as wished moves there by itself - its PostgreSQL's certificate made first
+# where it has none (the link between the databases gives it, when that is on), the connection
+# tried apart before it is moved, exactly as the wizard does it. Only towards TLS: a wish of none
+# is the wizard's own business (it switches every node); a node the rescue moved back follows
+# the rescue's own way back.
+# Not under 'dbtls:' - those are each machine's own and stay out of a copy put back (META_TRANSIENT).
+DBTLS_WANT_KEY = 'dbtls_want'
+DBTLS_WANT_AGAIN_S = float(os.environ.get('OTP_DBTLS_WANT_AGAIN_S') or 600)
+
+
+def _dbtls_want_set(store, mode, by):
+    try:
+        old = _dbtls_want(store, derive=False) or {}
+        if old.get('mode') != mode:
+            store.set_meta(DBTLS_WANT_KEY, json.dumps({'mode': mode, 'at': time.time(), 'by': by}))
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('dbtls-want-set', 'the cluster\'s wish for the connections could not be '
+                    'written: %s' % e, 'warn', every=3600)
+
+
+def _dbtls_want(store, derive=True):
+    """{'mode', 'at', 'by'} - the wizard's last word for the cluster. None written yet (set up
+    before 1.0.268, or a backup made before it): what the nodes' own rows said when it was made -
+    read before this node's row is written over at its start - or, on a node of its own, what its
+    configuration has; written then, so that the next backup carries it."""
+    rows = dbguard_rows(store.db, store.db.rows('SELECT k, v FROM meta WHERE k = ?', (DBTLS_WANT_KEY,)))
+    got = json_obj(rows[0]['v']) if rows else None
+    if isinstance(got, dict) and str(got.get('mode') or '') in DBTLS_MODES:
+        return got
+    if rows or not derive:
+        return None             # there but not otp's (the guard), or not to be guessed
+    modes = set()
+    for n, r in _dbtls_rows(store).items():
+        if r.get('kind') in ('local', 'replicated') and str(r.get('mode') or '') in DBTLS_MODES:
+            modes.add(str(r.get('mode') or ''))
+    if CONFIG.get('db_tls') and dbtls_kind() in ('local', 'replicated'):
+        modes.add(str(CONFIG.get('db_tls')))
+    tls = sorted(m for m in modes if m)
+    if len(tls) != 1:
+        return None             # none with TLS, or the nodes not of one mind: nothing guessed
+    row = {'mode': tls[0], 'at': time.time(), 'by': 'otp (as the nodes had it)'}
+    store.set_meta(DBTLS_WANT_KEY, json.dumps(row))
+    return row
+
+
+def _dbtls_link_wished(store):
+    """The cluster wishes the link between the databases encrypted, and it is not done on this node."""
+    if dbtls_kind() != 'replicated':
+        return False
+    w = hatls_want(store) or {}
+    return bool(w) and not w.get('off') and not _dbtls_link_has(store)
+
+
+def _dbtls_want_follow(daemon):
+    store = daemon.store
+    want = _dbtls_want(store)
+    mode = str((want or {}).get('mode') or '')
+    if not mode or CONFIG.get('db_tls') or dbtls_kind() not in ('local', 'replicated'):
+        DBTLS_WORK.pop('want_said', None)
+        return
+    if _meta_json(store, _dbtls_rescued_key()):
+        return                  # moved back by the rescue: it goes back by its own way (1.0.263)
+    t = DBTLS_WORK.get('want_thread')
+    if (t is not None and t.is_alive()) or time.time() < DBTLS_WORK.get('want_at', 0.0):
+        return
+    if not _dbtls_has_server(store) and (_dbtls_link_on(store) or _dbtls_link_wished(store)):
+        # The link between the databases gives its PostgreSQL the certificate - also on a node put
+        # back or joined anew, where it is wished by the cluster and not done here yet: asked of the
+        # root helper at the same moment, the two asks crossed and the link's failed.
+        return
+    DBTLS_WORK['want_at'] = time.time() + DBTLS_WANT_AGAIN_S
+    by = 'otp (as the cluster has it)'
+
+    def go():
+        try:
+            if not _dbtls_has_server(store):
+                dbtls_apply(daemon, {'phase': 'server', 'by': by})
+            dbtls_apply(daemon, {'phase': 'connect', 'mode': mode, 'by': by})
+            store.add_event('settings', '%s: the connection to its database is encrypted again as the '
+                            'cluster has it (%s)' % (node_name(), CONFIG.get('db_tls') or mode), 'info')
+            log('the connection to the database is encrypted again as the cluster has it (%s)'
+                % (CONFIG.get('db_tls') or mode))
+            DBTLS_WORK.pop('want_said', None)
+            dbtls_publish(daemon, force=True)
+        except Exception as e:                          # noqa: BLE001
+            said = scrub_secret(str(e))[:300]
+            if DBTLS_WORK.get('want_said') != said:
+                DBTLS_WORK['want_said'] = said
+                store.add_event('settings', '%s: the connection to its database is not encrypted as the '
+                                'cluster has it (%s) - tried again every %d minutes: %s'
+                                % (node_name(), mode, int(DBTLS_WANT_AGAIN_S // 60), said), 'warn')
+            log_sparing('dbtls-want', 'the connection to the database as the cluster has it (%s): %s'
+                        % (mode, said), 'warn', every=3600)
+    DBTLS_WORK['want_thread'] = threading.Thread(target=go, name='otp-dbtls-want', daemon=True)
+    DBTLS_WORK['want_thread'].start()
+
+
 def _dbtls_has_server(store):
     """This node's PostgreSQL has a certificate from otp's authority."""
     return HA_CA_FILE.exists() and (_dbtls_link_has(store) or bool(
@@ -40063,6 +40219,8 @@ def dbtls_apply(daemon, args):
                 CONFIG['db_tls_ca'] = str(DBTLS_CA)
                 for d in _dbtls_dbs(daemon):
                     d.tls_ca = str(DBTLS_CA)
+        if kind in ('replicated', 'local'):
+            _dbtls_want_set(store, mode, by)
         return dict(got, **dict(base, ok=True, said='it was so already' if
                                 got.get('changed') is False else ''))
     if phase == 'server_off':
@@ -40235,6 +40393,12 @@ def dbtls_tick(daemon):
     """Every few minutes the row for the page; the own certificate
     (kind local) made again 45 days before it ends or when the machine's
     names change - in a thread, the connection keeps going."""
+    if dbtls_kind() in ('local', 'replicated'):
+        try:
+            _dbtls_want_follow(daemon)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('dbtls-want-x', 'the connection to the database as the cluster has it: %s' % e,
+                        'warn', every=3600)
     dbtls_publish(daemon)
     if dbtls_kind() not in ('local', 'replicated'):
         return
@@ -42675,6 +42839,29 @@ def _ck_se_refused(store, f):
     return ('needed', {'sig': str(n), 'grows': True, 'args': {'n': n}})
 
 
+def _ck_se_was(store, f):
+    """Put back from a backup on a machine installed anew (1.0.268): SELinux was enforcing on
+    this node then, and is not now."""
+    was = _meta_json(store, 'host:selinux:was:' + str(f.get('node') or node_name())) or {}
+    if was.get('mode') != 'Enforcing':
+        return 'na'
+    d = odict(f.get('selinux'))
+    mode = str(d.get('mode') or '')
+    if not mode:
+        return 'na'             # not looked at yet (two minutes after the start): nothing said early
+    if mode == 'Enforcing':
+        try:
+            store.drop_meta('host:selinux:was:' + str(f.get('node') or node_name()))
+        except Exception:                               # noqa: BLE001
+            pass
+        return 'done'
+    words = {'Permissive': ('permissive', 'permissive'), 'Disabled': ('disabled', 'vypnutý'),
+             'absent': ('not on this machine', 'na tomto stroji není')}.get(mode, ('not said yet', 'zatím neznámý'))
+    return ('needed', {'sig': mode or '-', 'args': {
+        'mode': words[0], 'mode_cs': words[1],
+        'when': time.strftime('%Y-%m-%d', time.localtime(fnum(was.get('at')) or time.time()))}})
+
+
 def _ck_php(store, f):
     p = odict(f.get('php'))
     if not p.get('version'):
@@ -42810,6 +42997,26 @@ after_entry(
             'words': 'Settings → High security → SELinux says the same, with what otp needs.'}],
     foot='This band goes by itself once nothing is refused any more (put right, or after the next '
          'start of the machine). Done takes it away until something more is refused.')
+
+after_entry(
+    id='selinux-was-enforcing', since='1.0.268', level='warn', ack='auto', check=_ck_se_was,
+    title='SELinux was enforcing on this node before it was put back from a backup',
+    title_cs='SELinux byl na tomto uzlu před obnovou ze zálohy v režimu enforcing',
+    why='This machine was installed anew and the backup put back: otp put back its users, '
+        'keys, SELinux\'s booleans and its own module, but SELinux\'s mode is the machine\'s - it is '
+        '{mode} here now. Make it as it was: ready (permissive, one restart of the machine), a while '
+        'with nothing refused, then enforcing - one node at a time in a cluster.',
+    why_cs='Tento stroj byl nainstalován znovu a záloha vrácena: otp vrátil své uživatele, '
+           'klíče, booleany SELinuxu i svůj modul, ale režim SELinuxu patří stroji – teď je tu {mode}. '
+           'Vraťte ho, jak byl: připravit (permissive, jeden restart stroje), chvíli bez odmítnutí, '
+           'pak enforcing – v clusteru jeden uzel po druhém.',
+    steps=[{'where': 'pages', 'pane': 'hisec',
+            'words': 'Settings → High security → SELinux: Make it ready (permissive), restart the machine, '
+                     'then Switch to enforcing once nothing is refused.'},
+           {'where': 'root', 'lead': '{lead}', 'cmd': 'otp --selinux prepare'},
+           {'where': 'root', 'lead': 'After the restart, and a while with nothing refused:',
+            'cmd': 'otp --selinux enforce'}],
+    foot='This band goes by itself once SELinux is enforcing on this node again.')
 
 after_entry(
     id='php2shell', since='1.0.258', level='bad', ack='auto', check=_ck_php,
@@ -54252,6 +54459,19 @@ def keep_at_start(store):
         done = list((json.loads(store.get_meta('host:users:now:' + me) or '{}') or {}).get('done') or [])
     except (ValueError, TypeError, AttributeError):
         done = []
+    # SELinux's mode when the backup was made (1.0.268), from what was kept of the machine or from
+    # what the node said of it then - before that row goes: the mode is the machine's, never put
+    # back by itself (a restart and a time permissive come first); To be done by hand says it.
+    try:
+        was = ''
+        k = keep_open(_meta_json(store, 'host:keep:' + me) or {}, me) or {}
+        was = str(k.get('selinux_mode') or '')
+        if not was:
+            was = str(odict((_meta_json(store, 'host:selinux:now:' + me) or {}).get('data')).get('mode') or '')
+        if was in ('Enforcing', 'Permissive'):
+            store.set_meta('host:selinux:was:' + me, json.dumps({'mode': was, 'at': time.time()}))
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('selinux-was', 'SELinux\'s mode of before could not be kept: %s' % e, 'warn', every=3600)
     for p in APPLIED_PREFIXES:
         store.drop_meta(p + me)
     if done:
@@ -54358,7 +54578,7 @@ def keep_tick(daemon):
             got = users_ask({'do': 'keep'}, 120)
             got.pop('at', None)
             text = json.dumps({k: got.get(k) for k in ('users', 'keys', 'root_keys', 'selinux',
-                                                        'admin_group')}, sort_keys=True)
+                                                        'selinux_mode', 'admin_group')}, sort_keys=True)
             mark = hashlib.sha256(text.encode()).hexdigest()[:20]
             old = _meta_json(store, 'host:keep:' + me) or {}
             if old.get('mark') != mark:

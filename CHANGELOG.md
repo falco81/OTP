@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.268 — 12 November 2026
+
+Disaster recovery checked end to end from a remote backup: a cluster on PostgreSQL 16 with TLS between the databases and to each, the VIP address (VRRP) on and the guard of root's actions on, backed up to SFTP, SCP and SMB 3 at once; both machines lost; one installed from nothing, the backup fetched over SFTP and put back, the second joined - and compared with the cluster at the time of the backup (`tests/r268/t_dr_remote.py`): every row of every table, every setting, each node's configuration, keepalived's and nginx's files, the cluster's authority, the encrypted link, the guard, the local users and their keys, RADIUS on both, the destinations. Two things were not as before; now they are.
+
+Fixed
+- **Each node's connection to its own database is encrypted again after a restore**: it lives in the machine's config.json, which a machine installed anew keeps as its own - put back from a backup, or joined to the pair again, the daemons reached their databases encrypted but unchecked (sslmode prefer) where the cluster had verify-full. The wizard now keeps the cluster's wish in the database (`dbtls:want`, in every backup, signed with the guard on); a node whose connection is not as wished moves there by itself - its PostgreSQL's certificate from the link between the databases (or made, without it), the connection tried apart first and moved only when it goes, as the wizard does it; tried again every 10 minutes and said in Events while it does not go. Only towards TLS: the wizard switching it off is the wizard's business; a node the rescue moved back follows the rescue's way back. A cluster set up before, and a backup made before, take the wish from what the nodes had.
+- **SELinux enforcing before a restore is said after it**: the mode is the machine's (a restart and a time permissive come before enforcing) and a machine installed anew came up as its system had it - unsaid. What is kept of each machine for the backups now holds SELinux's mode too; a node put back where it was enforcing and is not now gets *To be done by hand* - "SELinux was enforcing on this node before it was put back from a backup", with the steps (make it ready, restart, enforcing) - gone by itself once it is enforcing again.
+
 ## 1.0.267 — 9 November 2026
 
 Ready for domain controllers on Windows Server 2025 (otp checked against what they change: LDAP signing, TLS 1.2+, a new certificate on every controller, channel binding, no RC4, no NTLMv1, no SMB1) - [docs/active-directory-2025.md](docs/active-directory-2025.md).

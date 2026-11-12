@@ -156,7 +156,20 @@ everything from the living one. Both lost - put the newest backup back on one ne
 machine as above, move it to PostgreSQL, and build the pair again
 (`otp --ha-setup`, `otp --ha-join` - high-availability.md). The VIP address, the
 firewall, the certificates and the encrypted link between the databases come
-back by themselves from the database.
+back by themselves from the database - and each node's connection to its own
+database is encrypted again as it was (1.0.268). SELinux's mode is the machine's:
+where a node was enforcing, *Settings → Upgrade → To be done by hand* says so on
+it, with the steps (make it ready, restart, then enforcing).
+
+Checked end to end in `tests/r268/t_dr_remote.py`: a cluster on PostgreSQL 16 with
+TLS between the databases and to each, the VIP address and the guard on, backed up
+to SFTP, SCP and SMB at once; both machines lost; the backup fetched over SFTP onto a
+machine installed from nothing, put back, the second joined - every row of every
+table, every setting, each node's configuration, keepalived's and nginx's files,
+the cluster's authority, the encrypted link and connections, the guard, the local
+users and their keys as they were at the time of the backup. (PostgreSQL's own
+certificate is made anew on a new machine - its key never leaves the machine - from
+the same authority, for the same names.)
 
 Every backup's own `RESTORE.md` has these steps with its own names, version and
 cluster in them. *How to put it back* at the top of *Settings → Backups* shows the same
