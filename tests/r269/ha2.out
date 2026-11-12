@@ -1,0 +1,23 @@
+is already running.
+Cluster is already running.
+Cluster is already running.
+Cluster is already running.
+sandbox made: /tmp/sbc1112204830, database otp_sbc1112204830
+made and joined: /tmp/sbc1112204830
+ok   the sandbox made and joined
+FAIL both nodes up, the administrator signs in
+FAIL the VIP address (VRRP) set and on (({'ok': False, 'error': 'not this API’s token'}, {'ok': False, 'error': 'not this API’s token'}))
+FAIL keepalived: one node holds the VIP address (None)
+FAIL node a: the VIP's certificate uploaded alone, the CA Issuers address down - kept, incomplete ({'ok': False, 'error': 'not this API’s token'})
+FAIL ...node b sees it incomplete too (replication)
+FAIL node b: Complete the chain - the intermediate fetched, complete ({'ok': False, 'error': 'not this API’s token'})
+FAIL both nodes hold the completed chain of the VIP's certificate
+FAIL nginx's file of the VIP on the node holding it (b): the certificate and the intermediate
+FAIL the page: the VIP's file in place on the holder checked complete (vip_cert_now.chain_ok)
+FAIL both nodes' own certificates uploaded alone (the address down, nothing kept from before): incomplete ((None, None))
+FAIL node a: Upload the missing authority for node b's certificate - complete ({'ok': False, 'error': 'not this API’s token'})
+FAIL node b: Complete the chain of node a's certificate - complete ({'ok': False, 'error': 'not this API’s token'})
+FAIL node a's nginx file: the certificate and the intermediate
+FAIL node b's nginx file: the certificate and the intermediate
+FAIL the page of either node: each node's file in place checked complete (cert_now.chain_ok)
+ALL 1 / 16

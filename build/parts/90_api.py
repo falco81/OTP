@@ -7072,7 +7072,7 @@ def _web_do(h):
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
-                    verify=got['verify'], how=how)
+                    verify=got['verify'], chain_state=got.get('chain_state'), how=how)
         if got2:
             # Both of the same names (1.0.240): the ECDSA one beside, as ACME's "both".
             prof['alt'] = {'cert': got2['cert'], 'chain': got2['chain'],
@@ -7092,10 +7092,92 @@ def _web_do(h):
             who, words, info.get('subject'), stamp(info.get('not_after')) if info.get('not_after') else '?',
             ' - with a second one beside it, %s' % (got2['info'].get('key') or 'ECDSA') if got2 else ''),
             'warn', who=who)
-        return {'message': 'the certificate of %s is kept; the node%s put%s it in within a few '
-                           'seconds' % (words, 's' if target == 'vip' else '',
-                                        '' if target == 'vip' else 's'),
-                'tls': tls_view(prof)}
+        cst = got.get('chain_state') or {}
+        msg = 'the certificate of %s is kept; the node%s put%s it in within a few seconds' % (
+            words, 's' if target == 'vip' else '', '' if target == 'vip' else 's')
+        if cst.get('fetched') or cst.get('ok') is False:
+            # What the chain is (1.0.269): completed from the authority's address, or not complete.
+            msg += ' - its chain: %s' % cst.get('words')
+            store.add_event('settings', 'the chain of the certificate of %s: %s' % (words, cst.get('words')),
+                            'info' if cst.get('ok') else 'warn', who=who)
+        return {'message': msg, 'complete': cst.get('ok'), 'tls': tls_view(prof)}
+    if act == 'tls_chain':
+        # Complete the chain (1.0.269): the certificate kept, checked again against the system's roots
+        # and completed from its CA Issuers addresses (its second, ECDSA, one too) - nginx then sends
+        # the whole chain.
+        if not prof.get('cert'):
+            raise ApiError(404, 'no certificate is kept for %s' % words)
+        cur = [m.group(0) for m in PEM_CERT.finditer(prof.get('chain') or '')]
+        chain, state = chain_complete(prof['cert'].strip(), cur, prof.get('root') or '')
+        prof.update(chain=''.join(c.strip() + '\n' for c in chain), chain_info=[cert_info(c) for c in chain],
+                    chain_state=state, verify='ok' if state.get('ok') else (
+                        '' if state.get('ok') is None else state.get('words') or ''))
+        alt = prof.get('alt') if isinstance(prof.get('alt'), dict) else None
+        if alt and alt.get('cert'):
+            acur = [m.group(0) for m in PEM_CERT.finditer(alt.get('chain') or '')]
+            achain, _st = chain_complete(alt['cert'].strip(), acur, prof.get('root') or '')
+            alt['chain'] = ''.join(c.strip() + '\n' for c in achain)
+        tls_save(store, target, prof, who)
+        store.add_event('settings', '%s checked the chain of the certificate of %s: %s' % (
+            who, words, state['words']), 'info' if state.get('ok') else 'warn', who=who)
+        return {'message': state['words'], 'complete': state.get('ok'), 'tls': tls_view(prof)}
+    if act == 'tls_chain_add':
+        # The missing authority by hand (1.0.269): when it cannot be fetched (no CA Issuers address, no
+        # way out, a private CA) - only certificates of authorities, never a key; a root goes beside the
+        # chain (kept to check with, never sent), the rest into the chain in order.
+        if not prof.get('cert'):
+            raise ApiError(404, 'no certificate is kept for %s' % words)
+        text = str(b.get('text') or '')
+        if len(text) > 262144:
+            raise ApiError(400, 'that is far bigger than the certificates of a chain')
+        if re.search(r'PRIVATE KEY', text):
+            raise ApiError(400, 'only the certificates of the authorities - no private key')
+        given = [m.group(0) for m in PEM_CERT.finditer(text)]
+        if not given:
+            raise ApiError(400, 'no certificate in it (-----BEGIN CERTIFICATE-----, or a .cer file)')
+        if len(given) > 8:
+            raise ApiError(400, '%d certificates - the chain of one certificate is a few' % len(given))
+        cur = [m.group(0) for m in PEM_CERT.finditer(prof.get('chain') or '')]
+        roots = [m.group(0) for m in PEM_CERT.finditer(prof.get('root') or '')]
+        try:
+            have = {cert_info(c).get('fingerprint') for c in cur + roots}
+            leaf = prof['cert'].strip()
+            new_roots, new_inter = [], []
+            for c in given:
+                ci = cert_info(c)
+                if ci.get('fingerprint') in have or ci.get('fingerprint') == odict(prof.get('info')).get('fingerprint'):
+                    continue
+                (new_roots if ci.get('self_signed') else new_inter).append(c)
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        if not new_roots and not new_inter:
+            raise ApiError(400, 'every certificate in it is there already')
+        # In order from the certificate: each the issuer of the one before.
+        pool = cur + new_inter
+        infos = {c: cert_info(c) for c in pool}
+        ordered, at = [], cert_info(leaf)
+        while pool:
+            nxt = next((c for c in pool if infos[c].get('subject') == at.get('issuer')), None)
+            if not nxt:
+                break
+            ordered.append(nxt)
+            pool.remove(nxt)
+            at = infos[nxt]
+        root_now = ''.join(c.strip() + '\n' for c in roots + new_roots)
+        useful = [c for c in new_inter if c in ordered] or \
+            [c for c in new_roots if cert_info(c).get('subject') == at.get('issuer')]
+        if not useful:
+            raise ApiError(400, 'none of these is the authority that signed the chain\'s last certificate (%s)'
+                           % _cn_of(at.get('issuer')))
+        chain, state = chain_complete(leaf, ordered, root_now)
+        prof.update(chain=''.join(c.strip() + '\n' for c in chain), chain_info=[cert_info(c) for c in chain],
+                    root=root_now, root_info=[cert_info(c) for c in roots + new_roots], chain_state=state,
+                    verify='ok' if state.get('ok') else (state.get('words') or ''))
+        tls_save(store, target, prof, who)
+        store.add_event('settings', '%s added %s to the chain of the certificate of %s: %s' % (
+            who, ', '.join(cert_info(c).get('cn') or '?' for c in useful), words, state['words']),
+            'info' if state.get('ok') else 'warn', who=who)
+        return {'message': state['words'], 'complete': state.get('ok'), 'tls': tls_view(prof)}
     if act == 'tls_csr':
         names = [x.strip() for x in re.split(r'[\s,;]+', str(b.get('names') or '')) if x.strip()]
         key, csr = make_csr(str(b.get('cn') or '').strip(), names, str(b.get('kind') or 'rsa2048'),

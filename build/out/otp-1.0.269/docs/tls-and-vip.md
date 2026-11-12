@@ -464,3 +464,22 @@ otp --vip-return stay      # stays where it is
 ```
 
 Every move is in Settings → High availability → **History**.
+
+
+## The whole chain (1.0.269)
+
+nginx sends each certificate with every intermediate authority up to a root (never the root). A certificate
+uploaded without its intermediates is completed by otp from the authority's *CA Issuers* address, as a browser
+would do it; when that cannot be done (no address, no way out, a company CA), **Upload the missing authority**
+on the card takes the authority's certificate (PEM or .cer/.crt; a root is kept to check with and never sent).
+The card's **Chain** line says it in green or red; **Complete the chain** / **Check the chain** asks again. The
+file nginx has is checked too, and each node connects to itself (and the VIP holder to the VIP address) after
+nginx takes a certificate, as a client that fetches nothing - a refusal is an event and the card's **Sent** line.
+
+Check it from any machine:
+
+```bash
+openssl s_client -connect NAME:443 -servername NAME </dev/null 2>/dev/null | grep -E "^ *[0-9] s:|Verify return code"
+```
+
+At least two certificates (`0 s:` the certificate, `1 s:` the intermediate) and `Verify return code: 0 (ok)`.

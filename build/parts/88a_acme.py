@@ -531,7 +531,7 @@ def acme_put_back(store, target, by):
                          'Certificates and TLS' % stamp(info.get('not_after')))
     prof = tls_profile(store, target) or {}
     prof.update({k: got.get(k) for k in ('cert', 'chain', 'root', 'key', 'info', 'chain_info',
-                                         'root_info', 'verify', 'how')})
+                                         'root_info', 'verify', 'chain_state', 'how')})
     # Its second certificate (ECDSA) with it (1.0.249): lost at the put back, the node served RSA
     # only. ACME's own taken away where there was none before.
     if got.get('alt') and float(((got['alt'] or {}).get('info') or {}).get('not_after') or 0) > time.time():
@@ -718,7 +718,7 @@ def acme_order(store, target, name, by, say=None):
         prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                     key=seal_secret(got['key'], 'web:tls'), info=info,
                     chain_info=got['chain_info'], root_info=got['root_info'],
-                    verify=got['verify'], how='ACME')
+                    verify=got['verify'], chain_state=got.get('chain_state'), how='ACME')
         if alt:
             prof['alt'] = alt
         else:

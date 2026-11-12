@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.269 — 12 November 2026
+
+The whole chain of the pages' certificates - nodes and the VIP address, in a cluster on both nodes.
+
+New
+- **Certificates and TLS checks the chain the way every client that is not a browser does.** nginx must send the certificate with every intermediate authority up to a root; a certificate uploaded without them was sent alone - browsers fetch the missing link themselves (CA Issuers) and said nothing, curl, Python, Java, a VPN client, rsyslog and monitoring refused it ("unable to get local issuer certificate"). Whatever comes in - an upload, a PFX, a request signed elsewhere, ACME, acme push - is checked against the system's roots (and a root given with it), and a chain that does not reach one is **completed from the authority's CA Issuers address**, as browsers do (4 steps at most, http/https, through the proxy where ACME goes through it); what is fetched is only a link to a root of the system, a root is never sent.
+- The card's **Chain** line: green *complete - N certificates up to …* (with *fetched: …* when otp completed it, *a private root* for a company CA whose root was given), red *incomplete - the authority … is not sent* with why, or *it leads to …, a root the system does not trust*; self-signed: no chain. **Complete the chain** (primary when it is incomplete; otherwise *Check the chain*) and **Upload the missing authority** - a dialog that names the authority missing, PEM or a .cer/.crt file, only certificates of authorities, never a key; a root is kept to check with, never sent.
+- The file nginx has now is checked as well (the system's roots, nothing fetched) - certificates put in before this version too; and after every time nginx takes a certificate each node connects to itself as a client that fetches nothing - its own name, and the VIP address on the node that holds it (also when the VIP comes over): a refusal is an event, and the card's **Sent** line says it.
+- In a cluster: the VIP's certificate and every node's own completed from either node's pages, the same chain on both (replication), nginx's files on each node with the certificate and its intermediates (tests/r269/t_chain_ha.py, VRRP on).
+
 ## 1.0.268 — 12 November 2026
 
 Disaster recovery checked end to end from a remote backup: a cluster on PostgreSQL 16 with TLS between the databases and to each, the VIP address (VRRP) on and the guard of root's actions on, backed up to SFTP, SCP and SMB 3 at once; both machines lost; one installed from nothing, the backup fetched over SFTP and put back, the second joined - and compared with the cluster at the time of the backup (`tests/r268/t_dr_remote.py`): every row of every table, every setting, each node's configuration, keepalived's and nginx's files, the cluster's authority, the encrypted link, the guard, the local users and their keys, RADIUS on both, the destinations. Two things were not as before; now they are.

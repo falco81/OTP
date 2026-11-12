@@ -561,7 +561,7 @@ def net_cert_again(store, w, by):
     prof.update(cert=got['cert'], chain=got['chain'], root=got['root'],
                 key=seal_secret(got['key'], 'web:tls'), info=got['info'],
                 chain_info=got['chain_info'], root_info=got['root_info'],
-                verify=got['verify'], how='self-signed, made here (the network changed)')
+                verify=got['verify'], chain_state=got.get('chain_state'), how='self-signed, made here (the network changed)')
     tls_save(store, me, prof, by)
     return 'this node\'s own certificate made again for %s' % ', '.join(new_names[:6])
 

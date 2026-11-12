@@ -83,6 +83,26 @@ S270 = {
     'After the restart, and a while with nothing refused:': 'Po restartu a chvíli bez odmítnutí:',
     'This band goes by itself once SELinux is enforcing on this node again.': 'Tento pruh zmizí sám, jakmile bude SELinux na tomto uzlu opět v režimu enforcing.',
     'SELinux was enforcing on this node before it was put back from a backup': 'SELinux byl na tomto uzlu před obnovou ze zálohy v režimu enforcing',
+    # 1.0.269: the whole chain.
+    'Upload the missing authority': 'Nahrát chybějící autoritu',
+    'Missing in the chain:': 'V řetězci chybí:',
+    'Add it to the chain': 'Přidat do řetězce',
+    'Complete the chain': 'Doplnit řetězec',
+    'Check the chain': 'Zkontrolovat řetězec',
+    'Sent': 'Posílá se',
+    'The certificate of that authority - the intermediate (or several) your certificate authority gives with the certificate, often called "CA bundle", "intermediate" or "chain" - as PEM or a .cer / .crt file. Only certificates of authorities, never a key; the certificate and its key stay as they are. A root is kept to check with and never sent.':
+        'Certifikát té autority – mezilehlý (nebo několik), který certifikační autorita dává k certifikátu, často pod názvem „CA bundle“, „intermediate“ nebo „chain“ – jako PEM nebo soubor .cer / .crt. Jen certifikáty autorit, nikdy klíč; certifikát a jeho klíč zůstávají, jak jsou. Kořen se uloží ke kontrole a nikdy se neposílá.',
+    "Checked against the system's root authorities; an intermediate the certificate did not come with is fetched from its CA Issuers address, as browsers do it - so that curl, a VPN client and other clients that fetch nothing take it too.":
+        'Ověří se proti kořenovým autoritám systému; mezilehlá autorita, která s certifikátem nepřišla, se stáhne z adresy CA Issuers, jak to dělají prohlížeče – aby ho přijal i curl, VPN klient a další klienti, kteří si nic nestahují.',
+    'incomplete - what nginx sends does not lead to a root of the system: curl, a VPN client and other clients refuse it':
+        'neúplný – to, co nginx posílá, nevede ke kořeni systému: curl, VPN klient a další klienti ho odmítnou',
+    'self-signed - no chain; whoever connects must trust this certificate itself':
+        'self-signed – žádný řetězec; kdo se připojuje, musí důvěřovat přímo tomuto certifikátu',
+    'checked as a client that fetches nothing: the whole chain is sent':
+        'ověřeno jako klient, který si nic nestahuje: posílá se celý řetězec',
+    'only the certificates of the authorities - no private key': 'jen certifikáty autorit – žádný soukromý klíč',
+    'no certificate in it (-----BEGIN CERTIFICATE-----, or a .cer file)': 'není v tom žádný certifikát (-----BEGIN CERTIFICATE----- nebo soubor .cer)',
+    'every certificate in it is there already': 'každý certifikát z toho už tam je',
 }
 P270 = {
     'this node is busy: {0} requests wait for the directory {1}': 'tento nod je vytížený: na adresář {1} čeká {0} požadavků',
@@ -122,4 +142,24 @@ P270 = {
         '{0}: spojení s jeho databází není šifrované, jak to má cluster ({1}) – zkouší se znovu každých {2} minut: {3}',
     "This machine was installed anew and the backup put back: otp put back its users, keys, SELinux's booleans and its own module, but SELinux's mode is the machine's - it is {0} here now. Make it as it was: ready (permissive, one restart of the machine), a while with nothing refused, then enforcing - one node at a time in a cluster.":
         'Tento stroj byl nainstalován znovu a záloha vrácena: otp vrátil své uživatele, klíče, booleany SELinuxu i svůj modul, ale režim SELinuxu patří stroji – teď je tu {0}. Vraťte ho, jak byl: připravit (permissive, jeden restart stroje), chvíli bez odmítnutí, pak enforcing – v clusteru jeden uzel po druhém.',
+    # 1.0.269: the whole chain.
+    'complete - {0} certificates up to {1}': 'úplný – {0} certifikáty až ke {1}',
+    'complete - {0} certificate up to {1}': 'úplný – {0} certifikát až ke {1}',
+    'complete - {0} certificates up to {1} (fetched: {2} - it was not sent with the certificate)':
+        'úplný – {0} certifikáty až ke {1} (staženo: {2} – s certifikátem se neposlalo)',
+    'complete - {0} certificates up to {1} - a private root: only clients that trust it take it':
+        'úplný – {0} certifikáty až ke {1} – soukromý kořen: přijmou ho jen klienti, kteří mu důvěřují',
+    'incomplete - the authority {0} is not sent and could not be completed ({1}); curl, Python, a VPN client and other clients refuse it - only browsers fetch it themselves; upload the certificate with its chain, or the missing authority':
+        'neúplný – autorita {0} se neposílá a nepodařilo se ji doplnit ({1}); curl, Python, VPN klient a další klienti ho odmítnou – jen prohlížeče si ji stáhnou samy; nahrajte certifikát s jeho řetězcem, nebo chybějící autoritu',
+    'it leads to {0}, a root the system does not trust (a private CA?) - the chain is complete; the clients (curl, a VPN client, monitoring) must trust that root, or upload its root here':
+        'vede ke {0}, kořeni, kterému systém nedůvěřuje (soukromá CA?) – řetězec je úplný; klienti (curl, VPN klient, monitoring) musí tomu kořeni důvěřovat, nebo sem nahrajte jeho kořen',
+    'a client that fetches nothing (curl, a VPN client) refuses what nginx sends: {0}':
+        'klient, který si nic nestahuje (curl, VPN klient), odmítá to, co nginx posílá: {0}',
+    'the certificate of {0} is kept; the node puts it in within a few seconds - its chain: {1}':
+        'certifikát {0} je uložen; uzel ho za pár sekund nasadí – jeho řetězec: {1}',
+    'the certificate of {0} is kept; the nodes put it in within a few seconds - its chain: {1}':
+        'certifikát {0} je uložen; uzly ho za pár sekund nasadí – jeho řetězec: {1}',
+    'no certificate is kept for {0}': 'pro {0} není uložen žádný certifikát',
+    "none of these is the authority that signed the chain's last certificate ({0})":
+        'žádný z nich není autorita, která podepsala poslední certifikát řetězce ({0})',
 }
