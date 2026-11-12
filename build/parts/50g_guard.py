@@ -34,7 +34,11 @@ DBGUARD_META_PREFIXES = (
     'console:want:', 'acme_push:key:', 'adm2fa:', 'host:selinux:want:',
     'host:users:want:', 'host:keep:', 'host:putback:', 'rbackup:now:',
     # The system's trusted roots each node puts in as root (1.0.265): the set wanted.
-    'oscerts:want:')
+    'oscerts:want:',
+    # The cluster's wish for each node's connection to its database (1.0.268): a node without
+    # it - one put back from a backup, one joined anew - asks root for its PostgreSQL's
+    # certificate by it.
+    'dbtls_want')
 # Settings whose word reaches root, or who may sign in to these pages.
 DBGUARD_SETTINGS = frozenset((
     'acme', 'acme_challenge', 'acme_for', 'acme_node_name', 'radius_auth_port',

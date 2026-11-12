@@ -1437,6 +1437,39 @@ META_TRANSIENT = ('db_job:', 'node:', 'load:', 'maint:', 'upgrade:', 'radtest:',
                   'held:')
 
 
+COPY_SAW = {}
+
+
+def se_was_from_copy(db, k, v):
+    """A node's row left out of a copy put back (1.0.268), what it says of the cluster kept:
+    SELinux's mode as it was then (a machine installed anew comes up as its system has it, and
+    To be done by hand says that SELinux was enforcing there); and from a copy made before 1.0.268,
+    which has no wish for the connections to the databases, the mode its nodes had (each node then
+    encrypts its connection again as it was)."""
+    k = str(k or '')
+    if k.startswith('dbtls:node:'):
+        try:
+            row = json.loads(v or '{}') or {}
+            mode = str(row.get('mode') or '')
+            if mode in ('require', 'verify-ca', 'verify-full') and row.get('kind') in ('local', 'replicated'):
+                # Written once the copy's key is in place (signed then, with the guard on).
+                COPY_SAW['dbtls'] = mode
+        except Exception:                               # noqa: BLE001
+            pass
+        return
+    if not k.startswith('host:selinux:now:'):
+        return
+    try:
+        mode = str((json.loads(v or '{}').get('data') or {}).get('mode') or '')
+        if mode not in ('Enforcing', 'Permissive'):
+            return
+        was = 'host:selinux:was:' + k[len('host:selinux:now:'):]
+        db.run('DELETE FROM meta WHERE k = ?', (was,))
+        db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (was, json.dumps({'mode': mode, 'at': time.time()})))
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 def _load_tables(db, src, keep_logs, say, gzip):
     counts = {}
     batch, keys, table, have = [], None, None, set()
@@ -1487,6 +1520,7 @@ def _load_tables(db, src, keep_logs, say, gzip):
                 # a job stayed grey. Heartbeats, maintenance and upgrades
                 # are of the machine that wrote them, too.
                 if str(row.get('k') or '').startswith(META_TRANSIENT):
+                    se_was_from_copy(db, row.get('k'), row.get('v'))
                     continue
                 db.run('DELETE FROM meta WHERE k = ?', (row.get('k'),))
             these = sorted(row.keys())

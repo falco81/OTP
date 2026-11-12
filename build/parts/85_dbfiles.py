@@ -645,6 +645,7 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     except Exception:                                   # noqa: BLE001
         live_once = None
     c = _db_conf()
+    COPY_SAW.clear()
     if kind == 'copy':
         load_tables(store.db, path)
     elif kind == 'sqlite':
@@ -697,8 +698,9 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
     store.db.make_tables()
     if kind in ('mariadb', 'postgres') and live_transient is not None:
         try:
-            for r in store.db.rows('SELECT k FROM meta'):
+            for r in store.db.rows('SELECT k, v FROM meta'):
                 if str(r.get('k') or '').startswith(META_TRANSIENT):
+                    se_was_from_copy(store.db, r['k'], r.get('v'))
                     store.drop_meta(r['k'])
             for r in live_transient:
                 store.set_meta(r['k'], r['v'])
@@ -776,6 +778,16 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
                                 'bad', who=by)
         except Exception as e:                          # noqa: BLE001
             log('the tokens put back could not be tried with the key: %s' % e, 'warn')
+    # A copy of before 1.0.268 had no wish for the connections to the databases: the mode its
+    # nodes had, written now that its key is in place (signed with it, the guard on).
+    if COPY_SAW.get('dbtls'):
+        try:
+            if not store.db.value("SELECT COUNT(*) FROM meta WHERE k = 'dbtls_want'"):
+                sealing_key_forget()
+                store.set_meta('dbtls_want', json.dumps({'mode': COPY_SAW['dbtls'], 'at': time.time(),
+                                                         'by': 'otp (as the backup had it)'}))
+        except Exception as e:                          # noqa: BLE001
+            log('putting back: the wish for the connections to the databases: %s' % e, 'warn')
     bump(store)
     store.add_event('backups', '%s put the database back from %s (%s); what it replaced is in %s'
                     % (by, from_name or 'a file', DUMP_WORDS.get(kind, kind), safety.name),

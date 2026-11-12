@@ -551,8 +551,9 @@ ok('docs: a section in upgrades.md', '## To be done by hand (1.0.258)' in doc an
 
 # ---- Czech ------------------------------------------------------------------------------------------------
 sys.path.insert(0, '/home/claude/i18n')
-import cs_266
-S, P = cs_266.S266, cs_266.P266
+import cs_266, cs_270
+# The entries of later versions in the dictionaries of theirs (1.0.268).
+S, P = dict(cs_266.S266, **cs_270.S270), dict(cs_266.P266, **cs_270.P270)
 ok('Czech: every text given', all(v.strip() for v in list(S.values()) + list(P.values())))
 ok('Czech: the {0} of each pattern kept', all(set(re.findall(r'\{\d', k)) == set(re.findall(r'\{\d', v)) for k, v in P.items()), [k for k, v in P.items() if set(re.findall(r'\{\d', k)) != set(re.findall(r'\{\d', v))])
 

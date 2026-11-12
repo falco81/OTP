@@ -77,6 +77,12 @@ S270 = {
     'Given by its address, while the certificate is checked against the server’s name - a new domain controller’s certificate (Windows Server 2025) usually carries its name only. Give the name (FQDN) instead:':
         'Zadáno IP adresou, přitom se certifikát ověřuje proti jménu serveru – certifikát nového řadiče domény (Windows Server 2025) obvykle obsahuje jen jeho jméno. Zadejte místo toho jméno (FQDN):',
     'its servers by name (FQDN)': 'jeho servery jménem (FQDN)',
+    # 1.0.268: put back from a backup - SELinux's mode, the connections to the databases.
+    'Settings → High security → SELinux: Make it ready (permissive), restart the machine, then Switch to enforcing once nothing is refused.':
+        'Nastavení → Vysoké zabezpečení → SELinux: Připravit (permissive), restartovat stroj, a až nebude nic odmítáno, Přepnout na enforcing.',
+    'After the restart, and a while with nothing refused:': 'Po restartu a chvíli bez odmítnutí:',
+    'This band goes by itself once SELinux is enforcing on this node again.': 'Tento pruh zmizí sám, jakmile bude SELinux na tomto uzlu opět v režimu enforcing.',
+    'SELinux was enforcing on this node before it was put back from a backup': 'SELinux byl na tomto uzlu před obnovou ze zálohy v režimu enforcing',
 }
 P270 = {
     'this node is busy: {0} requests wait for the directory {1}': 'tento nod je vytížený: na adresář {1} čeká {0} požadavků',
@@ -109,4 +115,11 @@ P270 = {
         'adresář {0} se připojuje nešifrovaným LDAPem – řadiče domény s Windows Serverem 2025 přihlášení přes něj odmítnou (LDAP signing, jejich výchozí nastavení)',
     "the directory {0} names its servers by address ({1}) - the certificate is checked against the server's name, and a new domain controller's certificate usually carries its name only":
         'adresář {0} zadává své servery IP adresou ({1}) – certifikát se ověřuje proti jménu serveru a certifikát nového řadiče domény obvykle obsahuje jen jeho jméno',
+    # 1.0.268
+    '{0}: the connection to its database is encrypted again as the cluster has it ({1})':
+        '{0}: spojení s jeho databází je znovu šifrované, jak to má cluster ({1})',
+    '{0}: the connection to its database is not encrypted as the cluster has it ({1}) - tried again every {2} minutes: {3}':
+        '{0}: spojení s jeho databází není šifrované, jak to má cluster ({1}) – zkouší se znovu každých {2} minut: {3}',
+    "This machine was installed anew and the backup put back: otp put back its users, keys, SELinux's booleans and its own module, but SELinux's mode is the machine's - it is {0} here now. Make it as it was: ready (permissive, one restart of the machine), a while with nothing refused, then enforcing - one node at a time in a cluster.":
+        'Tento stroj byl nainstalován znovu a záloha vrácena: otp vrátil své uživatele, klíče, booleany SELinuxu i svůj modul, ale režim SELinuxu patří stroji – teď je tu {0}. Vraťte ho, jak byl: připravit (permissive, jeden restart stroje), chvíli bez odmítnutí, pak enforcing – v clusteru jeden uzel po druhém.',
 }

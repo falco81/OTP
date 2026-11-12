@@ -655,6 +655,19 @@ def keep_at_start(store):
         done = list((json.loads(store.get_meta('host:users:now:' + me) or '{}') or {}).get('done') or [])
     except (ValueError, TypeError, AttributeError):
         done = []
+    # SELinux's mode when the backup was made (1.0.268), from what was kept of the machine or from
+    # what the node said of it then - before that row goes: the mode is the machine's, never put
+    # back by itself (a restart and a time permissive come first); To be done by hand says it.
+    try:
+        was = ''
+        k = keep_open(_meta_json(store, 'host:keep:' + me) or {}, me) or {}
+        was = str(k.get('selinux_mode') or '')
+        if not was:
+            was = str(odict((_meta_json(store, 'host:selinux:now:' + me) or {}).get('data')).get('mode') or '')
+        if was in ('Enforcing', 'Permissive'):
+            store.set_meta('host:selinux:was:' + me, json.dumps({'mode': was, 'at': time.time()}))
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('selinux-was', 'SELinux\'s mode of before could not be kept: %s' % e, 'warn', every=3600)
     for p in APPLIED_PREFIXES:
         store.drop_meta(p + me)
     if done:
@@ -761,7 +774,7 @@ def keep_tick(daemon):
             got = users_ask({'do': 'keep'}, 120)
             got.pop('at', None)
             text = json.dumps({k: got.get(k) for k in ('users', 'keys', 'root_keys', 'selinux',
-                                                        'admin_group')}, sort_keys=True)
+                                                        'selinux_mode', 'admin_group')}, sort_keys=True)
             mark = hashlib.sha256(text.encode()).hexdigest()[:20]
             old = _meta_json(store, 'host:keep:' + me) or {}
             if old.get('mark') != mark:

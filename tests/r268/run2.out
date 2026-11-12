@@ -1,0 +1,141 @@
+== 1. a cluster of two: PostgreSQL 16, TLS between the databases and to each, VIP, the guard
+ok   sandbox /tmp/drr11121211301 made and joined
+ok   both nodes up
+ok   tokens, accounts, clients, realms, a directory made
+ok   the administrator signs in
+ok   settings saved
+ok   the link's TLS asked (200)
+ok   ...the link over TLS on both, verify-full
+ok   each daemon's connection to its database over TLS, verify-full (200 200)
+ok   the VIP address (VRRP) set and on
+ok   ...keepalived's configuration on both nodes
+ok   the password policy of the local users
+ok   a local user on both
+ok   ...its SSH key
+ok   ...kept for the backups (host:keep)
+ok   the backups' password
+ok   destination sftp-box (sftp) saved
+ok   destination scp-box (scp) saved
+ok   destination nas (smb) saved
+ok   SFTP: an SSH key made by otp, put on the backup server
+ok   sftp-box: the server's host key trusted
+ok   scp-box: the server's host key trusted
+ok   sftp-box: Try it - it works
+ok   scp-box: Try it - it works
+ok   nas: Try it - it works
+ok   the guard of root's actions on, node a
+ok   the guard of root's actions on, node b
+ok   replication a -> b
+ok   replication b -> a
+ok   node a: its daemon's connections encrypted (t|1)
+ok   node a: its subscription verify-full, running, the other side's sender over TLS (verify-full 1 t)
+ok   node b: its daemon's connections encrypted (t|1)
+ok   node b: its subscription verify-full, running, the other side's sender over TLS (verify-full 1 t)
+ok   before: anna let in on node a
+ok   before: the two nodes hold the same meta (9 rows)
+ok   before: the two nodes hold the same settings (7 rows)
+ok   before: the two nodes hold the same accounts (3 rows)
+ok   before: the two nodes hold the same tokens (5 rows)
+ok   before: the two nodes hold the same clients (2 rows)
+ok   before: the two nodes hold the same realms (2 rows)
+ok   before: the two nodes hold the same directories (1 rows)
+ok   before: the two nodes hold the same token_once (2 rows)
+ok   the cluster's wish for the connections kept (dbtls:want: verify-full) - in every backup
+ok   the backup sent to SFTP, SCP and SMB at once
+ok   ...the same file at all three (otp-backup-drrsite-nodea-20261112-121328.tar.gz.enc)
+ok   ...with its .sha256 and -RESTORE.md beside it at sftp
+ok   ...with its .sha256 and -RESTORE.md beside it at scp
+ok   ...with its .sha256 and -RESTORE.md beside it at smb
+ok   ...locked: not a gzip, no PEM, no token secret readable in it
+== 2. both machines lost - a new one, from nothing, the backup fetched over SFTP
+ok   the machines lost: the local user gone too
+ok   PostgreSQL of both: nothing of otp's TLS left, as on a machine from nothing
+ok   two machines from nothing (/tmp/drr11121211302)
+ok   node a: nothing there - no key, no database rows
+ok   node b: nothing there - no key, no database rows
+ok   the backup fetched over SFTP from the backup server
+ok   ...it is whole: its SHA-256 as the .sha256 beside it says
+ok   what is in it, before anything is done (cluster, nodes, version)
+ok   node a restored from it (--restore-bundle)
+ok   ...it says it came from a cluster: make it two again
+== 3. a cluster of two again
+ok   node a: the first of two again (--ha-setup)
+ok   node b from nothing joined (--ha-join)
+ok   both nodes up
+ok   the link over TLS again on both, verify-full
+FAIL each daemon's connection to its database over TLS again, verify-full ([None, None])
+ok   keepalived's configuration with the VIP address on both
+ok   the local user made again - its UID, its password, sudo
+ok   ...its SSH key back
+ok   replication a -> b
+ok   replication b -> a
+FAIL node a: meta - all 9 rows back, as they were ({'missing': ['dbtls:want'], 'changed': []})
+ok   node a: meta - nothing more than before
+ok   node a: settings - all 7 rows back, as they were
+ok   node a: settings - nothing more than before
+ok   node a: accounts - all 3 rows back, as they were
+ok   node a: accounts - nothing more than before
+ok   node a: tokens - all 5 rows back, as they were
+ok   node a: tokens - nothing more than before
+ok   node a: clients - all 2 rows back, as they were
+ok   node a: clients - nothing more than before
+ok   node a: realms - all 2 rows back, as they were
+ok   node a: realms - nothing more than before
+ok   node a: directories - all 1 rows back, as they were
+ok   node a: directories - nothing more than before
+ok   node a: token_once - all 2 rows back, as they were
+ok   node a: token_once - nothing more than before
+ok   node a: radius_log - every row of before still there (1)
+ok   node a: otp_log - every row of before still there (1)
+ok   node a: events - every row of before still there (43)
+FAIL node a: its configuration (config.json) as it was ({'db_tls': ('verify-full', None), 'db_tls_ca': ('@S@/a/ha-ca.pem', None)})
+ok   node a: keepalived, nginx, the pages' certificates, the cluster's authority - the same files (3)
+ok   node a: PostgreSQL's TLS as it was (on)
+ok   node a: its daemon's connections encrypted (t|1)
+ok   node a: its subscription verify-full, running, over TLS (verify-full 1 t)
+ok   node a: the guard of root's actions on
+FAIL node b: meta - all 9 rows back, as they were ({'missing': ['dbtls:want'], 'changed': []})
+ok   node b: meta - nothing more than before
+ok   node b: settings - all 7 rows back, as they were
+ok   node b: settings - nothing more than before
+ok   node b: accounts - all 3 rows back, as they were
+ok   node b: accounts - nothing more than before
+ok   node b: tokens - all 5 rows back, as they were
+ok   node b: tokens - nothing more than before
+ok   node b: clients - all 2 rows back, as they were
+ok   node b: clients - nothing more than before
+ok   node b: realms - all 2 rows back, as they were
+ok   node b: realms - nothing more than before
+ok   node b: directories - all 1 rows back, as they were
+ok   node b: directories - nothing more than before
+ok   node b: token_once - all 2 rows back, as they were
+ok   node b: token_once - nothing more than before
+ok   node b: radius_log - every row of before still there (1)
+ok   node b: otp_log - every row of before still there (1)
+ok   node b: events - every row of before still there (43)
+FAIL node b: its configuration (config.json) as it was ({'db_tls': ('verify-full', None), 'db_tls_ca': ('@S@/b/ha-ca.pem', None)})
+ok   node b: keepalived, nginx, the pages' certificates, the cluster's authority - the same files (3)
+ok   node b: PostgreSQL's TLS as it was (on)
+ok   node b: its daemon's connections encrypted (t|1)
+ok   node b: its subscription verify-full, running, over TLS (verify-full 1 t)
+ok   node b: the guard of root's actions on
+== 4. it works as it did
+ok   the administrator signs in on both, with the password of before
+ok   node a: anna let in by RADIUS
+ok   node a: bob let in by RADIUS
+ok   node a: cyril let in by RADIUS
+ok   node a: dana let in by RADIUS
+ok   node a: emil let in by RADIUS
+ok   node b: anna let in by RADIUS
+ok   node b: bob let in by RADIUS
+ok   node b: cyril let in by RADIUS
+ok   node b: dana let in by RADIUS
+ok   node b: emil let in by RADIUS
+ok   the password policy put in by both nodes
+FAIL node a: To be done by hand says SELinux was enforcing there before the backup was put back
+FAIL node b: To be done by hand says SELinux was enforcing there before the backup was put back
+ok   sftp-box: its backups listed from the restored cluster (its key, password and host key back)
+ok   scp-box: its backups listed from the restored cluster (its key, password and host key back)
+ok   nas: its backups listed from the restored cluster (its key, password and host key back)
+ok   a new backup to all three from the restored cluster
+ALL 129 / 136

@@ -332,6 +332,109 @@ def _dbtls_again(daemon):
                     '%s' % e, 'warn', every=3600)
 
 
+# ---- the cluster's wish for the connections (1.0.268) ------------------------------------------
+# The connection of each node to its database lives in that machine's config.json - and a machine
+# installed anew keeps its own: put back from a backup, or joined to the pair again, its daemon
+# reached its database without TLS (sslmode prefer: encrypted where the server offers it, never
+# checked) while the cluster had it verify-full. The wizard writes what it set in a row of the
+# cluster's, 'dbtls_want' (in every backup; signed with the guard on), and a node whose own
+# connection is not as wished moves there by itself - its PostgreSQL's certificate made first
+# where it has none (the link between the databases gives it, when that is on), the connection
+# tried apart before it is moved, exactly as the wizard does it. Only towards TLS: a wish of none
+# is the wizard's own business (it switches every node); a node the rescue moved back follows
+# the rescue's own way back.
+# Not under 'dbtls:' - those are each machine's own and stay out of a copy put back (META_TRANSIENT).
+DBTLS_WANT_KEY = 'dbtls_want'
+DBTLS_WANT_AGAIN_S = float(os.environ.get('OTP_DBTLS_WANT_AGAIN_S') or 600)
+
+
+def _dbtls_want_set(store, mode, by):
+    try:
+        old = _dbtls_want(store, derive=False) or {}
+        if old.get('mode') != mode:
+            store.set_meta(DBTLS_WANT_KEY, json.dumps({'mode': mode, 'at': time.time(), 'by': by}))
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('dbtls-want-set', 'the cluster\'s wish for the connections could not be '
+                    'written: %s' % e, 'warn', every=3600)
+
+
+def _dbtls_want(store, derive=True):
+    """{'mode', 'at', 'by'} - the wizard's last word for the cluster. None written yet (set up
+    before 1.0.268, or a backup made before it): what the nodes' own rows said when it was made -
+    read before this node's row is written over at its start - or, on a node of its own, what its
+    configuration has; written then, so that the next backup carries it."""
+    rows = dbguard_rows(store.db, store.db.rows('SELECT k, v FROM meta WHERE k = ?', (DBTLS_WANT_KEY,)))
+    got = json_obj(rows[0]['v']) if rows else None
+    if isinstance(got, dict) and str(got.get('mode') or '') in DBTLS_MODES:
+        return got
+    if rows or not derive:
+        return None             # there but not otp's (the guard), or not to be guessed
+    modes = set()
+    for n, r in _dbtls_rows(store).items():
+        if r.get('kind') in ('local', 'replicated') and str(r.get('mode') or '') in DBTLS_MODES:
+            modes.add(str(r.get('mode') or ''))
+    if CONFIG.get('db_tls') and dbtls_kind() in ('local', 'replicated'):
+        modes.add(str(CONFIG.get('db_tls')))
+    tls = sorted(m for m in modes if m)
+    if len(tls) != 1:
+        return None             # none with TLS, or the nodes not of one mind: nothing guessed
+    row = {'mode': tls[0], 'at': time.time(), 'by': 'otp (as the nodes had it)'}
+    store.set_meta(DBTLS_WANT_KEY, json.dumps(row))
+    return row
+
+
+def _dbtls_link_wished(store):
+    """The cluster wishes the link between the databases encrypted, and it is not done on this node."""
+    if dbtls_kind() != 'replicated':
+        return False
+    w = hatls_want(store) or {}
+    return bool(w) and not w.get('off') and not _dbtls_link_has(store)
+
+
+def _dbtls_want_follow(daemon):
+    store = daemon.store
+    want = _dbtls_want(store)
+    mode = str((want or {}).get('mode') or '')
+    if not mode or CONFIG.get('db_tls') or dbtls_kind() not in ('local', 'replicated'):
+        DBTLS_WORK.pop('want_said', None)
+        return
+    if _meta_json(store, _dbtls_rescued_key()):
+        return                  # moved back by the rescue: it goes back by its own way (1.0.263)
+    t = DBTLS_WORK.get('want_thread')
+    if (t is not None and t.is_alive()) or time.time() < DBTLS_WORK.get('want_at', 0.0):
+        return
+    if not _dbtls_has_server(store) and (_dbtls_link_on(store) or _dbtls_link_wished(store)):
+        # The link between the databases gives its PostgreSQL the certificate - also on a node put
+        # back or joined anew, where it is wished by the cluster and not done here yet: asked of the
+        # root helper at the same moment, the two asks crossed and the link's failed.
+        return
+    DBTLS_WORK['want_at'] = time.time() + DBTLS_WANT_AGAIN_S
+    by = 'otp (as the cluster has it)'
+
+    def go():
+        try:
+            if not _dbtls_has_server(store):
+                dbtls_apply(daemon, {'phase': 'server', 'by': by})
+            dbtls_apply(daemon, {'phase': 'connect', 'mode': mode, 'by': by})
+            store.add_event('settings', '%s: the connection to its database is encrypted again as the '
+                            'cluster has it (%s)' % (node_name(), CONFIG.get('db_tls') or mode), 'info')
+            log('the connection to the database is encrypted again as the cluster has it (%s)'
+                % (CONFIG.get('db_tls') or mode))
+            DBTLS_WORK.pop('want_said', None)
+            dbtls_publish(daemon, force=True)
+        except Exception as e:                          # noqa: BLE001
+            said = scrub_secret(str(e))[:300]
+            if DBTLS_WORK.get('want_said') != said:
+                DBTLS_WORK['want_said'] = said
+                store.add_event('settings', '%s: the connection to its database is not encrypted as the '
+                                'cluster has it (%s) - tried again every %d minutes: %s'
+                                % (node_name(), mode, int(DBTLS_WANT_AGAIN_S // 60), said), 'warn')
+            log_sparing('dbtls-want', 'the connection to the database as the cluster has it (%s): %s'
+                        % (mode, said), 'warn', every=3600)
+    DBTLS_WORK['want_thread'] = threading.Thread(target=go, name='otp-dbtls-want', daemon=True)
+    DBTLS_WORK['want_thread'].start()
+
+
 def _dbtls_has_server(store):
     """This node's PostgreSQL has a certificate from otp's authority."""
     return HA_CA_FILE.exists() and (_dbtls_link_has(store) or bool(
@@ -398,6 +501,8 @@ def dbtls_apply(daemon, args):
                 CONFIG['db_tls_ca'] = str(DBTLS_CA)
                 for d in _dbtls_dbs(daemon):
                     d.tls_ca = str(DBTLS_CA)
+        if kind in ('replicated', 'local'):
+            _dbtls_want_set(store, mode, by)
         return dict(got, **dict(base, ok=True, said='it was so already' if
                                 got.get('changed') is False else ''))
     if phase == 'server_off':
@@ -570,6 +675,12 @@ def dbtls_tick(daemon):
     """Every few minutes the row for the page; the own certificate
     (kind local) made again 45 days before it ends or when the machine's
     names change - in a thread, the connection keeps going."""
+    if dbtls_kind() in ('local', 'replicated'):
+        try:
+            _dbtls_want_follow(daemon)
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('dbtls-want-x', 'the connection to the database as the cluster has it: %s' % e,
+                        'warn', every=3600)
     dbtls_publish(daemon)
     if dbtls_kind() not in ('local', 'replicated'):
         return

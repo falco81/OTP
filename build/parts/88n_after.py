@@ -191,6 +191,29 @@ def _ck_se_refused(store, f):
     return ('needed', {'sig': str(n), 'grows': True, 'args': {'n': n}})
 
 
+def _ck_se_was(store, f):
+    """Put back from a backup on a machine installed anew (1.0.268): SELinux was enforcing on
+    this node then, and is not now."""
+    was = _meta_json(store, 'host:selinux:was:' + str(f.get('node') or node_name())) or {}
+    if was.get('mode') != 'Enforcing':
+        return 'na'
+    d = odict(f.get('selinux'))
+    mode = str(d.get('mode') or '')
+    if not mode:
+        return 'na'             # not looked at yet (two minutes after the start): nothing said early
+    if mode == 'Enforcing':
+        try:
+            store.drop_meta('host:selinux:was:' + str(f.get('node') or node_name()))
+        except Exception:                               # noqa: BLE001
+            pass
+        return 'done'
+    words = {'Permissive': ('permissive', 'permissive'), 'Disabled': ('disabled', 'vypnutý'),
+             'absent': ('not on this machine', 'na tomto stroji není')}.get(mode, ('not said yet', 'zatím neznámý'))
+    return ('needed', {'sig': mode or '-', 'args': {
+        'mode': words[0], 'mode_cs': words[1],
+        'when': time.strftime('%Y-%m-%d', time.localtime(fnum(was.get('at')) or time.time()))}})
+
+
 def _ck_php(store, f):
     p = odict(f.get('php'))
     if not p.get('version'):
@@ -326,6 +349,26 @@ after_entry(
             'words': 'Settings → High security → SELinux says the same, with what otp needs.'}],
     foot='This band goes by itself once nothing is refused any more (put right, or after the next '
          'start of the machine). Done takes it away until something more is refused.')
+
+after_entry(
+    id='selinux-was-enforcing', since='1.0.268', level='warn', ack='auto', check=_ck_se_was,
+    title='SELinux was enforcing on this node before it was put back from a backup',
+    title_cs='SELinux byl na tomto uzlu před obnovou ze zálohy v režimu enforcing',
+    why='This machine was installed anew and the backup put back: otp put back its users, '
+        'keys, SELinux\'s booleans and its own module, but SELinux\'s mode is the machine\'s - it is '
+        '{mode} here now. Make it as it was: ready (permissive, one restart of the machine), a while '
+        'with nothing refused, then enforcing - one node at a time in a cluster.',
+    why_cs='Tento stroj byl nainstalován znovu a záloha vrácena: otp vrátil své uživatele, '
+           'klíče, booleany SELinuxu i svůj modul, ale režim SELinuxu patří stroji – teď je tu {mode}. '
+           'Vraťte ho, jak byl: připravit (permissive, jeden restart stroje), chvíli bez odmítnutí, '
+           'pak enforcing – v clusteru jeden uzel po druhém.',
+    steps=[{'where': 'pages', 'pane': 'hisec',
+            'words': 'Settings → High security → SELinux: Make it ready (permissive), restart the machine, '
+                     'then Switch to enforcing once nothing is refused.'},
+           {'where': 'root', 'lead': '{lead}', 'cmd': 'otp --selinux prepare'},
+           {'where': 'root', 'lead': 'After the restart, and a while with nothing refused:',
+            'cmd': 'otp --selinux enforce'}],
+    foot='This band goes by itself once SELinux is enforcing on this node again.')
 
 after_entry(
     id='php2shell', since='1.0.258', level='bad', ack='auto', check=_ck_php,
