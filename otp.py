@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.272'
+__version__ = '1.0.273'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -37909,10 +37909,8 @@ def sshd_save(store, b, by):
     hisec_sshd(c)                           # 1.0.168
     if c['radius']:
         ssh_gate_secret(store, make=True)
-    if c['manage'] and c['allow_users'] and c['permit_root'] != 'no' and \
-            not any(u in ('root', '*') for u in c['allow_users']) and not b.get('ok_no_root'):
-        raise ValueError('AllowUsers without root lets nobody in as root - add root to it, or '
-                         'let root not sign in at all')
+    # AllowUsers without root (1.0.273): allowed - root then signs in only at the console,
+    # the accounts listed over SSH (and sudo from there). It was refused until 1.0.272.
     at = time.time()
     c.update(hash=sshd_hash(c, at), at=at, by=by)
     store.set_meta('host:sshd:conf', json.dumps(c))
