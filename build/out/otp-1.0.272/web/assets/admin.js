@@ -8154,7 +8154,10 @@ if ($('ag-find')) {
       setTimeout(function () { name.focus(); }, 60);
     }, [{words: 'Try it', cls: 'primary', icon: 'person', go: function (b) {
       busy(b, true);
+      var tk = modalTicket();
       api('directories', {action: 'try', user: name.value, password: pass.value}).then(function (d) {
+        /* Into this popup only (1.0.272): closed meanwhile, another person's groups went into the next one. */
+        if (!modalStill(tk)) return;
         var said = d.tried || {};
         /* Under the boxes, not in their place (1.0.36): a typo could not be
            put right without closing the window. */
@@ -9642,6 +9645,7 @@ if ($('ha-bundle')) {
       }).catch(function () {});
     }, [{words: 'Close', close: true}, {words: 'Make it', cls: 'primary', icon: 'key', go: function (b) {
       busy(b, true);
+      var tk = modalTicket();
       api('ha', {action: 'bundle', db_host: host.value.trim(), peer: peer.value.trim(),
                  listen: !!(listen && listen.checked)}).then(function (d) {
         var blob = new Blob([JSON.stringify(d.bundle, null, 1) + '\n'], {type: 'application/json'});
@@ -9651,6 +9655,19 @@ if ($('ha-bundle')) {
         document.body.appendChild(link);
         link.click();
         setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 1500);
+        /* Closed meanwhile (1.0.272): the passphrase, shown only now, went into a hidden popup and the
+           bundle saved could never be opened - shown in a popup of its own. */
+        if (!modalStill(tk)) {
+          modal('The passphrase of the bundle', function (body2) {
+            body2.appendChild(el('p', 'note good', 'The bundle was saved as ' + d.name + '. Its passphrase, shown only now:'));
+            var pw2 = el('input'); pw2.type = 'text'; pw2.readOnly = true; pw2.className = 'mono'; pw2.value = d.passphrase;
+            pw2.style.fontSize = '18px';
+            noI18n(pw2);
+            body2.appendChild(pw2);
+          }, [{words: 'Close', close: true}], 'medium');
+          loadHa();
+          return;
+        }
         var body = $('modal-body');
         clear(body);
         if ((d.steps || []).length) {
@@ -9962,13 +9979,22 @@ if ($('tk-names')) {
    live refresh asks the daemon every few seconds, which kept the sign-in
    fresh for ever. What counts is a person using the page. */
 (function () {
-  var last = Date.now(), limit = 0;
+  /* The last use of any tab (1.0.272): a tab left open in the background signed the one in use out -
+     the session is the browser's, not the tab's. */
+  var last = Date.now(), limit = 0, kept = 0;
+  var mark = function () {
+    last = Date.now();
+    if (last - kept > 10000) { kept = last; try { localStorage.setItem('otp.active', String(last)); } catch (e) {} }
+  };
+  mark();
   ['mousemove', 'keydown', 'click', 'scroll', 'touchstart', 'wheel'].forEach(function (e) {
-    document.addEventListener(e, function () { last = Date.now(); }, {passive: true, capture: true});
+    document.addEventListener(e, mark, {passive: true, capture: true});
   });
   api('whoami').then(function (d) { limit = (d.idle_min || 120) * 60000; }).catch(function () {});
   setInterval(function () {
-    if (limit && Date.now() - last > limit) {
+    var shared = 0;
+    try { shared = Number(localStorage.getItem('otp.active')) || 0; } catch (e) {}
+    if (limit && Date.now() - Math.max(last, shared) > limit) {
       limit = 0;
       api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); });
     }
@@ -10724,8 +10750,10 @@ function loadWeb() {
     if (!paneLive('web')) { clearInterval(WEB.timer); return; }
     if (document.hidden) return;
     if ($('modal') && !$('modal').hidden) return;
-    apiLatest('web', 'web').then(function (d) { liveRun(function () { drawWeb(d); }); }).catch(function () {});
-    osrTick();
+    /* Not while the last one is out (1.0.272): on a busy daemon each ask took more than 5 s, the next
+       one stopped it, and the pane was never drawn again. */
+    if (!apiLatestOut('web')) apiLatest('web', 'web').then(function (d) { liveRun(function () { drawWeb(d); }); }).catch(function () {});
+    if (!apiLatestOut('osroots')) osrTick();
   }, 5000);
 }
 function daysLeft(ts) { return ts ? Math.floor((ts - Date.now() / 1000) / 86400) : null; }
@@ -10784,7 +10812,7 @@ function certCard(d, target) {
          the file in place is checked against the system's roots alone - what was found with its root
          is what counts. */
       /* The VIP's: what the node holding the VIP address has (HA, VRRP). */
-      var holderW = target === 'vip' ? (((d.nodes || []).filter(function (n) { return (n.web || {}).vip_here || (n.web || {}).vip_cert_now; })[0] || {}).web || null) : w;
+      var holderW = target === 'vip' ? vipHolderWeb(d) : w;
       var now = (target === 'vip' ? (holderW && holderW.vip_cert_now) : (w && w.cert_now)) || {};
       var cs = prof.chain_state || null;
       if (cs && cs.ok && prof.root_info && prof.root_info.length) now = {};
@@ -10797,6 +10825,10 @@ function certCard(d, target) {
       else if (now.chain_ok === true) { chainEl.className = 'good'; chainEl.textContent = 'complete - ' + (prof.chain_info || []).length + ' between it and the root'; }
       else chainEl.textContent = prof.chain_info ? (prof.chain_info.length + ' between it and the root') : '–';
       facts.push(['Chain', chainEl]);
+      /* The second (ECDSA) certificate's chain (1.0.270): the one most clients take. */
+      var acs = (prof.alt && prof.alt.chain_state) || null;
+      if (acs && acs.words && (acs.ok === false || (acs.fetched && acs.fetched.length)))
+        facts.push(['Chain (second)', el('span', acs.ok === false ? 'bad' : 'good', acs.words)]);
       facts.push(['Root', prof.root_info && prof.root_info.length ? noI18n(el('span', '', prof.root_info[0].cn || 'given')) : 'not given']);
       /* nginx checked as a client that fetches nothing, after it took the certificate (1.0.269). */
       var sc = target === 'vip' ? ((holderW && holderW.self_check_vip) || null) : ((w && w.self_check) || null);
@@ -10892,10 +10924,11 @@ function certCard(d, target) {
     if (ADMIN && prof && prof.cert && !(prof.info || {}).self_signed) {
       /* Complete the chain (1.0.269): checked again against the system's roots, the missing
          intermediates fetched from their CA Issuers addresses - as browsers do. */
-      var hW = target === 'vip' ? (((d.nodes || []).filter(function (n) { return (n.web || {}).vip_here || (n.web || {}).vip_cert_now; })[0] || {}).web || {}) : (w || {});
+      var hW = target === 'vip' ? (vipHolderWeb(d) || {}) : (w || {});
       var wnow = (target === 'vip' ? hW.vip_cert_now : hW.cert_now) || {};
       var cs2 = prof.chain_state || {};
-      var bad = (wnow.chain_ok === false && !(cs2.ok && prof.root_info && prof.root_info.length)) || cs2.ok === false;
+      var bad = (wnow.chain_ok === false && !(cs2.ok && prof.root_info && prof.root_info.length)) || cs2.ok === false ||
+        ((prof.alt && prof.alt.chain_state) || {}).ok === false;
       var ch = cmdButton(bad ? 'Complete the chain' : 'Check the chain', 'refresh', bad ? 'small primary' : 'small');
       explain(ch, 'Checked against the system\'s root authorities; an intermediate the certificate did not come with is fetched from its CA Issuers address, as browsers do it - so that curl, a VPN client and other clients that fetch nothing take it too.');
       ch.onclick = function () {
@@ -11246,6 +11279,15 @@ function drawWeb(d) {
 }
 
 /* The dialog Upload the missing authority (1.0.269). */
+/* The node holding the VIP address (1.0.270): every node writes the VIP's files, so the one that
+   holds the address first - what it sends is what clients get. */
+function vipHolderWeb(d) {
+  var ns = d.nodes || [];
+  var h = ns.filter(function (n) { return (n.web || {}).vip_here; })[0] ||
+    ns.filter(function (n) { return (n.web || {}).vip_cert_now; })[0];
+  return h ? (h.web || null) : null;
+}
+
 function certChainAdd(target, prof) {
   var cs = prof.chain_state || {};
   var last = (prof.chain_info || []).length ? prof.chain_info[prof.chain_info.length - 1] : (prof.info || {});
@@ -11728,6 +11770,7 @@ function loadVip(live) {
     if (!paneLive('ha')) { clearInterval(VIP_TIMER); return; }
     if (document.hidden) return;
     if ($('modal') && !$('modal').hidden) return;
+    if (apiLatestOut('vip')) return;      /* the last one still out (1.0.272) */
     apiLatest('vip', 'web').then(function (d) { WEB.last = d; liveRun(function () { drawVip(d); }); explainWhatWasDrawn($('ha-vip-card')); }).catch(function () {});
   }, 5000);
 }
@@ -11977,6 +12020,7 @@ function loadFw() {
     if (!paneLive('fw')) { clearInterval(FW.timer); return; }
     if (document.hidden) return;
     if ($('modal') && !$('modal').hidden) return;
+    if (apiLatestOut('fw')) return;       /* the last one still out (1.0.272) */
     apiLatest('fw', 'firewall').then(function (d) { liveRun(function () { drawFw(d); }); }).catch(function () {});
   }, 5000);
 }
@@ -19708,7 +19752,13 @@ function seReport(btn) {
     .then(function () { busy(btn, false); });
 }
 function seBusy(d) {
-  return ((d && d.nodes) || []).some(function (n) { return !!n.pending || !(n.state && n.state.mode); });
+  /* A node not said yet is waited for three minutes at most, one that said an error not at all
+     (1.0.270): a node away kept the page asking every 2 s for as long as it was open. */
+  if (!SE.firstAt) SE.firstAt = Date.now();
+  var fresh = Date.now() - SE.firstAt < 180000;
+  return ((d && d.nodes) || []).some(function (n) {
+    return !!n.pending || (fresh && !n.error && !(n.state && n.state.mode));
+  });
 }
 function sePoll(on) {
   if (on && !SE.poll) SE.poll = setInterval(function () {

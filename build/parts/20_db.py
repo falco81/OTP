@@ -175,11 +175,12 @@ DB_RESTORING = threading.Event()
 
 class _Lane(object):
     """One connection to the database and the lock it is used under."""
-    __slots__ = ('conn', 'lock', 'in_tx', 'failed_until', 'down_until', 'down_said')
+    __slots__ = ('conn', 'lock', 'in_tx', 'failed_until', 'down_until', 'down_said', 'unl')
 
     def __init__(self):
         self.conn = None
         self.lock = threading.RLock()
+        self.unl = 0            # unlimited() within unlimited() (1.0.272)
         self.in_tx = False
         self.failed_until = 0.0
         self.down_until = 0.0
@@ -649,6 +650,18 @@ class Db(object):
             'SET SESSION max_statement_time = 0',
             'SET SESSION max_statement_time = %d' % self.statement_s))
         with self.lock:
+            lane = self._lane()
+            if lane.unl:
+                # Within another (1.0.272): the inner one put the limit back on its way out, and the
+                # indexes made after the columns were cut at 120 s - the node did not start after
+                # an upgrade that added one to a large log.
+                lane.unl += 1
+                try:
+                    yield
+                finally:
+                    lane.unl -= 1
+                return
+            lane.unl = 1
             try:
                 # A connection the server dropped is made again first (1.0.208):
                 # the SET went to the dead one, and the job ran limited after all.
@@ -681,6 +694,7 @@ class Db(object):
                             conn._sock.settimeout(was_rt)
                     except Exception:                   # noqa: BLE001
                         pass
+                lane.unl = 0
                 try:
                     if self.statement_s:
                         self.run(RawSql(on))
@@ -1464,10 +1478,21 @@ def se_was_from_copy(db, k, v):
         if mode not in ('Enforcing', 'Permissive'):
             return
         was = 'host:selinux:was:' + k[len('host:selinux:now:'):]
-        db.run('DELETE FROM meta WHERE k = ?', (was,))
-        db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (was, json.dumps({'mode': mode, 'at': time.time()})))
+        # Written when the copy's rows are all in (1.0.270): the copy's own row of the same key,
+        # still waiting in the batch, met this one - "duplicate key" and the restore undone.
+        COPY_SAW.setdefault('se_was', {})[was] = json.dumps({'mode': mode, 'at': time.time()})
     except Exception:                                   # noqa: BLE001
         pass
+
+
+def se_was_put(db):
+    """The SELinux modes a copy said, written once its rows are in."""
+    for was, v in sorted((COPY_SAW.pop('se_was', None) or {}).items()):
+        try:
+            db.run('DELETE FROM meta WHERE k = ?', (was,))
+            db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (was, v))
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 def _load_tables(db, src, keep_logs, say, gzip):
@@ -1531,4 +1556,5 @@ def _load_tables(db, src, keep_logs, say, gzip):
             if len(batch) >= 1000:
                 flush()
         flush()
+    se_was_put(db)
     return counts

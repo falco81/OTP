@@ -103,6 +103,10 @@ S270 = {
     'only the certificates of the authorities - no private key': 'jen certifikáty autorit – žádný soukromý klíč',
     'no certificate in it (-----BEGIN CERTIFICATE-----, or a .cer file)': 'není v tom žádný certifikát (-----BEGIN CERTIFICATE----- nebo soubor .cer)',
     'every certificate in it is there already': 'každý certifikát z toho už tam je',
+    # 1.0.270
+    'Chain (second)': 'Řetězec (druhý)',
+    'not an http(s) address': 'není to adresa http(s)',
+    'it took more than 30 seconds': 'trvalo to déle než 30 sekund',
 }
 P270 = {
     'this node is busy: {0} requests wait for the directory {1}': 'tento nod je vytížený: na adresář {1} čeká {0} požadavků',
@@ -162,4 +166,19 @@ P270 = {
     'no certificate is kept for {0}': 'pro {0} není uložen žádný certifikát',
     "none of these is the authority that signed the chain's last certificate ({0})":
         'žádný z nich není autorita, která podepsala poslední certifikát řetězce ({0})',
+    # 1.0.270
+    'the chain could not be checked: {0}': 'řetězec se nepodařilo ověřit: {0}',
+    'the chain up to {0} does not check: {1}': 'řetězec až ke {0} neprochází ověřením: {1}',
+    "{0} - the second ({1}) one: {2}": '{0} – druhý ({1}): {2}',
+    "{0} - the second ({1}) one's chain: {2}": '{0} – řetězec druhého ({1}): {2}',
+    'the chain of the second certificate of {0}: {1}': 'řetězec druhého certifikátu {0}: {1}',
+    'a CA Issuers address on port {0} - only 80 and 443 are asked': 'adresa CA Issuers na portu {0} – dotazují se jen porty 80 a 443',
+    '{0} is {1} - not asked': '{0} je {1} – nedotazuje se',
+    "in the folder but not in the system's list: {0} - Read it again runs the system's tool once more":
+        've složce, ale ne v seznamu systému: {0} – Načíst znovu spustí nástroj systému ještě jednou',
+    "the system's list lacked {0} of them": 'v seznamu systému jich chybělo {0}',
+    'the step "{0}" was asked more than an hour ago, while this node was away - not done; ask for it again':
+        'krok „{0}“ byl vyžádán před více než hodinou, když tento uzel nebyl dostupný – neproveden; vyžádejte ho znovu',
+    'SELinux on {0}: the step "{1}" asked more than an hour ago was not done':
+        'SELinux na {0}: krok „{1}“ vyžádaný před více než hodinou nebyl proveden',
 }

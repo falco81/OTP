@@ -788,6 +788,8 @@ def snmp_traps_tick(daemon, cur):
     changed = False
     for k, p in cur.items():
         was = known.get(k)
+        if was and was.pop('missing_since', None) is not None:
+            changed = True                      # back before it was over (1.0.271)
         since = fnum((was or {}).get('since'), now) or now
         if not was:
             known[k] = {'since': now, 'sent': False, 'level': p.get('level')}
@@ -804,6 +806,13 @@ def snmp_traps_tick(daemon, cur):
     # sent in the middle of the maintenance the manager watched.
     quiet = alerts_quiet_until(store) > time.time()
     for k in [k for k in known if k not in cur and not (quiet and k.startswith(ALERTS_HELD))]:
+        if known[k].get('sent') and delay:
+            # Over only once away as long as it had to be there (1.0.271): no flapping traps.
+            if not known[k].get('missing_since'):
+                known[k]['missing_since'] = now
+                changed = True
+            if now - fnum(known[k].get('missing_since')) < delay:
+                continue
         p = known.pop(k)
         changed = True
         if p.get('sent'):

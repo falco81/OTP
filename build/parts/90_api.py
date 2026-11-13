@@ -226,7 +226,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             # The heavy pages a few at a time (1.0.265): a hundred open pages asking together held
             # RADIUS (the same process) behind them. The rest wait for a place, then hear "busy".
-            slot = page_slot(method, path)
+            # Only for somebody signed in (1.0.271): asks without a session took the places too,
+            # and a flood of them told the administrators "busy".
+            if self._signed_in():
+                slot = page_slot(method, path)
             got = fn(self)
             if got is not None:
                 self.send_json(got if 'ok' in got else dict(ok=True, **got))
@@ -2812,7 +2815,7 @@ def _token_import(h):
                                 'created_by': t.get('created_by') or '',
                                 'last_from': t.get('last_from') or '',
                                 'last_how': t.get('last_how') or '', 'scratch_left': left,
-                                'failures': 0, 'digits': int(t.get('digits') or 6)})
+                                'failures': 0, 'digits': int(_when_read(t.get('digits')) or 6)})
             # Searched with the words of the token list (1.0.96).
             q = str(b.get('q') or '')
             if q.strip():
@@ -2835,7 +2838,7 @@ def _token_import(h):
                     # Replaced one by one as the page chose (1.0.100), or all.
                     said = token_restore(h.store, t, 'restore:' + s['name'],
                                          replace=bool(b.get('replace')) or n in repl_names)
-                except (ValueError, TypeError) as e:
+                except (ValueError, TypeError, OverflowError) as e:
                     said = 'not restored: %s' % e
                 out.append({'name': n, 'said': said})
         h.store.add_event('tokens', '%s restored %d token(s) from a backup' % (
@@ -7077,7 +7080,7 @@ def _web_do(h):
             # Both of the same names (1.0.240): the ECDSA one beside, as ACME's "both".
             prof['alt'] = {'cert': got2['cert'], 'chain': got2['chain'],
                            'key': seal_secret(got2['key'], 'web:tls'), 'info': got2['info'],
-                           'for': tls_alt_for(got['cert'])}
+                           'for': tls_alt_for(got['cert']), 'chain_state': got2.get('chain_state')}
         else:
             prof.pop('alt', None)
         prof.pop('pending_key', None)
@@ -7100,7 +7103,16 @@ def _web_do(h):
             msg += ' - its chain: %s' % cst.get('words')
             store.add_event('settings', 'the chain of the certificate of %s: %s' % (words, cst.get('words')),
                             'info' if cst.get('ok') else 'warn', who=who)
-        return {'message': msg, 'complete': cst.get('ok'), 'tls': tls_view(prof)}
+        # The second (ECDSA) one's chain too (1.0.270): the one most clients take.
+        ast = (got2 or {}).get('chain_state') or {}
+        if ast.get('fetched') or ast.get('ok') is False:
+            msg += ' - the second (%s) one\'s chain: %s' % (got2['info'].get('key') or 'ECDSA', ast.get('words'))
+            store.add_event('settings', 'the chain of the second certificate of %s: %s' % (words, ast.get('words')),
+                            'info' if ast.get('ok') else 'warn', who=who)
+        complete = cst.get('ok')
+        if got2 and complete and ast.get('ok') is False:
+            complete = False
+        return {'message': msg, 'complete': complete, 'tls': tls_view(prof)}
     if act == 'tls_chain':
         # Complete the chain (1.0.269): the certificate kept, checked again against the system's roots
         # and completed from its CA Issuers addresses (its second, ECDSA, one too) - nginx then sends
@@ -7115,12 +7127,21 @@ def _web_do(h):
         alt = prof.get('alt') if isinstance(prof.get('alt'), dict) else None
         if alt and alt.get('cert'):
             acur = [m.group(0) for m in PEM_CERT.finditer(alt.get('chain') or '')]
-            achain, _st = chain_complete(alt['cert'].strip(), acur, prof.get('root') or '')
+            achain, ast = chain_complete(alt['cert'].strip(), acur, prof.get('root') or '')
             alt['chain'] = ''.join(c.strip() + '\n' for c in achain)
+            alt['chain_state'] = ast
+        else:
+            ast = {}
         tls_save(store, target, prof, who)
+        said = state['words']
+        complete = state.get('ok')
+        if ast:
+            said += ' - the second (%s) one: %s' % (odict(alt.get('info')).get('key') or 'ECDSA', ast.get('words'))
+            if complete and ast.get('ok') is False:
+                complete = False
         store.add_event('settings', '%s checked the chain of the certificate of %s: %s' % (
-            who, words, state['words']), 'info' if state.get('ok') else 'warn', who=who)
-        return {'message': state['words'], 'complete': state.get('ok'), 'tls': tls_view(prof)}
+            who, words, said), 'info' if complete else 'warn', who=who)
+        return {'message': said, 'complete': complete, 'tls': tls_view(prof)}
     if act == 'tls_chain_add':
         # The missing authority by hand (1.0.269): when it cannot be fetched (no CA Issuers address, no
         # way out, a private CA) - only certificates of authorities, never a key; a root goes beside the
@@ -7152,32 +7173,50 @@ def _web_do(h):
             raise ApiError(400, str(e))
         if not new_roots and not new_inter:
             raise ApiError(400, 'every certificate in it is there already')
-        # In order from the certificate: each the issuer of the one before.
-        pool = cur + new_inter
-        infos = {c: cert_info(c) for c in pool}
-        ordered, at = [], cert_info(leaf)
-        while pool:
-            nxt = next((c for c in pool if infos[c].get('subject') == at.get('issuer')), None)
-            if not nxt:
-                break
-            ordered.append(nxt)
-            pool.remove(nxt)
-            at = infos[nxt]
+        # In order from the certificate: each the issuer of the one before - the second (ECDSA)
+        # certificate's chain too (1.0.270): its authority could not be added by hand.
         root_now = ''.join(c.strip() + '\n' for c in roots + new_roots)
-        useful = [c for c in new_inter if c in ordered] or \
-            [c for c in new_roots if cert_info(c).get('subject') == at.get('issuer')]
-        if not useful:
+
+        def placed(leaf_pem, cur_chain):
+            ordered, rest = chain_order(leaf_pem, cur_chain + [c for c in new_inter if c not in cur_chain])
+            at = cert_info(ordered[-1] if ordered else leaf_pem)
+            use = [c for c in new_inter if c in ordered] or \
+                [c for c in new_roots if cert_info(c).get('subject') == at.get('issuer')]
+            return ordered, [c for c in rest if c in cur_chain], use, at
+        try:
+            ordered, rest, useful, at = placed(leaf, cur)
+            alt = prof.get('alt') if isinstance(prof.get('alt'), dict) and prof['alt'].get('cert') else None
+            aplaced = None
+            if alt:
+                acur = [m.group(0) for m in PEM_CERT.finditer(alt.get('chain') or '')]
+                aplaced = placed(alt['cert'].strip(), acur)
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        if not useful and not (aplaced and aplaced[2]):
             raise ApiError(400, 'none of these is the authority that signed the chain\'s last certificate (%s)'
                            % _cn_of(at.get('issuer')))
-        chain, state = chain_complete(leaf, ordered, root_now)
+        if useful or not aplaced:
+            chain, state = chain_complete(leaf, ordered + rest, root_now)
+        else:
+            chain, state = cur, odict(prof.get('chain_state')) or {'ok': None, 'words': ''}
         prof.update(chain=''.join(c.strip() + '\n' for c in chain), chain_info=[cert_info(c) for c in chain],
                     root=root_now, root_info=[cert_info(c) for c in roots + new_roots], chain_state=state,
-                    verify='ok' if state.get('ok') else (state.get('words') or ''))
+                    verify='ok' if state.get('ok') else ('' if state.get('ok') is None else state.get('words') or ''))
+        said, complete = state.get('words') or '', state.get('ok')
+        if aplaced and aplaced[2]:
+            achain, ast = chain_complete(alt['cert'].strip(), aplaced[0] + aplaced[1], root_now)
+            alt['chain'] = ''.join(c.strip() + '\n' for c in achain)
+            alt['chain_state'] = ast
+            useful = useful + [c for c in aplaced[2] if c not in useful]
+            said = (said + ' - ' if said else '') + 'the second (%s) one: %s' % (
+                odict(alt.get('info')).get('key') or 'ECDSA', ast.get('words'))
+            if ast.get('ok') is False:
+                complete = False
         tls_save(store, target, prof, who)
         store.add_event('settings', '%s added %s to the chain of the certificate of %s: %s' % (
-            who, ', '.join(cert_info(c).get('cn') or '?' for c in useful), words, state['words']),
-            'info' if state.get('ok') else 'warn', who=who)
-        return {'message': state['words'], 'complete': state.get('ok'), 'tls': tls_view(prof)}
+            who, ', '.join(cert_info(c).get('cn') or '?' for c in useful), words, said),
+            'info' if complete else 'warn', who=who)
+        return {'message': said, 'complete': complete, 'tls': tls_view(prof)}
     if act == 'tls_csr':
         names = [x.strip() for x in re.split(r'[\s,;]+', str(b.get('names') or '')) if x.strip()]
         key, csr = make_csr(str(b.get('cn') or '').strip(), names, str(b.get('kind') or 'rsa2048'),

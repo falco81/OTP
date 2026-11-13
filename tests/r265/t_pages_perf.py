@@ -239,6 +239,7 @@ def ask(path, daemon=None):
     return status, json.loads(raw.split('\r\n\r\n', 1)[1])
 
 
+m.ApiHandler._signed_in = lambda self: True     # the places are taken by somebody signed in (1.0.271)
 st_, body = ask('/api/t-pp-heavy')
 ok('3 handler: a heavy page answered while there is room', st_ == 200 and body.get('n') == 1, (st_, body))
 ask('/api/t-pp-broken')

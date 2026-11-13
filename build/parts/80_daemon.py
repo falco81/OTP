@@ -215,6 +215,19 @@ def tokens_backup_open(text, passphrase=''):
     return got
 
 
+def _when_read(v):
+    """A number of a token's copy, or None (1.0.271): "Infinity", 1e400 or "yesterday" in a file
+    put back stopped the putting back half way (a 500), or was kept as text in a column of
+    numbers - and every token backup after it failed."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and 0 <= f <= 1e11 else None
+
+
 def token_restore(store, t, by='restore', replace=False):
     """One token out of a backup. Returns what happened."""
     if not isinstance(t, dict):
@@ -243,10 +256,10 @@ def token_restore(store, t, by='restore', replace=False):
            'scratch_sealed': seal_codes(codes, token_bind(name)) if codes else '',
            'scratch_left': len(left), 'failures': 0, 'fail_times': '[]', 'locked_until': None,
            'pending_secret': None, 'pending_scratch': None, 'pending_at': None,
-           'pending_by': None, 'created': float(t.get('created') or time.time()),
+           'pending_by': None, 'created': _when_read(t.get('created')) or time.time(),
            'created_by': str(t.get('created_by') or by)[:190],
-           'activated': t.get('activated') or (time.time() if state == 'active' else None),
-           'last_used': t.get('last_used'), 'last_from': str(t.get('last_from') or '')[:190],
+           'activated': _when_read(t.get('activated')) or (time.time() if state == 'active' else None),
+           'last_used': _when_read(t.get('last_used')), 'last_from': str(t.get('last_from') or '')[:190],
            'last_how': str(t.get('last_how') or '')[:190],
            'note': str(t.get('note') or '')[:2000], 'display': str(t.get('display') or '')[:300],
            'issuer': str(t.get('issuer') or CONFIG.get('totp_issuer') or '')[:190],
@@ -260,7 +273,7 @@ def token_restore(store, t, by='restore', replace=False):
                 raise ValueError
         except ValueError:
             raise ValueError('the key is not a key of at least 16 base32 characters')
-        digits, period = int(t.get('digits') or 6), int(t.get('period') or 30)
+        digits, period = int(_when_read(t.get('digits')) or 6), int(_when_read(t.get('period')) or 30)
         algo = str(t.get('algorithm') or 'SHA1').upper()
         if digits not in (6, 7, 8) or not 10 <= period <= 300 or \
                 algo not in ('SHA1', 'SHA256', 'SHA512'):
@@ -268,7 +281,10 @@ def token_restore(store, t, by='restore', replace=False):
         row.update(secret=seal_secret(secret, token_bind(name)), digits=digits, period=period,
                    algorithm=algo, window_steps=max(-1, min(TOKEN_WINDOW_MOST, int(t['window_steps'])))
                    if t.get('window_steps') is not None else -1,
-                   last_step=int(t.get('last_step') or 0))
+                   # Never ahead of now (1.0.271), as an import is: a copy from a node whose
+                   # clock ran ahead refused every right code as "used already" until then.
+                   last_step=max(0, min(int(_when_read(t.get('last_step')) or 0),
+                                        int(time.time()) // period + 2)))
     else:
         row.update(secret='', dest=dest_checked(kind, t.get('dest')), digits=6, period=30,
                    algorithm='SHA1', window_steps=-1, last_step=0)

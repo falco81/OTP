@@ -588,9 +588,12 @@ def _peer_alive_there(name):
     try:
         far = ha_peer_db()
         try:
-            beat = json.loads(far.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,))
-                              or '{}')
-            alive = now_minus(beat.get('at')) < 120
+            beat = json_obj(far.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,)))
+            at = (beat or {}).get('at')
+            # No heartbeat there, or none that reads, is not alive (1.0.271): it was taken as
+            # beating just now, and while node1 was rebuilt nobody led (no alerts, no claims).
+            alive = isinstance(at, (int, float)) and not isinstance(at, bool) and \
+                now_minus(at) < 120
         finally:
             far.close()
     except Exception:                                   # noqa: BLE001

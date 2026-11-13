@@ -671,7 +671,7 @@ def push_put(store, slot, got, alt, by):
     if alt:
         prof['alt'] = {'cert': alt['cert'], 'chain': alt['chain'],
                        'key': seal_secret(alt['key'], 'web:tls'), 'info': alt['info'],
-                       'for': tls_alt_for(got['cert'])}
+                       'for': tls_alt_for(got['cert']), 'chain_state': alt.get('chain_state')}
     prof.setdefault('preset', 'standard')
     prof.setdefault('dh', 'none')
     tls_save(store, target, prof, 'acme push (%s)' % by)

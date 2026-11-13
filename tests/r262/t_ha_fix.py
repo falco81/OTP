@@ -381,13 +381,16 @@ ok('F web_desired: fixed before kept, a last pair of another family dropped',
 # ============================== F10 =========================================================
 i = W.index('def web_state(')
 ws = W[i:W.index('\ndef ', i + 10)]
-ok('F10 web_state reads NGINX_CERT_FILES', "cert_now(NGINX_CERT_FILES['node'])" in ws and
-   "cert_now(NGINX_CERT_FILES['vip'])" in ws and '/etc/nginx/certs' not in ws)
+ok('F10 web_state reads NGINX_CERT_FILES', "cert_now(NGINX_CERT_FILES['node']" in ws and
+   "cert_now(NGINX_CERT_FILES['vip']" in ws and '/etc/nginx/certs' not in ws)
 
 # ============================== G-L (round 2) ===============================================
 D = src('87d_dbtls.py')
 i = D.index('def _dbtls_server_cert(')
 dsc = D[i:D.index('\ndef ', i + 10)]
+if 'def hatls_ca_ensure(' in D:      # the wait-or-lead in a helper of its own since 1.0.271
+    i2 = D.index('def hatls_ca_ensure(')
+    dsc = D[i2:D.index('\ndef ', i2 + 10)] + '\n\n' + dsc
 
 
 class Lock(object):

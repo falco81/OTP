@@ -242,6 +242,11 @@ def fw_trial_answer(store, act, by):
     if not trial or trial.get('done'):
         raise ValueError('no change of the firewall waits to be kept')
     if act == 'keep':
+        if time.time() > fnum(trial.get('until')):
+            # Its time over (1.0.271): the other node may be putting it back this very moment -
+            # "kept" said here, and what was there before came back all the same.
+            raise ValueError('the time to keep it is over - it is being put back; make the change '
+                             'again if it is wanted')
         trial.update(done='kept', done_by=by, done_at=time.time())
         store.set_meta('fw:trial', json.dumps(trial))
         store.add_event('settings', '%s kept the change of the firewall and access' % by,

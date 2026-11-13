@@ -221,10 +221,11 @@ def hatls_want(store):
 
 
 def hatls_peer_name(store):
-    for n in ha_nodes(store):
-        if not n['me']:
-            return n['name']
-    return ''
+    # The live one first, then the newest heartbeat (1.0.271): the first by name was a node
+    # reinstalled under another name and never forgotten - waited for, or its old "done" taken.
+    others = [n for n in ha_nodes(store) if not n['me']]
+    others.sort(key=lambda n: (not n.get('alive'), -fnum(n.get('at')), n['name']))
+    return others[0]['name'] if others else ''
 
 
 def hatls_view(store):
@@ -638,6 +639,14 @@ def hatls_check(store):
                   failed_step=None, said='waiting for the other node\'s database to pass '
                   'verify-full again')
         hatls_put(store, st)
+        return
+    if not wrong and st.get('step') == 'failed' and st.get('failed_step') == 'hba' \
+            and now - fnum(st.get('at')) >= 3600:
+        # A later step that failed with nothing wrong in place (1.0.271) - the root helper slow,
+        # its answer overwritten: asked again an hour later. Left failed for good, the other
+        # node kept coming in without TLS.
+        hatls_put(store, dict(st, step=st.get('failed_step'), asked=None, error=None,
+                              failed_step=None, said='the last step asked again'))
         return
     if not wrong:
         if stuck:

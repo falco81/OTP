@@ -90,11 +90,17 @@ class _NoCredsRedirect(urllib.request.HTTPRedirectHandler):
     """A redirect to another host, or from https to http, without the request's credentials
     (1.0.234): urllib carried the SMS gateway's Bearer token wherever the answer pointed."""
 
+    def __init__(self, check=None):
+        urllib.request.HTTPRedirectHandler.__init__(self)
+        self.check = check
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new = urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg,
                                                                   headers, newurl)
         if new is None:
             return None
+        if self.check is not None:
+            self.check(new.full_url)        # raises: the address it points at is not one to ask
         a, b = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(new.full_url)
         if (a.hostname or '').lower() != (b.hostname or '').lower() or a.scheme != b.scheme or \
                 (a.port or 0) != (b.port or 0):
@@ -107,7 +113,7 @@ class _NoCredsRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
-def url_open(req, timeout=30, context=None, purpose=''):
+def url_open(req, timeout=30, context=None, purpose='', check=None):
     """urllib.request.urlopen - straight, unless asked for a purpose whose
     switch is on, a proxy set and the host not one reached straight; never
     through what the environment says."""
@@ -117,7 +123,9 @@ def url_open(req, timeout=30, context=None, purpose=''):
     host = urllib.parse.urlsplit(req.full_url).hostname or ''
     handlers = [_ProxyOnly(
         {'http': proxy, 'https': proxy} if proxy and not proxy_skips(host) else {}),
-        _NoCredsRedirect()]
+        _NoCredsRedirect(check)]
+    if check is not None:
+        check(req.full_url)
     if context is not None:
         handlers.append(urllib.request.HTTPSHandler(context=context))
     return urllib.request.build_opener(*handlers).open(req, timeout=timeout)

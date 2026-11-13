@@ -69,7 +69,7 @@ os.makedirs(TOP + '/run')
 json.dump({'db_engine': 'sqlite', 'radius_bind': '127.0.0.1', 'radius_auth_port': 32960, 'radius_acct_port': 32961,
            'api_port': 29961, 'node_name': 't269'}, open(TOP + '/config.json', 'w'))
 ENV = {'OTP_STATE': TOP, 'OTP_CONFIG': TOP + '/config.json', 'OTP_LOGDIR': TOP, 'OTP_RUN': TOP + '/run',
-       'OTP_STAY_ROOT': '1', 'OTP_CHAIN_CA': P + '/root.pem', 'OTP_VIP_CERT_DIR': TOP + '/certs'}
+       'OTP_STAY_ROOT': '1', 'OTP_CHAIN_CA': P + '/root.pem', 'OTP_AIA_LOCAL': '1', 'OTP_VIP_CERT_DIR': TOP + '/certs'}
 os.environ.update(ENV)
 sys.path.insert(0, V); sys.argv = ['x']
 import otp

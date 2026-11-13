@@ -26,6 +26,7 @@ LDAP_NO_SUCH_OBJECT = 32
 LDAP_BAD_CREDENTIALS = 49
 # busy, unavailable, unwilling to answer now, other: another server may (1.0.59)
 LDAP_TRY_ANOTHER = (51, 52, 80)
+LDAP_NOT_THE_PASSWORD = (1, 8, 13)     # operations error, stronger auth / confidentiality required (1.0.270)
 # Said in these words before the directory's own (1.0.267).
 LDAP_SAY_FIRST = (8, 13)
 LDAP_SAYS = {
@@ -50,7 +51,8 @@ def ldap_ip_hosts(row):
     (1.0.267): the name in a domain controller's certificate is its name - a new one (Windows
     Server 2025: a new certificate with every controller put in) rarely carries the address too,
     and the check of the server's name then refuses it."""
-    if str(row.get('tls') or 'none') not in ('ldaps', 'starttls') or not row.get('verify', 1):
+    if str(row.get('tls') or 'none') not in ('ldaps', 'starttls') or \
+            row.get('verify') in (0, False, '0'):     # NULL is checked, as Directory has it (1.0.270)
         return []
     out = []
     for h in re.split(r'[,;\s]+', str(row.get('hosts') or '')):

@@ -860,11 +860,11 @@ def sshd_ports_open(store):
         now = sshd_now(store, n)
         if odict(now.get('trial')).get('until') or now.get('hash') != c.get('hash'):
             for p in (odict(now.get('values')).get('port'), now.get('before_port')):
-                try:
-                    if p:
-                        ports.add(int(p))
-                except ValueError:
-                    pass
+                # Each of them (1.0.271): sshd on 22 and 2200 read "22 2200", which was no number -
+                # a change put back opened only the new port, and SSH was refused on the old ones.
+                for one in str(p or '').replace(',', ' ').split():
+                    if one.isdigit() and 0 < int(one) < 65536:
+                        ports.add(int(one))
     return sorted(ports)
 
 

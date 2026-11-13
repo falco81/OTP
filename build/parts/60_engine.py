@@ -517,7 +517,10 @@ class Directory(object):
                 if isinstance(e, LdapError) and not (isinstance(e, LdapUnreachable) or
                                                      e.code in LDAP_TRY_ANOTHER):
                     raise
-                if pooled and isinstance(e, (LdapUnreachable, OSError)):
+                # One that did not answer in time is a server hung, not a connection gone stale
+                # (1.0.270): asked again at once, the same server was waited on twice.
+                hung = isinstance(e, LdapUnreachable) and ('within' in str(e))
+                if pooled and isinstance(e, (LdapUnreachable, OSError)) and not hung:
                     # Closed by the server while it was kept: asked again on a new one, the
                     # server not marked down for it.
                     stale += 1
@@ -732,7 +735,10 @@ class Directory(object):
             except LdapError as e:
                 # Busy, unavailable, or an answer that does not read (1.0.59):
                 # not the directory's word on the password - the next one.
-                if e.code in LDAP_TRY_ANOTHER or (e.code is None and 'does not read' in str(e)):
+                # Signing or encryption demanded, an operations error, an answer that is not the
+                # server's word on anything (1.0.270): not a wrong password either - counted as one,
+                # a correct password used up the person's tries.
+                if e.code in LDAP_TRY_ANOTHER or e.code is None or e.code in LDAP_NOT_THE_PASSWORD:
                     tried.append(str(e))
                     continue
                 raise
@@ -1475,6 +1481,10 @@ class Tokens(object):
         if not won:
             self._said(name, False, 'The key changed meanwhile (confirming a new token)', how, src, '')
             return False, 'the key changed meanwhile - start again'
+        try:
+            self.store.token_counts_stale()      # pending to active: counted again (1.0.270)
+        except Exception:                               # noqa: BLE001
+            pass
         if staged:
             self._staged_forget(name)
         self._said(name, True, 'Token confirmed', how, src, '')

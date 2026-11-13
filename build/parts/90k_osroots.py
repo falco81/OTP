@@ -400,6 +400,14 @@ def osr_node_status(want, row, alive):
         if row.get('refused'):
             return 'failed', '; '.join('%s - %s' % (r.get('cn') or '?', r.get('why') or '?')
                                        for r in row['refused'])
+        # Written but not in the system's list (1.0.270): the tool did not take it in.
+        st = row.get('state') if isinstance(row.get('state'), dict) else {}
+        fps = {c.get('fp') for c in want.get('certs') or []}
+        lack = [str(x.get('cn') or x.get('fp') or '?') for x in st.get('ours') or []
+                if isinstance(x, dict) and x.get('fp') in fps and x.get('in_bundle') is False]
+        if lack:
+            return 'failed', ('in the folder but not in the system\'s list: %s - Read it again runs the '
+                              'system\'s tool once more' % ', '.join(lack[:5]))
         return 'applied', ''
     if not alive:
         return 'waiting', 'not answering'
@@ -455,7 +463,8 @@ def osr_view(store):
         on = {}
         for n in nodes:
             hit = [x for x in n['ours'] if x.get('fp') == c['fp']]
-            on[n['name']] = (hit[0].get('in_bundle') is not False) if hit else False
+            on[n['name']] = (True if hit[0].get('in_bundle') else (None if hit[0].get('in_bundle') is None
+                                                                       else False)) if hit else False
         certs.append({'fp': c['fp'], 'pem': c['pem'], 'cn': f.get('cn'), 'subject': f.get('subject'),
                       'issuer': f.get('issuer'), 'not_before': f.get('not_before'),
                       'not_after': f.get('not_after'), 'key': f.get('key'), 'kind': f.get('kind'),

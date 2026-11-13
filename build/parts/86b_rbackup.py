@@ -495,7 +495,18 @@ class RbFolder(object):
                 shutil.copyfileobj(src, out, 1024 * 1024)
                 out.flush()
                 os.fchmod(out.fileno(), 0o640)
+                # On the disk before the old ones are taken away (1.0.271): a power cut after
+                # could leave the newest empty and the good older ones gone.
+                os.fsync(out.fileno())
             os.replace(part, os.path.join(self.dir, name))
+            try:
+                dfd = os.open(self.dir, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
         except BaseException:
             try:
                 os.unlink(part)
@@ -779,7 +790,9 @@ class RbSsh(object):
         # scp and sftp read user@host:path - an IPv6 address in brackets
         # there (1.0.146), ssh takes it bare.
         self.rdest = '%s@[%s]' % (t.get('user') or 'root', host) if ':' in host else self.dest
-        self.dir = (t.get('path') or '').rstrip('/') or '.'
+        # ~ is the home folder, where ssh, scp and sftp start (1.0.271): quoted for mkdir, mv, ls
+        # and rm it was a folder named ~, and every backup to ~/otp failed.
+        self.dir = re.sub(r'^~(/+|$)', '', (t.get('path') or '')).rstrip('/') or '.'
         # Signed in and the folder made, at once - the errors said here.
         if t['kind'] == 'sftp':
             parts = [p for p in self.dir.split('/') if p and p != '.']
@@ -1210,6 +1223,10 @@ def rb_build(store, work, progress=None):
     inner = os.path.join(work, 'in')
     os.makedirs(inner, mode=0o700)
     say(1, 'the database is copied')
+    try:
+        before = int(store.db.value('SELECT COUNT(*) FROM tokens') or 0)
+    except Exception:                                   # noqa: BLE001
+        before = None
     copy = os.path.join(inner, 'otp-copy.json.gz')
     with open(copy, 'wb') as f:
         dump_tables(store.db, f)
@@ -1231,6 +1248,10 @@ def rb_build(store, work, progress=None):
     try:
         tokens = int(store.db.value('SELECT COUNT(*) FROM tokens') or 0)
     except Exception:                                   # noqa: BLE001
+        tokens = '?'
+    if tokens != before:
+        # A token added or taken away while the copy was made (1.0.271): the number is not the
+        # copy's, and the weekly check said the backup could not be put back.
         tokens = '?'
     pw = rb_password()
     m = rb_manifest(store, base, tokens, pw)
@@ -1309,17 +1330,27 @@ def rb_retain(tr, keep, days, now=None, just=''):
                 continue                    # ahead of the clock: neither counted nor taken away
             ours.append((when, x['name']))
     ours.sort(reverse=True)
-    gone = []
+    gone, kept = [], []
     for i, (when, name) in enumerate(ours):
         if i == 0 or name == just:
             continue
         if (keep and i >= keep) or (days and now - when > days * 86400):
+            failed = None
             for n in [name] + [c for c in rb_companions(name) if c in names]:
                 try:
                     tr.delete(n)
-                except Exception:                       # noqa: BLE001
-                    pass
-            gone.append(name)
+                except Exception as e:                  # noqa: BLE001
+                    if n == name:
+                        failed = e
+            if failed is None:
+                gone.append(name)
+            else:
+                # Said (1.0.271): a backup the server would not take away was told as taken away,
+                # and the destination filled up unseen.
+                kept.append('%s (%s)' % (name, str(failed)[:80]))
+    if kept:
+        raise RbError('not taken away: ' + '; '.join(kept[:5]) + (
+            ' - and taken away: ' + ', '.join(gone) if gone else ''))
     return gone
 
 
@@ -1368,7 +1399,6 @@ def rb_run(store, by, only=None, progress=None):
         raise RbError('the backups have no password: set one (Settings - Backups - '
                       'Backups to other machines) - unlocked, a copy would hand the key of '
                       'every token to whoever can read the destination')
-    rb_room(store)
     work = tempfile.mkdtemp(prefix='otp-rbackup-', dir=str(STATE_DIR))
     os.chmod(work, 0o700)
     began = time.time()
@@ -1381,6 +1411,9 @@ def rb_run(store, by, only=None, progress=None):
                           'taken away until one of the nodes has another name (node_name)'
                           % (', '.join(clash), rb_slug(node_name())))
     try:
+        # Inside (1.0.271): a disk with no room was a line in the log only - no line in the
+        # backups sent, no event, no alert.
+        rb_room(store)
         path, m, _md = rb_build(store, work, progress)
         if not m.get('encrypted'):
             # The password asked again as it was locked (1.0.205): taken away
@@ -1439,8 +1472,10 @@ def rb_run(store, by, only=None, progress=None):
                 # were never tried.
                 log('remote backup: what %s said is not kept: %s' % (t['name'], e), 'warn')
         run['ok'] = all(x['ok'] for x in run['targets'])
-    except (RbError, OSError, ValueError, subprocess.SubprocessError) as e:
-        run['error'] = scrub_secret(str(e))[:400]
+    except Exception as e:                              # noqa: BLE001
+        # Every failure kept (1.0.271): the copy of the database failing (DbError) went past
+        # this, and the backup that failed left no line, no event and no alert.
+        run['error'] = scrub_secret(str(e) or e.__class__.__name__)[:400]
     finally:
         shutil.rmtree(work, ignore_errors=True)
     run['secs'] = round(time.time() - began, 1)
@@ -1789,39 +1824,9 @@ def rb_tick(daemon):
 
 
 # ---- putting one back -----------------------------------------------------------------
-def rb_open(path, password, work):
-    """A backup file opened into `work`: its folder and its manifest - every
-    file checked against the checksum the manifest has."""
-    src = path
-    with open(path, 'rb') as f:
-        head = f.read(8)
-    if head.startswith(b'Salted__'):
-        if not password:
-            raise RbError('the backup is locked: its password is needed')
-        src = os.path.join(work, 'b.tar.gz')
-        tries = [password]
-        if password == rb_password() and rb_password_old():
-            tries.append(rb_password_old())             # made here before 1.0.139
-        for n, pw in enumerate(tries):
-            try:
-                _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
-                          'sha256', '-in', path, '-out', src, '-pass', 'fd:@'],
-                         secret=pw, what='opening it')
-                break
-            except ValueError:
-                if n == len(tries) - 1:
-                    raise RbError('the password does not open it (or the file is damaged)')
-    elif not head.startswith(b'\x1f\x8b'):
-        raise RbError('that is not a backup of otp (neither locked nor a .tar.gz)')
-    else:
-        # Backups are always locked: an unlocked one was put there by somebody else - its
-        # database, its accounts, its key (1.0.139) - whether a password is in play or not
-        # (1.0.234: on a machine with none set yet, one was put in; its checksums are only
-        # what its maker wrote).
-        raise RbError('the backup is not locked, and backups of otp always are - it was not '
-                      'made by otp; not put in')
-    out = os.path.join(work, 'x')
-    os.makedirs(out, mode=0o700)
+
+def _rb_unpack(src, work, out):
+    """The archive checked and unpacked into `out`; its one top folder given back."""
     with tarfile.open(src, 'r:gz') as tf:
         members = tf.getmembers()
         tops = set()
@@ -1848,6 +1853,52 @@ def rb_open(path, password, work):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with tf.extractfile(mb) as s, open(dst, 'wb') as d:
                     shutil.copyfileobj(s, d)
+    return tops
+
+
+def rb_open(path, password, work):
+    """A backup file opened into `work`: its folder and its manifest - every
+    file checked against the checksum the manifest has."""
+    src = path
+    with open(path, 'rb') as f:
+        head = f.read(8)
+    if head.startswith(b'Salted__'):
+        if not password:
+            raise RbError('the backup is locked: its password is needed')
+        src = os.path.join(work, 'b.tar.gz')
+        tries = [password]
+        if password == rb_password() and rb_password_old():
+            tries.append(rb_password_old())             # made here before 1.0.139
+        for n, pw in enumerate(tries):
+            try:
+                _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
+                          'sha256', '-in', path, '-out', src, '-pass', 'fd:@'],
+                         secret=pw, what='opening it')
+                with open(src, 'rb') as f:
+                    if f.read(2) != b'\x1f\x8b':
+                        # A wrong password that passes the padding check (1 in 256, 1.0.271):
+                        # taken as the wrong password, and the old one still tried.
+                        raise ValueError('not opened')
+                break
+            except ValueError:
+                if n == len(tries) - 1:
+                    raise RbError('the password does not open it (or the file is damaged)')
+    elif not head.startswith(b'\x1f\x8b'):
+        raise RbError('that is not a backup of otp (neither locked nor a .tar.gz)')
+    else:
+        # Backups are always locked: an unlocked one was put there by somebody else - its
+        # database, its accounts, its key (1.0.139) - whether a password is in play or not
+        # (1.0.234: on a machine with none set yet, one was put in; its checksums are only
+        # what its maker wrote).
+        raise RbError('the backup is not locked, and backups of otp always are - it was not '
+                      'made by otp; not put in')
+    out = os.path.join(work, 'x')
+    os.makedirs(out, mode=0o700)
+    try:
+        tops = _rb_unpack(src, work, out)
+    except (tarfile.TarError, EOFError, zlib.error) as e:
+        # Said as what it is (1.0.271): a damaged archive was an error of the page (500).
+        raise RbError('the backup is damaged: %s' % (str(e)[:200] or e.__class__.__name__))
     top = os.path.join(out, tops.pop())
     try:
         with open(os.path.join(top, 'manifest.json')) as f:

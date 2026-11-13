@@ -57,7 +57,15 @@ def ntp_desired(store):
         try:
             peers = [str(ipaddress.ip_address(str(other)))]
         except ValueError:
+            # A name (1.0.271), as ha_peer may be: its address - the nodes were said to take
+            # each other's time, and chrony was never told the other one.
             peers = []
+            for a in addresses_cached(str(other)):
+                try:
+                    peers = [str(ipaddress.ip_address(str(a).split('%')[0]))]
+                    break
+                except ValueError:
+                    continue
     return {'manage': bool(c.get('manage')), 'servers': c.get('servers') or [],
             'peers': peers, 'allow': c.get('allow') or [],
             'makestep': c.get('makestep') or [1.0, 3], 'minsources': c.get('minsources') or 1,

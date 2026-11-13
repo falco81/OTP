@@ -100,6 +100,21 @@ def sshotp_remove(store, name, by):
     store.add_event('settings', '%s removed the SSH token of %s' % (by, name), 'warn', who=by)
 
 
+SSHOTP_HOLD_FROM = 20
+
+
+def sshotp_held(rec, now):
+    """Seconds an app's SSH token is held for after many wrong codes in a row, 0 if not (1.0.271):
+    five a node every five minutes was all, a restart forgot them, and each node counted its own -
+    a code guessed in weeks. In the token's row, so both nodes and a restart count them: from 20
+    wrong in a row 15 minutes, doubled every 10 more, a day at most; a right code clears it."""
+    n = int(rec.get('fails') or 0)
+    if n < SSHOTP_HOLD_FROM:
+        return 0
+    hold = 60 * min(1440, 15 * 2 ** ((n - SSHOTP_HOLD_FROM) // 10))
+    return max(0, int(fnum(rec.get('failed_at')) + hold - now))
+
+
 def _sshotp_fails(name, now):
     fails = [t for t in SSHOTP_FAILS[name.lower()] if now - t < SSHOTP_WINDOW_S]
     SSHOTP_FAILS[name.lower()] = fails
@@ -134,6 +149,9 @@ def sshotp_check(store, name, code):
             return False, 'no SSH token for this account'
         if rec.get('kind', 'app') != 'app':
             return False, 'this token gets its codes sent'
+        held = sshotp_held(rec, now)
+        if held:
+            return False, 'too many wrong codes - wait %d min' % max(1, held // 60)
         secret = unseal_secret(rec.get('secret'), sshotp_key(name))
         code = ssh_code_typed(code)
         step = totp_match(secret, code, clock_now('codes'), digits=6, window=mfa_window()) if secret else None
@@ -149,10 +167,13 @@ def sshotp_check(store, name, code):
         if step is None or step <= int(rec.get('step') or 0):
             fails.append(now)
             rec['failed_at'] = now
+            if step is None:
+                rec['fails'] = int(rec.get('fails') or 0) + 1
             store.set_meta(sshotp_key(name), json.dumps(rec))
             return False, ('the code is not right' if step is None
                            else 'the code was used already - wait for the next one')
         rec.update(step=step, used_at=now, used_on=node_name())
+        rec.pop('fails', None)
         store.set_meta(sshotp_key(name), json.dumps(rec))
         SSHOTP_FAILS.pop(name.lower(), None)
         return True, 'signed in'

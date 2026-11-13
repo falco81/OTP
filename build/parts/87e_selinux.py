@@ -169,6 +169,9 @@ def selinux_ask(store, node, action, by):
             'permissive': 'permissive again'}[action]), 'warn', who=by)
 
 
+SE_STEP_STALE_S = 3600
+
+
 def selinux_tick(daemon):
     """Every few seconds: a step asked for this node done; how it is, looked at now and then."""
     store = daemon.store
@@ -182,6 +185,21 @@ def selinux_tick(daemon):
     # A step tried is not tried again (1.0.234): with its answer not written (the database
     # away), it ran again every 5 s - "enforce" and "prepare" over and over.
     asked = bool(want) and want.get('id') != now.get('done') and want.get('id') != SE_WORK['tried']
+    if asked and want.get('do') in ('prepare', 'enforce', 'permissive') and \
+            time.time() - fnum(want.get('at')) > SE_STEP_STALE_S:
+        # A step asked of a node that was away is not done days later (1.0.270): high security
+        # may have been switched on since, and nobody waits for it - said, and left.
+        try:
+            store.set_meta('host:selinux:now:' + me, json.dumps(dict(
+                now, done=want.get('id'), action=want.get('do'), at=time.time(), said=[],
+                error='the step "%s" was asked more than an hour ago, while this node was away - not done; '
+                      'ask for it again' % want.get('do'))))
+            store.add_event('settings', 'SELinux on %s: the step "%s" asked more than an hour ago was not done'
+                            % (me, want.get('do')), 'warn')
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('selinux', 'SELinux: %s' % e, 'warn', every=600)
+        SE_WORK['tried'] = want.get('id') or ''
+        return
     if SE_WORK['busy'] or not (asked or time.time() - SE_WORK['seen'] > SE_EVERY):
         return
     SE_WORK['busy'] = True
@@ -193,7 +211,9 @@ def selinux_tick(daemon):
     def go():
         try:
             err = ''
-            data = odict(now.get('data')) if do != 'check' else {}
+            # What was known kept when a look fails (1.0.270): with none, the high security check
+            # and the after-update checks lost SELinux and the error was never shown.
+            data = odict(now.get('data'))
             said = []
             try:
                 data = root_ask('selinux.ask', 'selinux.json',
@@ -229,7 +249,10 @@ def selinux_tick(daemon):
                     log('SELinux on %s: %s' % (me, '; '.join(said) or 'done'), 'warn')
             store.set_meta('host:selinux:now:' + me, json.dumps({
                 'data': data if isinstance(data, dict) else {}, 'at': time.time(),
-                'done': want.get('id') if asked else now.get('done'), 'error': err,
+                # A step tried whose answer could not be written is done all the same (1.0.270):
+                # it stayed "asked" until a restart ran it again.
+                'done': want.get('id') if (asked or (want.get('id') and want.get('id') == SE_WORK['tried']))
+                else now.get('done'), 'error': err,
                 'said': said, 'action': do}))
         except Exception as e:                          # noqa: BLE001
             log_sparing('selinux', 'SELinux: %s' % e, 'warn', every=600)

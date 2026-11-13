@@ -208,30 +208,35 @@ def _dbtls_helper(what, store, by, wait=120):
                      'otp-web.path running?  systemctl status otp-web.path')
 
 
-def _dbtls_server_cert(store, by):
-    """This machine's PostgreSQL given a certificate from otp's authority
-    (kind local): for localhost, 127.0.0.1 and its names; ssl switched on with
-    a reload, no restart."""
-    # One node makes the authority (1.0.262): replicating with none yet, both nodes in this
-    # phase made one - two INSERTs of the one row 'hatls:ca', and replication stopped on it for
-    # good. The lead makes it (or rolls it); the other waits for it to come over.
-    end = time.time() + 60
+def hatls_ca_ensure(store, by, wait=60):
+    """The cluster's authority there and not near its end - made (or rolled) by one node only
+    (1.0.262; for isemon's certificates too since 1.0.271): replicating with none yet, both nodes
+    made one - two INSERTs of the one row 'hatls:ca', and replication stopped on it for good. The
+    lead makes it; the other waits for it to come over."""
+    end = time.time() + wait
     while True:
         with HATLS_LOCK:
             ca = hatls_ca(store)
             roll = not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
                 HATLS_CA_ROLL_DAYS * 86400
             if not roll:
-                break
+                return
             if CONFIG.get('ha_mode') != 'replicated' or ha_lead(store):
                 hatls_ca_make(store, by)
-                break
+                return
             if ca['cas'] and float(ca['cas'][0].get('end') or 0) > time.time():
-                break                   # rolled by the other node; this one good meanwhile
+                return                  # rolled by the other node; this one good meanwhile
         if time.time() > end:
             raise ValueError('the cluster\'s authority has not come over from the other node yet '
                              '- try again in a minute')
         time.sleep(3)
+
+
+def _dbtls_server_cert(store, by):
+    """This machine's PostgreSQL given a certificate from otp's authority
+    (kind local): for localhost, 127.0.0.1 and its names; ssl switched on with
+    a reload, no restart."""
+    hatls_ca_ensure(store, by)
     names = hatls_names()
     key, crt = hatls_issue(store, names)
     got = _dbtls_helper({'do': 'server', 'cert': crt, 'key': key,
@@ -345,6 +350,7 @@ def _dbtls_again(daemon):
 # the rescue's own way back.
 # Not under 'dbtls:' - those are each machine's own and stay out of a copy put back (META_TRANSIENT).
 DBTLS_WANT_KEY = 'dbtls_want'
+DBTLS_FOLLOW_BY = 'otp (as the cluster has it)'
 DBTLS_WANT_AGAIN_S = float(os.environ.get('OTP_DBTLS_WANT_AGAIN_S') or 600)
 
 
@@ -366,6 +372,7 @@ def _dbtls_want(store, derive=True):
     rows = dbguard_rows(store.db, store.db.rows('SELECT k, v FROM meta WHERE k = ?', (DBTLS_WANT_KEY,)))
     got = json_obj(rows[0]['v']) if rows else None
     if isinstance(got, dict) and str(got.get('mode') or '') in DBTLS_MODES:
+        DBTLS_WORK.pop('want_missing', None)
         return got
     if rows or not derive:
         return None             # there but not otp's (the guard), or not to be guessed
@@ -379,6 +386,13 @@ def _dbtls_want(store, derive=True):
     if len(tls) != 1:
         return None             # none with TLS, or the nodes not of one mind: nothing guessed
     row = {'mode': tls[0], 'at': time.time(), 'by': 'otp (as the nodes had it)'}
+    # In a cluster one node writes it (1.0.270), and only after it was missing two minutes: both
+    # writing a new row of the cluster's at once is a duplicate key that stops replication - and a
+    # copy put back on the other node writes its own at its end.
+    if dbtls_kind() == 'replicated':
+        since = DBTLS_WORK.setdefault('want_missing', time.time())
+        if int(CONFIG.get('ha_slot') or 1) != 1 or time.time() - since < 120:
+            return row
     store.set_meta(DBTLS_WANT_KEY, json.dumps(row))
     return row
 
@@ -408,13 +422,25 @@ def _dbtls_want_follow(daemon):
         # back or joined anew, where it is wished by the cluster and not done here yet: asked of the
         # root helper at the same moment, the two asks crossed and the link's failed.
         return
+    if time.time() - DBTLS_WORK.get('wizard_at', 0.0) < 120:
+        return                  # the wizard is at work on this node
     DBTLS_WORK['want_at'] = time.time() + DBTLS_WANT_AGAIN_S
-    by = 'otp (as the cluster has it)'
+    by = DBTLS_FOLLOW_BY
+
+    def still():
+        # Asked again just before each step: the wizard may have switched it off meanwhile.
+        w = _dbtls_want(store, derive=False) or {}
+        return str(w.get('mode') or '') and not CONFIG.get('db_tls') and \
+            time.time() - DBTLS_WORK.get('wizard_at', 0.0) >= 120
 
     def go():
         try:
+            if not still():
+                return
             if not _dbtls_has_server(store):
                 dbtls_apply(daemon, {'phase': 'server', 'by': by})
+            if not still():
+                return
             dbtls_apply(daemon, {'phase': 'connect', 'mode': mode, 'by': by})
             store.add_event('settings', '%s: the connection to its database is encrypted again as the '
                             'cluster has it (%s)' % (node_name(), CONFIG.get('db_tls') or mode), 'info')
@@ -483,6 +509,13 @@ def dbtls_apply(daemon, args):
                 raise ValueError('this node\'s PostgreSQL has no certificate from otp yet')
             mode = 'verify-full'
         ca = _dbtls_ca_for(store, kind, mode, args)
+        if by != DBTLS_FOLLOW_BY:
+            # The wizard at work here (1.0.270): the follow waits two minutes.
+            DBTLS_WORK['wizard_at'] = time.time()
+        if not mode and kind in ('replicated', 'local'):
+            # The wish of none written before the switch (1.0.270): after it, the follow saw the
+            # node without TLS and the wish still with it - and encrypted it again at once.
+            _dbtls_want_set(store, mode, by)
         try:
             got = dbtls_switch(daemon, mode, ca, by)
         except Exception:

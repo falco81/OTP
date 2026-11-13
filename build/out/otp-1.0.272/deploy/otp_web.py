@@ -317,8 +317,8 @@ def checked(r):
         # 2000 (1.0.59): a RADIUS rule per client and family came to 400 with
         # 200 clients, and the whole request - certificate, web address and
         # all - was refused for it.
-        if not isinstance(rules, list) or len(rules) > 2000:
-            raise Refused('the firewall rules are a list, 2000 at most')
+        if not isinstance(rules, list) or len(rules) > 20000:
+            raise Refused('the firewall rules are a list, 20000 at most')
         out['fw'] = {'on': bool(fw.get('on')), 'rules': [fw_rule_checked(x) for x in rules]}
     else:
         out['fw'] = None
@@ -1485,7 +1485,12 @@ def fw_into(text, lines, on):
     if end is None:
         raise Refused('the saved firewall has a *filter table without COMMIT')
     last_decl = max([i for i in range(start, end) if rows[i].startswith(':')] or [start])
-    first_input = next((i for i in range(start, end) if rows[i].startswith('-A INPUT')), end)
+    # Its counters first too (1.0.271): iptables-services saves [n:m] -A INPUT ... with
+    # IPTABLES_SAVE_COUNTER=yes - no row matched, the jump went after the last REJECT, and after a
+    # reboot RADIUS, the pages and SSH were refused.
+    first_input = next((i for i in range(start, end)
+                        if re.sub(r'^\[\d+:\d+\]\s+', '', rows[i].strip()).startswith('-A INPUT')),
+                       end)
     block = ['%s otp opens what its functions need here (Settings - Firewall); changed '
              'only there' % FW_MARK] + lines + ['%s end' % FW_MARK]
     rows = (rows[:last_decl + 1] + [':%s - [0:0]' % FW_CHAIN] +
@@ -2562,6 +2567,20 @@ def net_addrs4_after(before, addr4):
     return out
 
 
+def net_addrs6_after(before, addr6):
+    """The IPv6 addresses the connection gets (1.0.271), as for IPv4: the first replaced by the
+    new one, the others set by hand kept - a change of the IPv4 address or the DNS took a second
+    IPv6 address (a service of its own) away."""
+    out = [addr6]
+    if str(before.get('ipv6.method') or '') != 'manual':
+        return out
+    new_ip = addr6.split('/')[0].lower()
+    for a in nm_list(before.get('ipv6.addresses'))[1:8]:
+        if a.split('/')[0].lower() != new_ip and a not in out:
+            out.append(a)
+    return out
+
+
 def net_apply(n):
     if not shutil.which(NMCLI):
         raise Refused('NetworkManager (nmcli) is not on this machine: set the network by hand')
@@ -2600,7 +2619,8 @@ def net_apply(n):
         args += ['ipv6.method', 'auto', 'ipv6.addresses', '', 'ipv6.gateway', '',
                  'ipv6.dns', ','.join(n['dns6'])]
     elif n['mode6'] == 'manual':
-        args += ['ipv6.method', 'manual', 'ipv6.addresses', n['addr6'],
+        args += ['ipv6.method', 'manual', 'ipv6.addresses',
+                 ','.join(net_addrs6_after(before, n['addr6'])),
                  'ipv6.gateway', n['gw6'], 'ipv6.dns', ','.join(n['dns6'])]
     run(args, 'nmcli connection modify')
     said.append('NetworkManager: %s - %s via %s, DNS %s%s' % (
@@ -3053,7 +3073,7 @@ def status_read():
     owns, so nothing of it is trusted (1.0.57): what is used again - the
     peer, its family, the interface, the DH choices - is checked again."""
     try:
-        got = json.loads(read_req('status.json').decode('utf-8'))
+        got = json.loads(read_req('status.json', 4 << 20).decode('utf-8'))
     except (OSError, ValueError, Refused):
         return {}
     if not isinstance(got, dict):
@@ -5671,6 +5691,12 @@ def _se_run(cmd, timeout=120, light=False, data=None):
         if shutil.which('nice'):
             cmd = ['nice', '-n', '19'] + cmd
     try:
+        # Never the helper's own stdin (1.0.270): from the otp command it is a pipe, read to its
+        # end - ausearch then read that pipe for the audit log, found nothing, and the check
+        # before enforcing said nothing was refused.
+        if data is None:
+            return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                  timeout=timeout)
         return subprocess.run(cmd, input=data, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -6164,7 +6190,11 @@ def _se_out(cmd, timeout=120, data=None, light=True):
         if shutil.which('nice'):
             cmd = ['nice', '-n', '19'] + cmd
     try:
-        got = subprocess.run(cmd, input=data, capture_output=True, text=True, timeout=timeout)
+        if data is None:
+            got = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                 timeout=timeout)
+        else:
+            got = subprocess.run(cmd, input=data, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as e:
         return '(%s: %s)\n' % (' '.join(cmd), e)
     text = (got.stdout or '') + (('\n--- stderr ---\n' + got.stderr) if got.stderr.strip() else '')
@@ -6191,11 +6221,14 @@ def se_report_parts(r):
     parts['avc-raw.txt'] = raw
     parts['avc.txt'] = _se_out(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR',
                                 '-ts', 'boot', '-i'], 300)
-    if raw.startswith('('):
+    # Not there or failed: what was said kept - a long log cut (1.0.270) starts with '(' too, and
+    # it went into both in place of what audit2why says.
+    if not shutil.which('ausearch') or (raw.startswith('(') and not raw.startswith('(the first ')):
         parts['audit2why.txt'] = parts['audit2allow.te'] = raw
     else:
-        parts['audit2why.txt'] = _se_out(['audit2why'], 300, data=raw)
-        parts['audit2allow.te'] = _se_out(['audit2allow', '-m', 'otp_local'], 300, data=raw)
+        log_only = raw.split('\n', 1)[1] if raw.startswith('(the first ') else raw
+        parts['audit2why.txt'] = _se_out(['audit2why'], 300, data=log_only)
+        parts['audit2allow.te'] = _se_out(['audit2allow', '-m', 'otp_local'], 300, data=log_only)
     sysw = []
     for name, cmd in (('os-release', ['cat', '/etc/os-release']), ('kernel', ['uname', '-a']),
                       ('started', ['uptime', '-s']), ('getenforce', ['getenforce']),
@@ -6372,7 +6405,7 @@ def se_report(c):
 OSROOTS_ASK = 'osroots.ask'
 OSROOTS_FILE = 'osroots.json'
 OSROOTS_MAX = 50                    # otp's certificates at most
-OSROOTS_PEM_MAX = 16384             # one certificate, as PEM
+OSROOTS_PEM_MAX = 20480             # one certificate, as PEM (the daemon takes 12 kB of DER)
 OSROOTS_NAME_RE = re.compile(r'^otp-[0-9a-f]{16}\.(pem|crt)\Z')
 OSROOTS_BLOCK_RE = re.compile(r'-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*?)-----END CERTIFICATE-----')
 OSROOTS_FLAVOURS = {
@@ -6512,7 +6545,17 @@ def osroots_dir_ok(d, make=False):
         st = os.lstat(d)
     if not stat.S_ISDIR(st.st_mode):
         raise Refused('%s is not a folder (a link?) - nothing is written there' % d)
-    if st.st_uid != 0 or st.st_mode & 0o022:
+    # Debian makes it with the mode and group of /usr/local (2775 root:staff on older or upgraded
+    # systems, 1.0.270): writable by a group no more than its parent already is, taken.
+    group_ok = False
+    if st.st_mode & 0o020 and not st.st_mode & 0o002:
+        try:
+            up = os.stat(os.path.dirname(os.path.abspath(d)))
+            group_ok = st.st_gid == 0 or (up.st_uid == 0 and up.st_gid == st.st_gid and up.st_mode & 0o020
+                                          and not up.st_mode & 0o002)
+        except OSError:
+            group_ok = False
+    if st.st_uid != 0 or st.st_mode & 0o002 or (st.st_mode & 0o020 and not group_ok):
         raise Refused('%s is not root\'s alone (owner %d, mode %o) - nothing is written there'
                       % (d, st.st_uid, stat.S_IMODE(st.st_mode)))
     return True
@@ -6725,6 +6768,14 @@ def osroots_sync(w, certs, force=False):
             said.append('removed %s' % name)
             changed = True
     tool_said = ''
+    if not changed and not force and want:
+        # The files as wanted but the system's list without one of them (1.0.270): the tool's run
+        # before failed or timed out after they were written - run again, not "applied" for good.
+        inb = _osroots_in_bundle(w, [base64.b64decode(re.sub(r'-----[A-Z ]+-----|\s+', '', pem))
+                                     for pem in want.values()])
+        if inb and not all(inb.values()):
+            said.append('the system\'s list lacked %d of them' % sum(1 for v in inb.values() if not v))
+            changed = True
     if changed or force:
         if not shutil.which(w['tool'][0]):
             raise Refused('%s is not on this machine - the files are in %s, the system\'s list is '
@@ -6868,7 +6919,9 @@ def serve():
     out = {'at': time.time(), 'applied': last.get('applied') or {}, 'dh': last.get('dh') or {}}
     try:
         try:
-            raw = json.loads(read_req('request.taken').decode('utf-8'))
+            # Up to 4 MB (1.0.272): a RADIUS rule a client and family, and some 1850 clients made
+            # the request bigger than 256 kB - refused whole, certificates and the VIP included.
+            raw = json.loads(read_req('request.taken', 4 << 20).decode('utf-8'))
         except ValueError as e:
             raise Refused('the request does not read: %s' % e)
         if isinstance(raw, dict):

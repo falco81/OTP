@@ -94,7 +94,7 @@ ok('...the RSA one the main, the ECDSA one beside, tied to it', (p.get('info') o
 ok('...the ECDSA key sealed, not in the clear', 'PRIVATE KEY' not in json.dumps(p.get('alt') or {}))
 ok('...nginx would be handed both', 'alt' in (otp.tls_resolved(p) or {}))
 va = otp.tls_view(p).get('alt') or {}
-ok('...the view shows the second one, never its key', va.get('info') and set(va) == {'info'} and 'PRIVATE KEY' not in json.dumps(va), va)
+ok('...the view shows the second one, never its key', va.get('info') and set(va) <= {'info', 'chain_state'} and 'PRIVATE KEY' not in json.dumps(va), va)
 c, x = up(cert=E1 + EK1 + R1 + RK1)
 ok('the other order: the same (%s)' % c, c == 200 and (x.get('tls') or {}).get('alt') and prof()['info']['key'].startswith('RSA'))
 c, x = up(pfx=base64.b64encode(RP1).decode(), pfx2=base64.b64encode(EP1).decode(), password='pfxpass12')

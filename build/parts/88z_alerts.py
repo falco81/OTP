@@ -938,7 +938,9 @@ def alert_send(store, msg, to, kind, keys):
         entry.update(ok=False, said=str(e)[:200], queued=getattr(e, 'queued', '') or '')
     # The row of what was sent is the sending node's (1.0.234): a test from another node's pages
     # wrote its older copy back over it, and the same alerts went out again.
-    if kind == 'test' and not alerts_lead(store):
+    # A report sent from that node's pages too (1.0.271): it wrote its stale copy of the
+    # problems back, and they were mailed again.
+    if kind != 'alert' and not alerts_lead(store):
         return entry
     st = _alert_state(store)
     if not entry['ok'] and entry.get('queued') != 'waiting':
@@ -1006,6 +1008,14 @@ def _alerts_evaluate(store, force=False):
         if k not in cur:
             if quiet and k.startswith(held):
                 continue
+            if known[k].get('sent') and delay and not force:
+                # Over only once it has stayed away as long as it had to stay to be said
+                # (1.0.271): a disk about its limit, a sink that blinked - "new" and "over"
+                # mailed and trapped all day.
+                gone_at = fnum(known[k].get('missing_since')) or now
+                known[k]['missing_since'] = gone_at
+                if now - gone_at < delay:
+                    continue
             p = known.pop(k)
             if p.get('sent') and CONFIG.get('alerts_resolved', 1):
                 gone.append(p)

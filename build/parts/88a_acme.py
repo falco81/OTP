@@ -442,6 +442,10 @@ class Acme(object):
         der = _openssl(['req', '-in', '/dev/stdin', '-outform', 'DER'], data=csr.encode(),
                        what='the request')
         say('the certificate is made')
+        # Finalized once the order is ready (1.0.271, RFC 8555 7.4): a CA that works the order
+        # out after its authorizations answered orderNotReady, and it failed every 6 hours.
+        if order_url:
+            self._poll(order_url, ('ready', 'processing', 'valid'), 'the order', 60)
         o, _ = self.post_json(got['finalize'], {'csr': _b64u(der)})
         if o.get('status') != 'valid':
             o = self._poll(order_url, ('valid',), 'the order', 120)
@@ -659,12 +663,15 @@ def acme_order(store, target, name, by, say=None):
     def say(t):
         steps.append([round(time.time(), 1), str(t)[:300]])
         tell(t)
-    if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
-                    r'(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9-]{1,59})\Z', name):   # .рф too (1.0.209)
-        raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)' % name)
     st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url(), 'steps': steps}
     a = None
     try:
+        if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+                        r'(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9-]{1,59})\Z', name):  # .рф (1.0.209)
+            # Inside (1.0.271): a short name (getfqdn said otp1) failed every hour with a line in
+            # the log only - no state on the card, no event, no alert until the certificate ended.
+            raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)'
+                            % name)
         a = Acme(store)
         choice = str(CONFIG.get('acme_key') or 'dual')
         kinds = ACME_CERT_KEYS.get(choice) or ('ec',)
@@ -691,7 +698,8 @@ def acme_order(store, target, name, by, say=None):
                 g2 = cert_bundle(c2, k2)
                 alt = {'cert': g2['cert'], 'chain': g2['chain'],
                        'key': seal_secret(g2['key'], 'web:tls'),
-                       'info': g2['info'], 'for': tls_alt_for(got['cert'])}
+                       'info': g2['info'], 'for': tls_alt_for(got['cert']),
+                       'chain_state': g2.get('chain_state')}
                 made.append(kinds[1])
             except (AcmeError, ValueError) as e:
                 # The first one kept all the same (1.0.205): thrown away with it,

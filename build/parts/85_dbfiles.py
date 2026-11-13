@@ -702,6 +702,7 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
                 if str(r.get('k') or '').startswith(META_TRANSIENT):
                     se_was_from_copy(store.db, r['k'], r.get('v'))
                     store.drop_meta(r['k'])
+            se_was_put(store.db)
             for r in live_transient:
                 store.set_meta(r['k'], r['v'])
         except Exception as e:                          # noqa: BLE001

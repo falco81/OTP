@@ -1767,6 +1767,10 @@ def cli_ha_resync(args, pal):
     load_config(saved=None)
     if CONFIG.get('ha_mode') != 'replicated':
         raise SystemExit('otp: this node does not replicate (ha_mode is not "replicated")')
+    try:
+        ha_slot_set()
+    except ValueError as e:
+        raise SystemExit('otp: %s' % e)
     # Root only (1.0.59): anybody else could not stop the daemon, and the
     # copy went on with it writing - the very thing that stops it for good.
     if os.geteuid() != 0:
@@ -1796,8 +1800,8 @@ def cli_ha_resync(args, pal):
                              'changed: %s' % e)
         remote = ha_peer_db()
         HA_STORE['store'] = Storage(local)      # a failed one in maintenance (1.0.249)
-        got = ha_rebuild(local, remote, int(CONFIG.get('ha_slot') or 2),
-                         3 - int(CONFIG.get('ha_slot') or 2),
+        got = ha_rebuild(local, remote, ha_slot_set(),
+                         3 - ha_slot_set(),
                          CONFIG.get('ha_address') or node_address(),
                          int(CONFIG.get('db_port') or 5432), CONFIG.get('ha_peer'),
                          int(CONFIG.get('ha_peer_port') or 5432), CONFIG.get('db_name'),

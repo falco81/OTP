@@ -214,6 +214,20 @@ def node_name_taken(store, want):
 HB_SEEN = {}
 
 
+def ha_slot_set():
+    """This node's slot in the cluster, 1 or 2 - for a rebuild, which must not guess (1.0.271):
+    taken as 2 when missing (and as 1 everywhere else), it dropped the wrong subscription and
+    numbered this node's rows as the other's."""
+    try:
+        my = int(CONFIG.get('ha_slot') or 0)
+    except (TypeError, ValueError):
+        my = 0
+    if my not in (1, 2):
+        raise ValueError('ha_slot is not set (1 or 2) in %s - otp --set ha_slot=1 (or 2)'
+                         % CONFIG_FILE)
+    return my
+
+
 def ha_nodes(store):
     out = []
     try:
@@ -1878,6 +1892,7 @@ def ha_resync_job(store, by):
     """This node rebuilt from the other, as a job the pages can follow."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
+    ha_slot_set()                       # said before anything is stopped or copied
 
     def work(progress):
         steps = []
@@ -1889,8 +1904,8 @@ def ha_resync_job(store, by):
         copy = make_backup(store, 'before rebuilding from the other node, by %s' % by)
         remote = ha_peer_db()
         try:
-            got = ha_rebuild(store.db, remote, int(CONFIG.get('ha_slot') or 2),
-                             3 - int(CONFIG.get('ha_slot') or 2),
+            got = ha_rebuild(store.db, remote, ha_slot_set(),
+                             3 - ha_slot_set(),
                              CONFIG.get('ha_address') or node_address(),
                              int(CONFIG.get('db_port') or 5432), CONFIG.get('ha_peer'),
                              int(CONFIG.get('ha_peer_port') or 5432), CONFIG.get('db_name'),

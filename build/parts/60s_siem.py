@@ -118,7 +118,9 @@ class Siem(object):
                 for k, v in fields.items() if v not in (None, '')))
             body = words
         stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='milliseconds')
-        pri = int(CONFIG.get('siem_facility') or 13) * 8 + severity
+        fac = CONFIG.get('siem_facility')
+        # 0 (kern) is one of them (1.0.271): `or 13` sent it as 13.
+        pri = (int(fac) if fac not in (None, '') else 13) * 8 + severity
         # No control character anywhere in the line (1.0.248): a name of a RADIUS request with a
         # line break in it went into the structured data as it was - a forged event for a
         # receiver that splits on lines.
@@ -188,7 +190,8 @@ class Siem(object):
                     self._send(t, line)
                 except Exception as e:                  # noqa: BLE001
                     # Nothing ends this thread (1.0.186).
-                    self.trouble[str(t)] = str(e)[:200]
+                    self.trouble['%s:%s/%s' % tuple(t) if isinstance(t, tuple) and len(t) == 3
+                                 else str(t)] = str(e)[:200]
 
     def _tls(self):
         if self.ctx is None:

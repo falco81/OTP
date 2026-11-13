@@ -41,6 +41,7 @@ for name, cn in (('vip', 'vip.example.test'), ('na', 'nodea.example.test'), ('nb
 sh('openssl', 'x509', '-in', 'int.pem', '-outform', 'DER', '-out', P + '/int.cer.away')
 rd = lambda f: open(P + '/' + f).read()
 os.environ['OTP_CHAIN_CA'] = P + '/root.pem'          # the system's roots, for the daemons started below
+os.environ['OTP_AIA_LOCAL'] = '1'                     # the authority served here, on a port of its own (1.0.270)
 
 def sandbox_daemons_stop():
     # The sandboxes' own daemons only (OTP_CONFIG under /tmp) - one left from a run before held the ports.

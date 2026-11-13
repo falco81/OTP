@@ -544,7 +544,7 @@ for s_ in ('Trusted roots of the system', 'Add an authority', 'Read it again on 
 ok('8 docs: tls-and-vip.md has the section', 'Trusted roots of the system' in open(V + '/docs/tls-and-vip.md').read())
 
 # The pages reach it (1.0.265): the route was missing from the PHP map, every page asked 404
-_php = open('/home/claude/build/out/otp-%s/web/admin/index.php' % (sys.argv[1] if len(sys.argv) > 1 else '1.0.265')).read()
+_php = open(V + '/web/admin/index.php').read()
 ok('the admin pages relay osroots (GET and POST maps)', _php.count("'osroots' => '/api/osroots'") == 2)
 print('\n%d of %d passed' % (sum(R), len(R)))
 sys.exit(0 if all(R) else 1)

@@ -2106,9 +2106,13 @@ class Storage(object):
         row.setdefault('node', log_node())
         # As long as RADIUS lets them be (1.0.249): a test of a 100 000-letter name was kept whole,
         # and the overview took 25 s to lay out every time it was opened.
-        for k, most in (('username', 253), ('reason', 1000)):
-            if isinstance(row.get(k), str) and len(row[k]) > most:
-                row[k] = row[k][:most]
+        # Every short column at 190 (1.0.272), what MariaDB keeps: a name of 191-253 letters was
+        # refused there ("Data too long"), and kept on SQLite or PostgreSQL it stopped every move
+        # of the database to MariaDB after it.
+        for k, v in list(row.items()):
+            most = 1000 if k == 'reason' else (None if k in ('attrs', 'reply', 'steps') else 190)
+            if most and isinstance(v, str) and len(v) > most:
+                row[k] = v[:most]
         hook = getattr(self, 'on_radius', None)
         if hook:
             try:

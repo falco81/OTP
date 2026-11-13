@@ -13,7 +13,7 @@ ISEMON_CLIENT_RENEW_DAYS = 60
 ISEMON_SERVER_DAYS = 1825
 ISEMON_CLIENT_CRT = STATE_DIR / 'isemon-client.crt'
 ISEMON_CLIENT_KEY = STATE_DIR / 'isemon-client.key'
-ISEMON_TLS_WORK = {'at': 0.0, 'said': 0.0}
+ISEMON_TLS_WORK = {'at': 0.0, 'said': 0.0, 'mtime': None}
 
 
 def isemon_tls_ctx():
@@ -61,11 +61,7 @@ def isemon_client_cert(store, force=False):
         key = unseal_secret(got['key'], bind=k)       # files gone: written again
         crt = got['cert']
     else:
-        with HATLS_LOCK:
-            ca = hatls_ca(store)
-            if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
-                    HATLS_CA_ROLL_DAYS * 86400:
-                hatls_ca_make(store, 'otp (isemon)')
+        hatls_ca_ensure(store, 'otp (isemon)')          # one node makes it (1.0.271)
         name = re.sub(r'[^A-Za-z0-9.-]', '', node_name())[:64] or 'otp'
         key, crt = hatls_issue(store, [name], eku='clientAuth', days=ISEMON_CLIENT_DAYS, cn=name)
         end = _cert_end(crt)
@@ -99,11 +95,14 @@ def isemon_tls_tick(daemon):
     ISEMON_TLS_WORK['at'] = now
     store = daemon.store
     if CONFIG.get('isemon') and CONFIG.get('isemon_mtls'):
-        before = ISEMON_CLIENT_CRT.stat().st_mtime if ISEMON_CLIENT_CRT.exists() else 0
         isemon_client_cert(store)
         after = ISEMON_CLIENT_CRT.stat().st_mtime if ISEMON_CLIENT_CRT.exists() else 0
+        # Against the last one seen here (1.0.271), not only around this call: renewed by "Try it"
+        # in between, the shipper kept the old certificate until it ran out.
+        before = ISEMON_TLS_WORK['mtime']
+        ISEMON_TLS_WORK['mtime'] = after
         sh = getattr(daemon, 'shipper', None)
-        if sh is not None and after != before:
+        if sh is not None and before is not None and after != before:
             sh.ctx = None
             for key in list(sh.tcp):
                 try:
@@ -156,11 +155,7 @@ def isemon_tls_bundle(store, names, port, mtls, passphrase, by):
     if len(str(passphrase or '')) < 12:
         raise ValueError('the passphrase is 12 characters at least - the key of isemon\'s '
                          'certificate is in the file')
-    with HATLS_LOCK:
-        ca = hatls_ca(store)
-        if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
-                HATLS_CA_ROLL_DAYS * 86400:
-            hatls_ca_make(store, by)
+    hatls_ca_ensure(store, by)
     key, crt = hatls_issue(store, names, eku='serverAuth', days=ISEMON_SERVER_DAYS,
                            cn=names[0][:64])
     trust = hatls_trust(hatls_ca(store))

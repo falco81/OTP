@@ -379,16 +379,67 @@ def aia_issuer_url(pem):
     return m.group(1) if m else ''
 
 
+# The cloud's metadata services not on a link-local address (1.0.271): AWS's IPv6 one. Private
+# addresses stay allowed - an AD CS publishes its CA Issuers on the inside.
+AIA_METADATA = frozenset(('fd00:ec2::254',))
+AIA_NAT64 = ipaddress.ip_network('64:ff9b::/96')
+
+
+def aia_url_ok(url):
+    """A CA Issuers address otp asks (1.0.270): http or https on their own ports, never this
+    machine, a link-local address (the cloud's metadata service) or a broadcast one - the address
+    comes from a certificate that was sent, and an acme push key's holder makes those."""
+    u = urllib.parse.urlsplit(str(url or ''))
+    if u.scheme not in ('http', 'https') or not u.hostname:
+        raise ValueError('not an http(s) address')
+    if os.environ.get('OTP_AIA_LOCAL') == '1':
+        return              # the tests: an authority served on this machine, on a port of its own
+    try:
+        port = u.port
+    except ValueError:
+        raise ValueError('not an address')
+    if port not in (None, 80, 443):
+        raise ValueError('a CA Issuers address on port %d - only 80 and 443 are asked' % port)
+    try:
+        addrs = {a[4][0] for a in socket.getaddrinfo(u.hostname, port or 80, proto=socket.IPPROTO_TCP)}
+    except (OSError, UnicodeError):
+        return              # not found here: through the proxy, or not at all
+    for a in addrs:
+        try:
+            ip = ipaddress.ip_address(a.split('%')[0])
+        except ValueError:
+            continue
+        if getattr(ip, 'ipv4_mapped', None):
+            ip = ip.ipv4_mapped
+        elif ip.version == 6 and ip in AIA_NAT64:
+            # An IPv4 address in NAT64's form (1.0.271): 64:ff9b::a9fe:a9fe is 169.254.169.254.
+            ip = ipaddress.ip_address(int(ip) & 0xffffffff)
+        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or \
+                (ip.version == 4 and ip.is_reserved) or str(ip) in AIA_METADATA:
+            raise ValueError('%s is %s - not asked' % (u.hostname, a))
+
+
 def aia_fetch(url):
-    """The certificates at a CA Issuers address - DER, PEM or PKCS#7 - as PEM (kept a day)."""
+    """The certificates at a CA Issuers address - DER, PEM or PKCS#7 - as PEM (kept a day; an
+    answer of none kept ten minutes)."""
     got = CHAIN_FETCHED.get(url)
-    if got and time.time() - got[0] < 86400:
+    if got and time.time() - got[0] < (86400 if got[1] else 600):
         return got[1]
     if not re.match(r'^https?://[A-Za-z0-9.\[\]:-]+(:\d+)?/\S*\Z', url):
         return []
+    # Fifteen seconds for each step and thirty in all: a server that sends a byte now and then
+    # never holds an upload, an ACME renewal or an acme push.
+    until = time.time() + 30
+    raw = b''
     with url_open(urllib.request.Request(url, headers={'User-Agent': 'otp/%s' % __version__}),
-                  timeout=15, purpose='acme') as r:
-        raw = r.read(CHAIN_FETCH_MOST + 1)
+                  timeout=15, purpose='acme', check=aia_url_ok) as r:
+        while len(raw) <= CHAIN_FETCH_MOST:
+            part = r.read(16384)
+            if not part:
+                break
+            raw += part
+            if time.time() > until:
+                raise ValueError('it took more than 30 seconds')
     if len(raw) > CHAIN_FETCH_MOST:
         return []
     pems = []
@@ -420,18 +471,47 @@ def _cn_of(dn):
     return (m.group(1) if m else str(dn or '?')).strip()[:200]
 
 
+def chain_order(leaf, certs):
+    """(the chain from the certificate up - each the issuer of the one before it -, the rest)."""
+    infos = {c: cert_info(c) for c in certs}
+    rest, out, at = list(certs), [], cert_info(leaf)
+    while rest:
+        nxt = next((c for c in rest if infos[c].get('subject') == at.get('issuer')
+                    and not infos[c].get('self_signed')), None)
+        if not nxt:
+            break
+        out.append(nxt)
+        rest.remove(nxt)
+        at = infos[nxt]
+    return out, rest
+
+
 def chain_complete(leaf, chain_out, roots=''):
     """The chain checked against the system's roots and, where it does not reach one, completed
     from the CA Issuers addresses: (the chain, its state - {'ok': True|False|None, 'words',
-    'fetched', 'missing', 'private_root'})."""
+    'fetched', 'missing', 'private_root'}). Never raises (1.0.270): an upload, an ACME renewal and
+    an acme push go on with the chain as it came, and the state says it was not checked."""
+    try:
+        return _chain_complete(leaf, chain_out, roots)
+    except Exception as e:                              # noqa: BLE001
+        return chain_out, {'ok': None, 'fetched': [],
+                           'words': 'the chain could not be checked: %s' % (str(e)[:200] or e.__class__.__name__)}
+
+
+def _chain_complete(leaf, chain_out, roots=''):
     leaf = leaf.strip() + '\n'
     leaf_info = cert_info(leaf)
     if leaf_info.get('self_signed'):
         return chain_out, {'ok': None, 'fetched': [],
                            'words': 'self-signed - no chain; whoever connects must trust this certificate itself'}
-    ok, why = chain_verify(leaf, ''.join(c.strip() + '\n' for c in chain_out), roots)
-    fetched, chain = [], list(chain_out)
-    tried, root_seen = 0, ''
+    # The walk goes on from the top of the chain that leads up from the certificate (1.0.270): an
+    # authority sent beside it that is not of its chain (the other key's, an old one) was taken
+    # for the top, and a public chain was told to be a private CA's.
+    ordered, extra = chain_order(leaf, [c for c in chain_out if c.strip()])
+    joined = lambda xs: ''.join(c.strip() + '\n' for c in xs)
+    ok, why = chain_verify(leaf, joined(ordered + extra), roots)
+    fetched, chain = [], list(ordered)
+    tried, root_seen, root_pem = 0, '', ''
     while not ok and tried < 4:
         tried += 1
         last = chain[-1] if chain else leaf
@@ -444,37 +524,55 @@ def chain_complete(leaf, chain_out, roots=''):
             break
         try:
             got = aia_fetch(url)
+            got_infos = [(c, cert_info(c)) for c in got]
         except Exception as e:                          # noqa: BLE001
             why = 'the authority %s could not be fetched from %s: %s' % (_cn_of(info.get('issuer')), url,
                                                                          str(e)[:120])
             break
-        nxt = next((c for c in got if cert_info(c).get('subject') == info.get('issuer')), None)
-        if not nxt:
+        hit = next(((c, i) for c, i in got_infos if i.get('subject') == info.get('issuer')), None)
+        if not hit:
             why = '%s does not hold the authority %s' % (url, _cn_of(info.get('issuer')))
             break
-        ni = cert_info(nxt)
+        nxt, ni = hit
         if ni.get('self_signed'):
-            root_seen = ni.get('cn') or ni.get('subject')
+            root_seen, root_pem = ni.get('cn') or ni.get('subject'), nxt
             break                       # a root: never sent - it has to be the system's own
         chain.append(nxt)
         fetched.append(ni.get('cn') or ni.get('subject'))
-        ok, why = chain_verify(leaf, ''.join(c.strip() + '\n' for c in chain), roots)
+        ok, why = chain_verify(leaf, joined(chain + extra), roots)
+    out = chain + extra
     n = len(chain)
     if ok:
         top = cert_info(chain[-1] if chain else leaf).get('issuer')
         words = 'complete - %d certificate%s up to %s' % (n + 1, '' if n == 0 else 's', _cn_of(top))
         if fetched:
             words += ' (fetched: %s - it was not sent with the certificate)' % ', '.join(fetched)
-        if roots and not chain_verify(leaf, ''.join(c.strip() + '\n' for c in chain))[0]:
+        if roots and not chain_verify(leaf, joined(out))[0]:
             words += ' - a private root: only clients that trust it take it'
-        return chain, {'ok': True, 'words': words, 'fetched': fetched}
+        return out, {'ok': True, 'words': words, 'fetched': fetched}
     if root_seen:
-        return chain, {'ok': False, 'fetched': fetched, 'missing': '', 'private_root': root_seen,
-                       'words': 'it leads to %s, a root the system does not trust (a private CA?) - the chain is '
-                                'complete; the clients (curl, a VPN client, monitoring) must trust that root, '
-                                'or upload its root here' % root_seen}
+        # The root reached: a private one only when the chain checks with it trusted - else what
+        # openssl said is the reason (an authority out of date, a list of roots missing).
+        ok2, why2 = chain_verify(leaf, joined(out), (roots or '') + '\n' + root_pem)
+        known = False
+        try:
+            ca = chain_ca_file()
+            if ca:
+                with open(ca, 'rb') as f:
+                    flat = re.sub(rb'\s+', b'', f.read(64 * 1048576))
+                body = re.sub(r'-----[A-Z ]+-----|\s+', '', root_pem).encode('ascii', 'replace')
+                known = bool(body) and body in flat
+        except OSError:
+            known = False
+        if ok2 and not known:
+            return out, {'ok': False, 'fetched': fetched, 'missing': '', 'private_root': root_seen,
+                         'words': 'it leads to %s, a root the system does not trust (a private CA?) - the chain is '
+                                  'complete; the clients (curl, a VPN client, monitoring) must trust that root, '
+                                  'or upload its root here' % root_seen}
+        return out, {'ok': False, 'fetched': fetched, 'missing': '',
+                     'words': 'the chain up to %s does not check: %s' % (root_seen, (why2 if not ok2 else why)[:200])}
     last = cert_info(chain[-1] if chain else leaf)
-    return (chain if fetched else chain_out), {
+    return (out if fetched else chain_out), {
         'ok': False, 'fetched': fetched, 'missing': _cn_of(last.get('issuer')),
         'words': 'incomplete - the authority %s is not sent and could not be completed (%s); curl, Python, '
                  'a VPN client and other clients refuse it - only browsers fetch it themselves; upload the '
@@ -782,7 +880,7 @@ def tls_view(prof):
     alt = tls_alt(prof)
     if alt:
         # The second certificate (1.0.196): what it is, never its key.
-        out['alt'] = {'info': alt.get('info') or {}}
+        out['alt'] = {'info': alt.get('info') or {}, 'chain_state': alt.get('chain_state') or None}
     out['pending'] = bool(prof.get('pending_key'))
     return out
 
@@ -1204,6 +1302,7 @@ def web_tick(store):
             'lbport' not in desired:
         return
     h = web_hash(desired)
+    drifted = False
     if st.get('hash') == h:
         try:
             web_self_tick(store, st)            # 1.0.269
@@ -1221,13 +1320,17 @@ def web_tick(store):
                 'warn')
             store.add_event('settings', 'the certificate nginx has on %s is not the one saved '
                             '(%s): put in again' % (node_name(), drift), 'warn')
+            drifted = True
         # Failed with exactly this: asked again only when somebody says so.
         # Or once after a restart (1.0.120): it may have failed on what the
         # machine did not have yet - its new address, say.
         # And every 15 minutes (1.0.187): a failure on something passing - a
         # mirror that did not answer while keepalived was installed - left the
         # VIP address and the certificates as they were until somebody looked.
-        if float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
+        # Past the gate when it drifted (1.0.271): "put in again" was said, and nothing was asked -
+        # nginx kept the wrong (or a run-out) certificate for good.
+        if not drifted and \
+                float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
             if st.get('state') != 'failed':
                 return
             rebooted = not WEB_DRIFT.get('boot_retried') and boot_time() > fnum(st.get('at'))
@@ -1334,8 +1437,15 @@ def web_state(store):
     v = vip_conf(store)
     # Where root writes them (1.0.262): the fixed paths read nothing on a machine whose nginx
     # keeps its certificates elsewhere (OTP_VIP_CERT_DIR).
-    return {'cert_now': cert_now(NGINX_CERT_FILES['node']),
-            'vip_cert_now': cert_now(NGINX_CERT_FILES['vip']),
+    # The root kept with a private certificate checked with it (1.0.270): without it, a private
+    # authority's certificate was "incomplete" on the card for good.
+    def _root(target):
+        try:
+            return str((tls_profile(store, target) or {}).get('root') or '')
+        except Exception:                               # noqa: BLE001
+            return ''
+    return {'cert_now': cert_now(NGINX_CERT_FILES['node'], _root(node_name())),
+            'vip_cert_now': cert_now(NGINX_CERT_FILES['vip'], _root('vip')),
             'self_check': _json_meta(store, 'web:selfcheck:' + node_name()),
             'self_check_vip': _json_meta(store, 'web:selfcheck:vip'),
             'state': st.get('state') or '', 'said': (st.get('said') or [])[-6:],
@@ -1383,15 +1493,16 @@ def fw_now_ask(wait=6.0):
 CERT_NOW = {}
 
 
-def cert_now(path):
+def cert_now(path, roots=''):
     """What the certificate nginx has in `path` says - read again only
-    when the file changes."""
+    when the file changes (or the root kept with it)."""
     try:
         st = os.stat(path)
     except OSError:
         return None
     had = CERT_NOW.get(path)
-    if had and had[0] == (st.st_mtime, st.st_size):
+    rh = hashlib.sha256(roots.encode('utf-8', 'replace')).hexdigest()[:16] if roots else ''
+    if had and had[0] == (st.st_mtime, st.st_size, rh):
         return had[1]
     try:
         with open(path) as f:
@@ -1404,12 +1515,12 @@ def cert_now(path):
             # What nginx sends, checked as curl and a VPN client check it (1.0.269): the system's
             # roots, nothing fetched.
             if not info.get('self_signed'):
-                ok, why = chain_verify(all_[0] + '\n', ''.join(c + '\n' for c in all_[1:]))
+                ok, why = chain_verify(all_[0] + '\n', ''.join(c + '\n' for c in all_[1:]), roots)
                 info['chain_ok'] = ok
                 info['chain_why'] = '' if ok else why[:200]
     except (OSError, ValueError):
         return None             # not kept: read again next time (1.0.57)
-    CERT_NOW[path] = ((st.st_mtime, st.st_size), info)
+    CERT_NOW[path] = ((st.st_mtime, st.st_size, rh), info)
     return info
 
 
@@ -1650,6 +1761,17 @@ def node_carry(store, old, new, by='the daemon'):
     if prof and store.get_meta('web:tls:' + new) is None:
         store.set_meta('web:tls:' + new, prof)
         said.append('its certificate and TLS settings')
+    # Its database's certificate too (1.0.271): left under the old name, it was never renewed
+    # and its end never alerted - and once it ran out the database connection lost TLS, or under
+    # high security the database itself.
+    for pre in ('dbtls:server:', 'dbtls:rescued:'):
+        got = store.get_meta(pre + old)
+        if got and store.get_meta(pre + new) is None:
+            store.set_meta(pre + new, got)
+            if pre == 'dbtls:server:':
+                said.append('its database\'s certificate')
+        if got is not None:
+            store.drop_meta(pre + old)
     v = vip_conf(store)
     changed = False
     if v.get('prefer') == old:
