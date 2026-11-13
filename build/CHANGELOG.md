@@ -4,6 +4,12 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.273 — 13 November 2026
+
+Changed
+- **Your account - a new password is typed twice**: beside "The new one" there is "The new one again"; the two must be the same, and the one you have now must be filled in, before anything is sent. A slip of a finger no longer leaves a password nobody knows.
+- **SSH server - "Who may sign in" without root is allowed**: saving AllowUsers that leaves root out was refused ("AllowUsers without root lets nobody in as root") unless root could not sign in at all. Leaving root out is a choice of its own - the accounts listed sign in over SSH and use sudo, root signs in only at the console - so it is saved as it is. The field's help says so. The on-trial time still puts back what the node had if nobody keeps it.
+
 ## 1.0.272 — 13 November 2026
 
 1.0.271 was not released on its own (its full run was cut by a restart of the test machine): its changes below ship in this version. Bug-hunt round 3 (the database layer and upgrades, the pages, the pages' certificates and nginx, TLS of the database connections and of isemon): every finding checked in the code and traced to a real path before it was fixed.

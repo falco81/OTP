@@ -506,13 +506,20 @@ function showMe() {
       pwsec.appendChild(el('h3', '', 'A new password'));
       var old = maskBox('', '', '');
       var nw = maskBox('', '', '');
+      var nw2 = maskBox('', '', '');
+      old.id = 'me-pw-old'; nw.id = 'me-pw-new'; nw2.id = 'me-pw-new2';
       var g = el('div', 'formgrid');
       g.appendChild(formField('The one you have now', old));
       g.appendChild(formField('The new one (8 characters at least)', nw));
+      g.appendChild(formField('The new one again', nw2));
       pwsec.appendChild(g);
       var go = cmdButton('Change the password', 'lock', 'primary');
+      go.id = 'me-pw-go';
       go.style.marginTop = '10px';
       go.onclick = function () {
+        /* Typed twice (1.0.273): one slip of a finger was a password nobody knew. */
+        if (!old.value) { toast('type the password you have now first', 'bad'); old.focus(); return; }
+        if (nw.value !== nw2.value) { toast('the two new ones are not the same', 'bad'); nw2.focus(); return; }
         api('password', {old: old.value, 'new': nw.value}).then(function (d) {
           toast(d.message, 'good'); closeModal();
         }).catch(oops);
@@ -18172,7 +18179,7 @@ function drawSshd(live) {
     /* Picked, not typed (1.0.242): the accounts of the nodes, several, or everybody. */
     var au = accountPicker(dr.allow_users || [], {every: 'Everybody', root: true, disabled: !dr.manage,
       change: function (v) { dr.allow_users = v; sdDirty(); }});
-    g.appendChild(formField('Who may sign in', au, 'The accounts that may sign in over SSH (AllowUsers) - or everybody.'));
+    g.appendChild(formField('Who may sign in', au, 'The accounts that may sign in over SSH (AllowUsers) - or everybody. Root left out of the list signs in only at the console.'));
     var tm = textBox(String(dr.trial_min === undefined ? 5 : dr.trial_min), '5', 'mono');
     tm.disabled = !dr.manage;
     tm.oninput = function () { dr.trial_min = Math.max(0, parseInt(tm.value, 10) || 0); sdDirty(); };

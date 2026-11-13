@@ -137,8 +137,10 @@ ok('kept: %s' % c, c == 200 and until(lambda: all(x['state'] == 'done' for x in 
 ok('... the trial over on both', not os.path.exists(N['node2']['dir'] + '/ssh/.otp-sshd-trial.json'))
 rules = [r for a in otp.fw_auto(st, 'node1') if a['key'] == 'ssh' for r in a['rules']]
 ok('the firewall now lets only 2222 in: %s' % sorted({r['port'] for r in rules}), {r['port'] for r in rules} == {'2222'})
-c, x = call('node1', '/api/sshd', {'action': 'save', 'conf': dict(WANT, allow_users='admin')}, S)
-ok('AllowUsers without root refused: %s' % c, c == 400)
+# AllowUsers without root (1.0.273): saved and put in - root then signs in at the console only.
+c, x = call('node1', '/api/sshd', {'action': 'save', 'conf': dict(WANT, port=2222, allow_users='admin', trial_min=0)}, S)
+ok('AllowUsers without root: put in on both (%s)' % c,
+   c == 200 and until(lambda: all((x['now'].get('values') or {}).get('allowusers') == 'admin' for x in view()['nodes'])))
 c, x = call('node1', '/api/sshd', {'action': 'save', 'conf': dict(WANT, port=2222, allow_users='root admin', trial_min=0)}, S)
 ok('AllowUsers root admin: put in on both (%s)' % [n['now'].get('error') for n in view()['nodes']],
    c == 200 and until(lambda: all((x['now'].get('values') or {}).get('allowusers') == 'root admin' for x in view()['nodes'])))
