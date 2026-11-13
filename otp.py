@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.269'
+__version__ = '1.0.272'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -3881,11 +3881,12 @@ DB_RESTORING = threading.Event()
 
 class _Lane(object):
     """One connection to the database and the lock it is used under."""
-    __slots__ = ('conn', 'lock', 'in_tx', 'failed_until', 'down_until', 'down_said')
+    __slots__ = ('conn', 'lock', 'in_tx', 'failed_until', 'down_until', 'down_said', 'unl')
 
     def __init__(self):
         self.conn = None
         self.lock = threading.RLock()
+        self.unl = 0            # unlimited() within unlimited() (1.0.272)
         self.in_tx = False
         self.failed_until = 0.0
         self.down_until = 0.0
@@ -4355,6 +4356,18 @@ class Db(object):
             'SET SESSION max_statement_time = 0',
             'SET SESSION max_statement_time = %d' % self.statement_s))
         with self.lock:
+            lane = self._lane()
+            if lane.unl:
+                # Within another (1.0.272): the inner one put the limit back on its way out, and the
+                # indexes made after the columns were cut at 120 s - the node did not start after
+                # an upgrade that added one to a large log.
+                lane.unl += 1
+                try:
+                    yield
+                finally:
+                    lane.unl -= 1
+                return
+            lane.unl = 1
             try:
                 # A connection the server dropped is made again first (1.0.208):
                 # the SET went to the dead one, and the job ran limited after all.
@@ -4387,6 +4400,7 @@ class Db(object):
                             conn._sock.settimeout(was_rt)
                     except Exception:                   # noqa: BLE001
                         pass
+                lane.unl = 0
                 try:
                     if self.statement_s:
                         self.run(RawSql(on))
@@ -5170,10 +5184,21 @@ def se_was_from_copy(db, k, v):
         if mode not in ('Enforcing', 'Permissive'):
             return
         was = 'host:selinux:was:' + k[len('host:selinux:now:'):]
-        db.run('DELETE FROM meta WHERE k = ?', (was,))
-        db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (was, json.dumps({'mode': mode, 'at': time.time()})))
+        # Written when the copy's rows are all in (1.0.270): the copy's own row of the same key,
+        # still waiting in the batch, met this one - "duplicate key" and the restore undone.
+        COPY_SAW.setdefault('se_was', {})[was] = json.dumps({'mode': mode, 'at': time.time()})
     except Exception:                                   # noqa: BLE001
         pass
+
+
+def se_was_put(db):
+    """The SELinux modes a copy said, written once its rows are in."""
+    for was, v in sorted((COPY_SAW.pop('se_was', None) or {}).items()):
+        try:
+            db.run('DELETE FROM meta WHERE k = ?', (was,))
+            db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (was, v))
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 def _load_tables(db, src, keep_logs, say, gzip):
@@ -5237,6 +5262,7 @@ def _load_tables(db, src, keep_logs, say, gzip):
             if len(batch) >= 1000:
                 flush()
         flush()
+    se_was_put(db)
     return counts
 
 
@@ -5266,6 +5292,7 @@ LDAP_NO_SUCH_OBJECT = 32
 LDAP_BAD_CREDENTIALS = 49
 # busy, unavailable, unwilling to answer now, other: another server may (1.0.59)
 LDAP_TRY_ANOTHER = (51, 52, 80)
+LDAP_NOT_THE_PASSWORD = (1, 8, 13)     # operations error, stronger auth / confidentiality required (1.0.270)
 # Said in these words before the directory's own (1.0.267).
 LDAP_SAY_FIRST = (8, 13)
 LDAP_SAYS = {
@@ -5290,7 +5317,8 @@ def ldap_ip_hosts(row):
     (1.0.267): the name in a domain controller's certificate is its name - a new one (Windows
     Server 2025: a new certificate with every controller put in) rarely carries the address too,
     and the check of the server's name then refuses it."""
-    if str(row.get('tls') or 'none') not in ('ldaps', 'starttls') or not row.get('verify', 1):
+    if str(row.get('tls') or 'none') not in ('ldaps', 'starttls') or \
+            row.get('verify') in (0, False, '0'):     # NULL is checked, as Directory has it (1.0.270)
         return []
     out = []
     for h in re.split(r'[,;\s]+', str(row.get('hosts') or '')):
@@ -9195,9 +9223,13 @@ class Storage(object):
         row.setdefault('node', log_node())
         # As long as RADIUS lets them be (1.0.249): a test of a 100 000-letter name was kept whole,
         # and the overview took 25 s to lay out every time it was opened.
-        for k, most in (('username', 253), ('reason', 1000)):
-            if isinstance(row.get(k), str) and len(row[k]) > most:
-                row[k] = row[k][:most]
+        # Every short column at 190 (1.0.272), what MariaDB keeps: a name of 191-253 letters was
+        # refused there ("Data too long"), and kept on SQLite or PostgreSQL it stopped every move
+        # of the database to MariaDB after it.
+        for k, v in list(row.items()):
+            most = 1000 if k == 'reason' else (None if k in ('attrs', 'reply', 'steps') else 190)
+            if most and isinstance(v, str) and len(v) > most:
+                row[k] = v[:most]
         hook = getattr(self, 'on_radius', None)
         if hook:
             try:
@@ -10706,7 +10738,10 @@ class Directory(object):
                 if isinstance(e, LdapError) and not (isinstance(e, LdapUnreachable) or
                                                      e.code in LDAP_TRY_ANOTHER):
                     raise
-                if pooled and isinstance(e, (LdapUnreachable, OSError)):
+                # One that did not answer in time is a server hung, not a connection gone stale
+                # (1.0.270): asked again at once, the same server was waited on twice.
+                hung = isinstance(e, LdapUnreachable) and ('within' in str(e))
+                if pooled and isinstance(e, (LdapUnreachable, OSError)) and not hung:
                     # Closed by the server while it was kept: asked again on a new one, the
                     # server not marked down for it.
                     stale += 1
@@ -10921,7 +10956,10 @@ class Directory(object):
             except LdapError as e:
                 # Busy, unavailable, or an answer that does not read (1.0.59):
                 # not the directory's word on the password - the next one.
-                if e.code in LDAP_TRY_ANOTHER or (e.code is None and 'does not read' in str(e)):
+                # Signing or encryption demanded, an operations error, an answer that is not the
+                # server's word on anything (1.0.270): not a wrong password either - counted as one,
+                # a correct password used up the person's tries.
+                if e.code in LDAP_TRY_ANOTHER or e.code is None or e.code in LDAP_NOT_THE_PASSWORD:
                     tried.append(str(e))
                     continue
                 raise
@@ -11664,6 +11702,10 @@ class Tokens(object):
         if not won:
             self._said(name, False, 'The key changed meanwhile (confirming a new token)', how, src, '')
             return False, 'the key changed meanwhile - start again'
+        try:
+            self.store.token_counts_stale()      # pending to active: counted again (1.0.270)
+        except Exception:                               # noqa: BLE001
+            pass
         if staged:
             self._staged_forget(name)
         self._said(name, True, 'Token confirmed', how, src, '')
@@ -12578,7 +12620,9 @@ class Siem(object):
                 for k, v in fields.items() if v not in (None, '')))
             body = words
         stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='milliseconds')
-        pri = int(CONFIG.get('siem_facility') or 13) * 8 + severity
+        fac = CONFIG.get('siem_facility')
+        # 0 (kern) is one of them (1.0.271): `or 13` sent it as 13.
+        pri = (int(fac) if fac not in (None, '') else 13) * 8 + severity
         # No control character anywhere in the line (1.0.248): a name of a RADIUS request with a
         # line break in it went into the structured data as it was - a forged event for a
         # receiver that splits on lines.
@@ -12648,7 +12692,8 @@ class Siem(object):
                     self._send(t, line)
                 except Exception as e:                  # noqa: BLE001
                     # Nothing ends this thread (1.0.186).
-                    self.trouble[str(t)] = str(e)[:200]
+                    self.trouble['%s:%s/%s' % tuple(t) if isinstance(t, tuple) and len(t) == 3
+                                 else str(t)] = str(e)[:200]
 
     def _tls(self):
         if self.ctx is None:
@@ -16815,6 +16860,19 @@ def tokens_backup_open(text, passphrase=''):
     return got
 
 
+def _when_read(v):
+    """A number of a token's copy, or None (1.0.271): "Infinity", 1e400 or "yesterday" in a file
+    put back stopped the putting back half way (a 500), or was kept as text in a column of
+    numbers - and every token backup after it failed."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and 0 <= f <= 1e11 else None
+
+
 def token_restore(store, t, by='restore', replace=False):
     """One token out of a backup. Returns what happened."""
     if not isinstance(t, dict):
@@ -16843,10 +16901,10 @@ def token_restore(store, t, by='restore', replace=False):
            'scratch_sealed': seal_codes(codes, token_bind(name)) if codes else '',
            'scratch_left': len(left), 'failures': 0, 'fail_times': '[]', 'locked_until': None,
            'pending_secret': None, 'pending_scratch': None, 'pending_at': None,
-           'pending_by': None, 'created': float(t.get('created') or time.time()),
+           'pending_by': None, 'created': _when_read(t.get('created')) or time.time(),
            'created_by': str(t.get('created_by') or by)[:190],
-           'activated': t.get('activated') or (time.time() if state == 'active' else None),
-           'last_used': t.get('last_used'), 'last_from': str(t.get('last_from') or '')[:190],
+           'activated': _when_read(t.get('activated')) or (time.time() if state == 'active' else None),
+           'last_used': _when_read(t.get('last_used')), 'last_from': str(t.get('last_from') or '')[:190],
            'last_how': str(t.get('last_how') or '')[:190],
            'note': str(t.get('note') or '')[:2000], 'display': str(t.get('display') or '')[:300],
            'issuer': str(t.get('issuer') or CONFIG.get('totp_issuer') or '')[:190],
@@ -16860,7 +16918,7 @@ def token_restore(store, t, by='restore', replace=False):
                 raise ValueError
         except ValueError:
             raise ValueError('the key is not a key of at least 16 base32 characters')
-        digits, period = int(t.get('digits') or 6), int(t.get('period') or 30)
+        digits, period = int(_when_read(t.get('digits')) or 6), int(_when_read(t.get('period')) or 30)
         algo = str(t.get('algorithm') or 'SHA1').upper()
         if digits not in (6, 7, 8) or not 10 <= period <= 300 or \
                 algo not in ('SHA1', 'SHA256', 'SHA512'):
@@ -16868,7 +16926,10 @@ def token_restore(store, t, by='restore', replace=False):
         row.update(secret=seal_secret(secret, token_bind(name)), digits=digits, period=period,
                    algorithm=algo, window_steps=max(-1, min(TOKEN_WINDOW_MOST, int(t['window_steps'])))
                    if t.get('window_steps') is not None else -1,
-                   last_step=int(t.get('last_step') or 0))
+                   # Never ahead of now (1.0.271), as an import is: a copy from a node whose
+                   # clock ran ahead refused every right code as "used already" until then.
+                   last_step=max(0, min(int(_when_read(t.get('last_step')) or 0),
+                                        int(time.time()) // period + 2)))
     else:
         row.update(secret='', dest=dest_checked(kind, t.get('dest')), digits=6, period=30,
                    algorithm='SHA1', window_steps=-1, last_step=0)
@@ -20742,6 +20803,7 @@ def _db_file_restore(store, path, by, key_file, from_name, kind):
                 if str(r.get('k') or '').startswith(META_TRANSIENT):
                     se_was_from_copy(store.db, r['k'], r.get('v'))
                     store.drop_meta(r['k'])
+            se_was_put(store.db)
             for r in live_transient:
                 store.set_meta(r['k'], r['v'])
         except Exception as e:                          # noqa: BLE001
@@ -23640,7 +23702,18 @@ class RbFolder(object):
                 shutil.copyfileobj(src, out, 1024 * 1024)
                 out.flush()
                 os.fchmod(out.fileno(), 0o640)
+                # On the disk before the old ones are taken away (1.0.271): a power cut after
+                # could leave the newest empty and the good older ones gone.
+                os.fsync(out.fileno())
             os.replace(part, os.path.join(self.dir, name))
+            try:
+                dfd = os.open(self.dir, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
         except BaseException:
             try:
                 os.unlink(part)
@@ -23924,7 +23997,9 @@ class RbSsh(object):
         # scp and sftp read user@host:path - an IPv6 address in brackets
         # there (1.0.146), ssh takes it bare.
         self.rdest = '%s@[%s]' % (t.get('user') or 'root', host) if ':' in host else self.dest
-        self.dir = (t.get('path') or '').rstrip('/') or '.'
+        # ~ is the home folder, where ssh, scp and sftp start (1.0.271): quoted for mkdir, mv, ls
+        # and rm it was a folder named ~, and every backup to ~/otp failed.
+        self.dir = re.sub(r'^~(/+|$)', '', (t.get('path') or '')).rstrip('/') or '.'
         # Signed in and the folder made, at once - the errors said here.
         if t['kind'] == 'sftp':
             parts = [p for p in self.dir.split('/') if p and p != '.']
@@ -24355,6 +24430,10 @@ def rb_build(store, work, progress=None):
     inner = os.path.join(work, 'in')
     os.makedirs(inner, mode=0o700)
     say(1, 'the database is copied')
+    try:
+        before = int(store.db.value('SELECT COUNT(*) FROM tokens') or 0)
+    except Exception:                                   # noqa: BLE001
+        before = None
     copy = os.path.join(inner, 'otp-copy.json.gz')
     with open(copy, 'wb') as f:
         dump_tables(store.db, f)
@@ -24376,6 +24455,10 @@ def rb_build(store, work, progress=None):
     try:
         tokens = int(store.db.value('SELECT COUNT(*) FROM tokens') or 0)
     except Exception:                                   # noqa: BLE001
+        tokens = '?'
+    if tokens != before:
+        # A token added or taken away while the copy was made (1.0.271): the number is not the
+        # copy's, and the weekly check said the backup could not be put back.
         tokens = '?'
     pw = rb_password()
     m = rb_manifest(store, base, tokens, pw)
@@ -24454,17 +24537,27 @@ def rb_retain(tr, keep, days, now=None, just=''):
                 continue                    # ahead of the clock: neither counted nor taken away
             ours.append((when, x['name']))
     ours.sort(reverse=True)
-    gone = []
+    gone, kept = [], []
     for i, (when, name) in enumerate(ours):
         if i == 0 or name == just:
             continue
         if (keep and i >= keep) or (days and now - when > days * 86400):
+            failed = None
             for n in [name] + [c for c in rb_companions(name) if c in names]:
                 try:
                     tr.delete(n)
-                except Exception:                       # noqa: BLE001
-                    pass
-            gone.append(name)
+                except Exception as e:                  # noqa: BLE001
+                    if n == name:
+                        failed = e
+            if failed is None:
+                gone.append(name)
+            else:
+                # Said (1.0.271): a backup the server would not take away was told as taken away,
+                # and the destination filled up unseen.
+                kept.append('%s (%s)' % (name, str(failed)[:80]))
+    if kept:
+        raise RbError('not taken away: ' + '; '.join(kept[:5]) + (
+            ' - and taken away: ' + ', '.join(gone) if gone else ''))
     return gone
 
 
@@ -24513,7 +24606,6 @@ def rb_run(store, by, only=None, progress=None):
         raise RbError('the backups have no password: set one (Settings - Backups - '
                       'Backups to other machines) - unlocked, a copy would hand the key of '
                       'every token to whoever can read the destination')
-    rb_room(store)
     work = tempfile.mkdtemp(prefix='otp-rbackup-', dir=str(STATE_DIR))
     os.chmod(work, 0o700)
     began = time.time()
@@ -24526,6 +24618,9 @@ def rb_run(store, by, only=None, progress=None):
                           'taken away until one of the nodes has another name (node_name)'
                           % (', '.join(clash), rb_slug(node_name())))
     try:
+        # Inside (1.0.271): a disk with no room was a line in the log only - no line in the
+        # backups sent, no event, no alert.
+        rb_room(store)
         path, m, _md = rb_build(store, work, progress)
         if not m.get('encrypted'):
             # The password asked again as it was locked (1.0.205): taken away
@@ -24584,8 +24679,10 @@ def rb_run(store, by, only=None, progress=None):
                 # were never tried.
                 log('remote backup: what %s said is not kept: %s' % (t['name'], e), 'warn')
         run['ok'] = all(x['ok'] for x in run['targets'])
-    except (RbError, OSError, ValueError, subprocess.SubprocessError) as e:
-        run['error'] = scrub_secret(str(e))[:400]
+    except Exception as e:                              # noqa: BLE001
+        # Every failure kept (1.0.271): the copy of the database failing (DbError) went past
+        # this, and the backup that failed left no line, no event and no alert.
+        run['error'] = scrub_secret(str(e) or e.__class__.__name__)[:400]
     finally:
         shutil.rmtree(work, ignore_errors=True)
     run['secs'] = round(time.time() - began, 1)
@@ -24934,39 +25031,9 @@ def rb_tick(daemon):
 
 
 # ---- putting one back -----------------------------------------------------------------
-def rb_open(path, password, work):
-    """A backup file opened into `work`: its folder and its manifest - every
-    file checked against the checksum the manifest has."""
-    src = path
-    with open(path, 'rb') as f:
-        head = f.read(8)
-    if head.startswith(b'Salted__'):
-        if not password:
-            raise RbError('the backup is locked: its password is needed')
-        src = os.path.join(work, 'b.tar.gz')
-        tries = [password]
-        if password == rb_password() and rb_password_old():
-            tries.append(rb_password_old())             # made here before 1.0.139
-        for n, pw in enumerate(tries):
-            try:
-                _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
-                          'sha256', '-in', path, '-out', src, '-pass', 'fd:@'],
-                         secret=pw, what='opening it')
-                break
-            except ValueError:
-                if n == len(tries) - 1:
-                    raise RbError('the password does not open it (or the file is damaged)')
-    elif not head.startswith(b'\x1f\x8b'):
-        raise RbError('that is not a backup of otp (neither locked nor a .tar.gz)')
-    else:
-        # Backups are always locked: an unlocked one was put there by somebody else - its
-        # database, its accounts, its key (1.0.139) - whether a password is in play or not
-        # (1.0.234: on a machine with none set yet, one was put in; its checksums are only
-        # what its maker wrote).
-        raise RbError('the backup is not locked, and backups of otp always are - it was not '
-                      'made by otp; not put in')
-    out = os.path.join(work, 'x')
-    os.makedirs(out, mode=0o700)
+
+def _rb_unpack(src, work, out):
+    """The archive checked and unpacked into `out`; its one top folder given back."""
     with tarfile.open(src, 'r:gz') as tf:
         members = tf.getmembers()
         tops = set()
@@ -24993,6 +25060,52 @@ def rb_open(path, password, work):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with tf.extractfile(mb) as s, open(dst, 'wb') as d:
                     shutil.copyfileobj(s, d)
+    return tops
+
+
+def rb_open(path, password, work):
+    """A backup file opened into `work`: its folder and its manifest - every
+    file checked against the checksum the manifest has."""
+    src = path
+    with open(path, 'rb') as f:
+        head = f.read(8)
+    if head.startswith(b'Salted__'):
+        if not password:
+            raise RbError('the backup is locked: its password is needed')
+        src = os.path.join(work, 'b.tar.gz')
+        tries = [password]
+        if password == rb_password() and rb_password_old():
+            tries.append(rb_password_old())             # made here before 1.0.139
+        for n, pw in enumerate(tries):
+            try:
+                _openssl(['enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', str(RB_ITER), '-md',
+                          'sha256', '-in', path, '-out', src, '-pass', 'fd:@'],
+                         secret=pw, what='opening it')
+                with open(src, 'rb') as f:
+                    if f.read(2) != b'\x1f\x8b':
+                        # A wrong password that passes the padding check (1 in 256, 1.0.271):
+                        # taken as the wrong password, and the old one still tried.
+                        raise ValueError('not opened')
+                break
+            except ValueError:
+                if n == len(tries) - 1:
+                    raise RbError('the password does not open it (or the file is damaged)')
+    elif not head.startswith(b'\x1f\x8b'):
+        raise RbError('that is not a backup of otp (neither locked nor a .tar.gz)')
+    else:
+        # Backups are always locked: an unlocked one was put there by somebody else - its
+        # database, its accounts, its key (1.0.139) - whether a password is in play or not
+        # (1.0.234: on a machine with none set yet, one was put in; its checksums are only
+        # what its maker wrote).
+        raise RbError('the backup is not locked, and backups of otp always are - it was not '
+                      'made by otp; not put in')
+    out = os.path.join(work, 'x')
+    os.makedirs(out, mode=0o700)
+    try:
+        tops = _rb_unpack(src, work, out)
+    except (tarfile.TarError, EOFError, zlib.error) as e:
+        # Said as what it is (1.0.271): a damaged archive was an error of the page (500).
+        raise RbError('the backup is damaged: %s' % (str(e)[:200] or e.__class__.__name__))
     top = os.path.join(out, tops.pop())
     try:
         with open(os.path.join(top, 'manifest.json')) as f:
@@ -25620,6 +25733,20 @@ def node_name_taken(store, want):
 
 
 HB_SEEN = {}
+
+
+def ha_slot_set():
+    """This node's slot in the cluster, 1 or 2 - for a rebuild, which must not guess (1.0.271):
+    taken as 2 when missing (and as 1 everywhere else), it dropped the wrong subscription and
+    numbered this node's rows as the other's."""
+    try:
+        my = int(CONFIG.get('ha_slot') or 0)
+    except (TypeError, ValueError):
+        my = 0
+    if my not in (1, 2):
+        raise ValueError('ha_slot is not set (1 or 2) in %s - otp --set ha_slot=1 (or 2)'
+                         % CONFIG_FILE)
+    return my
 
 
 def ha_nodes(store):
@@ -27286,6 +27413,7 @@ def ha_resync_job(store, by):
     """This node rebuilt from the other, as a job the pages can follow."""
     if CONFIG.get('ha_mode') != 'replicated':
         raise ValueError('this node does not replicate')
+    ha_slot_set()                       # said before anything is stopped or copied
 
     def work(progress):
         steps = []
@@ -27297,8 +27425,8 @@ def ha_resync_job(store, by):
         copy = make_backup(store, 'before rebuilding from the other node, by %s' % by)
         remote = ha_peer_db()
         try:
-            got = ha_rebuild(store.db, remote, int(CONFIG.get('ha_slot') or 2),
-                             3 - int(CONFIG.get('ha_slot') or 2),
+            got = ha_rebuild(store.db, remote, ha_slot_set(),
+                             3 - ha_slot_set(),
                              CONFIG.get('ha_address') or node_address(),
                              int(CONFIG.get('db_port') or 5432), CONFIG.get('ha_peer'),
                              int(CONFIG.get('ha_peer_port') or 5432), CONFIG.get('db_name'),
@@ -27915,9 +28043,12 @@ def _peer_alive_there(name):
     try:
         far = ha_peer_db()
         try:
-            beat = json.loads(far.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,))
-                              or '{}')
-            alive = now_minus(beat.get('at')) < 120
+            beat = json_obj(far.value('SELECT v FROM meta WHERE k = ?', ('node:' + name,)))
+            at = (beat or {}).get('at')
+            # No heartbeat there, or none that reads, is not alive (1.0.271): it was taken as
+            # beating just now, and while node1 was rebuilt nobody led (no alerts, no claims).
+            alive = isinstance(at, (int, float)) and not isinstance(at, bool) and \
+                now_minus(at) < 120
         finally:
             far.close()
     except Exception:                                   # noqa: BLE001
@@ -28368,11 +28499,17 @@ class _NoCredsRedirect(urllib.request.HTTPRedirectHandler):
     """A redirect to another host, or from https to http, without the request's credentials
     (1.0.234): urllib carried the SMS gateway's Bearer token wherever the answer pointed."""
 
+    def __init__(self, check=None):
+        urllib.request.HTTPRedirectHandler.__init__(self)
+        self.check = check
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new = urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg,
                                                                   headers, newurl)
         if new is None:
             return None
+        if self.check is not None:
+            self.check(new.full_url)        # raises: the address it points at is not one to ask
         a, b = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(new.full_url)
         if (a.hostname or '').lower() != (b.hostname or '').lower() or a.scheme != b.scheme or \
                 (a.port or 0) != (b.port or 0):
@@ -28385,7 +28522,7 @@ class _NoCredsRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
-def url_open(req, timeout=30, context=None, purpose=''):
+def url_open(req, timeout=30, context=None, purpose='', check=None):
     """urllib.request.urlopen - straight, unless asked for a purpose whose
     switch is on, a proxy set and the host not one reached straight; never
     through what the environment says."""
@@ -28395,7 +28532,9 @@ def url_open(req, timeout=30, context=None, purpose=''):
     host = urllib.parse.urlsplit(req.full_url).hostname or ''
     handlers = [_ProxyOnly(
         {'http': proxy, 'https': proxy} if proxy and not proxy_skips(host) else {}),
-        _NoCredsRedirect()]
+        _NoCredsRedirect(check)]
+    if check is not None:
+        check(req.full_url)
     if context is not None:
         handlers.append(urllib.request.HTTPSHandler(context=context))
     return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
@@ -29883,16 +30022,67 @@ def aia_issuer_url(pem):
     return m.group(1) if m else ''
 
 
+# The cloud's metadata services not on a link-local address (1.0.271): AWS's IPv6 one. Private
+# addresses stay allowed - an AD CS publishes its CA Issuers on the inside.
+AIA_METADATA = frozenset(('fd00:ec2::254',))
+AIA_NAT64 = ipaddress.ip_network('64:ff9b::/96')
+
+
+def aia_url_ok(url):
+    """A CA Issuers address otp asks (1.0.270): http or https on their own ports, never this
+    machine, a link-local address (the cloud's metadata service) or a broadcast one - the address
+    comes from a certificate that was sent, and an acme push key's holder makes those."""
+    u = urllib.parse.urlsplit(str(url or ''))
+    if u.scheme not in ('http', 'https') or not u.hostname:
+        raise ValueError('not an http(s) address')
+    if os.environ.get('OTP_AIA_LOCAL') == '1':
+        return              # the tests: an authority served on this machine, on a port of its own
+    try:
+        port = u.port
+    except ValueError:
+        raise ValueError('not an address')
+    if port not in (None, 80, 443):
+        raise ValueError('a CA Issuers address on port %d - only 80 and 443 are asked' % port)
+    try:
+        addrs = {a[4][0] for a in socket.getaddrinfo(u.hostname, port or 80, proto=socket.IPPROTO_TCP)}
+    except (OSError, UnicodeError):
+        return              # not found here: through the proxy, or not at all
+    for a in addrs:
+        try:
+            ip = ipaddress.ip_address(a.split('%')[0])
+        except ValueError:
+            continue
+        if getattr(ip, 'ipv4_mapped', None):
+            ip = ip.ipv4_mapped
+        elif ip.version == 6 and ip in AIA_NAT64:
+            # An IPv4 address in NAT64's form (1.0.271): 64:ff9b::a9fe:a9fe is 169.254.169.254.
+            ip = ipaddress.ip_address(int(ip) & 0xffffffff)
+        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or \
+                (ip.version == 4 and ip.is_reserved) or str(ip) in AIA_METADATA:
+            raise ValueError('%s is %s - not asked' % (u.hostname, a))
+
+
 def aia_fetch(url):
-    """The certificates at a CA Issuers address - DER, PEM or PKCS#7 - as PEM (kept a day)."""
+    """The certificates at a CA Issuers address - DER, PEM or PKCS#7 - as PEM (kept a day; an
+    answer of none kept ten minutes)."""
     got = CHAIN_FETCHED.get(url)
-    if got and time.time() - got[0] < 86400:
+    if got and time.time() - got[0] < (86400 if got[1] else 600):
         return got[1]
     if not re.match(r'^https?://[A-Za-z0-9.\[\]:-]+(:\d+)?/\S*\Z', url):
         return []
+    # Fifteen seconds for each step and thirty in all: a server that sends a byte now and then
+    # never holds an upload, an ACME renewal or an acme push.
+    until = time.time() + 30
+    raw = b''
     with url_open(urllib.request.Request(url, headers={'User-Agent': 'otp/%s' % __version__}),
-                  timeout=15, purpose='acme') as r:
-        raw = r.read(CHAIN_FETCH_MOST + 1)
+                  timeout=15, purpose='acme', check=aia_url_ok) as r:
+        while len(raw) <= CHAIN_FETCH_MOST:
+            part = r.read(16384)
+            if not part:
+                break
+            raw += part
+            if time.time() > until:
+                raise ValueError('it took more than 30 seconds')
     if len(raw) > CHAIN_FETCH_MOST:
         return []
     pems = []
@@ -29924,18 +30114,47 @@ def _cn_of(dn):
     return (m.group(1) if m else str(dn or '?')).strip()[:200]
 
 
+def chain_order(leaf, certs):
+    """(the chain from the certificate up - each the issuer of the one before it -, the rest)."""
+    infos = {c: cert_info(c) for c in certs}
+    rest, out, at = list(certs), [], cert_info(leaf)
+    while rest:
+        nxt = next((c for c in rest if infos[c].get('subject') == at.get('issuer')
+                    and not infos[c].get('self_signed')), None)
+        if not nxt:
+            break
+        out.append(nxt)
+        rest.remove(nxt)
+        at = infos[nxt]
+    return out, rest
+
+
 def chain_complete(leaf, chain_out, roots=''):
     """The chain checked against the system's roots and, where it does not reach one, completed
     from the CA Issuers addresses: (the chain, its state - {'ok': True|False|None, 'words',
-    'fetched', 'missing', 'private_root'})."""
+    'fetched', 'missing', 'private_root'}). Never raises (1.0.270): an upload, an ACME renewal and
+    an acme push go on with the chain as it came, and the state says it was not checked."""
+    try:
+        return _chain_complete(leaf, chain_out, roots)
+    except Exception as e:                              # noqa: BLE001
+        return chain_out, {'ok': None, 'fetched': [],
+                           'words': 'the chain could not be checked: %s' % (str(e)[:200] or e.__class__.__name__)}
+
+
+def _chain_complete(leaf, chain_out, roots=''):
     leaf = leaf.strip() + '\n'
     leaf_info = cert_info(leaf)
     if leaf_info.get('self_signed'):
         return chain_out, {'ok': None, 'fetched': [],
                            'words': 'self-signed - no chain; whoever connects must trust this certificate itself'}
-    ok, why = chain_verify(leaf, ''.join(c.strip() + '\n' for c in chain_out), roots)
-    fetched, chain = [], list(chain_out)
-    tried, root_seen = 0, ''
+    # The walk goes on from the top of the chain that leads up from the certificate (1.0.270): an
+    # authority sent beside it that is not of its chain (the other key's, an old one) was taken
+    # for the top, and a public chain was told to be a private CA's.
+    ordered, extra = chain_order(leaf, [c for c in chain_out if c.strip()])
+    joined = lambda xs: ''.join(c.strip() + '\n' for c in xs)
+    ok, why = chain_verify(leaf, joined(ordered + extra), roots)
+    fetched, chain = [], list(ordered)
+    tried, root_seen, root_pem = 0, '', ''
     while not ok and tried < 4:
         tried += 1
         last = chain[-1] if chain else leaf
@@ -29948,37 +30167,55 @@ def chain_complete(leaf, chain_out, roots=''):
             break
         try:
             got = aia_fetch(url)
+            got_infos = [(c, cert_info(c)) for c in got]
         except Exception as e:                          # noqa: BLE001
             why = 'the authority %s could not be fetched from %s: %s' % (_cn_of(info.get('issuer')), url,
                                                                          str(e)[:120])
             break
-        nxt = next((c for c in got if cert_info(c).get('subject') == info.get('issuer')), None)
-        if not nxt:
+        hit = next(((c, i) for c, i in got_infos if i.get('subject') == info.get('issuer')), None)
+        if not hit:
             why = '%s does not hold the authority %s' % (url, _cn_of(info.get('issuer')))
             break
-        ni = cert_info(nxt)
+        nxt, ni = hit
         if ni.get('self_signed'):
-            root_seen = ni.get('cn') or ni.get('subject')
+            root_seen, root_pem = ni.get('cn') or ni.get('subject'), nxt
             break                       # a root: never sent - it has to be the system's own
         chain.append(nxt)
         fetched.append(ni.get('cn') or ni.get('subject'))
-        ok, why = chain_verify(leaf, ''.join(c.strip() + '\n' for c in chain), roots)
+        ok, why = chain_verify(leaf, joined(chain + extra), roots)
+    out = chain + extra
     n = len(chain)
     if ok:
         top = cert_info(chain[-1] if chain else leaf).get('issuer')
         words = 'complete - %d certificate%s up to %s' % (n + 1, '' if n == 0 else 's', _cn_of(top))
         if fetched:
             words += ' (fetched: %s - it was not sent with the certificate)' % ', '.join(fetched)
-        if roots and not chain_verify(leaf, ''.join(c.strip() + '\n' for c in chain))[0]:
+        if roots and not chain_verify(leaf, joined(out))[0]:
             words += ' - a private root: only clients that trust it take it'
-        return chain, {'ok': True, 'words': words, 'fetched': fetched}
+        return out, {'ok': True, 'words': words, 'fetched': fetched}
     if root_seen:
-        return chain, {'ok': False, 'fetched': fetched, 'missing': '', 'private_root': root_seen,
-                       'words': 'it leads to %s, a root the system does not trust (a private CA?) - the chain is '
-                                'complete; the clients (curl, a VPN client, monitoring) must trust that root, '
-                                'or upload its root here' % root_seen}
+        # The root reached: a private one only when the chain checks with it trusted - else what
+        # openssl said is the reason (an authority out of date, a list of roots missing).
+        ok2, why2 = chain_verify(leaf, joined(out), (roots or '') + '\n' + root_pem)
+        known = False
+        try:
+            ca = chain_ca_file()
+            if ca:
+                with open(ca, 'rb') as f:
+                    flat = re.sub(rb'\s+', b'', f.read(64 * 1048576))
+                body = re.sub(r'-----[A-Z ]+-----|\s+', '', root_pem).encode('ascii', 'replace')
+                known = bool(body) and body in flat
+        except OSError:
+            known = False
+        if ok2 and not known:
+            return out, {'ok': False, 'fetched': fetched, 'missing': '', 'private_root': root_seen,
+                         'words': 'it leads to %s, a root the system does not trust (a private CA?) - the chain is '
+                                  'complete; the clients (curl, a VPN client, monitoring) must trust that root, '
+                                  'or upload its root here' % root_seen}
+        return out, {'ok': False, 'fetched': fetched, 'missing': '',
+                     'words': 'the chain up to %s does not check: %s' % (root_seen, (why2 if not ok2 else why)[:200])}
     last = cert_info(chain[-1] if chain else leaf)
-    return (chain if fetched else chain_out), {
+    return (out if fetched else chain_out), {
         'ok': False, 'fetched': fetched, 'missing': _cn_of(last.get('issuer')),
         'words': 'incomplete - the authority %s is not sent and could not be completed (%s); curl, Python, '
                  'a VPN client and other clients refuse it - only browsers fetch it themselves; upload the '
@@ -30286,7 +30523,7 @@ def tls_view(prof):
     alt = tls_alt(prof)
     if alt:
         # The second certificate (1.0.196): what it is, never its key.
-        out['alt'] = {'info': alt.get('info') or {}}
+        out['alt'] = {'info': alt.get('info') or {}, 'chain_state': alt.get('chain_state') or None}
     out['pending'] = bool(prof.get('pending_key'))
     return out
 
@@ -30708,6 +30945,7 @@ def web_tick(store):
             'lbport' not in desired:
         return
     h = web_hash(desired)
+    drifted = False
     if st.get('hash') == h:
         try:
             web_self_tick(store, st)            # 1.0.269
@@ -30725,13 +30963,17 @@ def web_tick(store):
                 'warn')
             store.add_event('settings', 'the certificate nginx has on %s is not the one saved '
                             '(%s): put in again' % (node_name(), drift), 'warn')
+            drifted = True
         # Failed with exactly this: asked again only when somebody says so.
         # Or once after a restart (1.0.120): it may have failed on what the
         # machine did not have yet - its new address, say.
         # And every 15 minutes (1.0.187): a failure on something passing - a
         # mirror that did not answer while keepalived was installed - left the
         # VIP address and the certificates as they were until somebody looked.
-        if float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
+        # Past the gate when it drifted (1.0.271): "put in again" was said, and nothing was asked -
+        # nginx kept the wrong (or a run-out) certificate for good.
+        if not drifted and \
+                float(store.get_meta('web:retry:' + node_name()) or 0) <= fnum(st.get('at')):
             if st.get('state') != 'failed':
                 return
             rebooted = not WEB_DRIFT.get('boot_retried') and boot_time() > fnum(st.get('at'))
@@ -30838,8 +31080,15 @@ def web_state(store):
     v = vip_conf(store)
     # Where root writes them (1.0.262): the fixed paths read nothing on a machine whose nginx
     # keeps its certificates elsewhere (OTP_VIP_CERT_DIR).
-    return {'cert_now': cert_now(NGINX_CERT_FILES['node']),
-            'vip_cert_now': cert_now(NGINX_CERT_FILES['vip']),
+    # The root kept with a private certificate checked with it (1.0.270): without it, a private
+    # authority's certificate was "incomplete" on the card for good.
+    def _root(target):
+        try:
+            return str((tls_profile(store, target) or {}).get('root') or '')
+        except Exception:                               # noqa: BLE001
+            return ''
+    return {'cert_now': cert_now(NGINX_CERT_FILES['node'], _root(node_name())),
+            'vip_cert_now': cert_now(NGINX_CERT_FILES['vip'], _root('vip')),
             'self_check': _json_meta(store, 'web:selfcheck:' + node_name()),
             'self_check_vip': _json_meta(store, 'web:selfcheck:vip'),
             'state': st.get('state') or '', 'said': (st.get('said') or [])[-6:],
@@ -30887,15 +31136,16 @@ def fw_now_ask(wait=6.0):
 CERT_NOW = {}
 
 
-def cert_now(path):
+def cert_now(path, roots=''):
     """What the certificate nginx has in `path` says - read again only
-    when the file changes."""
+    when the file changes (or the root kept with it)."""
     try:
         st = os.stat(path)
     except OSError:
         return None
     had = CERT_NOW.get(path)
-    if had and had[0] == (st.st_mtime, st.st_size):
+    rh = hashlib.sha256(roots.encode('utf-8', 'replace')).hexdigest()[:16] if roots else ''
+    if had and had[0] == (st.st_mtime, st.st_size, rh):
         return had[1]
     try:
         with open(path) as f:
@@ -30908,12 +31158,12 @@ def cert_now(path):
             # What nginx sends, checked as curl and a VPN client check it (1.0.269): the system's
             # roots, nothing fetched.
             if not info.get('self_signed'):
-                ok, why = chain_verify(all_[0] + '\n', ''.join(c + '\n' for c in all_[1:]))
+                ok, why = chain_verify(all_[0] + '\n', ''.join(c + '\n' for c in all_[1:]), roots)
                 info['chain_ok'] = ok
                 info['chain_why'] = '' if ok else why[:200]
     except (OSError, ValueError):
         return None             # not kept: read again next time (1.0.57)
-    CERT_NOW[path] = ((st.st_mtime, st.st_size), info)
+    CERT_NOW[path] = ((st.st_mtime, st.st_size, rh), info)
     return info
 
 
@@ -31154,6 +31404,17 @@ def node_carry(store, old, new, by='the daemon'):
     if prof and store.get_meta('web:tls:' + new) is None:
         store.set_meta('web:tls:' + new, prof)
         said.append('its certificate and TLS settings')
+    # Its database's certificate too (1.0.271): left under the old name, it was never renewed
+    # and its end never alerted - and once it ran out the database connection lost TLS, or under
+    # high security the database itself.
+    for pre in ('dbtls:server:', 'dbtls:rescued:'):
+        got = store.get_meta(pre + old)
+        if got and store.get_meta(pre + new) is None:
+            store.set_meta(pre + new, got)
+            if pre == 'dbtls:server:':
+                said.append('its database\'s certificate')
+        if got is not None:
+            store.drop_meta(pre + old)
     v = vip_conf(store)
     changed = False
     if v.get('prefer') == old:
@@ -32224,6 +32485,10 @@ class Acme(object):
         der = _openssl(['req', '-in', '/dev/stdin', '-outform', 'DER'], data=csr.encode(),
                        what='the request')
         say('the certificate is made')
+        # Finalized once the order is ready (1.0.271, RFC 8555 7.4): a CA that works the order
+        # out after its authorizations answered orderNotReady, and it failed every 6 hours.
+        if order_url:
+            self._poll(order_url, ('ready', 'processing', 'valid'), 'the order', 60)
         o, _ = self.post_json(got['finalize'], {'csr': _b64u(der)})
         if o.get('status') != 'valid':
             o = self._poll(order_url, ('valid',), 'the order', 120)
@@ -32441,12 +32706,15 @@ def acme_order(store, target, name, by, say=None):
     def say(t):
         steps.append([round(time.time(), 1), str(t)[:300]])
         tell(t)
-    if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
-                    r'(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9-]{1,59})\Z', name):   # .рф too (1.0.209)
-        raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)' % name)
     st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url(), 'steps': steps}
     a = None
     try:
+        if not re.match(r'^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+                        r'(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9-]{1,59})\Z', name):  # .рф (1.0.209)
+            # Inside (1.0.271): a short name (getfqdn said otp1) failed every hour with a line in
+            # the log only - no state on the card, no event, no alert until the certificate ended.
+            raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)'
+                            % name)
         a = Acme(store)
         choice = str(CONFIG.get('acme_key') or 'dual')
         kinds = ACME_CERT_KEYS.get(choice) or ('ec',)
@@ -32473,7 +32741,8 @@ def acme_order(store, target, name, by, say=None):
                 g2 = cert_bundle(c2, k2)
                 alt = {'cert': g2['cert'], 'chain': g2['chain'],
                        'key': seal_secret(g2['key'], 'web:tls'),
-                       'info': g2['info'], 'for': tls_alt_for(got['cert'])}
+                       'info': g2['info'], 'for': tls_alt_for(got['cert']),
+                       'chain_state': g2.get('chain_state')}
                 made.append(kinds[1])
             except (AcmeError, ValueError) as e:
                 # The first one kept all the same (1.0.205): thrown away with it,
@@ -33630,10 +33899,11 @@ def hatls_want(store):
 
 
 def hatls_peer_name(store):
-    for n in ha_nodes(store):
-        if not n['me']:
-            return n['name']
-    return ''
+    # The live one first, then the newest heartbeat (1.0.271): the first by name was a node
+    # reinstalled under another name and never forgotten - waited for, or its old "done" taken.
+    others = [n for n in ha_nodes(store) if not n['me']]
+    others.sort(key=lambda n: (not n.get('alive'), -fnum(n.get('at')), n['name']))
+    return others[0]['name'] if others else ''
 
 
 def hatls_view(store):
@@ -34047,6 +34317,14 @@ def hatls_check(store):
                   failed_step=None, said='waiting for the other node\'s database to pass '
                   'verify-full again')
         hatls_put(store, st)
+        return
+    if not wrong and st.get('step') == 'failed' and st.get('failed_step') == 'hba' \
+            and now - fnum(st.get('at')) >= 3600:
+        # A later step that failed with nothing wrong in place (1.0.271) - the root helper slow,
+        # its answer overwritten: asked again an hour later. Left failed for good, the other
+        # node kept coming in without TLS.
+        hatls_put(store, dict(st, step=st.get('failed_step'), asked=None, error=None,
+                              failed_step=None, said='the last step asked again'))
         return
     if not wrong:
         if stuck:
@@ -36380,6 +36658,11 @@ def fw_trial_answer(store, act, by):
     if not trial or trial.get('done'):
         raise ValueError('no change of the firewall waits to be kept')
     if act == 'keep':
+        if time.time() > fnum(trial.get('until')):
+            # Its time over (1.0.271): the other node may be putting it back this very moment -
+            # "kept" said here, and what was there before came back all the same.
+            raise ValueError('the time to keep it is over - it is being put back; make the change '
+                             'again if it is wanted')
         trial.update(done='kept', done_by=by, done_at=time.time())
         store.set_meta('fw:trial', json.dumps(trial))
         store.add_event('settings', '%s kept the change of the firewall and access' % by,
@@ -36506,7 +36789,15 @@ def ntp_desired(store):
         try:
             peers = [str(ipaddress.ip_address(str(other)))]
         except ValueError:
+            # A name (1.0.271), as ha_peer may be: its address - the nodes were said to take
+            # each other's time, and chrony was never told the other one.
             peers = []
+            for a in addresses_cached(str(other)):
+                try:
+                    peers = [str(ipaddress.ip_address(str(a).split('%')[0]))]
+                    break
+                except ValueError:
+                    continue
     return {'manage': bool(c.get('manage')), 'servers': c.get('servers') or [],
             'peers': peers, 'allow': c.get('allow') or [],
             'makestep': c.get('makestep') or [1.0, 3], 'minsources': c.get('minsources') or 1,
@@ -37679,11 +37970,11 @@ def sshd_ports_open(store):
         now = sshd_now(store, n)
         if odict(now.get('trial')).get('until') or now.get('hash') != c.get('hash'):
             for p in (odict(now.get('values')).get('port'), now.get('before_port')):
-                try:
-                    if p:
-                        ports.add(int(p))
-                except ValueError:
-                    pass
+                # Each of them (1.0.271): sshd on 22 and 2200 read "22 2200", which was no number -
+                # a change put back opened only the new port, and SSH was refused on the old ones.
+                for one in str(p or '').replace(',', ' ').split():
+                    if one.isdigit() and 0 < int(one) < 65536:
+                        ports.add(int(one))
     return sorted(ports)
 
 
@@ -37991,6 +38282,21 @@ def sshotp_remove(store, name, by):
     store.add_event('settings', '%s removed the SSH token of %s' % (by, name), 'warn', who=by)
 
 
+SSHOTP_HOLD_FROM = 20
+
+
+def sshotp_held(rec, now):
+    """Seconds an app's SSH token is held for after many wrong codes in a row, 0 if not (1.0.271):
+    five a node every five minutes was all, a restart forgot them, and each node counted its own -
+    a code guessed in weeks. In the token's row, so both nodes and a restart count them: from 20
+    wrong in a row 15 minutes, doubled every 10 more, a day at most; a right code clears it."""
+    n = int(rec.get('fails') or 0)
+    if n < SSHOTP_HOLD_FROM:
+        return 0
+    hold = 60 * min(1440, 15 * 2 ** ((n - SSHOTP_HOLD_FROM) // 10))
+    return max(0, int(fnum(rec.get('failed_at')) + hold - now))
+
+
 def _sshotp_fails(name, now):
     fails = [t for t in SSHOTP_FAILS[name.lower()] if now - t < SSHOTP_WINDOW_S]
     SSHOTP_FAILS[name.lower()] = fails
@@ -38025,6 +38331,9 @@ def sshotp_check(store, name, code):
             return False, 'no SSH token for this account'
         if rec.get('kind', 'app') != 'app':
             return False, 'this token gets its codes sent'
+        held = sshotp_held(rec, now)
+        if held:
+            return False, 'too many wrong codes - wait %d min' % max(1, held // 60)
         secret = unseal_secret(rec.get('secret'), sshotp_key(name))
         code = ssh_code_typed(code)
         step = totp_match(secret, code, clock_now('codes'), digits=6, window=mfa_window()) if secret else None
@@ -38040,10 +38349,13 @@ def sshotp_check(store, name, code):
         if step is None or step <= int(rec.get('step') or 0):
             fails.append(now)
             rec['failed_at'] = now
+            if step is None:
+                rec['fails'] = int(rec.get('fails') or 0) + 1
             store.set_meta(sshotp_key(name), json.dumps(rec))
             return False, ('the code is not right' if step is None
                            else 'the code was used already - wait for the next one')
         rec.update(step=step, used_at=now, used_on=node_name())
+        rec.pop('fails', None)
         store.set_meta(sshotp_key(name), json.dumps(rec))
         SSHOTP_FAILS.pop(name.lower(), None)
         return True, 'signed in'
@@ -40172,30 +40484,35 @@ def _dbtls_helper(what, store, by, wait=120):
                      'otp-web.path running?  systemctl status otp-web.path')
 
 
-def _dbtls_server_cert(store, by):
-    """This machine's PostgreSQL given a certificate from otp's authority
-    (kind local): for localhost, 127.0.0.1 and its names; ssl switched on with
-    a reload, no restart."""
-    # One node makes the authority (1.0.262): replicating with none yet, both nodes in this
-    # phase made one - two INSERTs of the one row 'hatls:ca', and replication stopped on it for
-    # good. The lead makes it (or rolls it); the other waits for it to come over.
-    end = time.time() + 60
+def hatls_ca_ensure(store, by, wait=60):
+    """The cluster's authority there and not near its end - made (or rolled) by one node only
+    (1.0.262; for isemon's certificates too since 1.0.271): replicating with none yet, both nodes
+    made one - two INSERTs of the one row 'hatls:ca', and replication stopped on it for good. The
+    lead makes it; the other waits for it to come over."""
+    end = time.time() + wait
     while True:
         with HATLS_LOCK:
             ca = hatls_ca(store)
             roll = not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
                 HATLS_CA_ROLL_DAYS * 86400
             if not roll:
-                break
+                return
             if CONFIG.get('ha_mode') != 'replicated' or ha_lead(store):
                 hatls_ca_make(store, by)
-                break
+                return
             if ca['cas'] and float(ca['cas'][0].get('end') or 0) > time.time():
-                break                   # rolled by the other node; this one good meanwhile
+                return                  # rolled by the other node; this one good meanwhile
         if time.time() > end:
             raise ValueError('the cluster\'s authority has not come over from the other node yet '
                              '- try again in a minute')
         time.sleep(3)
+
+
+def _dbtls_server_cert(store, by):
+    """This machine's PostgreSQL given a certificate from otp's authority
+    (kind local): for localhost, 127.0.0.1 and its names; ssl switched on with
+    a reload, no restart."""
+    hatls_ca_ensure(store, by)
     names = hatls_names()
     key, crt = hatls_issue(store, names)
     got = _dbtls_helper({'do': 'server', 'cert': crt, 'key': key,
@@ -40309,6 +40626,7 @@ def _dbtls_again(daemon):
 # the rescue's own way back.
 # Not under 'dbtls:' - those are each machine's own and stay out of a copy put back (META_TRANSIENT).
 DBTLS_WANT_KEY = 'dbtls_want'
+DBTLS_FOLLOW_BY = 'otp (as the cluster has it)'
 DBTLS_WANT_AGAIN_S = float(os.environ.get('OTP_DBTLS_WANT_AGAIN_S') or 600)
 
 
@@ -40330,6 +40648,7 @@ def _dbtls_want(store, derive=True):
     rows = dbguard_rows(store.db, store.db.rows('SELECT k, v FROM meta WHERE k = ?', (DBTLS_WANT_KEY,)))
     got = json_obj(rows[0]['v']) if rows else None
     if isinstance(got, dict) and str(got.get('mode') or '') in DBTLS_MODES:
+        DBTLS_WORK.pop('want_missing', None)
         return got
     if rows or not derive:
         return None             # there but not otp's (the guard), or not to be guessed
@@ -40343,6 +40662,13 @@ def _dbtls_want(store, derive=True):
     if len(tls) != 1:
         return None             # none with TLS, or the nodes not of one mind: nothing guessed
     row = {'mode': tls[0], 'at': time.time(), 'by': 'otp (as the nodes had it)'}
+    # In a cluster one node writes it (1.0.270), and only after it was missing two minutes: both
+    # writing a new row of the cluster's at once is a duplicate key that stops replication - and a
+    # copy put back on the other node writes its own at its end.
+    if dbtls_kind() == 'replicated':
+        since = DBTLS_WORK.setdefault('want_missing', time.time())
+        if int(CONFIG.get('ha_slot') or 1) != 1 or time.time() - since < 120:
+            return row
     store.set_meta(DBTLS_WANT_KEY, json.dumps(row))
     return row
 
@@ -40372,13 +40698,25 @@ def _dbtls_want_follow(daemon):
         # back or joined anew, where it is wished by the cluster and not done here yet: asked of the
         # root helper at the same moment, the two asks crossed and the link's failed.
         return
+    if time.time() - DBTLS_WORK.get('wizard_at', 0.0) < 120:
+        return                  # the wizard is at work on this node
     DBTLS_WORK['want_at'] = time.time() + DBTLS_WANT_AGAIN_S
-    by = 'otp (as the cluster has it)'
+    by = DBTLS_FOLLOW_BY
+
+    def still():
+        # Asked again just before each step: the wizard may have switched it off meanwhile.
+        w = _dbtls_want(store, derive=False) or {}
+        return str(w.get('mode') or '') and not CONFIG.get('db_tls') and \
+            time.time() - DBTLS_WORK.get('wizard_at', 0.0) >= 120
 
     def go():
         try:
+            if not still():
+                return
             if not _dbtls_has_server(store):
                 dbtls_apply(daemon, {'phase': 'server', 'by': by})
+            if not still():
+                return
             dbtls_apply(daemon, {'phase': 'connect', 'mode': mode, 'by': by})
             store.add_event('settings', '%s: the connection to its database is encrypted again as the '
                             'cluster has it (%s)' % (node_name(), CONFIG.get('db_tls') or mode), 'info')
@@ -40447,6 +40785,13 @@ def dbtls_apply(daemon, args):
                 raise ValueError('this node\'s PostgreSQL has no certificate from otp yet')
             mode = 'verify-full'
         ca = _dbtls_ca_for(store, kind, mode, args)
+        if by != DBTLS_FOLLOW_BY:
+            # The wizard at work here (1.0.270): the follow waits two minutes.
+            DBTLS_WORK['wizard_at'] = time.time()
+        if not mode and kind in ('replicated', 'local'):
+            # The wish of none written before the switch (1.0.270): after it, the follow saw the
+            # node without TLS and the wish still with it - and encrypted it again at once.
+            _dbtls_want_set(store, mode, by)
         try:
             got = dbtls_switch(daemon, mode, ca, by)
         except Exception:
@@ -40762,7 +41107,7 @@ ISEMON_CLIENT_RENEW_DAYS = 60
 ISEMON_SERVER_DAYS = 1825
 ISEMON_CLIENT_CRT = STATE_DIR / 'isemon-client.crt'
 ISEMON_CLIENT_KEY = STATE_DIR / 'isemon-client.key'
-ISEMON_TLS_WORK = {'at': 0.0, 'said': 0.0}
+ISEMON_TLS_WORK = {'at': 0.0, 'said': 0.0, 'mtime': None}
 
 
 def isemon_tls_ctx():
@@ -40810,11 +41155,7 @@ def isemon_client_cert(store, force=False):
         key = unseal_secret(got['key'], bind=k)       # files gone: written again
         crt = got['cert']
     else:
-        with HATLS_LOCK:
-            ca = hatls_ca(store)
-            if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
-                    HATLS_CA_ROLL_DAYS * 86400:
-                hatls_ca_make(store, 'otp (isemon)')
+        hatls_ca_ensure(store, 'otp (isemon)')          # one node makes it (1.0.271)
         name = re.sub(r'[^A-Za-z0-9.-]', '', node_name())[:64] or 'otp'
         key, crt = hatls_issue(store, [name], eku='clientAuth', days=ISEMON_CLIENT_DAYS, cn=name)
         end = _cert_end(crt)
@@ -40848,11 +41189,14 @@ def isemon_tls_tick(daemon):
     ISEMON_TLS_WORK['at'] = now
     store = daemon.store
     if CONFIG.get('isemon') and CONFIG.get('isemon_mtls'):
-        before = ISEMON_CLIENT_CRT.stat().st_mtime if ISEMON_CLIENT_CRT.exists() else 0
         isemon_client_cert(store)
         after = ISEMON_CLIENT_CRT.stat().st_mtime if ISEMON_CLIENT_CRT.exists() else 0
+        # Against the last one seen here (1.0.271), not only around this call: renewed by "Try it"
+        # in between, the shipper kept the old certificate until it ran out.
+        before = ISEMON_TLS_WORK['mtime']
+        ISEMON_TLS_WORK['mtime'] = after
         sh = getattr(daemon, 'shipper', None)
-        if sh is not None and after != before:
+        if sh is not None and before is not None and after != before:
             sh.ctx = None
             for key in list(sh.tcp):
                 try:
@@ -40905,11 +41249,7 @@ def isemon_tls_bundle(store, names, port, mtls, passphrase, by):
     if len(str(passphrase or '')) < 12:
         raise ValueError('the passphrase is 12 characters at least - the key of isemon\'s '
                          'certificate is in the file')
-    with HATLS_LOCK:
-        ca = hatls_ca(store)
-        if not ca['cas'] or float(ca['cas'][0].get('end') or 0) - time.time() < \
-                HATLS_CA_ROLL_DAYS * 86400:
-            hatls_ca_make(store, by)
+    hatls_ca_ensure(store, by)
     key, crt = hatls_issue(store, names, eku='serverAuth', days=ISEMON_SERVER_DAYS,
                            cn=names[0][:64])
     trust = hatls_trust(hatls_ca(store))
@@ -41242,6 +41582,9 @@ def selinux_ask(store, node, action, by):
             'permissive': 'permissive again'}[action]), 'warn', who=by)
 
 
+SE_STEP_STALE_S = 3600
+
+
 def selinux_tick(daemon):
     """Every few seconds: a step asked for this node done; how it is, looked at now and then."""
     store = daemon.store
@@ -41255,6 +41598,21 @@ def selinux_tick(daemon):
     # A step tried is not tried again (1.0.234): with its answer not written (the database
     # away), it ran again every 5 s - "enforce" and "prepare" over and over.
     asked = bool(want) and want.get('id') != now.get('done') and want.get('id') != SE_WORK['tried']
+    if asked and want.get('do') in ('prepare', 'enforce', 'permissive') and \
+            time.time() - fnum(want.get('at')) > SE_STEP_STALE_S:
+        # A step asked of a node that was away is not done days later (1.0.270): high security
+        # may have been switched on since, and nobody waits for it - said, and left.
+        try:
+            store.set_meta('host:selinux:now:' + me, json.dumps(dict(
+                now, done=want.get('id'), action=want.get('do'), at=time.time(), said=[],
+                error='the step "%s" was asked more than an hour ago, while this node was away - not done; '
+                      'ask for it again' % want.get('do'))))
+            store.add_event('settings', 'SELinux on %s: the step "%s" asked more than an hour ago was not done'
+                            % (me, want.get('do')), 'warn')
+        except Exception as e:                          # noqa: BLE001
+            log_sparing('selinux', 'SELinux: %s' % e, 'warn', every=600)
+        SE_WORK['tried'] = want.get('id') or ''
+        return
     if SE_WORK['busy'] or not (asked or time.time() - SE_WORK['seen'] > SE_EVERY):
         return
     SE_WORK['busy'] = True
@@ -41266,7 +41624,9 @@ def selinux_tick(daemon):
     def go():
         try:
             err = ''
-            data = odict(now.get('data')) if do != 'check' else {}
+            # What was known kept when a look fails (1.0.270): with none, the high security check
+            # and the after-update checks lost SELinux and the error was never shown.
+            data = odict(now.get('data'))
             said = []
             try:
                 data = root_ask('selinux.ask', 'selinux.json',
@@ -41302,7 +41662,10 @@ def selinux_tick(daemon):
                     log('SELinux on %s: %s' % (me, '; '.join(said) or 'done'), 'warn')
             store.set_meta('host:selinux:now:' + me, json.dumps({
                 'data': data if isinstance(data, dict) else {}, 'at': time.time(),
-                'done': want.get('id') if asked else now.get('done'), 'error': err,
+                # A step tried whose answer could not be written is done all the same (1.0.270):
+                # it stayed "asked" until a restart ran it again.
+                'done': want.get('id') if (asked or (want.get('id') and want.get('id') == SE_WORK['tried']))
+                else now.get('done'), 'error': err,
                 'said': said, 'action': do}))
         except Exception as e:                          # noqa: BLE001
             log_sparing('selinux', 'SELinux: %s' % e, 'warn', every=600)
@@ -42311,7 +42674,9 @@ def alert_send(store, msg, to, kind, keys):
         entry.update(ok=False, said=str(e)[:200], queued=getattr(e, 'queued', '') or '')
     # The row of what was sent is the sending node's (1.0.234): a test from another node's pages
     # wrote its older copy back over it, and the same alerts went out again.
-    if kind == 'test' and not alerts_lead(store):
+    # A report sent from that node's pages too (1.0.271): it wrote its stale copy of the
+    # problems back, and they were mailed again.
+    if kind != 'alert' and not alerts_lead(store):
         return entry
     st = _alert_state(store)
     if not entry['ok'] and entry.get('queued') != 'waiting':
@@ -42379,6 +42744,14 @@ def _alerts_evaluate(store, force=False):
         if k not in cur:
             if quiet and k.startswith(held):
                 continue
+            if known[k].get('sent') and delay and not force:
+                # Over only once it has stayed away as long as it had to stay to be said
+                # (1.0.271): a disk about its limit, a sink that blinked - "new" and "over"
+                # mailed and trapped all day.
+                gone_at = fnum(known[k].get('missing_since')) or now
+                known[k]['missing_since'] = gone_at
+                if now - gone_at < delay:
+                    continue
             p = known.pop(k)
             if p.get('sent') and CONFIG.get('alerts_resolved', 1):
                 gone.append(p)
@@ -44268,7 +44641,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             # The heavy pages a few at a time (1.0.265): a hundred open pages asking together held
             # RADIUS (the same process) behind them. The rest wait for a place, then hear "busy".
-            slot = page_slot(method, path)
+            # Only for somebody signed in (1.0.271): asks without a session took the places too,
+            # and a flood of them told the administrators "busy".
+            if self._signed_in():
+                slot = page_slot(method, path)
             got = fn(self)
             if got is not None:
                 self.send_json(got if 'ok' in got else dict(ok=True, **got))
@@ -46854,7 +47230,7 @@ def _token_import(h):
                                 'created_by': t.get('created_by') or '',
                                 'last_from': t.get('last_from') or '',
                                 'last_how': t.get('last_how') or '', 'scratch_left': left,
-                                'failures': 0, 'digits': int(t.get('digits') or 6)})
+                                'failures': 0, 'digits': int(_when_read(t.get('digits')) or 6)})
             # Searched with the words of the token list (1.0.96).
             q = str(b.get('q') or '')
             if q.strip():
@@ -46877,7 +47253,7 @@ def _token_import(h):
                     # Replaced one by one as the page chose (1.0.100), or all.
                     said = token_restore(h.store, t, 'restore:' + s['name'],
                                          replace=bool(b.get('replace')) or n in repl_names)
-                except (ValueError, TypeError) as e:
+                except (ValueError, TypeError, OverflowError) as e:
                     said = 'not restored: %s' % e
                 out.append({'name': n, 'said': said})
         h.store.add_event('tokens', '%s restored %d token(s) from a backup' % (
@@ -51119,7 +51495,7 @@ def _web_do(h):
             # Both of the same names (1.0.240): the ECDSA one beside, as ACME's "both".
             prof['alt'] = {'cert': got2['cert'], 'chain': got2['chain'],
                            'key': seal_secret(got2['key'], 'web:tls'), 'info': got2['info'],
-                           'for': tls_alt_for(got['cert'])}
+                           'for': tls_alt_for(got['cert']), 'chain_state': got2.get('chain_state')}
         else:
             prof.pop('alt', None)
         prof.pop('pending_key', None)
@@ -51142,7 +51518,16 @@ def _web_do(h):
             msg += ' - its chain: %s' % cst.get('words')
             store.add_event('settings', 'the chain of the certificate of %s: %s' % (words, cst.get('words')),
                             'info' if cst.get('ok') else 'warn', who=who)
-        return {'message': msg, 'complete': cst.get('ok'), 'tls': tls_view(prof)}
+        # The second (ECDSA) one's chain too (1.0.270): the one most clients take.
+        ast = (got2 or {}).get('chain_state') or {}
+        if ast.get('fetched') or ast.get('ok') is False:
+            msg += ' - the second (%s) one\'s chain: %s' % (got2['info'].get('key') or 'ECDSA', ast.get('words'))
+            store.add_event('settings', 'the chain of the second certificate of %s: %s' % (words, ast.get('words')),
+                            'info' if ast.get('ok') else 'warn', who=who)
+        complete = cst.get('ok')
+        if got2 and complete and ast.get('ok') is False:
+            complete = False
+        return {'message': msg, 'complete': complete, 'tls': tls_view(prof)}
     if act == 'tls_chain':
         # Complete the chain (1.0.269): the certificate kept, checked again against the system's roots
         # and completed from its CA Issuers addresses (its second, ECDSA, one too) - nginx then sends
@@ -51157,12 +51542,21 @@ def _web_do(h):
         alt = prof.get('alt') if isinstance(prof.get('alt'), dict) else None
         if alt and alt.get('cert'):
             acur = [m.group(0) for m in PEM_CERT.finditer(alt.get('chain') or '')]
-            achain, _st = chain_complete(alt['cert'].strip(), acur, prof.get('root') or '')
+            achain, ast = chain_complete(alt['cert'].strip(), acur, prof.get('root') or '')
             alt['chain'] = ''.join(c.strip() + '\n' for c in achain)
+            alt['chain_state'] = ast
+        else:
+            ast = {}
         tls_save(store, target, prof, who)
+        said = state['words']
+        complete = state.get('ok')
+        if ast:
+            said += ' - the second (%s) one: %s' % (odict(alt.get('info')).get('key') or 'ECDSA', ast.get('words'))
+            if complete and ast.get('ok') is False:
+                complete = False
         store.add_event('settings', '%s checked the chain of the certificate of %s: %s' % (
-            who, words, state['words']), 'info' if state.get('ok') else 'warn', who=who)
-        return {'message': state['words'], 'complete': state.get('ok'), 'tls': tls_view(prof)}
+            who, words, said), 'info' if complete else 'warn', who=who)
+        return {'message': said, 'complete': complete, 'tls': tls_view(prof)}
     if act == 'tls_chain_add':
         # The missing authority by hand (1.0.269): when it cannot be fetched (no CA Issuers address, no
         # way out, a private CA) - only certificates of authorities, never a key; a root goes beside the
@@ -51194,32 +51588,50 @@ def _web_do(h):
             raise ApiError(400, str(e))
         if not new_roots and not new_inter:
             raise ApiError(400, 'every certificate in it is there already')
-        # In order from the certificate: each the issuer of the one before.
-        pool = cur + new_inter
-        infos = {c: cert_info(c) for c in pool}
-        ordered, at = [], cert_info(leaf)
-        while pool:
-            nxt = next((c for c in pool if infos[c].get('subject') == at.get('issuer')), None)
-            if not nxt:
-                break
-            ordered.append(nxt)
-            pool.remove(nxt)
-            at = infos[nxt]
+        # In order from the certificate: each the issuer of the one before - the second (ECDSA)
+        # certificate's chain too (1.0.270): its authority could not be added by hand.
         root_now = ''.join(c.strip() + '\n' for c in roots + new_roots)
-        useful = [c for c in new_inter if c in ordered] or \
-            [c for c in new_roots if cert_info(c).get('subject') == at.get('issuer')]
-        if not useful:
+
+        def placed(leaf_pem, cur_chain):
+            ordered, rest = chain_order(leaf_pem, cur_chain + [c for c in new_inter if c not in cur_chain])
+            at = cert_info(ordered[-1] if ordered else leaf_pem)
+            use = [c for c in new_inter if c in ordered] or \
+                [c for c in new_roots if cert_info(c).get('subject') == at.get('issuer')]
+            return ordered, [c for c in rest if c in cur_chain], use, at
+        try:
+            ordered, rest, useful, at = placed(leaf, cur)
+            alt = prof.get('alt') if isinstance(prof.get('alt'), dict) and prof['alt'].get('cert') else None
+            aplaced = None
+            if alt:
+                acur = [m.group(0) for m in PEM_CERT.finditer(alt.get('chain') or '')]
+                aplaced = placed(alt['cert'].strip(), acur)
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        if not useful and not (aplaced and aplaced[2]):
             raise ApiError(400, 'none of these is the authority that signed the chain\'s last certificate (%s)'
                            % _cn_of(at.get('issuer')))
-        chain, state = chain_complete(leaf, ordered, root_now)
+        if useful or not aplaced:
+            chain, state = chain_complete(leaf, ordered + rest, root_now)
+        else:
+            chain, state = cur, odict(prof.get('chain_state')) or {'ok': None, 'words': ''}
         prof.update(chain=''.join(c.strip() + '\n' for c in chain), chain_info=[cert_info(c) for c in chain],
                     root=root_now, root_info=[cert_info(c) for c in roots + new_roots], chain_state=state,
-                    verify='ok' if state.get('ok') else (state.get('words') or ''))
+                    verify='ok' if state.get('ok') else ('' if state.get('ok') is None else state.get('words') or ''))
+        said, complete = state.get('words') or '', state.get('ok')
+        if aplaced and aplaced[2]:
+            achain, ast = chain_complete(alt['cert'].strip(), aplaced[0] + aplaced[1], root_now)
+            alt['chain'] = ''.join(c.strip() + '\n' for c in achain)
+            alt['chain_state'] = ast
+            useful = useful + [c for c in aplaced[2] if c not in useful]
+            said = (said + ' - ' if said else '') + 'the second (%s) one: %s' % (
+                odict(alt.get('info')).get('key') or 'ECDSA', ast.get('words'))
+            if ast.get('ok') is False:
+                complete = False
         tls_save(store, target, prof, who)
         store.add_event('settings', '%s added %s to the chain of the certificate of %s: %s' % (
-            who, ', '.join(cert_info(c).get('cn') or '?' for c in useful), words, state['words']),
-            'info' if state.get('ok') else 'warn', who=who)
-        return {'message': state['words'], 'complete': state.get('ok'), 'tls': tls_view(prof)}
+            who, ', '.join(cert_info(c).get('cn') or '?' for c in useful), words, said),
+            'info' if complete else 'warn', who=who)
+        return {'message': said, 'complete': complete, 'tls': tls_view(prof)}
     if act == 'tls_csr':
         names = [x.strip() for x in re.split(r'[\s,;]+', str(b.get('names') or '')) if x.strip()]
         key, csr = make_csr(str(b.get('cn') or '').strip(), names, str(b.get('kind') or 'rsa2048'),
@@ -54037,6 +54449,14 @@ def osr_node_status(want, row, alive):
         if row.get('refused'):
             return 'failed', '; '.join('%s - %s' % (r.get('cn') or '?', r.get('why') or '?')
                                        for r in row['refused'])
+        # Written but not in the system's list (1.0.270): the tool did not take it in.
+        st = row.get('state') if isinstance(row.get('state'), dict) else {}
+        fps = {c.get('fp') for c in want.get('certs') or []}
+        lack = [str(x.get('cn') or x.get('fp') or '?') for x in st.get('ours') or []
+                if isinstance(x, dict) and x.get('fp') in fps and x.get('in_bundle') is False]
+        if lack:
+            return 'failed', ('in the folder but not in the system\'s list: %s - Read it again runs the '
+                              'system\'s tool once more' % ', '.join(lack[:5]))
         return 'applied', ''
     if not alive:
         return 'waiting', 'not answering'
@@ -54092,7 +54512,8 @@ def osr_view(store):
         on = {}
         for n in nodes:
             hit = [x for x in n['ours'] if x.get('fp') == c['fp']]
-            on[n['name']] = (hit[0].get('in_bundle') is not False) if hit else False
+            on[n['name']] = (True if hit[0].get('in_bundle') else (None if hit[0].get('in_bundle') is None
+                                                                       else False)) if hit else False
         certs.append({'fp': c['fp'], 'pem': c['pem'], 'cn': f.get('cn'), 'subject': f.get('subject'),
                       'issuer': f.get('issuer'), 'not_before': f.get('not_before'),
                       'not_after': f.get('not_after'), 'key': f.get('key'), 'kind': f.get('kind'),
@@ -56286,6 +56707,8 @@ def snmp_traps_tick(daemon, cur):
     changed = False
     for k, p in cur.items():
         was = known.get(k)
+        if was and was.pop('missing_since', None) is not None:
+            changed = True                      # back before it was over (1.0.271)
         since = fnum((was or {}).get('since'), now) or now
         if not was:
             known[k] = {'since': now, 'sent': False, 'level': p.get('level')}
@@ -56302,6 +56725,13 @@ def snmp_traps_tick(daemon, cur):
     # sent in the middle of the maintenance the manager watched.
     quiet = alerts_quiet_until(store) > time.time()
     for k in [k for k in known if k not in cur and not (quiet and k.startswith(ALERTS_HELD))]:
+        if known[k].get('sent') and delay:
+            # Over only once away as long as it had to be there (1.0.271): no flapping traps.
+            if not known[k].get('missing_since'):
+                known[k]['missing_since'] = now
+                changed = True
+            if now - fnum(known[k].get('missing_since')) < delay:
+                continue
         p = known.pop(k)
         changed = True
         if p.get('sent'):
@@ -57113,7 +57543,7 @@ def push_put(store, slot, got, alt, by):
     if alt:
         prof['alt'] = {'cert': alt['cert'], 'chain': alt['chain'],
                        'key': seal_secret(alt['key'], 'web:tls'), 'info': alt['info'],
-                       'for': tls_alt_for(got['cert'])}
+                       'for': tls_alt_for(got['cert']), 'chain_state': alt.get('chain_state')}
     prof.setdefault('preset', 'standard')
     prof.setdefault('dh', 'none')
     tls_save(store, target, prof, 'acme push (%s)' % by)
@@ -63585,6 +64015,10 @@ def cli_ha_resync(args, pal):
     load_config(saved=None)
     if CONFIG.get('ha_mode') != 'replicated':
         raise SystemExit('otp: this node does not replicate (ha_mode is not "replicated")')
+    try:
+        ha_slot_set()
+    except ValueError as e:
+        raise SystemExit('otp: %s' % e)
     # Root only (1.0.59): anybody else could not stop the daemon, and the
     # copy went on with it writing - the very thing that stops it for good.
     if os.geteuid() != 0:
@@ -63614,8 +64048,8 @@ def cli_ha_resync(args, pal):
                              'changed: %s' % e)
         remote = ha_peer_db()
         HA_STORE['store'] = Storage(local)      # a failed one in maintenance (1.0.249)
-        got = ha_rebuild(local, remote, int(CONFIG.get('ha_slot') or 2),
-                         3 - int(CONFIG.get('ha_slot') or 2),
+        got = ha_rebuild(local, remote, ha_slot_set(),
+                         3 - ha_slot_set(),
                          CONFIG.get('ha_address') or node_address(),
                          int(CONFIG.get('db_port') or 5432), CONFIG.get('ha_peer'),
                          int(CONFIG.get('ha_peer_port') or 5432), CONFIG.get('db_name'),
