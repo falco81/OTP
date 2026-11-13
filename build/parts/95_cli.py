@@ -806,6 +806,12 @@ def build_parser():
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='the second step of signing in to these pages, for every account: '
                         'switch it on or off, or say how it stands')
+    g.add_argument('--kerberos', choices=('on', 'off', 'status'), metavar='on|off|status',
+                   help='signing in to these pages with Windows (Kerberos): switch it on or off, or say '
+                        'how it stands on every node (1.0.274)')
+    g.add_argument('--kerberos-keytab', metavar='FILE',
+                   help='put in the keytab of the pages\' service (HTTP/name@REALM) - every node gets it')
+    g.add_argument('--kerberos-keytab-drop', action='store_true', help='take the keytab of Kerberos away')
     g.add_argument('--reset-2fa', metavar='NAME', help='take away the second step an account set '
                    'up for these pages: it sets it up again at its next sign-in')
     g.add_argument('--note', metavar='TEXT', default='', help='a note beside what is made')
@@ -3898,6 +3904,52 @@ def cli_main(argv=None):
         store.add_event('accounts', 'the password of %s was set on the command line'
                         % args.passwd, who=who)
         print(pal.ok_line('the password of %s is set' % args.passwd))
+        return 0
+
+    if args.kerberos or args.kerberos_keytab or args.kerberos_keytab_drop:
+        if args.kerberos_keytab:
+            try:
+                with open(args.kerberos_keytab, 'rb') as f:
+                    raw = f.read(KRB_KEYTAB_MAX + 1)
+                ents = krb_keytab_put(store, raw, who)
+            except (OSError, ValueError) as e:
+                raise SystemExit('otp: %s' % e)
+            print(pal.ok_line('the keytab is put in: %s' % ', '.join(
+                '%s (kvno %s, %s)' % (e['principal'], e['kvno'], e['kind']) for e in ents)))
+        if args.kerberos_keytab_drop:
+            krb_keytab_drop(store, who)
+            print(pal.ok_line('the keytab of Kerberos is taken away'))
+        if args.kerberos in ('on', 'off'):
+            d = Daemon(store, serve=False)
+            try:
+                d.save_settings({'admin_kerberos': '1' if args.kerberos == 'on' else '0'}, by=who)
+            except (BadSetting, OSError) as e:
+                raise SystemExit('otp: %s' % e)
+            CONFIG['admin_kerberos'] = 1 if args.kerberos == 'on' else 0
+        v = krb_view(store)
+        v['problems'] = krb_problems(store) if v['on'] else []
+        if args.json:
+            out(v)
+            return 0
+        print(pal.ok_line('signing in to these pages with Kerberos is %s' % ('ON' if v['on'] else 'off')))
+        print('a password on the sign-in page: %s' % ('NOT offered (only Windows)' if v['password_off'] else 'offered'))
+        print('realm: %s%s · directory: %s · second step after it: %s · NTLM: never' % (
+            v['realm'] or '-', '' if v['realm_set'] else ' (from the directory)', v['directory'] or '-',
+            'asked' if v['mfa'] else 'off'))
+        kt = v['keytab']
+        print('keytab: %s' % (', '.join('%s kvno %s %s%s' % (e['principal'], e['kvno'], e['kind'],
+                                                               ' WEAK' if e['weak'] else '')
+                                         for e in kt['entries']) if kt['there'] else 'none'))
+        for n in v['nodes']:
+            print('  %-20s %s, keytab %s, library %s%s' % (
+                n['name'], 'heard from' if n['alive'] else 'NOT heard from',
+                'written' if n['file'] and n['same'] else ('none' if not kt['there'] else 'not yet'),
+                'there' if n['lib'] else ('MISSING' if n['lib'] is False else '-'),
+                (' - ' + (n['err'] or n['lib_err'])) if (n['err'] or n['lib_err']) else ''))
+        for n in v['names']:
+            print('  name %-30s SPN HTTP/%s' % (n['name'], n['name']))
+        for pr in v['problems']:
+            print(pal.warn_line("not ready: " + pr))
         return 0
 
     if args.reset_2fa:

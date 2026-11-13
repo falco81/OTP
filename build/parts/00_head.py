@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.273'
+__version__ = '1.0.274'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -226,6 +226,11 @@ DEFAULTS = {
     'admin_group_full': '',
     'admin_group_token': '',
     'admin_group_readonly': '',
+    # --- signing in to these pages with Windows (Kerberos, SPNEGO) (1.0.274): off --
+    'admin_kerberos': 0,
+    'admin_kerberos_auto': 0,
+    'admin_kerberos_realm': '',
+    'admin_password_off': 0,
     # --- a second step for the administration (1.0.125) -------------------
     'admin_2fa': 0,
     'admin_2fa_app': 1,
@@ -558,6 +563,7 @@ TUNABLE = {
     'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
+    'admin_kerberos': (0, 1), 'admin_kerberos_auto': (0, 1), 'admin_password_off': (0, 1),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
@@ -829,6 +835,10 @@ NAMES = {
     'admin_group_full': 'Group of full administrators',
     'admin_group_token': 'Group of token administrators',
     'admin_group_readonly': 'Group of read-only accounts',
+    'admin_kerberos': 'Sign administrators in with Windows (Kerberos)',
+    'admin_kerberos_auto': '...by itself when the sign-in page opens',
+    'admin_kerberos_realm': 'Kerberos realm',
+    'admin_password_off': '...and no password at all - only Windows',
     'admin_2fa': 'A second step when signing in to these pages',
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
@@ -1400,6 +1410,20 @@ SAYS = {
     'admin_group_full': 'Members may change everything. By name or by whole DN.',
     'admin_group_token': 'Members may look at everything and look after people’s tokens.',
     'admin_group_readonly': 'Members may look at everything and change nothing.',
+    'admin_kerberos': 'A browser on a computer in the domain signs its person in without a password: it '
+                      'sends a Kerberos ticket for the name it opened, checked against the keytab put in '
+                      'below. Only accounts of the directory above, with the role of their groups; the '
+                      'second step, when it is on, is still asked. NTLM is never taken. Off: as until now.',
+    'admin_kerberos_auto': 'On: the sign-in page tries Kerberos at once, and shows the form only when it '
+                           'did not work. Off: a button "Sign in with Windows" beside the form. After '
+                           'signing out it is never tried by itself in that tab.',
+    'admin_kerberos_realm': 'The realm whose people may sign in, in capitals (CORP.EXAMPLE). Empty: taken '
+                            'from the base DN of the directory above (DC=corp,DC=example).',
+    'admin_password_off': 'On: the sign-in page offers no name and password - nobody signs in with a '
+                          'password, local accounts neither; only Windows (Kerberos), then the second '
+                          'step when it is on. Switched on only from a sign-in made with Windows (so it '
+                          'is known to work). Kerberos off: passwords are taken again. Locked out: as '
+                          'root, otp --set admin_password_off=0.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
                  'and sets it up (an authenticator app, a code sent to an address or a phone '
@@ -1753,7 +1777,8 @@ PANES = {
     'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
                'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms', 'admin_2fa_passkey',
                'admin_directory', 'admin_group_full', 'admin_group_token',
-               'admin_group_readonly'],
+               'admin_group_readonly', 'admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm',
+               'admin_password_off'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
            'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
            'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
@@ -1833,6 +1858,9 @@ ONLY_WHEN = {
     'isemon_verify': ['isemon', '1'], 'isemon_mtls': ['isemon', '1'],
     'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
     'admin_group_readonly': ['admin_directory', '*'],
+    'admin_kerberos': ['admin_directory', '*'],
+    'admin_kerberos_auto': ['admin_kerberos', '1'], 'admin_kerberos_realm': ['admin_kerberos', '1'],
+    'admin_password_off': ['admin_kerberos', '1'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
     'admin_2fa_passkey': ['admin_2fa', '1'],
@@ -2220,6 +2248,9 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('portal_sso_from: %r is not an address or a network' % one)
+    if key == 'admin_kerberos_realm' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9][A-Za-z0-9.-]{0,252}\Z', str(got).strip()):
+        raise BadSetting('admin_kerberos_realm: a realm, such as CORP.EXAMPLE')
     if key == 'portal_first_sms_attr' and str(got).strip():
         # Names of attributes (RFC 4512) or OIDs, four at most (1.0.255), as on a directory's card.
         words = [w for w in re.split(r'[,;\s]+', str(got).strip()) if w]

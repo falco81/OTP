@@ -1103,7 +1103,12 @@ def _health(h):
            'maintenance': maint,
            # For a balancer of RADIUS and for monitoring (1.0.47): whether
            # RADIUS listens, and - asked for - whether replication runs.
-           'radius': bool(getattr(getattr(h.d, 'radius', None), 'bound', None))}
+           'radius': bool(getattr(getattr(h.d, 'radius', None), 'bound', None)),
+           # The sign-in page's button of Kerberos (1.0.274): only whether it is offered.
+           'kerberos': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')),
+           'kerberos_auto': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')
+                                 and CONFIG.get('admin_kerberos_auto')),
+           'password': not admin_password_off_now()}
     if h.arg('check') == 'all' and CONFIG.get('ha_mode') == 'replicated':
         try:
             rep = ha_repl_state(h.store)
@@ -1141,9 +1146,11 @@ def admin_name_parts(name):
     return name, ('upn' if '@' in name else 'sam')
 
 
-def admin_ask_directory(h, name, password):
+def admin_ask_directory(h, name, password, kerberos=False):
     """One sign-in, asked of the directory in `admin_directory`, and what it
-    earns here. Nothing is made and no session is opened."""
+    earns here. Nothing is made and no session is opened. `kerberos` (1.0.274): the
+    person is proven by a Kerberos ticket already - no password is asked, and nothing is
+    counted against the account's cap of wrong passwords."""
     ad = h.d.dirs.get(str(CONFIG.get('admin_directory') or '').lower())
     if not ad:
         return None
@@ -1152,7 +1159,7 @@ def admin_ask_directory(h, name, password):
         entry = ad.find_user(who, how)
     except LdapUnreachable as e:
         raise ApiError(503, 'the directory cannot be reached', str(e))
-    if not entry or entry.get('many') or entry_unusable(entry):
+    if (not entry or entry.get('many') or entry_unusable(entry)) and not kerberos:
         # Counted as a wrong password of a name that exists is (1.0.234): only those were held
         # back, so a name the directory lacks answered 401 for ever - which said who exists.
         dir_pw_done(h, dir_pw_take(h, who, ad.name, entry if entry and not entry.get('many')
@@ -1174,6 +1181,11 @@ def admin_ask_directory(h, name, password):
         # there, anybody would be an administrator here.
         return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
                 'directory': ad.name}
+    if kerberos:
+        have = ad.groups_of(entry, True)
+        return {'ok': True, 'name': who, 'role': admin_role_for(have, ad), 'dn': entry['dn'],
+                'display': entry.get('display') or '', 'directory': ad.name, 'entry': entry,
+                'groups': sorted({cn for _, cn in have}, key=str.lower)}
     held = dir_pw_take(h, who, ad.name, entry)   # the cap per account (1.0.230, 1.0.232, 1.0.234)
     try:
         ad.password_ok(entry, password)
@@ -1191,10 +1203,10 @@ def admin_ask_directory(h, name, password):
             'groups': sorted({cn for _, cn in have}, key=str.lower)}
 
 
-def admin_from_directory(h, name, password):
+def admin_from_directory(h, name, password, kerberos=False):
     """An administrator signed in against the directory named in
     `admin_directory`: the role is that of the first group they are in."""
-    said = admin_ask_directory(h, name, password)
+    said = admin_ask_directory(h, name, password, kerberos=kerberos)
     if said is None:
         return None
     if not said['ok']:
@@ -1292,6 +1304,9 @@ def dir_account_far(store, name, role, said, entry, groups):
 
 @route('POST', '/api/auth/login')
 def _login(h):
+    if admin_password_off_now():
+        # Only Windows (1.0.274): no password is taken, nor counted, nor compared.
+        raise ApiError(403, 'signing in with a password is switched off here - sign in with Windows')
     b = h.body()
     # No account has a longer name (1.0.146): megabytes typed went into the log.
     name = str(b.get('name') or '').strip()[:190]
@@ -1335,18 +1350,27 @@ def _login(h):
         h.store.add_event('sign-ins', '%s, switched off, tried to sign in from %s'
                           % (ok['name'], h.client_ip()), 'warn')
         raise ApiError(401, 'the name or the password is not right')
+    return admin_signed_in(h, ok)
+
+
+def admin_signed_in(h, ok, how=''):
+    """The sign-in opened for an account proven by its password - or, `how` 'Kerberos'
+    (1.0.274), by a ticket: the second step, when it is on, is asked just the same."""
     # The second step, when it is asked for (1.0.125): the sign-in is made,
     # and may do nothing but give it.
     stage = mfa_stage(h.store, ok['name']) if CONFIG.get('admin_2fa') else ''
     # Marked when opened with the second step off (1.0.255): switched on later - read by this node
     # or the other - the sign-in gives it then (mfa_pending).
+    data = {'mfa': stage} if stage else {'mfa_off': 1}
+    if how:
+        data['how'] = how
     token = h.store.session_new('admin', ok['name'], ok['role'], h.client_ip(),
-                                CONFIG.get('session_hours') or 12,
-                                data={'mfa': stage} if stage else {'mfa_off': 1})
+                                CONFIG.get('session_hours') or 12, data=data)
     h.store.set_account(ok['name'], last_in=time.time(), last_from=h.client_ip())
-    h.store.add_event('sign-ins', '%s signed in from %s%s' % (
-        ok['name'], h.client_ip(), {'check': ' - the second step to give',
-                                     'enrol': ' - the second step to set up'}.get(stage, '')),
+    h.store.add_event('sign-ins', '%s signed in from %s%s%s' % (
+        ok['name'], h.client_ip(), ' with Kerberos' if how == 'Kerberos' else '',
+        {'check': ' - the second step to give',
+         'enrol': ' - the second step to set up'}.get(stage, '')),
                       who=ok['name'])
     return {'token': token, 'who': {'name': ok['name'], 'role': ok['role'] if not stage else ''},
             'must_change': bool(ok.get('must_change')), 'mfa': stage}
@@ -1523,6 +1547,8 @@ def _password(h):
     if acc.get('source') == 'directory':
         raise ApiError(400, 'this account signs in with its directory password, which is '
                        'changed in the directory')
+    if admin_password_off_now():
+        raise ApiError(403, 'signing in with a password is switched off here - sign in with Windows')
     # Counted as sign-ins are (1.0.57): a session left open was a way to
     # guess the password without end.
     key = h.throttle('password', int(CONFIG.get('login_tries') or 5), 5, name=acc['name'])
@@ -3704,6 +3730,15 @@ def _settings_do(h):
         raise ApiError(400, 'the database is changed on Settings - The database with its own '
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
+    if str(asked.get('admin_password_off', '0')) in ('1', 'true', 'True') and \
+            not CONFIG.get('admin_password_off'):
+        # Never locked out by a click (1.0.274): passwords switched off only by somebody signed in
+        # with Windows now, with a keytab there - so it is known to work.
+        if odict(s.get('data')).get('how') != 'Kerberos':
+            raise ApiError(400, 'sign in with Windows first, then switch the password off - so it is '
+                                'known to work for you (nothing saved)')
+        if not krb_keytab_raw(h.store):
+            raise ApiError(400, 'no keytab is put in - nobody could sign in (nothing saved)')
     if 'token_names_case' in asked:
         # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
         bad = token_case_problem(h.store, asked.get('token_names_case'))

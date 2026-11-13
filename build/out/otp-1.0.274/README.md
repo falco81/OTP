@@ -70,6 +70,7 @@ And the real thing, from anywhere a client is allowed:
 - [docs/network-and-power.md](docs/network-and-power.md) - each node's IP address, gateway, DNS, host name and IPv6 from the pages, and restarting or switching off one node or both
 - [docs/console.md](docs/console.md) - the otp console: menus, the live log and live RADIUS requests, at root's login
 - [docs/admin-second-step.md](docs/admin-second-step.md) - a code after the password for the administration pages: app, e-mail or SMS, reset
+- [docs/admin-kerberos.md](docs/admin-kerberos.md) - signing in to the administration with Windows (Kerberos, never NTLM), the second step kept, only Windows if wanted; a cluster and its VIP address
 - [docs/time.md](docs/time.md) - the clock of each node (chrony): how far off, its sources, the time servers for the whole cluster, the time zone
 - [docs/renaming-and-readdressing.md](docs/renaming-and-readdressing.md) - a node renamed or given a new address: putting the cluster right, from the pages or the command line
 - [docs/tls-and-vip.md](docs/tls-and-vip.md) - certificates, TLS, the VIP address, the firewall

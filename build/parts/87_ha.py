@@ -1545,7 +1545,8 @@ ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0, 
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400,
-               'push': 3600}          # acme push's nonces (1.0.217), seen for 900 s
+               'push': 3600,          # acme push's nonces (1.0.217), seen for 900 s
+               'krb': 86400}          # Kerberos tickets of the pages (1.0.274), each node's 5 min apart
 
 
 def once_node():

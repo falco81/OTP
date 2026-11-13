@@ -837,6 +837,13 @@ if 'location = /metrics' not in text and 'location /assets/' in text:
        re.search(r'fastcgi_pass\s+([^;]+);', text).group(1))
     text = text.replace('    location /assets/', block + '    location /assets/', 1)
     said.append('GET /metrics for Prometheus')
+# 1.0.274: a Kerberos ticket in one header can be larger than nginx's 8 kB.
+if 'large_client_header_buffers' not in text and 'limit_req_zone' in text:
+    m = re.search(r'(?m)^limit_req_zone[^\n]*\n', text)
+    if m:
+        text = text[:m.end()] + ('# Signing in with Windows (Kerberos, otp 1.0.274): the ticket in one header.\n'
+                                 'large_client_header_buffers 4 32k;\n') + text[m.end():]
+        said.append('room for a Kerberos ticket in a header')
 # 1.0.15: the health check rate-limited like everything else (the zone is
 # whichever one the conf keeps for everybody; otp_all, as shipped).
 # Looked for in the whole block (1.0.67): the access lists put in front of
