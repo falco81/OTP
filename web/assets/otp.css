@@ -3318,7 +3318,7 @@ body.app-shell #pane-mailq > .card.held{flex:1 1 auto;min-height:320px;max-heigh
 .ac-pick{display:flex;flex-direction:column;gap:2px;margin-top:10px}
 .ac-pick-row{padding:10px 0;border-bottom:1px solid var(--line)}
 .ac-pick-row:last-child{border-bottom:0}
-.acme-steps{margin:6px 0 12px 18px;padding:0;display:flex;flex-direction:column;gap:4px;color:var(--muted)}
+.acme-steps{margin:6px 0 12px 18px;padding:0;display:flex;flex-direction:column;gap:4px;color:var(--tx-dim)}
 /* the records and their copy buttons: the text left, the button at the column's right edge, one under the other */
 .acme-dns td{vertical-align:middle}
 .acme-dns table{table-layout:fixed;width:100%}
@@ -3871,3 +3871,22 @@ table.se-avc-t td,table.se-avc-t td.mono{white-space:normal;word-break:break-wor
 .ctl-nav .rail-n:empty{display:none}
 .tabs .count.after-n.hot,.tabs button[aria-selected="true"] .count.after-n.hot{background:var(--crit-bg);color:var(--crit)}
 .tabs .count.after-n.warm,.tabs button[aria-selected="true"] .count.after-n.warm{background:var(--warn-bg);color:var(--warn)}
+
+/* Signing in with Windows - Kerberos (1.0.274) */
+.krb-box{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+.krb-box .btn{width:100%;justify-content:center}
+.krb-or{display:flex;align-items:center;gap:10px;color:var(--tx-dim);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.krb-or::before,.krb-or::after{content:'';flex:1;border-top:1px solid var(--line)}
+body.mfa-on .krb-box{display:none}
+.krb-names td.mono{white-space:nowrap}
+.krb-cmd{white-space:pre-wrap;word-break:break-all}
+#krb-host .kv-grid{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:6px 0 12px;font-size:13px}
+#krb-host .kv-grid .k{color:var(--tx-dim)}
+#krb-host .kv-grid .sub{margin-left:8px;color:var(--tx-mut);font-size:12px}
+#krb-host .warnbox{border:1px solid var(--warn);background:var(--warn-bg);border-radius:10px;padding:8px 12px;margin:8px 0}
+#krb-host h3{margin:18px 0 6px;font-size:14px}
+#krb-host .krb-try{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+#krb-host .krb-try .sub{color:var(--tx-dim);font-size:12px}
+#krb-host pre.krb-cmd{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12px;overflow-x:auto}
+#krb-host ul.note{margin:4px 0 0 18px;padding:0}
+#krb-host ul.note li{margin:3px 0}

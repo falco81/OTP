@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.273'
+__version__ = '1.0.274'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -226,6 +226,11 @@ DEFAULTS = {
     'admin_group_full': '',
     'admin_group_token': '',
     'admin_group_readonly': '',
+    # --- signing in to these pages with Windows (Kerberos, SPNEGO) (1.0.274): off --
+    'admin_kerberos': 0,
+    'admin_kerberos_auto': 0,
+    'admin_kerberos_realm': '',
+    'admin_password_off': 0,
     # --- a second step for the administration (1.0.125) -------------------
     'admin_2fa': 0,
     'admin_2fa_app': 1,
@@ -558,6 +563,7 @@ TUNABLE = {
     'portal_tries': (1, 100), 'portal_wait_min': (1, 1440),
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
+    'admin_kerberos': (0, 1), 'admin_kerberos_auto': (0, 1), 'admin_password_off': (0, 1),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
@@ -829,6 +835,10 @@ NAMES = {
     'admin_group_full': 'Group of full administrators',
     'admin_group_token': 'Group of token administrators',
     'admin_group_readonly': 'Group of read-only accounts',
+    'admin_kerberos': 'Sign administrators in with Windows (Kerberos)',
+    'admin_kerberos_auto': '...by itself when the sign-in page opens',
+    'admin_kerberos_realm': 'Kerberos realm',
+    'admin_password_off': '...and no password at all - only Windows',
     'admin_2fa': 'A second step when signing in to these pages',
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
@@ -1400,6 +1410,20 @@ SAYS = {
     'admin_group_full': 'Members may change everything. By name or by whole DN.',
     'admin_group_token': 'Members may look at everything and look after people’s tokens.',
     'admin_group_readonly': 'Members may look at everything and change nothing.',
+    'admin_kerberos': 'A browser on a computer in the domain signs its person in without a password: it '
+                      'sends a Kerberos ticket for the name it opened, checked against the keytab put in '
+                      'below. Only accounts of the directory above, with the role of their groups; the '
+                      'second step, when it is on, is still asked. NTLM is never taken. Off: as until now.',
+    'admin_kerberos_auto': 'On: the sign-in page tries Kerberos at once, and shows the form only when it '
+                           'did not work. Off: a button "Sign in with Windows" beside the form. After '
+                           'signing out it is never tried by itself in that tab.',
+    'admin_kerberos_realm': 'The realm whose people may sign in, in capitals (CORP.EXAMPLE). Empty: taken '
+                            'from the base DN of the directory above (DC=corp,DC=example).',
+    'admin_password_off': 'On: the sign-in page offers no name and password - nobody signs in with a '
+                          'password, local accounts neither; only Windows (Kerberos), then the second '
+                          'step when it is on. Switched on only from a sign-in made with Windows (so it '
+                          'is known to work). Kerberos off: passwords are taken again. Locked out: as '
+                          'root, otp --set admin_password_off=0.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
                  'and sets it up (an authenticator app, a code sent to an address or a phone '
@@ -1753,7 +1777,8 @@ PANES = {
     'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
                'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms', 'admin_2fa_passkey',
                'admin_directory', 'admin_group_full', 'admin_group_token',
-               'admin_group_readonly'],
+               'admin_group_readonly', 'admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm',
+               'admin_password_off'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
            'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
            'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
@@ -1833,6 +1858,9 @@ ONLY_WHEN = {
     'isemon_verify': ['isemon', '1'], 'isemon_mtls': ['isemon', '1'],
     'admin_group_full': ['admin_directory', '*'], 'admin_group_token': ['admin_directory', '*'],
     'admin_group_readonly': ['admin_directory', '*'],
+    'admin_kerberos': ['admin_directory', '*'],
+    'admin_kerberos_auto': ['admin_kerberos', '1'], 'admin_kerberos_realm': ['admin_kerberos', '1'],
+    'admin_password_off': ['admin_kerberos', '1'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
     'admin_2fa_passkey': ['admin_2fa', '1'],
@@ -2220,6 +2248,9 @@ def check_setting(key, value):
                 ipaddress.ip_network(one, strict=False)
             except ValueError:
                 raise BadSetting('portal_sso_from: %r is not an address or a network' % one)
+    if key == 'admin_kerberos_realm' and str(got).strip() and \
+            not re.match(r'^[A-Za-z0-9][A-Za-z0-9.-]{0,252}\Z', str(got).strip()):
+        raise BadSetting('admin_kerberos_realm: a realm, such as CORP.EXAMPLE')
     if key == 'portal_first_sms_attr' and str(got).strip():
         # Names of attributes (RFC 4512) or OIDs, four at most (1.0.255), as on a directory's card.
         words = [w for w in re.split(r'[,;\s]+', str(got).strip()) if w]
@@ -9507,7 +9538,10 @@ DBGUARD_META_EXACT = frozenset((
     'readdress:ask', 'hatls:ca', 'hatls:want', 'host:osup:plan', 'host:sshd:conf',
     'host:sshd:keep', 'host:sshd:back', 'sshotp:gate', 'host:logs:again', 'upgrade:plan',
     'upgrade:pkg', 'acme_push:conf', 'acme_push:pairing', 'hisec:waive', 'host:pwpolicy:conf',
-    'rbackup:targets'))
+    'rbackup:targets',
+    # The keytab of signing in with Kerberos (1.0.274): one put in by somebody else lets
+    # anybody holding its keys sign in as anybody of the directory.
+    'kerberos:keytab'))
 DBGUARD_META_PREFIXES = (
     'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
@@ -9533,7 +9567,7 @@ DBGUARD_SETTINGS = frozenset((
     'logs_journal_days', 'logs_keep', 'logs_max_mb', 'ssh_gate_port', 'upgrade_downgrade',
     'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
     'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
-    'admin_2fa_sms', 'admin_2fa_passkey', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
+    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify',
@@ -18712,6 +18746,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('selinux-tick', 'SELinux: %s' % e, 'warn', every=600)
                 try:
+                    krb_tick(self.store)        # the keytab of Kerberos on this node (1.0.274)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('krb-tick', 'Kerberos: %s' % e, 'warn', every=600)
+                try:
                     sshkeys_tick(self)          # root's SSH keys (1.0.158)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('sshkeys-tick', 'root\'s SSH keys: %s' % e, 'warn', every=600)
@@ -27066,7 +27104,8 @@ ONCE_PEER = {'pool': [], 'made': 0, 'down_until': 0.0, 'said': 0.0, 'fails': 0, 
 ONCE_PEER_LOCK = threading.Lock()
 ONCE_PEER_MOST = 4               # connections to the other node's database, at most
 ONCE_KEEP_S = {'step': 3 * 86400, 'chal': 3 * 86400, 'scratch': 800 * 86400,
-               'push': 3600}          # acme push's nonces (1.0.217), seen for 900 s
+               'push': 3600,          # acme push's nonces (1.0.217), seen for 900 s
+               'krb': 86400}          # Kerberos tickets of the pages (1.0.274), each node's 5 min apart
 
 
 def once_node():
@@ -41733,6 +41772,436 @@ def selinux_report_bundle(store):
         tf.addfile(info, io.BytesIO(data))
     return buf.getvalue(), missing
 
+
+# ---- Signing in to these pages with Windows (Kerberos, SPNEGO) (1.0.274) ----------------
+# Off by default (admin_kerberos). The browser of somebody signed in to the domain sends a
+# Kerberos service ticket for HTTP/<the name it opened> in "Authorization: Negotiate"; the
+# pages hand it here, and it is checked against the keytab of that service - with the
+# system's own GSS-API library (libgssapi_krb5, part of every RHEL, Rocky, AlmaLinux, Debian
+# and Ubuntu), called through ctypes: nothing to install, no Python package. The name it
+# proves (novak@CORP.EXAMPLE) is looked up in the directory the administrators sign in
+# against (admin_directory) - its groups give the role, as a password would have. The
+# second step, when it is on, is asked just the same: Kerberos takes the place of the
+# password only.
+#
+# NTLM is never taken: a token of NTLM (bare, or inside SPNEGO) is refused, and so is any
+# mechanism of SPNEGO but Kerberos 5. Nothing of it can be switched on.
+#
+# The keytab is uploaded on the pages (a full administrator), kept in the database sealed
+# with this installation's key (so the other node of a cluster has it too), and written by
+# each node to STATE_DIR/kerberos/http.keytab (0600, otp's own). It is never shown again:
+# only its principals, key versions and kinds of key.
+import ctypes
+import ctypes.util
+
+KRB_DIR = STATE_DIR / 'kerberos'
+KRB_KEYTAB = KRB_DIR / 'http.keytab'
+KRB_RCACHE = KRB_DIR / 'rcache'
+KRB_META = 'kerberos:keytab'
+KRB_KEYTAB_MAX = 65536
+KRB_TOKEN_MAX = 65536
+KRB5_MECH = bytes.fromhex('2a864886f712010202')          # 1.2.840.113554.1.2.2
+KRB_LIB = {'lib': None, 'tried': False, 'err': '', 'lock': threading.Lock()}
+KRB_NODE = {'sha': None, 'said': None, 'at': 0.0, 'err': '', 'v': None}
+KRB_ENCTYPES = {1: 'des-cbc-crc', 3: 'des-cbc-md5', 16: 'des3-cbc-sha1', 17: 'aes128-cts-hmac-sha1-96',
+                18: 'aes256-cts-hmac-sha1-96', 19: 'aes128-cts-hmac-sha256-128',
+                20: 'aes256-cts-hmac-sha384-192', 23: 'rc4-hmac', 24: 'rc4-hmac-exp',
+                25: 'camellia128-cts-cmac', 26: 'camellia256-cts-cmac'}
+KRB_WEAK = (1, 3, 16, 23, 24)
+GSS_S_COMPLETE = 0
+GSS_S_CONTINUE_NEEDED = 1
+
+
+class KrbError(Exception):
+    """A ticket not taken: the words say why (never anything secret)."""
+
+
+class _GssBuf(ctypes.Structure):
+    _fields_ = [('length', ctypes.c_size_t), ('value', ctypes.c_void_p)]
+
+
+class _GssOid(ctypes.Structure):
+    _fields_ = [('length', ctypes.c_uint32), ('elements', ctypes.c_void_p)]
+
+
+def krb_env():
+    """Where the library finds the keytab and keeps its replay cache: set once for the
+    process (the library reads them on each call)."""
+    os.environ['KRB5_KTNAME'] = 'FILE:%s' % KRB_KEYTAB
+    os.environ['KRB5RCACHEDIR'] = str(KRB_RCACHE)
+
+
+def krb_lib():
+    """The system's GSS-API library, or None (KRB_LIB['err'] says why)."""
+    with KRB_LIB['lock']:
+        if KRB_LIB['tried']:
+            return KRB_LIB['lib']
+        KRB_LIB['tried'] = True
+        try:
+            path = ctypes.util.find_library('gssapi_krb5') or 'libgssapi_krb5.so.2'
+            lib = ctypes.CDLL(path)
+            P, U, V = ctypes.POINTER, ctypes.c_uint32, ctypes.c_void_p
+            lib.gss_accept_sec_context.argtypes = [P(U), P(V), V, P(_GssBuf), V, P(V), P(P(_GssOid)),
+                                                   P(_GssBuf), P(U), P(U), P(V)]
+            lib.gss_accept_sec_context.restype = U
+            lib.gss_display_name.argtypes = [P(U), V, P(_GssBuf), P(P(_GssOid))]
+            lib.gss_display_name.restype = U
+            lib.gss_display_status.argtypes = [P(U), U, ctypes.c_int, V, P(U), P(_GssBuf)]
+            lib.gss_display_status.restype = U
+            lib.gss_release_buffer.argtypes = [P(U), P(_GssBuf)]
+            lib.gss_release_name.argtypes = [P(U), P(V)]
+            lib.gss_delete_sec_context.argtypes = [P(U), P(V), V]
+            krb_env()
+            KRB_LIB['lib'] = lib
+        except (OSError, AttributeError) as e:
+            KRB_LIB['err'] = 'the GSS-API library of Kerberos (libgssapi_krb5) is not there: %s' % e
+            KRB_LIB['lib'] = None
+        return KRB_LIB['lib']
+
+
+def _gss_words(lib, major, minor):
+    out = []
+    for code, kind in ((major, 1), (minor, 2)):
+        if not code:
+            continue
+        ctx = ctypes.c_uint32(0)
+        for _ in range(8):
+            m = ctypes.c_uint32()
+            buf = _GssBuf()
+            if lib.gss_display_status(ctypes.byref(m), code, kind, None, ctypes.byref(ctx),
+                                      ctypes.byref(buf)) != 0:
+                break
+            try:
+                words = ctypes.string_at(buf.value, buf.length).decode('utf-8', 'replace').strip()
+            finally:
+                lib.gss_release_buffer(ctypes.byref(m), ctypes.byref(buf))
+            if words and words not in out:
+                out.append(words)
+            if not ctx.value:
+                break
+    return '; '.join(out)[:400] or 'GSS-API status %#x/%d' % (major, minor)
+
+
+def krb_is_ntlm(token):
+    """A token of NTLM, bare or carried by SPNEGO."""
+    return b'NTLMSSP\x00' in bytes(token or b'')
+
+
+def krb_accept(token):
+    """The principal a Kerberos ticket (SPNEGO or bare) proves: 'novak@CORP.EXAMPLE'. Refuses
+    NTLM, any other mechanism, a ticket for a service not in the keytab, an old or replayed one."""
+    token = bytes(token or b'')
+    if not token:
+        raise KrbError('the browser sent no ticket')
+    if len(token) > KRB_TOKEN_MAX:
+        raise KrbError('the ticket is larger than any Kerberos ticket')
+    if krb_is_ntlm(token):
+        raise KrbError('the browser offered NTLM, which is never taken here - only Kerberos '
+                       '(is the name it opened in the keytab, and is the computer in the domain?)')
+    lib = krb_lib()
+    if lib is None:
+        raise KrbError(KRB_LIB['err'] or 'no GSS-API library')
+    if not KRB_KEYTAB.exists():
+        raise KrbError('this node has no keytab yet')
+    minor = ctypes.c_uint32()
+    ctx = ctypes.c_void_p()
+    raw = ctypes.create_string_buffer(token, len(token))
+    inb = _GssBuf(len(token), ctypes.cast(raw, ctypes.c_void_p))
+    src = ctypes.c_void_p()
+    mech = ctypes.POINTER(_GssOid)()
+    out = _GssBuf()
+    flags = ctypes.c_uint32()
+    try:
+        major = lib.gss_accept_sec_context(ctypes.byref(minor), ctypes.byref(ctx), None,
+                                           ctypes.byref(inb), None, ctypes.byref(src),
+                                           ctypes.byref(mech), ctypes.byref(out),
+                                           ctypes.byref(flags), None, None)
+        if major == GSS_S_CONTINUE_NEEDED:
+            raise KrbError('the browser wants more than one round - that is not Kerberos (NTLM?)')
+        if major != GSS_S_COMPLETE:
+            raise KrbError('the ticket was not taken: %s' % _gss_words(lib, major, minor.value))
+        got = ctypes.string_at(mech.contents.elements, mech.contents.length) if mech else b''
+        if got != KRB5_MECH:
+            raise KrbError('the browser used a mechanism that is not Kerberos 5')
+        name = _GssBuf()
+        m2 = ctypes.c_uint32()
+        if lib.gss_display_name(ctypes.byref(m2), src, ctypes.byref(name), None) != 0:
+            raise KrbError('the ticket has no name that can be read')
+        try:
+            who = ctypes.string_at(name.value, name.length).decode('utf-8', 'replace')
+        finally:
+            lib.gss_release_buffer(ctypes.byref(m2), ctypes.byref(name))
+        return who
+    finally:
+        m3 = ctypes.c_uint32()
+        if out.value:
+            lib.gss_release_buffer(ctypes.byref(m3), ctypes.byref(out))
+        if src.value:
+            lib.gss_release_name(ctypes.byref(m3), ctypes.byref(src))
+        if ctx.value:
+            lib.gss_delete_sec_context(ctypes.byref(m3), ctypes.byref(ctx), None)
+
+
+def krb_principal_split(principal):
+    """('novak', 'CORP.EXAMPLE') of a person's principal; a service's (HTTP/x@R), one with a
+    second @ or none, or letters a name never has: refused."""
+    p = str(principal or '')
+    if p.count('@') != 1 or '/' in p or '\\' in p:
+        raise KrbError('%s is not the name of a person' % p[:200])
+    user, realm = p.split('@', 1)
+    if not user or not realm or not re.match(r'^[A-Za-z0-9._-]{1,253}\Z', realm):
+        raise KrbError('%s is not the name of a person' % p[:200])
+    return user, realm.upper()
+
+
+def krb_realm_wanted(store=None):
+    """The realm whose people may sign in: as set, or from the base DN of the directory the
+    administrators sign in against (DC=corp,DC=example -> CORP.EXAMPLE)."""
+    set_ = str(CONFIG.get('admin_kerberos_realm') or '').strip().upper()
+    if set_:
+        return set_
+    name = str(CONFIG.get('admin_directory') or '').lower()
+    if not name or store is None:
+        return ''
+    try:
+        row = store.db.row('SELECT * FROM directories WHERE LOWER(name) = ?', (name,))
+    except Exception:                                   # noqa: BLE001
+        row = None
+    base = str((row or {}).get('base') or '')
+    dcs = [x.split('=', 1)[1] for x in re.split(r'\s*,\s*', base) if x.lower().startswith('dc=')]
+    return '.'.join(dcs).upper()
+
+
+def keytab_entries(raw):
+    """What a keytab holds, without its keys: [{principal, kvno, enctype, kind, weak}]."""
+    raw = bytes(raw or b'')
+    if len(raw) < 2 or raw[0] != 5 or raw[1] not in (1, 2):
+        raise ValueError('that is not a keytab (it starts 0x05 0x02)')
+    if raw[1] == 1:
+        raise ValueError('a keytab of the first format is not read - make it again with ktpass or ktutil')
+    out, i = [], 2
+
+    def take(n):
+        nonlocal i
+        if i + n > end:
+            raise ValueError('the keytab ends in the middle of an entry')
+        b = raw[i:i + n]
+        i += n
+        return b
+    while i + 4 <= len(raw):
+        size = struct.unpack('>i', raw[i:i + 4])[0]
+        i += 4
+        if size == 0:
+            break
+        if size < 0:
+            i += -size                      # a hole left by a key taken away
+            continue
+        end = i + size
+        if end > len(raw):
+            raise ValueError('the keytab ends in the middle of an entry')
+        count = struct.unpack('>H', take(2))[0]
+        rl = struct.unpack('>H', take(2))[0]
+        realm = take(rl).decode('utf-8', 'replace')
+        comps = []
+        for _ in range(count):
+            cl = struct.unpack('>H', take(2))[0]
+            comps.append(take(cl).decode('utf-8', 'replace'))
+        take(4)                             # name type
+        stamp = struct.unpack('>I', take(4))[0]
+        kvno = take(1)[0]
+        enc = struct.unpack('>H', take(2))[0]
+        kl = struct.unpack('>H', take(2))[0]
+        take(kl)                            # the key itself: never kept, never shown
+        if end - i >= 4:
+            kv32 = struct.unpack('>I', raw[i:i + 4])[0]
+            if kv32:
+                kvno = kv32
+        i = end
+        out.append({'principal': '%s@%s' % ('/'.join(comps), realm), 'kvno': kvno, 'enctype': enc,
+                    'kind': KRB_ENCTYPES.get(enc, 'type %d' % enc), 'weak': enc in KRB_WEAK,
+                    'at': stamp})
+    if not out:
+        raise ValueError('the keytab holds no key')
+    return out
+
+
+def krb_keytab_raw(store):
+    """The keytab as kept in the database, or None."""
+    v = store.get_meta(KRB_META)
+    if not v:
+        return None
+    try:
+        got = json_obj(v) or {}
+        data = unseal_secret(got.get('data') or '', bind=KRB_META)
+        return base64.b64decode(data) if data else None
+    except (ValueError, TypeError):
+        return None
+
+
+def krb_keytab_put(store, raw, by):
+    """A keytab uploaded: checked, sealed into the database; each node writes it out."""
+    raw = bytes(raw or b'')
+    if not raw:
+        raise ValueError('the file is empty')
+    if len(raw) > KRB_KEYTAB_MAX:
+        raise ValueError('that is larger than any keytab of a web service (64 kB)')
+    ents = keytab_entries(raw)
+    good = [e for e in ents if not e['weak']]
+    if not good:
+        raise ValueError('every key in it is of a weak kind (DES, RC4) - make it with '
+                         '-crypto AES256-SHA1 (ktpass) and allow AES for the account')
+    http = [e for e in ents if e['principal'].upper().startswith('HTTP/')]
+    if not http:
+        raise ValueError('it holds no key of a web service (HTTP/name@REALM) - the browser asks '
+                         'for HTTP/<the name it opened>')
+    sha = hashlib.sha256(raw).hexdigest()
+    store.set_meta(KRB_META, json.dumps({
+        'data': seal_secret(base64.b64encode(raw).decode('ascii'), bind=KRB_META),
+        'sha': sha, 'at': time.time(), 'by': str(by or '')[:190],
+        'principals': sorted({e['principal'] for e in ents})}))
+    store.add_event('settings', '%s put in a keytab for signing in with Kerberos: %s' % (
+        by, ', '.join(sorted({e['principal'] for e in http}))[:600]), 'warn', who=by)
+    return ents
+
+
+def krb_keytab_drop(store, by):
+    store.drop_meta(KRB_META)
+    store.add_event('settings', '%s took the keytab of Kerberos away' % by, 'warn', who=by)
+
+
+def _krb_write(raw):
+    KRB_DIR.mkdir(mode=0o700, exist_ok=True)
+    KRB_RCACHE.mkdir(mode=0o700, exist_ok=True)
+    tmp = KRB_DIR / ('.http.keytab.%d' % os.getpid())
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, raw)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(str(tmp), str(KRB_KEYTAB))
+
+
+def krb_tick(store):
+    """Each node: the keytab in the database written out (or taken away), and what this node
+    can do said in meta kerberos:node:NAME."""
+    v = store.get_meta(KRB_META)
+    if v is not None and v == KRB_NODE.get('v') and KRB_KEYTAB.exists() and not KRB_NODE.get('err') \
+            and time.time() - KRB_NODE['at'] < 600:
+        return                              # nothing new since the last look
+    if v is None and KRB_NODE.get('v') is None and not KRB_KEYTAB.exists() and KRB_NODE['said'] \
+            and time.time() - KRB_NODE['at'] < 600:
+        return
+    KRB_NODE['v'] = v
+    raw = krb_keytab_raw(store)
+    sha = hashlib.sha256(raw).hexdigest() if raw else ''
+    err = ''
+    try:
+        if raw:
+            have = KRB_KEYTAB.read_bytes() if KRB_KEYTAB.exists() else b''
+            if hashlib.sha256(have).hexdigest() != sha:
+                _krb_write(raw)
+                log('the keytab of Kerberos was written (%d key(s))' % len(keytab_entries(raw)))
+        elif KRB_KEYTAB.exists():
+            KRB_KEYTAB.unlink()
+            log('the keytab of Kerberos was taken away')
+    except (OSError, ValueError) as e:
+        err = 'the keytab could not be written: %s' % e
+    if v and not raw and not err:
+        err = 'the keytab in the database does not open with this node\'s key (secrets.key)'
+    lib = krb_lib()
+    said = {'at': int(time.time()), 'sha': sha[:16], 'file': KRB_KEYTAB.exists(),
+            'lib': lib is not None, 'lib_err': KRB_LIB['err'] if lib is None else '',
+            'err': err, 'version': __version__}
+    same = {k: v for k, v in said.items() if k != 'at'}
+    if KRB_NODE['said'] != same or time.time() - KRB_NODE['at'] > 600:
+        store.set_meta('kerberos:node:' + node_name(), json.dumps(said))
+        KRB_NODE.update(said=same, at=time.time())
+    KRB_NODE['err'] = err
+
+
+def krb_names(store):
+    """The names the browser may open the pages by - each needs HTTP/<name> in the keytab."""
+    names = []
+    try:
+        if CONFIG.get('ha_mode') == 'replicated':
+            v = acme_name_of(store, 'vip')
+            if v:
+                names.append(('vip', v.lower()))
+    except Exception:                                   # noqa: BLE001
+        pass
+    for n in host_nodes(store):
+        try:
+            f = acme_name_of(store, n)
+        except Exception:                               # noqa: BLE001
+            f = ''
+        if f:
+            names.append((n, f.lower()))
+    seen, out = set(), []
+    for who, f in names:
+        if f not in seen:
+            seen.add(f)
+            out.append({'for': who, 'name': f})
+    return out
+
+
+def krb_view(store):
+    raw = krb_keytab_raw(store)
+    meta = json_obj(store.get_meta(KRB_META)) or {}
+    ents = []
+    if raw:
+        try:
+            ents = keytab_entries(raw)
+        except ValueError:
+            ents = []
+    have = {e['principal'].split('@', 1)[0].lower() for e in ents}
+    names = krb_names(store)
+    for n in names:
+        n['in_keytab'] = ('http/' + n['name']) in have
+    nodes = []
+    alive = host_alive(store)
+    for n in host_nodes(store):
+        got = json_obj(store.get_meta('kerberos:node:' + n)) or {}
+        nodes.append({'name': n, 'alive': alive.get(n, False), 'at': got.get('at'),
+                      'file': bool(got.get('file')), 'lib': got.get('lib'),
+                      'lib_err': got.get('lib_err') or '', 'err': got.get('err') or '',
+                      'same': bool(meta.get('sha')) and str(meta.get('sha', ''))[:16] == got.get('sha'),
+                      'version': got.get('version') or ''})
+    return {'on': bool(CONFIG.get('admin_kerberos')), 'auto': bool(CONFIG.get('admin_kerberos_auto')),
+            'directory': CONFIG.get('admin_directory') or '',
+            'realm': krb_realm_wanted(store), 'realm_set': str(CONFIG.get('admin_kerberos_realm') or ''),
+            'mfa': bool(CONFIG.get('admin_2fa')), 'password_off': admin_password_off_now(),
+            'keytab': {'there': bool(raw), 'at': meta.get('at'), 'by': meta.get('by') or '',
+                       'sha': str(meta.get('sha') or '')[:16],
+                       'entries': [{k: e[k] for k in ('principal', 'kvno', 'kind', 'weak')} for e in ents]},
+            'names': names, 'nodes': nodes, 'ntlm': False}
+
+
+def admin_password_off_now():
+    """No password on the sign-in page (1.0.274): only while signing in with Kerberos can work at
+    all - switched off, or without the directory, passwords are taken again (never locked out by
+    switching Kerberos off)."""
+    return bool(CONFIG.get('admin_password_off') and CONFIG.get('admin_kerberos')
+                and CONFIG.get('admin_directory'))
+
+
+def krb_problems(store):
+    """What stands in the way, for the card and for alerts: [] when it is ready."""
+    if not CONFIG.get('admin_kerberos'):
+        return []
+    out = []
+    if not CONFIG.get('admin_directory'):
+        out.append('no directory is set for administrators (Sign administrators in against the directory)')
+    if krb_lib() is None:
+        out.append(KRB_LIB['err'])
+    if not krb_keytab_raw(store):
+        out.append('no keytab is put in')
+    if KRB_NODE.get('err'):
+        out.append(KRB_NODE['err'])
+    if not krb_realm_wanted(store):
+        out.append('the realm is not known - set it (Kerberos realm)')
+    return out
+
 # ---- alerts by mail, and the report (1.0.162) ------------------------------------------
 # Each node writes what only it can see into a row of its own every minute
 # ('host:health:NODE': its disks, the directories it cannot reach, the SMS
@@ -45516,7 +45985,12 @@ def _health(h):
            'maintenance': maint,
            # For a balancer of RADIUS and for monitoring (1.0.47): whether
            # RADIUS listens, and - asked for - whether replication runs.
-           'radius': bool(getattr(getattr(h.d, 'radius', None), 'bound', None))}
+           'radius': bool(getattr(getattr(h.d, 'radius', None), 'bound', None)),
+           # The sign-in page's button of Kerberos (1.0.274): only whether it is offered.
+           'kerberos': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')),
+           'kerberos_auto': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')
+                                 and CONFIG.get('admin_kerberos_auto')),
+           'password': not admin_password_off_now()}
     if h.arg('check') == 'all' and CONFIG.get('ha_mode') == 'replicated':
         try:
             rep = ha_repl_state(h.store)
@@ -45554,9 +46028,11 @@ def admin_name_parts(name):
     return name, ('upn' if '@' in name else 'sam')
 
 
-def admin_ask_directory(h, name, password):
+def admin_ask_directory(h, name, password, kerberos=False):
     """One sign-in, asked of the directory in `admin_directory`, and what it
-    earns here. Nothing is made and no session is opened."""
+    earns here. Nothing is made and no session is opened. `kerberos` (1.0.274): the
+    person is proven by a Kerberos ticket already - no password is asked, and nothing is
+    counted against the account's cap of wrong passwords."""
     ad = h.d.dirs.get(str(CONFIG.get('admin_directory') or '').lower())
     if not ad:
         return None
@@ -45565,7 +46041,7 @@ def admin_ask_directory(h, name, password):
         entry = ad.find_user(who, how)
     except LdapUnreachable as e:
         raise ApiError(503, 'the directory cannot be reached', str(e))
-    if not entry or entry.get('many') or entry_unusable(entry):
+    if (not entry or entry.get('many') or entry_unusable(entry)) and not kerberos:
         # Counted as a wrong password of a name that exists is (1.0.234): only those were held
         # back, so a name the directory lacks answered 401 for ever - which said who exists.
         dir_pw_done(h, dir_pw_take(h, who, ad.name, entry if entry and not entry.get('many')
@@ -45587,6 +46063,11 @@ def admin_ask_directory(h, name, password):
         # there, anybody would be an administrator here.
         return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
                 'directory': ad.name}
+    if kerberos:
+        have = ad.groups_of(entry, True)
+        return {'ok': True, 'name': who, 'role': admin_role_for(have, ad), 'dn': entry['dn'],
+                'display': entry.get('display') or '', 'directory': ad.name, 'entry': entry,
+                'groups': sorted({cn for _, cn in have}, key=str.lower)}
     held = dir_pw_take(h, who, ad.name, entry)   # the cap per account (1.0.230, 1.0.232, 1.0.234)
     try:
         ad.password_ok(entry, password)
@@ -45604,10 +46085,10 @@ def admin_ask_directory(h, name, password):
             'groups': sorted({cn for _, cn in have}, key=str.lower)}
 
 
-def admin_from_directory(h, name, password):
+def admin_from_directory(h, name, password, kerberos=False):
     """An administrator signed in against the directory named in
     `admin_directory`: the role is that of the first group they are in."""
-    said = admin_ask_directory(h, name, password)
+    said = admin_ask_directory(h, name, password, kerberos=kerberos)
     if said is None:
         return None
     if not said['ok']:
@@ -45705,6 +46186,9 @@ def dir_account_far(store, name, role, said, entry, groups):
 
 @route('POST', '/api/auth/login')
 def _login(h):
+    if admin_password_off_now():
+        # Only Windows (1.0.274): no password is taken, nor counted, nor compared.
+        raise ApiError(403, 'signing in with a password is switched off here - sign in with Windows')
     b = h.body()
     # No account has a longer name (1.0.146): megabytes typed went into the log.
     name = str(b.get('name') or '').strip()[:190]
@@ -45748,18 +46232,27 @@ def _login(h):
         h.store.add_event('sign-ins', '%s, switched off, tried to sign in from %s'
                           % (ok['name'], h.client_ip()), 'warn')
         raise ApiError(401, 'the name or the password is not right')
+    return admin_signed_in(h, ok)
+
+
+def admin_signed_in(h, ok, how=''):
+    """The sign-in opened for an account proven by its password - or, `how` 'Kerberos'
+    (1.0.274), by a ticket: the second step, when it is on, is asked just the same."""
     # The second step, when it is asked for (1.0.125): the sign-in is made,
     # and may do nothing but give it.
     stage = mfa_stage(h.store, ok['name']) if CONFIG.get('admin_2fa') else ''
     # Marked when opened with the second step off (1.0.255): switched on later - read by this node
     # or the other - the sign-in gives it then (mfa_pending).
+    data = {'mfa': stage} if stage else {'mfa_off': 1}
+    if how:
+        data['how'] = how
     token = h.store.session_new('admin', ok['name'], ok['role'], h.client_ip(),
-                                CONFIG.get('session_hours') or 12,
-                                data={'mfa': stage} if stage else {'mfa_off': 1})
+                                CONFIG.get('session_hours') or 12, data=data)
     h.store.set_account(ok['name'], last_in=time.time(), last_from=h.client_ip())
-    h.store.add_event('sign-ins', '%s signed in from %s%s' % (
-        ok['name'], h.client_ip(), {'check': ' - the second step to give',
-                                     'enrol': ' - the second step to set up'}.get(stage, '')),
+    h.store.add_event('sign-ins', '%s signed in from %s%s%s' % (
+        ok['name'], h.client_ip(), ' with Kerberos' if how == 'Kerberos' else '',
+        {'check': ' - the second step to give',
+         'enrol': ' - the second step to set up'}.get(stage, '')),
                       who=ok['name'])
     return {'token': token, 'who': {'name': ok['name'], 'role': ok['role'] if not stage else ''},
             'must_change': bool(ok.get('must_change')), 'mfa': stage}
@@ -45936,6 +46429,8 @@ def _password(h):
     if acc.get('source') == 'directory':
         raise ApiError(400, 'this account signs in with its directory password, which is '
                        'changed in the directory')
+    if admin_password_off_now():
+        raise ApiError(403, 'signing in with a password is switched off here - sign in with Windows')
     # Counted as sign-ins are (1.0.57): a session left open was a way to
     # guess the password without end.
     key = h.throttle('password', int(CONFIG.get('login_tries') or 5), 5, name=acc['name'])
@@ -48117,6 +48612,15 @@ def _settings_do(h):
         raise ApiError(400, 'the database is changed on Settings - The database with its own '
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
+    if str(asked.get('admin_password_off', '0')) in ('1', 'true', 'True') and \
+            not CONFIG.get('admin_password_off'):
+        # Never locked out by a click (1.0.274): passwords switched off only by somebody signed in
+        # with Windows now, with a keytab there - so it is known to work.
+        if odict(s.get('data')).get('how') != 'Kerberos':
+            raise ApiError(400, 'sign in with Windows first, then switch the password off - so it is '
+                                'known to work for you (nothing saved)')
+        if not krb_keytab_raw(h.store):
+            raise ApiError(400, 'no keytab is put in - nobody could sign in (nothing saved)')
     if 'token_names_case' in asked:
         # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
         bad = token_case_problem(h.store, asked.get('token_names_case'))
@@ -52302,6 +52806,162 @@ def _portal_sso_do(h):
         h.store.db.run("DELETE FROM meta WHERE k LIKE 'portal_sso:last:%'")
         return {'view': sso_view(h.store)}
     raise ApiError(400, 'no such thing to do')
+
+
+# ---- Signing in with Windows (Kerberos) on the pages (1.0.274) ----------------------------
+def _krb_token_of(b):
+    raw = str(b.get('token') or '').strip()
+    if raw.lower().startswith('negotiate '):
+        raw = raw[10:].strip()
+    if not raw:
+        raise KrbError('the browser sent no ticket')
+    if len(raw) > KRB_TOKEN_MAX * 2:
+        raise KrbError('the ticket is larger than any Kerberos ticket')
+    try:
+        return base64.b64decode(raw, validate=True)
+    except (ValueError, binascii.Error):
+        raise KrbError('the ticket is not base64')
+
+
+def krb_who(h, token):
+    """(principal, user, said of the directory) of a ticket - raises KrbError or ApiError."""
+    principal = krb_accept(token)
+    user, realm = krb_principal_split(principal)
+    want = krb_realm_wanted(h.store)
+    if not want:
+        raise KrbError('the realm whose people may sign in is not known - set Kerberos realm')
+    if realm != want:
+        raise KrbError('%s is of the realm %s, and only %s signs in here' % (principal, realm, want))
+    bad = name_letters_problem(user)
+    if bad:
+        raise KrbError('%s: %s' % (principal, bad))
+    said = admin_ask_directory(h, user, '', kerberos=True)
+    return principal, user, said
+
+
+@route('POST', '/api/auth/kerberos')
+def _auth_kerberos(h):
+    """The pages hand the browser's "Authorization: Negotiate" here (no sign-in yet)."""
+    if not CONFIG.get('admin_kerberos'):
+        raise ApiError(404, 'signing in with Kerberos is off')
+    if not CONFIG.get('admin_directory'):
+        raise ApiError(409, 'signing in with Kerberos needs the directory of the administrators')
+    tries = int(CONFIG.get('login_tries') or 5)
+    key = h.throttle('kerberos', tries * 4, int(CONFIG.get('login_wait_min') or 15),
+                     ip_tries=max(50, tries * 10), what='refused tickets')
+    b = h.body()
+    try:
+        token = _krb_token_of(b)
+        principal, user, said = krb_who(h, token)
+    except KrbError as e:
+        h.failed(key)
+        h.store.add_event('sign-ins', 'a Kerberos sign-in from %s was refused: %s' % (h.client_ip(), e),
+                          'warn')
+        raise ApiError(401, str(e), extra={'code': 'kerberos'})
+    if said is None:
+        raise ApiError(409, 'signing in with Kerberos needs the directory of the administrators')
+    # Once in the whole cluster: the library's replay cache is this node's own, and the same
+    # ticket handed to the other node (behind the VIP address, after it moved) was taken there.
+    if not once_take(h.store, 'krb', principal, hashlib.sha256(token).hexdigest()):
+        h.failed(key)
+        h.store.add_event('sign-ins', 'a Kerberos ticket of %s from %s was used already' % (
+            principal, h.client_ip()), 'warn')
+        raise ApiError(401, 'this ticket was used already (a replay?)', extra={'code': 'kerberos'})
+    acc = h.store.account(user, checked=True)
+    if acc and acc.get('source') != 'directory':
+        h.failed(key)
+        h.store.add_event('sign-ins', '%s (Kerberos) from %s was refused: %s is an account of '
+                          'this server - it signs in with its password' % (principal, h.client_ip(), user),
+                          'warn')
+        raise ApiError(401, '%s is an account of this server with a password of its own - Kerberos '
+                       'signs in only accounts of the directory' % user, extra={'code': 'kerberos'})
+    if not said.get('ok'):
+        h.failed(key)
+        h.store.add_event('sign-ins', '%s (Kerberos) from %s was refused: %s' % (
+            principal, h.client_ip(), said.get('said') or '?'), 'warn')
+        raise ApiError(401, 'the directory does not let %s in: %s' % (user, said.get('said') or '?'),
+                       extra={'code': 'kerberos'})
+    if not said.get('role'):
+        h.failed(key)
+        h.store.add_event('sign-ins', '%s (Kerberos) from %s: none of the groups given a role here '
+                          'holds them' % (principal, h.client_ip()), 'warn')
+        raise ApiError(401, '%s is known, and none of the groups given a role here holds it' % principal,
+                       extra={'code': 'kerberos'})
+    try:
+        ok = admin_from_directory(h, user, '', kerberos=True)
+    except ApiError:
+        h.failed(key)
+        raise
+    if not ok or ok.get('disabled'):
+        h.failed(key)
+        h.store.add_event('sign-ins', '%s (Kerberos) from %s was refused: the account is switched off'
+                          % (principal, h.client_ip()), 'warn')
+        raise ApiError(401, 'the account %s is switched off here' % user, extra={'code': 'kerberos'})
+    return admin_signed_in(h, ok, how='Kerberos')
+
+
+@route('GET', '/api/kerberos')
+def _kerberos_view(h):
+    h.me()
+    out = krb_view(h.store)
+    out['problems'] = krb_problems(h.store)
+    return out
+
+
+@route('POST', '/api/kerberos')
+def _kerberos_do(h):
+    act = str(h.body().get('action') or '')
+    if act == 'check':
+        # "Try my browser's ticket": who it would sign in, and as what - nothing opened.
+        h.me()
+        try:
+            principal, user, said = krb_who(h, _krb_token_of(h.body()))
+        except KrbError as e:
+            return {'ok': False, 'said': str(e)}
+        if said is None:
+            return {'ok': False, 'said': 'no directory is set for administrators'}
+        acc = h.store.account(user, checked=True)
+        if acc and acc.get('source') != 'directory':
+            return {'ok': False, 'principal': principal,
+                    'said': '%s is an account of this server - it signs in with its password' % user}
+        if not said.get('ok'):
+            return {'ok': False, 'principal': principal, 'said': said.get('said') or '?'}
+        return {'ok': bool(said.get('role')), 'principal': principal, 'name': user,
+                'role': said.get('role') or '', 'groups': said.get('groups') or [],
+                'said': '' if said.get('role') else 'none of the groups given a role here holds it',
+                'mfa': bool(CONFIG.get('admin_2fa'))}
+    s = h.me('fulladmin')
+    if act == 'keytab':
+        raw = str(h.body().get('data') or '')
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (ValueError, binascii.Error):
+            raise ApiError(400, 'the file did not arrive whole (not base64)')
+        try:
+            ents = krb_keytab_put(h.store, data, s['name'])
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        try:
+            krb_tick(h.store)
+        except Exception:                               # noqa: BLE001
+            pass
+        out = krb_view(h.store)
+        out['problems'] = krb_problems(h.store)
+        out['message'] = 'the keytab is put in: %d key(s)%s' % (
+            len(ents), ' - each node writes it out within a few seconds'
+            if CONFIG.get('ha_mode') == 'replicated' else '')
+        return out
+    if act == 'drop':
+        krb_keytab_drop(h.store, s['name'])
+        try:
+            krb_tick(h.store)
+        except Exception:                               # noqa: BLE001
+            pass
+        out = krb_view(h.store)
+        out['problems'] = krb_problems(h.store)
+        out['message'] = 'the keytab is taken away'
+        return out
+    raise ApiError(400, 'no such action')
 # ---- a second step for the administration (1.0.125) ---------------------------------
 # With admin_2fa on, a password right for these pages opens a sign-in that can
 # do nothing yet but its second step (MFA_ALLOWED): a code from an app, or one
@@ -63052,6 +63712,12 @@ def build_parser():
     g.add_argument('--admin-2fa', choices=('on', 'off', 'status'), metavar='on|off|status',
                    help='the second step of signing in to these pages, for every account: '
                         'switch it on or off, or say how it stands')
+    g.add_argument('--kerberos', choices=('on', 'off', 'status'), metavar='on|off|status',
+                   help='signing in to these pages with Windows (Kerberos): switch it on or off, or say '
+                        'how it stands on every node (1.0.274)')
+    g.add_argument('--kerberos-keytab', metavar='FILE',
+                   help='put in the keytab of the pages\' service (HTTP/name@REALM) - every node gets it')
+    g.add_argument('--kerberos-keytab-drop', action='store_true', help='take the keytab of Kerberos away')
     g.add_argument('--reset-2fa', metavar='NAME', help='take away the second step an account set '
                    'up for these pages: it sets it up again at its next sign-in')
     g.add_argument('--note', metavar='TEXT', default='', help='a note beside what is made')
@@ -66144,6 +66810,52 @@ def cli_main(argv=None):
         store.add_event('accounts', 'the password of %s was set on the command line'
                         % args.passwd, who=who)
         print(pal.ok_line('the password of %s is set' % args.passwd))
+        return 0
+
+    if args.kerberos or args.kerberos_keytab or args.kerberos_keytab_drop:
+        if args.kerberos_keytab:
+            try:
+                with open(args.kerberos_keytab, 'rb') as f:
+                    raw = f.read(KRB_KEYTAB_MAX + 1)
+                ents = krb_keytab_put(store, raw, who)
+            except (OSError, ValueError) as e:
+                raise SystemExit('otp: %s' % e)
+            print(pal.ok_line('the keytab is put in: %s' % ', '.join(
+                '%s (kvno %s, %s)' % (e['principal'], e['kvno'], e['kind']) for e in ents)))
+        if args.kerberos_keytab_drop:
+            krb_keytab_drop(store, who)
+            print(pal.ok_line('the keytab of Kerberos is taken away'))
+        if args.kerberos in ('on', 'off'):
+            d = Daemon(store, serve=False)
+            try:
+                d.save_settings({'admin_kerberos': '1' if args.kerberos == 'on' else '0'}, by=who)
+            except (BadSetting, OSError) as e:
+                raise SystemExit('otp: %s' % e)
+            CONFIG['admin_kerberos'] = 1 if args.kerberos == 'on' else 0
+        v = krb_view(store)
+        v['problems'] = krb_problems(store) if v['on'] else []
+        if args.json:
+            out(v)
+            return 0
+        print(pal.ok_line('signing in to these pages with Kerberos is %s' % ('ON' if v['on'] else 'off')))
+        print('a password on the sign-in page: %s' % ('NOT offered (only Windows)' if v['password_off'] else 'offered'))
+        print('realm: %s%s · directory: %s · second step after it: %s · NTLM: never' % (
+            v['realm'] or '-', '' if v['realm_set'] else ' (from the directory)', v['directory'] or '-',
+            'asked' if v['mfa'] else 'off'))
+        kt = v['keytab']
+        print('keytab: %s' % (', '.join('%s kvno %s %s%s' % (e['principal'], e['kvno'], e['kind'],
+                                                               ' WEAK' if e['weak'] else '')
+                                         for e in kt['entries']) if kt['there'] else 'none'))
+        for n in v['nodes']:
+            print('  %-20s %s, keytab %s, library %s%s' % (
+                n['name'], 'heard from' if n['alive'] else 'NOT heard from',
+                'written' if n['file'] and n['same'] else ('none' if not kt['there'] else 'not yet'),
+                'there' if n['lib'] else ('MISSING' if n['lib'] is False else '-'),
+                (' - ' + (n['err'] or n['lib_err'])) if (n['err'] or n['lib_err']) else ''))
+        for n in v['names']:
+            print('  name %-30s SPN HTTP/%s' % (n['name'], n['name']))
+        for pr in v['problems']:
+            print(pal.warn_line("not ready: " + pr))
         return 0
 
     if args.reset_2fa:

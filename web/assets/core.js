@@ -1205,7 +1205,7 @@ function api(what, body, wait, ctl) {
     throw err;
   }).then(function (r) {
     clearTimeout(timer);
-    if (r.status === 401 && !/^(login|portal-login)/.test(what)) {
+    if (r.status === 401 && !/^(login|portal-login|kerberos-)/.test(what)) {
       /* Asked again before the page is left (1.0.73): behind the VIP address
          a node that is restarting, or that has just got the address, may say
          401 for a moment - and reloading then broke the page in the middle

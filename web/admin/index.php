@@ -128,6 +128,56 @@ if (isset($_GET['api'])) {
         echo json_encode(is_array($data) ? $data : ['ok' => false, 'error' => 'sign-in failed']);
         exit;
     }
+    if (($what === 'kerberos-login' || $what === 'kerberos-check') && $post) {
+        /* Signing in with Windows (1.0.274): the browser's Kerberos ticket, from
+           "Authorization: Negotiate", handed to the daemon - which checks it, refuses
+           NTLM, and opens the sign-in (the second step still to give, when it is on).
+           Without a ticket: 401 and "WWW-Authenticate: Negotiate", which makes a
+           browser that may send one send it at once. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        $login = $what === 'kerberos-login';
+        if ($login) {
+            $hl = otp_get('/api/health', 5.0);
+            if (!is_array($hl) || empty($hl['kerberos'])) {
+                http_response_code(404);
+                echo json_encode(['ok' => false, 'error' => 'signing in with Kerberos is off']);
+                exit;
+            }
+        }
+        $auth = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ($_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? ''));
+        /* A quantifier of PCRE goes to 65535 at most: the length is checked apart. */
+        if (strlen($auth) > 140000
+            || !preg_match('/^Negotiate\s+([A-Za-z0-9+\/]{8,}={0,2})\s*\z/i', $auth, $neg)) {
+            http_response_code(401);
+            header('WWW-Authenticate: Negotiate');
+            echo json_encode(['ok' => false, 'code' => 'no_ticket', 'error' =>
+                'the browser sent no Kerberos ticket - is this computer in the domain, and is this '
+                . 'name among the browser\'s intranet sites?']);
+            exit;
+        }
+        [$status, $body] = $login
+            ? otp_call('/api/auth/kerberos', 'POST', ['token' => $neg[1]], 30.0)
+            : otp_call('/api/kerberos', 'POST', ['action' => 'check', 'token' => $neg[1]], 30.0);
+        if ($status === 0) {
+            http_response_code(503);
+            echo json_encode(['ok' => false, 'error' =>
+                'the daemon is not answering — is otp.service running?']);
+            exit;
+        }
+        $data = json_decode($body, true);
+        if ($login && $status === 200 && is_array($data) && !empty($data['token'])) {
+            otp_set_session((string) $data['token']);
+            unset($data['token']);
+            echo json_encode($data);
+            exit;
+        }
+        /* Refused: 403, never 401 again - a 401 with Negotiate would have the browser try
+           once more, or offer NTLM, or ask for a password in a window of its own. */
+        http_response_code($status === 401 ? 403 : $status);
+        echo is_array($data) ? json_encode($data) : json_encode(['ok' => false, 'error' => 'refused']);
+        exit;
+    }
     if ($what === 'mfa' && $post) {
         /* The second step given (1.0.149): the daemon ends the sign-in the
            password opened and hands a new one - its cookie set here, the
@@ -337,6 +387,7 @@ if (isset($_GET['api'])) {
         'split' => '/api/split',
         'load' => '/api/load',
         'after' => '/api/after',
+        'kerberos' => '/api/kerberos',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -358,6 +409,7 @@ if (isset($_GET['api'])) {
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
         'after' => '/api/after',
+        'kerberos' => '/api/kerberos',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -463,7 +515,9 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         <span class="mono">otp --add-user yourname --role fulladmin</span></div>
     <?php endif; ?>
     <div id="mfa-box" data-stage="<?= h($mfa) ?>" hidden></div>
-    <form id="signin-form" autocomplete="on"<?= $mfa !== '' ? ' hidden' : '' ?>>
+    <?php $pw_off = is_array($health) && array_key_exists('password', $health) && $health['password'] === false
+                    && !empty($health['kerberos']); ?>
+    <form id="signin-form" autocomplete="on"<?= ($mfa !== '' || $pw_off) ? ' hidden' : '' ?>>
       <input type="text" id="in-name" name="username" placeholder="name" autocomplete="username"
              autocapitalize="none" spellcheck="false" required>
       <input type="password" id="in-pass" name="password" placeholder="password"
@@ -475,6 +529,21 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         d="M18 9l3 3-3 3"/></svg><span>Sign in</span></button>
       <div class="said" id="in-said"></div>
     </form>
+    <?php if (!empty($health['kerberos'])): ?>
+    <div id="krb-box" class="krb-box"<?= $mfa !== '' ? ' hidden' : '' ?>
+         data-auto="<?= (!empty($health['kerberos_auto']) || $pw_off) ? '1' : '' ?>">
+      <?php if ($pw_off): ?>
+      <p class="muted small krb-only">Signing in here is with Windows only - no password.</p>
+      <?php else: ?>
+      <div class="krb-or"><span>or</span></div>
+      <?php endif; ?>
+      <button class="btn cmd" type="button" id="krb-go"><svg viewBox="0 0 24 24" width="17" height="17"
+        fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+        aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect
+        x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg><span>Sign in with Windows</span></button>
+      <div class="said" id="krb-said"></div>
+    </div>
+    <?php endif; ?>
     <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
       <span class="muted small">otp <?= h(OTP_VERSION) ?></span>
       <span class="langpick" id="langpick"></span>
@@ -524,7 +593,36 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       $('in-pass').focus();
     });
   });
-  if ($('mfa-box').dataset.stage) mfaStep(); else $('in-name').focus();
+  /* Signing in with Windows - Kerberos (1.0.274): the browser hands its ticket on the 401 of
+     ?api=kerberos-login. Never NTLM. The second step after it, when it is on, as after a
+     password. Tried by itself only when so set, once per tab, and never after signing out. */
+  var kb = $('krb-box');
+  function krbTry(auto) {
+    var kgo = $('krb-go'), ksaid = $('krb-said'), kw = kgo.querySelector('span');
+    kgo.disabled = true; ksaid.className = 'said'; ksaid.textContent = '';
+    kw.textContent = 'Signing in with Windows…';
+    try { sessionStorage.setItem('otp.krb.tried', '1'); } catch (e) { }
+    return api('kerberos-login', {}).then(function (d) {
+      if (d && d.mfa) { form.hidden = true; kb.hidden = true; mfaStep(); return; }
+      ksaid.className = 'said good'; ksaid.textContent = 'Welcome back.';
+      location.reload();
+    }).catch(function (e) {
+      kgo.disabled = false; kw.textContent = 'Sign in with Windows';
+      if (auto && e && e.data && e.data.code === 'no_ticket' && !form.hidden) return;   /* not in the domain: the form only */
+      ksaid.className = 'said bad'; ksaid.textContent = String(e.message || e);
+    });
+  }
+  if (kb) {
+    $('krb-go').onclick = function () { krbTry(false); };
+  }
+  var krbAuto = false;
+  try {
+    krbAuto = !!(kb && !kb.hidden && kb.dataset.auto === '1' && !$('mfa-box').dataset.stage
+                 && !sessionStorage.getItem('otp.krb.tried') && !sessionStorage.getItem('otp.krb.out'));
+  } catch (e) { krbAuto = false; }
+  if ($('mfa-box').dataset.stage) mfaStep();
+  else if (krbAuto) krbTry(true);
+  else if (!form.hidden) $('in-name').focus();
 }());
 </script>
 </body>
@@ -1122,6 +1220,15 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       </div>
     </div>
     <div class="card full"><div id="sect-people"></div></div>
+    <div class="card full" id="krb-card">
+      <h2>Signing in with Windows (Kerberos) <span class="right" id="krb-state"></span></h2>
+      <p class="note">A browser on a computer in the domain signs its person in to these pages without a
+        password: it sends a Kerberos ticket for the name it opened, checked here against the keytab of that
+        name. Only accounts of the directory set above get in, with the role of their groups - and the second
+        step, when it is on, is asked after it just the same. NTLM is never taken. Switched on above
+        (<b>Sign administrators in with Windows (Kerberos)</b>); off, nothing of it is offered.</p>
+      <div id="krb-host"></div>
+    </div>
     <div class="card full">
       <h2>The groups, and what each one may do</h2>
       <p class="note">Choose the directory in Sign administrators in against the directory above, then press Find the groups and pick them out of the directory rather than typing a distinguished name by hand — that is how a role ends up pointing at a group that does not exist, and nobody finds out until the first person cannot sign in.</p>
@@ -1882,6 +1989,8 @@ otp --upgrade-status                       # an upgrade started on these pages</
 <div class="toast" id="toast"></div>
 <script nonce="<?= h($nonce) ?>">
 var ME = <?= json_encode($me, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+/* Only Windows (1.0.274): no field for a password anywhere on these pages. */
+var PW_OFF = <?= (is_array($health) && array_key_exists('password', $health) && $health['password'] === false) ? 'true' : 'false' ?>;
 var STATUS = <?= $initial ? json_encode($initial, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
 var PHP_SAFETY = <?= ($me['role'] ?? '') === 'fulladmin' ? json_encode(otp_php_safety(), JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
 </script>

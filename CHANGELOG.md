@@ -4,6 +4,17 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.274 — 13 November 2026
+
+Added
+- **Signing in to the administration with Windows (Kerberos)** - off by default (Settings → Accounts, *Sign administrators in with Windows (Kerberos)*). A browser on a computer in the domain sends a Kerberos ticket for the name it opened (SPNEGO, `Authorization: Negotiate`); otp checks it with the system's own GSS-API library (libgssapi_krb5, called through the standard library - nothing to install) against the keytab put in on the pages, and looks the person up in the directory the administrators sign in against: the role of their groups, as after a password. **The second step, when it is on, is asked after it every time.** **NTLM is never taken** (bare or inside SPNEGO), nor any mechanism but Kerberos 5. Only accounts of the directory; the realm from the directory's base DN or set. docs/admin-kerberos.md.
+- **The keytab**: put in once by a full administrator (or `otp --kerberos-keytab FILE`), checked (a keytab, a key of `HTTP/`, not only DES/RC4), kept sealed in the database (signed with the guard on) and written out by **every node** itself (`/var/lib/otp/kerberos/http.keytab`, 0600). Its principals, key versions and kinds of key are shown; its keys never. One key of the service account serves every name of it (the VIP address's and each node's).
+- **A cluster and its VIP address**: a ticket is taken by whichever node holds the address; one used on one node is refused on the other, also after the VIP address moved (the cluster's replay cache is in the database).
+- **On the sign-in page**: *Sign in with Windows*; *...by itself when the sign-in page opens* (never again in that tab after signing out); *...and no password at all - only Windows*: no name and password offered, every password refused (local accounts too) - switched on only from a sign-in made with Windows and with a keytab in, in effect only while Kerberos is on; the way back as root: `otp --set admin_password_off=0`. In this mode no field for a password is shown anywhere on the administration pages either: not *A new password* in Your account, not *Set a new password* of an account, not the first password of *Make an account* (the directory's people get their account at their first sign-in with Windows); a change of a password is refused by the daemon too.
+- **The card** in Settings → Accounts: the keytab, the names the pages are opened by and their SPNs, each node (the keytab written, the library there), the commands for AD (setspn, ktpass) filled in with this server's names, the browsers' settings, and *Try my browser's ticket* (who it would sign in, and as what - nothing opened).
+- `otp --kerberos on|off|status`, `--kerberos-keytab FILE`, `--kerberos-keytab-drop`.
+- nginx takes a header of up to 32 kB (`large_client_header_buffers 4 32k`) for the ticket of a person in many groups - put in by the upgrade.
+
 ## 1.0.273 — 13 November 2026
 
 Changed
