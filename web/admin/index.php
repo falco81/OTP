@@ -26,6 +26,95 @@ if (($_SERVER['OTP_AUTH_ONLY'] ?? '') === '1') {
     exit;
 }
 
+/* The certificate's own port (1.0.275): nginx there asks the browser for a client certificate and
+   sends only ?api=cert-login and ?api=cert-check here, with the certificate it got
+   (SSL_CLIENT_CERT, set by nginx - never a header of the browser's). Nothing else is answered on
+   that port; every answer goes back to the pages on 443. */
+if (($_SERVER['OTP_CERT_PORT'] ?? '') === '1') {
+    otp_cert_port();
+    exit;
+}
+
+function otp_cert_back(string $said = ''): void
+{
+    $host = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
+    if (!preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])\z/', $host)) {
+        $host = (string) ($_SERVER['SERVER_NAME'] ?? 'localhost');
+    }
+    $to = 'https://' . $host . '/admin/' . ($said !== '' ? '?certsaid=' . rawurlencode(substr($said, 0, 300)) : '');
+    header('Cache-Control: no-store');
+    header('Location: ' . $to, true, 303);
+    exit;
+}
+
+function otp_cert_port(): void
+{
+    $what = (string) ($_GET['api'] ?? '');
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET' || !in_array($what, ['cert-login', 'cert-check'], true)) {
+        http_response_code(404);
+        exit;
+    }
+    $pem = rawurldecode((string) ($_SERVER['SSL_CLIENT_CERT'] ?? ''));
+    if (($_SERVER['OTP_CERT_FAIL'] ?? '') === '1') {
+        /* nginx refused the certificate itself (495): run out, not for a client, cut short. */
+        $why = preg_replace('/^FAILED:/', '', (string) ($_SERVER['SSL_CLIENT_VERIFY'] ?? ''));
+        $why = preg_replace('/[^\x20-\x7e]/', '', $why);
+        $why = $why !== '' ? $why : 'the browser\'s certificate could not be read';
+        if ($what === 'cert-check') {
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'would not sign in: the certificate is not taken: ' . $why;
+            exit;
+        }
+        otp_cert_back('the certificate is not taken: ' . $why);
+    }
+    if ($what === 'cert-login') {
+        /* Started from the sign-in page of this browser (the nonce of its cookie): a link of
+           somebody else's cannot sign anybody in. Used once. */
+        $n = (string) ($_GET['n'] ?? '');
+        $c = (string) ($_COOKIE['otp_certn'] ?? '');
+        setcookie('otp_certn', '', ['expires' => time() - 3600, 'path' => OTP_COOKIE_PATH,
+                                    'secure' => true, 'httponly' => true, 'samesite' => 'Strict']);
+        if ($n === '' || $c === '' || !preg_match('/^[0-9a-f]{32}\z/', $n) || !hash_equals($c, $n)) {
+            otp_cert_back('the sign-in with a certificate was not started from this browser\'s sign-in page - try again');
+        }
+        if ($pem === '') {
+            otp_cert_back('no certificate was sent - none chosen, or the browser has none from the authorities put in here');
+        }
+        [$status, $body] = otp_call('/api/auth/cert', 'POST', ['cert' => $pem], 30.0);
+        $data = json_decode((string) $body, true);
+        if ($status === 200 && is_array($data) && !empty($data['token'])) {
+            otp_set_session((string) $data['token']);
+            otp_cert_back();
+        }
+        otp_cert_back(is_array($data) && !empty($data['error']) ? (string) $data['error']
+                      : ($status === 0 ? 'the daemon is not answering' : 'refused'));
+    }
+    /* cert-check: who the certificate would sign in, for a signed-in administrator - nothing opened. */
+    [$status, $body] = otp_call('/api/certlogin', 'POST', ['action' => 'check', 'cert' => $pem], 30.0);
+    $d = json_decode((string) $body, true);
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-store');
+    $h = fn($x) => htmlspecialchars((string) $x, ENT_QUOTES, 'UTF-8');
+    $ok = is_array($d) && !empty($d['ok']);
+    $line = !is_array($d) ? 'the daemon is not answering'
+        : ($status !== 200 ? ($d['error'] ?? 'refused')
+        : ($ok ? 'would sign in ' . ($d['upn'] ?? '') . ' as ' . ($d['role'] ?? '') . (!empty($d['mfa']) ? ', then the second step' : '')
+               : 'would not sign in' . (!empty($d['upn']) ? ' ' . $d['upn'] : '') . ': ' . ($d['said'] ?? '')));
+    $rows = '';
+    foreach (['subject' => 'Subject', 'issuer' => 'Issuer', 'serial' => 'Serial', 'not_after' => 'Valid to', 'sid' => 'SID'] as $k => $l) {
+        if (is_array($d) && !empty($d[$k])) {
+            $rows .= '<tr><td>' . $h($l) . '</td><td><code>' . $h($d[$k]) . '</code></td></tr>';
+        }
+    }
+    $host = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
+    echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        . '<title>otp - your certificate</title><style nonce="' . $h($GLOBALS['nonce'] ?? '') . '">body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6e9ef;margin:0;padding:32px}'
+        . '.box{max-width:720px;margin:0 auto;background:#161b22;border:1px solid #262c37;border-radius:14px;padding:24px}'
+        . '.ok{color:#3fb950}.bad{color:#f85149}td{padding:4px 12px 4px 0;vertical-align:top;color:#8b94a3}code{color:#e6e9ef;word-break:break-all}'
+        . 'a{color:#58a6ff}</style></head><body><div class="box"><h2>Your certificate</h2><p class="' . ($ok ? 'ok' : 'bad') . '" id="said">'
+        . $h($line) . '</p><table>' . $rows . '</table><p><a href="https://' . $h($host) . '/admin/#settings/people">Back to the pages</a></p></div></body></html>';
+}
+
 if (isset($_GET['api'])) {
     $what = (string) $_GET['api'];
     $post = $_SERVER['REQUEST_METHOD'] === 'POST';
@@ -176,6 +265,30 @@ if (isset($_GET['api'])) {
            once more, or offer NTLM, or ask for a password in a window of its own. */
         http_response_code($status === 401 ? 403 : $status);
         echo is_array($data) ? json_encode($data) : json_encode(['ok' => false, 'error' => 'refused']);
+        exit;
+    }
+    if ($what === 'cert-nonce' && $post) {
+        /* The start of a sign-in with a certificate (1.0.275): a nonce in a cookie of this browser,
+           and the address of the certificate's port to go to with it. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        $hl = otp_get('/api/health', 5.0);
+        if (!is_array($hl) || empty($hl['cert'])) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'signing in with a certificate is off']);
+            exit;
+        }
+        $n = bin2hex(random_bytes(16));
+        setcookie('otp_certn', $n, ['expires' => time() + 300, 'path' => OTP_COOKIE_PATH,
+                                    'secure' => true, 'httponly' => true, 'samesite' => 'Strict']);
+        $host = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
+        if (!preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])\z/', $host)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'open the pages by their name']);
+            exit;
+        }
+        echo json_encode(['ok' => true, 'url' => 'https://' . $host . ':' . (int) ($hl['cert_port'] ?? 8443)
+                          . '/admin/?api=cert-login&n=' . $n]);
         exit;
     }
     if ($what === 'mfa' && $post) {
@@ -388,6 +501,7 @@ if (isset($_GET['api'])) {
         'load' => '/api/load',
         'after' => '/api/after',
         'kerberos' => '/api/kerberos',
+        'certlogin' => '/api/certlogin',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -410,6 +524,7 @@ if (isset($_GET['api'])) {
         'split' => '/api/split',
         'after' => '/api/after',
         'kerberos' => '/api/kerberos',
+        'certlogin' => '/api/certlogin',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -516,7 +631,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <?php endif; ?>
     <div id="mfa-box" data-stage="<?= h($mfa) ?>" hidden></div>
     <?php $pw_off = is_array($health) && array_key_exists('password', $health) && $health['password'] === false
-                    && !empty($health['kerberos']); ?>
+                    && (!empty($health['kerberos']) || !empty($health['cert'])); ?>
     <form id="signin-form" autocomplete="on"<?= ($mfa !== '' || $pw_off) ? ' hidden' : '' ?>>
       <input type="text" id="in-name" name="username" placeholder="name" autocomplete="username"
              autocapitalize="none" spellcheck="false" required>
@@ -529,18 +644,29 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         d="M18 9l3 3-3 3"/></svg><span>Sign in</span></button>
       <div class="said" id="in-said"></div>
     </form>
-    <?php if (!empty($health['kerberos'])): ?>
+    <?php if (!empty($health['kerberos']) || !empty($health['cert'])): ?>
     <div id="krb-box" class="krb-box"<?= $mfa !== '' ? ' hidden' : '' ?>
-         data-auto="<?= (!empty($health['kerberos_auto']) || $pw_off) ? '1' : '' ?>">
+         data-auto="<?= (!empty($health['kerberos_auto']) || ($pw_off && !empty($health['kerberos']))) ? '1' : '' ?>">
       <?php if ($pw_off): ?>
-      <p class="muted small krb-only">Signing in here is with Windows only - no password.</p>
+      <p class="muted small krb-only"><?= !empty($health['cert']) && empty($health['kerberos'])
+        ? 'Signing in here is with a certificate only - no password.'
+        : (!empty($health['cert']) ? 'Signing in here is with Windows or a certificate only - no password.'
+        : 'Signing in here is with Windows only - no password.') ?></p>
       <?php else: ?>
       <div class="krb-or"><span>or</span></div>
       <?php endif; ?>
+      <?php if (!empty($health['kerberos'])): ?>
       <button class="btn cmd" type="button" id="krb-go"><svg viewBox="0 0 24 24" width="17" height="17"
         fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
         aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect
         x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg><span>Sign in with Windows</span></button>
+      <?php endif; ?>
+      <?php if (!empty($health['cert'])): ?>
+      <button class="btn cmd" type="button" id="cert-go"><svg viewBox="0 0 24 24" width="17" height="17"
+        fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+        aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="12" r="2.2"/><path
+        d="M14 10h4M14 14h3"/></svg><span>Sign in with a certificate</span></button>
+      <?php endif; ?>
       <div class="said" id="krb-said"></div>
     </div>
     <?php endif; ?>
@@ -597,6 +723,27 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
      ?api=kerberos-login. Never NTLM. The second step after it, when it is on, as after a
      password. Tried by itself only when so set, once per tab, and never after signing out. */
   var kb = $('krb-box');
+  /* A certificate (1.0.275): a nonce in this browser's cookie, then the certificate's own port -
+     the browser asks which certificate (and the card's PIN); the answer comes back here. */
+  if ($('cert-go')) {
+    $('cert-go').onclick = function () {
+      var b = $('cert-go'), ksaid = $('krb-said');
+      b.disabled = true; ksaid.className = 'said'; ksaid.textContent = '';
+      b.querySelector('span').textContent = 'Asking for your certificate…';
+      api('cert-nonce', {}).then(function (d) { location.href = d.url; }).catch(function (e) {
+        b.disabled = false; b.querySelector('span').textContent = 'Sign in with a certificate';
+        ksaid.className = 'said bad'; ksaid.textContent = String(e.message || e);
+      });
+    };
+  }
+  try {
+    var cs = new URLSearchParams(location.search).get('certsaid');
+    if (cs && $('krb-said')) {
+      $('krb-said').className = 'said bad';
+      $('krb-said').textContent = cs;
+      history.replaceState(null, '', location.pathname);
+    }
+  } catch (e) { }
   function krbTry(auto) {
     var kgo = $('krb-go'), ksaid = $('krb-said'), kw = kgo.querySelector('span');
     kgo.disabled = true; ksaid.className = 'said'; ksaid.textContent = '';
@@ -612,12 +759,12 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       ksaid.className = 'said bad'; ksaid.textContent = String(e.message || e);
     });
   }
-  if (kb) {
+  if (kb && $('krb-go')) {
     $('krb-go').onclick = function () { krbTry(false); };
   }
   var krbAuto = false;
   try {
-    krbAuto = !!(kb && !kb.hidden && kb.dataset.auto === '1' && !$('mfa-box').dataset.stage
+    krbAuto = !!(kb && $('krb-go') && !kb.hidden && kb.dataset.auto === '1' && !$('mfa-box').dataset.stage
                  && !sessionStorage.getItem('otp.krb.tried') && !sessionStorage.getItem('otp.krb.out'));
   } catch (e) { krbAuto = false; }
   if ($('mfa-box').dataset.stage) mfaStep();
@@ -1228,6 +1375,16 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         step, when it is on, is asked after it just the same. NTLM is never taken. Switched on above
         (<b>Sign administrators in with Windows (Kerberos)</b>); off, nothing of it is offered.</p>
       <div id="krb-host"></div>
+    </div>
+    <div class="card full" id="cert-card">
+      <h2>Signing in with a certificate <span class="right" id="cert-state"></span></h2>
+      <p class="note">A certificate of the domain's authority - on a smart card, a YubiKey or in the computer -
+        signs its person in to these pages without a password. nginx asks for it on a port of its own, never on
+        443: nobody else is ever asked for a certificate. Checked here: the chain to an authority put in below,
+        its dates, a key usage for signing in, not revoked (CRL), and the UPN in it looked up in the directory set
+        above - the role of its groups. The second step, when it is on, is asked after it just the same.
+        Switched on above (<b>Sign administrators in with a certificate</b>); off, nothing of it is offered.</p>
+      <div id="cert-host"></div>
     </div>
     <div class="card full">
       <h2>The groups, and what each one may do</h2>

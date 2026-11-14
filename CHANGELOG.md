@@ -4,6 +4,17 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.275 — 14 November 2026
+
+Added
+- **Signing in to the administration with a certificate - a smart card, a YubiKey (PIV), or one in the computer** - off by default (Settings → Accounts, *Sign administrators in with a certificate*). nginx asks the browser for a certificate on **a port of its own** (`admin_cert_port`, 8443) - never on 443, so nobody else is ever asked for one - and only that sign-in is served there. otp checks it itself: the chain to an authority put in on the pages (openssl verify) and its dates, a key usage for signing in (Client Authentication or Smart Card Logon), **not revoked** (the CRL at its CRL Distribution Point, kept until its next update - no CRL, no sign-in; `admin_cert_crl`), and the **UPN** in it looked up in the directory the administrators sign in against (on, not locked, not expired; the role of its groups). `admin_cert_map`: **compat** (the SID of KB5014754 must be the account's when it is there), **strong** (it must be there), **upn**. **The second step, when it is on, is asked after it every time.** The account is named by its sAMAccountName, as with a password or Kerberos. docs/admin-certificate.md.
+- **The authorities** are put in once (PEM, DER, .p7b; a person's certificate refused), kept in the database (signed with the guard on) and written by every node. **A cluster and its VIP address**: root's helper of each node makes nginx's server on the port from the node's HTTPS server and the VIP address's (its address, name and certificate); the firewall lets the port in for the administrators' networks; SELinux lets nginx have it; nginx is checked to listen (and to stop) after the reload.
+- **On the sign-in page**: *Sign in with a certificate* - a nonce in a cookie of this browser (refused when the sign-in was not started from it), the certificate's port, back to 443 signed in or with why not (a certificate nginx refuses itself - run out, not for a client - says why too, not nginx's own 400).
+- **No password at all - only Windows or a certificate** (the 1.0.274 switch, now for both): no field for a password anywhere; switched on only from a sign-in made with Windows or a certificate; in effect only while one of them is on.
+- **The card** in Settings → Accounts: the authorities, which account a certificate is, revocation and the CRLs fetched, each node (the authorities written, nginx listening on the port), *Try my certificate* (who it would sign in, and as what - nothing opened), the AD CS template, a YubiKey, the browsers and the network.
+- `otp --cert on|off|status`, `--cert-ca FILE`, `--cert-ca-drop SHA256`.
+- The directory's `objectSid` is read with a person's entry (for the SID in a certificate).
+
 ## 1.0.274 — 13 November 2026
 
 Added

@@ -138,6 +138,8 @@ PEOPLE = {
 PEOPLE.update({
     'CN=Falco Tester,OU=People,DC=corpnet,DC=loc': {
         'sAMAccountName': ['falco'], 'userPrincipalName': ['falco@corpnet.cz'],
+        # The account's SID (1.0.275): binary, as AD sends it - S-1-5-21-1111-2222-3333-1105.
+        'objectSid': [bytes.fromhex('010500000000000515000000570400 00ae080000050d000051040000'.replace(' ', ''))],
         'displayName': ['Falco Tester'], 'objectClass': ['top', 'person', 'user'],
         'userAccountControl': ['512'],
         'memberOf': ['CN=VPN_2FACT_USERS,OU=Groups,DC=corpnet,DC=loc'],
@@ -154,6 +156,7 @@ PEOPLE.update({
     },
     'CN=Nested Person,OU=People,DC=corpnet,DC=loc': {
         'sAMAccountName': ['nested'], 'userPrincipalName': ['nested@corpnet.cz'],
+        'objectSid': [bytes.fromhex('010500000000000515000000570400 00ae080000050d000052040000'.replace(' ', ''))],
         'displayName': ['Nested Person'], 'objectClass': ['top', 'person', 'user'],
         'userAccountControl': ['512'],
         'memberOf': ['CN=VPN_SUPPLIER_X,OU=Groups,DC=corpnet,DC=loc'],
@@ -161,6 +164,7 @@ PEOPLE.update({
     },
     'CN=Outsider,OU=People,DC=corpnet,DC=loc': {
         'sAMAccountName': ['outsider'], 'userPrincipalName': ['outsider@corpnet.cz'],
+        'objectSid': [bytes.fromhex('01050000000000051500000057040000ae080000050d0000b0040000')],
         'objectClass': ['top', 'person', 'user'], 'userAccountControl': ['512'],
         'memberOf': [], '_password': 'outsider-password-1',
     },
