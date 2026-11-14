@@ -111,10 +111,11 @@ ok('off: the sign-in page has no Windows button', b'id="krb-go"' not in page)
 # -- the directory of the administrators
 st, _, got = admin.j('directories')
 had_corp = any(d.get('name') == 'corp' for d in (got.get('directories') or []))
+corp_id = next((d.get('id') for d in (got.get('directories') or []) if d.get('name') == 'corp'), None)
 st, _, got = admin.j('directories', {'action': 'save', 'directory': {
     'name': 'corp', 'hosts': '127.0.0.1:3899', 'tls': 'none', 'port': 389, 'base': 'DC=corpnet,DC=loc',
     'bind_dn': 'CN=otp,OU=Service,DC=corpnet,DC=loc', 'bind_pw': 'the-otp-service-password',
-    'timeout_s': 5, 'user_attr': 'sAMAccountName', 'enabled': 1}})
+    'timeout_s': 5, 'user_attr': 'sAMAccountName', 'enabled': 1, **({'id': corp_id} if corp_id else {})}})
 ok('the directory corp saved', st == 200, got)
 st, got = settings(admin_directory='corp', admin_group_full='CN=VPN_SUPPLIER_X,OU=Groups,DC=corpnet,DC=loc',
                    admin_group_readonly='CN=VPN_2FACT_USERS,OU=Groups,DC=corpnet,DC=loc', admin_group_token='',
@@ -237,7 +238,7 @@ time.sleep(1.2)
 # -- only Windows: no password on the sign-in page
 st, got = settings(admin_password_off=1)
 ok('no password: refused from a sign-in made with a password (so nobody locks themselves out)',
-   st == 400 and 'Windows first' in (got.get('error') or ''), (st, got))
+   st == 400 and 'first, then switch the password off' in (got.get('error') or ''), (st, got))
 kb = Browser()
 st, _, got = kb.j('kerberos-login', {}, neg('nested'))
 ok('nested (full admin) signs in with Windows', st == 200 and got.get('who', {}).get('role') == 'fulladmin', (st, got))

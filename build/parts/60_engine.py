@@ -14,7 +14,7 @@ AD_NEVER = (0, 0x7FFFFFFFFFFFFFFF)
 USER_ATTRS = ('distinguishedName', 'sAMAccountName', 'userPrincipalName', 'displayName',
               'mail', 'userAccountControl', 'accountExpires', 'memberOf', 'lockoutTime',
               'pwdLastSet', 'department', 'title', 'mobile', 'telephoneNumber',
-              'objectClass', 'msDS-User-Account-Control-Computed')
+              'objectClass', 'msDS-User-Account-Control-Computed', 'objectSid')
 # msDS-User-Account-Control-Computed (1.0.101): what AD works out now -
 # locked out (0x10) and the password expired (0x800000). lockoutTime alone
 # stays set after the lockout is over.
@@ -605,6 +605,9 @@ class Directory(object):
                      'mobile': entry_first(a, self.mobile_attrs),
                      'phone': first('telephoneNumber'),
                      'pw_set': ad_time(first('pwdLastSet')),
+                     # The account's SID (1.0.275): what a certificate of AD CS names since KB5014754.
+                     'sid': sid_text(bytes.fromhex(first('objectSid'))) if re.match(
+                         r'^[0-9a-f]{16,136}\Z', first('objectSid') or '') else '',
                      'many': len(rows) > 1}
         self._cache_put(key, entry)
         return entry

@@ -29,7 +29,10 @@ DBGUARD_META_EXACT = frozenset((
     'rbackup:targets',
     # The keytab of signing in with Kerberos (1.0.274): one put in by somebody else lets
     # anybody holding its keys sign in as anybody of the directory.
-    'kerberos:keytab'))
+    'kerberos:keytab',
+    # The authorities of signing in with a certificate (1.0.275): one put in by somebody else lets
+    # whoever it issues for sign in as anybody of the directory.
+    'certlogin:ca'))
 DBGUARD_META_PREFIXES = (
     'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
@@ -55,7 +58,8 @@ DBGUARD_SETTINGS = frozenset((
     'logs_journal_days', 'logs_keep', 'logs_max_mb', 'ssh_gate_port', 'upgrade_downgrade',
     'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
     'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
-    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
+    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'admin_cert', 'admin_cert_port',
+    'admin_cert_map', 'admin_cert_crl', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify',

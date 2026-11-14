@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.274'
+__version__ = '1.0.275'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -231,6 +231,11 @@ DEFAULTS = {
     'admin_kerberos_auto': 0,
     'admin_kerberos_realm': '',
     'admin_password_off': 0,
+    # --- signing in to these pages with a client certificate (1.0.275): off --------
+    'admin_cert': 0,
+    'admin_cert_port': 8443,
+    'admin_cert_map': 'compat',
+    'admin_cert_crl': 1,
     # --- a second step for the administration (1.0.125) -------------------
     'admin_2fa': 0,
     'admin_2fa_app': 1,
@@ -531,7 +536,7 @@ SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_passwo
 
 # Saved as a row even when equal to the default (1.0.238): what they were before tells "switched
 # off" from "never switched on".
-KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso', 'web_proxy_port')
+KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso', 'web_proxy_port', 'admin_cert')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -564,6 +569,8 @@ TUNABLE = {
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_kerberos': (0, 1), 'admin_kerberos_auto': (0, 1), 'admin_password_off': (0, 1),
+    'admin_cert': (0, 1), 'admin_cert_port': (1025, 65535), 'admin_cert_map': ('compat', 'strong', 'upn'),
+    'admin_cert_crl': (0, 1),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
@@ -838,7 +845,11 @@ NAMES = {
     'admin_kerberos': 'Sign administrators in with Windows (Kerberos)',
     'admin_kerberos_auto': '...by itself when the sign-in page opens',
     'admin_kerberos_realm': 'Kerberos realm',
-    'admin_password_off': '...and no password at all - only Windows',
+    'admin_password_off': 'No password at all - only Windows or a certificate',
+    'admin_cert': 'Sign administrators in with a certificate (a smart card, a YubiKey)',
+    'admin_cert_port': 'The certificate\u2019s own port',
+    'admin_cert_map': 'Which account a certificate is',
+    'admin_cert_crl': 'Check that a certificate is not revoked (CRL)',
     'admin_2fa': 'A second step when signing in to these pages',
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
@@ -1419,11 +1430,25 @@ SAYS = {
                            'signing out it is never tried by itself in that tab.',
     'admin_kerberos_realm': 'The realm whose people may sign in, in capitals (CORP.EXAMPLE). Empty: taken '
                             'from the base DN of the directory above (DC=corp,DC=example).',
-    'admin_password_off': 'On: the sign-in page offers no name and password - nobody signs in with a '
-                          'password, local accounts neither; only Windows (Kerberos), then the second '
-                          'step when it is on. Switched on only from a sign-in made with Windows (so it '
-                          'is known to work). Kerberos off: passwords are taken again. Locked out: as '
-                          'root, otp --set admin_password_off=0.',
+    'admin_password_off': 'On: no field for a password anywhere on these pages - nobody signs in with a '
+                          'password, local accounts neither; only Windows (Kerberos) or a certificate, '
+                          'then the second step when it is on. Switched on only from a sign-in made '
+                          'that way (so it is known to work). Kerberos and certificates both off: '
+                          'passwords are taken again. Locked out: as root, otp --set admin_password_off=0.',
+    'admin_cert': 'A certificate of the domain\u2019s authority - on a smart card, a YubiKey or in the '
+                  'computer - signs its person in without a password: nginx asks for it on a port of its '
+                  'own (below), never on 443. Checked here: the chain to an authority put in below, its '
+                  'dates, a key usage for signing in, not revoked, the UPN in it looked up in the '
+                  'directory above (the role of the groups). The second step, when it is on, is still '
+                  'asked. Off: as until now.',
+    'admin_cert_port': 'Where nginx asks the browser for a certificate (8443: SELinux lets nginx have it '
+                       'already). Opened in the firewall for the administrators\u2019 networks.',
+    'admin_cert_map': 'compat: the SID an AD CS writes into a certificate since KB5014754 must be the '
+                      'account\u2019s when it is there; strong: it must be there (Microsoft\u2019s full '
+                      'enforcement); upn: the UPN alone.',
+    'admin_cert_crl': 'The CRL at the certificate\u2019s CRL Distribution Point (http), kept until its next '
+                      'update: no CRL to be had, no sign-in. Off: revocation is not checked - a lost card '
+                      'signs in until its account is switched off in AD.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
                  'and sets it up (an authenticator app, a code sent to an address or a phone '
@@ -1778,7 +1803,7 @@ PANES = {
                'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms', 'admin_2fa_passkey',
                'admin_directory', 'admin_group_full', 'admin_group_token',
                'admin_group_readonly', 'admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm',
-               'admin_password_off'],
+               'admin_password_off', 'admin_cert', 'admin_cert_port', 'admin_cert_map', 'admin_cert_crl'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
            'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
            'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
@@ -1860,7 +1885,9 @@ ONLY_WHEN = {
     'admin_group_readonly': ['admin_directory', '*'],
     'admin_kerberos': ['admin_directory', '*'],
     'admin_kerberos_auto': ['admin_kerberos', '1'], 'admin_kerberos_realm': ['admin_kerberos', '1'],
-    'admin_password_off': ['admin_kerberos', '1'],
+    'admin_password_off': ['admin_directory', '*'],
+    'admin_cert': ['admin_directory', '*'], 'admin_cert_port': ['admin_cert', '1'],
+    'admin_cert_map': ['admin_cert', '1'], 'admin_cert_crl': ['admin_cert', '1'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
     'admin_2fa_passkey': ['admin_2fa', '1'],
@@ -6332,7 +6359,9 @@ class Ldap(object):
             deep = 0
             while deep < len(values):
                 _t, value, deep = _ber_read(values, deep)
-                got.append(value.decode('utf-8', 'replace'))
+                # objectSid as it is (1.0.275): binary, hex here - the SID a certificate names.
+                got.append(value.hex() if name.lower() == b'objectsid' else
+                           value.decode('utf-8', 'replace'))
             entry['attrs'][name.decode('utf-8', 'replace')] = got
         return entry
 
@@ -9541,7 +9570,10 @@ DBGUARD_META_EXACT = frozenset((
     'rbackup:targets',
     # The keytab of signing in with Kerberos (1.0.274): one put in by somebody else lets
     # anybody holding its keys sign in as anybody of the directory.
-    'kerberos:keytab'))
+    'kerberos:keytab',
+    # The authorities of signing in with a certificate (1.0.275): one put in by somebody else lets
+    # whoever it issues for sign in as anybody of the directory.
+    'certlogin:ca'))
 DBGUARD_META_PREFIXES = (
     'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
@@ -9567,7 +9599,8 @@ DBGUARD_SETTINGS = frozenset((
     'logs_journal_days', 'logs_keep', 'logs_max_mb', 'ssh_gate_port', 'upgrade_downgrade',
     'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
     'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
-    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
+    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'admin_cert', 'admin_cert_port',
+    'admin_cert_map', 'admin_cert_crl', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
     'sms_tel_host', 'sms_tel_user', 'sms_tel_password', 'sms_tel_https', 'sms_tel_verify',
@@ -10269,7 +10302,7 @@ AD_NEVER = (0, 0x7FFFFFFFFFFFFFFF)
 USER_ATTRS = ('distinguishedName', 'sAMAccountName', 'userPrincipalName', 'displayName',
               'mail', 'userAccountControl', 'accountExpires', 'memberOf', 'lockoutTime',
               'pwdLastSet', 'department', 'title', 'mobile', 'telephoneNumber',
-              'objectClass', 'msDS-User-Account-Control-Computed')
+              'objectClass', 'msDS-User-Account-Control-Computed', 'objectSid')
 # msDS-User-Account-Control-Computed (1.0.101): what AD works out now -
 # locked out (0x10) and the password expired (0x800000). lockoutTime alone
 # stays set after the lockout is over.
@@ -10860,6 +10893,9 @@ class Directory(object):
                      'mobile': entry_first(a, self.mobile_attrs),
                      'phone': first('telephoneNumber'),
                      'pw_set': ad_time(first('pwdLastSet')),
+                     # The account's SID (1.0.275): what a certificate of AD CS names since KB5014754.
+                     'sid': sid_text(bytes.fromhex(first('objectSid'))) if re.match(
+                         r'^[0-9a-f]{16,136}\Z', first('objectSid') or '') else '',
                      'many': len(rows) > 1}
         self._cache_put(key, entry)
         return entry
@@ -18745,6 +18781,10 @@ class Daemon(object):
                     selinux_tick(self)          # SELinux of this node (1.0.233)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('selinux-tick', 'SELinux: %s' % e, 'warn', every=600)
+                try:
+                    cert_tick(self.store)       # the authorities of certificates on this node (1.0.275)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('cert-tick', 'certificates: %s' % e, 'warn', every=600)
                 try:
                     krb_tick(self.store)        # the keytab of Kerberos on this node (1.0.274)
                 except Exception as e:          # noqa: BLE001
@@ -30865,6 +30905,24 @@ def lbport_desired(store):
     return None
 
 
+def certlogin_desired(store):
+    """The certificate's own port (1.0.275): {'port', 'ca'} - a server of its own on this node
+    (and the VIP address's name) that asks the browser for a certificate of these authorities and
+    serves only the sign-in with it; {'port': 0} takes it away again; None where it was never
+    switched on (nginx left as it is)."""
+    if CONFIG.get('admin_cert') and CONFIG.get('admin_directory'):
+        pems = cert_cas(store)
+        if pems:
+            return {'port': int(CONFIG.get('admin_cert_port') or 8443),
+                    'ca': ''.join(p.strip() + '\n' for p in pems)}
+    try:
+        if any(k.split('@', 1)[0] == 'admin_cert' for k in saved_keys(store)):
+            return {'port': 0}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
 def sso_peer_desired(store):
     """True: nginx tells the enrolment page which machine a request came from (OTP_PEER); False:
     no longer; None where the sign-in by the balancer was never switched on (nginx as it is)."""
@@ -30944,6 +31002,9 @@ def web_desired(store):
     lp = lbport_desired(store)
     if lp is not None:
         out['lbport'] = lp
+    cl = certlogin_desired(store)
+    if cl is not None:
+        out['certlogin'] = cl
     if fw is not None:
         out['fw'] = fw
     if access is not None:
@@ -30981,7 +31042,7 @@ def web_tick(store):
     st = web_status()
     if not st and not desired['vip']['on'] and not desired['tls']['node'] and \
             'fw' not in desired and 'access' not in desired and 'acme' not in desired and \
-            'lbport' not in desired:
+            'lbport' not in desired and 'certlogin' not in desired:
         return
     h = web_hash(desired)
     drifted = False
@@ -31695,6 +31756,15 @@ def fw_auto(store, node):
         for n in lp.get('from') or []:
             web.append({'family': _fam(n.split('/')[0]), 'proto': 'tcp', 'port': str(lp['port']),
                         'source': n, 'note': 'the balancer\'s own port'})
+    # The certificate's own port (1.0.275): from wherever the administration may be reached.
+    cl = certlogin_desired(store) or {}
+    if cl.get('port'):
+        adm = (a or {}).get('admin') or {'any': True}
+        csrcs = [''] if (not a or adm.get('any')) else list(adm.get('from') or [])
+        for s in csrcs:
+            for f in ((4, 6) if not s else (_fam(s),)):
+                web.append({'family': f, 'proto': 'tcp', 'port': str(cl['port']), 'source': s,
+                            'note': 'signing in with a certificate'})
     out.append({'key': 'web', 'title': 'HTTP / HTTPS', 'why': 'the enrolment and '
                 'administration pages and the health check; who sees which is under '
                 '"Who may reach the pages"', 'rules': web})
@@ -41967,7 +42037,7 @@ def krb_realm_wanted(store=None):
         row = store.db.row('SELECT * FROM directories WHERE LOWER(name) = ?', (name,))
     except Exception:                                   # noqa: BLE001
         row = None
-    base = str((row or {}).get('base') or '')
+    base = str(odict(row).get('base') or '')
     dcs = [x.split('=', 1)[1] for x in re.split(r'\s*,\s*', base) if x.lower().startswith('dc=')]
     return '.'.join(dcs).upper()
 
@@ -42177,14 +42247,6 @@ def krb_view(store):
             'names': names, 'nodes': nodes, 'ntlm': False}
 
 
-def admin_password_off_now():
-    """No password on the sign-in page (1.0.274): only while signing in with Kerberos can work at
-    all - switched off, or without the directory, passwords are taken again (never locked out by
-    switching Kerberos off)."""
-    return bool(CONFIG.get('admin_password_off') and CONFIG.get('admin_kerberos')
-                and CONFIG.get('admin_directory'))
-
-
 def krb_problems(store):
     """What stands in the way, for the card and for alerts: [] when it is ready."""
     if not CONFIG.get('admin_kerberos'):
@@ -42200,6 +42262,500 @@ def krb_problems(store):
         out.append(KRB_NODE['err'])
     if not krb_realm_wanted(store):
         out.append('the realm is not known - set it (Kerberos realm)')
+    return out
+
+
+# ---- Signing in to these pages with a client certificate (a smart card, a YubiKey) (1.0.275) ----
+# Off by default (admin_cert). A port of its own (admin_cert_port, 8443) where nginx asks the
+# browser for a certificate of the authorities put in here - never on 443, so nobody else is ever
+# asked for one (the enrolment pages, the administration's own sign-in). The browser shows the
+# certificates it has from those authorities (the one on a YubiKey or a smart card: the system asks
+# for its PIN), nginx hands it to the page, and this daemon checks it itself:
+#   - the chain to an authority put in on the pages (openssl verify), its dates;
+#   - a key usage for signing in: Client Authentication or Smart Card Logon;
+#   - not revoked: the CRL at its CRL Distribution Point (fetched over http, kept until its
+#     next update) - with admin_cert_crl on, no CRL means no sign-in;
+#   - the person: the UPN in its Subject Alternative Name, looked up in the directory the
+#     administrators sign in against (on, not locked, not expired; the role of its groups);
+#   - admin_cert_map: 'compat' (default) - the SID the AD CS writes into a certificate since
+#     KB5014754 (szOID_NTDS_CA_SECURITY_EXT) must be the account's own when it is there; 'strong' -
+#     it must be there; 'upn' - not looked at.
+# The second step, when it is on, is asked after it - always. A password is never taken here.
+# The authorities are kept in the database (signed with the guard on) and written out by every
+# node; nginx's server on the port is made by root from this node's HTTPS server and the VIP
+# address's, with their certificates.
+CERT_DIR = STATE_DIR / 'certlogin'
+CERT_CA_FILE = CERT_DIR / 'ca.pem'
+CERT_META = 'certlogin:ca'
+CERT_MOST = 16384
+CERT_CA_MOST = 20
+CRL_MOST = 8 << 20
+OID_SAN = '2.5.29.17'
+OID_EKU = '2.5.29.37'
+OID_CDP = '2.5.29.31'
+OID_BC = '2.5.29.19'
+OID_UPN = '1.3.6.1.4.1.311.20.2.3'
+OID_SID_EXT = '1.3.6.1.4.1.311.25.2'
+OID_SID = '1.3.6.1.4.1.311.25.2.1'
+EKU_SIGN_IN = {'1.3.6.1.5.5.7.3.2': 'Client Authentication', '1.3.6.1.4.1.311.20.2.2': 'Smart Card Logon'}
+CERT_NODE = {'said': None, 'at': 0.0, 'v': None, 'err': ''}
+CRL_CACHE = {}
+CRL_LOCK = threading.Lock()
+
+
+class CertError(Exception):
+    """A certificate not taken; the words say why."""
+
+
+# -- reading a certificate (DER), only what is needed ---------------------------------------
+def _der(b, i=0):
+    if i + 2 > len(b):
+        raise ValueError('cut short')
+    tag = b[i]
+    n = b[i + 1]
+    i += 2
+    if n & 0x80:
+        k = n & 0x7f
+        if not 0 < k <= 4 or i + k > len(b):
+            raise ValueError('a length that cannot be')
+        n = int.from_bytes(b[i:i + k], 'big')
+        i += k
+    if i + n > len(b):
+        raise ValueError('cut short')
+    return tag, b[i:i + n], i + n
+
+
+def _der_all(b):
+    out, i = [], 0
+    while i < len(b):
+        t, v, i = _der(b, i)
+        out.append((t, v))
+    return out
+
+
+def _oid(v):
+    if not v:
+        return ''
+    parts = [v[0] // 40, v[0] % 40] if v[0] < 80 else [2, v[0] - 80]
+    n = 0
+    for c in v[1:]:
+        n = (n << 7) | (c & 0x7f)
+        if not c & 0x80:
+            parts.append(n)
+            n = 0
+    return '.'.join(str(x) for x in parts)
+
+
+def _der_find(b, want, depth=0):
+    """Every value of tag `want` anywhere in b (constructed tags walked into)."""
+    out = []
+    if depth > 12:
+        return out
+    try:
+        items = _der_all(b)
+    except ValueError:
+        return out
+    for t, v in items:
+        if t == want:
+            out.append(v)
+        if t & 0x20:
+            out += _der_find(v, want, depth + 1)
+    return out
+
+
+def cert_der(pem):
+    m = re.search(r'-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----', str(pem or ''))
+    if not m:
+        raise CertError('that is not a certificate (PEM)')
+    try:
+        return base64.b64decode(re.sub(r'\s+', '', m.group(1)), validate=True)
+    except (ValueError, binascii.Error):
+        raise CertError('the certificate is not whole')
+
+
+def cert_facts(pem):
+    """What the checks need of a certificate: its extensions read from DER, its names and dates
+    from openssl."""
+    der = cert_der(pem)
+    try:
+        t, cert, _ = _der(der)
+        tbs_t, tbs, _ = _der(cert)
+        items = _der_all(tbs)
+    except ValueError as e:
+        raise CertError('the certificate cannot be read: %s' % e)
+    exts = {}
+    for t, v in items:
+        if t != 0xa3:
+            continue
+        try:
+            for _t, one in _der_all(_der(v)[1]):
+                parts = _der_all(one)
+                oid = _oid(parts[0][1])
+                crit = len(parts) == 3 and parts[1][0] == 0x01 and parts[1][1] == b'\xff'
+                exts[oid] = (crit, parts[-1][1])
+        except (ValueError, IndexError):
+            raise CertError('the extensions of the certificate cannot be read')
+    upns, mails, sid = [], [], ''
+    if OID_SAN in exts:
+        try:
+            for gt, gv in _der_all(_der(exts[OID_SAN][1])[1]):
+                if gt == 0xa0:                      # otherName
+                    p = _der_all(gv)
+                    if p and _oid(p[0][1]) == OID_UPN and len(p) > 1:
+                        inner = _der_all(p[1][1])
+                        if inner:
+                            upns.append(inner[0][1].decode('utf-8', 'replace'))
+                    elif p and _oid(p[0][1]) == OID_SID and len(p) > 1:
+                        inner = _der_all(p[1][1])
+                        if inner:
+                            sid = sid or inner[0][1].decode('ascii', 'replace')
+                elif gt == 0x81:                    # rfc822Name
+                    mails.append(gv.decode('ascii', 'replace'))
+        except (ValueError, IndexError):
+            raise CertError('the Subject Alternative Name of the certificate cannot be read')
+    if OID_SID_EXT in exts:
+        try:
+            for gt, gv in _der_all(_der(exts[OID_SID_EXT][1])[1]):
+                p = _der_all(gv)
+                if p and _oid(p[0][1]) == OID_SID and len(p) > 1:
+                    inner = _der_all(p[1][1])
+                    if inner:
+                        sid = inner[0][1].decode('ascii', 'replace')
+        except (ValueError, IndexError):
+            raise CertError('the SID extension of the certificate cannot be read')
+    eku = []
+    if OID_EKU in exts:
+        try:
+            eku = [_oid(v) for t, v in _der_all(_der(exts[OID_EKU][1])[1]) if t == 0x06]
+        except ValueError:
+            raise CertError('the key usages of the certificate cannot be read')
+    is_ca = False
+    if OID_BC in exts:
+        try:
+            body = _der(exts[OID_BC][1])[1]
+            p = _der_all(body)
+            is_ca = bool(p and p[0][0] == 0x01 and p[0][1] == b'\xff')
+        except ValueError:
+            is_ca = False
+    cdp = []
+    if OID_CDP in exts:
+        cdp = [u.decode('ascii', 'replace') for u in _der_find(exts[OID_CDP][1], 0x86)]
+    try:
+        txt = _openssl(['x509', '-noout', '-subject', '-issuer', '-serial', '-startdate', '-enddate',
+                        '-fingerprint', '-sha256', '-nameopt', 'RFC2253'], pem.encode(),
+                       what='the certificate').decode('utf-8', 'replace')
+    except ValueError as e:
+        raise CertError(str(e)[:300])
+    one = lambda k: (re.search(r'(?m)^%s=\s*(.*)$' % k, txt) or [None, ''])[1].strip()
+    fp = (re.search(r'(?mi)^sha256 Fingerprint=([0-9A-F:]+)', txt) or [None, ''])[1]
+    return {'subject': one('subject'), 'issuer': one('issuer'), 'serial': one('serial'),
+            'not_before': one('notBefore'), 'not_after': one('notAfter'),
+            'sha256': fp.replace(':', '').lower(), 'upn': upns, 'mail': mails, 'sid': sid,
+            'eku': eku, 'ca': is_ca, 'cdp': cdp, 'unknown_critical': sorted(
+                k for k, (c, _v) in exts.items() if c and k not in (OID_SAN, OID_EKU, OID_BC, '2.5.29.15',
+                                                                     OID_CDP, '2.5.29.32'))}
+
+
+def sid_text(raw):
+    """S-1-5-21-... of a SID in its binary form (objectSid), or ''."""
+    try:
+        b = bytes(raw)
+        if len(b) < 8 or b[0] != 1 or len(b) != 8 + 4 * b[1]:
+            return ''
+        auth = int.from_bytes(b[2:8], 'big')
+        subs = [int.from_bytes(b[8 + 4 * i:12 + 4 * i], 'little') for i in range(b[1])]
+        return 'S-%d-%d' % (b[0], auth) + ''.join('-%d' % s for s in subs)
+    except (TypeError, ValueError):
+        return ''
+
+
+# -- the authorities ------------------------------------------------------------------------
+def cert_split_pems(raw):
+    """PEM certificates of an upload: PEM (one or a bundle), DER, or PKCS#7 (.p7b) in DER or PEM."""
+    raw = bytes(raw or b'')
+    if b'-----BEGIN' in raw:
+        text = raw.decode('ascii', 'replace')
+        if '-----BEGIN PKCS7-----' in text:
+            text = _openssl(['pkcs7', '-print_certs'], raw, what='PKCS#7').decode('ascii', 'replace')
+        return [m.group(0) for m in PEM_CERT.finditer(text)]
+    for args in (['x509', '-inform', 'DER'], ['pkcs7', '-inform', 'DER', '-print_certs']):
+        try:
+            text = _openssl(args, raw, what='the authority').decode('ascii', 'replace')
+        except ValueError:
+            continue
+        got = [m.group(0) for m in PEM_CERT.finditer(text)]
+        if got:
+            return got
+    return []
+
+
+def cert_cas(store):
+    """[pem] of the authorities whose certificates sign people in."""
+    got = json_obj(store.get_meta(CERT_META)) or {}
+    return [p for p in (got.get('certs') or []) if isinstance(p, str) and 'BEGIN CERTIFICATE' in p]
+
+
+def cert_ca_add(store, raw, by):
+    if len(raw or b'') > 1 << 20:
+        raise ValueError('that is more than certificates of authorities are')
+    try:
+        pems = cert_split_pems(raw)
+    except ValueError as e:
+        raise ValueError('not read: %s' % e)
+    if not pems:
+        raise ValueError('no certificate in it (PEM, DER or PKCS#7 .p7b)')
+    have = cert_cas(store)
+    seen = {cert_facts(p)['sha256'] for p in have}
+    added = []
+    for p in pems:
+        f = cert_facts(p)
+        if not f['ca']:
+            raise ValueError('%s is not the certificate of an authority (no CA:TRUE) - put in the '
+                             'authority that issues the people\'s certificates, and the one above it'
+                             % (f['subject'] or '?'))
+        if f['sha256'] in seen:
+            continue
+        seen.add(f['sha256'])
+        have.append(p.strip() + '\n')
+        added.append(f)
+    if len(have) > CERT_CA_MOST:
+        raise ValueError('%d authorities at most' % CERT_CA_MOST)
+    if added:
+        store.set_meta(CERT_META, json.dumps({'certs': have, 'at': time.time(), 'by': str(by or '')[:190]}))
+        store.add_event('settings', '%s put in an authority for signing in with a certificate: %s' % (
+            by, '; '.join(f['subject'] for f in added)[:600]), 'warn', who=by)
+    return added
+
+
+def cert_ca_drop(store, sha, by):
+    have = cert_cas(store)
+    keep = [p for p in have if cert_facts(p)['sha256'] != str(sha or '').lower()]
+    if len(keep) == len(have):
+        raise ValueError('there is no such authority')
+    if keep:
+        store.set_meta(CERT_META, json.dumps({'certs': keep, 'at': time.time(), 'by': str(by or '')[:190]}))
+    else:
+        store.drop_meta(CERT_META)
+    store.add_event('settings', '%s took an authority of signing in with a certificate away' % by,
+                    'warn', who=by)
+
+
+def cert_listening(port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        return s.connect_ex(('127.0.0.1', int(port))) == 0
+    except (OSError, ValueError):
+        return False
+    finally:
+        s.close()
+
+
+def cert_tick(store):
+    """Each node: the authorities written out for the checks, and what this node can do said."""
+    v = store.get_meta(CERT_META)
+    port = int(CONFIG.get('admin_cert_port') or 8443)
+    lis = bool(CONFIG.get('admin_cert')) and cert_listening(port)
+    if v == CERT_NODE.get('v') and lis == CERT_NODE.get('lis') and time.time() - CERT_NODE['at'] < 300:
+        return
+    CERT_NODE['v'] = v
+    CERT_NODE['lis'] = lis
+    err = ''
+    pems = cert_cas(store)
+    try:
+        if pems:
+            text = ''.join(p.strip() + '\n' for p in pems)
+            have = CERT_CA_FILE.read_text() if CERT_CA_FILE.exists() else ''
+            if have != text:
+                CERT_DIR.mkdir(mode=0o700, exist_ok=True)
+                tmp = CERT_DIR / ('.ca.%d' % os.getpid())
+                tmp.write_text(text)
+                os.chmod(str(tmp), 0o600)
+                os.replace(str(tmp), str(CERT_CA_FILE))
+        elif CERT_CA_FILE.exists():
+            CERT_CA_FILE.unlink()
+    except OSError as e:
+        err = 'the authorities could not be written: %s' % e
+    said = {'at': int(time.time()), 'cas': len(pems), 'file': CERT_CA_FILE.exists(),
+            'listening': lis, 'port': port,
+            'err': err, 'version': __version__}
+    store.set_meta('certlogin:node:' + node_name(), json.dumps(said))
+    CERT_NODE.update(said=said, at=time.time(), err=err)
+
+
+# -- revocation -------------------------------------------------------------------------------
+def cdp_url_ok(url):
+    """A CRL Distribution Point otp asks: http(s) on their own ports, never this machine, a
+    link-local or a broadcast address (as a CA Issuers address)."""
+    if os.environ.get('OTP_CDP_LOCAL') == '1':
+        u = urllib.parse.urlsplit(str(url or ''))
+        if u.scheme in ('http', 'https') and u.hostname:
+            return
+    return aia_url_ok(url)
+
+
+def crl_fetch(url):
+    """The CRL at url as PEM and its next update - kept until then (an hour when it says nothing),
+    and used while still good when the address does not answer."""
+    now = time.time()
+    with CRL_LOCK:
+        got = CRL_CACHE.get(url)
+    if got and now < got['next'] and now - got['at'] < 86400:
+        return got
+    try:
+        raw = b''
+        with url_open(urllib.request.Request(url, headers={'User-Agent': 'otp/%s' % __version__}),
+                      timeout=10, purpose='acme', check=cdp_url_ok) as r:
+            while len(raw) <= CRL_MOST:
+                part = r.read(65536)
+                if not part:
+                    break
+                raw += part
+        if len(raw) > CRL_MOST:
+            raise ValueError('larger than %d MB' % (CRL_MOST >> 20))
+        if b'-----BEGIN X509 CRL' in raw:
+            pem = _openssl(['crl', '-outform', 'PEM'], raw, what='the CRL').decode('ascii', 'replace')
+        else:
+            pem = _openssl(['crl', '-inform', 'DER', '-outform', 'PEM'], raw,
+                           what='the CRL').decode('ascii', 'replace')
+        nu = _openssl(['crl', '-noout', '-nextupdate'], pem.encode(), what='the CRL').decode()
+        m = re.search(r'nextUpdate=(.+)', nu)
+        nxt = now + 3600
+        if m and 'NONE' not in m.group(1):
+            try:
+                nxt = calendar.timegm(time.strptime(m.group(1).strip().replace(' GMT', ''),
+                                                    '%b %d %H:%M:%S %Y'))
+            except ValueError:
+                pass
+        one = {'at': now, 'pem': pem, 'next': nxt, 'url': url, 'err': ''}
+        with CRL_LOCK:
+            if len(CRL_CACHE) > 50:
+                CRL_CACHE.clear()
+            CRL_CACHE[url] = one
+        return one
+    except Exception as e:                              # noqa: BLE001
+        why = str(e)[:200] or e.__class__.__name__
+        if got and now < got['next']:
+            return got                                  # still good: the last one
+        with CRL_LOCK:
+            CRL_CACHE[url] = {'at': now, 'pem': '', 'next': 0, 'url': url, 'err': why}
+        raise CertError('the CRL at %s could not be had (%s) - nobody signs in while the '
+                        'certificate cannot be checked' % (url, why))
+
+
+# -- the check --------------------------------------------------------------------------------
+def cert_check(store, pem):
+    """The facts of a client certificate that passed every check, or CertError."""
+    pem = str(pem or '').strip()
+    if not pem:
+        raise CertError('no certificate was sent (none chosen, or the browser has none from the '
+                        'authorities put in here)')
+    if len(pem) > CERT_MOST:
+        raise CertError('larger than any certificate of a person')
+    f = cert_facts(pem)
+    if f['ca']:
+        raise CertError('that is the certificate of an authority, not of a person')
+    if f['unknown_critical']:
+        raise CertError('the certificate has a critical extension otp does not know (%s)'
+                        % ', '.join(f['unknown_critical']))
+    if not f['eku'] or not set(f['eku']) & set(EKU_SIGN_IN):
+        raise CertError('the certificate is not for signing in (no Client Authentication or Smart '
+                        'Card Logon among its key usages)')
+    cas = cert_cas(store)
+    if not cas or not CERT_CA_FILE.exists():
+        raise CertError('no authority is put in on this node yet')
+    args = ['verify', '-CAfile', str(CERT_CA_FILE)]
+    work = tempfile.mkdtemp(prefix='otp-cert-')
+    try:
+        if CONFIG.get('admin_cert_crl', 1):
+            urls = [u for u in f['cdp'] if u.lower().startswith(('http://', 'https://'))]
+            if not urls:
+                raise CertError('the certificate names no CRL over http (CRL Distribution Points) - '
+                                'it cannot be checked for revocation')
+            crl = None
+            last = None
+            for u in urls[:3]:
+                try:
+                    crl = crl_fetch(u)
+                    break
+                except CertError as e:
+                    last = e
+            if crl is None:
+                raise last
+            cp = os.path.join(work, 'crl.pem')
+            with open(cp, 'w') as fh:
+                fh.write(crl['pem'])
+            args += ['-crl_check', '-CRLfile', cp]
+        lp = os.path.join(work, 'leaf.pem')
+        with open(lp, 'w') as fh:
+            fh.write(pem + '\n')
+        args.append(lp)
+        try:
+            got = subprocess.run(['openssl'] + args, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise CertError('openssl did not run: %s' % e)
+        if got.returncode != 0 or not re.search(r':\s*OK\s*$', got.stdout or ''):
+            words = (got.stdout or '') + '\n' + (got.stderr or '')
+            m = re.search(r'error \d+ at (\d+) depth lookup:\s*(.+)', words)
+            raise CertError('the certificate is not taken: %s' % (
+                ('%s%s' % (m.group(2).strip(), '' if m.group(1) == '0' else ' (an authority above it)'))
+                if m else re.sub(r'\S*otp-cert-\S*:?\s*', '', words).strip()[:300]))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if not f['upn']:
+        raise CertError('the certificate names no user (no UPN in its Subject Alternative Name)')
+    return f
+
+
+def admin_password_off_now():
+    """No password anywhere (1.0.274, 1.0.275): only while signing in another way can work at all -
+    Kerberos or a certificate on, with the directory; switched off, passwords are taken again."""
+    return bool(CONFIG.get('admin_password_off') and CONFIG.get('admin_directory')
+                and (CONFIG.get('admin_kerberos') or CONFIG.get('admin_cert')))
+
+
+def cert_view(store):
+    meta = json_obj(store.get_meta(CERT_META)) or {}
+    cas = []
+    for p in cert_cas(store):
+        try:
+            f = cert_facts(p)
+            cas.append({k: f[k] for k in ('subject', 'issuer', 'not_after', 'sha256')})
+        except CertError as e:
+            cas.append({'subject': '?', 'issuer': '', 'not_after': '', 'sha256': '', 'err': str(e)})
+    nodes = []
+    alive = host_alive(store)
+    for n in host_nodes(store):
+        got = json_obj(store.get_meta('certlogin:node:' + n)) or {}
+        nodes.append({'name': n, 'alive': alive.get(n, False), 'at': got.get('at'),
+                      'cas': got.get('cas', 0), 'file': bool(got.get('file')),
+                      'listening': bool(got.get('listening')), 'err': got.get('err') or ''})
+    with CRL_LOCK:
+        crls = [{'url': c['url'], 'ok': bool(c['pem']), 'at': c['at'], 'next': c['next'],
+                 'err': c.get('err') or ''} for c in CRL_CACHE.values()]
+    names = []
+    try:
+        names = krb_names(store)
+    except Exception:                                   # noqa: BLE001
+        names = []
+    return {'on': bool(CONFIG.get('admin_cert')), 'port': int(CONFIG.get('admin_cert_port') or 8443),
+            'map': str(CONFIG.get('admin_cert_map') or 'compat'), 'crl': bool(CONFIG.get('admin_cert_crl', 1)),
+            'directory': CONFIG.get('admin_directory') or '', 'mfa': bool(CONFIG.get('admin_2fa')),
+            'password_off': admin_password_off_now(), 'cas': cas, 'cas_at': meta.get('at'),
+            'cas_by': meta.get('by') or '', 'nodes': nodes, 'crls': crls,
+            'names': [{'for': n['for'], 'name': n['name']} for n in names]}
+
+
+def cert_problems(store):
+    if not CONFIG.get('admin_cert'):
+        return []
+    out = []
+    if not CONFIG.get('admin_directory'):
+        out.append('no directory is set for administrators (Sign administrators in against the directory)')
+    if not cert_cas(store):
+        out.append('no authority is put in')
+    if CERT_NODE.get('err'):
+        out.append(CERT_NODE['err'])
     return out
 
 # ---- alerts by mail, and the report (1.0.162) ------------------------------------------
@@ -45990,7 +46546,10 @@ def _health(h):
            'kerberos': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')),
            'kerberos_auto': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')
                                  and CONFIG.get('admin_kerberos_auto')),
-           'password': not admin_password_off_now()}
+           'password': not admin_password_off_now(),
+           # The button of a certificate (1.0.275): offered, and the port it goes to.
+           'cert': bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory')),
+           'cert_port': int(CONFIG.get('admin_cert_port') or 8443)}
     if h.arg('check') == 'all' and CONFIG.get('ha_mode') == 'replicated':
         try:
             rep = ha_repl_state(h.store)
@@ -46028,10 +46587,10 @@ def admin_name_parts(name):
     return name, ('upn' if '@' in name else 'sam')
 
 
-def admin_ask_directory(h, name, password, kerberos=False):
+def admin_ask_directory(h, name, password, proven=False):
     """One sign-in, asked of the directory in `admin_directory`, and what it
-    earns here. Nothing is made and no session is opened. `kerberos` (1.0.274): the
-    person is proven by a Kerberos ticket already - no password is asked, and nothing is
+    earns here. Nothing is made and no session is opened. `proven` (1.0.274, 1.0.275): the
+    person is proven by a Kerberos ticket or a client certificate already - no password is asked, and nothing is
     counted against the account's cap of wrong passwords."""
     ad = h.d.dirs.get(str(CONFIG.get('admin_directory') or '').lower())
     if not ad:
@@ -46041,7 +46600,7 @@ def admin_ask_directory(h, name, password, kerberos=False):
         entry = ad.find_user(who, how)
     except LdapUnreachable as e:
         raise ApiError(503, 'the directory cannot be reached', str(e))
-    if (not entry or entry.get('many') or entry_unusable(entry)) and not kerberos:
+    if (not entry or entry.get('many') or entry_unusable(entry)) and not proven:
         # Counted as a wrong password of a name that exists is (1.0.234): only those were held
         # back, so a name the directory lacks answered 401 for ever - which said who exists.
         dir_pw_done(h, dir_pw_take(h, who, ad.name, entry if entry and not entry.get('many')
@@ -46063,7 +46622,7 @@ def admin_ask_directory(h, name, password, kerberos=False):
         # there, anybody would be an administrator here.
         return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
                 'directory': ad.name}
-    if kerberos:
+    if proven:
         have = ad.groups_of(entry, True)
         return {'ok': True, 'name': who, 'role': admin_role_for(have, ad), 'dn': entry['dn'],
                 'display': entry.get('display') or '', 'directory': ad.name, 'entry': entry,
@@ -46085,10 +46644,10 @@ def admin_ask_directory(h, name, password, kerberos=False):
             'groups': sorted({cn for _, cn in have}, key=str.lower)}
 
 
-def admin_from_directory(h, name, password, kerberos=False):
+def admin_from_directory(h, name, password, proven=False):
     """An administrator signed in against the directory named in
     `admin_directory`: the role is that of the first group they are in."""
-    said = admin_ask_directory(h, name, password, kerberos=kerberos)
+    said = admin_ask_directory(h, name, password, proven=proven)
     if said is None:
         return None
     if not said['ok']:
@@ -48616,11 +49175,29 @@ def _settings_do(h):
             not CONFIG.get('admin_password_off'):
         # Never locked out by a click (1.0.274): passwords switched off only by somebody signed in
         # with Windows now, with a keytab there - so it is known to work.
-        if odict(s.get('data')).get('how') != 'Kerberos':
-            raise ApiError(400, 'sign in with Windows first, then switch the password off - so it is '
-                                'known to work for you (nothing saved)')
-        if not krb_keytab_raw(h.store):
+        how = odict(s.get('data')).get('how')
+        if how not in ('Kerberos', 'certificate'):
+            raise ApiError(400, 'sign in with Windows or a certificate first, then switch the password '
+                                'off - so it is known to work for you (nothing saved)')
+        if how == 'Kerberos' and not krb_keytab_raw(h.store):
             raise ApiError(400, 'no keytab is put in - nobody could sign in (nothing saved)')
+        if how == 'certificate' and not cert_cas(h.store):
+            raise ApiError(400, 'no authority is put in - nobody could sign in (nothing saved)')
+    if 'admin_cert_port' in asked or str(asked.get('admin_cert', '0')) in ('1', 'true', 'True'):
+        # Not a port of otp's own (1.0.275), nor 80 or 443, nor the balancer's.
+        try:
+            cport = int(asked.get('admin_cert_port') or CONFIG.get('admin_cert_port') or 8443)
+        except (TypeError, ValueError):
+            cport = 0
+        conf = dict(CONFIG)
+        conf.update({k: v for k, v in asked.items() if k in dict(WEB_PROXY_PORT_CLASHES)})
+        clash = web_proxy_port_clash(cport, conf) or (
+            'the pages\' own port' if cport in (80, 443) else '') or (
+            'the balancer\'s own port' if cport == int(asked.get('web_proxy_port') or
+                                                      CONFIG.get('web_proxy_port') or 0) else '')
+        if clash:
+            raise ApiError(400, 'admin_cert_port: %d is %s - give a port of its own (8443, say) '
+                                '(nothing saved)' % (cport, clash))
     if 'token_names_case' in asked:
         # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
         bad = token_case_problem(h.store, asked.get('token_names_case'))
@@ -52835,7 +53412,7 @@ def krb_who(h, token):
     bad = name_letters_problem(user)
     if bad:
         raise KrbError('%s: %s' % (principal, bad))
-    said = admin_ask_directory(h, user, '', kerberos=True)
+    said = admin_ask_directory(h, user, '', proven=True)
     return principal, user, said
 
 
@@ -52888,7 +53465,7 @@ def _auth_kerberos(h):
         raise ApiError(401, '%s is known, and none of the groups given a role here holds it' % principal,
                        extra={'code': 'kerberos'})
     try:
-        ok = admin_from_directory(h, user, '', kerberos=True)
+        ok = admin_from_directory(h, user, '', proven=True)
     except ApiError:
         h.failed(key)
         raise
@@ -52960,6 +53537,153 @@ def _kerberos_do(h):
         out = krb_view(h.store)
         out['problems'] = krb_problems(h.store)
         out['message'] = 'the keytab is taken away'
+        return out
+    raise ApiError(400, 'no such action')
+
+
+# ---- Signing in with a client certificate on the pages (1.0.275) ----------------------------
+def cert_who(h, pem):
+    """(facts, said of the directory) of a client certificate - CertError when not taken."""
+    f = cert_check(h.store, pem)
+    upn = f['upn'][0]
+    bad = name_letters_problem(upn.split('@', 1)[0])
+    if bad:
+        raise CertError('%s: %s' % (upn, bad))
+    said = admin_ask_directory(h, upn, '', proven=True)
+    if said is None:
+        raise CertError('no directory is set for administrators')
+    if said.get('ok'):
+        mode = str(CONFIG.get('admin_cert_map') or 'compat')
+        have = str(odict(said.get('entry')).get('sid') or '')
+        if mode == 'strong' and not f['sid']:
+            raise CertError('the certificate names no SID of its account (strong mapping, KB5014754) - '
+                            'issued by an AD CS before May 2022, or from an offline template')
+        if mode in ('strong', 'compat') and f['sid']:
+            if not have:
+                raise CertError('the directory did not say the SID of %s, and the certificate names one' % upn)
+            if f['sid'].upper() != have.upper():
+                raise CertError('the certificate is of another account: its SID is %s, %s\'s is %s'
+                                % (f['sid'], upn, have))
+    return f, said
+
+
+@route('POST', '/api/auth/cert')
+def _auth_cert(h):
+    """The page of the certificate's own port hands the browser's certificate here (nginx's
+    $ssl_client_escaped_cert) - no sign-in yet."""
+    if not CONFIG.get('admin_cert'):
+        raise ApiError(404, 'signing in with a certificate is off')
+    if not CONFIG.get('admin_directory'):
+        raise ApiError(409, 'signing in with a certificate needs the directory of the administrators')
+    tries = int(CONFIG.get('login_tries') or 5)
+    key = h.throttle('certificate', tries * 4, int(CONFIG.get('login_wait_min') or 15),
+                     ip_tries=max(50, tries * 10), what='refused certificates')
+    pem = str(h.body().get('cert') or '')
+    try:
+        f, said = cert_who(h, pem)
+    except CertError as e:
+        h.failed(key)
+        h.store.add_event('sign-ins', 'a sign-in with a certificate from %s was refused: %s'
+                          % (h.client_ip(), e), 'warn')
+        raise ApiError(401, str(e), extra={'code': 'certificate'})
+    upn = f['upn'][0]
+    tail = ' (serial %s, %s)' % (f['serial'], f['issuer'][:120])
+    if not said.get('ok'):
+        h.failed(key)
+        h.store.add_event('sign-ins', '%s (a certificate) from %s was refused: %s%s' % (
+            upn, h.client_ip(), said.get('said') or '?', tail), 'warn')
+        raise ApiError(401, 'the directory does not let %s in: %s' % (upn, said.get('said') or '?'),
+                       extra={'code': 'certificate'})
+    if not said.get('role'):
+        h.failed(key)
+        h.store.add_event('sign-ins', '%s (a certificate) from %s: none of the groups given a role '
+                          'here holds them%s' % (upn, h.client_ip(), tail), 'warn')
+        raise ApiError(401, '%s is known, and none of the groups given a role here holds it' % upn,
+                       extra={'code': 'certificate'})
+    # The account by its sAMAccountName (as with a password or Kerberos): one person, one account,
+    # whichever way they signed in first.
+    entry = odict(said.get('entry'))
+    name = str(entry.get('sam') or '') or upn
+    local = h.store.account(name, checked=True)
+    if local and local.get('source') != 'directory':
+        h.failed(key)
+        raise ApiError(401, '%s is an account of this server with a password of its own - a '
+                       'certificate signs in only accounts of the directory' % name,
+                       extra={'code': 'certificate'})
+    try:
+        ok = admin_from_directory(h, name, '', proven=True)
+    except ApiError:
+        h.failed(key)
+        raise
+    if ok and str(ok.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
+        h.failed(key)
+        raise ApiError(401, '%s is not the same entry of the directory as %s' % (name, upn),
+                       extra={'code': 'certificate'})
+    if not ok or ok.get('disabled'):
+        h.failed(key)
+        raise ApiError(401, 'the account %s is switched off here' % upn, extra={'code': 'certificate'})
+    h.store.add_event('sign-ins', '%s: the certificate %s%s' % (ok['name'], f['subject'][:160], tail),
+                      who=ok['name'])
+    return admin_signed_in(h, ok, how='certificate')
+
+
+@route('GET', '/api/certlogin')
+def _certlogin_view(h):
+    h.me()
+    out = cert_view(h.store)
+    out['problems'] = cert_problems(h.store)
+    return out
+
+
+@route('POST', '/api/certlogin')
+def _certlogin_do(h):
+    b = h.body()
+    act = str(b.get('action') or '')
+    if act == 'check':
+        # "Try my certificate": who it would sign in, and as what - nothing opened.
+        h.me()
+        try:
+            f, said = cert_who(h, str(b.get('cert') or ''))
+        except CertError as e:
+            return {'ok': False, 'said': str(e)}
+        upn = f['upn'][0]
+        if not said.get('ok'):
+            return {'ok': False, 'upn': upn, 'said': said.get('said') or '?'}
+        return {'ok': bool(said.get('role')), 'upn': upn, 'name': said.get('name'),
+                'role': said.get('role') or '', 'subject': f['subject'], 'issuer': f['issuer'],
+                'serial': f['serial'], 'not_after': f['not_after'], 'sid': f['sid'],
+                'said': '' if said.get('role') else 'none of the groups given a role here holds it',
+                'mfa': bool(CONFIG.get('admin_2fa'))}
+    s = h.me('fulladmin')
+    if act == 'ca_add':
+        try:
+            raw = base64.b64decode(str(b.get('data') or ''), validate=True)
+        except (ValueError, binascii.Error):
+            raise ApiError(400, 'the file did not arrive whole (not base64)')
+        try:
+            added = cert_ca_add(h.store, raw, s['name'])
+        except (ValueError, CertError) as e:
+            raise ApiError(400, str(e))
+        try:
+            cert_tick(h.store)
+        except Exception:                               # noqa: BLE001
+            pass
+        out = cert_view(h.store)
+        out['problems'] = cert_problems(h.store)
+        out['message'] = ('%d authority(ies) put in' % len(added)) if added else 'every one of them was in already'
+        return out
+    if act == 'ca_drop':
+        try:
+            cert_ca_drop(h.store, b.get('sha256'), s['name'])
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        try:
+            cert_tick(h.store)
+        except Exception:                               # noqa: BLE001
+            pass
+        out = cert_view(h.store)
+        out['problems'] = cert_problems(h.store)
+        out['message'] = 'the authority is taken away'
         return out
     raise ApiError(400, 'no such action')
 # ---- a second step for the administration (1.0.125) ---------------------------------
@@ -63718,6 +64442,13 @@ def build_parser():
     g.add_argument('--kerberos-keytab', metavar='FILE',
                    help='put in the keytab of the pages\' service (HTTP/name@REALM) - every node gets it')
     g.add_argument('--kerberos-keytab-drop', action='store_true', help='take the keytab of Kerberos away')
+    g.add_argument('--cert', choices=('on', 'off', 'status'), metavar='on|off|status',
+                   help='signing in to these pages with a client certificate (a smart card, a YubiKey): '
+                        'switch it on or off, or say how it stands on every node (1.0.275)')
+    g.add_argument('--cert-ca', metavar='FILE', help='put in an authority whose certificates sign people '
+                   'in (PEM, DER or .p7b) - every node gets it')
+    g.add_argument('--cert-ca-drop', metavar='SHA256', help='take an authority away (its SHA-256, as '
+                   '--cert status shows it)')
     g.add_argument('--reset-2fa', metavar='NAME', help='take away the second step an account set '
                    'up for these pages: it sets it up again at its next sign-in')
     g.add_argument('--note', metavar='TEXT', default='', help='a note beside what is made')
@@ -66810,6 +67541,52 @@ def cli_main(argv=None):
         store.add_event('accounts', 'the password of %s was set on the command line'
                         % args.passwd, who=who)
         print(pal.ok_line('the password of %s is set' % args.passwd))
+        return 0
+
+    if args.cert or args.cert_ca or args.cert_ca_drop:
+        if args.cert_ca:
+            try:
+                with open(args.cert_ca, 'rb') as f:
+                    raw = f.read((1 << 20) + 1)
+                added = cert_ca_add(store, raw, who)
+            except (OSError, ValueError, CertError) as e:
+                raise SystemExit('otp: %s' % e)
+            print(pal.ok_line('%d authority(ies) put in%s' % (len(added), ''.join(
+                '\n  ' + f['subject'] for f in added))))
+        if args.cert_ca_drop:
+            try:
+                cert_ca_drop(store, args.cert_ca_drop, who)
+            except ValueError as e:
+                raise SystemExit('otp: %s' % e)
+            print(pal.ok_line('the authority is taken away'))
+        if args.cert in ('on', 'off'):
+            d = Daemon(store, serve=False)
+            try:
+                d.save_settings({'admin_cert': '1' if args.cert == 'on' else '0'}, by=who)
+            except (BadSetting, OSError) as e:
+                raise SystemExit('otp: %s' % e)
+            CONFIG['admin_cert'] = 1 if args.cert == 'on' else 0
+        v = cert_view(store)
+        v['problems'] = cert_problems(store) if v['on'] else []
+        if args.json:
+            out(v)
+            return 0
+        print(pal.ok_line('signing in to these pages with a certificate is %s (port %d)' % (
+            'ON' if v['on'] else 'off', v['port'])))
+        print('a password on the sign-in page: %s' % ('NOT offered' if v['password_off'] else 'offered'))
+        print('which account: %s · revocation (CRL): %s · directory: %s · second step after it: %s' % (
+            v['map'], 'checked' if v['crl'] else 'NOT checked', v['directory'] or '-', 'asked' if v['mfa'] else 'off'))
+        for c in v['cas']:
+            print('  authority %s (to %s) sha256 %s' % (c['subject'], c['not_after'], c['sha256']))
+        if not v['cas']:
+            print('  no authority put in')
+        for n in v['nodes']:
+            print('  %-20s %s, authorities %s, nginx on %d %s%s' % (
+                n['name'], 'heard from' if n['alive'] else 'NOT heard from',
+                'written (%d)' % n['cas'] if n['file'] else 'none', v['port'],
+                'listening' if n['listening'] else 'not listening', (' - ' + n['err']) if n['err'] else ''))
+        for pr in v['problems']:
+            print(pal.warn_line('not ready: ' + pr))
         return 0
 
     if args.kerberos or args.kerberos_keytab or args.kerberos_keytab_drop:

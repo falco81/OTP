@@ -202,7 +202,7 @@ except ow.Refused:
     ok('a file without location = / is refused, not half written', True)
 src = open(OUT + '/deploy/otp_web.py').read()
 ok('nginx_part: the file in the snapshot (put back when nginx refuses), written and taken away',
-   'paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB]' in src and 'write_root(NGINX_LB, text, 0o644)' in src and 'os.unlink(NGINX_LB)' in src)
+   'paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB' in src and 'write_root(NGINX_LB, text, 0o644)' in src and 'os.unlink(NGINX_LB)' in src)
 ok('nginx_part: built after the TLS of 443 is in (main as written)', src.index('lbport_server(main[:where[0]] + block + main[where[1]:], lp)') > src.index("new, words, dh['node'] = tls_into(block"))
 ok('the request: lbport checked', "out['lbport'] = lbport_checked(r.get('lbport'))" in src)
 # nginx -t on a scratch copy: unix sockets in place of every port - nothing bound

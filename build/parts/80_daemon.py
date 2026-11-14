@@ -2067,6 +2067,10 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('selinux-tick', 'SELinux: %s' % e, 'warn', every=600)
                 try:
+                    cert_tick(self.store)       # the authorities of certificates on this node (1.0.275)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('cert-tick', 'certificates: %s' % e, 'warn', every=600)
+                try:
                     krb_tick(self.store)        # the keytab of Kerberos on this node (1.0.274)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('krb-tick', 'Kerberos: %s' % e, 'warn', every=600)

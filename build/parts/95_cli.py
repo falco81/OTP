@@ -812,6 +812,13 @@ def build_parser():
     g.add_argument('--kerberos-keytab', metavar='FILE',
                    help='put in the keytab of the pages\' service (HTTP/name@REALM) - every node gets it')
     g.add_argument('--kerberos-keytab-drop', action='store_true', help='take the keytab of Kerberos away')
+    g.add_argument('--cert', choices=('on', 'off', 'status'), metavar='on|off|status',
+                   help='signing in to these pages with a client certificate (a smart card, a YubiKey): '
+                        'switch it on or off, or say how it stands on every node (1.0.275)')
+    g.add_argument('--cert-ca', metavar='FILE', help='put in an authority whose certificates sign people '
+                   'in (PEM, DER or .p7b) - every node gets it')
+    g.add_argument('--cert-ca-drop', metavar='SHA256', help='take an authority away (its SHA-256, as '
+                   '--cert status shows it)')
     g.add_argument('--reset-2fa', metavar='NAME', help='take away the second step an account set '
                    'up for these pages: it sets it up again at its next sign-in')
     g.add_argument('--note', metavar='TEXT', default='', help='a note beside what is made')
@@ -3904,6 +3911,52 @@ def cli_main(argv=None):
         store.add_event('accounts', 'the password of %s was set on the command line'
                         % args.passwd, who=who)
         print(pal.ok_line('the password of %s is set' % args.passwd))
+        return 0
+
+    if args.cert or args.cert_ca or args.cert_ca_drop:
+        if args.cert_ca:
+            try:
+                with open(args.cert_ca, 'rb') as f:
+                    raw = f.read((1 << 20) + 1)
+                added = cert_ca_add(store, raw, who)
+            except (OSError, ValueError, CertError) as e:
+                raise SystemExit('otp: %s' % e)
+            print(pal.ok_line('%d authority(ies) put in%s' % (len(added), ''.join(
+                '\n  ' + f['subject'] for f in added))))
+        if args.cert_ca_drop:
+            try:
+                cert_ca_drop(store, args.cert_ca_drop, who)
+            except ValueError as e:
+                raise SystemExit('otp: %s' % e)
+            print(pal.ok_line('the authority is taken away'))
+        if args.cert in ('on', 'off'):
+            d = Daemon(store, serve=False)
+            try:
+                d.save_settings({'admin_cert': '1' if args.cert == 'on' else '0'}, by=who)
+            except (BadSetting, OSError) as e:
+                raise SystemExit('otp: %s' % e)
+            CONFIG['admin_cert'] = 1 if args.cert == 'on' else 0
+        v = cert_view(store)
+        v['problems'] = cert_problems(store) if v['on'] else []
+        if args.json:
+            out(v)
+            return 0
+        print(pal.ok_line('signing in to these pages with a certificate is %s (port %d)' % (
+            'ON' if v['on'] else 'off', v['port'])))
+        print('a password on the sign-in page: %s' % ('NOT offered' if v['password_off'] else 'offered'))
+        print('which account: %s · revocation (CRL): %s · directory: %s · second step after it: %s' % (
+            v['map'], 'checked' if v['crl'] else 'NOT checked', v['directory'] or '-', 'asked' if v['mfa'] else 'off'))
+        for c in v['cas']:
+            print('  authority %s (to %s) sha256 %s' % (c['subject'], c['not_after'], c['sha256']))
+        if not v['cas']:
+            print('  no authority put in')
+        for n in v['nodes']:
+            print('  %-20s %s, authorities %s, nginx on %d %s%s' % (
+                n['name'], 'heard from' if n['alive'] else 'NOT heard from',
+                'written (%d)' % n['cas'] if n['file'] else 'none', v['port'],
+                'listening' if n['listening'] else 'not listening', (' - ' + n['err']) if n['err'] else ''))
+        for pr in v['problems']:
+            print(pal.warn_line('not ready: ' + pr))
         return 0
 
     if args.kerberos or args.kerberos_keytab or args.kerberos_keytab_drop:

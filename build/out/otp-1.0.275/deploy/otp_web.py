@@ -54,6 +54,7 @@ NGINX_MAIN = os.path.join(NGINX_DIR, 'otp.conf')
 NGINX_VIP = os.path.join(NGINX_DIR, 'otp_vip.conf')   # read after otp.conf: never the default server
 # The balancer's own port (1.0.259): read after otp.conf too - its limits are defined there.
 NGINX_LB = os.path.join(NGINX_DIR, 'otp_lbport.conf')
+NGINX_CERT = os.path.join(NGINX_DIR, 'otp_certlogin.conf')   # 1.0.275
 CERT_DIR = os.environ.get('OTP_VIP_CERT_DIR', '/etc/nginx/certs')
 # Where SELinux lets keepalived run it; the program's own folder otherwise.
 CHECK = os.environ.get('OTP_VIP_CHECK') or next(
@@ -335,6 +336,8 @@ def checked(r):
     out['sso_peer'] = None if sp is None else bool(sp)
     # The balancer's own port (1.0.259): None leaves nginx as it is.
     out['lbport'] = lbport_checked(r.get('lbport'))
+    # The certificate's own port (1.0.275): None leaves nginx as it is.
+    out['certlogin'] = certlogin_checked(r.get('certlogin'))
     names = r.get('acme')
     if names is None:
         out['acme'] = None
@@ -616,6 +619,93 @@ def block_at(text, start):
             if depth == 0:
                 return text[start:j + 1]
     raise Refused('a block of %s does not end' % NGINX_MAIN)
+
+
+def certlogin_checked(cl):
+    """The certificate's own port as the daemon asked (1.0.275): {'port': 0} takes it away."""
+    if cl is None:
+        return None
+    if not isinstance(cl, dict):
+        raise Refused('certlogin: not an object')
+    try:
+        port = int(cl.get('port') or 0)
+    except (TypeError, ValueError):
+        raise Refused('certlogin: the port is not a number')
+    if not port:
+        return {'port': 0}
+    if not 1025 <= port <= 65535:
+        raise Refused('certlogin: the port is from 1025 to 65535')
+    ca = str(cl.get('ca') or '')
+    blocks = re.findall(r'-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----', ca)
+    if not blocks or len(blocks) > 20 or len(ca) > 200000:
+        raise Refused('certlogin: the authorities are not certificates (PEM), 20 at most')
+    return {'port': port, 'ca': ''.join(b.strip() + '\n' for b in blocks)}
+
+
+CERT_HEAD = ('# otp: signing in to the administration with a certificate (1.0.275) - nginx asks for a\n'
+             '# client certificate on this port only, and serves nothing here but that sign-in. Made from\n'
+             '# the HTTPS servers of otp.conf and otp_vip.conf again whenever one is changed on the pages:\n'
+             '# not to be edited (Settings - Accounts - Signing in with a certificate).\n')
+CERT_CA_PATH = os.path.join(CERT_DIR, 'otp-certlogin-ca.pem')
+CERT_DROP = ('client_max_body_size', 'client_body_timeout', 'fastcgi_request_buffering',
+             'fastcgi_read_timeout')
+
+
+def certlogin_server(block, port, ca_path):
+    """One server { } of the certificate's port, made from an HTTPS server of otp's (this node's,
+    or the VIP address's): its names, TLS and headers, the administration's location as it is there
+    (who may reach it, the limits) - asking for a certificate, handing it to the page, and only
+    ?api=cert-login and ?api=cert-check answered."""
+    body = block[block.index('{') + 1:block.rindex('}')]
+    keep, depth, names = [], 0, '_'
+    for line in body.split('\n'):
+        # Without a comment at the end (otp.conf's own "server_name x;   # <- your hostname").
+        k = re.sub(r'\s+#.*$', '', line.strip()) if not line.strip().startswith('#') else ''
+        if depth == 0 and k.startswith('server_name ') and k.endswith(';'):
+            names = k[len('server_name '):-1].strip()
+        if depth == 0 and k.endswith(';') and '{' not in k and k.split(None, 1)[0].startswith(LB_KEEP):
+            keep.append('    ' + k)
+        depth += line.count('{') - line.count('}')
+    m = re.search(r'(?m)^[ \t]*location[ \t]*=[ \t]*/admin/[ \t]*\{', block)
+    if not m:
+        raise Refused('no location = /admin/ { } (the administration) in an HTTPS server of %s' % NGINX_MAIN)
+    adm = block_at(block, m.start())
+    inner = []
+    for line in adm.split('\n')[1:-1]:
+        k = line.strip()
+        if not k or k.startswith('#') or k.split(None, 1)[0] in CERT_DROP:
+            continue
+        inner.append('        ' + k)
+    inner += ['        # only the sign-in with a certificate, and its try',
+              '        if ($arg_api !~ "^cert-(login|check)$") { return 404; }',
+              '        fastcgi_param  OTP_CERT_PORT 1;',
+              '        fastcgi_param  SSL_CLIENT_CERT $ssl_client_escaped_cert;',
+              '        fastcgi_param  SSL_CLIENT_VERIFY $ssl_client_verify;']
+    listens = []
+    for lm in re.finditer(r'(?m)^\s*listen\s+((?:\[[^\]]*\]:|[0-9.]+:)?)443\b([^;]*);', body):
+        opts = [o for o in lm.group(2).split() if o in ('ssl', 'http2')]
+        if 'ssl' not in opts:
+            opts.insert(0, 'ssl')
+        line = '    listen %s%d %s;' % (lm.group(1), port, ' '.join(opts))
+        if line not in listens:
+            listens.append(line)
+    if not listens:
+        listens = ['    listen %d ssl;' % port]
+    out = ['server {'] + listens + ['    server_name %s;' % names] + keep
+    # A certificate nginx itself refuses (run out, not for a client): the page says why - not
+    # nginx's own "400 The SSL certificate error".
+    fail = [x for x in inner if 'arg_api' not in x and 'only the sign-in' not in x] + \
+        ['        fastcgi_param  OTP_CERT_FAIL 1;']
+    out += ['    ssl_client_certificate %s;' % ca_path,
+            '    ssl_verify_client optional_no_ca;',
+            '    ssl_verify_depth 4;',
+            '    error_page 495 = @certfail;',
+            '    location = /admin/ {'] + inner + ['    }',
+            '    location @certfail {'] + [x.replace('fastcgi_param  OTP_CERT_PORT 1;', 'fastcgi_param  OTP_CERT_PORT 1;')
+                                         for x in fail if not x.strip().startswith('limit_req')] + ['    }',
+            '    # nothing else: the enrolment pages, the rest of the administration, /metrics, /healthz',
+            '    location / { return 404; }', '}']
+    return '\n'.join(out) + '\n'
 
 
 def lbport_server(main, lp):
@@ -1080,7 +1170,7 @@ def acme_into(main, names):
     return main[:where[0]] + new + main[where[1]:] if new != block else main
 
 
-def lbport_selinux(port):
+def lbport_selinux(port, what='the balancer\'s port', key='web_proxy_port'):
     """The balancer's own port let to nginx where SELinux is on (1.0.262), or Refused on an
     enforcing node where it cannot be: written without it, nginx could not bind it - reloaded,
     the port stayed shut; restarted (an upgrade), nginx did not start at all. A port http_port_t
@@ -1093,18 +1183,18 @@ def lbport_selinux(port):
     if known is None:
         if enforcing:
             raise Refused('SELinux is enforcing and semanage is not on this machine, so nginx '
-                          'cannot be let listen on the balancer\'s port %d (dnf install '
-                          'policycoreutils-python-utils)' % port)
+                          'cannot be let listen on %s %d (dnf install '
+                          'policycoreutils-python-utils)' % (what, port))
         return ''
     if se_port_has(known, 'http_port_t', 'tcp', port) or \
             se_port_has(known, 'http_cache_port_t', 'tcp', port):
         return ''
     got = _se_run(['semanage', 'port', '-a', '-t', 'http_port_t', '-p', 'tcp', str(port)], 300)
     if got is not None and got.returncode == 0:
-        return 'SELinux lets nginx listen on the balancer\'s port %d' % port
+        return 'SELinux lets nginx listen on %s %d' % (what, port)
     if got is not None and 'already defined' in (got.stderr or ''):
         why = ('port %d/tcp is another service\'s in the SELinux policy - choose another port for '
-               'the balancer (web_proxy_port)' % port)
+               '%s (%s)' % (port, what, key))
     else:
         why = 'semanage port %d/tcp: %s' % (port, ((got.stderr or '') if got else '').strip()[-200:])
     if enforcing:
@@ -1152,7 +1242,8 @@ def nginx_part(r, last):
             DH_READY[files['dh']] = files['dh']
             continue
         DH_READY[files['dh']] = dh_file(t['dh'], files['dh'], (last.get('dh') or {}).get(which))
-    paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB] + list(NODE_FILES.values()) + list(VIP_FILES.values())
+    paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB, NGINX_CERT, CERT_CA_PATH] + list(NODE_FILES.values()) + \
+        list(VIP_FILES.values())
     snap = snapshot(paths)
     changed = False
     TLS_FILES_NEW[0] = False
@@ -1207,6 +1298,7 @@ def nginx_part(r, last):
             said += ['this node: ' + w for w in words]
             block = new
         vip, tv = r['vip'], r['tls_vip']
+        vip_block = None
         if vip['on'] and tv and tv['pem']:
             vb = re.sub(r'(?m)^(\s*)server_name\s+[^;]*;', r'\1server_name %s;' % vip['fqdn'],
                         block, count=1)
@@ -1235,6 +1327,7 @@ def nginx_part(r, last):
                                 m.group(2).split(':443', 1)[1].rstrip(';')), vb, count=1)
             said.append(nonlocal_bind(vip['family'], 6 if vip.get('address6') else None))
             vb, words, dh['vip'] = tls_into(vb, tv, VIP_FILES, (last.get('dh') or {}).get('vip'))
+            vip_block = vb
             text = ('%s\n# %s - the web address\'s own name and certificate: a copy of the '
                     'HTTPS server of otp.conf,\n# made again whenever either is changed on the '
                     'pages.\n%s\n' % (MARK, vip['fqdn'], vb))
@@ -1283,6 +1376,44 @@ def nginx_part(r, last):
             os.unlink(NGINX_LB)
             changed = True
             said.append('nginx: the balancer\'s own port taken away')
+        # The certificate's own port (1.0.275): made from this node's server and the VIP
+        # address's (its name and certificate), the authorities in a file of their own.
+        cl = r.get('certlogin')
+        cert_look = cert_gone = 0
+        if cl is not None and cl.get('port'):
+            text = CERT_HEAD + certlogin_server(block, int(cl['port']), CERT_CA_PATH)
+            if vip_block:
+                text += certlogin_server(vip_block, int(cl['port']), CERT_CA_PATH)
+            ca_now = snap.get(CERT_CA_PATH)
+            if ca_now is None or ca_now[0].decode() != cl['ca']:
+                write_root(CERT_CA_PATH, cl['ca'], 0o644)
+                changed = True
+            if snap.get(NGINX_CERT) is None or snap[NGINX_CERT][0].decode() != text:
+                w = lbport_selinux(int(cl['port']), 'the certificate\'s port', 'admin_cert_port')
+                if w:
+                    said.append(w)
+                write_root(NGINX_CERT, text, 0o644)
+                changed = True
+                cert_look = int(cl['port'])
+                said.append('nginx: port %d asks for a certificate of the authorities put in (%d), for '
+                            'signing in to the administration' % (cl['port'], cl['ca'].count('BEGIN CERT')))
+            elif not NO_SERVICES and not lbport_listening(int(cl['port']), 0):
+                cert_look = int(cl['port'])
+                changed = True
+        elif cl is not None and (os.path.exists(NGINX_CERT) or os.path.exists(CERT_CA_PATH)):
+            try:
+                with open(NGINX_CERT) as f:
+                    m = re.search(r'(?m)^\s*listen\s+(?:\S+:)?(\d+)\s', f.read())
+                cert_gone = int(m.group(1)) if m else 0
+            except (OSError, ValueError):
+                cert_gone = 0
+            for p in (NGINX_CERT, CERT_CA_PATH):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            changed = True
+            said.append('nginx: the certificate\'s own port taken away')
         # A certificate renewed changes no line of nginx's (1.0.205): its files
         # alone were written, nginx was not reloaded, and went on giving the
         # old one until it ran out.
@@ -1309,6 +1440,21 @@ def nginx_part(r, last):
                 # nginx not run by systemd (a systemctl that answers without reloading it): its
                 # own signal, and a look again
                 subprocess.run(['nginx', '-s', 'reload'], capture_output=True)
+            if cert_gone and lbport_listening(cert_gone, 0):
+                # Still asking for certificates (a systemctl that answers without reloading it): its
+                # own signal, and a look again.
+                subprocess.run(['nginx', '-s', 'reload'], capture_output=True)
+                end = time.time() + 5
+                while time.time() < end and lbport_listening(cert_gone, 0):
+                    time.sleep(0.25)
+            if cert_look and not lbport_listening(cert_look):
+                subprocess.run(['nginx', '-s', 'reload'], capture_output=True)
+            if cert_look and not lbport_listening(cert_look):
+                put_back(snap)
+                subprocess.run(['systemctl', 'reload', 'nginx'], capture_output=True)
+                raise Refused('nginx does not listen on the certificate\'s port %d after the reload '
+                              '(SELinux: ausearch -m avc -ts recent; or another program has it) - '
+                              'nginx is as it was' % cert_look)
             if lb_look and not lbport_listening(lb_look):
                 # Reloaded, and the balancer's port still shut (SELinux, another program on it):
                 # everything put back and nginx read again - refused, not "done".

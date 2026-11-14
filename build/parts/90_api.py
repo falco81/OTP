@@ -1108,7 +1108,10 @@ def _health(h):
            'kerberos': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')),
            'kerberos_auto': bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory')
                                  and CONFIG.get('admin_kerberos_auto')),
-           'password': not admin_password_off_now()}
+           'password': not admin_password_off_now(),
+           # The button of a certificate (1.0.275): offered, and the port it goes to.
+           'cert': bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory')),
+           'cert_port': int(CONFIG.get('admin_cert_port') or 8443)}
     if h.arg('check') == 'all' and CONFIG.get('ha_mode') == 'replicated':
         try:
             rep = ha_repl_state(h.store)
@@ -1146,10 +1149,10 @@ def admin_name_parts(name):
     return name, ('upn' if '@' in name else 'sam')
 
 
-def admin_ask_directory(h, name, password, kerberos=False):
+def admin_ask_directory(h, name, password, proven=False):
     """One sign-in, asked of the directory in `admin_directory`, and what it
-    earns here. Nothing is made and no session is opened. `kerberos` (1.0.274): the
-    person is proven by a Kerberos ticket already - no password is asked, and nothing is
+    earns here. Nothing is made and no session is opened. `proven` (1.0.274, 1.0.275): the
+    person is proven by a Kerberos ticket or a client certificate already - no password is asked, and nothing is
     counted against the account's cap of wrong passwords."""
     ad = h.d.dirs.get(str(CONFIG.get('admin_directory') or '').lower())
     if not ad:
@@ -1159,7 +1162,7 @@ def admin_ask_directory(h, name, password, kerberos=False):
         entry = ad.find_user(who, how)
     except LdapUnreachable as e:
         raise ApiError(503, 'the directory cannot be reached', str(e))
-    if (not entry or entry.get('many') or entry_unusable(entry)) and not kerberos:
+    if (not entry or entry.get('many') or entry_unusable(entry)) and not proven:
         # Counted as a wrong password of a name that exists is (1.0.234): only those were held
         # back, so a name the directory lacks answered 401 for ever - which said who exists.
         dir_pw_done(h, dir_pw_take(h, who, ad.name, entry if entry and not entry.get('many')
@@ -1181,7 +1184,7 @@ def admin_ask_directory(h, name, password, kerberos=False):
         # there, anybody would be an administrator here.
         return {'ok': False, 'said': 'the directory %s is not as otp wrote it - not asked' % ad.name,
                 'directory': ad.name}
-    if kerberos:
+    if proven:
         have = ad.groups_of(entry, True)
         return {'ok': True, 'name': who, 'role': admin_role_for(have, ad), 'dn': entry['dn'],
                 'display': entry.get('display') or '', 'directory': ad.name, 'entry': entry,
@@ -1203,10 +1206,10 @@ def admin_ask_directory(h, name, password, kerberos=False):
             'groups': sorted({cn for _, cn in have}, key=str.lower)}
 
 
-def admin_from_directory(h, name, password, kerberos=False):
+def admin_from_directory(h, name, password, proven=False):
     """An administrator signed in against the directory named in
     `admin_directory`: the role is that of the first group they are in."""
-    said = admin_ask_directory(h, name, password, kerberos=kerberos)
+    said = admin_ask_directory(h, name, password, proven=proven)
     if said is None:
         return None
     if not said['ok']:
@@ -3734,11 +3737,29 @@ def _settings_do(h):
             not CONFIG.get('admin_password_off'):
         # Never locked out by a click (1.0.274): passwords switched off only by somebody signed in
         # with Windows now, with a keytab there - so it is known to work.
-        if odict(s.get('data')).get('how') != 'Kerberos':
-            raise ApiError(400, 'sign in with Windows first, then switch the password off - so it is '
-                                'known to work for you (nothing saved)')
-        if not krb_keytab_raw(h.store):
+        how = odict(s.get('data')).get('how')
+        if how not in ('Kerberos', 'certificate'):
+            raise ApiError(400, 'sign in with Windows or a certificate first, then switch the password '
+                                'off - so it is known to work for you (nothing saved)')
+        if how == 'Kerberos' and not krb_keytab_raw(h.store):
             raise ApiError(400, 'no keytab is put in - nobody could sign in (nothing saved)')
+        if how == 'certificate' and not cert_cas(h.store):
+            raise ApiError(400, 'no authority is put in - nobody could sign in (nothing saved)')
+    if 'admin_cert_port' in asked or str(asked.get('admin_cert', '0')) in ('1', 'true', 'True'):
+        # Not a port of otp's own (1.0.275), nor 80 or 443, nor the balancer's.
+        try:
+            cport = int(asked.get('admin_cert_port') or CONFIG.get('admin_cert_port') or 8443)
+        except (TypeError, ValueError):
+            cport = 0
+        conf = dict(CONFIG)
+        conf.update({k: v for k, v in asked.items() if k in dict(WEB_PROXY_PORT_CLASHES)})
+        clash = web_proxy_port_clash(cport, conf) or (
+            'the pages\' own port' if cport in (80, 443) else '') or (
+            'the balancer\'s own port' if cport == int(asked.get('web_proxy_port') or
+                                                      CONFIG.get('web_proxy_port') or 0) else '')
+        if clash:
+            raise ApiError(400, 'admin_cert_port: %d is %s - give a port of its own (8443, say) '
+                                '(nothing saved)' % (cport, clash))
     if 'token_names_case' in asked:
         # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
         bad = token_case_problem(h.store, asked.get('token_names_case'))

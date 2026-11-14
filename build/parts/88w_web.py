@@ -1183,6 +1183,24 @@ def lbport_desired(store):
     return None
 
 
+def certlogin_desired(store):
+    """The certificate's own port (1.0.275): {'port', 'ca'} - a server of its own on this node
+    (and the VIP address's name) that asks the browser for a certificate of these authorities and
+    serves only the sign-in with it; {'port': 0} takes it away again; None where it was never
+    switched on (nginx left as it is)."""
+    if CONFIG.get('admin_cert') and CONFIG.get('admin_directory'):
+        pems = cert_cas(store)
+        if pems:
+            return {'port': int(CONFIG.get('admin_cert_port') or 8443),
+                    'ca': ''.join(p.strip() + '\n' for p in pems)}
+    try:
+        if any(k.split('@', 1)[0] == 'admin_cert' for k in saved_keys(store)):
+            return {'port': 0}
+    except Exception:                                   # noqa: BLE001
+        pass
+    return None
+
+
 def sso_peer_desired(store):
     """True: nginx tells the enrolment page which machine a request came from (OTP_PEER); False:
     no longer; None where the sign-in by the balancer was never switched on (nginx as it is)."""
@@ -1262,6 +1280,9 @@ def web_desired(store):
     lp = lbport_desired(store)
     if lp is not None:
         out['lbport'] = lp
+    cl = certlogin_desired(store)
+    if cl is not None:
+        out['certlogin'] = cl
     if fw is not None:
         out['fw'] = fw
     if access is not None:
@@ -1299,7 +1320,7 @@ def web_tick(store):
     st = web_status()
     if not st and not desired['vip']['on'] and not desired['tls']['node'] and \
             'fw' not in desired and 'access' not in desired and 'acme' not in desired and \
-            'lbport' not in desired:
+            'lbport' not in desired and 'certlogin' not in desired:
         return
     h = web_hash(desired)
     drifted = False
@@ -2013,6 +2034,15 @@ def fw_auto(store, node):
         for n in lp.get('from') or []:
             web.append({'family': _fam(n.split('/')[0]), 'proto': 'tcp', 'port': str(lp['port']),
                         'source': n, 'note': 'the balancer\'s own port'})
+    # The certificate's own port (1.0.275): from wherever the administration may be reached.
+    cl = certlogin_desired(store) or {}
+    if cl.get('port'):
+        adm = (a or {}).get('admin') or {'any': True}
+        csrcs = [''] if (not a or adm.get('any')) else list(adm.get('from') or [])
+        for s in csrcs:
+            for f in ((4, 6) if not s else (_fam(s),)):
+                web.append({'family': f, 'proto': 'tcp', 'port': str(cl['port']), 'source': s,
+                            'note': 'signing in with a certificate'})
     out.append({'key': 'web', 'title': 'HTTP / HTTPS', 'why': 'the enrolment and '
                 'administration pages and the health check; who sees which is under '
                 '"Who may reach the pages"', 'rules': web})

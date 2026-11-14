@@ -1035,7 +1035,9 @@ class Ldap(object):
             deep = 0
             while deep < len(values):
                 _t, value, deep = _ber_read(values, deep)
-                got.append(value.decode('utf-8', 'replace'))
+                # objectSid as it is (1.0.275): binary, hex here - the SID a certificate names.
+                got.append(value.hex() if name.lower() == b'objectsid' else
+                           value.decode('utf-8', 'replace'))
             entry['attrs'][name.decode('utf-8', 'replace')] = got
         return entry
 

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.274'
+__version__ = '1.0.275'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -231,6 +231,11 @@ DEFAULTS = {
     'admin_kerberos_auto': 0,
     'admin_kerberos_realm': '',
     'admin_password_off': 0,
+    # --- signing in to these pages with a client certificate (1.0.275): off --------
+    'admin_cert': 0,
+    'admin_cert_port': 8443,
+    'admin_cert_map': 'compat',
+    'admin_cert_crl': 1,
     # --- a second step for the administration (1.0.125) -------------------
     'admin_2fa': 0,
     'admin_2fa_app': 1,
@@ -531,7 +536,7 @@ SEALED_KEYS = ('smtp_password', 'sms_token', 'sms_tel_password', 'rbackup_passwo
 
 # Saved as a row even when equal to the default (1.0.238): what they were before tells "switched
 # off" from "never switched on".
-KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso', 'web_proxy_port')
+KEPT_OFF_KEYS = ('proxy_update', 'proxy_os', 'web_proxy', 'portal_sso', 'web_proxy_port', 'admin_cert')
 
 # What each setting may be: a list of words, or the lowest and highest number.
 TUNABLE = {
@@ -564,6 +569,8 @@ TUNABLE = {
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_kerberos': (0, 1), 'admin_kerberos_auto': (0, 1), 'admin_password_off': (0, 1),
+    'admin_cert': (0, 1), 'admin_cert_port': (1025, 65535), 'admin_cert_map': ('compat', 'strong', 'upn'),
+    'admin_cert_crl': (0, 1),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
@@ -838,7 +845,11 @@ NAMES = {
     'admin_kerberos': 'Sign administrators in with Windows (Kerberos)',
     'admin_kerberos_auto': '...by itself when the sign-in page opens',
     'admin_kerberos_realm': 'Kerberos realm',
-    'admin_password_off': '...and no password at all - only Windows',
+    'admin_password_off': 'No password at all - only Windows or a certificate',
+    'admin_cert': 'Sign administrators in with a certificate (a smart card, a YubiKey)',
+    'admin_cert_port': 'The certificate\u2019s own port',
+    'admin_cert_map': 'Which account a certificate is',
+    'admin_cert_crl': 'Check that a certificate is not revoked (CRL)',
     'admin_2fa': 'A second step when signing in to these pages',
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
@@ -1419,11 +1430,25 @@ SAYS = {
                            'signing out it is never tried by itself in that tab.',
     'admin_kerberos_realm': 'The realm whose people may sign in, in capitals (CORP.EXAMPLE). Empty: taken '
                             'from the base DN of the directory above (DC=corp,DC=example).',
-    'admin_password_off': 'On: the sign-in page offers no name and password - nobody signs in with a '
-                          'password, local accounts neither; only Windows (Kerberos), then the second '
-                          'step when it is on. Switched on only from a sign-in made with Windows (so it '
-                          'is known to work). Kerberos off: passwords are taken again. Locked out: as '
-                          'root, otp --set admin_password_off=0.',
+    'admin_password_off': 'On: no field for a password anywhere on these pages - nobody signs in with a '
+                          'password, local accounts neither; only Windows (Kerberos) or a certificate, '
+                          'then the second step when it is on. Switched on only from a sign-in made '
+                          'that way (so it is known to work). Kerberos and certificates both off: '
+                          'passwords are taken again. Locked out: as root, otp --set admin_password_off=0.',
+    'admin_cert': 'A certificate of the domain\u2019s authority - on a smart card, a YubiKey or in the '
+                  'computer - signs its person in without a password: nginx asks for it on a port of its '
+                  'own (below), never on 443. Checked here: the chain to an authority put in below, its '
+                  'dates, a key usage for signing in, not revoked, the UPN in it looked up in the '
+                  'directory above (the role of the groups). The second step, when it is on, is still '
+                  'asked. Off: as until now.',
+    'admin_cert_port': 'Where nginx asks the browser for a certificate (8443: SELinux lets nginx have it '
+                       'already). Opened in the firewall for the administrators\u2019 networks.',
+    'admin_cert_map': 'compat: the SID an AD CS writes into a certificate since KB5014754 must be the '
+                      'account\u2019s when it is there; strong: it must be there (Microsoft\u2019s full '
+                      'enforcement); upn: the UPN alone.',
+    'admin_cert_crl': 'The CRL at the certificate\u2019s CRL Distribution Point (http), kept until its next '
+                      'update: no CRL to be had, no sign-in. Off: revocation is not checked - a lost card '
+                      'signs in until its account is switched off in AD.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
                  'and sets it up (an authenticator app, a code sent to an address or a phone '
@@ -1778,7 +1803,7 @@ PANES = {
                'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms', 'admin_2fa_passkey',
                'admin_directory', 'admin_group_full', 'admin_group_token',
                'admin_group_readonly', 'admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm',
-               'admin_password_off'],
+               'admin_password_off', 'admin_cert', 'admin_cert_port', 'admin_cert_map', 'admin_cert_crl'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
            'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
            'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
@@ -1860,7 +1885,9 @@ ONLY_WHEN = {
     'admin_group_readonly': ['admin_directory', '*'],
     'admin_kerberos': ['admin_directory', '*'],
     'admin_kerberos_auto': ['admin_kerberos', '1'], 'admin_kerberos_realm': ['admin_kerberos', '1'],
-    'admin_password_off': ['admin_kerberos', '1'],
+    'admin_password_off': ['admin_directory', '*'],
+    'admin_cert': ['admin_directory', '*'], 'admin_cert_port': ['admin_cert', '1'],
+    'admin_cert_map': ['admin_cert', '1'], 'admin_cert_crl': ['admin_cert', '1'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
     'admin_2fa_passkey': ['admin_2fa', '1'],

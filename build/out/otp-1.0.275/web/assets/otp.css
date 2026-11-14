@@ -3880,13 +3880,13 @@ table.se-avc-t td,table.se-avc-t td.mono{white-space:normal;word-break:break-wor
 body.mfa-on .krb-box{display:none}
 .krb-names td.mono{white-space:nowrap}
 .krb-cmd{white-space:pre-wrap;word-break:break-all}
-#krb-host .kv-grid{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:6px 0 12px;font-size:13px}
-#krb-host .kv-grid .k{color:var(--tx-dim)}
-#krb-host .kv-grid .sub{margin-left:8px;color:var(--tx-mut);font-size:12px}
-#krb-host .warnbox{border:1px solid var(--warn);background:var(--warn-bg);border-radius:10px;padding:8px 12px;margin:8px 0}
-#krb-host h3{margin:18px 0 6px;font-size:14px}
+#krb-host .kv-grid,#cert-host .kv-grid{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:6px 0 12px;font-size:13px}
+#krb-host .kv-grid .k,#cert-host .kv-grid .k{color:var(--tx-dim)}
+#krb-host .kv-grid .sub,#cert-host .kv-grid .sub{margin-left:8px;color:var(--tx-mut);font-size:12px}
+#krb-host .warnbox,#cert-host .warnbox{border:1px solid var(--warn);background:var(--warn-bg);border-radius:10px;padding:8px 12px;margin:8px 0}
+#krb-host h3,#cert-host h3{margin:18px 0 6px;font-size:14px}
 #krb-host .krb-try{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
 #krb-host .krb-try .sub{color:var(--tx-dim);font-size:12px}
 #krb-host pre.krb-cmd{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12px;overflow-x:auto}
-#krb-host ul.note{margin:4px 0 0 18px;padding:0}
-#krb-host ul.note li{margin:3px 0}
+#krb-host ul.note,#cert-host ul.note{margin:4px 0 0 18px;padding:0}
+#krb-host ul.note li,#cert-host ul.note li{margin:3px 0}

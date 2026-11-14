@@ -71,6 +71,7 @@ And the real thing, from anywhere a client is allowed:
 - [docs/console.md](docs/console.md) - the otp console: menus, the live log and live RADIUS requests, at root's login
 - [docs/admin-second-step.md](docs/admin-second-step.md) - a code after the password for the administration pages: app, e-mail or SMS, reset
 - [docs/admin-kerberos.md](docs/admin-kerberos.md) - signing in to the administration with Windows (Kerberos, never NTLM), the second step kept, only Windows if wanted; a cluster and its VIP address
+- [docs/admin-certificate.md](docs/admin-certificate.md) - signing in to the administration with a certificate (a smart card, a YubiKey; AD CS): a port of its own, the CRL, the SID of KB5014754, the second step kept, only a certificate if wanted; a cluster and its VIP address
 - [docs/time.md](docs/time.md) - the clock of each node (chrony): how far off, its sources, the time servers for the whole cluster, the time zone
 - [docs/renaming-and-readdressing.md](docs/renaming-and-readdressing.md) - a node renamed or given a new address: putting the cluster right, from the pages or the command line
 - [docs/tls-and-vip.md](docs/tls-and-vip.md) - certificates, TLS, the VIP address, the firewall

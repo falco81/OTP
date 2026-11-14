@@ -27,7 +27,7 @@ def krb_who(h, token):
     bad = name_letters_problem(user)
     if bad:
         raise KrbError('%s: %s' % (principal, bad))
-    said = admin_ask_directory(h, user, '', kerberos=True)
+    said = admin_ask_directory(h, user, '', proven=True)
     return principal, user, said
 
 
@@ -80,7 +80,7 @@ def _auth_kerberos(h):
         raise ApiError(401, '%s is known, and none of the groups given a role here holds it' % principal,
                        extra={'code': 'kerberos'})
     try:
-        ok = admin_from_directory(h, user, '', kerberos=True)
+        ok = admin_from_directory(h, user, '', proven=True)
     except ApiError:
         h.failed(key)
         raise

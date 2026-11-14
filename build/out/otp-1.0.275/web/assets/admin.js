@@ -2698,7 +2698,7 @@ function showPane(name) {
   if (name === 'guard') { loadLockouts(); loadDirCaps(); }
   if (name === 'realms') loadRealms();
   if (name === 'dir') loadDirs();
-  if (name === 'people') { loadUsers(); loadKrb(); }
+  if (name === 'people') { loadUsers(); loadKrb(); loadCert(); }
   if (name === 'db') { loadDb(); dbLinkNote(); }
   if (name === 'backup') loadRbackup();
   if (name === 'network') loadNet();
@@ -20173,4 +20173,156 @@ function drawKrb() {
     br.appendChild(li);
   });
   host.appendChild(br);
+}
+
+/* ---- Signing in with a certificate (1.0.275) ------------------------------------------------
+   Settings → Accounts: the authorities (put in once, kept in the database, written by every
+   node), how a certificate is matched to an account, the CRLs fetched, each node (the authorities
+   written, nginx listening on the port), a try of this browser's certificate, and the guides:
+   the template of AD CS, a YubiKey, the browsers. */
+var CERTL = {d: null};
+function loadCert() {
+  var host = $('cert-host');
+  if (!host) return;
+  api('certlogin').then(function (d) { CERTL.d = d; drawCert(); }).catch(function (e) {
+    clear(host); host.appendChild(el('p', 'note', String(e && e.message || e)));
+  });
+}
+function certPick() {
+  var input = el('input'); input.type = 'file'; input.hidden = true;
+  input.accept = '.pem,.crt,.cer,.der,.p7b,.p7c,application/x-x509-ca-cert,application/pkcs7-mime';
+  input.onchange = function () {
+    var f = input.files && input.files[0];
+    if (!f) return;
+    if (f.size > 1048576) { toast('that is more than certificates of authorities are', 'bad'); return; }
+    f.arrayBuffer().then(function (buf) {
+      return api('certlogin', {action: 'ca_add', data: krbB64(buf)});
+    }).then(function (d) { toast(d.message, 'good'); CERTL.d = d; drawCert(); }).catch(oops);
+  };
+  document.body.appendChild(input);
+  input.click();
+  setTimeout(function () { input.remove(); }, 60000);
+}
+function drawCert() {
+  var d = CERTL.d, host = $('cert-host');
+  if (!host || !d) return;
+  clear(host);
+  var st = $('cert-state');
+  if (st) {
+    clear(st);
+    st.appendChild(el('span', 'tag ' + (d.on ? (d.problems && d.problems.length ? 'warn' : 'ok') : 'dim'),
+      d.on ? (d.problems && d.problems.length ? 'on - not ready' : 'on') : 'off'));
+  }
+  var full = ME && ME.role === 'fulladmin';
+  var facts = el('div', 'kv-grid');
+  [['The port', String(d.port), 'nginx asks for a certificate there, and nowhere else'],
+   ['Directory', d.directory || 'none - set Sign administrators in against the directory', ''],
+   ['Which account', {compat: 'the UPN; the SID in it must be the account\'s when it is there', strong: 'the UPN and the SID in it, which must be there',
+     upn: 'the UPN alone'}[d.map] || d.map, 'admin_cert_map: ' + d.map],
+   ['Revocation', d.crl ? 'checked - the CRL of each certificate, no CRL no sign-in' : 'not checked', ''],
+   ['Second step after it', d.mfa ? 'asked' : 'off (A second step when signing in to these pages)', ''],
+   ['A password on the sign-in page', d.password_off ? 'not offered' : 'offered beside it', d.password_off ? 'root: otp --set admin_password_off=0' : '']].forEach(function (r) {
+    facts.appendChild(el('span', 'k', r[0]));
+    var v = el('span', 'v');
+    v.appendChild(el('span', '', r[1]));
+    if (r[2]) v.appendChild(el('span', 'sub', r[2]));
+    facts.appendChild(v);
+  });
+  host.appendChild(facts);
+  if (d.on && d.problems && d.problems.length) {
+    var pr = el('div', 'note warnbox');
+    pr.appendChild(el('b', '', 'Not ready yet: '));
+    pr.appendChild(document.createTextNode(d.problems.join('; ')));
+    host.appendChild(pr);
+  }
+  host.appendChild(el('h3', '', 'The authorities'));
+  if (d.cas && d.cas.length) {
+    host.appendChild(listTable(['Authority', 'Issued by', 'Valid to', 'SHA-256', ''], d.cas, function (c) {
+      var tr = el('tr');
+      tr.appendChild(noI18n(el('td', 'mono small', c.subject)));
+      tr.appendChild(noI18n(el('td', 'mono small', c.issuer)));
+      tr.appendChild(noI18n(el('td', 'small', c.not_after)));
+      tr.appendChild(noI18n(el('td', 'mono small', (c.sha256 || '').slice(0, 16) + '…')));
+      var t = el('td', 'rowtools');
+      var x = iconButton('trash', 'Take this authority away');
+      x.disabled = !full;
+      x.onclick = function () {
+        modal('Take this authority away?', function (body) {
+          body.appendChild(el('p', '', 'Certificates issued by it no longer sign anybody in.'));
+          body.appendChild(noI18n(el('p', 'mono small', c.subject)));
+        }, [{words: 'Cancel', close: true}, {words: 'Take it away', cls: 'danger', icon: 'trash', go: function (b) {
+          busy(b, true);
+          api('certlogin', {action: 'ca_drop', sha256: c.sha256}).then(function (r) { closeModal(); toast(r.message, 'good'); CERTL.d = r; drawCert(); })
+            .catch(function (e) { busy(b, false); oops(e); });
+        }}], true);
+      };
+      t.appendChild(x);
+      tr.appendChild(t);
+      return tr;
+    }));
+  } else {
+    host.appendChild(el('p', 'note', 'None yet. Put in the certificate of the authority that issues the people\'s certificates and of the one above it (the root) - PEM, DER or a .p7b. Once: every node of a cluster gets them.'));
+  }
+  var row = el('div', 'btnrow');
+  var put = cmdButton('Put in an authority…', 'upload', d.cas && d.cas.length ? '' : 'primary');
+  put.id = 'cert-put';
+  put.disabled = !full;
+  put.onclick = certPick;
+  row.appendChild(put);
+  var tryb = cmdButton('Try my certificate', 'person', '');
+  tryb.id = 'cert-try';
+  tryb.title = 'Opens the certificate\'s port in a new tab: the browser asks which certificate, and the page says who it would sign in, and as what. Nothing is signed in or changed.';
+  tryb.disabled = !d.on;
+  tryb.onclick = function () {
+    window.open('https://' + location.hostname + ':' + d.port + '/admin/?api=cert-check', '_blank', 'noopener');
+  };
+  row.appendChild(tryb);
+  host.appendChild(row);
+  if (d.crls && d.crls.length) {
+    host.appendChild(el('h3', '', 'Revocation lists fetched'));
+    host.appendChild(listTable(['Address', 'State', 'Fetched', 'Next update'], d.crls, function (c) {
+      var tr = el('tr');
+      tr.appendChild(noI18n(el('td', 'mono small', c.url)));
+      var s = el('td'); s.appendChild(el('span', 'tag ' + (c.ok ? 'ok' : 'crit'), c.ok ? 'good' : 'not had'));
+      if (c.err) s.appendChild(noI18n(el('span', 'sub', c.err)));
+      tr.appendChild(s);
+      tr.appendChild(c.at ? stampCell(c.at) : el('td', 'muted', '–'));
+      tr.appendChild(c.next ? stampCell(c.next) : el('td', 'muted', '–'));
+      return tr;
+    }));
+  }
+  host.appendChild(el('h3', '', 'Each node'));
+  host.appendChild(listTable(['Node', 'Heard from', 'The authorities', 'nginx on port ' + d.port, 'Trouble'], d.nodes || [], function (n) {
+    var tr = el('tr');
+    tr.appendChild(noI18n(el('td', 'mono', n.name)));
+    var a = el('td'); a.appendChild(el('span', 'tag ' + (n.alive ? 'ok' : 'warn'), n.alive ? 'yes' : 'no')); tr.appendChild(a);
+    var k = el('td'); k.appendChild(el('span', 'tag ' + (!d.cas.length ? 'dim' : (n.file && n.cas === d.cas.length ? 'ok' : 'warn')),
+      !d.cas.length ? 'none' : (n.file && n.cas === d.cas.length ? 'written' : 'not yet'))); tr.appendChild(k);
+    var l = el('td'); l.appendChild(el('span', 'tag ' + (!d.on ? 'dim' : (n.listening ? 'ok' : 'warn')),
+      !d.on ? 'off' : (n.listening ? 'listening' : 'not yet'))); tr.appendChild(l);
+    tr.appendChild(noI18n(el('td', 'small', n.err || '')));
+    return tr;
+  }));
+  var first = (d.names && d.names[0] && d.names[0].name) || 'otp.corp.example';
+  host.appendChild(el('h3', '', 'The people\'s certificates (AD CS)'));
+  var ul = el('ul', 'note');
+  ['A template from "Smartcard Logon" (or "User"): Subject Alternative Name built from Active Directory with the User principal name (UPN); key usages Client Authentication and Smart Card Logon.',
+   'Since KB5014754 the authority writes the account\'s SID into each certificate it issues from AD: "Which account" compat (the default) checks it, strong requires it.',
+   'A CRL Distribution Point over http in the certificates (the authority\'s Extensions tab), reachable from the nodes.',
+   'A YubiKey (PIV): enrolled from Windows with certreq or the template\'s smart card enrolment, or with YubiKey Manager (a CSR from slot 9a, signed by the authority). Windows asks for its PIN when the browser offers it.'].forEach(function (x) {
+    ul.appendChild(el('li', '', x));
+  });
+  host.appendChild(ul);
+  host.appendChild(el('h3', '', 'The browsers and the network'));
+  var ul2 = el('ul', 'note');
+  [['The button "Sign in with a certificate" opens ', 'https://' + first + ':' + d.port + '/'],
+   ['The firewall of each node lets the port in for the administrators\' networks - nothing else is served there: ', String(d.port)],
+   ['Behind a load balancer the port is passed through as TCP - TLS ends on the nodes: ', String(d.port)],
+   ['Edge, Chrome: no setting - a policy can pick the certificate by itself: ', 'AutoSelectCertificateForUrls']].forEach(function (x) {
+    var li = el('li');
+    li.appendChild(el('span', '', x[0]));
+    li.appendChild(noI18n(el('span', 'mono', x[1])));
+    ul2.appendChild(li);
+  });
+  host.appendChild(ul2);
 }

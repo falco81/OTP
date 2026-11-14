@@ -194,7 +194,7 @@ def krb_realm_wanted(store=None):
         row = store.db.row('SELECT * FROM directories WHERE LOWER(name) = ?', (name,))
     except Exception:                                   # noqa: BLE001
         row = None
-    base = str((row or {}).get('base') or '')
+    base = str(odict(row).get('base') or '')
     dcs = [x.split('=', 1)[1] for x in re.split(r'\s*,\s*', base) if x.lower().startswith('dc=')]
     return '.'.join(dcs).upper()
 
@@ -402,14 +402,6 @@ def krb_view(store):
                        'sha': str(meta.get('sha') or '')[:16],
                        'entries': [{k: e[k] for k in ('principal', 'kvno', 'kind', 'weak')} for e in ents]},
             'names': names, 'nodes': nodes, 'ntlm': False}
-
-
-def admin_password_off_now():
-    """No password on the sign-in page (1.0.274): only while signing in with Kerberos can work at
-    all - switched off, or without the directory, passwords are taken again (never locked out by
-    switching Kerberos off)."""
-    return bool(CONFIG.get('admin_password_off') and CONFIG.get('admin_kerberos')
-                and CONFIG.get('admin_directory'))
 
 
 def krb_problems(store):
