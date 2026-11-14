@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.275'
+__version__ = '1.0.276'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1442,7 +1442,8 @@ SAYS = {
                   'directory above (the role of the groups). The second step, when it is on, is still '
                   'asked. Off: as until now.',
     'admin_cert_port': 'Where nginx asks the browser for a certificate (8443: SELinux lets nginx have it '
-                       'already). Opened in the firewall for the administrators\u2019 networks.',
+                       'already) - a port of its own, not the balancer\u2019s own port (web_proxy_port). '
+                       'Opened in the firewall for the administrators\u2019 networks.',
     'admin_cert_map': 'compat: the SID an AD CS writes into a certificate since KB5014754 must be the '
                       'account\u2019s when it is there; strong: it must be there (Microsoft\u2019s full '
                       'enforcement); upn: the UPN alone.',
@@ -18142,7 +18143,8 @@ class Daemon(object):
         hisec_guard_settings(self.store, checked)        # 1.0.168
         # The balancer's port on the nodes clashes with nothing (1.0.262), the batch as saved
         others = None
-        if many and any(k in checked for k in ('web_proxy', 'web_proxy_port') + NODE_KEYS):
+        if many and any(k in checked for k in ('web_proxy', 'web_proxy_port', 'admin_cert',
+                                               'admin_cert_port') + NODE_KEYS):
             # The other nodes' own ports too (1.0.262): the balancer's port is the cluster's.
             held_ = self.store.settings_saved()
             others = {}
@@ -18153,6 +18155,9 @@ class Daemon(object):
                 others[n] = {k: v for k, v in own.items() if v is not None}
         why = web_proxy_port_problem(checked, probe=(node == node_name() and not cluster_wide),
                                      others=others)
+        # The certificate sign-in's port too (1.0.276), whichever of the two is changed.
+        why = why or cert_port_problem(checked, probe=(node == node_name() and not cluster_wide),
+                                       others=others)
         if why:
             raise BadSetting(why)
         # The API's port, and the UDP ports, clash with nothing either (1.0.262): an API port
@@ -42551,6 +42556,66 @@ def cert_listening(port):
         s.close()
 
 
+def cert_port_ours(port):
+    """Whether what listens on the port is otp's own certificate server (1.0.276): just switched
+    off, root's helper may not have taken it away yet - switching on again is not refused over it."""
+    try:
+        with open(os.path.join(os.environ.get('OTP_VIP_NGINX_DIR', '/etc/nginx/conf.d'),
+                               'otp_certlogin.conf')) as f:
+            return re.search(r'(?m)^\s*listen\s+(\S*:)?%d\b' % int(port), f.read(4 << 20)) is not None
+    except (OSError, ValueError):
+        return False
+
+
+def cert_port_problem(checked, conf=None, probe=False, others=None):
+    """Why a batch of settings cannot be saved over the certificate's own port (1.0.276), or '':
+    with admin_cert on, its port is nobody else's - not 80 or 443, not the balancer's own port
+    (web_proxy_port, whichever of the two is changed), not the API's, RADIUS's, the SSH gate's or a
+    local database's, on this node or another of the cluster (others: {node: its own values}).
+    probe: switched on or moved, the port is tried on 127.0.0.1 - something listening there
+    already (not otp's nginx) refuses it. Off, the port is nothing and nothing is asked."""
+    keys = ('admin_cert', 'admin_cert_port', 'web_proxy_port') + tuple(k for k, _ in WEB_PROXY_PORT_CLASHES)
+    if not any(k in (checked or {}) for k in keys):
+        return ''
+    before = conf if conf is not None else CONFIG
+    after = dict(before)
+    after.update(checked or {})
+    if str(after.get('admin_cert') or '0') not in ('1', 'true', 'True'):
+        return ''
+    try:
+        port = int(after.get('admin_cert_port') or 8443)
+        lb = int(after.get('web_proxy_port') or 0)
+    except (TypeError, ValueError):
+        return ''
+    other = '9443' if port == 8443 else '8443'
+    clash = web_proxy_port_clash(port, after)
+    if not clash and port in (80, 443):
+        clash = 'the pages\' own port'
+    if not clash and port == lb:
+        clash = 'the balancer\'s own port (web_proxy_port)'
+    if not clash:
+        for n in sorted(others or {}):
+            clash = web_proxy_port_clash(port, others[n], keys=NODE_KEYS)
+            if clash:
+                clash = '%s on %s' % (clash, n)
+                break
+    if clash:
+        if port == lb and 'web_proxy_port' in (checked or {}) and 'admin_cert_port' not in (checked or {}):
+            return ('web_proxy_port: %d is the certificate sign-in\'s own port (admin_cert_port) - '
+                    'give the balancer another one (%s, say)' % (port, '9443' if port == 8443 else '8443'))
+        return ('admin_cert_port: %d is %s - give the certificate sign-in a port of its own '
+                '(%s, say)' % (port, clash, other))
+    try:
+        was_on = str(before.get('admin_cert') or '0') in ('1', 'true', 'True')
+        was = int(before.get('admin_cert_port') or 8443)
+    except (TypeError, ValueError):
+        was_on, was = False, 0
+    if probe and (not was_on or port != was) and cert_listening(port) and not cert_port_ours(port):
+        return ('admin_cert_port: something on this node listens on %d already - give a free port '
+                '(%s, say)' % (port, other))
+    return ''
+
+
 def cert_tick(store):
     """Each node: the authorities written out for the checks, and what this node can do said."""
     v = store.get_meta(CERT_META)
@@ -49183,21 +49248,6 @@ def _settings_do(h):
             raise ApiError(400, 'no keytab is put in - nobody could sign in (nothing saved)')
         if how == 'certificate' and not cert_cas(h.store):
             raise ApiError(400, 'no authority is put in - nobody could sign in (nothing saved)')
-    if 'admin_cert_port' in asked or str(asked.get('admin_cert', '0')) in ('1', 'true', 'True'):
-        # Not a port of otp's own (1.0.275), nor 80 or 443, nor the balancer's.
-        try:
-            cport = int(asked.get('admin_cert_port') or CONFIG.get('admin_cert_port') or 8443)
-        except (TypeError, ValueError):
-            cport = 0
-        conf = dict(CONFIG)
-        conf.update({k: v for k, v in asked.items() if k in dict(WEB_PROXY_PORT_CLASHES)})
-        clash = web_proxy_port_clash(cport, conf) or (
-            'the pages\' own port' if cport in (80, 443) else '') or (
-            'the balancer\'s own port' if cport == int(asked.get('web_proxy_port') or
-                                                      CONFIG.get('web_proxy_port') or 0) else '')
-        if clash:
-            raise ApiError(400, 'admin_cert_port: %d is %s - give a port of its own (8443, say) '
-                                '(nothing saved)' % (cport, clash))
     if 'token_names_case' in asked:
         # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
         bad = token_case_problem(h.store, asked.get('token_names_case'))
