@@ -68,6 +68,13 @@ otp --cert-ca-drop SHA256
 otp --set admin_cert_port=8443 --set admin_cert_map=compat --set admin_cert_crl=1
 ```
 
+## The port
+
+`admin_cert_port` (8443) is the certificate sign-in's alone: not 80 or 443, not the balancer's own
+port (`web_proxy_port` - give that 9443, say, when both are used), not the API's, RADIUS's or the SSH
+gate's, on either node. Saving one over the other is refused, whichever is set first, and so is a
+port something else listens on already.
+
 ## Behind a load balancer
 
 The port must reach the nodes as TCP (TLS passthrough): a balancer that ends TLS itself cannot hand

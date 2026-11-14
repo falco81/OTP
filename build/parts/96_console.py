@@ -1668,7 +1668,10 @@ class Console(object):
                    ('realms', 'Realms'), ('tokens', 'Tokens'),
                    ('codes', 'Codes by e-mail and SMS'), ('portal', 'The enrolment pages'),
                    ('portalsso', 'Signed in by a load balancer (SSO)'),
-                   ('mail', 'Mail'), ('people', 'Accounts'), ('isemon', 'isemon'),
+                   ('mail', 'Mail'), ('people', 'Accounts'),
+                   ('kerberos', 'Signing in with Windows (Kerberos)'),
+                   ('certlogin', 'Signing in with a certificate'), ('signin', 'The sign-in page'),
+                   ('isemon', 'isemon'),
                    ('db', 'The database'), ('backup', 'Backups'), ('ha', 'High availability'),
                    ('upgrade', 'Upgrades'), ('about', 'About and debugging')]
 

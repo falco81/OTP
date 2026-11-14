@@ -1427,7 +1427,8 @@ class Daemon(object):
         hisec_guard_settings(self.store, checked)        # 1.0.168
         # The balancer's port on the nodes clashes with nothing (1.0.262), the batch as saved
         others = None
-        if many and any(k in checked for k in ('web_proxy', 'web_proxy_port') + NODE_KEYS):
+        if many and any(k in checked for k in ('web_proxy', 'web_proxy_port', 'admin_cert',
+                                               'admin_cert_port') + NODE_KEYS):
             # The other nodes' own ports too (1.0.262): the balancer's port is the cluster's.
             held_ = self.store.settings_saved()
             others = {}
@@ -1438,6 +1439,9 @@ class Daemon(object):
                 others[n] = {k: v for k, v in own.items() if v is not None}
         why = web_proxy_port_problem(checked, probe=(node == node_name() and not cluster_wide),
                                      others=others)
+        # The certificate sign-in's port too (1.0.276), whichever of the two is changed.
+        why = why or cert_port_problem(checked, probe=(node == node_name() and not cluster_wide),
+                                       others=others)
         if why:
             raise BadSetting(why)
         # The API's port, and the UDP ports, clash with nothing either (1.0.262): an API port

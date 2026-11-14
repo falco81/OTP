@@ -286,6 +286,66 @@ def cert_listening(port):
         s.close()
 
 
+def cert_port_ours(port):
+    """Whether what listens on the port is otp's own certificate server (1.0.276): just switched
+    off, root's helper may not have taken it away yet - switching on again is not refused over it."""
+    try:
+        with open(os.path.join(os.environ.get('OTP_VIP_NGINX_DIR', '/etc/nginx/conf.d'),
+                               'otp_certlogin.conf')) as f:
+            return re.search(r'(?m)^\s*listen\s+(\S*:)?%d\b' % int(port), f.read(4 << 20)) is not None
+    except (OSError, ValueError):
+        return False
+
+
+def cert_port_problem(checked, conf=None, probe=False, others=None):
+    """Why a batch of settings cannot be saved over the certificate's own port (1.0.276), or '':
+    with admin_cert on, its port is nobody else's - not 80 or 443, not the balancer's own port
+    (web_proxy_port, whichever of the two is changed), not the API's, RADIUS's, the SSH gate's or a
+    local database's, on this node or another of the cluster (others: {node: its own values}).
+    probe: switched on or moved, the port is tried on 127.0.0.1 - something listening there
+    already (not otp's nginx) refuses it. Off, the port is nothing and nothing is asked."""
+    keys = ('admin_cert', 'admin_cert_port', 'web_proxy_port') + tuple(k for k, _ in WEB_PROXY_PORT_CLASHES)
+    if not any(k in (checked or {}) for k in keys):
+        return ''
+    before = conf if conf is not None else CONFIG
+    after = dict(before)
+    after.update(checked or {})
+    if str(after.get('admin_cert') or '0') not in ('1', 'true', 'True'):
+        return ''
+    try:
+        port = int(after.get('admin_cert_port') or 8443)
+        lb = int(after.get('web_proxy_port') or 0)
+    except (TypeError, ValueError):
+        return ''
+    other = '9443' if port == 8443 else '8443'
+    clash = web_proxy_port_clash(port, after)
+    if not clash and port in (80, 443):
+        clash = 'the pages\' own port'
+    if not clash and port == lb:
+        clash = 'the balancer\'s own port (web_proxy_port)'
+    if not clash:
+        for n in sorted(others or {}):
+            clash = web_proxy_port_clash(port, others[n], keys=NODE_KEYS)
+            if clash:
+                clash = '%s on %s' % (clash, n)
+                break
+    if clash:
+        if port == lb and 'web_proxy_port' in (checked or {}) and 'admin_cert_port' not in (checked or {}):
+            return ('web_proxy_port: %d is the certificate sign-in\'s own port (admin_cert_port) - '
+                    'give the balancer another one (%s, say)' % (port, '9443' if port == 8443 else '8443'))
+        return ('admin_cert_port: %d is %s - give the certificate sign-in a port of its own '
+                '(%s, say)' % (port, clash, other))
+    try:
+        was_on = str(before.get('admin_cert') or '0') in ('1', 'true', 'True')
+        was = int(before.get('admin_cert_port') or 8443)
+    except (TypeError, ValueError):
+        was_on, was = False, 0
+    if probe and (not was_on or port != was) and cert_listening(port) and not cert_port_ours(port):
+        return ('admin_cert_port: something on this node listens on %d already - give a free port '
+                '(%s, say)' % (port, other))
+    return ''
+
+
 def cert_tick(store):
     """Each node: the authorities written out for the checks, and what this node can do said."""
     v = store.get_meta(CERT_META)
@@ -473,12 +533,30 @@ def cert_view(store):
         names = krb_names(store)
     except Exception:                                   # noqa: BLE001
         names = []
-    return {'on': bool(CONFIG.get('admin_cert')), 'port': int(CONFIG.get('admin_cert_port') or 8443),
+    return {'on': bool(CONFIG.get('admin_cert')), 'auto': bool(CONFIG.get('admin_cert_auto')),
+            'port': int(CONFIG.get('admin_cert_port') or 8443),
             'map': str(CONFIG.get('admin_cert_map') or 'compat'), 'crl': bool(CONFIG.get('admin_cert_crl', 1)),
             'directory': CONFIG.get('admin_directory') or '', 'mfa': bool(CONFIG.get('admin_2fa')),
             'password_off': admin_password_off_now(), 'cas': cas, 'cas_at': meta.get('at'),
             'cas_by': meta.get('by') or '', 'nodes': nodes, 'crls': crls,
             'names': [{'for': n['for'], 'name': n['name']} for n in names]}
+
+
+def signin_last_way(store, what):
+    """Why taking `what` ('keytab' or the last 'authority') away would leave nobody a way in (1.0.277),
+    or '': with no password at all in effect, the keytab while no certificate signs in, the last
+    authority while Windows does not."""
+    if not admin_password_off_now():
+        return ''
+    krb = bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory') and krb_keytab_raw(store))
+    crt = bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory') and cert_cas(store))
+    if what == 'keytab' and not crt:
+        return ('the keytab signs everybody in - with no password at all, nobody could sign in without it: '
+                'switch No password at all off first (or a certificate on)')
+    if what == 'authority' and not krb and len(cert_cas(store)) <= 1:
+        return ('the last authority signs everybody in - with no password at all, nobody could sign in '
+                'without it: switch No password at all off first (or Windows on)')
+    return ''
 
 
 def cert_problems(store):

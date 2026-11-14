@@ -132,6 +132,9 @@ def _certlogin_do(h):
         out['message'] = ('%d authority(ies) put in' % len(added)) if added else 'every one of them was in already'
         return out
     if act == 'ca_drop':
+        why = signin_last_way(h.store, 'authority')
+        if why:
+            raise ApiError(400, why)
         try:
             cert_ca_drop(h.store, b.get('sha256'), s['name'])
         except ValueError as e:

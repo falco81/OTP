@@ -190,6 +190,11 @@ ok('NTLM: refused, 403, said so', st == 403 and 'NTLM' in (got.get('error') or '
 spnego_ntlm = base64.b64encode(bytes.fromhex('6082') + b'\x00\x40' + b'\x06\x06+\x06\x01\x05\x05\x02' + b'NTLMSSP\x00\x01' + b'\x00' * 40).decode()
 st, hd, got = Browser().j('kerberos-login', {}, 'Negotiate ' + spnego_ntlm)
 ok('NTLM inside SPNEGO: refused', st == 403 and 'NTLM' in (got.get('error') or ''), (st, got))
+st, hd, got = Browser().j('kerberos-login', {}, 'NTLM ' + ntlm)
+ok('1.0.277: NTLM bare (the browser\'s own window of a name and password): 403 at once, no new challenge',
+   st == 403 and got.get('code') == 'ntlm' and not any(k.lower() == 'www-authenticate' for k in hd), (st, hd, got))
+st, hd, got = Browser().j('kerberos-login', {}, 'Basic ' + base64.b64encode(b'falco:x').decode())
+ok('1.0.277: Basic: 403, no new challenge', st == 403 and not any(k.lower() == 'www-authenticate' for k in hd), (st, got))
 st, hd, got = Browser().j('kerberos-login', {}, 'Negotiate ' + base64.b64encode(os.urandom(300)).decode())
 ok('garbage: refused, 403', st == 403, (st, got))
 big = 'Negotiate ' + base64.b64encode(os.urandom(15000)).decode()

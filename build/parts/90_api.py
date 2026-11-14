@@ -1111,7 +1111,10 @@ def _health(h):
            'password': not admin_password_off_now(),
            # The button of a certificate (1.0.275): offered, and the port it goes to.
            'cert': bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory')),
-           'cert_port': int(CONFIG.get('admin_cert_port') or 8443)}
+           'cert_port': int(CONFIG.get('admin_cert_port') or 8443),
+           # Tried by itself when the page opens (1.0.277).
+           'cert_auto': bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory')
+                             and CONFIG.get('admin_cert_auto'))}
     if h.arg('check') == 'all' and CONFIG.get('ha_mode') == 'replicated':
         try:
             rep = ha_repl_state(h.store)
@@ -3745,21 +3748,6 @@ def _settings_do(h):
             raise ApiError(400, 'no keytab is put in - nobody could sign in (nothing saved)')
         if how == 'certificate' and not cert_cas(h.store):
             raise ApiError(400, 'no authority is put in - nobody could sign in (nothing saved)')
-    if 'admin_cert_port' in asked or str(asked.get('admin_cert', '0')) in ('1', 'true', 'True'):
-        # Not a port of otp's own (1.0.275), nor 80 or 443, nor the balancer's.
-        try:
-            cport = int(asked.get('admin_cert_port') or CONFIG.get('admin_cert_port') or 8443)
-        except (TypeError, ValueError):
-            cport = 0
-        conf = dict(CONFIG)
-        conf.update({k: v for k, v in asked.items() if k in dict(WEB_PROXY_PORT_CLASHES)})
-        clash = web_proxy_port_clash(cport, conf) or (
-            'the pages\' own port' if cport in (80, 443) else '') or (
-            'the balancer\'s own port' if cport == int(asked.get('web_proxy_port') or
-                                                      CONFIG.get('web_proxy_port') or 0) else '')
-        if clash:
-            raise ApiError(400, 'admin_cert_port: %d is %s - give a port of its own (8443, say) '
-                                '(nothing saved)' % (cport, clash))
     if 'token_names_case' in asked:
         # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
         bad = token_case_problem(h.store, asked.get('token_names_case'))

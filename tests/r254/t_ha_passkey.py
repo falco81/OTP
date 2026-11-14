@@ -161,7 +161,14 @@ t = password('a')
 st, o = call('a', '/api/auth/mfa', {'action': 'pk_begin'}, tok=t)
 st, got = call('b', '/api/auth/mfa', {'action': 'check', **rdev.get(o, ORIGIN, count=1)}, tok=t)
 HL.ok('...the counter back on the other node: refused as copied', st != 200 and 'counter' in json.dumps(got), (st, got))
-ev = HL.dbq('a', "SELECT words FROM events WHERE words LIKE 'pkha: the passkey was refused%' ORDER BY id DESC LIMIT 1")
+# Refused on b: its event is b's at once, a's once replicated - looked for on both, for a while.
+ev = ''
+for _ in range(20):
+    ev = ' | '.join(HL.dbq(n, "SELECT words FROM events WHERE words LIKE 'pkha: the passkey was refused%' "
+                              "AND words LIKE '%counter%' ORDER BY id DESC LIMIT 1") or '' for n in ('b', 'a'))
+    if 'counter' in ev:
+        break
+    time.sleep(0.5)
 HL.ok('...said in the events', 'counter' in ev, ev)
 
 # reset by a full administrator on a: b asks to set it up again

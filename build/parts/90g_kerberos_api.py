@@ -144,6 +144,9 @@ def _kerberos_do(h):
             if CONFIG.get('ha_mode') == 'replicated' else '')
         return out
     if act == 'drop':
+        why = signin_last_way(h.store, 'keytab')
+        if why:
+            raise ApiError(400, why)
         krb_keytab_drop(h.store, s['name'])
         try:
             krb_tick(h.store)

@@ -4,6 +4,11 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.276 — 14 November 2026
+
+Fixed
+- **The certificate sign-in's port and the balancer's own port are never one port**, whichever is set first: with *Sign administrators in with a certificate* on (8443), *The balancer's own port on the nodes* (`web_proxy_port`) set to 8443 afterwards was taken - two nginx servers on one port. It is refused now, saying another one (9443); the certificate's port is checked against the balancer's, 80/443, the API's, RADIUS's, the SSH gate's and a local database's - of this node and of the other node of a cluster - on every way of saving (the pages, `otp --set`, an imported configuration), and switched on or moved it is tried on the node first: something else listening there already (not otp's own certificate server) refuses it.
+
 ## 1.0.275 — 14 November 2026
 
 Added

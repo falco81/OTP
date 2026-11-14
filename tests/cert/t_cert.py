@@ -176,6 +176,9 @@ for bad, why in ((443, 'pages'), (1812, 'RADIUS')):
     ok('admin_cert_port %d refused (%s)' % (bad, why), st == 400 and 'admin_cert_port' in (got.get('error') or ''), got)
 st, got = settings(admin_cert=1, admin_cert_port=PORT)
 ok('switched on, port %d' % PORT, st == 200, got)
+st, got = settings(web_proxy_port=PORT)
+ok('1.0.276: the balancer\'s own port set to the certificate\'s after: refused', st == 400 and
+   'web_proxy_port' in (got.get('error') or '') and 'admin_cert_port' in (got.get('error') or ''), got)
 conf = '/etc/nginx/conf.d/otp_certlogin.conf'
 ok('root puts nginx\'s server on port %d' % PORT, helper(lambda: os.path.exists(conf) and listening(PORT)))
 text = open(conf).read() if os.path.exists(conf) else ''
@@ -281,6 +284,17 @@ st, got = Browser().j('login', {'name': 'admin', 'password': PW})
 ok('a password refused (403)', st == 403, (st, got))
 said, who = Browser('falco').cert_login()
 ok('a certificate still signs in', who.get('name') == 'falco', (said, who))
+# 1.0.277: the sign-in variants
+ok('1.0.277: no password, a certificate alone: the page tries it by itself', b'data-cert-auto="1"' in page, page[:0])
+cas = cb.j('certlogin')[1].get('cas') or []
+root = [c for c in cas if 'Root' in c.get('subject', '')]
+issuing = [c for c in cas if 'Root' not in c.get('subject', '')]
+st, got = cb.j('certlogin', {'action': 'ca_drop', 'sha256': root[0]['sha256']}) if root else (0, {})
+ok('1.0.277: one authority of two taken away, with no password at all', st == 200, got)
+st, got = cb.j('certlogin', {'action': 'ca_drop', 'sha256': issuing[0]['sha256']}) if issuing else (0, {})
+ok('1.0.277: ...the last one not - it alone signs people in', st == 400 and 'the last authority' in (got.get('error') or ''), got)
+st, got = cb.j('certlogin', {'action': 'ca_add', 'data': base64.b64encode(open(PKI + '/cas.pem', 'rb').read()).decode()})
+ok('1.0.277: ...put back', st == 200, got)
 row = subprocess.run(['otp', '--cert', 'status'], capture_output=True, text=True)
 ok('otp --cert status: on, the password not offered, the node listening', 'is ON' in row.stdout and 'NOT offered' in row.stdout
    and 'listening' in row.stdout, row.stdout[-400:])
@@ -292,6 +306,13 @@ for _ in range(30):
 admin = Browser()
 st, got = admin.j('login', {'name': 'admin', 'password': PW})
 ok('the way back as root: otp --set admin_password_off=0', st == 200, got)
+pg = Browser().raw('https://127.0.0.1/admin/')[2]
+ok('1.0.277: with a password, the certificate a button (not by itself)', b'data-cert-auto=""' in pg, pg[:0])
+st, got = settings(admin_cert_auto=1)
+time.sleep(1.5)
+pg = Browser().raw('https://127.0.0.1/admin/')[2]
+ok('1.0.277: ...by itself when the sign-in page opens: the page tries it', st == 200 and b'data-cert-auto="1"' in pg, got)
+settings(admin_cert_auto=0)
 
 # the events
 st, ev = admin.j('events')
