@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.276'
+__version__ = '1.0.277'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -233,6 +233,7 @@ DEFAULTS = {
     'admin_password_off': 0,
     # --- signing in to these pages with a client certificate (1.0.275): off --------
     'admin_cert': 0,
+    'admin_cert_auto': 0,
     'admin_cert_port': 8443,
     'admin_cert_map': 'compat',
     'admin_cert_crl': 1,
@@ -569,7 +570,7 @@ TUNABLE = {
     'session_hours': (1, 168), 'session_idle_min': (5, 1440),
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_kerberos': (0, 1), 'admin_kerberos_auto': (0, 1), 'admin_password_off': (0, 1),
-    'admin_cert': (0, 1), 'admin_cert_port': (1025, 65535), 'admin_cert_map': ('compat', 'strong', 'upn'),
+    'admin_cert': (0, 1), 'admin_cert_auto': (0, 1), 'admin_cert_port': (1025, 65535), 'admin_cert_map': ('compat', 'strong', 'upn'),
     'admin_cert_crl': (0, 1),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
@@ -847,6 +848,7 @@ NAMES = {
     'admin_kerberos_realm': 'Kerberos realm',
     'admin_password_off': 'No password at all - only Windows or a certificate',
     'admin_cert': 'Sign administrators in with a certificate (a smart card, a YubiKey)',
+    'admin_cert_auto': '...by itself when the sign-in page opens',
     'admin_cert_port': 'The certificate\u2019s own port',
     'admin_cert_map': 'Which account a certificate is',
     'admin_cert_crl': 'Check that a certificate is not revoked (CRL)',
@@ -1425,9 +1427,12 @@ SAYS = {
                       'sends a Kerberos ticket for the name it opened, checked against the keytab put in '
                       'below. Only accounts of the directory above, with the role of their groups; the '
                       'second step, when it is on, is still asked. NTLM is never taken. Off: as until now.',
-    'admin_kerberos_auto': 'On: the sign-in page tries Kerberos at once, and shows the form only when it '
-                           'did not work. Off: a button "Sign in with Windows" beside the form. After '
-                           'signing out it is never tried by itself in that tab.',
+    'admin_kerberos_auto': 'On: the sign-in page tries Windows at once, silently, and shows the form only '
+                           'when it did not work. A browser that had no ticket (outside the domain, its '
+                           'window of name and password cancelled) is not tried by itself again for 30 '
+                           'days - its button stays, and a sign-in with Windows forgets it; computers in '
+                           'the domain sign in silently as before. Off: a button "Sign in with Windows" '
+                           'under the form. After signing out it is never tried by itself in that tab.',
     'admin_kerberos_realm': 'The realm whose people may sign in, in capitals (CORP.EXAMPLE). Empty: taken '
                             'from the base DN of the directory above (DC=corp,DC=example).',
     'admin_password_off': 'On: no field for a password anywhere on these pages - nobody signs in with a '
@@ -1441,6 +1446,12 @@ SAYS = {
                   'dates, a key usage for signing in, not revoked, the UPN in it looked up in the '
                   'directory above (the role of the groups). The second step, when it is on, is still '
                   'asked. Off: as until now.',
+    'admin_cert_auto': 'On: the sign-in page goes to the certificate\u2019s port at once - the browser offers its '
+                       'certificate, the card asks for its PIN - and shows the form only when that did not '
+                       'work. With Windows tried by itself as well, Windows goes first and the certificate only '
+                       'when this computer has no Windows ticket (not in the domain). Off: a button "Sign in with '
+                       'a certificate" under the form. Never tried by itself again in a tab after Sign out or '
+                       'after a refusal.',
     'admin_cert_port': 'Where nginx asks the browser for a certificate (8443: SELinux lets nginx have it '
                        'already) - a port of its own, not the balancer\u2019s own port (web_proxy_port). '
                        'Opened in the firewall for the administrators\u2019 networks.',
@@ -1803,8 +1814,13 @@ PANES = {
     'people': ['session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
                'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail', 'admin_2fa_sms', 'admin_2fa_passkey',
                'admin_directory', 'admin_group_full', 'admin_group_token',
-               'admin_group_readonly', 'admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm',
-               'admin_password_off', 'admin_cert', 'admin_cert_port', 'admin_cert_map', 'admin_cert_crl'],
+               'admin_group_readonly'],
+    # The ways of signing in to these pages (1.0.277): a card each on the Accounts pane, their
+    # switches beside what each card says and shows - Windows, a certificate, and the sign-in page
+    # with the one setting the two share.
+    'kerberos': ['admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm'],
+    'certlogin': ['admin_cert', 'admin_cert_auto', 'admin_cert_port', 'admin_cert_map', 'admin_cert_crl'],
+    'signin': ['admin_password_off'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
            'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
            'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
@@ -1888,7 +1904,7 @@ ONLY_WHEN = {
     'admin_kerberos_auto': ['admin_kerberos', '1'], 'admin_kerberos_realm': ['admin_kerberos', '1'],
     'admin_password_off': ['admin_directory', '*'],
     'admin_cert': ['admin_directory', '*'], 'admin_cert_port': ['admin_cert', '1'],
-    'admin_cert_map': ['admin_cert', '1'], 'admin_cert_crl': ['admin_cert', '1'],
+    'admin_cert_map': ['admin_cert', '1'], 'admin_cert_crl': ['admin_cert', '1'], 'admin_cert_auto': ['admin_cert', '1'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
     'admin_2fa_passkey': ['admin_2fa', '1'],
@@ -9600,7 +9616,7 @@ DBGUARD_SETTINGS = frozenset((
     'logs_journal_days', 'logs_keep', 'logs_max_mb', 'ssh_gate_port', 'upgrade_downgrade',
     'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
     'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
-    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'admin_cert', 'admin_cert_port',
+    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'admin_cert', 'admin_cert_auto', 'admin_cert_port',
     'admin_cert_map', 'admin_cert_crl', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
@@ -42803,12 +42819,30 @@ def cert_view(store):
         names = krb_names(store)
     except Exception:                                   # noqa: BLE001
         names = []
-    return {'on': bool(CONFIG.get('admin_cert')), 'port': int(CONFIG.get('admin_cert_port') or 8443),
+    return {'on': bool(CONFIG.get('admin_cert')), 'auto': bool(CONFIG.get('admin_cert_auto')),
+            'port': int(CONFIG.get('admin_cert_port') or 8443),
             'map': str(CONFIG.get('admin_cert_map') or 'compat'), 'crl': bool(CONFIG.get('admin_cert_crl', 1)),
             'directory': CONFIG.get('admin_directory') or '', 'mfa': bool(CONFIG.get('admin_2fa')),
             'password_off': admin_password_off_now(), 'cas': cas, 'cas_at': meta.get('at'),
             'cas_by': meta.get('by') or '', 'nodes': nodes, 'crls': crls,
             'names': [{'for': n['for'], 'name': n['name']} for n in names]}
+
+
+def signin_last_way(store, what):
+    """Why taking `what` ('keytab' or the last 'authority') away would leave nobody a way in (1.0.277),
+    or '': with no password at all in effect, the keytab while no certificate signs in, the last
+    authority while Windows does not."""
+    if not admin_password_off_now():
+        return ''
+    krb = bool(CONFIG.get('admin_kerberos') and CONFIG.get('admin_directory') and krb_keytab_raw(store))
+    crt = bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory') and cert_cas(store))
+    if what == 'keytab' and not crt:
+        return ('the keytab signs everybody in - with no password at all, nobody could sign in without it: '
+                'switch No password at all off first (or a certificate on)')
+    if what == 'authority' and not krb and len(cert_cas(store)) <= 1:
+        return ('the last authority signs everybody in - with no password at all, nobody could sign in '
+                'without it: switch No password at all off first (or Windows on)')
+    return ''
 
 
 def cert_problems(store):
@@ -46614,7 +46648,10 @@ def _health(h):
            'password': not admin_password_off_now(),
            # The button of a certificate (1.0.275): offered, and the port it goes to.
            'cert': bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory')),
-           'cert_port': int(CONFIG.get('admin_cert_port') or 8443)}
+           'cert_port': int(CONFIG.get('admin_cert_port') or 8443),
+           # Tried by itself when the page opens (1.0.277).
+           'cert_auto': bool(CONFIG.get('admin_cert') and CONFIG.get('admin_directory')
+                             and CONFIG.get('admin_cert_auto'))}
     if h.arg('check') == 'all' and CONFIG.get('ha_mode') == 'replicated':
         try:
             rep = ha_repl_state(h.store)
@@ -53579,6 +53616,9 @@ def _kerberos_do(h):
             if CONFIG.get('ha_mode') == 'replicated' else '')
         return out
     if act == 'drop':
+        why = signin_last_way(h.store, 'keytab')
+        if why:
+            raise ApiError(400, why)
         krb_keytab_drop(h.store, s['name'])
         try:
             krb_tick(h.store)
@@ -53723,6 +53763,9 @@ def _certlogin_do(h):
         out['message'] = ('%d authority(ies) put in' % len(added)) if added else 'every one of them was in already'
         return out
     if act == 'ca_drop':
+        why = signin_last_way(h.store, 'authority')
+        if why:
+            raise ApiError(400, why)
         try:
             cert_ca_drop(h.store, b.get('sha256'), s['name'])
         except ValueError as e:
@@ -61812,7 +61855,10 @@ class Console(object):
                    ('realms', 'Realms'), ('tokens', 'Tokens'),
                    ('codes', 'Codes by e-mail and SMS'), ('portal', 'The enrolment pages'),
                    ('portalsso', 'Signed in by a load balancer (SSO)'),
-                   ('mail', 'Mail'), ('people', 'Accounts'), ('isemon', 'isemon'),
+                   ('mail', 'Mail'), ('people', 'Accounts'),
+                   ('kerberos', 'Signing in with Windows (Kerberos)'),
+                   ('certlogin', 'Signing in with a certificate'), ('signin', 'The sign-in page'),
+                   ('isemon', 'isemon'),
                    ('db', 'The database'), ('backup', 'Backups'), ('ha', 'High availability'),
                    ('upgrade', 'Upgrades'), ('about', 'About and debugging')]
 

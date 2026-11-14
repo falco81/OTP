@@ -114,6 +114,20 @@ def _certlogin_do(h):
                 'said': '' if said.get('role') else 'none of the groups given a role here holds it',
                 'mfa': bool(CONFIG.get('admin_2fa'))}
     s = h.me('fulladmin')
+    if act in ('crl_fetch', 'crl_clear'):
+        # Fetch now / Clear (1.0.278): asked of every node, each does it itself.
+        try:
+            asked = crl_ask(h.d, act[4:], b.get('url'), s['name'])
+        except ValueError as e:
+            raise ApiError(404, str(e))
+        return dict(asked, message=('every node fetches the CRLs again' if act == 'crl_fetch'
+                                    else 'the CRLs are cleared on every node'))
+    if act == 'result':
+        ident = str(b.get('id') or '')
+        got = node_ask_results(h.store, 'crl_fetch', ident)
+        for n, v in node_ask_results(h.store, 'crl_clear', ident).items():
+            got[n] = got.get(n) or v
+        return {'nodes': got}
     if act == 'ca_add':
         try:
             raw = base64.b64decode(str(b.get('data') or ''), validate=True)

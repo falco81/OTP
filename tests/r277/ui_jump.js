@@ -66,20 +66,33 @@ function compare(a, b, itemBox) {
       await p.goto(URL + '#settings/' + pane); await p.waitForTimeout(1800);
       const sel = '#pane-' + pane;
       const n = await p.$$eval(sel + ' .set-item[data-key]', a => a.filter(x => x.offsetParent && x.querySelector(':scope > label.sw input, .set-ctl label.sw input, label.sw input') && !x.querySelector('label.sw input').disabled).map(x => x.dataset.key));
-      const bad = [];
+      const bad = [], asked = [];
       for (const key of n) {
         const item = await p.$(sel + ' .set-item[data-key="' + key + '"]');
         if (!item) continue;
-        await item.scrollIntoViewIfNeeded();
+        /* In the middle of what is seen, as a person clicks it - not under the save bar held at the
+           bottom (the browser then scrolls the focused switch out from under it). */
+        await item.evaluate(e => e.scrollIntoView({block: 'center'}));
         await p.waitForTimeout(150);
         const box0 = await item.boundingBox();
         const sy = await p.evaluate(() => scrollY);
         const itemBox = { x: box0.x, y: box0.y + sy, w: box0.width, h: box0.height };
         const before = await snap(p, sel);
         const sw = await item.$('label.sw');
+        if (process.env.JDEBUG) console.log('.. ' + pane + ' ' + key);
         if (sw) await sw.click(); else await (await item.$('input[type=checkbox]')).click({ force: true });
         flipped++;
         await p.waitForTimeout(450);
+        /* a switch that asks first (a modal): said, answered No, the switch stays as it was */
+        if (await p.$eval('#modal', e => !e.hidden && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden' && e.getClientRects().length > 0).catch(() => false)) {
+          asked.push(key + ': ' + ((await p.textContent('#modal').catch(() => '')) || '').replace(/\s+/g, ' ').trim().slice(0, 90));
+          await p.keyboard.press('Escape'); await p.waitForTimeout(300);
+          for (const t of ['Cancel', 'No', 'Close', 'Zrušit']) {
+            const still = await p.$eval('#modal', e => !e.hidden && getComputedStyle(e).display !== 'none' && e.getClientRects().length > 0).catch(() => false);
+            if (!still) break;
+            const btn = await p.$('#modal button:has-text("' + t + '")'); if (btn) { await btn.click(); await p.waitForTimeout(300); }
+          }
+        }
         const after = await snap(p, sel);
         const m = compare(before, after, itemBox);
         if (m.length) bad.push(key + ': ' + m.slice(0, 4).join('; ') + (m.length > 4 ? ' (+' + (m.length - 4) + ')' : ''));
@@ -88,11 +101,11 @@ function compare(a, b, itemBox) {
         if (back && await back.isVisible()) { await back.click(); await p.waitForTimeout(500); }
         else { if (sw) await sw.click(); await p.waitForTimeout(300); }
       }
-      ok(vw + ' ' + pane + ': ' + n.length + ' switch(es) flipped, nothing else moved', !bad.length, bad.join(' | '));
+      ok(vw + ' ' + pane + ': ' + n.length + ' switch(es) flipped, nothing else moved' + (asked.length ? ' (asked first: ' + asked.join(' / ') + ')' : ''), !bad.length, bad.join(' | '));
     }
     ok(vw + ': ' + flipped + ' switches in all; no page errors', errs.length === 0, errs.join(' | '));
     await ctx.close();
   }
   await b.close();
   console.log('ALL ' + R.filter(Boolean).length + ' / ' + R.length);
-})().catch(e => { console.log('FAIL ' + e); console.log('ALL ' + R.filter(Boolean).length + ' / ' + (R.length + 1)); });
+})().catch(e => { console.log('FAIL ' + e); console.log('ALL ' + R.filter(Boolean).length + ' / ' + (R.length + 1)); process.exit(1); });

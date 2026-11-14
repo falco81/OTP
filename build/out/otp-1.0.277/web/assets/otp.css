@@ -3880,8 +3880,12 @@ table.se-avc-t td,table.se-avc-t td.mono{white-space:normal;word-break:break-wor
 body.mfa-on .krb-box{display:none}
 .krb-names td.mono{white-space:nowrap}
 .krb-cmd{white-space:pre-wrap;word-break:break-all}
-#krb-host .kv-grid,#cert-host .kv-grid{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:6px 0 12px;font-size:13px}
-#krb-host .kv-grid .k,#cert-host .kv-grid .k{color:var(--tx-dim)}
+#krb-host .kv-grid,#cert-host .kv-grid,#signin-host .kv-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 16px;margin:6px 0 14px;font-size:13.5px}
+#krb-host .kv-grid .k,#cert-host .kv-grid .k,#signin-host .kv-grid .k{color:var(--tx)}
+#krb-host .krb-chips,#cert-host .cert-chips{margin:4px 0 14px}
+#krb-host .krb-cmd{margin:4px 0 6px}
+#krb-host .krb-browsers li{margin:4px 0}
+.cchip.good{color:var(--ok);border-color:rgba(63,185,80,.4);background:var(--ok-bg)}
 #krb-host .kv-grid .sub,#cert-host .kv-grid .sub{margin-left:8px;color:var(--tx-mut);font-size:12px}
 #krb-host .warnbox,#cert-host .warnbox{border:1px solid var(--warn);background:var(--warn-bg);border-radius:10px;padding:8px 12px;margin:8px 0}
 #krb-host h3,#cert-host h3{margin:18px 0 6px;font-size:14px}

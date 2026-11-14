@@ -201,7 +201,7 @@ big = 'Negotiate ' + base64.b64encode(os.urandom(15000)).decode()
 st, hd, got = Browser().j('kerberos-login', {}, big)
 ok('a header of %d bytes: nginx lets it through, the daemon refuses it (403, not 400)' % len(big), st == 403, (st, got))
 st, hd, got = Browser().j('kerberos-login', {}, 'Basic ' + base64.b64encode(b'falco:x').decode())
-ok('Basic instead of Negotiate: 401 asking for Negotiate', st == 401 and hd.get('WWW-Authenticate') == 'Negotiate', (st, got))
+ok('Basic instead of Negotiate: 403, never a new challenge (1.0.277)', st == 403 and not hd.get('WWW-Authenticate'), (st, got))
 # another realm only
 st, got = settings(admin_kerberos_realm='OTHER.EXAMPLE')
 time.sleep(1.2)

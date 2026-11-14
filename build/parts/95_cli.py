@@ -819,6 +819,16 @@ def build_parser():
                    'in (PEM, DER or .p7b) - every node gets it')
     g.add_argument('--cert-ca-drop', metavar='SHA256', help='take an authority away (its SHA-256, as '
                    '--cert status shows it)')
+    g.add_argument('--cert-crl', action='store_true',
+                   help='the CRLs of the sign-in with a certificate: each address, its authority, number, '
+                        'this and next update, revoked entries, signature, and each node\'s fetch - those '
+                        'the authorities name and not fetched yet too (1.0.278)')
+    g.add_argument('--cert-crl-fetch', metavar='URL', nargs='?', const='',
+                   help='fetch every CRL again now (or the one at URL) - on every node, each itself; a '
+                        'fetch that fails lets nobody in that was not before')
+    g.add_argument('--cert-crl-clear', metavar='URL', nargs='?', const='',
+                   help='forget the CRLs kept (or the one at URL) on every node - the next sign-in fetches '
+                        'them again (all of them: asks; --yes)')
     g.add_argument('--reset-2fa', metavar='NAME', help='take away the second step an account set '
                    'up for these pages: it sets it up again at its next sign-in')
     g.add_argument('--note', metavar='TEXT', default='', help='a note beside what is made')
@@ -1759,6 +1769,86 @@ def cli_acme_order_one(store, t, name, who, say):
         except Exception:                               # noqa: BLE001
             pass
 
+
+
+def cli_cert_crl(args, pal, store):
+    """otp --cert-crl, --cert-crl-fetch [URL], --cert-crl-clear [URL] (1.0.278): as the card's table
+    of the CRLs, its Fetch now and Clear - the same rules and events."""
+    by = 'root on %s' % node_name()
+    act = 'fetch' if args.cert_crl_fetch is not None else ('clear' if args.cert_crl_clear is not None else '')
+    if act:
+        url = (args.cert_crl_fetch if act == 'fetch' else args.cert_crl_clear) or ''
+        if act == 'clear' and not url:
+            cli_sure(args, 'every CRL kept forgotten on every node - while an address does not answer, '
+                           'nobody signs in with a certificate of it')
+        d = Daemon(store, serve=False)
+        try:
+            asked = crl_ask(d, act, url, by)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        got = cli_ask_wait(store, 'crl_' + act, asked, 60)
+        if args.json:
+            print(json.dumps({'nodes': got}, default=str))
+            return 0 if all(v and v.get('ok') for v in got.values()) else 1
+        bad = False
+        for n, v in sorted(got.items()):
+            if not v:
+                bad = True
+                print(pal.warn_line('%s: no answer in a minute - is otp running there?' % n))
+                continue
+            rows = v.get('crls') or []
+            if v.get('error'):
+                bad = True
+                print(pal.warn_line('%s: %s' % (n, v['error'])))
+            elif act == 'clear':
+                print(pal.ok_line('%s: %d CRL(s) cleared' % (n, len(rows))))
+            else:
+                print((pal.ok_line if v.get('ok') else pal.warn_line)('%s: %d of %d CRL(s) fetched' % (
+                    n, sum(1 for r in rows if r.get('ok')), len(rows))))
+                bad = bad or not v.get('ok')
+            for r in rows:
+                print('  %-64s %s' % (str(r.get('url'))[:64], ('number %s' % r['number'] if r.get('number')
+                                                              else 'ok') if r.get('ok') else
+                                      'NOT FETCHED: %s' % r.get('err')))
+        return 1 if bad else 0
+    rows = crl_view_rows(store)
+    if args.json:
+        print(json.dumps({'crls': rows}, default=str))
+        return 0
+    if not rows:
+        print(pal.ok_line('no CRL kept or named yet - a CRL is fetched at the first sign-in of a '
+                          'certificate naming it (or otp --cert-crl-fetch)'))
+        return 0
+    now = time.time()
+    for c in rows:
+        if not c['fetched']:
+            state = 'not fetched yet'
+        elif not c['ok']:
+            state = 'NOT HAD - nobody signs in with a certificate it covers'
+        elif float(c.get('next') or 0) - now < 86400:
+            state = 'good, its next update within a day'
+        elif c.get('err'):
+            state = 'good - the last fetch failed (the last good one is kept until its next update)'
+        else:
+            state = 'good'
+        line = '%s %s  %s' % ('delta CRL' if c['delta'] else 'CRL', c['url'], state)
+        print(pal.ok_line(line) if c['ok'] and state == 'good' else pal.warn_line(line))
+        if c.get('issuer'):
+            print('  issued by     %s' % c['issuer'])
+        elif c.get('of'):
+            print('  named by      %s' % '; '.join(c['of']))
+        if c['fetched'] and c.get('this'):
+            print('  number %s, this update %s, next update %s' % (
+                c.get('number') or '-', stamp(c['this']), stamp(c.get('next'))))
+            print('  %s revoked, %s bytes, signature %s' % (
+                '-' if c.get('revoked') is None else c['revoked'], c.get('size') or '-',
+                {'ok': 'good (openssl, by the authorities put in)', 'bad': 'NOT GOOD',
+                 'unknown': 'not checked - its authority is not put in'}.get(c.get('sig'), '-')))
+        for n in c.get('nodes') or []:
+            print('  node %-12s %s%s' % (
+                n['node'], 'fetched %s' % stamp(n.get('at')) if n.get('ok') else 'not had',
+                ('  (%s, %s)' % (n['err'], stamp(n.get('err_at')))) if n.get('err') else ''))
+    return 0
 
 def cli_sure(args, what):
     """A destructive step asked about once (1.0.59): --yes says it ahead,
@@ -3913,6 +4003,9 @@ def cli_main(argv=None):
         print(pal.ok_line('the password of %s is set' % args.passwd))
         return 0
 
+    if args.cert_crl or args.cert_crl_fetch is not None or args.cert_crl_clear is not None:
+        return cli_cert_crl(args, pal, store)
+
     if args.cert or args.cert_ca or args.cert_ca_drop:
         if args.cert_ca:
             try:
@@ -3924,6 +4017,11 @@ def cli_main(argv=None):
             print(pal.ok_line('%d authority(ies) put in%s' % (len(added), ''.join(
                 '\n  ' + f['subject'] for f in added))))
         if args.cert_ca_drop:
+            # Nobody left without a way in, from here as from the pages (1.0.278).
+            if len(cert_cas(store)) <= 1:
+                why = signin_last_way(store, 'authority')
+                if why:
+                    raise SystemExit('otp: %s - the way back: otp --set admin_password_off=0' % why)
             try:
                 cert_ca_drop(store, args.cert_ca_drop, who)
             except ValueError as e:
@@ -3970,6 +4068,9 @@ def cli_main(argv=None):
             print(pal.ok_line('the keytab is put in: %s' % ', '.join(
                 '%s (kvno %s, %s)' % (e['principal'], e['kvno'], e['kind']) for e in ents)))
         if args.kerberos_keytab_drop:
+            why = signin_last_way(store, 'keytab')      # as on the pages (1.0.278)
+            if why:
+                raise SystemExit('otp: %s - the way back: otp --set admin_password_off=0' % why)
             krb_keytab_drop(store, who)
             print(pal.ok_line('the keytab of Kerberos is taken away'))
         if args.kerberos in ('on', 'off'):

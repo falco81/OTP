@@ -235,6 +235,16 @@ if (isset($_GET['api'])) {
             }
         }
         $auth = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ($_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? ''));
+        /* NTLM is never taken (1.0.277): offered bare - a browser outside the domain, or a name and
+           password typed into the browser's own window - it is refused here at once, with 403 and no new
+           challenge, so the browser does not ask again. Never passed on, never looked into. */
+        if (preg_match('/^\s*(NTLM|Basic|Digest)\b/i', $auth, $other)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'code' => 'ntlm', 'error' => strtoupper($other[1]) === 'NTLM'
+                ? 'the browser offered NTLM, which is never taken here - only Kerberos'
+                : 'the browser offered ' . $other[1] . ', which is never taken here - only Kerberos']);
+            exit;
+        }
         /* A quantifier of PCRE goes to 65535 at most: the length is checked apart. */
         if (strlen($auth) > 140000
             || !preg_match('/^Negotiate\s+([A-Za-z0-9+\/]{8,}={0,2})\s*\z/i', $auth, $neg)) {
@@ -574,8 +584,17 @@ if (!$me && !otp_local()) {
        that is not fine has already turned this into "not answering" above.
        (1.0.19: only the language was kept, and the page then read the
        missing database as one that will not open.) */
-    $health = ['lang' => (string) ($health['lang'] ?? 'cs'), 'database' => ['ok' => true],
-               'users' => 1];
+    $keep = ['lang' => (string) ($health['lang'] ?? 'cs'), 'database' => ['ok' => true],
+             'users' => 1];
+    /* 1.0.277: the ways of signing in are what a browser from anywhere needs to draw the
+       page (they were dropped here, so Windows and a certificate were offered only to a
+       browser on this machine, and "no password at all" left a remote one nothing to press).
+       Only yes/no - the same /api/health says to anybody. */
+    foreach (['kerberos', 'kerberos_auto', 'cert', 'cert_auto'] as $k) {
+        if (is_array($health) && array_key_exists($k, $health)) $keep[$k] = !empty($health[$k]);
+    }
+    if (is_array($health) && array_key_exists('password', $health)) $keep['password'] = $health['password'] !== false;
+    $health = $keep;
 }
 $initial = $me ? (otp_get('/api/status', 8.0) ?: null) : null;
 /* The sign-in's picture, when it is to be shown here too (1.0.71). */
@@ -646,7 +665,8 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     </form>
     <?php if (!empty($health['kerberos']) || !empty($health['cert'])): ?>
     <div id="krb-box" class="krb-box"<?= $mfa !== '' ? ' hidden' : '' ?>
-         data-auto="<?= (!empty($health['kerberos_auto']) || ($pw_off && !empty($health['kerberos']))) ? '1' : '' ?>">
+         data-auto="<?= (!empty($health['kerberos_auto']) || ($pw_off && !empty($health['kerberos']))) ? '1' : '' ?>"
+         data-cert-auto="<?= (!empty($health['cert_auto']) || ($pw_off && !empty($health['cert']) && empty($health['kerberos']))) ? '1' : '' ?>">
       <?php if ($pw_off): ?>
       <p class="muted small krb-only"><?= !empty($health['cert']) && empty($health['kerberos'])
         ? 'Signing in here is with a certificate only - no password.'
@@ -725,37 +745,60 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   var kb = $('krb-box');
   /* A certificate (1.0.275): a nonce in this browser's cookie, then the certificate's own port -
      the browser asks which certificate (and the card's PIN); the answer comes back here. */
-  if ($('cert-go')) {
-    $('cert-go').onclick = function () {
+  /* Tried once in a tab (1.0.277): after a refusal or Sign out it is not started by itself again. */
+  function certGo() {
       var b = $('cert-go'), ksaid = $('krb-said');
+      try { sessionStorage.setItem('otp.cert.tried', '1'); } catch (e) { }
       b.disabled = true; ksaid.className = 'said'; ksaid.textContent = '';
       b.querySelector('span').textContent = 'Asking for your certificate…';
       api('cert-nonce', {}).then(function (d) { location.href = d.url; }).catch(function (e) {
         b.disabled = false; b.querySelector('span').textContent = 'Sign in with a certificate';
         ksaid.className = 'said bad'; ksaid.textContent = String(e.message || e);
       });
-    };
   }
+  if ($('cert-go')) $('cert-go').onclick = certGo;
+  var certRefused = false;
   try {
     var cs = new URLSearchParams(location.search).get('certsaid');
+    if (cs) { certRefused = true; try { sessionStorage.setItem('otp.cert.tried', '1'); } catch (e) { } }
     if (cs && $('krb-said')) {
       $('krb-said').className = 'said bad';
       $('krb-said').textContent = cs;
       history.replaceState(null, '', location.pathname);
     }
   } catch (e) { }
+  /* A browser with no Windows ticket (1.0.277) - outside the domain, or its window of name and password
+     cancelled, or NTLM offered: remembered in it for 30 days, and Windows is not tried by itself there
+     meanwhile; the button stays, and a sign-in with Windows forgets it. A computer in the domain signs in
+     silently and is never marked. */
+  var KRB_NONE = 'otp.krb.none', KRB_NONE_MS = 30 * 86400000;
+  function krbNoneRecent() {
+    try { var t = +localStorage.getItem(KRB_NONE) || 0; return t > 0 && Date.now() - t < KRB_NONE_MS; } catch (e) { return false; }
+  }
+  function krbNone(mark) {
+    try { if (mark) localStorage.setItem(KRB_NONE, String(Date.now())); else localStorage.removeItem(KRB_NONE); } catch (e) { }
+  }
   function krbTry(auto) {
     var kgo = $('krb-go'), ksaid = $('krb-said'), kw = kgo.querySelector('span');
     kgo.disabled = true; ksaid.className = 'said'; ksaid.textContent = '';
     kw.textContent = 'Signing in with Windows…';
     try { sessionStorage.setItem('otp.krb.tried', '1'); } catch (e) { }
     return api('kerberos-login', {}).then(function (d) {
+      krbNone(false);
       if (d && d.mfa) { form.hidden = true; kb.hidden = true; mfaStep(); return; }
       ksaid.className = 'said good'; ksaid.textContent = 'Welcome back.';
       location.reload();
     }).catch(function (e) {
       kgo.disabled = false; kw.textContent = 'Sign in with Windows';
-      if (auto && e && e.data && e.data.code === 'no_ticket' && !form.hidden) return;   /* not in the domain: the form only */
+      var noTicket = !!(e && e.data && (e.data.code === 'no_ticket' || e.data.code === 'ntlm'
+                        || (e.data.code === 'kerberos' && /NTLM/.test(String(e.message || e.data.error || '')))));
+      if (auto && noTicket) {
+        krbNone(true);
+        /* No ticket at all - a computer outside the domain (1.0.277): the certificate, when it is tried by
+           itself too; a refusal with a reason is said and nothing else starts. */
+        if (certAuto) { certGo(); return; }
+        if (!form.hidden) return;                                     /* not in the domain: the form only */
+      }
       ksaid.className = 'said bad'; ksaid.textContent = String(e.message || e);
     });
   }
@@ -765,10 +808,16 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   var krbAuto = false;
   try {
     krbAuto = !!(kb && $('krb-go') && !kb.hidden && kb.dataset.auto === '1' && !$('mfa-box').dataset.stage
-                 && !sessionStorage.getItem('otp.krb.tried') && !sessionStorage.getItem('otp.krb.out'));
+                 && !sessionStorage.getItem('otp.krb.tried') && !sessionStorage.getItem('otp.krb.out') && !krbNoneRecent());
   } catch (e) { krbAuto = false; }
+  var certAuto = false;
+  try {
+    certAuto = !!(kb && $('cert-go') && !kb.hidden && kb.dataset.certAuto === '1' && !$('mfa-box').dataset.stage
+                  && !certRefused && !sessionStorage.getItem('otp.cert.tried') && !sessionStorage.getItem('otp.krb.out'));
+  } catch (e) { certAuto = false; }
   if ($('mfa-box').dataset.stage) mfaStep();
   else if (krbAuto) krbTry(true);
+  else if (certAuto) certGo();
   else if (!form.hidden) $('in-name').focus();
 }());
 </script>
@@ -1368,23 +1417,36 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     </div>
     <div class="card full"><div id="sect-people"></div></div>
     <div class="card full" id="krb-card">
-      <h2>Signing in with Windows (Kerberos) <span class="right" id="krb-state"></span></h2>
+      <h2>Signing in with Windows (Kerberos)</h2>
       <p class="note">A browser on a computer in the domain signs its person in to these pages without a
         password: it sends a Kerberos ticket for the name it opened, checked here against the keytab of that
-        name. Only accounts of the directory set above get in, with the role of their groups - and the second
-        step, when it is on, is asked after it just the same. NTLM is never taken. Switched on above
-        (<b>Sign administrators in with Windows (Kerberos)</b>); off, nothing of it is offered.</p>
+        name. Only accounts of the directory chosen above get in, with the role of their groups - and the second
+        step, when it is on, is asked after it just the same. NTLM is never taken. Off, nothing of it is
+        offered.</p>
+      <div id="sect-kerberos"></div>
       <div id="krb-host"></div>
     </div>
     <div class="card full" id="cert-card">
-      <h2>Signing in with a certificate <span class="right" id="cert-state"></span></h2>
+      <h2>Signing in with a certificate</h2>
       <p class="note">A certificate of the domain's authority - on a smart card, a YubiKey or in the computer -
         signs its person in to these pages without a password. nginx asks for it on a port of its own, never on
         443: nobody else is ever asked for a certificate. Checked here: the chain to an authority put in below,
         its dates, a key usage for signing in, not revoked (CRL), and the UPN in it looked up in the directory set
         above - the role of its groups. The second step, when it is on, is asked after it just the same.
-        Switched on above (<b>Sign administrators in with a certificate</b>); off, nothing of it is offered.</p>
+        Off, nothing of it is offered.</p>
+      <div id="sect-certlogin"></div>
       <div id="cert-host"></div>
+    </div>
+    <div class="card full" id="signin-card">
+      <h2>The sign-in page</h2>
+      <p class="note">What the sign-in page offers, with Windows and a certificate side by side: each is a button
+        under the name and password, or is tried by itself when the page opens. Both tried by itself: Windows
+        first - silently - and the certificate only when this computer has no Windows ticket (a computer outside
+        the domain with a smart card). A refusal of either stops there and says why; the form stays unless there
+        is no password at all. After Sign out nothing is tried by itself again in that tab. The same on every node
+        of a cluster and on the VIP address.</p>
+      <div id="sect-signin"></div>
+      <div id="signin-host"></div>
     </div>
     <div class="card full">
       <h2>The groups, and what each one may do</h2>

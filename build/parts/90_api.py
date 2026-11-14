@@ -3736,18 +3736,19 @@ def _settings_do(h):
         raise ApiError(400, 'the database is changed on Settings - The database with its own '
                             'steps: Try it, Set it up, Carry everything across, Start using it '
                             '(%s not saved)' % ', '.join(moved))
-    if str(asked.get('admin_password_off', '0')) in ('1', 'true', 'True') and \
-            not CONFIG.get('admin_password_off'):
-        # Never locked out by a click (1.0.274): passwords switched off only by somebody signed in
-        # with Windows now, with a keytab there - so it is known to work.
-        how = odict(s.get('data')).get('how')
-        if how not in ('Kerberos', 'certificate'):
-            raise ApiError(400, 'sign in with Windows or a certificate first, then switch the password '
-                                'off - so it is known to work for you (nothing saved)')
-        if how == 'Kerberos' and not krb_keytab_raw(h.store):
-            raise ApiError(400, 'no keytab is put in - nobody could sign in (nothing saved)')
-        if how == 'certificate' and not cert_cas(h.store):
-            raise ApiError(400, 'no authority is put in - nobody could sign in (nothing saved)')
+    if any(k in asked for k in ('admin_password_off', 'admin_kerberos', 'admin_cert', 'admin_directory')):
+        # Never locked out by a click (1.0.274; 1.0.278: the batch as it will be kept - "1.0" is on
+        # too - and switching a way off or on counts as much as the password).
+        wanted = {}
+        for k in ('admin_password_off', 'admin_kerberos', 'admin_cert', 'admin_directory'):
+            if k in asked:
+                try:
+                    wanted[k] = check_setting(k, asked[k])
+                except BadSetting:
+                    pass                         # said by save_settings
+        why = signin_ways_problem(h.store, wanted, how=odict(s.get('data')).get('how'), session=True)
+        if why:
+            raise ApiError(400, why)
     if 'token_names_case' in asked:
         # Not back to small letters over tokens named with capitals (1.0.256): found by nobody.
         bad = token_case_problem(h.store, asked.get('token_names_case'))
@@ -4734,7 +4735,7 @@ def _db_do(h):
 def _export(h):
     s = h.me('fulladmin')
     whole = h.arg('secrets') == '1'
-    out = config_export(h.store, whole)
+    out = config_export(h.store, whole, pages=True)
     if whole:
         # Locked with a passphrase made here (1.0.136), as the cluster's
         # bundle is: the file leaves this machine with every shared secret,
@@ -4781,15 +4782,23 @@ CONFIG_FORMAT = 2
 CONFIG_BUNDLE_KIND = 'otp-config-locked'
 
 
-def config_export(store, whole):
+def config_export(store, whole, pages=False):
     settings = store.settings_saved()
+    left_out = []
     # Secrets kept in the database are sealed with this machine's key
     # (1.0.33): exported as they are, they came back sealed twice and opened
     # nowhere. Opened for an export with the secrets, left out otherwise.
     for k in list(settings):
         base = k.split('@', 1)[0]
         if base in SEALED_KEYS:
-            if whole and settings[k]:
+            if pages and whole and settings[k] and base == 'rbackup_password' and not CONFIG.get('admin_show_key'):
+                # The backups' password opens the key of every token in them (1.0.278): out of the
+                # pages only where a token's key may be shown at all; left out (an empty one
+                # imported would take the password away) - and said so in the file, so that
+                # "Exactly the file" does not take it away either.
+                settings.pop(k)
+                left_out.append(k)
+            elif whole and settings[k]:
                 settings[k] = unseal_secret(settings[k]) or ''
             else:
                 settings.pop(k)
@@ -4829,7 +4838,7 @@ def config_export(store, whole):
             return None
     return {'otp': __version__, 'made': time.time(), 'format': CONFIG_FORMAT,
             'node': node_name(), 'secrets': bool(whole),
-            'settings': settings,
+            'settings': settings, 'left_out': left_out,
             'clients': store.clients(with_secret=whole, last=False),
             'realms': store.realms(),
             'directories': store.directories(with_secret=whole, last=False),
@@ -5029,6 +5038,25 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 # The cluster's own value (1.0.206): a node's setting shared in the
                 # file was saved for the node that imported it alone - and with
                 # "replace" then taken away again.
+                if not admin_password_off_now() and any(
+                        k in want for k in ('admin_password_off', 'admin_kerberos', 'admin_cert')):
+                    # Never put in effect by a file (1.0.278): neither switched on by it, nor a
+                    # stored one woken by its Windows or certificate switch - those are left as
+                    # they are here, said so.
+                    probe = {}
+                    for k in ('admin_password_off', 'admin_kerberos', 'admin_cert', 'admin_directory'):
+                        if k in want:
+                            try:
+                                probe[k] = check_setting(k, want[k])
+                            except BadSetting:
+                                pass
+                    after = dict(CONFIG, **probe)
+                    if _setting_on(after.get('admin_password_off')) and after.get('admin_directory') and (
+                            _setting_on(after.get('admin_kerberos')) or _setting_on(after.get('admin_cert'))):
+                        for k in ('admin_password_off', 'admin_kerberos', 'admin_cert'):
+                            if k in want and str(want[k]) != str(CONFIG.get(k)):
+                                want.pop(k)
+                                said['%s left as it is (no password at all is switched on only from the pages)' % k] += 1
                 daemon.save_settings(want, by, node='*')
                 imported_keys |= set(want)
                 said['settings'] += len(want)
@@ -5210,6 +5238,8 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                         # another RADIUS port on the second node, its own mail server -
                         # and "Exactly the file" took them away from every node unseen.
                         continue
+                    if k in (conf.get('left_out') or []):
+                        continue                # left out of the file on purpose (1.0.278)
                     if k not in have and base in DEFAULTS and base not in FILE_ONLY_KEYS and \
                             not (base in SEALED_KEYS and conf.get('secrets') is not True):
                         drops.append(k)
@@ -5707,17 +5737,23 @@ def _portal_login(h):
     how = realm.get('lookup') if realm.get('lookup') in ('upn', 'sam') else (
         'upn' if '@' in full else 'sam')
     try:
+        began = time.monotonic()
         entry = Authenticator.find_person(ad, full, how, realm)
         if not entry:
             # Counted as a name that exists is (1.0.234): only names the directory has were
             # held back, so "too many wrong passwords for this name" said which ones do.
             dir_pw_done(h, dir_pw_take(h, full, realm.get('directory') or ''), True)
+            # As long as a wrong password takes (1.0.278): answered before the directory was asked
+            # for the password, the time alone said which names it has.
+            portal_bind_pad(began)
             raise LdapError('there is no such account')
         if entry.get('many') or entry_unusable(entry):
             # Counted as any wrong password is (1.0.234): not counted, a disabled or locked
             # account answered 401 where one that works answered 429 - which said which it was.
             dir_pw_done(h, dir_pw_take(h, full, realm.get('directory') or '',
                                        None if entry.get('many') else entry), True)
+        if entry.get('many') or entry_unusable(entry):
+            portal_bind_pad(began)          # as long as a wrong password, too (1.0.278)
         if entry.get('many'):
             # More than one account answers to the name (1.0.205): as RADIUS
             # refuses it - the token could be made for the wrong one.
@@ -5728,7 +5764,11 @@ def _portal_login(h):
         # asked: over it, the account there is not locked by guesses made here.
         held = dir_pw_take(h, full, realm.get('directory') or '', entry)
         try:
-            ad.password_ok(entry, password)
+            bind_began = time.monotonic()
+            try:
+                ad.password_ok(entry, password)
+            finally:
+                portal_bind_took(time.monotonic() - bind_began)
         except LdapUnreachable:
             dir_pw_done(h, held, False)
             raise
@@ -6056,6 +6096,21 @@ def portal_state(h, s):
             'sso': bool(data.get('sso')),
             'sso_logout': (CONFIG.get('portal_sso_logout') or '') if data.get('sso') else ''}
 
+
+
+# How long the directory takes to say yes or no to a password (1.0.278), for the names it does not have.
+PORTAL_BIND = {'avg': 0.15}
+
+
+def portal_bind_took(secs):
+    if 0 <= secs < 10:
+        PORTAL_BIND['avg'] = PORTAL_BIND['avg'] * 0.8 + secs * 0.2
+
+
+def portal_bind_pad(began):
+    """The time a bind takes, after the search (began: when the search started - kept for the log)."""
+    del began
+    time.sleep(min(PORTAL_BIND['avg'], 3.0) * random.uniform(0.85, 1.25))
 
 @route('GET', '/api/portal/me')
 def _portal_whoami(h):
@@ -6476,7 +6531,9 @@ def portal_reissue_rest(h, s, b, key):
         h.failed(key)
         raise ApiError(403, 'the code from the old token was not taken: %s' % said)
     want = str(b.get('kind') or 'totp')
-    if want != 'totp' or token_kind(h.store.token(s['name'])) != 'totp':
+    if want != 'totp' or token_kind(h.store.token(s['name'])) != 'totp' or \
+            'totp' not in portal_methods(h, s):
+        # ...and when the realm no longer offers an app token (1.0.278): replaced as one all the same.
         # Another way, or away from one (1.0.76): the page asks which, and
         # the old token goes on working until the new one is made.
         now_tok = h.store.token(s['name'])
@@ -6900,6 +6957,12 @@ def _ha_do(h):
                 'mode': CONFIG.get('ha_mode') or '', 'engine': h.store.db.engine,
                 'joining': ha_joining_info()}
     if act == 'bundle':
+        if not CONFIG.get('admin_show_key'):
+            # It carries the key that opens every token (1.0.278): out of the pages only where a
+            # token's key may be shown at all - as the database's and the backups' downloads are.
+            raise ApiError(403, 'the bundle carries the key that opens every token, and keys are not shown '
+                                'on these pages (Administrators may show a token\'s QR code and key is off) - '
+                                'make it as root: otp --ha-bundle FILE')
         steps = []
         try:
             if CONFIG.get('ha_mode') == 'replicated':

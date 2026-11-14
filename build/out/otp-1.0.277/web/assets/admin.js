@@ -2853,7 +2853,7 @@ var TALL = {portal_help: 1, portal_groups: 1, sms_body: 1, sms_headers: 1, isemo
 /* A pane drawn in sections (1.0.88): what belongs together side by side,
    and what only one choice uses in a panel of its own that is there only
    while that choice is made - not a page of greyed-out boxes. */
-var SET_PANE_HOME = {portalsso: 'portal'};
+var SET_PANE_HOME = {portalsso: 'portal', kerberos: 'people', certlogin: 'people', signin: 'people'};
 var PANE_LAYOUT = {
   portalsso: [
     {title: 'Who is believed', icon: 'shield', cols: 4,
@@ -20036,39 +20036,41 @@ function krbTryMine(b, out) {
   });
 }
 function drawKrb() {
+  /* Laid out as in acme (1.0.277): the switches above in the card itself, then how it stands in
+     chips, what is in effect, the keytab, the names, each node, and the guides with Copy. */
   var d = KRB.d, host = $('krb-host');
   if (!host || !d) return;
   clear(host);
-  var st = $('krb-state');
-  if (st) {
-    clear(st);
-    st.appendChild(el('span', 'tag ' + (d.on ? (d.problems && d.problems.length ? 'warn' : 'ok') : 'dim'),
-      d.on ? (d.problems && d.problems.length ? 'on - not ready' : 'on') : 'off'));
-  }
   var full = ME && ME.role === 'fulladmin';
+  var kt = d.keytab || {};
+  var bad = !!(d.on && d.problems && d.problems.length);
+  var chips = el('div', 'lb-facts krb-chips');
+  var chip = function (cls, words) { var c = el('span', 'cchip ' + cls); c.appendChild(el('span', '', words)); chips.appendChild(c); return c; };
+  chip(d.on ? (bad ? 'warn' : 'good') : 'dim', d.on ? (bad ? 'On - not ready' : 'On') : 'Off');
+  chip(kt.there ? 'good' : 'warn', kt.there ? 'A keytab is in' : 'No keytab yet');
+  host.appendChild(chips);
   var facts = el('div', 'kv-grid');
   [['Realm', d.realm || '–', d.realm_set ? 'as set' : 'from the directory\'s base DN'],
    ['Directory', d.directory || 'none - set Sign administrators in against the directory', ''],
-   ['Second step after it', d.mfa ? 'asked' : 'off (A second step when signing in to these pages)', ''],
-   ['By itself on the sign-in page', d.auto ? 'yes' : 'no - a button beside the form', ''],
-   ['A password on the sign-in page', d.password_off ? 'not offered - only Windows' : 'offered beside it', d.password_off ? 'root: otp --set admin_password_off=0' : ''],
+   ['Second step after it', d.mfa ? 'asked' : 'off', ''],
+   ['By itself on the sign-in page', d.auto ? 'yes - tried at once, the form if it did not work' : 'no - a button under the form', ''],
+   ['A password on the sign-in page', d.password_off ? 'not offered - only Windows or a certificate' : 'offered beside it', d.password_off ? 'root: otp --set admin_password_off=0' : ''],
    ['NTLM', 'never taken', '']].forEach(function (r) {
     facts.appendChild(el('span', 'k', r[0]));
     var v = el('span', 'v');
-    v.appendChild(noI18n(el('span', r[0] === 'Realm' ? 'mono' : '', r[1])));
+    v.appendChild(r[0] === 'Realm' || r[0] === 'Directory' ? noI18n(el('span', r[0] === 'Realm' ? 'mono' : '', r[1])) : el('span', '', r[1]));
     if (r[2]) v.appendChild(el('span', 'sub', r[2]));
     facts.appendChild(v);
   });
   host.appendChild(facts);
-  if (d.on && d.problems && d.problems.length) {
+  if (bad) {
     var pr = el('div', 'note warnbox');
     pr.appendChild(el('b', '', 'Not ready yet: '));
     pr.appendChild(document.createTextNode(d.problems.join('; ')));
     host.appendChild(pr);
   }
   /* The keytab */
-  host.appendChild(el('h3', '', 'The keytab'));
-  var kt = d.keytab || {};
+  host.appendChild(el('h3', 'peek-h', 'The keytab'));
   if (kt.there) {
     var p = el('p', 'note');
     p.appendChild(document.createTextNode('Put in '));
@@ -20087,17 +20089,18 @@ function drawKrb() {
       return tr;
     }));
   } else {
-    host.appendChild(el('p', 'note', 'None yet. Make it in the domain (below) and put it in here - once: every node of a cluster gets it.'));
+    host.appendChild(el('p', 'note', 'None yet. Make it in AD (below) and put it in here - once, for every node.'));
   }
   var row = el('div', 'btnrow');
-  var put = cmdButton(kt.there ? 'Put in another keytab…' : 'Put in a keytab…', 'upload', kt.there ? '' : 'primary');
+  var put = cmdButton(kt.there ? 'Put in another keytab…' : 'Put in a keytab…', 'upload', 'small' + (kt.there ? '' : ' primary'));
   put.id = 'krb-put';
   put.disabled = !full;
   if (!full) put.title = 'Only a full administrator';
   put.onclick = krbPick;
   row.appendChild(put);
+  var tryOut = el('div', 'krb-try-out');
   if (kt.there) {
-    var drop = cmdButton('Take the keytab away', 'trash', 'danger');
+    var drop = cmdButton('Take the keytab away', 'trash', 'small danger');
     drop.id = 'krb-drop';
     drop.disabled = !full;
     drop.onclick = function () {
@@ -20110,61 +20113,62 @@ function drawKrb() {
       }}], true);
     };
     row.appendChild(drop);
+    var tryb = cmdButton('Try my browser\'s ticket', 'person', 'small');
+    tryb.id = 'krb-try';
+    tryb.title = 'Asks this browser for its Kerberos ticket and says who it would sign in, and as what. Nothing is signed in or changed.';
+    tryb.onclick = function () { krbTryMine(tryb, tryOut); };
+    row.appendChild(tryb);
   }
-  var tryb = cmdButton('Try my browser\'s ticket', 'person', '');
-  tryb.id = 'krb-try';
-  tryb.title = 'Asks this browser for its Kerberos ticket and says who it would sign in, and as what. Nothing is signed in or changed.';
-  row.appendChild(tryb);
   host.appendChild(row);
-  var tryOut = el('div', 'krb-try-out');
   host.appendChild(tryOut);
-  tryb.onclick = function () { krbTryMine(tryb, tryOut); };
   /* The names */
-  host.appendChild(el('h3', '', 'The names the pages are opened by'));
-  host.appendChild(el('p', 'note', 'The browser asks for a ticket of HTTP/<the name in its address bar>. Each name needs its SPN on the service account in AD; one key of that account in the keytab serves them all.'));
+  host.appendChild(el('h3', 'peek-h', 'The names the pages are opened by'));
+  host.appendChild(el('p', 'note', 'The browser asks for a ticket of HTTP/<the name in its address bar>. Each name needs its SPN on the service account in AD; one key of that account in the keytab serves them all. Never an address: there is no SPN for one, and Windows then offers NTLM - which is refused.'));
   host.appendChild(listTable(['Name', 'Of', 'SPN', 'In the keytab'], d.names || [], function (n) {
     var tr = el('tr');
     tr.appendChild(noI18n(el('td', 'mono', n.name)));
     tr.appendChild(noI18n(el('td', '', n['for'] === 'vip' ? 'VIP' : n['for'])));
     tr.appendChild(noI18n(el('td', 'mono', 'HTTP/' + n.name)));
     var t = el('td');
-    t.appendChild(el('span', 'tag ' + (n.in_keytab ? 'ok' : 'dim'), n.in_keytab ? 'by name' : 'by the account\'s key'));
+    t.appendChild(!kt.there ? el('span', 'tag warn', 'no keytab')
+      : el('span', 'tag ' + (n.in_keytab ? 'ok' : 'dim'), n.in_keytab ? 'by name' : 'by the account\'s key'));
     tr.appendChild(t);
     return tr;
   }, 'krb-names'));
   /* Each node */
-  host.appendChild(el('h3', '', 'Each node'));
+  host.appendChild(el('h3', 'peek-h', 'Each node'));
   host.appendChild(listTable(['Node', 'Heard from', 'The keytab', 'Kerberos library', 'Trouble'], d.nodes || [], function (n) {
     var tr = el('tr');
     tr.appendChild(noI18n(el('td', 'mono', n.name)));
     var a = el('td'); a.appendChild(el('span', 'tag ' + (n.alive ? 'ok' : 'warn'), n.alive ? 'yes' : 'no')); tr.appendChild(a);
     var k = el('td');
     k.appendChild(el('span', 'tag ' + (!kt.there ? 'dim' : (n.file && n.same ? 'ok' : 'warn')),
-      !kt.there ? 'none' : (n.file && n.same ? 'written' : 'not yet')));
+      !kt.there ? 'none to write' : (n.file && n.same ? 'written' : 'not yet')));
     tr.appendChild(k);
     var l = el('td'); l.appendChild(el('span', 'tag ' + (n.lib ? 'ok' : (n.lib === false ? 'crit' : 'dim')),
       n.lib ? 'there' : (n.lib === false ? 'missing' : '–'))); tr.appendChild(l);
     tr.appendChild(noI18n(el('td', 'small', n.err || n.lib_err || '')));
     return tr;
   }));
-  /* How to make it */
+  /* How to make it - the values of this system marked, as in the balancers' guides */
   var first = (d.names && d.names[0] && d.names[0].name) || 'otp.corp.example';
   var realm = d.realm || 'CORP.EXAMPLE';
-  var dom = realm.split('.')[0];
-  host.appendChild(el('h3', '', 'Making the keytab in AD'));
-  host.appendChild(el('p', 'note', 'On a domain controller, as a domain administrator: a service account of its own (a normal user, password never expires, AES allowed), the SPN of each name, and the keytab of the first one - the others are served by the same key.'));
-  var lines = ['# 1. the account (once): CORP\\svc-otp-http, "This account supports Kerberos AES 256 bit encryption"'];
+  var v = {dom: realm.split('.')[0], acct: 'svc-otp-http', realm: realm};
+  host.appendChild(el('h3', 'peek-h', 'Making the keytab in AD'));
+  host.appendChild(el('p', 'note', 'On a domain controller, as a domain administrator: a service account of its own (a normal user, password never expires, AES allowed), the SPN of each name, and the keytab of the first one - the others are served by the same key. Changing the account\'s password later makes a new key version: make the keytab again.'));
+  var lines = ['# 1. the account (once): {dom}\\{acct}, "This account supports Kerberos AES 256 bit encryption"'];
   (d.names && d.names.length ? d.names : [{name: first}]).forEach(function (n) {
-    lines.push('setspn -S HTTP/' + n.name + ' ' + dom + '\\svc-otp-http');
+    lines.push('setspn -S HTTP/' + n.name + ' {dom}\\{acct}');
   });
-  lines.push('ktpass -princ HTTP/' + first + '@' + realm + ' -mapuser ' + dom + '\\svc-otp-http -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out otp-http.keytab');
-  var pre = noI18n(el('pre', 'mono krb-cmd', lines.join('\n').replace(/CORP\\/g, dom + '\\')));
-  host.appendChild(pre);
-  host.appendChild(el('h3', '', 'Telling the browsers'));
+  lines.push('ktpass -princ HTTP/' + first + '@{realm} -mapuser {dom}\\{acct} -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out otp-http.keytab');
+  var blk = lbBlock(lines.join('\n'), v, 'cmd.exe on a domain controller');
+  blk.classList.add('krb-cmd');
+  host.appendChild(blk);
+  host.appendChild(el('h3', 'peek-h', 'Telling the browsers'));
   var names = (d.names || []).map(function (n) { return n.name; }).join(',') || first;
-  var br = el('ul', 'note');
+  var br = el('ul', 'note krb-browsers');
   [['Edge and Chrome (Windows, by group policy): ', 'AuthServerAllowlist = ' + names],
-   ['…or Internet Options → Security → Local intranet → Sites: ', names],
+   ['…or Internet Options → Security → Local intranet → Sites: ', names.split(',').join(', ')],
    ['Firefox (policy or about:config): ', 'network.negotiate-auth.trusted-uris = ' + names],
    ['NTLM: ', 'nothing to set here - it is refused whatever the browser offers']].forEach(function (x) {
     var li = el('li');
@@ -20173,6 +20177,40 @@ function drawKrb() {
     br.appendChild(li);
   });
   host.appendChild(br);
+  host.appendChild(el('p', 'note small muted', 'The way back from "only Windows", as root: otp --set admin_password_off=0 (or Kerberos switched off). More: docs/admin-kerberos.md in the package.'));
+  drawSignin();
+}
+
+/* ---- The sign-in page (1.0.277) ---------------------------------------------------------------
+   What a person meets with the settings as saved: name and password offered or not, each way a
+   button or tried by itself, in which order, and what happens after a refusal and after Sign out. */
+function drawSignin() {
+  var host = $('signin-host'), k = KRB.d, c = CERTL.d;
+  if (!host || !k || !c) return;
+  clear(host);
+  var pwOff = !!(k.password_off || c.password_off);
+  var kA = k.on && (k.auto || (pwOff && !c.on)), cA = c.on && (c.auto || (pwOff && !k.on));
+  var way = function (on, auto) {
+    if (!on) return 'off';
+    if (auto) return 'tried by itself when the page opens';
+    return pwOff ? 'a button' : 'a button under the form';
+  };
+  var first = kA && cA ? 'Windows silently; the certificate when this computer has no Windows ticket'
+    : kA ? 'Windows silently' : cA ? 'the certificate at once - the browser\'s chooser, the card\'s PIN' : 'nothing - the person chooses';
+  var facts = el('div', 'kv-grid');
+  [['Name and password', pwOff ? 'not offered - only Windows or a certificate' : 'offered'],
+   ['Sign in with Windows', way(k.on, kA)],
+   ['Sign in with a certificate', way(c.on, cA)],
+   ['Tried by itself when the page opens', first],
+   ['A computer without a Windows ticket', kA ? 'Windows not tried by itself in that browser for 30 days - its button stays; a sign-in with Windows forgets it' : '–'],
+   ['After a refusal', 'said why on the page; nothing else tried by itself'],
+   ['After Sign out', 'nothing tried by itself in that tab'],
+   ['The second step', k.mfa ? 'asked after every way - a password, Windows, a certificate' : 'off']].forEach(function (r) {
+    facts.appendChild(el('span', 'k', r[0]));
+    facts.appendChild(el('span', 'v', r[1]));
+  });
+  host.appendChild(facts);
+  host.appendChild(el('p', 'note small muted', 'The way back from no password at all, as root: otp --set admin_password_off=0.'));
 }
 
 /* ---- Signing in with a certificate (1.0.275) ------------------------------------------------
@@ -20207,12 +20245,19 @@ function drawCert() {
   var d = CERTL.d, host = $('cert-host');
   if (!host || !d) return;
   clear(host);
-  var st = $('cert-state');
-  if (st) {
-    clear(st);
-    st.appendChild(el('span', 'tag ' + (d.on ? (d.problems && d.problems.length ? 'warn' : 'ok') : 'dim'),
-      d.on ? (d.problems && d.problems.length ? 'on - not ready' : 'on') : 'off'));
+  var cbad = !!(d.on && d.problems && d.problems.length);
+  var chips = el('div', 'lb-facts cert-chips');
+  var chip = function (cls, words) { var c = el('span', 'cchip ' + cls); c.appendChild(el('span', '', words)); chips.appendChild(c); return c; };
+  chip(d.on ? (cbad ? 'warn' : 'good') : 'dim', d.on ? (cbad ? 'On - not ready' : 'On') : 'Off');
+  chip(d.cas && d.cas.length ? 'good' : 'warn', d.cas && d.cas.length ? 'Authorities put in' : 'No authority yet');
+  var pc = chip('', 'Port');
+  pc.appendChild(noI18n(el('span', 'mono cchip-v', String(d.port))));
+  if (d.on) {
+    var lis = (d.nodes || []).filter(function (n) { return n.alive; });
+    var all = lis.length && lis.every(function (n) { return n.listening; });
+    chip(all ? 'good' : 'warn', all ? 'nginx: listening' : 'nginx: not yet - root puts it in within a minute');
   }
+  host.appendChild(chips);
   var full = ME && ME.role === 'fulladmin';
   var facts = el('div', 'kv-grid');
   [['The port', String(d.port), 'nginx asks for a certificate there, and nowhere else'],
@@ -20220,8 +20265,9 @@ function drawCert() {
    ['Which account', {compat: 'the UPN; the SID in it must be the account\'s when it is there', strong: 'the UPN and the SID in it, which must be there',
      upn: 'the UPN alone'}[d.map] || d.map, 'admin_cert_map: ' + d.map],
    ['Revocation', d.crl ? 'checked - the CRL of each certificate, no CRL no sign-in' : 'not checked', ''],
-   ['Second step after it', d.mfa ? 'asked' : 'off (A second step when signing in to these pages)', ''],
-   ['A password on the sign-in page', d.password_off ? 'not offered' : 'offered beside it', d.password_off ? 'root: otp --set admin_password_off=0' : '']].forEach(function (r) {
+   ['Second step after it', d.mfa ? 'asked' : 'off', ''],
+   ['By itself on the sign-in page', d.auto ? 'yes - at once, the form if it did not work' : 'no - a button under the form', ''],
+   ['A password on the sign-in page', d.password_off ? 'not offered - only Windows or a certificate' : 'offered beside it', d.password_off ? 'root: otp --set admin_password_off=0' : '']].forEach(function (r) {
     facts.appendChild(el('span', 'k', r[0]));
     var v = el('span', 'v');
     v.appendChild(el('span', '', r[1]));
@@ -20235,7 +20281,7 @@ function drawCert() {
     pr.appendChild(document.createTextNode(d.problems.join('; ')));
     host.appendChild(pr);
   }
-  host.appendChild(el('h3', '', 'The authorities'));
+  host.appendChild(el('h3', 'peek-h', 'The authorities'));
   if (d.cas && d.cas.length) {
     host.appendChild(listTable(['Authority', 'Issued by', 'Valid to', 'SHA-256', ''], d.cas, function (c) {
       var tr = el('tr');
@@ -20279,7 +20325,7 @@ function drawCert() {
   row.appendChild(tryb);
   host.appendChild(row);
   if (d.crls && d.crls.length) {
-    host.appendChild(el('h3', '', 'Revocation lists fetched'));
+    host.appendChild(el('h3', 'peek-h', 'Revocation lists fetched'));
     host.appendChild(listTable(['Address', 'State', 'Fetched', 'Next update'], d.crls, function (c) {
       var tr = el('tr');
       tr.appendChild(noI18n(el('td', 'mono small', c.url)));
@@ -20291,7 +20337,7 @@ function drawCert() {
       return tr;
     }));
   }
-  host.appendChild(el('h3', '', 'Each node'));
+  host.appendChild(el('h3', 'peek-h', 'Each node'));
   host.appendChild(listTable(['Node', 'Heard from', 'The authorities', 'nginx on port ' + d.port, 'Trouble'], d.nodes || [], function (n) {
     var tr = el('tr');
     tr.appendChild(noI18n(el('td', 'mono', n.name)));
@@ -20304,7 +20350,7 @@ function drawCert() {
     return tr;
   }));
   var first = (d.names && d.names[0] && d.names[0].name) || 'otp.corp.example';
-  host.appendChild(el('h3', '', 'The people\'s certificates (AD CS)'));
+  host.appendChild(el('h3', 'peek-h', 'The people\'s certificates (AD CS)'));
   var ul = el('ul', 'note');
   ['A template from "Smartcard Logon" (or "User"): Subject Alternative Name built from Active Directory with the User principal name (UPN); key usages Client Authentication and Smart Card Logon.',
    'Since KB5014754 the authority writes the account\'s SID into each certificate it issues from AD: "Which account" compat (the default) checks it, strong requires it.',
@@ -20313,7 +20359,7 @@ function drawCert() {
     ul.appendChild(el('li', '', x));
   });
   host.appendChild(ul);
-  host.appendChild(el('h3', '', 'The browsers and the network'));
+  host.appendChild(el('h3', 'peek-h', 'The browsers and the network'));
   var ul2 = el('ul', 'note');
   [['The button "Sign in with a certificate" opens ', 'https://' + first + ':' + d.port + '/'],
    ['The firewall of each node lets the port in for the administrators\' networks - nothing else is served there: ', String(d.port)],
@@ -20325,4 +20371,5 @@ function drawCert() {
     ul2.appendChild(li);
   });
   host.appendChild(ul2);
+  drawSignin();
 }

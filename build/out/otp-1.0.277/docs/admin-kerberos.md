@@ -6,6 +6,8 @@ opened (SPNEGO, `Authorization: Negotiate`), otp checks it against the keytab of
 looks the person up in the directory the administrators sign in against. The role comes from
 the directory's groups, exactly as after a password.
 
+How this way sits beside a password and the other way on one sign-in page (since 1.0.277): [admin-sign-in.md](admin-sign-in.md).
+
 - **The second step stays.** With *A second step when signing in to these pages* on, Kerberos
   takes the place of the password only: the code (app, mail, SMS or passkey) is asked after it,
   every time.

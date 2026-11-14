@@ -103,7 +103,7 @@ const name = w => (w && w.name) || '-';
   await p.context().close();
 
   // 3. both by itself: Windows first
-  setup('set', 'admin_kerberos_auto=1');
+  setup('set', 'admin_kerberos_auto=1', 'admin_cert_auto=1');
   p = await page('falco', 'nested', 2);
   await open(p);
   w = await who(p);
@@ -129,9 +129,13 @@ const name = w => (w && w.name) || '-';
   // 4. no password at all, a certificate alone: tried by itself whatever its own switch
   setup('set', 'admin_kerberos=0', 'admin_kerberos_auto=0', 'admin_cert_auto=0', 'admin_password_off=1');
   p = await page('none', 'falco', 2);
-  await p.goto(URL); await p.waitForTimeout(400);
+  // the page as a tab that tried the certificate already sees it (otherwise it is gone to the port at once)
+  await p.addInitScript(() => { try { if (location.port !== '8443' && !sessionStorage.getItem('t.look')) { sessionStorage.setItem('t.look', '1'); sessionStorage.setItem('otp.cert.tried', '1'); } } catch (e) {} });
+  await p.goto(URL); await p.waitForTimeout(1200);
   const formHidden = await p.$eval('#signin-form', f => f.hidden).catch(() => null);
-  await p.waitForTimeout(4600);
+  await p.context().close();
+  p = await page('none', 'falco', 2);
+  await p.goto(URL); await p.waitForTimeout(5000);
   w = await who(p);
   ok('no password at all, the certificate alone: no form, the certificate tried by itself, signed in', formHidden === true && name(w) === 'falco', JSON.stringify(w));
   await p.context().close();
@@ -163,4 +167,4 @@ const name = w => (w && w.name) || '-';
   for (const b of Object.values(browsers)) await b.close();
   setup('down');
   console.log('ALL ' + R.filter(Boolean).length + ' / ' + R.length);
-})().catch(e => { console.log('FAIL ' + e); try { setup('down'); } catch (x) {} console.log('ALL ' + R.filter(Boolean).length + ' / ' + (R.length + 1)); });
+})().catch(e => { console.log('FAIL ' + e); try { setup('down'); } catch (x) {} console.log('ALL ' + R.filter(Boolean).length + ' / ' + (R.length + 1)); process.exit(1); });

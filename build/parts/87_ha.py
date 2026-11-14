@@ -913,6 +913,81 @@ def peer_net(text):
     return '%s/%d' % (a, 32 if a.version == 4 else 128)
 
 
+
+class HbaError(OSError, ValueError):
+    """pg_hba.conf not read or written as root (1.0.278) - said, not a traceback: the callers catch
+    ValueError (the steps of a cluster) or OSError."""
+
+
+def _hba_said(path, e):
+    if isinstance(e, HbaError):
+        return e
+    if getattr(e, 'errno', None) == errno.ELOOP:
+        return HbaError('%s is a link - root writes no file through a link: point hba_file at the real '
+                        'file (ALTER SYSTEM SET hba_file = ...) and run this again' % path)
+    return HbaError('%s: %s' % (path, e))
+
+
+def pg_hba_read(path):
+    try:
+        return _pg_hba_read(path)
+    except OSError as e:
+        raise _hba_said(path, e)
+
+
+def _pg_hba_read(path):
+    """pg_hba.conf read as root (1.0.278): never through a link - the path is what PostgreSQL says,
+    and the file is in the postgres account's own folder."""
+    import stat as _stat
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0))
+    try:
+        st = os.fstat(fd)
+        if not _stat.S_ISREG(st.st_mode):
+            raise HbaError('%s is not a plain file' % path)
+        with os.fdopen(fd, 'r') as fh:
+            fd = None
+            return fh.read()
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def pg_hba_write(path, text, keep=None):
+    try:
+        return _pg_hba_write(path, text, keep)
+    except OSError as e:
+        raise _hba_said(path, e)
+
+
+def _pg_hba_write(path, text, keep=None):
+    """pg_hba.conf written as root (1.0.278) the way root's helper writes the postgres account's
+    files: never through a link, only over a plain file, a new file renamed into place with the old
+    one's owner and mode (keep: a copy of the old one there first, written the same way). Written
+    through a link, the postgres account could have had root put lines into any file of root's."""
+    import stat as _stat
+    path = str(path)
+    st = os.lstat(path)
+    if not _stat.S_ISREG(st.st_mode):
+        raise HbaError('%s is not a plain file (a link?) - not written: point hba_file at the real file' % path)
+    folder = os.path.dirname(path) or '.'
+    for target, body in (([keep, pg_hba_read(path)],) if keep else ()) + (([path, text],)):
+        fd, tmp = tempfile.mkstemp(prefix='.otp-hba-', dir=folder)
+        try:
+            with os.fdopen(fd, 'w') as fh:
+                fh.write(body)
+            os.chmod(tmp, _stat.S_IMODE(st.st_mode))
+            try:
+                os.chown(tmp, st.st_uid, st.st_gid)
+            except OSError:
+                pass
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
 def pg_open_to(peer, db_name, db_user):
     """PostgreSQL on this machine listening beyond localhost and letting the
     other node's address in for this one database and account. Returns what
@@ -931,13 +1006,13 @@ def pg_open_to(peer, db_name, db_user):
     hba = pg_local_admin('SHOW hba_file')
     line = 'host    %s    %s    %s    scram-sha-256' % (db_name, db_user, peer_net(peer))
     try:
-        text = Path(hba).read_text()
+        text = pg_hba_read(hba)
     except OSError as e:
         raise ValueError('%s could not be read: %s' % (hba, e))
     if line not in text:
         # In front of whatever is there: pg_hba.conf is read top down, and a
         # "reject" or an "ident" line further up would win otherwise.
-        Path(hba).write_text('# otp high availability: the other node (%s)\n%s\n%s'
+        pg_hba_write(hba, '# otp high availability: the other node (%s)\n%s\n%s'
                              % (datetime.now().strftime('%Y-%m-%d'), line, text))
         done.append('%s: %s' % (hba, line))
     pg_local_admin('SELECT pg_reload_conf()')
@@ -1126,7 +1201,7 @@ def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
         say('the database %s was made' % name)
     pg_admin('GRANT CREATE ON DATABASE %s TO %s' % (name, user), port)
     hba = pg_admin('SHOW hba_file', port)
-    text = Path(hba).read_text()
+    text = pg_hba_read(hba)
     added = []
     # This node's own address too (1.0.212): before the other node is told to take
     # this one's rows, that subscription's connection - to this address - is tried
@@ -1148,7 +1223,7 @@ def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
     if added:
         # In front of whatever is there: pg_hba.conf is read top down, and a
         # "reject" or an "ident" line further up would win otherwise.
-        Path(hba).write_text('# otp high availability (%s)\n%s\n%s'
+        pg_hba_write(hba, '# otp high availability (%s)\n%s\n%s'
                              % (datetime.now().strftime('%Y-%m-%d'), '\n'.join(added), text))
         say('%s: %s' % (hba, '; '.join(added)))
     pg_admin('SELECT pg_reload_conf()', port)

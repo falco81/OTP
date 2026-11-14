@@ -315,6 +315,45 @@ def rb_checked(data, old=None):
     return t
 
 
+
+# A fetch from a destination is held to the size it lists (1.0.278): RB_FETCH.cap, per thread.
+RB_FETCH = threading.local()
+
+
+def rb_fetch_cap():
+    return getattr(RB_FETCH, 'cap', None)
+
+
+def rb_capped_writer(write):
+    cap = rb_fetch_cap()
+    if not cap:
+        return write
+    got = [0]
+
+    def one(data):
+        got[0] += len(data)
+        if got[0] > cap:
+            raise ValueError('the destination sends more than it says the file is - stopped')
+        return write(data)
+    return one
+
+
+def rb_copy_capped(read, write):
+    put = rb_capped_writer(write)
+    while True:
+        part = read(1024 * 1024)
+        if not part:
+            return
+        put(part)
+
+
+def rb_capped_argv(argv):
+    """The child that fetches may write no more than that (prlimit, util-linux); as it was when
+    nothing is being fetched or prlimit is not there."""
+    cap = rb_fetch_cap()
+    tool = shutil.which('prlimit') if cap else None
+    return (['prlimit', '--fsize=%d' % cap, '--'] + list(argv)) if tool else list(argv)
+
 def rb_save(store, data, by):
     with RB_LOCK:
         targets = rb_targets(store)
@@ -331,8 +370,10 @@ def rb_save(store, data, by):
                 raise ValueError('20 destinations at most')
             targets.append(t)
         rb_put_targets(store, targets)
-    store.add_event('settings', '%s %s the backup destination %s (%s)' % (
-        by, 'changed' if old else 'added', t['name'], RB_KIND_WORDS[t['kind']]), who=by)
+    store.add_event('settings', '%s %s the backup destination %s (%s)%s' % (
+        by, 'changed' if old else 'added', t['name'], RB_KIND_WORDS[t['kind']],
+        '' if CONFIG.get('admin_show_key') else ' - the backups carry the key that opens every token, '
+        'and keys are not shown on these pages'), 'info' if CONFIG.get('admin_show_key') else 'warn', who=by)
     return t
 
 
@@ -517,7 +558,7 @@ class RbFolder(object):
     def get(self, name, local):
         fd = os.open(os.path.join(self.dir, rb_safe_name(name)), os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, 'rb') as src, open(local, 'wb') as out:
-            shutil.copyfileobj(src, out, 1024 * 1024)
+            rb_copy_capped(src.read, out.write)
 
     def list(self):
         out = []
@@ -665,7 +706,7 @@ class RbFtp(object):
 
     def get(self, name, local):
         with open(local, 'wb') as f:
-            self.ftp.retrbinary('RETR %s' % rb_safe_name(name), f.write, blocksize=262144)
+            self.ftp.retrbinary('RETR %s' % rb_safe_name(name), rb_capped_writer(f.write), blocksize=262144)
 
     def list(self):
         out = []
@@ -808,7 +849,7 @@ class RbSsh(object):
                                                         shlex_quote(self.dir)))
 
     def _run(self, args, what, stdin=None, timeout=3600):
-        got = subprocess.run(args, input=stdin, capture_output=True, text=True,
+        got = subprocess.run(rb_capped_argv(args), input=stdin, capture_output=True, text=True,
                              timeout=timeout, env=self.env, start_new_session=True)
         if got.returncode != 0:
             said = (got.stderr or got.stdout or '').strip().splitlines()
@@ -915,8 +956,8 @@ class RbSmb(object):
         self._run(cmds + ['cd "\\%s"' % self.dir, 'ls'], ignore=('NT_STATUS_OBJECT_NAME_COLLISION',))
 
     def _run(self, cmds, ignore=(), timeout=3600):
-        got = subprocess.run(self.args + ['-c', '; '.join(cmds)], capture_output=True, text=True,
-                             timeout=timeout, cwd=self.d, start_new_session=True)
+        got = subprocess.run(rb_capped_argv(self.args + ['-c', '; '.join(cmds)]), capture_output=True,
+                             text=True, timeout=timeout, cwd=self.d, start_new_session=True)
         text = (got.stdout or '') + (got.stderr or '')
         if 'Could not determine network interfaces' in text and \
                 not any(a.startswith('--option=interfaces=') for a in self.args):
@@ -1633,6 +1674,32 @@ def rb_job_start(store, by, only=None):
     return dict(RB_JOB)
 
 
+def rb_tick_again(daemon):
+    """The scheduled backup of today failed (1.0.278): tried again an hour later, three times at most
+    the same day - one failure (the destination down at 04:15) left a weekly schedule a week more
+    without a backup."""
+    store = daemon.store
+    if not CONFIG.get('rbackup') or not any(t.get('enabled') for t in rb_targets(store)):
+        return
+    today = datetime.now().strftime('%Y-%m-%d')
+    if getattr(daemon, '_rb_day', '') != today:
+        return                                  # no scheduled run of today on this node
+    mine = [r for r in rb_history(store) if r.get('node') == node_name()
+            and str(r.get('by') or '').startswith('otp (scheduled')
+            and datetime.fromtimestamp(fnum(r.get('at'))).strftime('%Y-%m-%d') == today]
+    if not mine or mine[0].get('ok') or len(mine) >= 4:
+        return
+    if time.time() - fnum(mine[0].get('at')) < 3600:
+        return
+    if time.time() - float(getattr(daemon, '_rb_again_at', 0)) < 3600:
+        return
+    daemon._rb_again_at = time.time()
+    try:
+        rb_job_start(store, 'otp (scheduled, again)')
+    except ValueError:
+        pass
+
+
 def rb_due(store, last_day):
     """Whether the scheduled backup is due now; the day it is for."""
     if not CONFIG.get('rbackup'):
@@ -1810,6 +1877,8 @@ def rb_tick(daemon):
         except ValueError:
             pass
     day = rb_due(store, getattr(daemon, '_rb_day', ''))
+    if not day and not RB_JOB['running']:
+        rb_tick_again(daemon)
     if not day or RB_JOB['running']:
         return
     # Marked done only once the database said whether it is this run's
@@ -1987,7 +2056,25 @@ def rb_fetch(store, tid, name, dst):
     tr = rb_transport(t)
     try:
         tr.open()
-        tr.get(name, dst)
+        # Never more than the destination says it holds (1.0.278): a server that sent without end
+        # filled the state folder - the database's disk - during the weekly check by itself.
+        listed = next((int(x.get('size') or 0) for x in tr.list() if x.get('name') == name), None)
+        if listed is None:
+            raise ValueError('%s is not at the destination any more' % name)
+        cap = listed + (1 << 20) if listed > 0 else 0     # 0: the destination does not say (FTP)
+        try:
+            free = shutil.disk_usage(os.path.dirname(os.path.abspath(dst)) or '.').free
+        except OSError:
+            free = None
+        if cap and free is not None and free < cap + BACKUP_ROOM_MIN:
+            raise ValueError('no room for %s here (%d MB, %d MB free)' % (name, cap >> 20, free >> 20))
+        RB_FETCH.cap = cap or None
+        try:
+            tr.get(name, dst)
+        finally:
+            RB_FETCH.cap = None
+        if cap and os.path.getsize(dst) > cap:
+            raise ValueError('%s came larger than the destination says it is - not taken' % name)
     finally:
         tr.close()
 

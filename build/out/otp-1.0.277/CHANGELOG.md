@@ -4,6 +4,21 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.277 — 14 November 2026
+
+Added
+- **The sign-in page's variants, set in three cards of their own** in Settings → Accounts: *Signing in with Windows*, *Signing in with a certificate* and **The sign-in page**. The last holds the one setting the two ways share (*No password at all*) and says in words what a person meets with the settings as they are: name and password offered or not, each way a button or tried by itself, the order, what happens after a refusal and after *Sign out*, and with a computer without a Windows ticket. docs/admin-sign-in.md.
+- **A certificate tried by itself when the sign-in page opens** (`admin_cert_auto`, off by default): the browser goes to the certificate's port at once; with no fitting certificate, or the chooser or the PIN cancelled, the person is back on the page with the reason and the form, and the certificate is not tried by itself again in that tab. With Windows by itself too, **Windows goes first, silently**, and the certificate only when the computer has no Windows ticket at all; a refusal of either is never a reason to try the other. With no password at all and only a certificate, it is tried by itself.
+- **A computer without a Windows ticket is remembered for 30 days**: when trying Windows by itself ends without a ticket (or the browser's window is cancelled), that browser does not try Windows by itself for 30 days - the form and *Sign in with Windows* are there, the button works, and a sign-in with Windows forgets it. Computers in the domain sign in silently as before.
+
+Changed
+- **The Windows card looks like the rest**: chips for its state, the facts in two columns that do not move when a switch is flipped, the keytab, the names and their SPN, each node, the commands for a domain controller (with a Copy button) and the browsers' settings. The certificate card the same.
+- **The last way without a password cannot be taken away**: dropping the keytab, or the last certificate authority, is refused while *No password at all* is in effect and nothing else would sign anybody in.
+
+Fixed
+- **Windows and the certificate are offered to a browser on another machine too**: the sign-in page cut what it knew down to the language for anybody not on the server itself (1.0.274, 1.0.275), so *Sign in with Windows* and *Sign in with a certificate* were drawn - and tried by themselves - only in a browser on the server, and with *No password at all* a remote browser had nothing to press. The page now keeps which ways are on (yes or no, as the health check says to anybody).
+- **NTLM is never asked for nor taken**: a browser that answers Negotiate with NTLM (a computer outside the domain) - or sends NTLM, Basic or Digest by itself - gets a refusal with no new challenge, so it never shows its own name-and-password window.
+
 ## 1.0.276 — 14 November 2026
 
 Fixed

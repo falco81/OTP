@@ -172,7 +172,7 @@ async function adminLogin(p) {
   await p.waitForTimeout(600);
   const sect = await p.$('#krb-card');
   if (sect) { await sect.scrollIntoViewIfNeeded(); await sect.screenshot({ path: SHOTS + '/5-settings-card.png' }); }
-  const sw = await p.$('#sect-people');
+  const sw = await p.$('#sect-kerberos');
   if (sw) await sw.screenshot({ path: SHOTS + '/6-settings-switches.png' });
   ok('no page errors (settings)', p.errs.length === 0, p.errs.join(' | '));
   await p.context().close();

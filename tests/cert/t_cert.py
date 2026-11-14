@@ -114,6 +114,9 @@ class Browser(object):
         st, hd, raw = self.raw(url)
         loc = hd.get('Location', '')
         said = urllib.parse.parse_qs(urllib.parse.urlsplit(loc).query).get('certsaid', [''])[0]
+        if said == '1':
+            # 1.0.278: why not comes in a cookie of the site, the address says only that it is there
+            said = urllib.parse.unquote_plus(next((c.value for c in self.jar if c.name == 'otp_certsaid'), '') or '') or '(no cookie)'
         if not loc and st != 303:
             said = 'HTTP %d: %s' % (st, re.sub(rb'\s+', b' ', raw[:160]).decode('utf-8', 'replace'))
         st2, me = self.j('whoami')
@@ -286,6 +289,37 @@ said, who = Browser('falco').cert_login()
 ok('a certificate still signs in', who.get('name') == 'falco', (said, who))
 # 1.0.277: the sign-in variants
 ok('1.0.277: no password, a certificate alone: the page tries it by itself', b'data-cert-auto="1"' in page, page[:0])
+# 1.0.277: the same from another machine (not 127.0.0.1) - the page had the ways dropped there
+import socket as _so
+def _far():
+    s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    try:
+        s.connect(('192.0.2.254', 9)); return s.getsockname()[0]
+    except OSError:
+        return ''
+    finally:
+        s.close()
+FAR = _far()
+
+def far_page():
+    """The sign-in page as a browser on another machine gets it: this machine's own address is not
+    127.0.0.1, let into /admin/ for the moment (nginx), and taken out again."""
+    conf = '/etc/nginx/conf.d/otp.conf'
+    was = open(conf).read()
+    try:
+        open(conf, 'w').write(was.replace('# ADMIN-ALLOW-BEGIN\n', '# ADMIN-ALLOW-BEGIN\n        allow %s;\n' % FAR))
+        subprocess.run(['nginx', '-s', 'reload'], capture_output=True); time.sleep(1.5)
+        return Browser().raw('https://%s/admin/' % FAR)[2]
+    finally:
+        open(conf, 'w').write(was)
+        subprocess.run(['nginx', '-s', 'reload'], capture_output=True); time.sleep(1.5)
+if FAR:
+    for _k in ('no_proxy', 'NO_PROXY'):
+        os.environ[_k] = (os.environ.get(_k, '') + ',' + FAR).lstrip(',')
+if FAR and not FAR.startswith('127.'):
+    fp = far_page()
+    ok('1.0.277: from another machine (%s): no form, the certificate offered and tried by itself' % FAR,
+       b'id="signin-form" autocomplete="on" hidden' in fp and b'id="cert-go"' in fp and b'data-cert-auto="1"' in fp, fp[-600:])
 cas = cb.j('certlogin')[1].get('cas') or []
 root = [c for c in cas if 'Root' in c.get('subject', '')]
 issuing = [c for c in cas if 'Root' not in c.get('subject', '')]
@@ -312,6 +346,10 @@ st, got = settings(admin_cert_auto=1)
 time.sleep(1.5)
 pg = Browser().raw('https://127.0.0.1/admin/')[2]
 ok('1.0.277: ...by itself when the sign-in page opens: the page tries it', st == 200 and b'data-cert-auto="1"' in pg, got)
+if FAR and not FAR.startswith('127.'):
+    fp = far_page()
+    ok('1.0.277: ...from another machine too: the form and the certificate, tried by itself', b'id="in-name"' in fp
+       and b'id="signin-form" autocomplete="on">' in fp and b'id="cert-go"' in fp and b'data-cert-auto="1"' in fp, fp[-600:])
 settings(admin_cert_auto=0)
 
 # the events

@@ -4,6 +4,8 @@ Since 1.0.275. **Off by default.** A certificate of the domain's authority (AD C
 card, a YubiKey (PIV) or in the computer's store - signs its person in to the administration pages
 without a password. Never NTLM, never a password on that way.
 
+How this way sits beside a password and the other way on one sign-in page (since 1.0.277): [admin-sign-in.md](admin-sign-in.md).
+
 - **A port of its own.** nginx asks the browser for a certificate only on `admin_cert_port` (8443),
   never on 443: nobody opening the enrolment pages or the administration's own sign-in is ever
   asked for a certificate. Only the sign-in is served there; everything else on that port is 404.

@@ -108,7 +108,7 @@ async function certIn(p) {
   await p.waitForTimeout(500);
   const card = await p.$('#cert-card');
   if (card) { await card.scrollIntoViewIfNeeded(); await card.screenshot({ path: SHOTS + '/5-settings-card.png' }); }
-  const sw = await p.$('#sect-people');
+  const sw = await p.$('#sect-certlogin');
   if (sw) await sw.screenshot({ path: SHOTS + '/6-settings-switches.png' });
   ok('no page errors (settings)', p.errs.length === 0, p.errs.join(' | '));
   await p.context().close();
@@ -127,7 +127,9 @@ async function certIn(p) {
   const pwIn = await p.$$eval('input[type=password], input.masked', a => a.filter(x => x.offsetParent).length);
   ok('certificate only: no field for a password on the page', pwIn === 0, pwIn);
   await p.context().close();
+  // 1.0.277: with nothing else to offer the page tries the certificate by itself - first as a tab that tried it already
   p = await page(b, 'falco', 'en', 2);
+  await p.addInitScript(() => { try { if (location.port !== '8443') sessionStorage.setItem('otp.cert.tried', '1'); } catch (e) {} });
   await p.goto(URL); await p.waitForTimeout(1200);
   ok('certificate only: the sign-in page has no name and password, only the certificate',
      await p.$eval('#signin-form', f => f.hidden) && /with a certificate only/.test(await p.textContent('body')) && !(await p.$('#krb-go')));
@@ -135,6 +137,11 @@ async function certIn(p) {
   await certIn(p);
   who = await signedIn(p);
   ok('... and the certificate signs in', who && who.name === 'falco', JSON.stringify(who));
+  await p.context().close();
+  p = await page(b, 'falco', 'en', 2);
+  await p.goto(URL); await p.waitForTimeout(5000);
+  who = await signedIn(p);
+  ok('certificate only, a new tab: the certificate tried by itself, signed in without a click (1.0.277)', who && who.name === 'falco', JSON.stringify(who));
   await p.context().close();
   execFileSync('otp', ['--set', 'admin_password_off=0']);
   await new Promise(r => setTimeout(r, 4000));

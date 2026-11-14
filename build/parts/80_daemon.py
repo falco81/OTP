@@ -1370,6 +1370,7 @@ class Daemon(object):
     def save_settings(self, changes, by='', node=None, drawn_by=None, keep_session=None):
         checked = {}
         was_2fa = bool(CONFIG.get('admin_2fa'))
+        was_pw_off = admin_password_off_now()
         # The page's boxes were drawn by one node and the save reached
         # another through the VIP address (1.0.110): otp1 took otp2's name
         # from a page otp2 had drawn. What belongs to one machine is saved
@@ -1425,6 +1426,10 @@ class Daemon(object):
             if key in SEALED_KEYS and checked[key]:
                 checked[key] = seal_secret(checked[key])
         hisec_guard_settings(self.store, checked)        # 1.0.168
+        # Nobody left without a way in (1.0.278), whatever the road to this save.
+        why_in = signin_ways_problem(self.store, checked)
+        if why_in:
+            raise BadSetting(why_in)
         # The balancer's port on the nodes clashes with nothing (1.0.262), the batch as saved
         others = None
         if many and any(k in checked for k in ('web_proxy', 'web_proxy_port', 'admin_cert',
@@ -1608,6 +1613,22 @@ class Daemon(object):
                                          'sign-in(s) to the pages ended' % gone, 'warn', who=by)
             except Exception as e:                      # noqa: BLE001
                 log('the sign-ins to the pages could not be ended: %s' % e, 'warn')
+        if not was_pw_off and admin_password_off_now():
+            # No password at all, now in effect (1.0.278): the sign-ins opened with a password end -
+            # they stayed whole for hours after. Windows' and a certificate's stay, and the saver's.
+            try:
+                ended = 0
+                for row in self.store.db.rows('SELECT id, data FROM sessions WHERE kind = ? AND id <> ?',
+                                              ('admin', int(keep_session or 0))):
+                    data = row.get('data')
+                    data = json_obj(bytes(data) if isinstance(data, memoryview) else data) or {}
+                    if data.get('how') not in ('Kerberos', 'certificate'):
+                        ended += self.store.db.run('DELETE FROM sessions WHERE id = ?', (row['id'],)) or 0
+                if ended:
+                    self.store.add_event('accounts', 'no password at all is in effect: %d sign-in(s) to the '
+                                         'pages made with a password ended' % ended, 'warn', who=by)
+            except Exception as e:                      # noqa: BLE001
+                log('the sign-ins made with a password could not be ended: %s' % e, 'warn')
         return {'message': ' '.join(['%d setting(s) saved.' % len(checked)] + said),
                 'saved': sorted(checked)}
 

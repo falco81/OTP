@@ -192,5 +192,8 @@ def _portal_sso_do(h):
         return {'key': tok, 'view': sso_view(h.store)}
     if act == 'forget':
         h.store.db.run("DELETE FROM meta WHERE k LIKE 'portal_sso:last:%'")
+        # Written down (1.0.278): the card's evidence went without a word.
+        h.store.add_event('settings', '%s cleared the last sign-ins by the load balancer' % s['name'],
+                          who=s['name'])
         return {'view': sso_view(h.store)}
     raise ApiError(400, 'no such thing to do')

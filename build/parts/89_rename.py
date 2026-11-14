@@ -33,7 +33,7 @@ def _pg_hba_rename(port, say):
     """'opt' as a database or an account in pg_hba.conf becomes 'otp'."""
     path = pg_admin('SHOW hba_file', port)
     try:
-        lines = Path(path).read_text().splitlines(True)
+        lines = pg_hba_read(path).splitlines(True)
     except OSError as e:
         say('pg_hba.conf could not be read (%s): look at it by hand' % e)
         return
@@ -57,8 +57,7 @@ def _pg_hba_rename(port, say):
                 changed += 1
         out.append(line)
     if changed:
-        shutil.copy2(path, path + '.before-otp')
-        Path(path).write_text(''.join(out))
+        pg_hba_write(path, ''.join(out), keep=path + '.before-otp')     # never through a link (1.0.278)
         pg_admin('SELECT pg_reload_conf()', port)
         say('pg_hba.conf: %d line(s) now name otp (the old one is %s.before-otp)'
             % (changed, path))
