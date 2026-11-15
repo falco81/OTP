@@ -41,12 +41,15 @@ watched session. A handshake that fails reaches nothing: the page asks once more
 443 (`?api=card-gone`), which hold or end only that same session.
 
 The state is kept with the session in the database: either node of a cluster answers a check, and a
-restart of the daemon forgets nothing. The server ends a watched session on its own too - the card out
-longer than the grace plus *late*, or no check for *late* + grace + max(interval, 30 s), *late* being
-three checks or 150 s, the longer (a browser checks a tab in the background about once a minute). Every
-end is in the events: `... was signed out: the card they signed in with was taken out` (`...was not put
-back in time`, `another certificate than the one signed in with was offered (the card was changed)`,
-`their page stopped checking the card they signed in with`).
+restart of the daemon forgets nothing. The server ends a watched session on its own too when the card
+has been out longer than the grace plus *late* (*late*: three checks or 150 s, the longer - a browser
+checks a tab in the background about once a minute). A session whose page has not checked for *late* +
+grace + max(interval, 30 s) is **held, not ended**: a page asleep (an iPad's screen locked, Safari in the
+background - iPadOS stops its pages entirely) is not a card taken out. Nothing of it is answered (HTTP
+423) until a check finds the card again - the page checks the moment it wakes (shown again, focused, the
+network back); no card then, and it goes as a card taken out. Every end is in the events: `... was signed
+out: the card they signed in with was taken out` (`...was not put back in time`, `another certificate
+than the one signed in with was offered (the card was changed)`).
 
 ### Kind to the card
 

@@ -1191,8 +1191,13 @@ def certlogin_desired(store):
     if CONFIG.get('admin_cert') and CONFIG.get('admin_directory'):
         pems = cert_cas(store)
         if pems:
-            return {'port': int(CONFIG.get('admin_cert_port') or 8443),
-                    'ca': ''.join(p.strip() + '\n' for p in pems)}
+            out = {'port': int(CONFIG.get('admin_cert_port') or 8443),
+                   'ca': ''.join(p.strip() + '\n' for p in pems)}
+            # The card watched (1.0.285): the port keeps no TLS session and no connection then. Only
+            # while it is on - off, the request (and nginx) stay as they were.
+            if card_mode() != 'off':
+                out['card'] = 1
+            return out
     try:
         if any(k.split('@', 1)[0] == 'admin_cert' for k in saved_keys(store)):
             return {'port': 0}

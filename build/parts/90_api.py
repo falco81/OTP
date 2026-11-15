@@ -347,6 +347,14 @@ class ApiHandler(BaseHTTPRequestHandler):
         # do that and nothing else.
         if mfa_pending(s, self.store) and getattr(self, 'route_path', '') not in MFA_ALLOWED:
             raise ApiError(401, 'the second step of signing in is not done yet')
+        # The card of a sign-in with a certificate (1.0.285): out too long - signed out; out within
+        # the grace - nothing answered but the card's own questions until it is back.
+        card = card_due(self, s)
+        if card == 'gone':
+            raise ApiError(401, 'signed out: the card was taken out', extra={'code': 'card'})
+        if card in ('out', 'stale') and getattr(self, 'route_path', '') not in CARD_ALLOWED:
+            raise ApiError(423, 'the card is out - put back the card you signed in with',
+                           extra={'code': 'card'})
         if acc.get('must_change') and getattr(self, 'route_path', '') not in MUST_CHANGE_ALLOWED:
             raise ApiError(403, 'change the password first')
         if ROLE_RANK.get(s['role'], 0) < ROLE_RANK[role]:
@@ -1359,7 +1367,7 @@ def _login(h):
     return admin_signed_in(h, ok)
 
 
-def admin_signed_in(h, ok, how=''):
+def admin_signed_in(h, ok, how='', extra=None):
     """The sign-in opened for an account proven by its password - or, `how` 'Kerberos'
     (1.0.274), by a ticket: the second step, when it is on, is asked just the same."""
     # The second step, when it is asked for (1.0.125): the sign-in is made,
@@ -1370,6 +1378,8 @@ def admin_signed_in(h, ok, how=''):
     data = {'mfa': stage} if stage else {'mfa_off': 1}
     if how:
         data['how'] = how
+    # The certificate's fingerprint (1.0.285): its card watched while the pages are open (admin_cert_card).
+    data.update(extra or {})
     token = h.store.session_new('admin', ok['name'], ok['role'], h.client_ip(),
                                 CONFIG.get('session_hours') or 12, data=data)
     h.store.set_account(ok['name'], last_in=time.time(), last_from=h.client_ip())
@@ -1534,11 +1544,17 @@ def _whoami(h):
         # is (a database or a package sent) refuse it.
         return {'who': {'name': acc['name'], 'role': '', 'display': acc.get('display') or '',
                         'mfa': stage}}
+    # The card of a sign-in with a certificate (1.0.285): ended - nobody; out - no role (the PHP pages'
+    # gates refuse it); the page told how to watch it (the PHP page lets the check's picture in by it).
+    card = card_due(h, s)
+    if card == 'gone':
+        return {'who': None}
     prefs = json_obj(acc.get('prefs')) or {}
     # The page is drawn with the person's own layout of the tables from the
     # first frame, rather than as it comes and then again.
     return {'idle_min': int(CONFIG.get('session_idle_min') or 120),
-            'who': {'name': acc['name'], 'role': acc['role'], 'source': acc.get('source'),
+            'who': {'name': acc['name'], 'role': '' if card in ('out', 'stale') else acc['role'],
+                    'card': card_conf(card), 'source': acc.get('source'),
                     'display': acc.get('display') or '', 'must_change': bool(
                         acc.get('must_change')), 'prefs': prefs,
                     'cols': h.store.user_cols(acc['name']),

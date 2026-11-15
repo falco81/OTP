@@ -1536,7 +1536,9 @@ def cert_view(store):
             'names': [{'for': n['for'], 'name': n['name']} for n in names],
             'ocsp': ocsp_mode(), 'ocsp_url': str(CONFIG.get('admin_cert_ocsp_url') or ''),
             'ocsp_url_ok': bool(ocsp_url_set()), 'crl_ldap': bool(_setting_on(CONFIG.get('admin_cert_crl_ldap'))),
-            'ocsp_answers': ocsp_rows}
+            'ocsp_answers': ocsp_rows,
+            # The card watched (1.0.285): a line of the card's facts.
+            'watch': card_mode(), 'watch_s': card_every(), 'watch_grace_s': card_grace()}
 
 
 def signin_last_way(store, what):

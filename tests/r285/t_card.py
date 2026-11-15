@@ -135,6 +135,7 @@ def settings(**kv):
 # ---- off: as before ----
 settings(admin_cert_card='off', admin_cert_card_s=15, admin_cert_card_grace_s=30)
 helper(lambda: 'alive' not in open(CONF).read())
+time.sleep(4)                      # nginx -s reload settled (its old workers gone)
 before = open(CONF).read()
 ok('off (the default): nginx on the port as before - nothing of the card', 'alive' not in before and
    'ssl_session_cache off' not in before and 'keepalive_timeout 0' not in before, before[:200])
@@ -155,10 +156,16 @@ conf = open(CONF).read()
 ok('nginx: no TLS session, no connection kept, cert-alive let through', 'ssl_session_cache off;' in conf and
    'ssl_session_tickets off;' in conf and 'keepalive_timeout 0;' in conf and 'cert-(login|check|alive)' in conf
    and 'shared:' not in conf, conf[:300])
-o = subprocess.run(['openssl', 's_client', '-connect', '127.0.0.1:8443', '-reconnect', '-cert', PKI + '/falco.pem',
-                    '-key', PKI + '/falco.key', '-tls1_2'], input='', capture_output=True, text=True, timeout=60).stdout
-ok('...openssl -reconnect: every handshake new, none taken up again (TLS 1.2)', o.count('Reused,') == 0 and o.count('New,') >= 5,
-   (o.count('Reused,'), o.count('New,')))
+# nginx -s reload is asynchronous: the old workers (with the default 'none' - an OpenSSL cache of one
+# session) take connections for a moment after it. Measured once nginx has settled, three times.
+time.sleep(4)
+reused = []
+for _ in range(3):
+    o = subprocess.run(['openssl', 's_client', '-connect', '127.0.0.1:8443', '-reconnect', '-cert', PKI + '/falco.pem',
+                        '-key', PKI + '/falco.key', '-tls1_2'], input='', capture_output=True, text=True, timeout=60).stdout
+    reused.append((o.count('Reused,'), o.count('New,')))
+    time.sleep(2)
+ok('...openssl -reconnect: every handshake new, none taken up again (TLS 1.2, three times)', all(r == 0 and n >= 6 for r, n in reused), reused)
 subprocess.run(['openssl', 's_client', '-connect', '127.0.0.1:8443', '-sess_out', '/tmp/claude-0/t_card.sess', '-tls1_3',
                 '-cert', PKI + '/falco.pem', '-key', PKI + '/falco.key'], input='GET / HTTP/1.0\r\n\r\n', capture_output=True, text=True, timeout=60)
 o2 = subprocess.run(['openssl', 's_client', '-connect', '127.0.0.1:8443', '-sess_in', '/tmp/claude-0/t_card.sess', '-tls1_3'],
@@ -166,7 +173,7 @@ o2 = subprocess.run(['openssl', 's_client', '-connect', '127.0.0.1:8443', '-sess
 ok('...TLS 1.3: no ticket to take it up again', 'Reused,' not in o2, re.findall(r'(New|Reused),[^\n]*', o2))
 st, me = falco.j('whoami')
 ok('...whoami: the page told how (signout, 5 s, grace 30, port 8443)', (me.get('who') or {}).get('card') ==
-   {'mode': 'signout', 'every': 5, 'grace': 30, 'port': 8443, 'out': False}, (me.get('who') or {}).get('card'))
+   {'mode': 'signout', 'every': 5, 'grace': 30, 'port': 8443, 'out': False, 'stale': False}, (me.get('who') or {}).get('card'))
 csp = page_csp(falco)
 ok('...the page\'s policy lets in pictures of the port, that one address only', "img-src 'self' data: https://127.0.0.1:8443;" in csp
    and "connect-src 'self';" in csp, csp)
@@ -231,12 +238,22 @@ falco.alive()
 st, got = falco.j('card-gone', {})
 ok('grace: card-gone - held, the time counted', got.get('gone') is False and 0 < got.get('grace_left', 0) <= 30, got)
 falco.alive()
-# the server's half: a page that stopped checking
+# the server's half: a page that stopped checking (asleep - a tablet locked): held, not ended
 falco.j('status')
 n = age('card_seen', 1000)
 st, got = falco.j('status')
-ok('the server\'s half: no check for long - signed out (401)', n and st == 401, (n, st))
-ok('...said: the page stopped checking', events('falco was signed out: their page stopped checking the card they signed in with'))
+ok('the server\'s half: no check for long - held: nothing answered (423), not signed out', n and st == 423 and got.get('code') == 'card', (n, st, got))
+st, me = falco.j('whoami')
+ok('...whoami: still falco, no role, the page told to check at once (stale)', (me.get('who') or {}).get('name') == 'falco' and
+   (me.get('who') or {}).get('role') == '' and ((me.get('who') or {}).get('card') or {}).get('stale') is True, me.get('who'))
+st, w, hd = falco.alive()
+ok('...the page wakes, its check finds the card: 1 px', (st, w) == (200, 1), (st, w))
+st, got = falco.j('status')
+ok('...answered again', st == 200, st)
+age('card_seen', 1000)
+st, w, hd = Browser(jar=falco.jar).alive()
+ok('...held, and the check finds no card: out (grace - 2 px)', (st, w) == (200, 2), (st, w))
+falco.alive()
 
 # ---- the ranges ----
 for k, v in (('admin_cert_card_s', 4), ('admin_cert_card_s', 301), ('admin_cert_card_grace_s', 4),

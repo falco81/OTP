@@ -1250,6 +1250,15 @@ function api(what, body, wait, ctl) {
         tired.data = data;
         throw tired;
       }
+      if (r.status === 423 && data && data.code === 'card') {
+        /* The card of a sign-in with a certificate is out (1.0.285): the page checks it at once. */
+        if (typeof certWatchNow === 'function') certWatchNow();
+        var locked = new Error(data.error || 'the card is out');
+        locked.status = 423;
+        locked.unreachable = true;
+        locked.data = data;
+        throw locked;
+      }
       if (!r.ok || data.ok === false) {
         var err = new Error(data.error || ('HTTP ' + r.status));
         err.status = r.status;

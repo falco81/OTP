@@ -10065,6 +10065,13 @@ if ($('tk-names')) {
     document.addEventListener(e, mark, {passive: true, capture: true});
   });
   api('whoami').then(function (d) { limit = (d.idle_min || 120) * 60000; }).catch(function () {});
+  /* The card watched (1.0.285): switched on while these pages were open - learnt within a minute. */
+  var cwAsked = Date.now();
+  setInterval(function () {
+    if (CW.conf || Date.now() - cwAsked < 55000) return;
+    cwAsked = Date.now();
+    api('whoami').then(function (d) { certWatchLater(d && d.who && d.who.card); }).catch(function () {});
+  }, 30000);
   setInterval(function () {
     var shared = 0;
     try { shared = Number(localStorage.getItem('otp.active')) || 0; } catch (e) {}
@@ -10075,6 +10082,199 @@ if ($('tk-names')) {
     }
   }, 30000);
 })();
+
+
+/* ---- The card watched (1.0.285) ------------------------------------------------
+   A sign-in made with a card, while Settings - Accounts - Signing in with a certificate - "When the card is
+   taken out" asks for it. Every few seconds a picture from the certificate's port - a new connection, so
+   the card has to sign it: 1 pixel wide, the card is there; 2, it is out and the session waits (grace);
+   none, it is out or the session is over. Out: signed out at once (signout), or a notice counting down
+   until it is back (grace). The server ends the session as well - this only makes it be seen at once.
+   Kind to the card: one check at a time, one for all the tabs of this browser (the others take its
+   answer), a check that waited for a window of the card's (its PIN, "insert the card") followed by a
+   longer pause - no window comes back again and again. */
+var CW = {conf: null, timer: null, out: 0, gen: 0, layer: null, busy: false, misses: 0, tick: null, n: null, ok: 0};
+var CW_SHARED = 'otp.card.check';
+function certWatchStart(conf) {
+  if (!conf || !conf.port || (conf.mode !== 'signout' && conf.mode !== 'grace')) return;
+  if (CW.conf) { CW.conf = conf; return; }
+  CW.conf = conf; CW.gen++;
+  if (conf.out) { CW.out = Date.now(); certWatchLayer(true); }
+  /* The first check soon: a card taken out while the page loaded is seen at once (and a session held
+     while its page slept is let go as soon as the card is found). */
+  certWatchNext(conf.out || conf.stale ? 300 : 1500);
+}
+/* Learnt later (switched on while the page was open): this page's policy does not let the check's
+   picture in yet - the page is loaded again (or asked to be, with changes not saved). */
+function certWatchLater(conf) {
+  if (!conf || CW.conf || !conf.port || (conf.mode !== 'signout' && conf.mode !== 'grace')) return;
+  if (ME && ME.card) { certWatchStart(conf); return; }
+  var unsaved = (typeof DIRTY === 'object' && DIRTY && Object.keys(DIRTY).length) ||
+                (typeof PENDING === 'object' && PENDING && Object.keys(PENDING).length);
+  if (!unsaved) location.reload();
+  else if (!CW.said) { CW.said = true; toast('The card you signed in with is watched from now on - save and reload the page.', 'warn'); }
+}
+function certWatchNow() { if (CW.conf && !CW.busy) certWatchNext(0); }
+function certWatchNext(ms) {
+  var g = CW.gen;
+  if (CW.timer) clearTimeout(CW.timer);
+  CW.timer = setTimeout(function () { if (g === CW.gen) certWatchCheck(); }, ms);
+}
+function certWatchShared() {
+  try { var v = JSON.parse(localStorage.getItem(CW_SHARED) || 'null'); return v && typeof v.t === 'number' ? v : null; } catch (e) { return null; }
+}
+function certWatchCheck() {
+  var c = CW.conf, g = CW.gen;
+  if (!c || CW.busy) return;
+  /* Another tab of this browser checked a moment ago and the card was there: its answer is this one's. */
+  var sh = certWatchShared();
+  if (sh && sh.w === 1 && !CW.out && Date.now() - sh.t < c.every * 600) {
+    certWatchNext(c.every * 1000 - (Date.now() - sh.t) + 200 + Math.random() * 800);
+    return;
+  }
+  var done = false, img = new Image(), to = null, began = Date.now();
+  CW.busy = true;
+  var fin = function (w) {
+    if (done) return;
+    done = true;
+    clearTimeout(to);
+    CW.busy = false;
+    img.onload = img.onerror = null;
+    if (g !== CW.gen) return;
+    try { localStorage.setItem(CW_SHARED, JSON.stringify({t: Date.now(), w: w})); } catch (e) { }
+    var took = Date.now() - began;
+    if (w === 1) { CW.misses = 0; certWatchIn(); return; }
+    if (w === 2) { CW.misses = 0; certWatchOut(took); return; }
+    /* No picture at all: the handshake failed (nothing to sign it with), or the session is over (403).
+       Once more after a moment - one lost connection is not a card taken out; then the pages are told
+       (the server holds or ends the sign-in, and says so in the events). */
+    CW.misses += 1;
+    if (CW.misses < 2 && !CW.out) { certWatchNext(1500); return; }
+    api('card-gone', {}).then(function (d) {
+      if (g !== CW.gen) return;
+      if (!d || !d.watched) { certWatchNext(c.every * 1000); return; }
+      if (d.gone) { certWatchEnd(CW.out ? 'late' : 'out'); return; }
+      certWatchOut(took);
+    }, function (e) {
+      if (g !== CW.gen) return;
+      /* The pages do not answer either: the network, not the card - asked again later. A sign-in the
+         pages no longer know is shown as signed out by whatever asks next. */
+      certWatchNext(Math.max(5000, c.every * 1000));
+    });
+  };
+  /* A check left without an answer for 20 s: counted as none (fail closed); the browser may still be
+     waiting on a window of the card's - no new check starts until this one is over. */
+  to = setTimeout(function () { fin(0); }, 20000);
+  img.onload = function () { fin(img.naturalWidth === 2 ? 2 : 1); };
+  img.onerror = function () { fin(0); };
+  img.src = 'https://' + location.hostname + ':' + c.port + '/admin/?api=cert-alive&r=' + Date.now().toString(36);
+}
+function certWatchIn() {
+  var c = CW.conf;
+  if (CW.out) {
+    CW.out = 0;
+    certWatchLayer(false);
+    toast('The card is back.', 'good');
+  }
+  certWatchNext(c.every * 1000);
+}
+function certWatchOut(took) {
+  var c = CW.conf;
+  if (c.mode === 'signout') { certWatchEnd('out'); return; }
+  if (!CW.out) CW.out = Date.now();
+  var left = c.grace - Math.floor((Date.now() - CW.out) / 1000);
+  if (left <= 0) { certWatchEnd('late'); return; }
+  certWatchLayer(true);
+  /* Asked again every 5 s; after a check that waited on a window of the card's, 10 s. */
+  certWatchNext(took > 4000 ? 10000 : 5000);
+}
+function certWatchLayer(on) {
+  if (!on) {
+    if (CW.tick) { clearInterval(CW.tick); CW.tick = null; }
+    if (CW.layer) {
+      CW.layer.remove(); CW.layer = null;
+      (CW.held || []).forEach(function (e) { e.inert = false; });
+      CW.held = [];
+    }
+    return;
+  }
+  if (!CW.layer) {
+    /* The notice (1.0.285, design B): the seconds left in a ring that empties as they go. */
+    var l = el('div', 'cw-layer');
+    l.id = 'cw-layer';
+    l.setAttribute('role', 'alertdialog');
+    l.setAttribute('aria-modal', 'true');
+    var box = el('div', 'cw-box');
+    var ring = el('div', 'cw-ring');
+    var R = 60, C = 2 * Math.PI * R;
+    ring.innerHTML = '<svg viewBox="0 0 132 132" aria-hidden="true"><circle class="cw-track" cx="66" cy="66" r="60"/>' +
+      '<circle class="cw-arc" cx="66" cy="66" r="60" stroke-dasharray="' + C.toFixed(2) + '" stroke-dashoffset="0"/></svg>';
+    var mid = el('div', 'cw-mid');
+    var n = noI18n(el('div', 'cw-n', ''));
+    n.id = 'cw-n';
+    mid.appendChild(n);
+    mid.appendChild(el('div', 'cw-unit', 'seconds'));
+    ring.appendChild(mid);
+    box.appendChild(ring);
+    box.appendChild(el('h3', '', 'Put the card back'));
+    box.appendChild(el('p', 'cw-p', 'The smart card or YubiKey was taken out, so this sign-in is locked. Put it back - the page goes on where you left off.'));
+    var until = el('div', 'cw-until', '');
+    until.id = 'cw-until';
+    box.appendChild(until);
+    var out = cmdButton('Sign out', 'out', 'danger');
+    out.id = 'cw-out';
+    out.onclick = function () { certWatchEnd('', true); };
+    box.appendChild(out);
+    l.appendChild(box);
+    /* Nothing behind it reachable - by the mouse or the keyboard. */
+    CW.held = [];
+    Array.prototype.forEach.call(document.body.children, function (e) {
+      if (!e.inert) { e.inert = true; CW.held.push(e); }
+    });
+    document.body.appendChild(l);
+    CW.layer = l; CW.n = n; CW.arc = ring.querySelector('.cw-arc'); CW.arcC = C; CW.until = until;
+    setTimeout(function () { try { out.focus(); } catch (e) { } }, 50);
+  }
+  var draw = function () {
+    if (!CW.conf || !CW.out) return;
+    var left = Math.max(0, CW.conf.grace - Math.floor((Date.now() - CW.out) / 1000));
+    CW.n.textContent = String(left);
+    CW.arc.setAttribute('stroke-dashoffset', (CW.arcC * (1 - left / Math.max(1, CW.conf.grace))).toFixed(2));
+    CW.until.textContent = 'Signed out in ' + left + ' s unless the card is back';
+    if (left <= 0) certWatchEnd('late');
+  };
+  draw();
+  if (!CW.tick) CW.tick = setInterval(draw, 1000);
+}
+function certWatchEnd(why, asked) {
+  if (!CW.conf) return;
+  CW.gen++; CW.conf = null;
+  if (CW.timer) clearTimeout(CW.timer);
+  if (CW.tick) { clearInterval(CW.tick); CW.tick = null; }
+  try {
+    sessionStorage.setItem('otp.krb.out', '1');
+    if (why) sessionStorage.setItem('otp.card.out', why);
+  } catch (e) { }
+  var go = function () { location.replace(location.pathname); };
+  api('logout', {}).then(go, go);
+}
+/* The page woken (a tablet unlocked, the browser brought back, the network back): checked at once - a
+   page asleep checks nothing, and the server holds the session until a check finds the card. */
+['visibilitychange', 'pageshow', 'focus', 'online'].forEach(function (ev) {
+  (ev === 'visibilitychange' ? document : window).addEventListener(ev, function () {
+    if (!document.hidden && CW.conf && !CW.busy) {
+      var sh = certWatchShared();
+      if (!sh || Date.now() - sh.t > 2000) certWatchNow();
+    }
+  });
+});
+/* Another tab saw the card out or the session over: this one checks at once. */
+window.addEventListener('storage', function (e) {
+  if (e.key !== CW_SHARED || !CW.conf) return;
+  var v = certWatchShared();
+  if (v && v.w !== 1) certWatchNow();
+});
+if (typeof ME !== 'undefined' && ME && ME.card) certWatchStart(ME.card);
 
 
 /* ---- upgrades and maintenance (1.0.37) ------------------------------------ */
@@ -20461,6 +20661,9 @@ function drawCertInto(host) {
      upn: 'the UPN alone'}[d.map] || d.map, 'admin_cert_map: ' + d.map],
    ['Revocation', certRevFlow(d), ''],
    ['Second step after it', d.mfa ? 'asked' : 'off', ''],
+   ['When the card is taken out', d.watch === 'signout' ? 'signed out at the next check (every ' + d.watch_s + ' s)'
+     : d.watch === 'grace' ? 'a notice, then signed out unless it is back within ' + d.watch_grace_s + ' s (checked every ' + d.watch_s + ' s)'
+     : 'nothing - the session goes on', 'admin_cert_card: ' + (d.watch || 'off')],
    ['By itself on the sign-in page', d.auto ? 'yes - at once, the form if it did not work' : 'no - a button under the form', ''],
    ['A password on the sign-in page', d.password_off ? 'not offered - only Windows or a certificate' : 'offered beside it', d.password_off ? 'root: otp --set admin_password_off=0' : '']].forEach(function (r) {
     facts.appendChild(el('span', 'k', r[0]));

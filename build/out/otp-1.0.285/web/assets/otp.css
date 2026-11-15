@@ -4052,3 +4052,20 @@ td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
 /* The box of the account with the people offered (1.0.284): its wrapper takes the row's width. */
 .creq-find > .qs-wrap{flex:1 1 auto;min-width:0}
 .creq-find > .qs-wrap input{width:100%}
+
+/* The card's notice (1.0.285; the kit "card-removal-watch", design B: the seconds in a ring). */
+.cw-layer{position:fixed;inset:0;z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px;
+  background:rgba(5,8,12,.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.cw-box{width:min(440px,calc(100vw - 32px));padding:30px 28px 26px;border:1px solid var(--line);border-radius:18px;
+  background:var(--panel);text-align:center;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.cw-ring{position:relative;width:150px;height:150px;margin:0 auto;display:flex;align-items:center;justify-content:center}
+.cw-ring svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.cw-track{fill:none;stroke:var(--line);stroke-width:7}
+.cw-arc{fill:none;stroke:var(--warn);stroke-width:7;stroke-linecap:round;transition:stroke-dashoffset .9s linear}
+.cw-mid{position:relative;display:flex;flex-direction:column;align-items:center}
+.cw-n{font-size:46px;font-weight:800;line-height:1;color:var(--warn);font-variant-numeric:tabular-nums}
+.cw-unit{font-size:13px;font-weight:600;color:var(--tx-dim);margin-top:3px}
+.cw-box h3{margin:16px 0 8px;font-size:21px;color:var(--tx)}
+.cw-p{margin:0 0 14px;color:var(--tx-dim);font-size:14px;line-height:1.55}
+.cw-until{color:var(--warn);font-weight:600;font-size:13.5px;margin:0 0 18px}
+@media (prefers-reduced-motion:reduce){.cw-arc{transition:none}}

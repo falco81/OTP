@@ -198,8 +198,9 @@ function certWatchStart(conf) {
   if (CW.conf) { CW.conf = conf; return; }
   CW.conf = conf; CW.gen++;
   if (conf.out) { CW.out = Date.now(); certWatchLayer(true); }
-  /* The first check soon: a card taken out while the page loaded is seen at once. */
-  certWatchNext(conf.out ? 300 : 1500);
+  /* The first check soon: a card taken out while the page loaded is seen at once (and a session held
+     while its page slept is let go as soon as the card is found). */
+  certWatchNext(conf.out || conf.stale ? 300 : 1500);
 }
 /* Learnt later (switched on while the page was open): this page's policy does not let the check's
    picture in yet - the page is loaded again (or asked to be, with changes not saved). */
@@ -355,6 +356,16 @@ function certWatchEnd(why, asked) {
   var go = function () { location.replace(location.pathname); };
   api('logout', {}).then(go, go);
 }
+/* The page woken (a tablet unlocked, the browser brought back, the network back): checked at once - a
+   page asleep checks nothing, and the server holds the session until a check finds the card. */
+['visibilitychange', 'pageshow', 'focus', 'online'].forEach(function (ev) {
+  (ev === 'visibilitychange' ? document : window).addEventListener(ev, function () {
+    if (!document.hidden && CW.conf && !CW.busy) {
+      var sh = certWatchShared();
+      if (!sh || Date.now() - sh.t > 2000) certWatchNow();
+    }
+  });
+});
 /* Another tab saw the card out or the session over: this one checks at once. */
 window.addEventListener('storage', function (e) {
   if (e.key !== CW_SHARED || !CW.conf) return;

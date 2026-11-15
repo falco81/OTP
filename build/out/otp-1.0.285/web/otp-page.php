@@ -17,7 +17,7 @@ if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME'])
     exit;
 }
 
-const OTP_VERSION = '1.0.284';
+const OTP_VERSION = '1.0.285';
 const OTP_LANG_CODE = '/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/';
 
 header('Cache-Control: no-cache, no-store, must-revalidate');
@@ -46,11 +46,17 @@ if (substr_count($otp_query, 'api=') > 1 || preg_match('/(^|&)[^=&]*%/', $otp_qu
 unset($otp_query);
 
 $nonce = base64_encode(random_bytes(16));
-header("Content-Security-Policy: default-src 'self'; "
-     . "script-src 'self' 'nonce-$nonce'; "
-     . "style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'nonce-$nonce'; "
-     . "img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; "
-     . "base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+/* The page's policy (1.0.285: one function - the administration sends it again, before any output, with
+   the address of the certificate's port for pictures when the card of the sign-in is watched). */
+function otp_csp(string $nonce, string $img_also = ''): void
+{
+    header("Content-Security-Policy: default-src 'self'; "
+         . "script-src 'self' 'nonce-$nonce'; "
+         . "style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'nonce-$nonce'; "
+         . "img-src 'self' data:" . ($img_also !== '' ? ' ' . $img_also : '') . "; connect-src 'self'; font-src 'self'; object-src 'none'; "
+         . "base-uri 'none'; form-action 'self'; frame-ancestors 'none'", true);
+}
+otp_csp($nonce);
 
 function h($value): string
 {

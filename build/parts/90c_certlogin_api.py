@@ -168,7 +168,179 @@ def _auth_cert(h):
         raise ApiError(401, 'the account %s is switched off here' % upn, extra={'code': 'certificate'})
     h.store.add_event('sign-ins', '%s: the certificate %s%s' % (ok['name'], f['subject'][:160], tail),
                       who=ok['name'])
-    return admin_signed_in(h, ok, how='certificate')
+    # The certificate's fingerprint kept with the sign-in (1.0.285) - never the certificate: its card is
+    # watched by it while admin_cert_card asks.
+    return admin_signed_in(h, ok, how='certificate', extra={'card': cert_sha(pem)})
+
+
+# ---- The card of a sign-in with a certificate (1.0.285) ------------------------------------
+# A browser has no event for "the smart card was taken out"; the only sure sign is that the card can no
+# longer sign. The open page loads a picture from the certificate's port every admin_cert_card_s seconds:
+# a new TCP and TLS connection (no session kept, no keep-alive there while this is on), whose handshake
+# only the card can sign. PHP hands the certificate that came ('' for none) and the session's cookie to
+# /api/auth/card: the same fingerprint - the card is in; another - the session ends at once; none -
+# signout: ends, grace: counted, ended past the grace. A handshake that fails reaches nothing here: the
+# page then says so itself (/api/auth/cardgone). The state is kept in the sign-in's row of the database
+# - either node of a cluster answers the check, a restart of the daemon forgets nothing - and the
+# server holds a watched sign-in whose page stopped checking (card_due, on every question) until a check
+# finds the card again.
+CARD_ALLOWED = ('/api/auth/logout', '/api/auth/whoami', '/api/auth/card', '/api/auth/cardgone')
+
+
+def cert_sha(pem):
+    """The SHA-256 of a certificate's DER - '' when it is not one."""
+    try:
+        return hashlib.sha256(cert_der(pem)).hexdigest()
+    except Exception:                                   # noqa: BLE001
+        return ''
+
+
+def card_mode():
+    m = str(CONFIG.get('admin_cert_card') or 'off')
+    return m if m in ('signout', 'grace') and CONFIG.get('admin_cert') else 'off'
+
+
+def _card_int(key, lo, hi, dflt):
+    try:
+        return max(lo, min(hi, int(CONFIG.get(key) or dflt)))
+    except (TypeError, ValueError):
+        return dflt
+
+
+def card_every():
+    return _card_int('admin_cert_card_s', 5, 300, 15)
+
+
+def card_grace():
+    return _card_int('admin_cert_card_grace_s', 5, 600, 30)
+
+
+def card_late():
+    """How late a check may be: a tab in the background is let check about once a minute."""
+    return max(3 * card_every(), 150)
+
+
+def card_bound(s):
+    return card_mode() != 'off' and bool(odict((s or {}).get('data')).get('card'))
+
+
+def card_conf(state):
+    """What the page is to do: None, or {mode, every, grace, port, out}."""
+    if not state:
+        return None
+    return {'mode': card_mode(), 'every': card_every(), 'grace': card_grace(),
+            'port': int(CONFIG.get('admin_cert_port') or 8443), 'out': state == 'out', 'stale': state == 'stale'}
+
+
+def card_end(h, s, why):
+    """The watched sign-in `s` ended, said in the events with why."""
+    who = s.get('name') or 'somebody'
+    h.store.db.run('DELETE FROM sessions WHERE id = ?', (s['id'],))
+    h.store.add_event('sign-ins', '%s was signed out: %s' % (who, why), 'warn', who=who)
+    return 'gone'
+
+
+def card_out(h, s, why):
+    """No card: signout - the sign-in ends; grace - the time out is counted ('out'), past it 'gone'."""
+    d = s['data']
+    t = time.time()
+    if card_mode() == 'signout':
+        return card_end(h, s, why)
+    if not d.get('card_out'):
+        d['card_out'] = t
+        h.store.session_merge(s['id'], {'card_out': t})
+        h.store.add_event('sign-ins', '%s: the card they signed in with is out - the session waits %d s for it'
+                          % (s.get('name') or '?', card_grace()), who=s.get('name') or '')
+    if t - fnum(d['card_out']) >= card_grace():
+        return card_end(h, s, 'the card they signed in with was not put back in time')
+    return 'out'
+
+
+def card_due(h, s):
+    """The server's half, on every question of a sign-in: None (not watched), 'in', 'out' (grace) or
+    'gone' (ended just now) - the card out longer than allowed, or its page no longer checking."""
+    if not card_bound(s):
+        return None
+    d = s['data']
+    t = time.time()
+    seen = fnum(d.get('card_seen'))
+    if not seen:
+        # Watched from now (switched on after the sign-in was made, or its first question).
+        d['card_seen'] = t
+        h.store.session_merge(s['id'], {'card_seen': t})
+        return 'in'
+    grace = card_grace() if card_mode() == 'grace' else 0
+    out = fnum(d.get('card_out'))
+    if out and card_mode() == 'signout':
+        return card_end(h, s, 'the card they signed in with was taken out')
+    if out and t - out >= grace + card_late():
+        return card_end(h, s, 'the card they signed in with was not put back in time')
+    if out:
+        return 'out'
+    if t - seen >= card_late() + grace + max(card_every(), 30):
+        # No check for long - a page asleep (a tablet's screen locked, the browser in the background
+        # stops its pages) is not a card taken out: nothing of the session is answered until a check
+        # finds the card again (the page checks the moment it wakes); a card not there then ends it.
+        return 'stale'
+    return 'in'
+
+
+def _card_session(h):
+    token = str(h.headers.get('X-Otp-Session') or '')
+    if not token:
+        return None
+    # Not touched: a check is not somebody using the pages (the idle time goes on).
+    return h.store.session_get(token, 'admin', int(CONFIG.get('session_idle_min') or 120) * 60, touch=False)
+
+
+@route('POST', '/api/auth/card')
+def _auth_card(h):
+    """One check, from the certificate's port: {watched, alive, gone, grace_left}."""
+    s = _card_session(h)
+    if not s:
+        return {'watched': False, 'alive': False, 'gone': True}
+    if not card_bound(s):
+        return {'watched': False, 'alive': True, 'gone': False}
+    d = s['data']
+    pem = str(h.body().get('cert') or '')
+    fp = cert_sha(pem) if pem else ''
+    if fp and fp != d.get('card'):
+        card_end(h, s, 'another certificate than the one signed in with was offered (the card was changed)')
+        return {'watched': True, 'alive': False, 'gone': True}
+    if not fp:
+        st = card_out(h, s, 'the card they signed in with was taken out')
+        if st == 'gone':
+            return {'watched': True, 'alive': False, 'gone': True}
+        return {'watched': True, 'alive': False, 'gone': False,
+                'grace_left': max(0, int(card_grace() - (time.time() - fnum(d.get('card_out')))))}
+    st = card_due(h, s)
+    if st == 'gone':
+        return {'watched': True, 'alive': False, 'gone': True}
+    t = time.time()
+    ch = {}
+    if d.get('card_out'):
+        ch['card_out'] = None
+        h.store.add_event('sign-ins', '%s: the card they signed in with is back' % s.get('name'), who=s.get('name') or '')
+    if t - fnum(d.get('card_seen')) >= 20:
+        ch['card_seen'] = t
+    if ch:
+        h.store.session_merge(s['id'], ch)
+    return {'watched': True, 'alive': True, 'gone': False}
+
+
+@route('POST', '/api/auth/cardgone')
+def _auth_cardgone(h):
+    """The page's picture got no answer at all, twice, while these pages answer: the handshake failed -
+    nothing to sign it with. It only ever ends or holds its own sign-in."""
+    s = _card_session(h)
+    if not s:
+        raise ApiError(401, 'not signed in, or the sign-in has run out')
+    if not card_bound(s):
+        return {'watched': False, 'gone': False}
+    st = card_out(h, s, 'the card they signed in with was taken out')
+    return {'watched': True, 'gone': st == 'gone',
+            'grace_left': max(0, int(card_grace() - (time.time() - fnum(s['data'].get('card_out')))))
+            if st != 'gone' else 0}
 
 
 @route('GET', '/api/certlogin')

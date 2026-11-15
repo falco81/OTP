@@ -89,7 +89,7 @@ edit('90_api.py', [(
         card = card_due(self, s)
         if card == 'gone':
             raise ApiError(401, 'signed out: the card was taken out', extra={'code': 'card'})
-        if card == 'out' and getattr(self, 'route_path', '') not in CARD_ALLOWED:
+        if card in ('out', 'stale') and getattr(self, 'route_path', '') not in CARD_ALLOWED:
             raise ApiError(423, 'the card is out - put back the card you signed in with',
                            extra={'code': 'card'})
         if acc.get('must_change') and getattr(self, 'route_path', '') not in MUST_CHANGE_ALLOWED:
@@ -106,7 +106,7 @@ edit('90_api.py', [(
         return {'who': None}
     prefs = json_obj(acc.get('prefs')) or {}"""), (
 """            'who': {'name': acc['name'], 'role': acc['role'], 'source': acc.get('source'),""",
-"""            'who': {'name': acc['name'], 'role': '' if card == 'out' else acc['role'],
+"""            'who': {'name': acc['name'], 'role': '' if card in ('out', 'stale') else acc['role'],
                     'card': card_conf(card), 'source': acc.get('source'),""")])
 
 edit('88w_web.py', [(
@@ -150,7 +150,8 @@ edit('90c_certlogin_api.py', [(
 # signout: ends, grace: counted, ended past the grace. A handshake that fails reaches nothing here: the
 # page then says so itself (/api/auth/cardgone). The state is kept in the sign-in's row of the database
 # - either node of a cluster answers the check, a restart of the daemon forgets nothing - and the
-# server ends a watched sign-in whose page stopped checking (card_due, on every question).
+# server holds a watched sign-in whose page stopped checking (card_due, on every question) until a check
+# finds the card again.
 CARD_ALLOWED = ('/api/auth/logout', '/api/auth/whoami', '/api/auth/card', '/api/auth/cardgone')
 
 
@@ -196,7 +197,7 @@ def card_conf(state):
     if not state:
         return None
     return {'mode': card_mode(), 'every': card_every(), 'grace': card_grace(),
-            'port': int(CONFIG.get('admin_cert_port') or 8443), 'out': state == 'out'}
+            'port': int(CONFIG.get('admin_cert_port') or 8443), 'out': state == 'out', 'stale': state == 'stale'}
 
 
 def card_end(h, s, why):
@@ -242,9 +243,14 @@ def card_due(h, s):
         return card_end(h, s, 'the card they signed in with was taken out')
     if out and t - out >= grace + card_late():
         return card_end(h, s, 'the card they signed in with was not put back in time')
+    if out:
+        return 'out'
     if t - seen >= card_late() + grace + max(card_every(), 30):
-        return card_end(h, s, 'their page stopped checking the card they signed in with')
-    return 'out' if out else 'in'
+        # No check for long - a page asleep (a tablet's screen locked, the browser in the background
+        # stops its pages) is not a card taken out: nothing of the session is answered until a check
+        # finds the card again (the page checks the moment it wakes); a card not there then ends it.
+        return 'stale'
+    return 'in'
 
 
 def _card_session(h):
