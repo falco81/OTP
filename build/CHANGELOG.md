@@ -4,6 +4,19 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.279 — 15 November 2026
+
+Added
+- **OCSP for the sign-in with a certificate, as the ocsp-ldap-kit says** - *Ask an OCSP responder* (`admin_cert_ocsp`), **off by default**: `first` (the responder - AD CS's *Online Responder* - and the certificate's CRL when it does not answer), `only` (no answer, no sign-in), `both` (the responder and the CRL, both must say good). The person's certificate and every authority above it but the root, each asked of its own issuer's responder (its *Authority Information Access*) or of **one responder for all** (`admin_cert_ocsp_url`, for certificates issued before the responder was there - refused when saved unless it is an http address a CRL could be fetched from). Asked only for a certificate whose chain is already good, over http with the CRLs' guards (every address checked, the connection made to it, never through the proxy, no redirect, 1 MB and 15 s); the answer checked by openssl against the authorities put in alone (signed by the authority or by a responder certificate it issued with OCSP Signing; only openssl's own words read - a forged, unsigned or out-of-date answer is no answer); kept ten minutes at most, the last good one used until its next update while the responder does not answer, a responder that gave no answer not asked again for a minute.
+- **An authority renewed with a new key under the same name** (as AD CS does): the one whose key signed the certificate (its *Authority Key Identifier*, else openssl's check of the signature) is the one asked, and the one above it in the chain. An authority above that names no responder is held to its CRL in every OCSP mode, even with CRLs off.
+- **CRLs from the directory** (`admin_cert_crl_ldap`, off by default): the `ldap:///...CN=CDP,CN=Public Key Services,...` address AD CS writes into its certificates is read too, after the http ones, **with the connection of the directory set for administrators** - never the host written in the address; only a CDP object of the configuration's Public Key Services, base scope, only its `certificateRevocationList` / `deltaRevocationList`, kept as its bytes.
+- **On the card**: the facts say how revocation is checked as steps (*OCSP → no answer → CRL → none to be had → no sign-in*); **Online status (OCSP)** - a row for each answer kept on every node (certificate, issuer, status: good / last answer kept / run out / unknown / revoked / no answer, next update, serial, when asked), a row opens to its details and each node's answer; **Ask again** and **Clear** asked of every node (a full administrator only, written to the events); a CRL read from the directory has an **LDAP** tag and its authority's name in the CRL table.
+- `otp --cert-ocsp [--json]`, `--cert-ocsp-fetch [KEY]`, `--cert-ocsp-clear [KEY]` (asks; `--yes`).
+- docs/admin-certificate.md: *OCSP and CRLs from the directory* - the modes, the guards and what to set up in AD CS.
+
+Fixed
+- A CRL fetched again (*Fetch now*) is no longer put back over by a fetch that started before it.
+
 ## 1.0.278 — 14 November 2026
 
 Three rounds of looking for bugs and security problems through the whole application; what they found.

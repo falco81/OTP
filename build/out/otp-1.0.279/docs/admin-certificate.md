@@ -111,6 +111,85 @@ otp --cert-crl-fetch [URL]     Fetch now - every CRL, or one - on every node; wa
 otp --cert-crl-clear [URL]     Clear - one, or all (asks; --yes) - on every node
 ```
 
+## OCSP and CRLs from the directory
+
+Two settings on the card, both **off by default** - with them off, revocation is checked by the CRLs
+alone, exactly as before (1.0.279).
+
+### Ask an OCSP responder (`admin_cert_ocsp`)
+
+| Mode | The responder says good | revoked / unknown | no answer | names no responder |
+|---|---|---|---|---|
+| `off` | - | - | - | the CRLs, as before |
+| `first` | taken | refused | its **CRL** (refused when CRLs are off) | its CRL |
+| `only` | taken | refused | **refused** | the person's certificate: **refused**; an authority above: its CRL |
+| `both` | then its **CRL** too | refused | refused | its CRL |
+
+- **The certificate and every authority above it but the root**, each asked of its own issuer's
+  responder: the OCSP address in its *Authority Information Access* (up to two http addresses, tried
+  in turn) - or **one responder for all** (`admin_cert_ocsp_url`), for certificates issued before the
+  responder was there. That setting is refused unless it is an http address a CRL could be fetched
+  from.
+- **An authority above that names no responder** (an issuing authority under an offline root seldom
+  does) is held to its CRL in every mode, even with CRLs off; one that names no CRL either is not
+  checked, as in 1.0.278.
+- **An authority renewed with a new key under the same name** (as AD CS does): the one whose key
+  signed the certificate (its *Authority Key Identifier*) is the one asked, and the one above it in
+  the chain.
+- **Asked only for a certificate whose chain is already good** - over http with the guards of a CRL:
+  every address of the name checked (no loopback, link-local, metadata, multicast or reserved
+  address), the connection made to the address checked, never through the proxy, no redirect,
+  1 MB and 15 s at most. The request has no nonce (as Windows asks).
+- **Checked by openssl against the authorities put in alone** (never the system's store): signed by
+  the authority, or by a responder certificate it issued with *OCSP Signing*. Only openssl's own
+  words are read - nothing the answer carries (a responder's name, a certificate's comment) is taken
+  for them. A forged, unsigned or out-of-date answer is no answer.
+- **Ten minutes at most**: an answer is used for 600 s, or until its next update when that is sooner.
+  A responder that gave no answer is not asked again for a minute, whoever's certificate; while it
+  does not answer, its last **good** answer is used until its next update.
+- **The person is told little** (*the certificate cannot be checked for revocation just now*,
+  *revoked*); which responder did not answer, and why, is in **Events**.
+
+### CRLs from the directory (`admin_cert_crl_ldap`)
+
+The `ldap:///CN=<CA>,CN=<server>,CN=CDP,CN=Public Key Services,CN=Services,CN=Configuration,DC=...`
+address AD CS writes into its certificates is read too, after up to three http ones - **with the
+connection of the directory set for administrators**, never the host written in the address. Only a
+`cRLDistributionPoint` object under the configuration's Public Key Services, base scope, and only its
+`certificateRevocationList` / `deltaRevocationList`. The same rules as over http: ten minutes, the
+last good one until its next update, openssl's check, no CRL no sign-in. With the setting off, a
+certificate whose only CRL is in the directory is refused (*names no CRL over http*).
+
+### On the card
+
+- **Revocation** in the facts shows the order as steps: *OCSP → no answer → CRL → none to be had →
+  no sign-in* (blue OCSP, green CRL, red the end).
+- **Online status (OCSP)**: a row for each answer kept on every node - the certificate, its issuer,
+  the status (*good*, *last answer kept*, *run out*, *unknown*, *revoked*, *no answer*), the next
+  update, the serial and when it was asked. A row opens (click, Enter, Space) to its details - signed
+  by, this and next update, size, the last error, the responder's address and each node's answer.
+- **Ask again** and **Clear all** (and each row's buttons) are asked of every node, by a full
+  administrator only, and written to the events.
+- A CRL read from the directory has an **LDAP** tag and its authority's name in the CRL table; its
+  details say *Read from: the directory (LDAP)* and show the whole address.
+
+```
+otp --cert-ocsp [--json]          the answers kept: certificate, status, responder, dates, errors
+otp --cert-ocsp-fetch [KEY]       ask every responder again (or the one of KEY); exit 1 if one did not answer
+otp --cert-ocsp-clear [KEY]       forget them (asks first; --yes)
+```
+
+### AD CS
+
+- **OCSP**: add the *Online Responder* role; issue it an *OCSP Response Signing* certificate; add a
+  *Revocation Configuration* for the issuing authority (and one for the root, or use `first`); in the
+  authority's *Extensions* - *Authority Information Access*, add `http://<responder>/ocsp` with
+  *Include in the online certificate status protocol (OCSP) extension*. Certificates issued before
+  that name no responder: set *OCSP responder of its own*, or use `first`.
+- **LDAP CDPs** are AD CS's default; any domain account may read the configuration partition.
+- **After revoking a lost card**: the Online Responder picks it up at its next CRL refresh - then
+  *Ask again*; for CRLs, `certutil -CRL`, then *Fetch now*.
+
 ## On the sign-in page
 
 **Sign in with a certificate** below the form: the browser goes to `https://<name>:8443/admin/`,

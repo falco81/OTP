@@ -67,3 +67,18 @@ P279 = {
     '{0} of {1} answered': 'odpovědělo {0} z {1}',
     'the OCSP responder at {0} gave no answer ({1})': 'OCSP respondér na {0} neodpověděl ({1})',
 }
+
+S279.update({
+    'Asked at a sign-in, at most every ten minutes - over http, by each node itself, never through the proxy; the answer is signed by the authority or a responder it named, and checked by openssl against the authorities put in. A row opens to its details and each node’s answer.':
+        'Ptá se při přihlášení, nejvýš jednou za deset minut – přes http, každý uzel sám, nikdy přes proxy; odpověď podepisuje autorita nebo respondér, kterého určila, a ověřuje ji openssl proti vloženým autoritám. Řádek se rozbalí na podrobnosti a odpověď každého uzlu.',
+    'CRLs are read from the directory too (LDAP), after the http ones - with the connection of the directory set for administrators, never the host written in the address.':
+        'CRL se čtou i z adresáře (LDAP), po těch přes http – spojením adresáře nastaveného pro administrátory, nikdy hostitelem zapsaným v adrese.',
+    'Clear this answer on every node - asked again at the next sign-in': 'Smazat tuto odpověď na všech uzlech – při dalším přihlášení se zeptá znovu',
+    'Every responder asked again now - on every node, for every certificate it answered for. One that does not answer changes nothing that lets anybody in.':
+        'Zeptat se teď znovu každého respondéru – na všech uzlech, za každý certifikát, za který odpověděl. Ten, který neodpoví, nezmění nic, co by někoho pustilo dovnitř.',
+    'Forget the OCSP answers kept on every node: the next sign-in asks again.': 'Zapomenout odpovědi OCSP uložené na všech uzlech: další přihlášení se zeptá znovu.',
+    'http, by each node itself': 'http, každý uzel sám',
+    'the directory': 'adresář',
+    'Read from': 'Načteno z',
+    'the directory (LDAP), with its connection above': 'adresář (LDAP), jeho spojením uvedeným výše',
+})
