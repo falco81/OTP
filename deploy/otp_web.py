@@ -639,7 +639,8 @@ def certlogin_checked(cl):
     blocks = re.findall(r'-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----', ca)
     if not blocks or len(blocks) > 20 or len(ca) > 200000:
         raise Refused('certlogin: the authorities are not certificates (PEM), 20 at most')
-    return {'port': port, 'ca': ''.join(b.strip() + '\n' for b in blocks)}
+    # The card watched (1.0.285): the port keeps no TLS session then.
+    return {'port': port, 'ca': ''.join(b.strip() + '\n' for b in blocks), 'card': bool(cl.get('card'))}
 
 
 CERT_HEAD = ('# otp: signing in to the administration with a certificate (1.0.275) - nginx asks for a\n'
@@ -651,7 +652,7 @@ CERT_DROP = ('client_max_body_size', 'client_body_timeout', 'fastcgi_request_buf
              'fastcgi_read_timeout')
 
 
-def certlogin_server(block, port, ca_path):
+def certlogin_server(block, port, ca_path, card=False):
     """One server { } of the certificate's port, made from an HTTPS server of otp's (this node's,
     or the VIP address's): its names, TLS and headers, the administration's location as it is there
     (who may reach it, the limits) - asking for a certificate, handing it to the page, and only
@@ -677,7 +678,7 @@ def certlogin_server(block, port, ca_path):
             continue
         inner.append('        ' + k)
     inner += ['        # only the sign-in with a certificate, and its try',
-              '        if ($arg_api !~ "^cert-(login|check)$") { return 404; }',
+              '        if ($arg_api !~ "^cert-(login|check%s)$") { return 404; }' % ('|alive' if card else ''),
               '        fastcgi_param  OTP_CERT_PORT 1;',
               '        fastcgi_param  SSL_CLIENT_CERT $ssl_client_escaped_cert;',
               '        fastcgi_param  SSL_CLIENT_VERIFY $ssl_client_verify;']
@@ -691,7 +692,14 @@ def certlogin_server(block, port, ca_path):
             listens.append(line)
     if not listens:
         listens = ['    listen %d ssl;' % port]
-    out = ['server {'] + listens + ['    server_name %s;' % names] + keep
+    out = ['server {'] + listens + ['    server_name %s;' % names]
+    if card:
+        # The card watched (1.0.285, admin_cert_card): every check a handshake of its own, which only the
+        # card can sign - no TLS session taken up again, no connection kept open. Off: as before.
+        out += [k for k in keep if not k.strip().startswith('ssl_session_')]
+        out += ['    ssl_session_cache off;', '    ssl_session_tickets off;', '    keepalive_timeout 0;']
+    else:
+        out += keep
     # A certificate nginx itself refuses (run out, not for a client): the page says why - not
     # nginx's own "400 The SSL certificate error".
     fail = [x for x in inner if 'arg_api' not in x and 'only the sign-in' not in x] + \
@@ -1417,9 +1425,9 @@ def nginx_part(r, last):
         cert_look = cert_gone = 0
         cert_gone_hosts = None
         if cl is not None and cl.get('port'):
-            text = CERT_HEAD + certlogin_server(block, int(cl['port']), CERT_CA_PATH)
+            text = CERT_HEAD + certlogin_server(block, int(cl['port']), CERT_CA_PATH, cl.get('card'))
             if vip_block:
-                text += certlogin_server(vip_block, int(cl['port']), CERT_CA_PATH)
+                text += certlogin_server(vip_block, int(cl['port']), CERT_CA_PATH, cl.get('card'))
             ca_now = snap.get(CERT_CA_PATH)
             if ca_now is None or ca_now[0].decode() != cl['ca']:
                 write_root(CERT_CA_PATH, cl['ca'], 0o644)

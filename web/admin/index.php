@@ -57,8 +57,34 @@ function otp_cert_back(string $said = ''): void
 function otp_cert_port(): void
 {
     $what = (string) ($_GET['api'] ?? '');
-    if ($_SERVER['REQUEST_METHOD'] !== 'GET' || !in_array($what, ['cert-login', 'cert-check'], true)) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET' || !in_array($what, ['cert-login', 'cert-check', 'cert-alive'], true)) {
         http_response_code(404);
+        exit;
+    }
+    if ($what === 'cert-alive') {
+        /* The card watched (1.0.285): the signed-in page loads a picture from here every few seconds - a
+           new connection, whose handshake only the card can sign. Whatever certificate came (none: the
+           card is out) goes to the daemon with the session's cookie; the answer is a picture 1 pixel wide
+           (the card is there), 2 wide (it is out, the session waits) or none - 403 (the session is over).
+           No session, no question asked. A picture: no CORS, nothing for another site to read. */
+        header('Cache-Control: no-store');
+        $pem = ($_SERVER['OTP_CERT_FAIL'] ?? '') === '1' ? '' : rawurldecode((string) ($_SERVER['SSL_CLIENT_CERT'] ?? ''));
+        if (strlen($pem) > 20000) {
+            $pem = '';
+        }
+        $d = null;
+        if (otp_session() !== '') {
+            [$status, $body] = otp_call('/api/auth/card', 'POST', ['cert' => $pem], 10.0);
+            $d = $status === 200 ? json_decode((string) $body, true) : null;
+        }
+        if (is_array($d) && empty($d['gone'])) {
+            header('Content-Type: image/gif');
+            echo base64_decode(!empty($d['alive'])
+                ? 'R0lGODlhAQABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAABAAEAAAgEAAEEBAA7'
+                : 'R0lGODlhAgABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAACAAEAAAgFAAEACAgAOw==');
+            exit;
+        }
+        http_response_code(403);
         exit;
     }
     $pem = rawurldecode((string) ($_SERVER['SSL_CLIENT_CERT'] ?? ''));
@@ -542,6 +568,7 @@ if (isset($_GET['api'])) {
         'after' => '/api/after',
         'kerberos' => '/api/kerberos',
         'certlogin' => '/api/certlogin',
+        'card-gone' => '/api/auth/cardgone',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -571,6 +598,18 @@ $me      = otp_whoami();
    sign-in page, asking for it - nothing of the pages yet. */
 $mfa     = (is_array($me) && !empty($me['mfa'])) ? (string) $me['mfa'] : '';
 if ($mfa !== '') { $me = null; }
+/* The card watched (1.0.285): its check is a picture from the certificate's port, which this page's
+   policy lets in by that one address - only for a sign-in that is watched, sent again before anything of
+   the page is. The name is the one this page was reached by (as the picture's). */
+if (is_array($me) && is_array($me['card'] ?? null)) {
+    $cwp = (int) ($me['card']['port'] ?? 0);
+    $cwh = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
+    if ($cwp >= 1025 && $cwp <= 65535 && preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])\z/', $cwh)) {
+        otp_csp($nonce, 'https://' . $cwh . ':' . $cwp);
+    } else {
+        $me['card'] = null;
+    }
+}
 $health  = otp_get('/api/health', 5.0);
 $alive   = is_array($health);
 $token_there = file_exists(OTP_TOKEN);
@@ -831,6 +870,22 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     certAuto = !!(kb && $('cert-go') && !kb.hidden && kb.dataset.certAuto === '1' && !$('mfa-box').dataset.stage
                   && !certRefused && !sessionStorage.getItem('otp.cert.tried') && !sessionStorage.getItem('otp.krb.out'));
   } catch (e) { certAuto = false; }
+  /* Signed out because of the card (1.0.285): said once, by a word of this tab's own - never a text of
+     the address - and nothing tried by itself (otp.krb.out), so the browser's certificate chooser does
+     not open again on its own. */
+  try {
+    var cw = sessionStorage.getItem('otp.card.out');
+    if (cw) {
+      sessionStorage.removeItem('otp.card.out');
+      var cws = $('krb-said') || $('in-said');
+      if (cws) {
+        cws.className = 'said bad';
+        cws.textContent = cw === 'late' ? 'Signed out: the card you signed in with was not put back in time.'
+          : cw === 'other' ? 'Signed out: another card than the one you signed in with was offered.'
+          : 'Signed out: the card you signed in with was taken out.';
+      }
+    }
+  } catch (e) { }
   if ($('mfa-box').dataset.stage) mfaStep();
   else if (krbAuto) krbTry(true);
   else if (certAuto) certGo();
