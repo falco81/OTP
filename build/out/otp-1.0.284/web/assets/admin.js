@@ -20625,13 +20625,19 @@ function certRequestWin(name) {
     var row = el('div', 'creq-find');
     inp = textBox(name || '', 'jnovak, CORP\\jnovak or jnovak@corp.example', 'mono');
     inp.id = 'creq-name';
-    inp.onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); find(); } };
     go = cmdButton('Find', 'search', 'primary');
     go.id = 'creq-find';
     go.onclick = find;
     row.appendChild(inp);
     row.appendChild(go);
     body.appendChild(row);
+    /* The people of the directory offered while a name is typed (1.0.284) - the box of a token's "For":
+       one picked is looked up at once. Put in once the box is in the page (its list goes beside it). */
+    personSuggest(inp, {directory: (CERTL.d && CERTL.d.directory) || '', picked: function () { setTimeout(find, 0); }});
+    inp.addEventListener('keydown', function (ev) {
+      /* Enter takes what the list offers first, when an item of it is chosen; else it looks the name up. */
+      if (ev.key === 'Enter' && !ev.defaultPrevented) { ev.preventDefault(); find(); }
+    });
     out = el('div', 'creq-out');
     body.appendChild(out);
     setTimeout(function () { inp.focus(); }, 60);

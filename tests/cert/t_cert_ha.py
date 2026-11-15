@@ -113,6 +113,40 @@ halib.SESS['a'] = tok
 st_, me = call('a', '/api/auth/whoami')
 halib.SESS.update(saved)
 ok('the sign-in made on node b is good on node a', st_ == 200 and str((me.get('who') or {}).get('name') or '').split('@')[0] == 'nested', (st_, me))
+# 1.0.285: its card watched - kept with the sign-in in the database, so either node answers a check
+if VER >= '1.0.285':
+    st_, got = call('a', '/api/settings', {'settings': {'admin_cert_card': 'grace', 'admin_cert_card_s': 5,
+                                                        'admin_cert_card_grace_s': 30}})
+    ok('the card watched: grace, switched on on node a', st_ == 200, got)
+    time.sleep(4)
+
+    def as_nested(n, path, body=None):
+        saved = dict(halib.SESS)
+        halib.SESS[n] = tok
+        try:
+            return call(n, path, body)
+        finally:
+            halib.SESS.update(saved)
+    st_, got = as_nested('b', '/api/auth/card', {'cert': PEM('nested')})
+    ok('node b: the same card - alive', st_ == 200 and got.get('alive') is True, (st_, got))
+    st_, got = as_nested('a', '/api/auth/card', {'cert': ''})
+    ok('node a: no card - out, the session waits', st_ == 200 and got.get('alive') is False and got.get('gone') is False, (st_, got))
+    for n in 'ab':
+        st_, got = as_nested(n, '/api/status')
+        ok('node %s: nothing answered meanwhile (423)' % n, st_ == 423 and got.get('code') == 'card', (st_, got))
+    st_, got = as_nested('b', '/api/auth/card', {'cert': PEM('nested')})
+    ok('node b: the same card back - alive', got.get('alive') is True, (st_, got))
+    for n in 'ab':
+        st_, got = as_nested(n, '/api/status')
+        ok('node %s: answered again' % n, st_ == 200, st_)
+    st_, got = as_nested('a', '/api/auth/card', {'cert': PEM('falco')})
+    ok('node a: another card - gone at once', got.get('gone') is True, (st_, got))
+    st_, got = as_nested('b', '/api/status')
+    ok('...node b: signed out (401)', st_ == 401, st_)
+    st_, got = call('b', '/api/settings', {'settings': {'admin_cert_card': 'off', 'admin_cert_card_s': 15,
+                                                        'admin_cert_card_grace_s': 30}})
+    st_, got = cert('b', 'nested')
+    tok = got.get('token')
 for who, words in (('falco-rev', 'revoked'), ('falco-sid2', 'another account'), ('outsider', 'none of the groups')):
     for n in 'ab':
         st_, got = cert(n, who)

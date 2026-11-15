@@ -13,7 +13,8 @@ const URL = 'https://127.0.0.1/admin/';
 const PW = fs.readFileSync('/home/claude/run/adminpw', 'utf8').trim();
 const SID = 'S-1-5-21-1111-2222-3333-1105';
 const PKI = process.env.PKI_DIR || '/tmp/claude-0/pki2';
-const V = process.argv[2] || '1.0.283';
+/* the version installed (the full run gives none): its otp.py reads the certificate */
+const V = process.argv[2] || (execFileSync('otp', ['--version'], { encoding: 'utf8' }).match(/\d+\.\d+\.\d+/) || ['1.0.283'])[0];
 const WORK = fs.mkdtempSync('/tmp/claude-0/csr-');
 fs.mkdirSync(SHOTS, { recursive: true });
 let R = [];

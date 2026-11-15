@@ -12,10 +12,10 @@ zabbix_export:
 
       The host: an SNMP interface at the node's own address (not the VIP address), SNMPv3, authPriv, the user and both passphrases of the page; link this template. MIB: OTP-MIB (deploy/OTP-MIB.txt in the package).
 
-      Made by otp 1.0.283.
+      Made by otp 1.0.284.
     vendor:
       name: otp
-      version: 7.0-283
+      version: 7.0-284
     groups:
     - name: Templates/Applications
     items:
