@@ -4048,3 +4048,7 @@ td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
   .csr-grid{grid-template-columns:1fr}
   .csr-san{grid-template-columns:1fr}
 }
+
+/* The box of the account with the people offered (1.0.284): its wrapper takes the row's width. */
+.creq-find > .qs-wrap{flex:1 1 auto;min-width:0}
+.creq-find > .qs-wrap input{width:100%}
