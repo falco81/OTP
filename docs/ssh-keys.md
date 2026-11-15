@@ -5,9 +5,10 @@ read from every node, a column a node.
 
 ## Root (1.0.158)
 
-The lines of `/root/.ssh/authorized_keys`. A key made here (Ed25519, or RSA 4096) has its
-private half shown once and kept nowhere; one of your own is put on by its public half - on
-every node or on one. Taking away the last key root signs in with is said first.
+The lines of `/root/.ssh/authorized_keys`, read from every node - **only shown** (1.0.280): no key
+for root is made, put on or taken away from the pages, and the server refuses it too. A way in as
+root is put on, or taken away, by root on the node itself. Each key's public half can still be
+exported as its `.pub` file.
 
 ## Every user who may sign in (1.0.240)
 
@@ -15,9 +16,10 @@ every node or on one. Taking away the last key root signs in with is said first.
 `/etc/login.defs` (1000 to 60000), with a login shell (not `nologin` or `false`). Local users
 (`/etc/passwd`); directory users of sssd appear when the machine lists them.
 
-Their own `~/.ssh/authorized_keys`, as for root: listed, a key added (a line of your own, or
-made here - its private half shown once to hand over), exported, taken away - on the nodes
-where the user is.
+Their own `~/.ssh/authorized_keys`: listed, a key added (a line of your own, or made here - its
+private half shown once to hand over, kept nowhere), exported, taken away - on the nodes where
+the user is. In a cluster a key is made as root's was until 1.0.279: *The same key on every node*
+(where the user is), or *Only on* one node.
 
 The file is read and written **as that user** - by a child of the root helper that has their
 UID, GID and groups: `~/.ssh` made 0700 and the file 0600, theirs; a link put there (to

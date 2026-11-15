@@ -4,6 +4,22 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.280 — 15 November 2026
+
+Changed
+- **SSH keys: root's are only shown.** On the pages no key for root is made, put on or taken away any more - the list of root's keys, each node's facts and the export of a key's public half stay; a way in as root is put on or taken away by root on the node itself (`/root/.ssh/authorized_keys`). The server refuses it too, not only the page. For the other users who may sign in on the nodes, a key is made or added as before - and **made the way root's was**: in a cluster *The same key on every node* or *Only on* one node.
+
+Fixed (bug and security hunt after 1.0.279)
+- **Settings - Accounts: the cards of Windows, the certificate and the sign-in page show a change at once** - after Save they were read again only on F5 (the steps of revocation, by itself on the sign-in page, the second step); asked again a few times in the first minute too, as root's helper puts nginx's part in. A save no longer moves what is in view: the settings drawn again, and the cards, keep their place.
+- **Import of settings**: the directory (`admin_directory`) is left as it is too when the file would put *no password at all* in effect by it; a file of a version before 1.0.278 that holds *no password at all* on no longer stops the import half way (left as it is - switched on only from the pages); *Replace* checks that nobody is left without a way in by what it takes back to the defaults, and keeps the switches root's helper reads as rows of their default instead of dropping them (nginx kept serving what was dropped).
+- **Sign-in with a certificate**: a person whose certificate cannot be checked for revocation just now is told little (*cannot be checked for revocation (CRL, OCSP) just now*); which responder or CRL address of the inside network did not answer, and openssl's words, go to the events. The certificate's port is looked for where its server listens on this node's own addresses (a node whose HTTPS server listens on one address said "not yet" for good; the VIP's listen line answered by the other node no longer counts).
+- **RADIUS queue**: a lone line (one NAS started again, thousands signing in) may use nine tenths of the queue instead of half; an address that is no client never gets a line of its own (it took the lines of real clients with realm names made up) - the line of those addresses is held to half the queue at all times; whether an address is a client is read from the clients kept in memory only.
+- **Tokens**: a delegated administrator enrolling a token no longer holds the token's lock while the directory is asked whether it is the same person (a RADIUS worker checking a code of that name waited on a directory that hangs); the token is looked at again afterwards.
+- **ACME**: the answers to the CA's http-01 challenge (`acme:chal:`) and the certificate before a renewal (`acme:before:`) are signed rows; a challenge is answered on port 80 only while ACME is on (the reach probe's own answer aside) - a row put in the database by somebody with write access to it no longer got a trusted certificate for the appliance's name.
+- **Signed rows**: *Windows tried by itself on the sign-in page* (`admin_kerberos_auto`) is a signed setting (written unsigned by 1.0.274-1.0.279, taken in once); guard.json says which version wrote it - back on a version after a downgrade, the rows signed only since a newer version are taken in again instead of being refused.
+- The lowest version a node goes back to (`DOWNGRADE_FLOOR`) is 1.0.278.
+- The settings pane no longer keeps the height of the pane before (a gap under a short pane after a long one).
+
 ## 1.0.279 — 15 November 2026
 
 Added
