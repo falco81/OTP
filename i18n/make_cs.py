@@ -423,6 +423,10 @@ for _k, _v in P278.items(): P.setdefault(_k, _v)
 from cs_279 import S279, P279
 for _k, _v in S279.items(): S.setdefault(_k, _v)
 for _k, _v in P279.items(): P.setdefault(_k, _v)
+from cs_280 import S280, P280, R280
+for _k, _v in S280.items(): S.setdefault(_k, _v)
+for _k, _v in P280.items(): P.setdefault(_k, _v)
+for _k, _v in R280.items(): R.setdefault(_k, _v)
 for _k, _v in P272.items(): P.setdefault(_k, _v)
 for _k, _v in S255.items(): S.setdefault(_k, _v)
 for _k, _v in P255.items(): P.setdefault(_k, _v)
