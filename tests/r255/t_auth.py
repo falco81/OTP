@@ -106,7 +106,7 @@ TMP = tempfile.mkdtemp()
 CONFIG = {'db_guard': 0, 'admin_2fa': 0, 'code_ttl_s': 300, 'portal': 1, 'portal_sso': 0,
           'portal_first_code': 'off', 'portal_first_sms_attr': ''}
 LOGS = []
-g = {'__name__': 'auth', 'math': __import__('math'), 'CONFIG': CONFIG, 'STATE_DIR': pathlib.Path(TMP), 'json': json, 'time': time,
+g = {'__name__': 'auth', '__version__': '1.0.999', 'math': __import__('math'), 'CONFIG': CONFIG, 'STATE_DIR': pathlib.Path(TMP), 'json': json, 'time': time,
      'hmac': hmac, 'hashlib': hashlib, 'secrets': secrets, 're': re, 'threading': threading,
      'unicodedata': unicodedata, 'os': os,
      'fnum': lambda x, d=0.0: float(x or d), 'node_name': lambda: 'otp1',

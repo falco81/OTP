@@ -109,7 +109,9 @@ ok('refused on both: root has no key and passwords would be off',
 ok('... sshd left as it was', not os.path.exists(N['node1']['dir'] + '/ssh/sshd_config.d/00-otp.conf'))
 pub = subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', TOP + '/k'], check=True) and \
     open(TOP + '/k.pub').read().strip()
-call('node1', '/api/sshkeys', {'action': 'add', 'line': pub, 'nodes': ['node1', 'node2']}, S)
+# 1.0.280: root's keys are only shown on the pages (403) - put on as otp's own code asks it.
+ok('the pages may not put a key of root on', call('node1', '/api/sshkeys', {'action': 'add', 'line': pub, 'nodes': ['node1', 'node2']}, S)[0] == 403)
+otp.sshkeys_ask(st, ['node1', 'node2'], 'add', 'local', line=pub)
 time.sleep(3)
 c, x = call('node1', '/api/sshd', {'action': 'save', 'conf': dict(WANT, port=2222, notice='Authorised use only.\nEverything is logged.',
                                                                   notice_ssh=True, notice_console=True, notice_motd=True)}, S)

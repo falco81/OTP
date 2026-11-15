@@ -16,7 +16,7 @@ let loop = null;
 (async () => {
   // root's helper in a loop (otp-web.path, as it were) while this runs, and a normal user
   try { execSync('id t280user', { stdio: 'ignore' }); } catch (e) { execSync('useradd -m -s /bin/bash t280user'); }
-  try { execSync('pgrep -f tests/dg/webloop.sh', { stdio: 'ignore' }); } catch (e) {
+  try { execSync('pgrep -f "[t]ests/dg/webloop.sh"', { stdio: 'ignore' }); } catch (e) {
     loop = spawn('bash', [__dirname + '/../dg/webloop.sh'], { detached: true, stdio: 'ignore' });
   }
   const b = await chromium.launch({ args: ['--no-proxy-server'] });
