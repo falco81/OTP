@@ -4,6 +4,39 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.278 — 14 November 2026
+
+Three rounds of looking for bugs and security problems through the whole application; what they found.
+
+Added
+- **Revocation lists (CRL) of the sign-in with a certificate, as the crl-revocation-kit says** (acme 1.0.104): the CRL of the person's certificate, **its delta CRL** (Freshest CRL - a card revoked since the weekly base no longer passes), and **those of every authority above it but the root** (an issuing authority its root revoked signs nobody in; one that names no CRL at all is not checked, as before), in one `openssl verify -crl_check_all -use_deltas` against the authorities put in alone - never the system's store. Seen within ten minutes (sooner at its next update); the last good one kept until its next update while the address does not answer, then no sign-in; a CRL already past its next update is none.
+- **Where a CRL is fetched from**: http only, by the node's own resolver and **never through the proxy** (AD CS's CDPs are inside); every address of the name checked - no loopback, link-local, metadata, multicast or reserved one, in any spelling of the number; private ones are fine - and the connection made to the address checked (no second look-up, no DNS rebinding); no redirect, 8 MB and 15 s at most.
+- **The table on the certificate's card** (*Revocation lists (CRL)*): one row for each CRL a node keeps and each one the authorities name - its address (copy), issuer, base or delta, the next update as a pill (good / within a day / last fetch failed / not had / run out / not fetched yet), revoked entries, when fetched; a row opens to this update, number, size, the signature (checked by openssl), the error and **each node's** fetch. **Fetch now** and **Clear** (all, or one row) are asked of every node of a cluster - each does it itself, and a box shows each node's answer; a full administrator only, written to the events. On a phone each row is a block, every value under its label.
+- `otp --cert-crl [--json]`, `--cert-crl-fetch [URL]`, `--cert-crl-clear [URL]` (asks; `--yes`) - the same rules and events as the page.
+- **The card is redrawn in one step and keeps its place**: a row opened, Fetch now's answers, a refresh - what is clicked or looked at stays where it was on the screen.
+- docs/admin-certificate.md: *Revocation (CRL)* - the rules, the lag (after revoking a lost card: `certutil -CRL`, then Fetch now) and the network.
+
+Security
+- **The CRL of a certificate is fetched only after its chain is checked**: nginx takes any certificate on the certificate's port, and its CRL address was fetched before the certificate was checked against the authorities put in - so anybody who could reach the port had this server fetch addresses of the inside network and say back what they answered. The chain first now; a certificate of somebody else's authority is refused before anything is fetched. The cache of CRLs that could not be had is bounded too.
+- **No password at all cannot leave nobody a way in, on any road to a save**: the check of 1.0.274 read the value as text ("1.0" passed it), was not made for an imported configuration, and not for switching Windows or the certificate off or on afterwards. Now the settings as they will be after the save are checked on the pages, `otp --set` and an import: with no password at all in effect, a way that is on must work (Windows with its keytab, a certificate with an authority); put in effect only from a sign-in made by a way that will still work; never by a file; and not saved at all with neither way on (it lay in wait for the next switch). `otp --kerberos-keytab-drop` and `--cert-ca-drop` refuse to take the last way away, as the pages do.
+- **The sign-ins made with a password end** when no password at all comes into effect - they went on for hours.
+- **The reason a certificate was refused comes back in a cookie of the site**, not as words in the address: a link of anybody's put any text on the sign-in page as a refusal. (In a cluster upgrade both nodes before relying on the certificate sign-in: a node of 1.0.277 shows the reason of a node of 1.0.278 as "1".)
+- **pg_hba.conf is never written by root through a link** (the steps of a cluster, the rename): its path is what PostgreSQL says, in the postgres account's folder. A link there is refused and said.
+- **The bundle for a second node** (it carries the key of every token) is made on the pages only while a token's key may be shown there (*Administrators may show a token's QR code and key*); otherwise as root, `otp --ha-bundle`. An export with the secrets made on the pages leaves the backups' password out under the same rule (and says so in the file, so that importing it never takes the password away); adding or changing a backup destination then is written down as a warning.
+- **The portal answers a name the directory does not have as slowly as a wrong password** (and a locked or ambiguous one): the time alone said which names exist.
+- **Replacing a token on the portal offers only the ways its realm offers**: an app token was made again where the realm had moved to mail or SMS.
+
+Fixed
+- **Nothing jumps when a switch is flipped near the end of a pane** (Alerts and reports, System updates, About): the words a switch hides below it (*Not in use while ... is off*) shortened the pane, and one scrolled to its end slid down by their height - the pane now keeps its height while it is worked in. Every pane of Settings is checked at 1920 and 1400 px by the tests.
+- *Try my browser's ticket*, *Check the database* and the SMS gateway's *Test* said only "HTTP 200" when what they found was no: a ticket that would not sign in read as "no ticket", a broken database never showed its list, the gateway's steps were not drawn.
+- A node's own switch in a cluster stayed flipped when its save was refused.
+- The Windows card's "none - set Sign administrators in against the directory" stayed in English on the Czech pages.
+- **A fetch from a backup destination is held to the size the destination lists**, with room for it checked first: a server that sent without end filled the database's disk during the weekly check.
+- **A scheduled backup that failed is tried again** an hour later, three times at most that day: a weekly schedule went a week more without one.
+- **The certificate's port is looked for on the address its server listens on**: a node's HTTPS server on one address gave the certificate's server that address, the look at 127.0.0.1 found nothing, and every save of nginx and the VIP address was put back.
+- **Uninstalling takes the certificate's nginx server away too** (and its authorities): left behind, nginx did not start again; nginx's configuration is tried before it is reloaded.
+- Importing a configuration made by an older version with *No password at all* stored is not stopped half way.
+
 ## 1.0.277 — 14 November 2026
 
 Added

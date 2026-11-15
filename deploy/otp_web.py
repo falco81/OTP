@@ -1202,21 +1202,40 @@ def lbport_selinux(port, what='the balancer\'s port', key='web_proxy_port'):
     return 'SELinux (permissive): %s' % why
 
 
-def lbport_listening(port, wait=5.0):
+def cert_listen_hosts(port):
+    """Where the certificate's server was told to listen on `port` (1.0.278): the addresses of its
+    listen lines - a node's HTTPS server on one address gave the certificate's that address, and a
+    look at 127.0.0.1 alone found nothing and put everything back."""
+    try:
+        with open(NGINX_CERT) as fh:
+            text = fh.read()
+    except OSError:
+        return ['127.0.0.1']
+    hosts = []
+    for m in re.finditer(r'(?m)^\s*listen\s+(?:\[([^\]]*)\]:|([0-9.]+):)?%d\b' % int(port), text):
+        h = m.group(1) if m.group(1) is not None else m.group(2)
+        h = {None: '127.0.0.1', '': '127.0.0.1', '0.0.0.0': '127.0.0.1', '::': '::1'}.get(h, h)
+        if h not in hosts:
+            hosts.append(h)
+    return hosts or ['127.0.0.1']
+
+
+def lbport_listening(port, wait=5.0, hosts=None):
     """nginx answers on the balancer's own port (a TCP connect to 127.0.0.1 - it listens on
-    every address), `wait` seconds at most."""
+    every address), `wait` seconds at most; hosts: the addresses to try instead (any one answers)."""
     import socket
     end = time.time() + wait
     while True:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        try:
-            if s.connect_ex(('127.0.0.1', int(port))) == 0:
-                return True
-        except OSError:
-            pass
-        finally:
-            s.close()
+        for host in (hosts or ['127.0.0.1']):
+            s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                if s.connect_ex((host, int(port))) == 0:
+                    return True
+            except OSError:
+                pass
+            finally:
+                s.close()
         if time.time() >= end:
             return False
         time.sleep(0.25)
@@ -1447,9 +1466,9 @@ def nginx_part(r, last):
                 end = time.time() + 5
                 while time.time() < end and lbport_listening(cert_gone, 0):
                     time.sleep(0.25)
-            if cert_look and not lbport_listening(cert_look):
+            if cert_look and not lbport_listening(cert_look, hosts=cert_listen_hosts(cert_look)):
                 subprocess.run(['nginx', '-s', 'reload'], capture_output=True)
-            if cert_look and not lbport_listening(cert_look):
+            if cert_look and not lbport_listening(cert_look, hosts=cert_listen_hosts(cert_look)):
                 put_back(snap)
                 subprocess.run(['systemctl', 'reload', 'nginx'], capture_output=True)
                 raise Refused('nginx does not listen on the certificate\'s port %d after the reload '

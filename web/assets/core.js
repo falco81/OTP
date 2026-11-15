@@ -2773,3 +2773,70 @@ function mfaWay(body, d, kind) {
     mfaSendPaint(send, left, d.send, icon);
   }
 }
+
+
+/* ---- the page stays where it is read (1.0.278, the crl-revocation-kit's redrawKeepingPlace) ----
+   A card redrawn - a row opened, an answer of a node, a refresh - is built off the page and put in
+   in one step, its height held meanwhile, and what the person looks at (the thing clicked, else
+   the focused one, else the first keyed thing on the screen) kept where it was on the screen, in
+   the box that really scrolls. Never scrollIntoView, never a focus that scrolls. */
+function scrollerOf(node) {
+  for (var n = node && node.parentElement; n && n !== document.body; n = n.parentElement) {
+    var oy = getComputedStyle(n).overflowY;
+    if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+function keyOf(node, host) {
+  for (var n = node; n && n !== host; n = n.parentElement) if (n.dataset && n.dataset.key) return n.dataset.key;
+  return null;
+}
+function firstVisibleKey(host) {
+  var all = host.querySelectorAll('[data-key]');
+  for (var i = 0; i < all.length; i++) {
+    var r = all[i].getBoundingClientRect();
+    if (r.bottom > 0 && r.top < window.innerHeight && r.height) return all[i].dataset.key;
+  }
+  return null;
+}
+function keyedIn(host, key) {
+  var all = host.querySelectorAll('[data-key]');
+  for (var i = 0; i < all.length; i++) if (all[i].dataset.key === key) return all[i];
+  return null;
+}
+function redrawKeepingPlace(host, build, opts) {
+  opts = opts || {};
+  var sc = scrollerOf(host);
+  var active = document.activeElement && host.contains(document.activeElement) ? document.activeElement : null;
+  var key = keyOf(opts.anchor, host) || keyOf(active, host) || firstVisibleKey(host);
+  var focusKey = keyOf(active, host);
+  var before = null;
+  if (key) {
+    var old = keyedIn(host, key);
+    if (old) before = old.getBoundingClientRect().top;
+  }
+  var box = document.createElement(host.tagName === 'TBODY' ? 'tbody' : 'div');
+  build(box);
+  host.style.minHeight = host.getBoundingClientRect().height + 'px';
+  var frag = document.createDocumentFragment();
+  while (box.firstChild) frag.appendChild(box.firstChild);
+  while (host.firstChild) host.removeChild(host.firstChild);
+  host.appendChild(frag);
+  /* Corrected now, again once the page's own passes over what was put in have run (a long note
+     folded to three lines, the words of the page's language), and again at the next frame. */
+  var hold = function () {
+    if (!key || before === null) return;
+    var now = keyedIn(host, key);
+    if (!now) return;
+    var d = now.getBoundingClientRect().top - before;
+    if (Math.abs(d) >= 1) sc.scrollTop += d;
+  };
+  hold();
+  setTimeout(hold, 0);
+  requestAnimationFrame(hold);
+  if (focusKey) {
+    var f = keyedIn(host, focusKey);
+    if (f && f.focus) { try { f.focus({preventScroll: true}); } catch (e) { /* not focusable */ } }
+  }
+  requestAnimationFrame(function () { requestAnimationFrame(function () { hold(); host.style.minHeight = ''; hold(); }); });
+}
