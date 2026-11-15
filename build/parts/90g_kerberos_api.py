@@ -103,6 +103,22 @@ def _kerberos_view(h):
 @route('POST', '/api/kerberos')
 def _kerberos_do(h):
     act = str(h.body().get('action') or '')
+    if act == 'ad':
+        # The guide's values from the directory itself (1.0.282): the domain's NetBIOS name, its DNS
+        # name (the realm), and the account holding each SPN - a guess of them was wrong where the
+        # NetBIOS name is not the first part of the DNS one (MERIT_NT for merit.cz).
+        h.me('fulladmin')
+        ad = h.d.dirs.get(str(CONFIG.get('admin_directory') or '').lower())
+        if not ad:
+            return {'ok': False, 'said': 'no directory is set for administrators'}
+        names = [n['name'] for n in krb_view(h.store).get('names') or [] if n.get('name')]
+        try:
+            dn = ad.domain_names()
+            holders = ad.spn_holders(['HTTP/' + n for n in names])
+        except LdapError as e:
+            return {'ok': False, 'directory': ad.name, 'said': 'the directory did not say: %s' % str(e)[:200]}
+        return {'ok': True, 'directory': ad.name, 'netbios': dn.get('netbios') or '', 'dns': dn.get('dns') or '',
+                'realm': (dn.get('dns') or '').upper(), 'spn': holders}
     if act == 'check':
         # "Try my browser's ticket": who it would sign in, and as what - nothing opened.
         h.me()

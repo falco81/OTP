@@ -20097,10 +20097,23 @@ function seNode(n) {
    node's state, how to make the keytab in AD, how to tell the browsers, and a try of this very
    browser's ticket - who it would sign in, and as what. */
 var KRB = {d: null};
+/* The guide's values from the directory itself (1.0.282): the domain's NetBIOS name and DNS name, and
+   the account holding each SPN - asked once in ten minutes, the card drawn again with them. */
+function krbAskAd(force) {
+  if (!(ME && ME.role === 'fulladmin') || !KRB.d || !KRB.d.directory) return;
+  if (!force && KRB.ad && Date.now() - KRB.adAt < 600000) return;
+  if (KRB.adAsking) return;
+  KRB.adAsking = true;
+  api('kerberos', {action: 'ad'}).then(function (x) {
+    KRB.adAsking = false; KRB.ad = x; KRB.adAt = Date.now(); drawKrb();
+  }).catch(function (e) {
+    KRB.adAsking = false; KRB.ad = {ok: false, said: String(e && e.message || e)}; KRB.adAt = Date.now(); drawKrb();
+  });
+}
 function loadKrb() {
   var host = $('krb-host');
   if (!host) return;
-  api('kerberos').then(function (d) { KRB.d = d; drawKrb(); }).catch(function (e) {
+  api('kerberos').then(function (d) { KRB.d = d; drawKrb(); krbAskAd(false); }).catch(function (e) {
     clear(host); host.appendChild(el('p', 'note', String(e && e.message || e)));
   });
 }
@@ -20300,8 +20313,36 @@ function drawKrbInto(host) {
   /* How to make it - the values of this system marked, as in the balancers' guides */
   var first = (d.names && d.names[0] && d.names[0].name) || 'otp.corp.example';
   var realm = d.realm || 'CORP.EXAMPLE';
-  var v = {dom: realm.split('.')[0], acct: 'svc-otp-http', realm: realm};
+  /* From AD where it said them (1.0.282): its NetBIOS name is not always the first part of the DNS one
+     (MERIT_NT for merit.cz), and an SPN already on an account names that account. */
+  var ad = KRB.ad && KRB.ad.ok ? KRB.ad : null;
+  var held = {};
+  if (ad) Object.keys(ad.spn || {}).forEach(function (s) { (ad.spn[s] || []).forEach(function (a) { held[a] = (held[a] || []).concat([s]); }); });
+  var holders = Object.keys(held);
+  var v = {dom: (ad && ad.netbios) || realm.split('.')[0], acct: holders.length === 1 ? holders[0] : 'svc-otp-http',
+           realm: (ad && ad.realm) || realm};
   host.appendChild(el('h3', 'peek-h', 'Making the keytab in AD'));
+  var from = el('div', 'krb-adsaid');
+  if (ad) {
+    from.appendChild(certTag('ok', 'from AD'));
+    from.appendChild(el('span', 'small', 'the domain ' + (ad.netbios || '?') + ' (NetBIOS), ' + (ad.dns || '?') + ' (DNS) - as ' + ad.directory + ' says them'));
+  } else if (KRB.ad) {
+    from.appendChild(certTag('warn', 'guessed'));
+    from.appendChild(el('span', 'small', 'the directory did not say the domain\'s names (' + (KRB.ad.said || '?') + ') - the NetBIOS name below is the first part of the realm: check it (set /a USERDOMAIN on a computer of the domain)'));
+  } else {
+    from.appendChild(certTag('dim', 'asking AD…'));
+  }
+  var again = iconButton('refresh', 'Ask AD again');
+  again.dataset.key = 'krb-ad-again';
+  again.onclick = function () { krbAskAd(true); };
+  from.appendChild(again);
+  host.appendChild(from);
+  if (ad && ad.realm && d.realm && ad.realm.toUpperCase() !== String(d.realm).toUpperCase())
+    host.appendChild(el('p', 'note warn', 'The realm used here is ' + d.realm + ', and AD says its domain is ' + ad.realm + ' - set the realm (admin_kerberos_realm) to it.'));
+  if (holders.length > 1)
+    host.appendChild(el('p', 'note bad', 'The SPNs are on more than one account (' + holders.join(', ') + ') - one key serves them all only when one account holds them: setspn -D them from the others.'));
+  else if (holders.length === 1)
+    host.appendChild(el('p', 'note', 'AD has the SPN' + (held[holders[0]].length > 1 ? 's' : '') + ' ' + held[holders[0]].join(', ') + ' on ' + v.dom + '\\' + holders[0] + ' already - that account is the one below.'));
   host.appendChild(el('p', 'note', 'On a domain controller, as a domain administrator: a service account of its own (a normal user, password never expires, AES allowed), the SPN of each name, and the keytab of the first one - the others are served by the same key. Changing the account\'s password later makes a new key version: make the keytab again.'));
   var lines = ['# 1. the account (once): {dom}\\{acct}, "This account supports Kerberos AES 256 bit encryption"'];
   (d.names && d.names.length ? d.names : [{name: first}]).forEach(function (n) {
@@ -20477,6 +20518,13 @@ function drawCertInto(host) {
     window.open('https://' + location.hostname + ':' + d.port + '/admin/?api=cert-check', '_blank', 'noopener');
   };
   row.appendChild(tryb);
+  /* The values of a certificate request for an account of the directory (1.0.282). */
+  var reqb = cmdButton('Values for a certificate request…', 'key', '');
+  reqb.id = 'cert-req';
+  reqb.title = 'An account of the directory looked up: the subject, the UPN and the SID of the SAN its certificate needs - each to copy, and certreq\'s and openssl\'s words for them.';
+  reqb.disabled = !full || !d.directory;
+  reqb.onclick = function () { certRequestWin(''); };
+  row.appendChild(reqb);
   host.appendChild(row);
   certCrls(host, d);
   certOcsp(host, d);
@@ -20552,6 +20600,118 @@ function certRevFlow(d) {
   return box;
 }
 function certTag(cls, words) { return el('span', 'tag ' + cls, words); }
+/* What a certificate request of an account needs (1.0.282): the account looked up in the directory set
+   for administrators, its values each with a copy button - the subject, the UPN of the SAN, the SID as
+   the URL of the SAN for the strong mapping (KB5014754) - and certreq's .inf and openssl's config. */
+function certRequestWin(name) {
+  var box, inp, go, out;
+  var find = function () {
+    var who = inp.value.trim();
+    if (!who) { inp.focus(); return; }
+    busy(go, true);
+    clear(out);
+    out.appendChild(el('p', 'muted small', 'Asking the directory…'));
+    api('certlogin', {action: 'request', name: who}).then(function (x) {
+      busy(go, false);
+      certRequestShow(out, x);
+    }).catch(function (e) {
+      busy(go, false);
+      clear(out);
+      out.appendChild(el('p', 'note bad', String(e && e.message || e)));
+    });
+  };
+  modal('Values for a certificate request', function (body) {
+    body.appendChild(el('p', 'note', 'An account of the directory set for administrators: its subject, the UPN and the SID the certificate must name to sign in here - as AD CS writes them since KB5014754 (strong mapping). Nothing is changed or kept.'));
+    var row = el('div', 'creq-find');
+    inp = textBox(name || '', 'jnovak, CORP\\jnovak or jnovak@corp.example', 'mono');
+    inp.id = 'creq-name';
+    inp.onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); find(); } };
+    go = cmdButton('Find', 'search', 'primary');
+    go.id = 'creq-find';
+    go.onclick = find;
+    row.appendChild(inp);
+    row.appendChild(go);
+    body.appendChild(row);
+    out = el('div', 'creq-out');
+    body.appendChild(out);
+    setTimeout(function () { inp.focus(); }, 60);
+  }, [{words: 'Close', close: true}], 'large');
+  if (name) find();
+}
+function certRequestShow(out, x) {
+  clear(out);
+  var head = el('div', 'creq-head');
+  var who = el('div', 'creq-who');
+  who.appendChild(noI18n(el('b', '', x.display || x.cn || x.name)));
+  who.appendChild(noI18n(el('span', 'mono small muted', x.name + ' · ' + x.directory)));
+  head.appendChild(who);
+  var tags = el('div', 'creq-tags');
+  tags.appendChild(certTag(x.role ? 'ok' : 'warn', x.role ? (x.role === 'fulladmin' ? 'full administrator' : x.role === 'readonly' ? 'read only' : x.role) : 'no role here'));
+  if (x.disabled) tags.appendChild(certTag('crit', 'switched off'));
+  if (x.locked) tags.appendChild(certTag('warn', 'locked out'));
+  tags.appendChild(certTag(x.sid ? 'info' : 'warn', 'mapping: ' + x.map));
+  head.appendChild(tags);
+  out.appendChild(head);
+  (x.notes || []).forEach(function (n) { out.appendChild(el('p', 'note ' + (n[0] === 'bad' ? 'bad' : 'warn'), n[1])); });
+  var grid = el('div', 'creq-grid');
+  var line = function (key, label, value, says) {
+    var k = el('div', 'creq-k');
+    k.appendChild(el('span', '', label));
+    if (says) k.appendChild(el('span', 'creq-says', says));
+    grid.appendChild(k);
+    var v = el('div', 'creq-v');
+    var t = noI18n(el('span', 'mono', value || '–'));
+    v.appendChild(t);
+    grid.appendChild(v);
+    var c = el('div', 'creq-c');
+    if (value) {
+      var b = iconButton('copy', 'Copy it');
+      b.dataset.key = 'creq-copy-' + key;
+      b.id = 'creq-copy-' + key;
+      b.onclick = function () { copyText(value, b, label + ' copied'); };
+      c.appendChild(b);
+    }
+    grid.appendChild(c);
+  };
+  line('subject', 'Certificate subject', x.subject, 'the certificate\'s name');
+  line('cn', 'CN', x.cn, 'Common Name');
+  line('upn', 'SAN: UPN', x.upn, 'Other Name - Principal Name (1.3.6.1.4.1.311.20.2.3)');
+  line('url', 'SAN: URL', x.url, 'the SID - strong mapping (KB5014754)');
+  line('email', 'SAN: e-mail', x.mail, 'RFC 822 Name - not needed to sign in');
+  line('sid', 'SID', x.sid, 'objectSid of the account');
+  line('dn', 'Account', x.dn, 'its place in the directory');
+  out.appendChild(grid);
+  var all = el('div', 'btnrow');
+  var cpSan = cmdButton('Copy the SAN', 'copy', 'small');
+  cpSan.id = 'creq-copy-san';
+  cpSan.onclick = function () { copyText((x.san || []).join('\n'), cpSan, 'the SAN copied'); };
+  all.appendChild(cpSan);
+  out.appendChild(all);
+  var block = function (key, title, says, text, file) {
+    var h = el('h3', 'peek-h', title);
+    out.appendChild(h);
+    out.appendChild(el('p', 'muted small', says));
+    var pre = noI18n(el('pre', 'wrap mono small creq-pre', text));
+    out.appendChild(pre);
+    var r = el('div', 'btnrow');
+    var cp = cmdButton('Copy', 'copy', 'small');
+    cp.id = 'creq-copy-' + key;
+    cp.onclick = function () { copyText(text, cp, title + ' copied'); };
+    r.appendChild(cp);
+    var dl = cmdButton('Download ' + file, 'download', 'small');
+    dl.onclick = function () {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], {type: 'application/octet-stream'}));
+      a.download = file;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    };
+    r.appendChild(dl);
+    out.appendChild(r);
+  };
+  block('certreq', 'Windows: certreq', 'certreq -new request.inf request.req, then certreq -submit -attrib "CertificateTemplate:SmartcardLogon" request.req - on the computer with the card (or the YubiKey); a template whose subject is "Supply in the request".', x.certreq, 'request.inf');
+  block('openssl', 'openssl', 'openssl req -new -key the.key -config request.cnf -out request.csr - for a key made outside Windows (a YubiKey with ykman, a CSR of slot 9a).', x.openssl, 'request.cnf');
+}
 function certCrlState(c) {
   var now = Date.now() / 1000;
   if (!c.fetched) return ['dim', 'not fetched yet'];

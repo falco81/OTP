@@ -759,6 +759,44 @@ class Directory(object):
                  'msDS-MaximumPasswordAge', 'msDS-MinimumPasswordAge',
                  'msDS-PasswordReversibleEncryptionEnabled', 'msDS-PSOAppliesTo')
 
+    def domain_names(self):
+        """The domain's own names as the forest's configuration says them (1.0.282): its NetBIOS name
+        (nETBIOSName of its crossRef - MERIT_NT, not the first part of merit.cz) and its DNS name
+        (dnsRoot). Kept ten minutes."""
+        with self.lock:
+            got = self.cache.get(('domnames',))
+            if got and time.time() - got[0] < 600:
+                return got[1]
+
+        def root(link):
+            return link.search('', ldap_present('objectClass'), ('defaultNamingContext',
+                                                                  'configurationNamingContext'), scope=0, limit=1)
+        got = self.asked(root)
+        a = {k.lower(): v for k, v in (got[0]['attrs'] if got else {}).items()}
+        dom = self.domain_dn() or (a.get('defaultnamingcontext') or [''])[0]
+        cfg = (a.get('configurationnamingcontext') or [''])[0]
+        out = {'domain_dn': dom, 'netbios': '', 'dns': ''}
+        if dom and cfg:
+            rows = self.asked(lambda link: link.search(
+                'CN=Partitions,' + cfg, ldap_and(ldap_equal('objectClass', 'crossRef'), ldap_equal('nCName', dom)),
+                ('nETBIOSName', 'dnsRoot'), scope=1, limit=5))
+            for r in rows:
+                b = {k.lower(): v for k, v in r['attrs'].items()}
+                out['netbios'] = out['netbios'] or (b.get('netbiosname') or [''])[0]
+                out['dns'] = out['dns'] or (b.get('dnsroot') or [''])[0]
+        self._cache_put(('domnames',), out)
+        return out
+
+    def spn_holders(self, spns):
+        """{spn: [sAMAccountName, ...]} - the accounts of the domain that hold each SPN (1.0.282)."""
+        dom = self.domain_names().get('domain_dn') or self.base
+        out = {}
+        for spn in list(spns)[:20]:
+            rows = self.asked(lambda link, s=spn: link.search(dom, ldap_equal('servicePrincipalName', s),
+                                                              ('sAMAccountName',), scope=2, limit=5))
+            out[spn] = [((r['attrs'].get('sAMAccountName') or [cn_of(r['dn'])])[0]) for r in rows]
+        return out
+
     def domain_dn(self):
         dcs = [p.strip() for p in re.split(r'(?<!\\),', self.base or '') if p.strip().lower().startswith('dc=')]
         return ','.join(dcs)

@@ -26,6 +26,85 @@ def cert_who(h, pem):
     return f, said
 
 
+CERT_SID_URL = 'tag:microsoft.com,2022-09-14:sid:'
+
+
+def cert_request_values(h, name):
+    """The values of a certificate request for one account of the directory set for administrators
+    (1.0.282): read from the directory, nothing kept, nothing changed - and whether a certificate of
+    them would sign in here."""
+    name = name.strip()
+    if not name or len(name) > 256:
+        raise ApiError(400, 'which account? its sAMAccountName, DOMAIN\\name or its UPN')
+    ad = h.d.dirs.get(str(CONFIG.get('admin_directory') or '').lower())
+    if not ad:
+        raise ApiError(409, 'no directory is set for administrators (Settings - Accounts)')
+    who, how = admin_name_parts(name)
+    bad = name_letters_problem(who.split('@', 1)[0])
+    if bad:
+        raise ApiError(400, '%s: %s' % (who, bad))
+    try:
+        entry = ad.find_user(who, how)
+        have = ad.groups_of(entry, True) if entry and not entry.get('many') else []
+    except LdapUnreachable as e:
+        raise ApiError(503, 'the directory cannot be reached', str(e))
+    if not entry:
+        raise ApiError(404, 'the directory %s has nobody called %s' % (ad.name, who))
+    if entry.get('many'):
+        raise ApiError(409, 'more than one account answers to %s' % who)
+    dn = str(entry.get('dn') or '')
+    cn = cn_of(dn) if dn else ''
+    upn = str(entry.get('upn') or '')
+    sid = str(entry.get('sid') or '')
+    mail = str(entry.get('mail') or '')
+    role = admin_role_for(have, ad) or ''
+    notes = []
+    if not upn:
+        notes.append(['bad', 'the account has no userPrincipalName - a certificate names its account by it; '
+                             'nobody signs in with one of this account'])
+    if not sid:
+        notes.append(['bad' if str(CONFIG.get('admin_cert_map') or 'compat') == 'strong' else 'warn',
+                      'the directory did not say the account\'s SID (objectSid) - strong mapping needs it'])
+    if entry_unusable(entry):
+        notes.append(['warn', 'the account may not sign in now: %s' % entry_unusable(entry)])
+    if not role:
+        notes.append(['warn', 'none of the groups given a role here holds the account - a certificate of it '
+                              'is taken, and nobody is signed in'])
+    url = CERT_SID_URL + sid if sid else ''
+    san = ['otherName: UPN = %s' % upn] if upn else []
+    if url:
+        san.append('URL = %s' % url)
+    if mail:
+        san.append('email = %s' % mail)
+    inf = ['[Version]', 'Signature="$Windows NT$"', '', '[NewRequest]',
+           'Subject = "CN=%s"' % cn.replace('"', '""'), 'KeySpec = 1', 'KeyLength = 2048', 'Exportable = FALSE',
+           'MachineKeySet = FALSE', 'RequestType = PKCS10', 'KeyUsage = 0xA0',
+           'ProviderName = "Microsoft Smart Card Key Storage Provider"', '', '[EnhancedKeyUsageExtension]',
+           'OID = 1.3.6.1.5.5.7.3.2      ; Client Authentication',
+           'OID = 1.3.6.1.4.1.311.20.2.2 ; Smart Card Logon', '', '[Extensions]',
+           '2.5.29.17 = "{text}"']
+    first = True
+    for k, v in (('upn', upn), ('url', url), ('email', mail)):
+        if v:
+            inf.append('_continue_ = "%s=%s&"' % (k, v))
+            first = False
+    if first:
+        inf.pop()
+    ossl = ['[req]', 'prompt = no', 'distinguished_name = dn', 'req_extensions = ext', '', '[dn]',
+            'CN = %s' % cn, '', '[ext]', 'keyUsage = critical, digitalSignature, keyEncipherment',
+            'extendedKeyUsage = clientAuth, 1.3.6.1.4.1.311.20.2.2',
+            'subjectAltName = ' + ', '.join(
+                ([('otherName:1.3.6.1.4.1.311.20.2.3;UTF8:%s' % upn)] if upn else []) +
+                ([('URI:%s' % url)] if url else []) + ([('email:%s' % mail)] if mail else []))]
+    return {'directory': ad.name, 'name': entry.get('sam') or who, 'dn': dn, 'cn': cn,
+            'display': entry.get('display') or '', 'upn': upn, 'sid': sid, 'mail': mail, 'url': url,
+            'subject': 'CN=%s' % cn if cn else '', 'san': san, 'role': role,
+            'groups': sorted({c for _, c in have}, key=str.lower)[:20],
+            'map': str(CONFIG.get('admin_cert_map') or 'compat'),
+            'disabled': bool(entry.get('disabled')), 'locked': bool(entry.get('locked')),
+            'notes': notes, 'certreq': '\r\n'.join(inf) + '\r\n', 'openssl': '\n'.join(ossl) + '\n'}
+
+
 @route('POST', '/api/auth/cert')
 def _auth_cert(h):
     """The page of the certificate's own port hands the browser's certificate here (nginx's
@@ -143,6 +222,10 @@ def _certlogin_do(h):
             for n, v in node_ask_results(h.store, kind, ident).items():
                 got[n] = got.get(n) or v
         return {'nodes': got}
+    if act == 'request':
+        # What a certificate request of an account needs (1.0.282): its subject, the UPN and the SID
+        # of the SAN - as AD CS writes them, and certreq's and openssl's words for them.
+        return cert_request_values(h, str(b.get('name') or ''))
     if act == 'ca_add':
         try:
             raw = base64.b64decode(str(b.get('data') or ''), validate=True)

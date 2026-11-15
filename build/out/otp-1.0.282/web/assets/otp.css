@@ -4006,3 +4006,29 @@ table.ocsp-t th:nth-child(4){width:140px} table.ocsp-t th:nth-child(5){width:18%
 table.ocsp-t th:nth-child(6){width:12%;text-align:left} table.ocsp-t td.cert-crl-num{text-align:left}
 table.ocsp-t td.cert-crl-num .mono{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
+
+/* Values for a certificate request (1.0.282). */
+.creq-find{display:flex;gap:10px;align-items:center;margin:4px 0 14px}
+.creq-find input{flex:1 1 auto;min-width:0}
+.creq-head{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin:6px 0 10px}
+.creq-who{display:flex;flex-direction:column;gap:2px}
+.creq-who b{font-size:15px}
+.creq-tags{display:flex;flex-wrap:wrap;gap:6px}
+.creq-grid{display:grid;grid-template-columns:minmax(150px,auto) 1fr auto;gap:0;border:1px solid var(--line);
+  border-radius:10px;overflow:hidden;margin:4px 0 10px}
+.creq-grid > div{padding:9px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;min-width:0}
+.creq-grid > div:nth-last-child(-n+3){border-bottom:0}
+.creq-k{flex-direction:column;align-items:flex-start !important;gap:2px;background:var(--panel2)}
+.creq-k > span:first-child{font-weight:600;font-size:13px}
+.creq-says{font-size:11px;color:var(--tx-dim)}
+.creq-v .mono{overflow-wrap:anywhere;word-break:break-all;font-size:13px}
+.creq-c{justify-content:flex-end}
+.creq-pre{max-height:260px;overflow:auto}
+@media (max-width:640px){
+  .creq-grid{grid-template-columns:1fr auto}
+  .creq-k{grid-column:1 / -1;border-bottom:0 !important;padding-bottom:2px !important}
+}
+
+/* Where the keytab guide's values come from (1.0.282). */
+.krb-adsaid{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:-2px 0 10px}
+.krb-adsaid .tag{flex:none}

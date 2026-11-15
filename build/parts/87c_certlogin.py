@@ -146,6 +146,13 @@ def cert_facts(pem):
                             sid = sid or inner[0][1].decode('ascii', 'replace')
                 elif gt == 0x81:                    # rfc822Name
                     mails.append(gv.decode('ascii', 'replace'))
+                elif gt == 0x86:                    # uniformResourceIdentifier
+                    # The SID as a URL of the SAN (1.0.282, KB5014754's strong mapping, as Microsoft
+                    # writes it): tag:microsoft.com,2022-09-14:sid:S-1-5-21-...
+                    m = re.match(r'(?i)^tag:microsoft\.com,2022-09-14:sid:(S-1-[0-9-]{3,180})\Z',
+                                 gv.decode('ascii', 'replace').strip())
+                    if m:
+                        sid = sid or m.group(1).upper()
         except (ValueError, IndexError):
             raise CertError('the Subject Alternative Name of the certificate cannot be read')
     if OID_SID_EXT in exts:

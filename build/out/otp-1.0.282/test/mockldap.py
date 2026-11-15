@@ -54,6 +54,14 @@ PARTITIONS = {
     'uPNSuffixes': ['corpnet.cz', 'corpnet.example'],
     'objectClass': ['top', 'crossRefContainer'],
 }
+# The domain's own entry among the partitions (1.0.282): its NetBIOS name is NOT the first part of its DNS
+# name - as MERIT_NT is for merit.cz - which a guess of it got wrong.
+CROSSREFS = {
+    'CN=CORPNET,CN=Partitions,CN=Configuration,DC=corpnet,DC=loc': {
+        'objectClass': ['top', 'crossRef'], 'nETBIOSName': ['CORPNET_NT'], 'dnsRoot': ['corpnet.loc'],
+        'nCName': ['DC=corpnet,DC=loc'],
+    },
+}
 
 
 # One small domain: two people, three groups, one of them inside another.
@@ -133,6 +141,15 @@ PEOPLE = {
         '_password': 'the-service-password',
     },
 }
+# A service account holding the pages' SPN (1.0.282): what the keytab guide names.
+SERVICES = {
+    'CN=svc-otp-web,OU=Service,DC=corpnet,DC=loc': {
+        'sAMAccountName': ['svc-otp-web'], 'objectClass': ['top', 'person', 'organizationalPerson', 'user'],
+        'servicePrincipalName': ['HTTP/otp.corpnet.loc'], 'userAccountControl': ['66048'],
+        'memberOf': [], '_password': 'svc-otp-web-password-1',
+    },
+}
+
 # The people a VPN realm asks about: names ending in @corpnet.cz while the
 # domain is corpnet.loc, as on the site this was written for.
 PEOPLE.update({
@@ -580,7 +597,11 @@ def serve(port=0, tls=None, stop=None):
             # Active Directory answers both, and what it says about its name
             # suffixes is how a program can know which names belong here
             # without anybody typing them in.
-            if not base or base.lower().startswith('cn=partitions,'):
+            try:
+                _sc = isemon._ber_int_of(_scope)
+            except Exception:
+                _sc = 2
+            if not base or (base.lower().startswith('cn=partitions,') and _sc == 0):
                 one = ROOTDSE if not base else PARTITIONS
                 pairs = b''
                 for name, values in one.items():
@@ -599,6 +620,8 @@ def serve(port=0, tls=None, stop=None):
             everything.update(CONTROLLERS)
             everything.update(POLICIES)
             everything.update(SITES)
+            everything.update(CROSSREFS)
+            everything.update(SERVICES)
             # Every domain controller has a ceiling of its own on how many
             # entries it will hand back in one answer - a thousand on Active
             # Directory unless somebody has changed it - and says "there is
