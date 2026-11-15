@@ -35,7 +35,14 @@ if what == 'up':
                                      stderr=subprocess.STDOUT, start_new_session=True).pid)
     open(PIDS, 'w').write(' '.join(str(p) for p in pids))
     time.sleep(2)
-    got = subprocess.run(['otp', '--cert-ca', D + '/cas.pem'], capture_output=True, text=True)
+    # The command line reads it as the otp account: a copy it may read.
+    import shutil, tempfile
+    fd, readable = tempfile.mkstemp(prefix='otp-ocsp-cas-', suffix='.pem', dir='/tmp')
+    os.close(fd)
+    shutil.copyfile(D + '/cas.pem', readable)
+    os.chmod(readable, 0o644)
+    got = subprocess.run(['otp', '--cert-ca', readable], capture_output=True, text=True)
+    os.unlink(readable)
     if got.returncode:
         raise SystemExit('cert-ca: %s' % got.stderr)
     subprocess.run(['otp', '--set', 'admin_cert_ocsp=first'], check=True, capture_output=True)

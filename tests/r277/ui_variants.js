@@ -156,7 +156,7 @@ const name = w => (w && w.name) || '-';
   const c = await p.$$eval('#sect-certlogin .set-item[data-key]', a => a.map(x => x.dataset.key));
   const s = await p.$$eval('#sect-signin .set-item[data-key]', a => a.map(x => x.dataset.key));
   ok('Windows\' card has its switches', k.join() === 'admin_kerberos,admin_kerberos_auto,admin_kerberos_realm', k.join());
-  ok('the certificate\'s card has its switches, by itself among them', c.join() === 'admin_cert,admin_cert_auto,admin_cert_port,admin_cert_map,admin_cert_crl', c.join());
+  ok('the certificate\'s card has its switches, by itself among them', c.join() === 'admin_cert,admin_cert_auto,admin_cert_port,admin_cert_map,admin_cert_crl,admin_cert_crl_ldap,admin_cert_ocsp,admin_cert_ocsp_url', c.join());
   ok('the sign-in page\'s card: No password at all', s.join() === 'admin_password_off', s.join());
   const facts = await p.textContent('#signin-host');
   ok('the sign-in page\'s card says the order: Windows silently, the certificate without a ticket', /Windows silently; the certificate when this computer has no Windows ticket/.test(facts), facts.slice(0, 300));
