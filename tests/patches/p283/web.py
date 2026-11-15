@@ -41,7 +41,10 @@ function csrWin(x) {
     f.key = selectBox([['rsa2048', 'RSA 2048 (what AD CS templates ask by default)'], ['rsa3072', 'RSA 3072'], ['rsa4096', 'RSA 4096'],
                        ['p256', 'ECDSA P-256'], ['p384', 'ECDSA P-384']], 'rsa2048');
     f.key.id = 'csr-key';
-    var kf = formField('The key', f.key); kf.classList.add('wide'); g.appendChild(kf);
+    var kf = formField('The key', f.key);
+    kf.classList.add('csr-keyf');
+    body.appendChild(el('h3', 'peek-h', 'The key pair'));
+    body.appendChild(kf);
     [['cn', 'CN (Common Name)', x.cn], ['o', 'O (organization)', ''], ['ou', 'OU (its unit)', ''], ['l', 'L (city)', ''],
      ['st', 'ST (region)', ''], ['c', 'C (country, two letters)', '']].forEach(function (s) {
       f[s[0]] = textBox(s[2] || '', s[0] === 'c' ? 'CZ' : '', 'mono');
@@ -81,8 +84,9 @@ function csrWin(x) {
     body.appendChild(el('h3', 'peek-h', 'The private key'));
     var pc = chk(true, 'Protected by a passphrase (PKCS#8, AES-256 - openssl and Windows read it)', 'csr-protect');
     f.protect = pc.box;
+    pc.lab.classList.add('csr-protect');
     body.appendChild(pc.lab);
-    var pg = el('div', 'formgrid');
+    var pg = el('div', 'formgrid csr-pass');
     f.pass = maskBox('', '', 'mono'); f.pass.id = 'csr-pass';
     f.pass2 = maskBox('', '', 'mono'); f.pass2.id = 'csr-pass2';
     var p1 = formField('Passphrase', f.pass), p2 = formField('Again', f.pass2);
@@ -156,7 +160,10 @@ if '.csr-san' not in s:
 .csr-sans{display:flex;flex-direction:column;gap:8px}
 .csr-san{display:grid;grid-template-columns:minmax(220px,auto) 1fr;gap:10px;align-items:center}
 .csr-san input[type=text]{min-width:0}
-.csr-eku{display:flex;flex-wrap:wrap;gap:6px 18px}
+.csr-eku{display:flex;flex-wrap:wrap;gap:6px 18px;margin-bottom:16px}
+.csr-keyf{max-width:520px}
+.csr-protect{display:block;margin-bottom:10px}
+.csr-pass{grid-template-columns:repeat(2,minmax(0,1fr))}
 .csr-out{margin-top:12px}
 .csr-out > .note:first-child{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 @media (max-width:640px){

@@ -7,7 +7,7 @@
 const { chromium } = require('playwright');
 for (const k of ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'https_proxy', 'http_proxy', 'all_proxy']) delete process.env[k];
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const SHOTS = process.env.SHOTS || '/tmp/claude-0/csrshots';
 const URL = 'https://127.0.0.1/admin/';
 const PW = fs.readFileSync('/home/claude/run/adminpw', 'utf8').trim();
@@ -18,7 +18,11 @@ const WORK = fs.mkdtempSync('/tmp/claude-0/csr-');
 fs.mkdirSync(SHOTS, { recursive: true });
 let R = [];
 function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w + (c || !more ? '' : ' (' + String(more).slice(0, 300) + ')')); }
-function sh(cmd, args, input) { try { return execFileSync(cmd, args, { encoding: 'utf8', input: input, stdio: ['pipe', 'pipe', 'pipe'] }); } catch (e) { return 'ERR ' + (e.stderr || e.message); } }
+function sh(cmd, args, input) {
+  /* what it said on both outputs (openssl says "verify OK" on its errors' one); ERR when it failed */
+  const r = spawnSync(cmd, args, { encoding: 'utf8', input: input });
+  return (r.status === 0 ? '' : 'ERR ') + (r.stdout || '') + (r.stderr || '');
+}
 function setup(a) { return execFileSync('python3', [__dirname + '/../cert/ui_cert_setup.py', a], { encoding: 'utf8' }); }
 async function signIn(b, vw, vh, lang) {
   const ctx = await b.newContext({ ignoreHTTPSErrors: true, viewport: { width: vw, height: vh }, deviceScaleFactor: 2, acceptDownloads: true });
@@ -63,10 +67,10 @@ async function grab(p, id) {
      await p.isChecked('#csr-eku-1') && !(await p.isChecked('#csr-eku-2')));
   await p.screenshot({ path: SHOTS + '/01-options.png' });
   // wrong input said
-  await p.fill('#csr-c', 'CZE');
+  await p.fill('#csr-c', '1Z');
   await p.click('#modal-foot button:has-text("Make the CSR")');
   await p.waitForTimeout(400);
-  ok('a country of three letters: said, nothing made', /two letters/.test(await p.textContent('.csr-out')));
+  ok('a country not of two letters: said, nothing made', /two letters/.test(await p.textContent('.csr-out')));
   await p.fill('#csr-c', 'CZ');
   await p.fill('#csr-pass', 'short');
   await p.fill('#csr-pass2', 'short');
@@ -95,13 +99,14 @@ async function grab(p, id) {
   ok('...the template in it', /S.m.a.r.t.c.a.r.d.L.o.g.o.n.O.t.p/.test(txt));
   ok('the key: locked by the passphrase', /ENCRYPTED PRIVATE KEY/.test(fs.readFileSync(key, 'utf8')) && /^ERR/.test(sh('openssl', ['pkey', '-in', key, '-passin', 'pass:wrong-one', '-noout'])));
   const kpub = sh('openssl', ['pkey', '-in', key, '-passin', 'pass:csr-passphrase-283', '-pubout']), rpub = sh('openssl', ['req', '-in', csr, '-pubkey', '-noout']);
+  // (both say only the key: the same text when it is the same key)
   ok('...opened by it, and the CSR\'s own', kpub.includes('PUBLIC KEY') && kpub === rpub);
   // the CSR signed by the test PKI's issuing authority, the certificate read by otp
   const crt = WORK + '/falco.crt';
   const signed = sh('openssl', ['x509', '-req', '-in', csr, '-CA', PKI + '/issuing.pem', '-CAkey', PKI + '/issuing.key', '-CAcreateserial',
                                 '-days', '30', '-copy_extensions', 'copy', '-out', crt]);
   ok('the CSR signed by the test PKI\'s issuing authority', fs.existsSync(crt), signed);
-  const read = sh('python3', ['-c', 'import sys;g={"__name__":"t"};exec(compile(open(sys.argv[1]).read(),"otp","exec"),g);f=g["cert_facts"](open(sys.argv[2]).read());print(f["upn"],f["sid"],f["eku"])',
+  const read = sh('python3', ['-c', 'import sys;g={"__name__":"t","__file__":sys.argv[1]};exec(compile(open(sys.argv[1]).read(),"otp","exec"),g);f=g["cert_facts"](open(sys.argv[2]).read());print(f["upn"],f["sid"],f["eku"])',
                               '/home/claude/build/out/otp-' + V + '/otp.py', crt]);
   ok('...otp reads it: falco\'s UPN and SID (strong mapping), Client Authentication and Smart Card Logon', read.includes("['falco@corpnet.cz']") && read.includes(SID) &&
      read.includes('1.3.6.1.5.5.7.3.2') && read.includes('1.3.6.1.4.1.311.20.2.2'), read);
