@@ -131,6 +131,15 @@ made outside Windows, a YubiKey's slot 9a) - to copy or download. The window als
 certificate of the account would sign anybody in: no UPN, no SID with *strong* mapping, the account
 switched off or locked, none of the groups given a role here. Nothing is changed or kept.
 
+**Make a CSR…** (1.0.283) makes the request itself, in the browser: a second window chooses the key (RSA
+2048/3072/4096, ECDSA P-256/P-384), the subject (CN, O, OU, L, ST, C), which of the UPN, the SID's URL and
+the e-mail go into the SAN (each to be edited), the extended key usages (Client Authentication, Smart Card
+Logon, Secure Email) and the template of AD CS. The key pair is made by the browser (WebCrypto) and never
+leaves it - nothing of it reaches the server; the request (`.csr`, PEM) and the private key (`.key`,
+PKCS#8, by default locked by a passphrase: PBES2 with PBKDF2-SHA-256 and AES-256-CBC) are downloaded.
+For a smart card or a YubiKey's PIV slot the key is made on the card instead (certreq's `request.inf` with
+the Smart Card Key Storage Provider, or `ykman piv keys generate` and `ykman piv certificates request`).
+
 The SID is read from the certificate's SID extension (1.3.6.1.4.1.311.25.2), the SAN's *Other Name* of
 it, **or the SAN's URL** `tag:microsoft.com,2022-09-14:sid:...` (1.0.282) - any of them satisfies
 *strong*.

@@ -4032,3 +4032,19 @@ td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
 /* Where the keytab guide's values come from (1.0.282). */
 .krb-adsaid{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:-2px 0 10px}
 .krb-adsaid .tag{flex:none}
+
+/* A CSR made in the browser (1.0.283). */
+.csr-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.csr-sans{display:flex;flex-direction:column;gap:8px}
+.csr-san{display:grid;grid-template-columns:minmax(220px,auto) 1fr;gap:10px;align-items:center}
+.csr-san input[type=text]{min-width:0}
+.csr-eku{display:flex;flex-wrap:wrap;gap:6px 18px;margin-bottom:16px}
+.csr-keyf{max-width:520px}
+.csr-protect{display:block;margin-bottom:10px}
+.csr-pass{grid-template-columns:repeat(2,minmax(0,1fr))}
+.csr-out{margin-top:12px}
+.csr-out > .note:first-child{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+@media (max-width:640px){
+  .csr-grid{grid-template-columns:1fr}
+  .csr-san{grid-template-columns:1fr}
+}
