@@ -102,26 +102,61 @@ subprocess.run(['ssh-keygen', '-q', '-t', 'rsa', '-b', '2048', '-N', '', '-C', '
 weak = open(work + '/w.pub').read().strip()
 c, x = call('node1', '/api/sshkeys', {'action': 'refresh', 'nodes': ['node1', 'node2']}, S)
 ok('read on both nodes: %s' % c, c == 200 and until(lambda: all(keys(n).get('at') for n in ('node1', 'node2'))))
-c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': pub, 'nodes': ['node1', 'node2']}, S)
+# 1.0.280: root's keys are only shown on the pages - the API refuses every change of them. What root's
+# helper does with them is asked below as the code asks it (otp.sshkeys_ask, otp.rootkey_put).
+for act, body in (('add', {'line': pub}), ('drop', {'fp': 'SHA256:x'}), ('rk_make', {'scope': 'all'}),
+                  ('rk_given', {'scope': 'all', 'key': pub}), ('rk_again', {'scope': 'all'})):
+    c, x = call('node1', '/api/sshkeys', dict(body, action=act, nodes=['node1', 'node2']), S)
+    ok('the pages may not %s a key of root: %s' % (act, c), c == 403 and 'only shown' in str(x.get('error') or x))
+
+
+def root_do(act, b):
+    """What the API did for root until 1.0.279, as the code does it - (status, answer)."""
+    try:
+        nodes = b.get('nodes') or ['node1']
+        if act == 'add':
+            line, was = otp.rootkey_public(b.get('line'), '')
+            otp.sshkeys_ask(st, nodes, 'add', 'local', line=line)
+            return 200, {'message': 'the private half was not kept' if was else 'put on'}
+        if act == 'drop':
+            otp.sshkeys_ask(st, nodes, 'drop', 'local', fp=b.get('fp'), last_ok=bool(b.get('last_ok')))
+            return 200, {}
+        scope = b.get('scope') or 'all'
+        if act == 'rk_make':
+            private, public, _ = otp.sshkey_pair(b.get('kind') or 'ed25519', 'root@test')
+            x = otp.rootkey_put(st, scope, public, 'local', 'made')
+            st.add_event('settings', 'local made a new SSH key for root on %s (%s)' % (', '.join(x['nodes']), x['fp']), 'warn')
+            return 200, dict(x, private=private)
+        if act == 'rk_given':
+            public, was = otp.rootkey_public(b.get('key'), '')
+            return 200, dict(otp.rootkey_put(st, scope, public, 'local', 'given'), message='private half not kept' if was else '')
+        if act == 'rk_download':
+            return 400, {}
+    except ValueError as e:
+        return 400, {'error': str(e)}
+    return 400, {}
+
+
+c, x = root_do('add', {'line': pub, 'nodes': ['node1', 'node2']})
 ok('a public key added to both: %s' % c, c == 200)
 ok('... it is on node1 and node2',
    until(lambda: all(any(k['comment'] == 'jan@laptop' for k in keys(n)['keys']) for n in ('node1', 'node2'))))
 ok('... the file is 0600 root, its folder 0700',
    oct(os.stat(N['node2']['dir'] + '/authorized_keys').st_mode & 0o777) == '0o600')
-c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': weak, 'nodes': ['node2']}, S)
+c, x = root_do('add', {'line': weak, 'nodes': ['node2']})
 ok('RSA 2048 refused on the node: %s' % keys('node2').get('error'),
    until(lambda: 'too weak' in (keys('node2').get('error') or '')))
-c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': 'command="sh" ' + pub, 'nodes': ['node2']}, S)
+c, x = root_do('add', {'line': 'command="sh" ' + pub, 'nodes': ['node2']})
 ok('a line with options refused: %s' % c, c == 400)
 fp_jan = [k for k in keys('node1')['keys'] if k['comment'] == 'jan@laptop'][0]['fp']
-call('node1', '/api/sshkeys', {'action': 'drop', 'fp': fp_jan, 'nodes': ['node1'], 'last_ok': True}, S)
+root_do('drop', {'fp': fp_jan, 'nodes': ['node1'], 'last_ok': True})
 ok('jan@laptop taken away on node1, kept on node2', until(lambda: not any(k['fp'] == fp_jan for k in keys('node1')['keys'])
                                                          and any(k['fp'] == fp_jan for k in keys('node2')['keys'])))
 last = keys('node2')['keys'][0]['fp']
-call('node1', '/api/sshkeys', {'action': 'drop', 'fp': last, 'nodes': ['node2']}, S)
+root_do('drop', {'fp': last, 'nodes': ['node2']})
 ok('the last key of node2 not taken away without being said again',
    until(lambda: 'last key' in (keys('node2').get('error') or '')))
-call('node1', '/api/sshkeys', {'action': 'drop', 'fp': last, 'nodes': ['node2'], 'last_ok': True}, S)
+root_do('drop', {'fp': last, 'nodes': ['node2'], 'last_ok': True})
 ok('... and taken away when said', until(lambda: not keys('node2')['keys']))
 
 # ---- root's key kept here, as isemon keeps a router's (1.0.159)
@@ -135,31 +170,31 @@ def has(node, fp):
 
 ok('scopes: every node, node1, node2', [r['scope'] for r in call('node1', '/api/sshkeys', None, S)[1]['kept']]
    == ['all', 'node1', 'node2'])
-c, x = call('node1', '/api/sshkeys', {'action': 'rk_make', 'scope': 'all'}, S)
+c, x = root_do('rk_make', {'scope': 'all'})
 ok('a key made for every node: %s, its private half handed once' % c, c == 200 and 'OPENSSH PRIVATE KEY' in x.get('private', ''))
 fa = x['fp']
 ok('... its public half on node1 and node2', until(lambda: has('node1', fa) and has('node2', fa)))
 ok('... both seen as on it', until(lambda: all(kept('all')['on'].values())))
 ok('... the private half kept nowhere', 'PRIVATE' not in json.dumps([r['v'] for r in st.db.rows("SELECT v FROM meta")]) and
    not subprocess.run(['grep', '-rl', 'OPENSSH PRIVATE', N['node1']['dir'], N['node2']['dir']], capture_output=True).stdout.strip())
-c, x = call('node1', '/api/sshkeys', {'action': 'rk_make', 'scope': 'node2', 'kind': 'rsa4096'}, S)
+c, x = root_do('rk_make', {'scope': 'node2', 'kind': 'rsa4096'})
 f2 = x['fp']
 ok('an RSA 4096 key of node2 its own: only there', until(lambda: has('node2', f2)) and not has('node1', f2)
    and any(k['bits'] == 4096 for k in keys('node2')['keys']))
-c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'node1', 'key': open(work + '/k').read()}, S)
+c, x = root_do('rk_given', {'scope': 'node1', 'key': open(work + '/k').read()})
 ok('my own private key given for node1: only its public half put on (%s)' % x.get('message'),
    c == 200 and until(lambda: any(k['comment'] == 'jan@laptop' for k in keys('node1')['keys']))
    and 'PRIVATE' not in (st.get_meta('host:rootkey:node1') or ''))
-c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'all', 'key': pub}, S)
+c, x = root_do('rk_given', {'scope': 'all', 'key': pub})
 ok('a public line given for every node', c == 200 and until(lambda: kept('all')['fp'] == fp_jan and all(kept('all')['on'].values())))
 subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'from-private', '-f', work + '/p'], check=True)
-c, x = call('node1', '/api/sshkeys', {'action': 'add', 'line': open(work + '/p').read(), 'nodes': ['node2']}, S)
+c, x = root_do('add', {'line': open(work + '/p').read(), 'nodes': ['node2']})
 ok('a private key added: only its public half put on (%s)' % x.get('message'),
    c == 200 and until(lambda: any(k['comment'] == 'from-private' for k in keys('node2')['keys'])))
-c, x = call('node1', '/api/sshkeys', {'action': 'rk_given', 'scope': 'node1', 'key': 'nonsense'}, S)
+c, x = root_do('rk_given', {'scope': 'node1', 'key': 'nonsense'})
 ok('neither a public nor a private key refused: %s' % c, c == 400)
 ok('the key made before stays on both', has('node1', fa) and has('node2', fa))
-c, x = call('node1', '/api/sshkeys', {'action': 'rk_download', 'scope': 'all'}, S)
+c, x = root_do('rk_download', {'scope': 'all'})
 ok('nothing to download: %s' % c, c == 400)
 ok('the keys read with their lines, to export', all(k.get('text', '').startswith('ssh-') for k in keys('node1')['keys']))
 ev = json.dumps(call('node1', '/api/events?limit=100', None, S)[1])

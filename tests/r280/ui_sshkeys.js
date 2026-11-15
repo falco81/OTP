@@ -11,7 +11,14 @@ const PW = fs.readFileSync('/home/claude/run/adminpw', 'utf8').trim();
 fs.mkdirSync(SHOTS, { recursive: true });
 let R = [];
 function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w + (c || !more ? '' : ' (' + String(more).slice(0, 300) + ')')); }
+const { spawn, execSync } = require('child_process');
+let loop = null;
 (async () => {
+  // root's helper in a loop (otp-web.path, as it were) while this runs, and a normal user
+  try { execSync('id t280user', { stdio: 'ignore' }); } catch (e) { execSync('useradd -m -s /bin/bash t280user'); }
+  try { execSync('pgrep -f tests/dg/webloop.sh', { stdio: 'ignore' }); } catch (e) {
+    loop = spawn('bash', [__dirname + '/../dg/webloop.sh'], { detached: true, stdio: 'ignore' });
+  }
   const b = await chromium.launch({ args: ['--no-proxy-server'] });
   const ctx = await b.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1400, height: 900 }, deviceScaleFactor: 2 });
   await ctx.addCookies([{ name: 'otp_lang', value: 'en', url: 'https://127.0.0.1' }]);
@@ -80,5 +87,6 @@ function ok(w, c, more) { R.push(!!c); console.log((c ? 'ok   ' : 'FAIL ') + w +
   }
   ok('no page errors', errs.length === 0, errs.join(' | '));
   await b.close();
+  if (loop) process.kill(-loop.pid);
   console.log('ALL ' + R.filter(Boolean).length + ' / ' + R.length);
-})().catch(e => { console.log('FAIL ' + e); console.log('ALL ' + R.filter(Boolean).length + ' / ' + (R.length + 1)); process.exit(1); });
+})().catch(e => { console.log('FAIL ' + e); if (loop) { try { process.kill(-loop.pid); } catch (x) {} } console.log('ALL ' + R.filter(Boolean).length + ' / ' + (R.length + 1)); process.exit(1); });
