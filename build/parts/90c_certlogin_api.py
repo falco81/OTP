@@ -44,6 +44,12 @@ def _auth_cert(h):
         h.failed(key)
         h.store.add_event('sign-ins', 'a sign-in with a certificate from %s was refused: %s'
                           % (h.client_ip(), e), 'warn')
+        if isinstance(e, CrlRefused):
+            # The person told little (1.0.280): which responder or CRL address of the inside network did
+            # not answer, and openssl's words, are for the administrator - in the events.
+            raise ApiError(401, 'the certificate cannot be checked for revocation (CRL, OCSP) just now - nobody '
+                                'signs in with it until it can; an administrator sees why in the events',
+                           extra={'code': 'certificate'})
         raise ApiError(401, str(e), extra={'code': 'certificate'})
     upn = f['upn'][0]
     tail = ' (serial %s, %s)' % (f['serial'], f['issuer'][:120])

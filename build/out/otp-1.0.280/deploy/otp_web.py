@@ -1215,9 +1215,25 @@ def cert_listen_hosts(port):
     for m in re.finditer(r'(?m)^\s*listen\s+(?:\[([^\]]*)\]:|([0-9.]+):)?%d\b' % int(port), text):
         h = m.group(1) if m.group(1) is not None else m.group(2)
         h = {None: '127.0.0.1', '': '127.0.0.1', '0.0.0.0': '127.0.0.1', '::': '::1'}.get(h, h)
-        if h not in hosts:
+        if h not in hosts and _own_address(h):
             hosts.append(h)
     return hosts or ['127.0.0.1']
+
+
+def _own_address(host):
+    """Whether an address is this node's own (1.0.280): the VIP's listen line, answered by the other
+    node while it holds the VIP, is no answer of this node's nginx."""
+    import socket
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((host, 0))
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        if s is not None:
+            s.close()
 
 
 def lbport_listening(port, wait=5.0, hosts=None):
@@ -1399,6 +1415,7 @@ def nginx_part(r, last):
         # address's (its name and certificate), the authorities in a file of their own.
         cl = r.get('certlogin')
         cert_look = cert_gone = 0
+        cert_gone_hosts = None
         if cl is not None and cl.get('port'):
             text = CERT_HEAD + certlogin_server(block, int(cl['port']), CERT_CA_PATH)
             if vip_block:
@@ -1416,7 +1433,7 @@ def nginx_part(r, last):
                 cert_look = int(cl['port'])
                 said.append('nginx: port %d asks for a certificate of the authorities put in (%d), for '
                             'signing in to the administration' % (cl['port'], cl['ca'].count('BEGIN CERT')))
-            elif not NO_SERVICES and not lbport_listening(int(cl['port']), 0):
+            elif not NO_SERVICES and not lbport_listening(int(cl['port']), 0, hosts=cert_listen_hosts(int(cl['port']))):
                 cert_look = int(cl['port'])
                 changed = True
         elif cl is not None and (os.path.exists(NGINX_CERT) or os.path.exists(CERT_CA_PATH)):
@@ -1424,6 +1441,9 @@ def nginx_part(r, last):
                 with open(NGINX_CERT) as f:
                     m = re.search(r'(?m)^\s*listen\s+(?:\S+:)?(\d+)\s', f.read())
                 cert_gone = int(m.group(1)) if m else 0
+                # Where it listened, read before the file goes (1.0.280): looked at 127.0.0.1 alone, a
+                # server on one address was never seen still asking.
+                cert_gone_hosts = cert_listen_hosts(cert_gone) if cert_gone else None
             except (OSError, ValueError):
                 cert_gone = 0
             for p in (NGINX_CERT, CERT_CA_PATH):
@@ -1459,12 +1479,12 @@ def nginx_part(r, last):
                 # nginx not run by systemd (a systemctl that answers without reloading it): its
                 # own signal, and a look again
                 subprocess.run(['nginx', '-s', 'reload'], capture_output=True)
-            if cert_gone and lbport_listening(cert_gone, 0):
+            if cert_gone and lbport_listening(cert_gone, 0, hosts=cert_gone_hosts):
                 # Still asking for certificates (a systemctl that answers without reloading it): its
                 # own signal, and a look again.
                 subprocess.run(['nginx', '-s', 'reload'], capture_output=True)
                 end = time.time() + 5
-                while time.time() < end and lbport_listening(cert_gone, 0):
+                while time.time() < end and lbport_listening(cert_gone, 0, hosts=cert_gone_hosts):
                     time.sleep(0.25)
             if cert_look and not lbport_listening(cert_look, hosts=cert_listen_hosts(cert_look)):
                 subprocess.run(['nginx', '-s', 'reload'], capture_output=True)

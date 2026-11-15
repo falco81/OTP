@@ -1045,7 +1045,10 @@ class RadiusQueue(object):
                     line = self.lines.get(key)
                 if line is None:
                     line = self.lines[key] = collections.deque()
-            if len(line) >= self.per_key:
+            if len(line) >= (self.per_key if key == '*' or self.n - len(line) > 0 else self.maxsize * 9 // 10):
+                # Half the queue at most while others wait (1.0.280); alone, a burst of one VPN (a NAS
+                # started again, thousands signing in) may use nine tenths of it - the rest kept for
+                # the others, and the line of the addresses that are no client always half at most.
                 raise queue.Full
             line.append(item)
             self.n += 1
@@ -1342,9 +1345,24 @@ class RadiusServer(object):
                     self.acct_jobs.put_nowait((kind, via, data, peer, time.time()))
                 else:
                     self.jobs.put_nowait((kind, via, data, peer, time.time()),
-                                         key=radius_fair_key(data, peer[0]))
+                                         key=radius_fair_key(data, peer[0]) if self.fair_known(peer[0]) else '*')
             except queue.Full:
                 self.counts['overflow'] += 1
+
+    def fair_known(self, ip):
+        """Whether a packet's address is one of the clients, for its line in the queue (1.0.280): an
+        address that is none shares the one line '*' - from addresses no secret was given to, anybody
+        took the 256 lines of their own with realm names made up, and a real NAS was left in '*'.
+        Only from the clients kept in memory: the reading thread never waits on the database."""
+        rows = getattr(self.d.store, '_clients', None)
+        if rows is None:
+            return True
+        try:
+            addr = ipaddress.ip_address(ip)
+            return any(r.get('_net') is not None and addr.version == r['_net'].version and addr in r['_net']
+                       for r in rows)
+        except (ValueError, TypeError, KeyError):
+            return True
 
     def work(self, jobs=None, quit=None):
         jobs = jobs if jobs is not None else self.jobs

@@ -33,7 +33,7 @@ DBGUARD_META_EXACT = frozenset((
     # The authorities of signing in with a certificate (1.0.275): one put in by somebody else lets
     # whoever it issues for sign in as anybody of the directory.
     'certlogin:ca'))
-DBGUARD_META_PREFIXES = (
+DBGUARD_META_PREFIXES = ('acme:chal:', 'acme:before:', 
     'web:tls:', 'web:retry:', 'ntp:sync:', 'net:want:', 'net:job:', 'net:undo:', 'net:keep:',
     'net:back:', 'readdress:dropold:', 'hatls:node:', 'dbtls:server:', 'ask:want:',
     'host:sshkeys:want:', 'host:rootkey:', 'host:osup:checkwant:', 'sshotp:u:', 'sshotp:port:',
@@ -58,7 +58,7 @@ DBGUARD_SETTINGS = frozenset((
     'logs_journal_days', 'logs_keep', 'logs_max_mb', 'ssh_gate_port', 'upgrade_downgrade',
     'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
     'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
-    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_realm', 'admin_password_off', 'admin_cert', 'admin_cert_auto', 'admin_cert_port', 'admin_cert_crl_ldap', 'admin_cert_ocsp', 'admin_cert_ocsp_url',
+    'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm', 'admin_password_off', 'admin_cert', 'admin_cert_auto', 'admin_cert_port', 'admin_cert_crl_ldap', 'admin_cert_ocsp', 'admin_cert_ocsp_url',
     'admin_cert_map', 'admin_cert_crl', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',
@@ -83,7 +83,10 @@ DBGUARD_SINCE = {
                              'acme_dns_token', 'acme_dns_tsig_alg', 'acme_dns_tsig_name', 'acme_dns_tsig_secret',
                              'acme_desec_token', 'acme_desec_domain')},
     # The signed marks of a sign-in's second step ('xm'): a node before 1.0.255 writes none.
-    '1.0.255': {}}
+    '1.0.255': {},
+    # Windows tried by itself on the sign-in page, ACME's challenges and certificate before a renewal
+    # (1.0.280): written unsigned by the versions before.
+    '1.0.280': {'settings': ('admin_kerberos_auto',), 'meta_prefixes': ('acme:chal:', 'acme:before:')}}
 # How long a node not heard from is still counted as one of the cluster's (1.0.251).
 DBGUARD_PEER_DAY_S = 86400
 DBGUARD_FILE = STATE_DIR / 'guard.json'
@@ -170,6 +173,12 @@ def _dbguard_load():
             DBGUARD['good'] = dict(odict(got.get('good'))) if isinstance(got, dict) else {}
             DBGUARD['seen_h'] = dict(odict(got.get('seen_h'))) if isinstance(got, dict) else {}
             DBGUARD['adopted'] = list(got.get('adopted') or []) if isinstance(got, dict) else []
+            by = str(got.get('by') or '1.0.279') if isinstance(got, dict) else '1.0.279'
+            if DBGUARD['had_file'] and _dbguard_ver(by) < _dbguard_ver(__version__):
+                # Written last by a version before this one (1.0.280): after a downgrade it wrote rows
+                # of a version newer than it unsigned - taken in again, as at the upgrade.
+                DBGUARD['adopted'] = [v for v in DBGUARD['adopted']
+                                      if v == 'tokens' or v not in DBGUARD_SINCE or _dbguard_ver(v) <= _dbguard_ver(by)]
 
 
 def dbguard_flush(force=False):
@@ -185,7 +194,8 @@ def dbguard_flush(force=False):
             DBGUARD['adopted'] = sorted(set(DBGUARD.get('adopted') or []) | set(DBGUARD_SINCE) |
                                         {'tokens'})
         data = json.dumps({'seen': DBGUARD['seen'], 'good': DBGUARD['good'],
-                           'seen_h': DBGUARD['seen_h'] or {}, 'adopted': DBGUARD.get('adopted') or []})
+                           'seen_h': DBGUARD['seen_h'] or {}, 'adopted': DBGUARD.get('adopted') or [],
+                           'by': __version__})
         DBGUARD['dirty'] = 0.0
     try:
         # The state folder's owner's even when root writes it (1.0.249: a copy put back, a rename from

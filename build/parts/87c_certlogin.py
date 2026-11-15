@@ -301,15 +301,57 @@ def cert_ca_drop(store, sha, by):
                     'warn', who=by)
 
 
-def cert_listening(port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(0.5)
+def cert_listen_hosts(port):
+    """Where otp's certificate server was told to listen on port (1.0.280): the addresses of its listen
+    lines that are this node's own - 127.0.0.1 when it listens on every address, or there is no such file."""
+    path = os.path.join(os.environ.get('OTP_VIP_NGINX_DIR') or '/etc/nginx/conf.d', 'otp_certlogin.conf')
     try:
-        return s.connect_ex(('127.0.0.1', int(port))) == 0
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return ['127.0.0.1']
+    hosts = []
+    for m in re.finditer(r'(?m)^\s*listen\s+(?:\[([^\]]*)\]:|([0-9.]+):)?%d\b' % int(port), text):
+        h = m.group(1) if m.group(1) is not None else m.group(2)
+        h = {None: '127.0.0.1', '': '127.0.0.1', '0.0.0.0': '127.0.0.1', '::': '::1'}.get(h, h)
+        if h not in hosts and _cert_own_address(h):
+            hosts.append(h)
+    return hosts or ['127.0.0.1']
+
+
+def _cert_own_address(host):
+    """Whether an address is this node's own (1.0.280): the VIP's listen line answered from the other
+    node, while it holds the VIP, is no answer of this node's nginx."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((host, 0))
+        return True
     except (OSError, ValueError):
         return False
     finally:
-        s.close()
+        if s is not None:
+            s.close()
+
+
+def cert_listening(port):
+    """Whether nginx answers on the certificate's port - where its server listens (1.0.280): on a node
+    whose HTTPS server listens on one address, a look at 127.0.0.1 alone said "not yet" for good."""
+    try:
+        hosts = cert_listen_hosts(int(port))
+    except (TypeError, ValueError):
+        return False
+    for host in hosts:
+        s = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        try:
+            if s.connect_ex((host, int(port))) == 0:
+                return True
+        except (OSError, ValueError):
+            pass
+        finally:
+            s.close()
+    return False
 
 
 def cert_port_ours(port):

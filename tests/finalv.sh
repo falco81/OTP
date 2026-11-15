@@ -14,13 +14,16 @@ one() {   # one test: its last lines that count
   esac
   echo "== $t ${r:-(nothing said)}"
 }
+# root's helper in a loop (otp-web.path, as it were) and a normal user, for the pages' SSH keys
+pgrep -f "tests/dg/webloop.sh" >/dev/null || (nohup bash "$T/dg/webloop.sh" >/dev/null 2>&1 &)
+id t280user >/dev/null 2>&1 || useradd -m -s /bin/bash t280user
 bash suite.sh $V
 # dg/t_root puts an older version in (the way back): this one installed again
 (cd ../build/out/otp-$V && bash install.sh --yes >/tmp/claude-0/finalv-install.log 2>&1) || echo "== install of $V again: FAIL"
 sleep 8
 for t in r2[4-9]*/t_*.py cert/t_cert.py krb/t_krb.py; do
   # r253/t_backend takes a file; r262/t_ops_fix a patch of its own day (both kept as they were)
-  case "$t" in *_ha*|*/t_ha*|r261/*|r268/*|r253/t_backend.py|r262/t_ops_fix.py|r280/*|r265/t_load.py|r265/t_pages_perf.py|r265/t_radius_perf.py) continue;; esac
+  case "$t" in *_ha*|*/t_ha*|r261/*|r268/*|r253/t_backend.py|r262/t_ops_fix.py|r265/t_load.py|r265/t_pages_perf.py|r265/t_radius_perf.py) continue;; esac
   one "$t"
 done
 for t in r2[4-9]*/ui_*.js cert/ui_cert.js krb/ui_krb.js; do

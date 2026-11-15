@@ -962,8 +962,13 @@ def acme_challenge(store, token):
     """The answer for the CA, or None: what acme.php gives on port 80."""
     if not re.match(r'^[A-Za-z0-9_-]{8,256}\Z', str(token or '')):
         return None
+    if not CONFIG.get('acme') and not str(token).startswith('otp-probe-'):
+        # Only while ACME is on (1.0.280) - or the reach probe's own answer, asked from here.
+        return None
     got = _meta_json(store, 'acme:chal:' + token) or {}
     if not got.get('auth') or time.time() - fnum(got.get('at')) > 3600:
+        return None
+    if str(token).startswith('otp-probe-') and not got.get('probe'):
         return None
     return got['auth']
 

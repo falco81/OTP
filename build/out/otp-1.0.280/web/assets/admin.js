@@ -3195,7 +3195,39 @@ function snPace(failed) {
   if (behind || SN.fast > 0) SN.fast = Math.max(0, SN.fast - 1);
   SN.poll = setTimeout(snLoad, behind || SN.fast > 0 ? 3000 : 15000);
 }
+function settingsPlace() {
+  var pane = typeof PANE !== 'undefined' && PANE && $('pane-' + PANE);
+  if (!pane || pane.hidden) return null;
+  var act = document.activeElement, pick = act && pane.contains(act) ? act.closest('.set-item[data-key]') : null;
+  if (!pick) {
+    var all = pane.querySelectorAll('.set-item[data-key], [id$="-host"]');
+    for (var i = 0; i < all.length && !pick; i++) {
+      var r = all[i].getBoundingClientRect();
+      if (r.height && r.bottom > 0 && r.top < window.innerHeight) pick = all[i];
+    }
+  }
+  if (!pick) return null;
+  return {sel: pick.dataset.key ? '.set-item[data-key="' + pick.dataset.key + '"]' : '#' + pick.id,
+          top: pick.getBoundingClientRect().top, sc: scrollerOf(pick), pane: pane};
+}
+function settingsHold(place) {
+  if (!place) return;
+  var fix = function () {
+    var n = place.pane.querySelector(place.sel);
+    if (!n) return;
+    var d = n.getBoundingClientRect().top - place.top;
+    if (Math.abs(d) >= 1) place.sc.scrollTop += d;
+  };
+  fix();
+  setTimeout(fix, 0);
+  requestAnimationFrame(fix);
+  setTimeout(fix, 150);
+}
 function drawSettings() {
+  /* What is in view stays where it is (1.0.280): every box is made again below. */
+  var place = settingsPlace();
+  /* The height held for the pane before let go (1.0.280): a short pane after a long one kept a gap. */
+  paneLetGo();
   DRAWN_NODE = SETTINGS.node || '';
   var shown = {};
   Object.keys(SETTINGS.panes).forEach(function (pane) {
@@ -3229,6 +3261,7 @@ function drawSettings() {
   explainWhatWasDrawn($('tab-settings'));
   if (typeof PANE !== 'undefined' && PANE === 'db') dbLinkNote();   /* drawn again (1.0.107) */
   if (typeof PANE !== 'undefined' && PANE === 'backup' && typeof rbPassTools === 'function') rbPassTools();
+  settingsHold(place);
 }
 
 /* Name, control, then the words, each in its own row of the grid, so every
@@ -3762,6 +3795,7 @@ $('set-save').onclick = function () {
       markDirtyCount();
       loadSettings(Object.keys(left).length ? false : undefined);
       if (paneLive('upgrade')) loadUpgrade();      /* the card to go back shown or not (1.0.144) */
+      peopleCardsAgain(Object.keys(want));
       tick();
       return true;
     }).catch(function (e) {
@@ -16509,19 +16543,23 @@ function drawSshKeys(live) {
     who.appendChild(wh);
     host.appendChild(who);
     var me = SK.user;
-    if (me === 'root') host.appendChild(skKeptCard(d));
+    /* Root's keys are only shown (1.0.280): put on and taken away by root on the node itself. */
+    if (me === 'root') host.appendChild(skRootNote());
     else host.appendChild(skUserCard(d, me));
     var card = el('div', 'card full');
     var h = el('h2', '', me === 'root' ? 'Keys that may sign in as root' : 'Keys that may sign in as');
     if (me !== 'root') h.appendChild(noI18n(el('span', 'mono', ' ' + me)));
     var tools = el('span', 'right');
-    var add = cmdButton('Add a key', 'upload', 'small');
-    explain(add, 'A key you have already - its public line or .pub file, or the private key, of which only the public half is used - put onto the nodes you choose.');
+    if (me !== 'root') {
+      var add = cmdButton('Add a key', 'upload', 'small');
+      explain(add, 'A key you have already - its public line or .pub file, or the private key, of which only the public half is used - put onto the nodes you choose.');
+      add.onclick = skAdd;
+      tools.appendChild(add);
+    }
     var again = iconButton('refresh', 'Read the keys again on every node');
-    tools.appendChild(add); tools.appendChild(again);
+    tools.appendChild(again);
     h.appendChild(tools);
     card.appendChild(h);
-    add.onclick = skAdd;
     again.onclick = function () {
       api('sshkeys', {action: 'refresh', nodes: skNodes(true), user: SK.user}).then(function () { skPoll(true); toast('asked again'); }).catch(oops);
     };
@@ -16563,9 +16601,11 @@ function drawSshKeys(live) {
         ex.disabled = !k.text;
         ex.onclick = function () { skExport(k); };
         act.appendChild(ex);
-        var rm = iconButton('trash', 'Take this key away');
-        rm.onclick = function () { skDrop(row); };
-        act.appendChild(rm);
+        if (me !== 'root') {
+          var rm = iconButton('trash', 'Take this key away');
+          rm.onclick = function () { skDrop(row); };
+          act.appendChild(rm);
+        }
         tr.appendChild(act);
         return tr;
       }, 'plain'));
@@ -16699,20 +16739,55 @@ function skKeptCard(d) {
   card.appendChild(P.box);
   return card;
 }
-/* A key for a normal user (1.0.240): made here, its private half shown once - remembered nowhere. */
+/* Root's keys are only shown (1.0.280): no key is made, put on or taken away as root from the pages. */
+function skRootNote() {
+  var card = el('div', 'card full');
+  card.appendChild(el('h2', '', 'Keys for root'));
+  var p = el('p', 'note');
+  p.innerHTML = 'Root\'s keys are only shown here - none is made, put on or taken away from these pages. That is done by root on the node itself, in <code>/root/.ssh/authorized_keys</code>. A key for another user who may sign in on the nodes is made or added here: choose them under <b>Whose keys</b>.';
+  card.appendChild(p);
+  return card;
+}
+/* A key for a normal user (1.0.240): made here, its private half shown once - remembered nowhere. In a
+   cluster the same key on every node where the user is, or a node's own (1.0.280, as root's was). */
 function skUserCard(d, user) {
   var card = el('div', 'card full');
   var h = el('h2', '', 'A key for');
   h.appendChild(noI18n(el('span', 'mono', ' ' + user)));
   card.appendChild(h);
-  var where = ((d.nodes || []).filter(function (n) { return (n.users || []).some(function (u) { return u.name === user; }); })).map(function (n) { return n.name; });
-  var P = rbPanel('Its <b>public</b> half goes into <code>~' + htmlText(user) + '/.ssh/authorized_keys</code> of ' + htmlText(where.join(', ') || 'the nodes') + ' - written as ' + htmlText(user) + ', so that the folder and the file are theirs. The <b>private</b> half is never kept here: it is shown to you once, to hand over.');
+  var there = ((d.nodes || []).filter(function (n) { return (n.users || []).some(function (u) { return u.name === user; }); })).map(function (n) { return n.name; });
+  SK.uscope = SK.uscope || {};
+  var scope = SK.uscope[user] || 'all';
+  if (scope !== 'all' && there.indexOf(scope) < 0) scope = SK.uscope[user] = 'all';
+  if (there.length > 1) {
+    var segb = el('div', 'seg');
+    ['all'].concat(there).forEach(function (sc) {
+      var b = el('button', sc === scope ? 'on' : '', sc === 'all' ? 'The same key on every node' : 'Only on');
+      if (sc !== 'all') b.appendChild(noI18n(el('b', '', ' ' + sc)));
+      b.type = 'button';
+      b.onclick = function () { SK.uscope[user] = sc; drawSshKeys(); };
+      segb.appendChild(b);
+    });
+    var ff = formField('The key for', segb);
+    ff.style.marginBottom = '12px';
+    card.appendChild(ff);
+  }
+  var where = scope === 'all' ? there : [scope];
+  var on = scope === 'all' ? (there.length > 1 ? htmlText(there.join(', ')) + ' - the same key' : htmlText(there.join(', ') || 'the nodes')) : '<b>' + htmlText(scope) + '</b> only';
+  var P = rbPanel('Its <b>public</b> half goes into <code>~' + htmlText(user) + '/.ssh/authorized_keys</code> of ' + on + ' - written as ' + htmlText(user) + ', so that the folder and the file are theirs. The <b>private</b> half is never kept here: it is shown to you once, to hand over. The key is then in the list below - exported or taken away there; a key of their own is added there too.');
+  if (!d.keygen) {
+    var miss = el('p', 'note');
+    miss.style.color = 'var(--warn)';
+    miss.textContent = 'ssh-keygen is not on this machine, so a key cannot be made or read here: dnf install openssh-clients.';
+    P.box.insertBefore(miss, P.row);
+  }
   var mk = cmdButton('Make a key', 'key', '');
+  explain(mk, 'Make a fresh pair here - Ed25519, or RSA 4096 where something old needs RSA. Its private half is shown to you once; its public half goes into ' + user + '\'s authorized_keys of ' + where.join(', ') + '.');
   mk.disabled = !d.keygen || !where.length;
   mk.onclick = function () {
     var kind = 'ed25519';
     modal('Make a key for ' + user, function (body) {
-      body.appendChild(el('p', 'note', 'A fresh pair is made here. Its private half is shown to you once, to download or copy, and kept nowhere; its public half goes onto ' + where.join(', ') + '.'));
+      body.appendChild(el('p', 'note', 'A fresh pair is made here. Its private half is shown to you once, to download or copy, and kept nowhere; its public half goes onto ' + where.join(', ') + '. A key there before stays until it is taken away in the list below.'));
       var sg = el('div', 'seg');
       [['ed25519', 'Ed25519 (the strongest, and short)'], ['rsa4096', 'RSA 4096 (where something old needs RSA)']].forEach(function (o) {
         var b = el('button', o[0] === kind ? 'on' : '', o[1]);
@@ -20061,12 +20136,32 @@ function krbTryMine(b, out) {
     out.appendChild(line);
   });
 }
+/* The cards of Windows, the certificate and the sign-in page drawn again after a save that
+   touches them (1.0.280): only the settings were read again, the cards kept what they had until F5.
+   Asked again a few times in the first minute too - root's helper puts nginx's part in a little later
+   (the certificate's port listening, the keytab written on every node). */
+var PEOPLE_AGAIN = [];
+function peopleCardsAgain(keys) {
+  if (!(keys || []).some(function (k) { return /^(admin_(kerberos|cert|password_off|2fa|directory|group_)|acme_node_name)/.test(String(k).split('@')[0]); })) return;
+  PEOPLE_AGAIN.forEach(function (t) { clearTimeout(t); });
+  PEOPLE_AGAIN = [0, 4000, 15000, 40000, 70000].map(function (ms) {
+    return setTimeout(function () {
+      if (!paneLive('people')) return;
+      loadKrb();
+      loadCert();
+    }, ms);
+  });
+}
 function drawKrb() {
   /* Laid out as in acme (1.0.277): the switches above in the card itself, then how it stands in
      chips, what is in effect, the keytab, the names, each node, and the guides with Copy. */
-  var d = KRB.d, host = $('krb-host');
-  if (!host || !d) return;
-  clear(host);
+  var real = $('krb-host');
+  if (!real || !KRB.d) return;
+  redrawKeepingPlace(real, drawKrbInto);
+  drawSignin();
+}
+function drawKrbInto(host) {
+  var d = KRB.d;
   var full = ME && ME.role === 'fulladmin';
   var kt = d.keytab || {};
   var bad = !!(d.on && d.problems && d.problems.length);
@@ -20206,16 +20301,18 @@ function drawKrb() {
   });
   host.appendChild(br);
   host.appendChild(el('p', 'note small muted', 'The way back from "only Windows", as root: otp --set admin_password_off=0 (or Kerberos switched off). More: docs/admin-kerberos.md in the package.'));
-  drawSignin();
 }
 
 /* ---- The sign-in page (1.0.277) ---------------------------------------------------------------
    What a person meets with the settings as saved: name and password offered or not, each way a
    button or tried by itself, in which order, and what happens after a refusal and after Sign out. */
 function drawSignin() {
-  var host = $('signin-host'), k = KRB.d, c = CERTL.d;
-  if (!host || !k || !c) return;
-  clear(host);
+  var real = $('signin-host');
+  if (!real || !KRB.d || !CERTL.d) return;
+  redrawKeepingPlace(real, drawSigninInto);
+}
+function drawSigninInto(host) {
+  var k = KRB.d, c = CERTL.d;
   var pwOff = !!(k.password_off || c.password_off);
   var kA = k.on && (k.auto || (pwOff && !c.on)), cA = c.on && (c.auto || (pwOff && !k.on));
   var way = function (on, auto) {

@@ -2252,7 +2252,16 @@ def _token_act(h, s, b, act, name, who):
             # administrator makes new ones.
             raise ApiError(403, '%s already has a token in use: only a full administrator '
                                 'replaces it (or the person, on the enrolment pages)' % name)
-        other = token_same_person(h.store, name, h.d) if s['role'] != 'fulladmin' else ''
+        other = ''
+        if s['role'] != 'fulladmin':
+            # Asked of the directory with the token's lock let go (1.0.280): a RADIUS worker checking
+            # a code of this name waited on a directory that hangs - then the token looked at again.
+            with token_locks_let_go(h):
+                other = token_same_person(h.store, name, h.d)
+            had = h.store.token(name)
+            if had and had.get('state') != 'pending':
+                raise ApiError(403, '%s already has a token in use: only a full administrator '
+                                    'replaces it (or the person, on the enrolment pages)' % name)
         if other:
             # The same person under another name (1.0.139): the new token
             # would be the one RADIUS takes - a working key for somebody else.
@@ -5039,7 +5048,7 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 # file was saved for the node that imported it alone - and with
                 # "replace" then taken away again.
                 if not admin_password_off_now() and any(
-                        k in want for k in ('admin_password_off', 'admin_kerberos', 'admin_cert')):
+                        k in want for k in ('admin_password_off', 'admin_kerberos', 'admin_cert', 'admin_directory')):
                     # Never put in effect by a file (1.0.278): neither switched on by it, nor a
                     # stored one woken by its Windows or certificate switch - those are left as
                     # they are here, said so.
@@ -5053,10 +5062,16 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                     after = dict(CONFIG, **probe)
                     if _setting_on(after.get('admin_password_off')) and after.get('admin_directory') and (
                             _setting_on(after.get('admin_kerberos')) or _setting_on(after.get('admin_cert'))):
-                        for k in ('admin_password_off', 'admin_kerberos', 'admin_cert'):
+                        for k in ('admin_password_off', 'admin_kerberos', 'admin_cert', 'admin_directory'):
                             if k in want and str(want[k]) != str(CONFIG.get(k)):
                                 want.pop(k)
                                 said['%s left as it is (no password at all is switched on only from the pages)' % k] += 1
+                    if 'admin_password_off' in want and str(want['admin_password_off']) != str(CONFIG.get('admin_password_off')) \
+                            and _setting_on(want['admin_password_off']):
+                        # A file of a version before 1.0.278 held it on with no way on (1.0.280): left as it
+                        # is here - saved, it stopped the import half way.
+                        want.pop('admin_password_off')
+                        said['admin_password_off left as it is (no password at all is switched on only from the pages)'] += 1
                 daemon.save_settings(want, by, node='*')
                 imported_keys |= set(want)
                 said['settings'] += len(want)
@@ -5249,11 +5264,21 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
                 back = {k: FILE_CONFIG.get(k, DEFAULTS[k]) for k in drops}
                 try:
                     hisec_guard_settings(store, back)
+                    # Nobody left without a way in by what is taken back either (1.0.280): Windows
+                    # dropped while no password at all is in effect by it.
+                    why_in = signin_ways_problem(store, {k: back[k] for k in back if '@' not in k})
+                    if why_in:
+                        raise BadSetting(why_in)
                 except BadSetting as e:
                     raise BadSetting('the settings not in the file were not taken back to their '
                                      'defaults: %s' % e)
                 for k in drops:
-                    store.drop_setting(k)
+                    if k.split('@', 1)[0] in KEPT_OFF_KEYS:
+                        # Kept as a row of its default (1.0.238's rule, 1.0.280 here too): dropped, root's
+                        # helper took "nothing said" for "leave as it is" and nginx kept serving it.
+                        store.save_setting(k, back[k], by)
+                    else:
+                        store.drop_setting(k)
                     said['settings back to default'] += 1
     except (ValueError, BadSetting) as e:
         if said:
