@@ -127,6 +127,8 @@ for db in t.get('dashboards') or []:
                     wbad.append('%s: no graph %s' % (w.get('name'), v['name']))
                 if fl['type'] == 'GRAPH_PROTOTYPE' and v['name'] not in gproto:
                     wbad.append('%s: no graph prototype %s' % (w.get('name'), v['name']))
+                if re.match(r'^thresholds\.\d+\.threshold$', fl['name']) and not re.match(r'^-?\d+(\.\d+)?[KMGTsmhdw]?$', str(v)):
+                    wbad.append('%s: a threshold is no number (%s) - Zabbix takes no macro there' % (w.get('name'), v))
                 if fl['type'] == 'STRING' and re.match(r'^(ds\.\d+\.items\.\d+|items\.\d+)$', fl['name']):
                     if not any(fnmatch.fnmatchcase(n, v) for n in allnames):
                         wbad.append('%s: the pattern %s finds no item' % (w.get('name'), v))

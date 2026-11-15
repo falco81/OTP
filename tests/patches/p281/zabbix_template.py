@@ -30,6 +30,7 @@ VALUEMAPS = {
     'otp: running': [('0', 'stopped'), ('1', 'running')],
     'otp: ok/failed': [('0', 'failed'), ('1', 'ok')],
     'otp: holds the VIP': [('0', 'no'), ('1', 'holds the VIP address')],
+    'otp: none': [('-1', 'none')],
     'Host availability status': [('0', 'not available'), ('1', 'available'), ('2', 'unknown')],
 }
 
@@ -127,10 +128,12 @@ item('otp.ha.vip.here', 'VIP address on this node', B + '.12.3.0', valuemap='otp
 item('otp.ha.vip.address', 'VIP address', B + '.12.4.0', vt='CHAR', comp='cluster', delay='15m', heartbeat='12h')
 # -- backups, mail
 item('otp.backup.nightly', 'Nightly copy', B + '.13.1.0', valuemap='otp: on/off', comp='backup', delay='15m')
-item('otp.backup.age', 'Nightly copy: age', B + '.13.3.0', units='s', comp='backup', delay='5m')
+item('otp.backup.age', 'Nightly copy: age', B + '.13.3.0', units='s', comp='backup', delay='5m', none=True, vt='FLOAT',
+     valuemap='otp: none')
 item('otp.rbackup.on', 'Backups sent away', B + '.13.4.0', valuemap='otp: on/off', comp='backup', delay='15m')
 item('otp.rbackup.ok', 'Backup sent away: the newest went', B + '.13.5.0', valuemap='otp: ok/failed', comp='backup', delay='5m')
-item('otp.rbackup.age', 'Backup sent away: age of the newest good one', B + '.13.7.0', units='s', comp='backup', delay='5m')
+item('otp.rbackup.age', 'Backup sent away: age of the newest good one', B + '.13.7.0', units='s', comp='backup', delay='5m',
+     none=True, vt='FLOAT', valuemap='otp: none')
 for i, st in enumerate(('sending', 'waiting', 'sent', 'failed', 'expired'), 1):
     item('otp.mail[%s]' % st, 'Mail: %s' % st, B + '.14.%d.0' % i, comp='mail')
 # -- signing in to the administration
@@ -193,6 +196,9 @@ def mk_item(key, name, oid, o):
         pre.append({'type': 'MULTIPLIER', 'parameters': ['8']})
     if o.get('mult'):
         pre.append({'type': 'MULTIPLIER', 'parameters': [o['mult']]})
+    if o.get('none'):
+        # 4294967295 is "none" in OTP-MIB: -1 here, shown as "none" (a value map)
+        pre.append({'type': 'JAVASCRIPT', 'parameters': ['return value == 4294967295 ? -1 : value;']})
     if o.get('heartbeat'):
         pre.append({'type': 'DISCARD_UNCHANGED_HEARTBEAT', 'parameters': [o['heartbeat']]})
     if pre:
@@ -261,14 +267,14 @@ trig('otp.host.mem.util', ex('otp.host.mem.util', 'min', '5m') + '>{$OTP.MEM.UTI
      'High memory utilization', 'AVERAGE', scope='capacity')
 trig('otp.ha.vip.here', 'change(/%s/otp.ha.vip.here)<>0' % T, 'The VIP address moved', 'INFO',
      'This node took the VIP address, or gave it up.', scope='notice', recovery=None)
-MULTI.append({'uuid': uid('trigger', 'nightly'), 'expression': '%s=1 and %s>{$OTP.BACKUP.AGE.MAX}' % (
-    ex('otp.backup.nightly'), ex('otp.backup.age')), 'name': TP + 'No nightly copy of the database',
+MULTI.append({'uuid': uid('trigger', 'nightly'), 'expression': '%s=1 and (%s>{$OTP.BACKUP.AGE.MAX} or %s=-1)' % (
+    ex('otp.backup.nightly'), ex('otp.backup.age'), ex('otp.backup.age')), 'name': TP + 'No nightly copy of the database',
     'priority': 'WARNING', 'opdata': 'Age: {ITEM.LASTVALUE2}', 'tags': tags(('scope', 'availability'))})
 MULTI.append({'uuid': uid('trigger', 'rbackup-failed'), 'expression': '%s=1 and %s=0' % (
     ex('otp.rbackup.on'), ex('otp.rbackup.ok')), 'name': TP + 'The backup sent away failed', 'priority': 'HIGH',
     'tags': tags(('scope', 'availability'))})
-MULTI.append({'uuid': uid('trigger', 'rbackup-old'), 'expression': '%s=1 and %s>{$OTP.RBACKUP.AGE.MAX}' % (
-    ex('otp.rbackup.on'), ex('otp.rbackup.age')), 'name': TP + 'No backup went away in time', 'priority': 'WARNING',
+MULTI.append({'uuid': uid('trigger', 'rbackup-old'), 'expression': '%s=1 and (%s>{$OTP.RBACKUP.AGE.MAX} or %s=-1)' % (
+    ex('otp.rbackup.on'), ex('otp.rbackup.age'), ex('otp.rbackup.age')), 'name': TP + 'No backup went away in time', 'priority': 'WARNING',
     'opdata': 'Age: {ITEM.LASTVALUE2}', 'tags': tags(('scope', 'availability')),
     'dependencies': [{'name': TP + 'The backup sent away failed', 'expression': '%s=1 and %s=0' % (
         ex('otp.rbackup.on'), ex('otp.rbackup.ok'))}]})
@@ -533,10 +539,10 @@ def fitem(key, n='itemid.0'):
     return f('ITEM', n, {'host': T, 'key': key})
 
 
-def tile(name, key, x, y, color, wd=12, h=3, units_show=True, thresholds=()):
+def tile(name, key, x, y, color, wd=12, h=3, units_show=True, thresholds=(), size='40'):
     fl = [f('STRING', 'bg_color', color), f('STRING', 'description', name), f('STRING', 'desc_color', 'FFFFFF'),
           f('INTEGER', 'desc_size', '12'), f('INTEGER', 'desc_v_pos', '0'), fitem(key), f('INTEGER', 'show.0', '2'),
-          f('INTEGER', 'show.1', '1'), f('STRING', 'value_color', 'FFFFFF'), f('INTEGER', 'value_size', '40'),
+          f('INTEGER', 'show.1', '1'), f('STRING', 'value_color', 'FFFFFF'), f('INTEGER', 'value_size', size),
           f('INTEGER', 'decimal_places', '0')]
     for i, (thr, col) in enumerate(thresholds):
         fl += [f('STRING', 'thresholds.%d.color' % i, col), f('STRING', 'thresholds.%d.threshold' % i, thr)]
@@ -606,14 +612,14 @@ def pie(name, x, y, keys, wd=24, h=6):
 GOOD, BAD, WARN, BLUE, GREY = '43A047', 'E53935', 'FFB300', '1E88E5', '546E7A'
 pages = [
     {'name': 'Overview', 'widgets': [
-        tile('RADIUS', 'otp.radius.listening', 0, 0, BLUE, thresholds=(('0', BAD), ('1', GOOD))),
-        tile('Database', 'otp.db.up', 12, 0, BLUE, thresholds=(('0', BAD), ('1', GOOD))),
+        tile('RADIUS', 'otp.radius.listening', 0, 0, BLUE, thresholds=(('0', BAD), ('1', GOOD)), size='18'),
+        tile('Database', 'otp.db.up', 12, 0, BLUE, thresholds=(('0', BAD), ('1', GOOD)), size='25'),
         tile('Problems', 'otp.alerts[bad]', 24, 0, GOOD, thresholds=(('0', GOOD), ('1', BAD))),
         tile('Warnings', 'otp.alerts[warn]', 36, 0, GOOD, thresholds=(('0', GOOD), ('1', WARN))),
         tile('Active tokens', 'otp.tokens[active]', 48, 0, BLUE),
-        tile('Version', 'otp.version', 60, 0, GREY),
-        gauge('CPU', 'otp.host.cpu.util', 0, 3, 18, 5, '{$OTP.CPU.UTIL.WARN}', '{$OTP.CPU.UTIL.CRIT}'),
-        gauge('Memory', 'otp.host.mem.util', 18, 3, 18, 5, '80', '{$OTP.MEM.UTIL.WARN}'),
+        tile('Version', 'otp.version', 60, 0, GREY, size='20'),
+        gauge('CPU', 'otp.host.cpu.util', 0, 3, 18, 5, '80', '90'),
+        gauge('Memory', 'otp.host.mem.util', 18, 3, 18, 5, '80', '90'),
         svg('RADIUS requests per second', 36, 3, [('RADIUS Access-Accept*', GOOD), ('RADIUS Access-Reject*', BAD),
                                                   ('RADIUS Access-Challenge*', BLUE)], 36, 5),
         problems('Problems', 0, 8, 72, 6)]},
@@ -629,8 +635,8 @@ pages = [
         gr('RADIUS trouble', 0, 9), gr('RADIUS queue', 36, 9),
         gr('Database latency', 0, 14), gr('Tokens', 36, 14)]},
     {'name': 'Machine', 'widgets': [
-        gauge('CPU', 'otp.host.cpu.util', 0, 0, 18, 5, '{$OTP.CPU.UTIL.WARN}', '{$OTP.CPU.UTIL.CRIT}'),
-        gauge('Memory', 'otp.host.mem.util', 18, 0, 18, 5, '80', '{$OTP.MEM.UTIL.WARN}'),
+        gauge('CPU', 'otp.host.cpu.util', 0, 0, 18, 5, '80', '90'),
+        gauge('Memory', 'otp.host.mem.util', 18, 0, 18, 5, '80', '90'),
         gr('CPU utilization', 36, 0),
         gr('Load average', 0, 5), gr('Memory', 36, 5),
         gr('Disk I/O', 0, 10), gr('Network traffic', 36, 10),
@@ -638,11 +644,11 @@ pages = [
               thresholds=(('0', GOOD), ('85', WARN), ('95', BAD)), label='{{ITEM.NAME}.regsub("^(.*): space used", "\\1")}'),
         gproto('{#FSPATH}: space', 0, 19, 72, 5, '3')]},
     {'name': 'Cluster and directories', 'widgets': [
-        tile('In a cluster', 'otp.ha.cluster', 0, 0, GREY),
-        tile('VIP address here', 'otp.ha.vip.here', 12, 0, BLUE, thresholds=(('0', GREY), ('1', GOOD))),
-        tile('VIP address', 'otp.ha.vip.address', 24, 0, GREY, wd=24),
+        tile('In a cluster', 'otp.ha.cluster', 0, 0, GREY, size='25'),
+        tile('VIP address here', 'otp.ha.vip.here', 12, 0, BLUE, thresholds=(('0', GREY), ('1', GOOD)), size='14'),
+        tile('VIP address', 'otp.ha.vip.address', 24, 0, GREY, wd=24, size='25'),
         tile('Directories', 'otp.radius.directories', 48, 0, GREY),
-        tile('Clock offset', 'otp.clock.offset', 60, 0, BLUE),
+        tile('Clock offset', 'otp.clock.offset', 60, 0, BLUE, size='25'),
         honey('Nodes', 'Node *: heard from', 0, 3, 36, 4),
         honey('Directories', 'Directory *: answers', 36, 3, 36, 4),
         gproto('Node {#NODE}: since heard from', 0, 7, 36, 5, '1'),
@@ -653,10 +659,10 @@ pages = [
               thresholds=(('0', BAD), ('7', WARN), ('21', GOOD))),
         tile('CRLs kept', 'otp.crl.count', 0, 4, GREY),
         tile('CRLs not had', 'otp.crl.bad', 12, 4, GOOD, thresholds=(('0', GOOD), ('1', BAD))),
-        tile('OCSP', 'otp.ocsp.mode', 24, 4, GREY),
+        tile('OCSP', 'otp.ocsp.mode', 24, 4, GREY, size='25'),
         tile('OCSP not good', 'otp.ocsp.bad', 36, 4, GOOD, thresholds=(('0', GOOD), ('1', WARN))),
-        tile('Nightly copy age', 'otp.backup.age', 48, 4, BLUE),
-        tile('Backup sent away', 'otp.rbackup.age', 60, 4, BLUE),
+        tile('Nightly copy age', 'otp.backup.age', 48, 4, BLUE, size='22'),
+        tile('Backup sent away', 'otp.rbackup.age', 60, 4, BLUE, size='22'),
         gr('Problems otp sees', 0, 7), gr('Mail queue', 36, 7)]},
 ]
 dashboard = {'uuid': uid('dashboard', 'otp'), 'name': 'otp', 'display_period': '60', 'pages': pages}
