@@ -1,0 +1,4427 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+  - uuid: 2a2a014090d24ed78fcbe524a0db6b2a
+    name: Templates/Applications
+  templates:
+  - uuid: 68b63a815e73467282ffd9c8bf820099
+    template: otp by SNMP
+    name: otp by SNMP
+    description: |-
+      otp, the one-time password server (RADIUS): every node by its own SNMPv3 agent (Settings - Monitoring - SNMP).
+
+      The host: an SNMP interface at the node's own address (not the VIP address), SNMPv3, authPriv, the user and both passphrases of the page; link this template. MIB: OTP-MIB (deploy/OTP-MIB.txt in the package).
+
+      Made by otp 1.0.281.
+    vendor:
+      name: otp
+      version: 7.0-281
+    groups:
+    - name: Templates/Applications
+    items:
+    - uuid: 9b9438027b364c049f7f0e03752ca41f
+      name: Accepted in the last 24 hours
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.18.0]
+      key: otp.radius.day[accept]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.18.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 1a3b36c8918c4fbbaece8ffb9fc3f7c3
+      name: 'Backup sent away: age of the newest good one'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.13.7.0]
+      key: otp.rbackup.age
+      delay: 5m
+      value_type: FLOAT
+      units: s
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.13.7.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: none'
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - 'return value == 4294967295 ? -1 : value;'
+      tags:
+      - tag: component
+        value: backup
+    - uuid: f461702689c243128f363d34a55c8b63
+      name: 'Backup sent away: the newest went'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.13.5.0]
+      key: otp.rbackup.ok
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.13.5.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: ok/failed'
+      tags:
+      - tag: component
+        value: backup
+    - uuid: 44aee3589c9049679c35a6a0dfc628a0
+      name: Backups sent away
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.13.4.0]
+      key: otp.rbackup.on
+      delay: 15m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.13.4.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: backup
+    - uuid: 8faa217004ab4d31bd0c0bdfc16714e5
+      name: 'Certificates of the pages: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.6.1.1.2,1.3.6.1.4.1.8072.9999.9999.7.6.1.1.3,1.3.6.1.4.1.8072.9999.9999.7.6.1.1.4,1.3.6.1.4.1.8072.9999.9999.7.6.1.1.5]
+      key: otp.cert.walk
+      delay: 1h
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by Certificates of the pages.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 59be0c82645f4afeb0e33e129dcb1c15
+      name: Challenged in the last 24 hours
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.20.0]
+      key: otp.radius.day[challenge]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.20.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 7aad7c1b6522440995c4f0198bae630f
+      name: Clock guard
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.16.2.0]
+      key: otp.clock.mode
+      delay: 15m
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.16.2.0 (OTP-MIB)'
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: clock
+    - uuid: d7f1baef51f348cfa1def56f435bed1f
+      name: Clock guard holding codes back
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.16.1.0]
+      key: otp.clock.engaged
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.16.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: yes/no'
+      tags:
+      - tag: component
+        value: clock
+      triggers:
+      - uuid: 2ad0cbdbaa084c1caf8b38dbcc3fa070
+        expression: last(/otp by SNMP/otp.clock.engaged)=1
+        name: 'otp: The clock guard holds codes back'
+        priority: HIGH
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: 'The clock of this node is not to be trusted: codes are refused until it is (Settings - Time).'
+        tags:
+        - tag: scope
+          value: availability
+    - uuid: bac720e26cab4430a92225bf575e0f0e
+      name: 'Clock: offset from the time servers'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.16.3.0]
+      key: otp.clock.offset
+      value_type: FLOAT
+      units: s
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.16.3.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      tags:
+      - tag: component
+        value: clock
+      triggers:
+      - uuid: 6594ee7ad5c2484d90a930a202a248ef
+        expression: abs(last(/otp by SNMP/otp.clock.offset))>{$OTP.CLOCK.OFFSET.MAX}/1000
+        name: 'otp: The clock is off'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: fd44b53027a34aefa3c3128b2c5214e4
+      name: 'Clock: skew from the other node or the directory'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.16.4.0]
+      key: otp.clock.skew
+      value_type: FLOAT
+      units: s
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.16.4.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.001'
+      tags:
+      - tag: component
+        value: clock
+    - uuid: 9b1319dfbeb546dfa7cf78c8aba44326
+      name: Cluster
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.12.1.0]
+      key: otp.ha.cluster
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: yes/no'
+      tags:
+      - tag: component
+        value: cluster
+    - uuid: d0c970b6d1084f69b3a1ea592ac4a8fd
+      name: CPU cores
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.3.0]
+      key: otp.host.cpu.cores
+      delay: 1h
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.3.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: ed5cf4ad20134ccdb960b185cf477838
+      name: CPU idle ticks, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.1.0]
+      key: otp.host.cpu.idle.rate
+      history: 1d
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.1.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: 6dd3b6eb5f6c4dd2a0fc8b8c6e6f8cb4
+      name: CPU ticks in all, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.2.0]
+      key: otp.host.cpu.total.rate
+      history: 1d
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.2.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: db101f4577c246da960818951aece0b7
+      name: CPU utilization
+      type: CALCULATED
+      key: otp.host.cpu.util
+      value_type: FLOAT
+      units: '%'
+      params: 100*(1-last(//otp.host.cpu.idle.rate)/last(//otp.host.cpu.total.rate))
+      description: |
+        All cores: the part of the time not idle.
+      tags:
+      - tag: component
+        value: cpu
+      triggers:
+      - uuid: f195dfb658af4b4892254c71d2e06191
+        expression: min(/otp by SNMP/otp.host.cpu.util,5m)>{$OTP.CPU.UTIL.CRIT}
+        name: 'otp: High CPU utilization'
+        priority: AVERAGE
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: performance
+      - uuid: ff8cb64200604d35b34a634a1988eda2
+        expression: min(/otp by SNMP/otp.host.cpu.util,5m)>{$OTP.CPU.UTIL.WARN}
+        name: 'otp: CPU utilization is rising'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        dependencies:
+        - name: 'otp: High CPU utilization'
+          expression: min(/otp by SNMP/otp.host.cpu.util,5m)>{$OTP.CPU.UTIL.CRIT}
+        tags:
+        - tag: scope
+          value: performance
+    - uuid: 0eec455b9b0b4141bbb9fcc563758db5
+      name: CRLs kept
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.5.0]
+      key: otp.crl.count
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.5.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: 688d6bcfe82640bab81d7d4cc6518a74
+      name: CRLs not had or run out
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.6.0]
+      key: otp.crl.bad
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.6.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: 2d5ba1314e08472c8d8c171aa32f2f01
+      name: Database engine
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.1.4.0]
+      key: otp.db.engine
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.1.4.0 (OTP-MIB)'
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: database
+    - uuid: 582819d5175842ee9022a80d02d5a36e
+      name: Database latency
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.3.2.0]
+      key: otp.db.latency
+      value_type: FLOAT
+      units: s
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.3.2.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.000001'
+      tags:
+      - tag: component
+        value: database
+      triggers:
+      - uuid: fce7de19a7e04512aa405761b4a43f65
+        expression: min(/otp by SNMP/otp.db.latency,5m)>{$OTP.DB.LATENCY.WARN}
+        name: 'otp: The database is slow'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        dependencies:
+        - name: 'otp: The database does not answer'
+          expression: last(/otp by SNMP/otp.db.up)=0
+        tags:
+        - tag: scope
+          value: performance
+    - uuid: 442aafdb75d140a8af7edfe1454c2f79
+      name: Database up
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.3.1.0]
+      key: otp.db.up
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.3.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: up/down'
+      tags:
+      - tag: component
+        value: database
+      triggers:
+      - uuid: d198aeb975bf4fc69872b09b886e4196
+        expression: last(/otp by SNMP/otp.db.up)=0
+        name: 'otp: The database does not answer'
+        priority: DISASTER
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        dependencies:
+        - name: 'otp: No SNMP answer'
+          expression: max(/otp by SNMP/zabbix[host,snmp,available],{$OTP.NODATA.TIMEOUT})=0
+        tags:
+        - tag: scope
+          value: availability
+    - uuid: 3032de901f5345c3b08fa4e1da6c5c31
+      name: Directories
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.17.0]
+      key: otp.radius.directories
+      delay: 15m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.17.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: directory
+    - uuid: 231a2116775d43d7a22aab43ff3d6b71
+      name: 'Directories: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.11.1.1.2,1.3.6.1.4.1.8072.9999.9999.7.11.1.1.3,1.3.6.1.4.1.8072.9999.9999.7.11.1.1.4,1.3.6.1.4.1.8072.9999.9999.7.11.1.1.5]
+      key: otp.dir.walk
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by Directories.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 681591a4a26143e7ababd39b26565860
+      name: 'Disks: read'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.10.0]
+      key: otp.host.disk.read
+      value_type: FLOAT
+      units: Bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.10.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: storage
+    - uuid: 6ac834c0f17f4241a322456ba30615dd
+      name: 'Disks: written'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.11.0]
+      key: otp.host.disk.write
+      value_type: FLOAT
+      units: Bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.11.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: storage
+    - uuid: 990519907bbe415295f92fe691429316
+      name: 'File systems: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.10.20.1.2,1.3.6.1.4.1.8072.9999.9999.7.10.20.1.3,1.3.6.1.4.1.8072.9999.9999.7.10.20.1.4,1.3.6.1.4.1.8072.9999.9999.7.10.20.1.5,1.3.6.1.4.1.8072.9999.9999.7.10.20.1.6,1.3.6.1.4.1.8072.9999.9999.7.10.20.1.7]
+      key: otp.fs.walk
+      delay: 5m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by File systems.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 0037d4b8e0b14e0781f3227475af927d
+      name: High security
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.1.5.0]
+      key: otp.high_security
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.1.5.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: security
+    - uuid: b352b3db2ac843039647c5c5caafd2c4
+      name: In a cluster
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.1.6.0]
+      key: otp.in_cluster
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.1.6.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: yes/no'
+      tags:
+      - tag: component
+        value: cluster
+    - uuid: d918ff0a371c4a3aae6270e331e4c85f
+      name: Load average (1 min)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.4.0]
+      key: otp.host.load[1]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.4.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: f7afdee52ca243b9a4e0197af6d8c128
+      name: Load average (15 min)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.6.0]
+      key: otp.host.load[15]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.6.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: 37e5921e1996476f8035c09fe9902e52
+      name: Load average (5 min)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.5.0]
+      key: otp.host.load[5]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.5.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: 39f6589ca92d4fd0873b53de6559a0ce
+      name: Logs to isemon
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.1.1.0]
+      key: otp.logs.on[isemon]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.1.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: logs
+    - uuid: baa353a7d98e41349436280b8f5b2605
+      name: 'Logs to isemon: in trouble'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.1.2.0]
+      key: otp.logs.trouble[isemon]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.1.2.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: yes/no'
+      tags:
+      - tag: component
+        value: logs
+    - uuid: 1f695f337168497babe4325ccc038ea1
+      name: 'Logs to isemon: lines dropped per second'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.1.4.0]
+      key: otp.logs.dropped[isemon]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.1.4.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: logs
+      triggers:
+      - uuid: d3c5c56c947c4752bd1a33c566a25eea
+        expression: min(/otp by SNMP/otp.logs.dropped[isemon],5m)>0
+        name: 'otp: Logs to isemon are dropped'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: capacity
+    - uuid: 8faac841a5564f24bb537d80cfc6a47a
+      name: 'Logs to isemon: lines per second'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.1.3.0]
+      key: otp.logs.sent[isemon]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.1.3.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: logs
+    - uuid: d1babc0276204bd79bfcbd6a0362377a
+      name: Logs to SIEM
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.2.1.0]
+      key: otp.logs.on[siem]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.2.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: logs
+    - uuid: a507a330c6ee4348b6618c0d5a59f911
+      name: 'Logs to SIEM: in trouble'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.2.2.0]
+      key: otp.logs.trouble[siem]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.2.2.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: yes/no'
+      tags:
+      - tag: component
+        value: logs
+    - uuid: b1ee1d9df4f048de906616aaacccc272
+      name: 'Logs to SIEM: lines dropped per second'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.2.4.0]
+      key: otp.logs.dropped[siem]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.2.4.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: logs
+      triggers:
+      - uuid: de6f5123faba4ee7b7fd43e4612c3acb
+        expression: min(/otp by SNMP/otp.logs.dropped[siem],5m)>0
+        name: 'otp: Logs to the SIEM are dropped'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: capacity
+    - uuid: 5c992a7f0b584509a18ce6ce14565a92
+      name: 'Logs to SIEM: lines per second'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.17.2.3.0]
+      key: otp.logs.sent[siem]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.17.2.3.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: logs
+    - uuid: c8e63989fc224284954bfc647d93bba9
+      name: 'Mail: expired'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.14.5.0]
+      key: otp.mail[expired]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.14.5.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: mail
+    - uuid: 969e3228958a4658ac611705b5f1359a
+      name: 'Mail: failed'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.14.4.0]
+      key: otp.mail[failed]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.14.4.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: mail
+      triggers:
+      - uuid: 01ec0b2b8b3440c0a72c1bdadc49365e
+        expression: last(/otp by SNMP/otp.mail[failed])>0
+        name: 'otp: Mail could not be sent'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: Settings - Outgoing mail says why.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: c8b19b6203924baca6abfd04d232f96c
+      name: 'Mail: sending'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.14.1.0]
+      key: otp.mail[sending]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.14.1.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: mail
+    - uuid: 172f40e75454477394e2eff0757e4552
+      name: 'Mail: sent'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.14.3.0]
+      key: otp.mail[sent]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.14.3.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: mail
+    - uuid: 3038840bd6614a24aa764b7b779f082c
+      name: 'Mail: waiting'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.14.2.0]
+      key: otp.mail[waiting]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.14.2.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: mail
+      triggers:
+      - uuid: 19e285e7cbe149b08fe5298b39315d90
+        expression: min(/otp by SNMP/otp.mail[waiting],30m)>{$OTP.MAIL.WAITING.MAX}
+        name: 'otp: Mail is piling up'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: performance
+    - uuid: d2485fff7f28440abb0e65ed12218c75
+      name: Memory utilization
+      type: CALCULATED
+      key: otp.host.mem.util
+      value_type: FLOAT
+      units: '%'
+      params: 100*last(//otp.host.mem.used)/last(//otp.host.mem.total)
+      tags:
+      - tag: component
+        value: memory
+      triggers:
+      - uuid: c6db9ea8c6584e54a7a9c0291adefe72
+        expression: min(/otp by SNMP/otp.host.mem.util,5m)>{$OTP.MEM.UTIL.WARN}
+        name: 'otp: High memory utilization'
+        priority: AVERAGE
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: capacity
+    - uuid: a075389ef16b417c906032b5db736f23
+      name: 'Memory: total'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.7.0]
+      key: otp.host.mem.total
+      delay: 15m
+      units: B
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.7.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '1024'
+      tags:
+      - tag: component
+        value: memory
+    - uuid: 22d24a30b1d847e3bbd1d0719253c83c
+      name: 'Memory: used'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.8.0]
+      key: otp.host.mem.used
+      units: B
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.8.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '1024'
+      tags:
+      - tag: component
+        value: memory
+    - uuid: e8d43e3ed5ee4b04be8cc0c57f594fb4
+      name: 'Network: in'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.12.0]
+      key: otp.host.net.rx
+      value_type: FLOAT
+      units: bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.12.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      - type: MULTIPLIER
+        parameters:
+        - '8'
+      tags:
+      - tag: component
+        value: network
+    - uuid: 8b3847fca87f49a48c3da149f6c60673
+      name: 'Network: out'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.13.0]
+      key: otp.host.net.tx
+      value_type: FLOAT
+      units: bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.13.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      - type: MULTIPLIER
+        parameters:
+        - '8'
+      tags:
+      - tag: component
+        value: network
+    - uuid: f07c5707efa744ebab3a8b27ed7269cb
+      name: Nightly copy
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.13.1.0]
+      key: otp.backup.nightly
+      delay: 15m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.13.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: backup
+    - uuid: 38b0f2cb3e5f47c682f51532cb0b6457
+      name: 'Nightly copy: age'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.13.3.0]
+      key: otp.backup.age
+      delay: 5m
+      value_type: FLOAT
+      units: s
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.13.3.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: none'
+      preprocessing:
+      - type: JAVASCRIPT
+        parameters:
+        - 'return value == 4294967295 ? -1 : value;'
+      tags:
+      - tag: component
+        value: backup
+    - uuid: 790ee2539c2d4b538a1578b51b132941
+      name: No password at all
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.3.0]
+      key: otp.signin.password_off
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.3.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: yes/no'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: b11b06dff4ea4564a14b276fa28455f0
+      name: Node name
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.1.2.0]
+      key: otp.node
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.1.2.0 (OTP-MIB)'
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: system
+    - uuid: ae6ada633cb842ed9eca8c0b15df2333
+      name: 'Nodes of the cluster: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.7.1.1.2,1.3.6.1.4.1.8072.9999.9999.7.7.1.1.3,1.3.6.1.4.1.8072.9999.9999.7.7.1.1.4]
+      key: otp.node.walk
+      delay: 5m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by Nodes of the cluster.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 320e9ec825914bb2b469bd3c78665b88
+      name: OCSP
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.7.0]
+      key: otp.ocsp.mode
+      delay: 5m
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.7.0 (OTP-MIB)'
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: signin
+    - uuid: 51babeb4940440ce964e08dcd59a5131
+      name: OCSP answers kept
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.8.0]
+      key: otp.ocsp.count
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.8.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: b514488b32634ff2bd5343aa25ab4036
+      name: OCSP answers not good
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.9.0]
+      key: otp.ocsp.bad
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.9.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: c491316ad19247289e6c6b8855d5d273
+      name: 'Problems otp sees: bad'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.5.1.0]
+      key: otp.alerts[bad]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.5.1.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: alerts
+      triggers:
+      - uuid: b71db79973d74657a5151d8ba32d6a8b
+        expression: last(/otp by SNMP/otp.alerts[bad])>0
+        name: 'otp: otp sees {ITEM.LASTVALUE1} problem(s)'
+        priority: HIGH
+        description: Settings - Alerts and the Overview of the pages say which; each is a problem of its own below too.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 0aaf4c095c13420eaf9d6ff5b060eda0
+      name: 'Problems otp sees: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.5.3.1.2,1.3.6.1.4.1.8072.9999.9999.7.5.3.1.3,1.3.6.1.4.1.8072.9999.9999.7.5.3.1.4,1.3.6.1.4.1.8072.9999.9999.7.5.3.1.5]
+      key: otp.alert.walk
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by Problems otp sees.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 90324d5bdab44c1a8ed015a22e2770ca
+      name: 'Problems otp sees: warnings'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.5.2.0]
+      key: otp.alerts[warn]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.5.2.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: alerts
+      triggers:
+      - uuid: fee0ee8d8c5541e8b5a0ba43963cded9
+        expression: last(/otp by SNMP/otp.alerts[warn])>0
+        name: 'otp: otp sees {ITEM.LASTVALUE1} warning(s)'
+        priority: WARNING
+        dependencies:
+        - name: 'otp: otp sees {ITEM.LASTVALUE1} problem(s)'
+          expression: last(/otp by SNMP/otp.alerts[bad])>0
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: ff420b27a9344c2f817ce3315e460344
+      name: RADIUS Access-Accept, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.4.0]
+      key: otp.radius.rate[accept]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.4.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: db713a660a384b1db8543921ecf379a5
+      name: RADIUS Access-Challenge, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.6.0]
+      key: otp.radius.rate[challenge]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.6.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 54f2257458dc4051b9545e6030d4c2e4
+      name: RADIUS Access-Reject, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.5.0]
+      key: otp.radius.rate[reject]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.5.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 02fd0c2bc8da49f2a4a9a80bba70c82c
+      name: RADIUS Accounting answered, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.7.0]
+      key: otp.radius.rate[accounting]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.7.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 949b2b7281e7481d8af9cf7b10cf9d1b
+      name: RADIUS clients
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.15.0]
+      key: otp.radius.clients
+      delay: 15m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.15.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: radius
+    - uuid: a6a6620ea63144519333d760850be4ea
+      name: RADIUS dropped, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.9.0]
+      key: otp.radius.rate[dropped]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.9.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 3042a1c201574181ad4ea8576ccd6754
+      name: RADIUS from no client, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.11.0]
+      key: otp.radius.rate[unknown]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.11.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 93ce6ca37f1642d4b078b3f8f72aece1
+      name: RADIUS listening
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.1.0]
+      key: otp.radius.listening
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: listening'
+      tags:
+      - tag: component
+        value: radius
+      triggers:
+      - uuid: 852b81cd92b6440dbecf11943051f83e
+        expression: last(/otp by SNMP/otp.radius.listening)=0
+        name: 'otp: RADIUS is not listening'
+        priority: DISASTER
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: Nobody signs in to the VPN through this node.
+        dependencies:
+        - name: 'otp: No SNMP answer'
+          expression: max(/otp by SNMP/zabbix[host,snmp,available],{$OTP.NODATA.TIMEOUT})=0
+        tags:
+        - tag: scope
+          value: availability
+    - uuid: 6fc12f02d80d40e98ae7e0dfccee6658
+      name: RADIUS malformed packets, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.10.0]
+      key: otp.radius.rate[malformed]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.10.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 350478a467df4f3098a649260dbe2706
+      name: RADIUS not answered in maintenance, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.14.0]
+      key: otp.radius.rate[maintenance]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.14.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: ab5968a2124a4425be718a92c09d7816
+      name: RADIUS packets, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.3.0]
+      key: otp.radius.rate[packets]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.3.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 68e6b97d676243428093bb5d81cd4082
+      name: RADIUS requests waiting
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.2.0]
+      key: otp.radius.queued
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.2.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: radius
+      triggers:
+      - uuid: 21fa3fd33cb34c53aaf3771243c59ffd
+        expression: min(/otp by SNMP/otp.radius.queued,5m)>{$OTP.RADIUS.QUEUE.WARN}
+        name: 'otp: RADIUS requests are waiting'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: 'More than {$OTP.RADIUS.QUEUE.WARN} requests waited for a worker for 5 minutes: the directory or the
+          database is slow.'
+        tags:
+        - tag: scope
+          value: performance
+    - uuid: 95d6dced3a7f437fb1d5eb70e0221d06
+      name: 'RADIUS results of the last day: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.2.30.1.2,1.3.6.1.4.1.8072.9999.9999.7.2.30.1.3]
+      key: otp.radiusday.walk
+      delay: 5m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by RADIUS results of the last day.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 8b54c770f8fd4466aa15c0ba5f4b2193
+      name: RADIUS sent again, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.12.0]
+      key: otp.radius.rate[repeated]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.12.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 68d35ad70f3a46ce9023d334d9261737
+      name: RADIUS Status-Server answered, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.8.0]
+      key: otp.radius.rate[status]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.8.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+    - uuid: 36354112e0ed4efd85d2c4998fd2bb0f
+      name: RADIUS without the database, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.13.0]
+      key: otp.radius.rate[no_database]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.13.0 (OTP-MIB)'
+      preprocessing:
+      - type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: radius
+      triggers:
+      - uuid: 1cb008993e2349e58f09e6786c4e633a
+        expression: min(/otp by SNMP/otp.radius.rate[no_database],5m)>0
+        name: 'otp: RADIUS answers without the database'
+        priority: HIGH
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        dependencies:
+        - name: 'otp: The database does not answer'
+          expression: last(/otp by SNMP/otp.db.up)=0
+        tags:
+        - tag: scope
+          value: availability
+    - uuid: bfee7920db8c4d888c466c66c94d4d62
+      name: Realms
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.16.0]
+      key: otp.radius.realms
+      delay: 15m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.16.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: radius
+    - uuid: faf32f04a30d41518bbd5f5509e5d4c7
+      name: Rejected in the last 24 hours
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.2.19.0]
+      key: otp.radius.day[reject]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.19.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: radius
+    - uuid: d3e1ae5d67964996b7f44348d78bc66f
+      name: 'Replication in: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.12.10.1.2,1.3.6.1.4.1.8072.9999.9999.7.12.10.1.3,1.3.6.1.4.1.8072.9999.9999.7.12.10.1.4]
+      key: otp.replin.walk
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by Replication in.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: 24db59f191524ff38a07c0a73439222d
+      name: 'Replication out: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.7.12.11.1.2,1.3.6.1.4.1.8072.9999.9999.7.12.11.1.3,1.3.6.1.4.1.8072.9999.9999.7.12.11.1.4]
+      key: otp.replout.walk
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table walked; its rows are found by Replication out.
+      tags:
+      - tag: component
+        value: raw
+    - uuid: d61d36bcb27d48bf96a8b56f5afd891b
+      name: Second step of the administrators
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.4.0]
+      key: otp.signin.second_step
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.4.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: cecb52810fb649a6a96071b8de8899d0
+      name: Sign-in with a certificate
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.2.0]
+      key: otp.signin.cert
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.2.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: 6c93158b7fa2434db318b02c94ceebef
+      name: Sign-in with Windows
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.15.1.0]
+      key: otp.signin.kerberos
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.15.1.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: on/off'
+      tags:
+      - tag: component
+        value: signin
+    - uuid: c0cb7313256d49f494dfb095de3f502d
+      name: Site
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.1.3.0]
+      key: otp.site
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.1.3.0 (OTP-MIB)'
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: system
+    - uuid: c8d2d85716d94a6d906a50811e456a1b
+      name: SNMP agent availability
+      type: INTERNAL
+      key: zabbix[host,snmp,available]
+      description: |
+        Availability of SNMP checks on the host, as the host list shows it.
+      valuemap:
+        name: Host availability status
+      tags:
+      - tag: component
+        value: health
+      triggers:
+      - uuid: 6381b2641f784c3d9b99e899601cd8ee
+        expression: max(/otp by SNMP/zabbix[host,snmp,available],{$OTP.NODATA.TIMEOUT})=0
+        name: 'otp: No SNMP answer'
+        priority: HIGH
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: 'The agent of otp does not answer: the node is down, the daemon stopped, SNMP is off on Settings - Monitoring,
+          or the user and its passphrases differ.'
+        tags:
+        - tag: scope
+          value: availability
+    - uuid: 371510d1caa54af196c20d68a8896793
+      name: 'Swap: used'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.9.0]
+      key: otp.host.swap.used
+      units: B
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.9.0 (OTP-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '1024'
+      tags:
+      - tag: component
+        value: memory
+    - uuid: 4e2ae7d96a8b41188e9ef2527f71bf1c
+      name: System contact
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.2.1.1.4.0]
+      key: otp.syscontact
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.2.1.1.4.0 (OTP-MIB)'
+      inventory_link: CONTACT
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: system
+    - uuid: ae3ca14e771149e9baf5a263eb39bf7d
+      name: System description
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.2.1.1.1.0]
+      key: otp.sysdescr
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.2.1.1.1.0 (OTP-MIB)'
+      inventory_link: OS
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: system
+    - uuid: 43fdc57f373b41d6b2c199cd4bebb1c4
+      name: System location
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.2.1.1.6.0]
+      key: otp.syslocation
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.2.1.1.6.0 (OTP-MIB)'
+      inventory_link: LOCATION
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: system
+    - uuid: c7209ab901ad4ea586c4a239cb3b79df
+      name: System name
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.2.1.1.5.0]
+      key: otp.sysname
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.2.1.1.5.0 (OTP-MIB)'
+      inventory_link: NAME
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: system
+    - uuid: 9727e7b41b32486a9703a6e3d3eb3b51
+      name: 'Tokens: active'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.4.2.0]
+      key: otp.tokens[active]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.4.2.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: tokens
+    - uuid: 99041ca7d2374db5b7fd451340e8fca6
+      name: 'Tokens: all'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.4.1.0]
+      key: otp.tokens[all]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.4.1.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: tokens
+    - uuid: 1dcaf02d57a3439da18fec8fc1743d62
+      name: 'Tokens: disabled'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.4.4.0]
+      key: otp.tokens[disabled]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.4.4.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: tokens
+    - uuid: 8d2e6f6ebbd642aa9a78de423091f728
+      name: 'Tokens: never used'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.4.6.0]
+      key: otp.tokens[never_used]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.4.6.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: tokens
+    - uuid: 2ae2d681d6324876ba40214515e16a20
+      name: 'Tokens: pending'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.4.3.0]
+      key: otp.tokens[pending]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.4.3.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: tokens
+    - uuid: fb49021b06374589be7a03131eb2b165
+      name: 'Tokens: used in 30 days'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.4.5.0]
+      key: otp.tokens[used_30d]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.4.5.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: tokens
+    - uuid: fc80558629fb429d9b66079e4e6f5134
+      name: Uptime (machine)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.10.14.0]
+      key: otp.host.uptime
+      units: uptime
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.14.0 (OTP-MIB)'
+      tags:
+      - tag: component
+        value: system
+    - uuid: 11c056a01207472a8167b26c5dd05367
+      name: Uptime (otp)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.1.7.0]
+      key: otp.uptime
+      value_type: FLOAT
+      units: uptime
+      description: |-
+        Since the otp daemon started.
+        OID: 1.3.6.1.4.1.8072.9999.9999.7.1.7.0 (OTP-MIB)
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: system
+      triggers:
+      - uuid: f4108e9b872b49d7921560b886b0c410
+        expression: last(/otp by SNMP/otp.uptime)<10m
+        name: 'otp: otp has been restarted'
+        priority: INFO
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: Uptime is less than 10 minutes.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 5f8a7496023146c2a07a2d46aa194384
+      name: Version
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.1.1.0]
+      key: otp.version
+      delay: 15m
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.1.1.0 (OTP-MIB)'
+      inventory_link: SOFTWARE
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: system
+      triggers:
+      - uuid: e87aaa9a25174b2299702ddeb95f8fee
+        expression: change(/otp by SNMP/otp.version)=1 and length(last(/otp by SNMP/otp.version))>0
+        name: 'otp: Version has changed'
+        priority: INFO
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: otp was updated (or went back).
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 5eeb5688a13f4c07beed599f9091ab2e
+      name: VIP address
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.12.4.0]
+      key: otp.ha.vip.address
+      delay: 15m
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.4.0 (OTP-MIB)'
+      preprocessing:
+      - type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: cluster
+    - uuid: 3bed8edb6ea6454ab65f13f043bb89b9
+      name: VIP address on this node
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.12.3.0]
+      key: otp.ha.vip.here
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.3.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: holds the VIP'
+      tags:
+      - tag: component
+        value: cluster
+      triggers:
+      - uuid: c7f1efa6c1224865a535fac8dd2ae60a
+        expression: change(/otp by SNMP/otp.ha.vip.here)<>0
+        name: 'otp: The VIP address moved'
+        priority: INFO
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: This node took the VIP address, or gave it up.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 75118b04889a44439bc02a3e352bf82b
+      name: VIP address set
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.7.12.2.0]
+      key: otp.ha.vip.on
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.2.0 (OTP-MIB)'
+      valuemap:
+        name: 'otp: yes/no'
+      tags:
+      - tag: component
+        value: cluster
+    discovery_rules:
+    - uuid: 36e25a6fc93b460993c0ff4fc227aad7
+      name: Problems otp sees
+      type: DEPENDENT
+      key: otp.alert.discovery
+      delay: '0'
+      description: Each thing otp sees wrong now - a problem of its own while it lasts, gone when it is right.
+      master_item:
+        key: otp.alert.walk
+      lifetime_type: DELETE_IMMEDIATELY
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.2
+        - '0'
+        - '{#KEY}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.2
+        - '0'
+        - '{#LEVEL}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.3
+        - '0'
+        - '{#TITLE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.4
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: aa13e06305474f668aa0975f0fae9503
+        name: 'Problem [{#KEY}]: level'
+        type: DEPENDENT
+        key: otp.alert.level[{#KEY}]
+        delay: '0'
+        value_type: CHAR
+        trends: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.3.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.alert.walk
+        tags:
+        - tag: component
+          value: alerts
+        trigger_prototypes:
+        - uuid: 06eb0115dd2f4d42819eacf01222b282
+          expression: find(/otp by SNMP/otp.alert.level[{#KEY}],,"like","bad")=1
+          name: 'otp: {#TITLE}'
+          priority: HIGH
+          description: 'otp sees it (Settings - Alerts): {#KEY}.'
+          tags:
+          - tag: scope
+            value: notice
+        - uuid: 69bf5cba93a54ac6b829944b57ee8814
+          expression: find(/otp by SNMP/otp.alert.level[{#KEY}],,"like","warn")=1
+          name: 'otp: {#TITLE} (warning)'
+          priority: WARNING
+          description: 'otp sees it (Settings - Alerts): {#KEY}.'
+          tags:
+          - tag: scope
+            value: notice
+      - uuid: dfaddb115b2e480fb47774e70d5d7365
+        name: 'Problem [{#KEY}]: said'
+        type: DEPENDENT
+        key: otp.alert.said[{#KEY}]
+        delay: '0'
+        value_type: TEXT
+        trends: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.5.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.5.3.1.5.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.alert.walk
+        tags:
+        - tag: component
+          value: alerts
+    - uuid: 341e914c503d4416899df8f248f382e1
+      name: Certificates of the pages
+      type: DEPENDENT
+      key: otp.cert.discovery
+      delay: '0'
+      description: Certificates of the pages
+      master_item:
+        key: otp.cert.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.6.1.1.2
+        - '0'
+        - '{#TARGET}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.6.1.1.2
+        - '0'
+        - '{#CN}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.6.1.1.3
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 891ad3360973416bb786d47382a357fb
+        name: 'Certificate [{#TARGET}] {#CN}: days left'
+        type: DEPENDENT
+        key: otp.cert.days[{#TARGET}]
+        delay: '0'
+        value_type: FLOAT
+        units: d
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.6.1.1.4.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.6.1.1.4.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.cert.walk
+        tags:
+        - tag: component
+          value: certificate
+        trigger_prototypes:
+        - uuid: b086f3af803142ea878c939b605d89f4
+          expression: last(/otp by SNMP/otp.cert.days[{#TARGET}])<{$OTP.CERT.EXPIRY.CRIT}
+          name: 'otp: Certificate [{#TARGET}] {#CN}: ends within {$OTP.CERT.EXPIRY.CRIT} days'
+          priority: HIGH
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: notice
+        - uuid: fbe9f68fc2184bceb8b19a6ce245c7ee
+          expression: last(/otp by SNMP/otp.cert.days[{#TARGET}])<{$OTP.CERT.EXPIRY.WARN}
+          name: 'otp: Certificate [{#TARGET}] {#CN}: ends within {$OTP.CERT.EXPIRY.WARN} days'
+          priority: WARNING
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          dependencies:
+          - name: 'otp: Certificate [{#TARGET}] {#CN}: ends within {$OTP.CERT.EXPIRY.CRIT} days'
+            expression: last(/otp by SNMP/otp.cert.days[{#TARGET}])<{$OTP.CERT.EXPIRY.CRIT}
+          tags:
+          - tag: scope
+            value: notice
+      - uuid: debdfe4549874d46b6890348be9ab69b
+        name: 'Certificate [{#TARGET}] {#CN}: ends'
+        type: DEPENDENT
+        key: otp.cert.end[{#TARGET}]
+        delay: '0'
+        units: unixtime
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.6.1.1.5.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.6.1.1.5.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.cert.walk
+        tags:
+        - tag: component
+          value: certificate
+    - uuid: 420467da653c4b1d994948f810ed7a68
+      name: Nodes of the cluster
+      type: DEPENDENT
+      key: otp.node.discovery
+      delay: '0'
+      description: Nodes of the cluster
+      master_item:
+        key: otp.node.walk
+      lifetime_type: DELETE_IMMEDIATELY
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.7.1.1.2
+        - '0'
+        - '{#NODE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.7.1.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: a09c1cc1097d454b922afb88cdf1fde4
+        name: 'Node [{#NODE}]: heard from'
+        type: DEPENDENT
+        key: otp.node.up[{#NODE}]
+        delay: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.7.1.1.3.{#SNMPINDEX} (OTP-MIB)'
+        valuemap:
+          name: 'otp: up/down'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.7.1.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.node.walk
+        tags:
+        - tag: component
+          value: cluster
+        trigger_prototypes:
+        - uuid: bfeceb5c37d74e3d8d6b94a93b1b9c86
+          expression: last(/otp by SNMP/otp.node.up[{#NODE}])=0
+          name: 'otp: Node {#NODE} is not heard from'
+          priority: HIGH
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: availability
+      - uuid: 6dee7ff58014415e86cc249b91ce83b5
+        name: 'Node [{#NODE}]: since heard from'
+        type: DEPENDENT
+        key: otp.node.age[{#NODE}]
+        delay: '0'
+        units: s
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.7.1.1.4.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.7.1.1.4.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.node.walk
+        tags:
+        - tag: component
+          value: cluster
+        trigger_prototypes:
+        - uuid: db4a491b61784dc4a916651767948609
+          expression: min(/otp by SNMP/otp.node.age[{#NODE}],3m)>{$OTP.HA.HEARTBEAT.MAX}
+          name: 'otp: Node {#NODE}: no heartbeat for {$OTP.HA.HEARTBEAT.MAX} s'
+          priority: AVERAGE
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: availability
+      graph_prototypes:
+      - uuid: b29dab9b46d04406b169099fc4a82a45
+        name: 'otp: Node {#NODE}: since heard from'
+        graph_items:
+        - color: 1A7C11
+          item:
+            host: otp by SNMP
+            key: otp.node.age[{#NODE}]
+          drawtype: GRADIENT_LINE
+    - uuid: aca5d871aa9640739c13db933fa1651a
+      name: File systems
+      type: DEPENDENT
+      key: otp.fs.discovery
+      delay: '0'
+      description: File systems
+      master_item:
+        key: otp.fs.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.2
+        - '0'
+        - '{#FSPATH}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 2d14d6c275a749c486846c1198f48666
+        name: '{#FSPATH}: total space'
+        type: DEPENDENT
+        key: otp.fs.total[{#FSPATH}]
+        delay: '0'
+        units: B
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.3.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.3.{#SNMPINDEX}
+          - '0'
+        - type: MULTIPLIER
+          parameters:
+          - '1024'
+        master_item:
+          key: otp.fs.walk
+        tags:
+        - tag: component
+          value: storage
+      - uuid: b1861b25d7c8494aa7385f6d8c2c89df
+        name: '{#FSPATH}: used space'
+        type: DEPENDENT
+        key: otp.fs.used[{#FSPATH}]
+        delay: '0'
+        units: B
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.4.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.4.{#SNMPINDEX}
+          - '0'
+        - type: MULTIPLIER
+          parameters:
+          - '1024'
+        master_item:
+          key: otp.fs.walk
+        tags:
+        - tag: component
+          value: storage
+      - uuid: 6ac43cd0844645adba76ba1a2d86de7b
+        name: '{#FSPATH}: free space'
+        type: DEPENDENT
+        key: otp.fs.free[{#FSPATH}]
+        delay: '0'
+        units: B
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.5.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.5.{#SNMPINDEX}
+          - '0'
+        - type: MULTIPLIER
+          parameters:
+          - '1024'
+        master_item:
+          key: otp.fs.walk
+        tags:
+        - tag: component
+          value: storage
+      - uuid: e1d773692f57429c93969e02f0563272
+        name: '{#FSPATH}: space used'
+        type: DEPENDENT
+        key: otp.fs.pused[{#FSPATH}]
+        delay: '0'
+        units: '%'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.6.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.6.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.fs.walk
+        tags:
+        - tag: component
+          value: storage
+        trigger_prototypes:
+        - uuid: 42bccf56ba5643e68e6208bce03d042c
+          expression: last(/otp by SNMP/otp.fs.pused[{#FSPATH}])>{$OTP.FS.PUSED.CRIT}
+          name: 'otp: {#FSPATH}: the space is critically low'
+          priority: AVERAGE
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: capacity
+        - uuid: 80ee913b29c9413d80841001c1198b66
+          expression: last(/otp by SNMP/otp.fs.pused[{#FSPATH}])>{$OTP.FS.PUSED.WARN}
+          name: 'otp: {#FSPATH}: the space is low'
+          priority: WARNING
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          dependencies:
+          - name: 'otp: {#FSPATH}: the space is critically low'
+            expression: last(/otp by SNMP/otp.fs.pused[{#FSPATH}])>{$OTP.FS.PUSED.CRIT}
+          tags:
+          - tag: scope
+            value: capacity
+      - uuid: 8fc666676fe044f5ac97274ff026f589
+        name: '{#FSPATH}: inodes used'
+        type: DEPENDENT
+        key: otp.fs.ipused[{#FSPATH}]
+        delay: '0'
+        units: '%'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.7.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.10.20.1.7.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.fs.walk
+        tags:
+        - tag: component
+          value: storage
+        trigger_prototypes:
+        - uuid: 92044288eff94edd90669c2c540ed043
+          expression: last(/otp by SNMP/otp.fs.ipused[{#FSPATH}])>{$OTP.FS.INODES.WARN}
+          name: 'otp: {#FSPATH}: the inodes run out'
+          priority: WARNING
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: capacity
+      graph_prototypes:
+      - uuid: 5bb7ce962f354da3b2c999163e130fba
+        name: 'otp: {#FSPATH}: space'
+        ymin_type_1: FIXED
+        graph_items:
+        - color: F63100
+          item:
+            host: otp by SNMP
+            key: otp.fs.used[{#FSPATH}]
+          drawtype: FILLED_REGION
+        - color: 199C0D
+          item:
+            host: otp by SNMP
+            key: otp.fs.total[{#FSPATH}]
+          sortorder: '1'
+    - uuid: f0fe0a2e8dc543f6a33db334fe25db4f
+      name: Directories
+      type: DEPENDENT
+      key: otp.dir.discovery
+      delay: '0'
+      description: Directories
+      master_item:
+        key: otp.dir.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.2
+        - '0'
+        - '{#DIRNAME}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: ac8ae98b59824bd0949286c62b9e0d5c
+        name: 'Directory [{#DIRNAME}]: used'
+        type: DEPENDENT
+        key: otp.dir.enabled[{#DIRNAME}]
+        delay: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.3.{#SNMPINDEX} (OTP-MIB)'
+        valuemap:
+          name: 'otp: yes/no'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.dir.walk
+        tags:
+        - tag: component
+          value: directory
+      - uuid: 6303e9702b2d4485a2411007e0ebe169
+        name: 'Directory [{#DIRNAME}]: answers'
+        type: DEPENDENT
+        key: otp.dir.up[{#DIRNAME}]
+        delay: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.4.{#SNMPINDEX} (OTP-MIB)'
+        valuemap:
+          name: 'otp: up/down'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.4.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.dir.walk
+        tags:
+        - tag: component
+          value: directory
+        trigger_prototypes:
+        - uuid: dc5e168b9cac4bb29b473bd9e5d30f49
+          expression: last(/otp by SNMP/otp.dir.enabled[{#DIRNAME}])=1 and last(/otp by SNMP/otp.dir.up[{#DIRNAME}])=0
+          name: 'otp: Directory {#DIRNAME} cannot be reached'
+          priority: HIGH
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          description: 'None of its servers answers this node: sign-ins through it do not pass.'
+          tags:
+          - tag: scope
+            value: availability
+      - uuid: cb97a6e93b654385a9e35773387e69ea
+        name: 'Directory [{#DIRNAME}]: servers'
+        type: DEPENDENT
+        key: otp.dir.hosts[{#DIRNAME}]
+        delay: '0'
+        value_type: CHAR
+        trends: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.5.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.11.1.1.5.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.dir.walk
+        tags:
+        - tag: component
+          value: directory
+    - uuid: 64bb759b5f264951947520cf082b3778
+      name: Replication in
+      type: DEPENDENT
+      key: otp.replin.discovery
+      delay: '0'
+      description: Replication in
+      master_item:
+        key: otp.replin.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.12.10.1.2
+        - '0'
+        - '{#REPL}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.12.10.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: d861683bebd54f338a1318d2d2558b16
+        name: 'Replication in [{#REPL}]: running'
+        type: DEPENDENT
+        key: otp.replin.running[{#REPL}]
+        delay: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.10.1.3.{#SNMPINDEX} (OTP-MIB)'
+        valuemap:
+          name: 'otp: running'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.12.10.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.replin.walk
+        tags:
+        - tag: component
+          value: cluster
+        trigger_prototypes:
+        - uuid: ceb9495994e44249b42624844c105813
+          expression: last(/otp by SNMP/otp.replin.running[{#REPL}])=0
+          name: 'otp: Replication {#REPL} is stopped'
+          priority: HIGH
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          description: This node does not take the other node's rows.
+          tags:
+          - tag: scope
+            value: availability
+      - uuid: a0870d4fbf0142f1b26de6826b219fa2
+        name: 'Replication in [{#REPL}]: errors per second'
+        type: DEPENDENT
+        key: otp.replin.errors[{#REPL}]
+        delay: '0'
+        value_type: FLOAT
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.10.1.4.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.12.10.1.4.{#SNMPINDEX}
+          - '0'
+        - type: CHANGE_PER_SECOND
+          parameters:
+          - ''
+        master_item:
+          key: otp.replin.walk
+        tags:
+        - tag: component
+          value: cluster
+        trigger_prototypes:
+        - uuid: 43d536e1f3c84ea1865b90955ab2121e
+          expression: min(/otp by SNMP/otp.replin.errors[{#REPL}],5m)>0
+          name: 'otp: Replication {#REPL} has errors'
+          priority: WARNING
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: availability
+    - uuid: 5acca5e6a6c042bc9f2026d7650b4561
+      name: Replication out
+      type: DEPENDENT
+      key: otp.replout.discovery
+      delay: '0'
+      description: Replication out
+      master_item:
+        key: otp.replout.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.12.11.1.2
+        - '0'
+        - '{#REPL}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.12.11.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 3ef46fefb61a4145bed4696e3eacb7b9
+        name: 'Replication out [{#REPL}]: behind'
+        type: DEPENDENT
+        key: otp.replout.behind[{#REPL}]
+        delay: '0'
+        units: B
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.11.1.3.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.12.11.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.replout.walk
+        tags:
+        - tag: component
+          value: cluster
+        trigger_prototypes:
+        - uuid: 2cc92f2e148145ac86de63253d6b94cd
+          expression: min(/otp by SNMP/otp.replout.behind[{#REPL}],5m)>{$OTP.HA.BEHIND.WARN}
+          name: 'otp: The other node is behind ({#REPL})'
+          priority: WARNING
+          opdata: 'Current: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: performance
+      - uuid: aa96ccfb2cc241fa8b85e61eddfe8419
+        name: 'Replication out [{#REPL}]: WAL'
+        type: DEPENDENT
+        key: otp.replout.wal[{#REPL}]
+        delay: '0'
+        value_type: CHAR
+        trends: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.12.11.1.4.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.12.11.1.4.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.replout.walk
+        tags:
+        - tag: component
+          value: cluster
+        trigger_prototypes:
+        - uuid: b7e733d0430a431ab17c42b0679b636d
+          expression: find(/otp by SNMP/otp.replout.wal[{#REPL}],,"like","lost")=1
+          name: 'otp: The other node lost its place ({#REPL})'
+          priority: HIGH
+          description: 'The other node cannot catch up from this one any more: Settings - Cluster.'
+          tags:
+          - tag: scope
+            value: availability
+      graph_prototypes:
+      - uuid: 5f88d660499244eba673dc6c60f15d96
+        name: 'otp: Replication {#REPL}: behind'
+        graph_items:
+        - color: FF8F00
+          item:
+            host: otp by SNMP
+            key: otp.replout.behind[{#REPL}]
+          drawtype: GRADIENT_LINE
+    - uuid: c6a7ddc0d4334ceba75e2d5fafa1b7ce
+      name: RADIUS results of the last day
+      type: DEPENDENT
+      key: otp.radiusday.discovery
+      delay: '0'
+      description: RADIUS results of the last day
+      master_item:
+        key: otp.radiusday.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.2.30.1.2
+        - '0'
+        - '{#RESULT}'
+        - 1.3.6.1.4.1.8072.9999.9999.7.2.30.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 0e09510a44f6409ea721cf076de8cec9
+        name: 'RADIUS last 24 hours: {#RESULT}'
+        type: DEPENDENT
+        key: otp.radiusday.count[{#RESULT}]
+        delay: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.7.2.30.1.3.{#SNMPINDEX} (OTP-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.7.2.30.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: otp.radiusday.walk
+        tags:
+        - tag: component
+          value: radius
+    tags:
+    - tag: class
+      value: software
+    - tag: target
+      value: otp
+    macros:
+    - macro: '{$OTP.NODATA.TIMEOUT}'
+      value: 10m
+      description: 'No SNMP answer for this long: a problem.'
+    - macro: '{$OTP.CPU.UTIL.WARN}'
+      value: '80'
+      description: CPU utilization (%) for a warning.
+    - macro: '{$OTP.CPU.UTIL.CRIT}'
+      value: '90'
+      description: CPU utilization (%) for a problem.
+    - macro: '{$OTP.MEM.UTIL.WARN}'
+      value: '90'
+      description: Memory utilization (%) for a warning.
+    - macro: '{$OTP.FS.PUSED.WARN}'
+      value: '85'
+      description: 'A file system this full (%): a warning.'
+    - macro: '{$OTP.FS.PUSED.CRIT}'
+      value: '95'
+      description: 'A file system this full (%): a problem.'
+    - macro: '{$OTP.FS.INODES.WARN}'
+      value: '90'
+      description: 'Inodes of a file system used (%): a warning.'
+    - macro: '{$OTP.RADIUS.QUEUE.WARN}'
+      value: '200'
+      description: RADIUS requests waiting for a worker, for 5 minutes.
+    - macro: '{$OTP.DB.LATENCY.WARN}'
+      value: '0.2'
+      description: SELECT 1 taking longer than this (seconds), for 5 minutes.
+    - macro: '{$OTP.CERT.EXPIRY.WARN}'
+      value: '21'
+      description: 'A certificate of the pages ending within this many days: a warning.'
+    - macro: '{$OTP.CERT.EXPIRY.CRIT}'
+      value: '7'
+      description: 'A certificate of the pages ending within this many days: a problem.'
+    - macro: '{$OTP.HA.HEARTBEAT.MAX}'
+      value: '120'
+      description: A node of the cluster not heard from for this long (seconds).
+    - macro: '{$OTP.HA.BEHIND.WARN}'
+      value: '104857600'
+      description: The other node this far behind in taking this node's rows (bytes).
+    - macro: '{$OTP.BACKUP.AGE.MAX}'
+      value: '129600'
+      description: The newest nightly copy older than this (seconds).
+    - macro: '{$OTP.RBACKUP.AGE.MAX}'
+      value: '129600'
+      description: The newest good backup sent away older than this (seconds; 691200 for weekly).
+    - macro: '{$OTP.CLOCK.OFFSET.MAX}'
+      value: '1000'
+      description: This node this far from the time servers (milliseconds).
+    - macro: '{$OTP.MAIL.WAITING.MAX}'
+      value: '20'
+      description: Mail waiting for 30 minutes, at most.
+    dashboards:
+    - uuid: b1b5a00da27641fca281e6845cf39df9
+      name: otp
+      display_period: '60'
+      pages:
+      - name: Overview
+        widgets:
+        - type: item
+          name: RADIUS
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: RADIUS
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.listening
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: E53935
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: item
+          name: Database
+          x: '12'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Database
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.db.up
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '25'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: E53935
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: item
+          name: Problems
+          x: '24'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Problems
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.alerts[bad]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: E53935
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: item
+          name: Warnings
+          x: '36'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Warnings
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.alerts[warn]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFB300
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: item
+          name: Active tokens
+          x: '48'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Active tokens
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.tokens[active]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Version
+          x: '60'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: Version
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.version
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '20'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: gauge
+          name: CPU
+          y: '3'
+          width: '18'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: description
+            value: CPU
+          - type: INTEGER
+            name: desc_size
+            value: '9'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.host.cpu.util
+          - type: STRING
+            name: thresholds.0.color
+            value: 0EC9AC
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFD54F
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '80'
+          - type: STRING
+            name: thresholds.2.color
+            value: FF465C
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '90'
+          - type: INTEGER
+            name: th_show_arc
+            value: '1'
+          - type: INTEGER
+            name: th_show_labels
+            value: '1'
+          - type: STRING
+            name: units
+            value: '%'
+          - type: INTEGER
+            name: units_size
+            value: '15'
+          - type: INTEGER
+            name: value_size
+            value: '20'
+        - type: gauge
+          name: Memory
+          x: '18'
+          y: '3'
+          width: '18'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: description
+            value: Memory
+          - type: INTEGER
+            name: desc_size
+            value: '9'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.host.mem.util
+          - type: STRING
+            name: thresholds.0.color
+            value: 0EC9AC
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFD54F
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '80'
+          - type: STRING
+            name: thresholds.2.color
+            value: FF465C
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '90'
+          - type: INTEGER
+            name: th_show_arc
+            value: '1'
+          - type: INTEGER
+            name: th_show_labels
+            value: '1'
+          - type: STRING
+            name: units
+            value: '%'
+          - type: INTEGER
+            name: units_size
+            value: '15'
+          - type: INTEGER
+            name: value_size
+            value: '20'
+        - type: svggraph
+          name: RADIUS requests per second
+          x: '36'
+          y: '3'
+          width: '36'
+          height: '5'
+          fields:
+          - type: STRING
+            name: ds.0.color
+            value: 43A047
+          - type: STRING
+            name: ds.0.items.0
+            value: RADIUS Access-Accept*
+          - type: INTEGER
+            name: ds.0.fill
+            value: '4'
+          - type: INTEGER
+            name: ds.0.width
+            value: '2'
+          - type: STRING
+            name: ds.1.color
+            value: E53935
+          - type: STRING
+            name: ds.1.items.0
+            value: RADIUS Access-Reject*
+          - type: INTEGER
+            name: ds.1.fill
+            value: '4'
+          - type: INTEGER
+            name: ds.1.width
+            value: '2'
+          - type: STRING
+            name: ds.2.color
+            value: 1E88E5
+          - type: STRING
+            name: ds.2.items.0
+            value: RADIUS Access-Challenge*
+          - type: INTEGER
+            name: ds.2.fill
+            value: '4'
+          - type: INTEGER
+            name: ds.2.width
+            value: '2'
+          - type: INTEGER
+            name: legend_lines
+            value: '2'
+          - type: INTEGER
+            name: legend_statistic
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAA
+          - type: STRING
+            name: lefty_min
+            value: '0'
+        - type: problems
+          name: Problems
+          y: '8'
+          width: '72'
+          height: '6'
+          fields:
+          - type: INTEGER
+            name: show
+            value: '3'
+          - type: INTEGER
+            name: show_opdata
+            value: '2'
+          - type: INTEGER
+            name: show_tags
+            value: '1'
+          - type: STRING
+            name: tag_priority
+            value: scope
+          - type: STRING
+            name: reference
+            value: AAABA
+      - name: RADIUS
+        widgets:
+        - type: item
+          name: Accepted (24 h)
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Accepted (24 h)
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.day[accept]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Rejected (24 h)
+          x: '12'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: E53935
+          - type: STRING
+            name: description
+            value: Rejected (24 h)
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.day[reject]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Challenged (24 h)
+          x: '24'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Challenged (24 h)
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.day[challenge]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Waiting
+          x: '36'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Waiting
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.queued
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFB300
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '50'
+          - type: STRING
+            name: thresholds.2.color
+            value: E53935
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '200'
+        - type: item
+          name: Clients
+          x: '48'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: Clients
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.clients
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Realms
+          x: '60'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: Realms
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.realms
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: graph
+          name: RADIUS requests
+          y: '3'
+          width: '48'
+          height: '6'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: RADIUS requests'
+          - type: STRING
+            name: reference
+            value: AABAA
+        - type: piechart
+          name: The last 24 hours
+          x: '48'
+          y: '3'
+          width: '24'
+          height: '6'
+          fields:
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: INTEGER
+            name: draw_type
+            value: '1'
+          - type: INTEGER
+            name: ds.0.dataset_type
+            value: '0'
+          - type: STRING
+            name: ds.0.data_set_label
+            value: The last 24 hours
+          - type: STRING
+            name: ds.0.color.0
+            value: 43A047
+          - type: ITEM
+            name: ds.0.itemids.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.day[accept]
+          - type: INTEGER
+            name: ds.0.type.0
+            value: '0'
+          - type: STRING
+            name: ds.0.color.1
+            value: E53935
+          - type: ITEM
+            name: ds.0.itemids.1
+            value:
+              host: otp by SNMP
+              key: otp.radius.day[reject]
+          - type: INTEGER
+            name: ds.0.type.1
+            value: '0'
+          - type: STRING
+            name: ds.0.color.2
+            value: 1E88E5
+          - type: ITEM
+            name: ds.0.itemids.2
+            value:
+              host: otp by SNMP
+              key: otp.radius.day[challenge]
+          - type: INTEGER
+            name: ds.0.type.2
+            value: '0'
+          - type: INTEGER
+            name: legend_lines
+            value: '3'
+          - type: INTEGER
+            name: legend_lines_mode
+            value: '1'
+          - type: INTEGER
+            name: legend_value
+            value: '1'
+          - type: INTEGER
+            name: space
+            value: '2'
+          - type: INTEGER
+            name: stroke
+            value: '1'
+          - type: INTEGER
+            name: total_show
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AABBA
+        - type: graph
+          name: RADIUS trouble
+          y: '9'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: RADIUS trouble'
+          - type: STRING
+            name: reference
+            value: AACAA
+        - type: graph
+          name: RADIUS queue
+          x: '36'
+          y: '9'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: RADIUS queue'
+          - type: STRING
+            name: reference
+            value: AACBA
+        - type: graph
+          name: Database latency
+          y: '14'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Database latency'
+          - type: STRING
+            name: reference
+            value: AADAA
+        - type: graph
+          name: Tokens
+          x: '36'
+          y: '14'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Tokens'
+          - type: STRING
+            name: reference
+            value: AADBA
+      - name: Machine
+        widgets:
+        - type: gauge
+          name: CPU
+          width: '18'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: description
+            value: CPU
+          - type: INTEGER
+            name: desc_size
+            value: '9'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.host.cpu.util
+          - type: STRING
+            name: thresholds.0.color
+            value: 0EC9AC
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFD54F
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '80'
+          - type: STRING
+            name: thresholds.2.color
+            value: FF465C
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '90'
+          - type: INTEGER
+            name: th_show_arc
+            value: '1'
+          - type: INTEGER
+            name: th_show_labels
+            value: '1'
+          - type: STRING
+            name: units
+            value: '%'
+          - type: INTEGER
+            name: units_size
+            value: '15'
+          - type: INTEGER
+            name: value_size
+            value: '20'
+        - type: gauge
+          name: Memory
+          x: '18'
+          width: '18'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: description
+            value: Memory
+          - type: INTEGER
+            name: desc_size
+            value: '9'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.host.mem.util
+          - type: STRING
+            name: thresholds.0.color
+            value: 0EC9AC
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFD54F
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '80'
+          - type: STRING
+            name: thresholds.2.color
+            value: FF465C
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '90'
+          - type: INTEGER
+            name: th_show_arc
+            value: '1'
+          - type: INTEGER
+            name: th_show_labels
+            value: '1'
+          - type: STRING
+            name: units
+            value: '%'
+          - type: INTEGER
+            name: units_size
+            value: '15'
+          - type: INTEGER
+            name: value_size
+            value: '20'
+        - type: graph
+          name: CPU utilization
+          x: '36'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: CPU utilization'
+          - type: STRING
+            name: reference
+            value: AAEAA
+        - type: graph
+          name: Load average
+          y: '5'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Load average'
+          - type: STRING
+            name: reference
+            value: AAEBA
+        - type: graph
+          name: Memory
+          x: '36'
+          y: '5'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Memory'
+          - type: STRING
+            name: reference
+            value: ABAAA
+        - type: graph
+          name: Disk I/O
+          y: '10'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Disk I/O'
+          - type: STRING
+            name: reference
+            value: ABABA
+        - type: graph
+          name: Network traffic
+          x: '36'
+          y: '10'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Network traffic'
+          - type: STRING
+            name: reference
+            value: ABBAA
+        - type: honeycomb
+          name: 'File systems: space used'
+          y: '15'
+          width: '72'
+          height: '4'
+          fields:
+          - type: STRING
+            name: items.0
+            value: '*: space used'
+          - type: STRING
+            name: primary_label
+            value: '{{ITEM.NAME}.regsub("^(.*): space used", "\1")}'
+          - type: INTEGER
+            name: primary_label_size
+            value: '15'
+          - type: INTEGER
+            name: primary_label_size_type
+            value: '1'
+          - type: STRING
+            name: reference
+            value: ABBBA
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFB300
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '85'
+          - type: STRING
+            name: thresholds.2.color
+            value: E53935
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '95'
+        - type: graphprototype
+          name: '{#FSPATH}: space'
+          y: '19'
+          width: '72'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: columns
+            value: '3'
+          - type: GRAPH_PROTOTYPE
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: {#FSPATH}: space'
+          - type: STRING
+            name: reference
+            value: ABCAA
+      - name: Cluster and directories
+        widgets:
+        - type: item
+          name: In a cluster
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: In a cluster
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.ha.cluster
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '25'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: VIP address here
+          x: '12'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: VIP address here
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.ha.vip.here
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '14'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 546E7A
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: item
+          name: VIP address
+          x: '24'
+          width: '24'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: VIP address
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.ha.vip.address
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '25'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Directories
+          x: '48'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: Directories
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.radius.directories
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Clock offset
+          x: '60'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Clock offset
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.clock.offset
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '25'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: honeycomb
+          name: Nodes
+          y: '3'
+          width: '36'
+          height: '4'
+          fields:
+          - type: STRING
+            name: items.0
+            value: 'Node *: heard from'
+          - type: STRING
+            name: primary_label
+            value: '{{ITEM.NAME}.regsub("\[(.*?)\]", "\1")}'
+          - type: INTEGER
+            name: primary_label_size
+            value: '15'
+          - type: INTEGER
+            name: primary_label_size_type
+            value: '1'
+          - type: STRING
+            name: reference
+            value: ABCBA
+          - type: STRING
+            name: thresholds.0.color
+            value: E53935
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: honeycomb
+          name: Directories
+          x: '36'
+          y: '3'
+          width: '36'
+          height: '4'
+          fields:
+          - type: STRING
+            name: items.0
+            value: 'Directory *: answers'
+          - type: STRING
+            name: primary_label
+            value: '{{ITEM.NAME}.regsub("\[(.*?)\]", "\1")}'
+          - type: INTEGER
+            name: primary_label_size
+            value: '15'
+          - type: INTEGER
+            name: primary_label_size_type
+            value: '1'
+          - type: STRING
+            name: reference
+            value: ABDAA
+          - type: STRING
+            name: thresholds.0.color
+            value: E53935
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: graphprototype
+          name: 'Node {#NODE}: since heard from'
+          y: '7'
+          width: '36'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: columns
+            value: '1'
+          - type: GRAPH_PROTOTYPE
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Node {#NODE}: since heard from'
+          - type: STRING
+            name: reference
+            value: ABDBA
+        - type: graphprototype
+          name: 'Replication {#REPL}: behind'
+          x: '36'
+          y: '7'
+          width: '36'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: columns
+            value: '1'
+          - type: GRAPH_PROTOTYPE
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Replication {#REPL}: behind'
+          - type: STRING
+            name: reference
+            value: ABEAA
+        - type: graph
+          name: Clock
+          y: '12'
+          width: '72'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Clock'
+          - type: STRING
+            name: reference
+            value: ABEBA
+      - name: Certificates, sign-in, backups
+        widgets:
+        - type: honeycomb
+          name: 'Certificates: days left'
+          width: '72'
+          height: '4'
+          fields:
+          - type: STRING
+            name: items.0
+            value: 'Certificate *: days left'
+          - type: STRING
+            name: primary_label
+            value: '{{ITEM.NAME}.regsub("\[(.*?)\]", "\1")}'
+          - type: INTEGER
+            name: primary_label_size
+            value: '15'
+          - type: INTEGER
+            name: primary_label_size_type
+            value: '1'
+          - type: STRING
+            name: reference
+            value: ACAAA
+          - type: STRING
+            name: thresholds.0.color
+            value: E53935
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFB300
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '7'
+          - type: STRING
+            name: thresholds.2.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '21'
+        - type: item
+          name: CRLs kept
+          y: '4'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: CRLs kept
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.crl.count
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: CRLs not had
+          x: '12'
+          y: '4'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: CRLs not had
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.crl.bad
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: E53935
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: item
+          name: OCSP
+          x: '24'
+          y: '4'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: OCSP
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.ocsp.mode
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '25'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: OCSP not good
+          x: '36'
+          y: '4'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: OCSP not good
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.ocsp.bad
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '40'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FFB300
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+        - type: item
+          name: Nightly copy age
+          x: '48'
+          y: '4'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Nightly copy age
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.backup.age
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '22'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: item
+          name: Backup sent away
+          x: '60'
+          y: '4'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Backup sent away
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: otp by SNMP
+              key: otp.rbackup.age
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '22'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+        - type: graph
+          name: Problems otp sees
+          y: '7'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Problems otp sees'
+          - type: STRING
+            name: reference
+            value: ACABA
+        - type: graph
+          name: Mail queue
+          x: '36'
+          y: '7'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: otp by SNMP
+              name: 'otp: Mail queue'
+          - type: STRING
+            name: reference
+            value: ACBAA
+    valuemaps:
+    - uuid: ab6c18b6a919429aafd2acdc04cad233
+      name: Host availability status
+      mappings:
+      - value: '0'
+        newvalue: not available
+      - value: '1'
+        newvalue: available
+      - value: '2'
+        newvalue: unknown
+    - uuid: 8b92b9b650864de3a974f024c48369c8
+      name: 'otp: holds the VIP'
+      mappings:
+      - value: '0'
+        newvalue: 'no'
+      - value: '1'
+        newvalue: holds the VIP address
+    - uuid: 5fc67ab2b1a0476cbb5bf911bae71ae9
+      name: 'otp: listening'
+      mappings:
+      - value: '0'
+        newvalue: not listening
+      - value: '1'
+        newvalue: listening
+    - uuid: a1a1a1f23fa941b5bdddfe3904bee8de
+      name: 'otp: none'
+      mappings:
+      - value: '-1'
+        newvalue: none
+    - uuid: fcdb38aa4c22498588adb5f1cebe8e6f
+      name: 'otp: ok/failed'
+      mappings:
+      - value: '0'
+        newvalue: failed
+      - value: '1'
+        newvalue: ok
+    - uuid: 763eefa61a124dc28b740efc8ef85c8d
+      name: 'otp: on/off'
+      mappings:
+      - value: '0'
+        newvalue: 'off'
+      - value: '1'
+        newvalue: 'on'
+    - uuid: 13fe0be0602b4f0b90a0ecd1a17c1a7e
+      name: 'otp: running'
+      mappings:
+      - value: '0'
+        newvalue: stopped
+      - value: '1'
+        newvalue: running
+    - uuid: b0f48ee54bd548708744349d0fd18cfd
+      name: 'otp: up/down'
+      mappings:
+      - value: '0'
+        newvalue: down
+      - value: '1'
+        newvalue: up
+    - uuid: 908ad600550b4fd8b86e58320913132c
+      name: 'otp: yes/no'
+      mappings:
+      - value: '0'
+        newvalue: 'no'
+      - value: '1'
+        newvalue: 'yes'
+  triggers:
+  - uuid: 66e3b84e96b94b6a8a7510fb5f70f750
+    expression: last(/otp by SNMP/otp.backup.nightly)=1 and (last(/otp by SNMP/otp.backup.age)>{$OTP.BACKUP.AGE.MAX} or last(/otp
+      by SNMP/otp.backup.age)=-1)
+    name: 'otp: No nightly copy of the database'
+    priority: WARNING
+    opdata: 'Age: {ITEM.LASTVALUE2}'
+    tags:
+    - tag: scope
+      value: availability
+  - uuid: 2a3897c10e244247bdf3c514dc318c2d
+    expression: last(/otp by SNMP/otp.rbackup.on)=1 and last(/otp by SNMP/otp.rbackup.ok)=0
+    name: 'otp: The backup sent away failed'
+    priority: HIGH
+    tags:
+    - tag: scope
+      value: availability
+  - uuid: 07a50a90dad74463bfffc8ffc0ca159a
+    expression: last(/otp by SNMP/otp.rbackup.on)=1 and (last(/otp by SNMP/otp.rbackup.age)>{$OTP.RBACKUP.AGE.MAX} or last(/otp
+      by SNMP/otp.rbackup.age)=-1)
+    name: 'otp: No backup went away in time'
+    priority: WARNING
+    opdata: 'Age: {ITEM.LASTVALUE2}'
+    tags:
+    - tag: scope
+      value: availability
+    dependencies:
+    - name: 'otp: The backup sent away failed'
+      expression: last(/otp by SNMP/otp.rbackup.on)=1 and last(/otp by SNMP/otp.rbackup.ok)=0
+  - uuid: 8013ecc7000d498fb341666ea92fce4b
+    expression: last(/otp by SNMP/otp.signin.cert)=1 and last(/otp by SNMP/otp.crl.bad)>0
+    name: 'otp: A CRL of the sign-in with a certificate cannot be had'
+    priority: HIGH
+    opdata: '{ITEM.LASTVALUE2} CRL(s)'
+    description: Nobody signs in with a certificate of its authority until it can (Settings - Accounts, Revocation lists).
+    tags:
+    - tag: scope
+      value: availability
+  - uuid: 6bfa68a7f40f4b5788c39b97e4a85bc9
+    expression: last(/otp by SNMP/otp.signin.cert)=1 and last(/otp by SNMP/otp.ocsp.mode)<>"off" and last(/otp by SNMP/otp.ocsp.bad)>0
+    name: 'otp: An OCSP answer is not good'
+    priority: WARNING
+    opdata: '{ITEM.LASTVALUE3} answer(s)'
+    description: Revoked, unknown, no answer or run out (Settings - Accounts, Online status).
+    tags:
+    - tag: scope
+      value: notice
+  - uuid: d02ad5d3de0b40e78df333776b0bc047
+    expression: last(/otp by SNMP/otp.logs.on[isemon])=1 and last(/otp by SNMP/otp.logs.trouble[isemon])=1
+    name: 'otp: Logs to isemon are in trouble'
+    priority: WARNING
+    tags:
+    - tag: scope
+      value: availability
+  - uuid: dc9b8ed193974d469a7b957a5926d4c9
+    expression: last(/otp by SNMP/otp.logs.on[siem])=1 and last(/otp by SNMP/otp.logs.trouble[siem])=1
+    name: 'otp: Logs to the SIEM are in trouble'
+    priority: WARNING
+    tags:
+    - tag: scope
+      value: availability
+  graphs:
+  - uuid: cdedc8e9e0a84e18ab61fa0ed4c332e0
+    name: 'otp: RADIUS requests'
+    type: STACKED
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[accept]
+      drawtype: FILLED_REGION
+    - color: F63100
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[reject]
+      sortorder: '1'
+      drawtype: FILLED_REGION
+    - color: 2774A4
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[challenge]
+      sortorder: '2'
+      drawtype: FILLED_REGION
+    - color: A54F10
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[accounting]
+      sortorder: '3'
+    - color: FC6EA3
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[status]
+      sortorder: '4'
+  - uuid: be851e81ff4c42d69b84eab6188b6657
+    name: 'otp: RADIUS trouble'
+    graph_items:
+    - color: F63100
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[dropped]
+    - color: FF8F00
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[malformed]
+      sortorder: '1'
+    - color: 6C59DC
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[unknown]
+      sortorder: '2'
+    - color: AC8C14
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[repeated]
+      sortorder: '3'
+    - color: E53935
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[no_database]
+      sortorder: '4'
+    - color: 611F27
+      item:
+        host: otp by SNMP
+        key: otp.radius.rate[maintenance]
+      sortorder: '5'
+  - uuid: 9127f1d8aaec4f32bdb7dc8634685dd3
+    name: 'otp: RADIUS queue'
+    graph_items:
+    - color: 2774A4
+      item:
+        host: otp by SNMP
+        key: otp.radius.queued
+      drawtype: GRADIENT_LINE
+  - uuid: c85be365dab745e5a843de18660798d1
+    name: 'otp: CPU utilization'
+    ymin_type_1: FIXED
+    ymax_type_1: FIXED
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: otp by SNMP
+        key: otp.host.cpu.util
+      drawtype: GRADIENT_LINE
+  - uuid: 1c1646a41b8e4f17bdf0cb741f585fe9
+    name: 'otp: Load average'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: otp by SNMP
+        key: otp.host.load[1]
+    - color: 2774A4
+      item:
+        host: otp by SNMP
+        key: otp.host.load[5]
+      sortorder: '1'
+    - color: F63100
+      item:
+        host: otp by SNMP
+        key: otp.host.load[15]
+      sortorder: '2'
+  - uuid: 019289949d4f47ec91f71db150f2ad8d
+    name: 'otp: Memory'
+    graph_items:
+    - color: F63100
+      item:
+        host: otp by SNMP
+        key: otp.host.mem.used
+      drawtype: FILLED_REGION
+    - color: 199C0D
+      item:
+        host: otp by SNMP
+        key: otp.host.mem.total
+      sortorder: '1'
+    - color: FF8F00
+      item:
+        host: otp by SNMP
+        key: otp.host.swap.used
+      sortorder: '2'
+  - uuid: 19c81e7068a14613855b7b3bf2d48802
+    name: 'otp: Disk I/O'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: otp by SNMP
+        key: otp.host.disk.read
+      drawtype: GRADIENT_LINE
+    - color: F63100
+      item:
+        host: otp by SNMP
+        key: otp.host.disk.write
+      sortorder: '1'
+      drawtype: GRADIENT_LINE
+  - uuid: e1705d80dd114e898fb644572f5b9045
+    name: 'otp: Network traffic'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: otp by SNMP
+        key: otp.host.net.rx
+      drawtype: GRADIENT_LINE
+    - color: 2774A4
+      item:
+        host: otp by SNMP
+        key: otp.host.net.tx
+      sortorder: '1'
+      drawtype: GRADIENT_LINE
+  - uuid: f6e819e22f11416f8fd9179622c1aea5
+    name: 'otp: Database latency'
+    graph_items:
+    - color: 6C59DC
+      item:
+        host: otp by SNMP
+        key: otp.db.latency
+      drawtype: GRADIENT_LINE
+  - uuid: bfabaeac767e43048f0423293a73fcac
+    name: 'otp: Tokens'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: otp by SNMP
+        key: otp.tokens[active]
+    - color: FF8F00
+      item:
+        host: otp by SNMP
+        key: otp.tokens[pending]
+      sortorder: '1'
+    - color: 9E9E9E
+      item:
+        host: otp by SNMP
+        key: otp.tokens[disabled]
+      sortorder: '2'
+    - color: 2774A4
+      item:
+        host: otp by SNMP
+        key: otp.tokens[used_30d]
+      sortorder: '3'
+  - uuid: 5c2d92ed6c544cbe93522fa2834137a0
+    name: 'otp: Problems otp sees'
+    type: STACKED
+    graph_items:
+    - color: E53935
+      item:
+        host: otp by SNMP
+        key: otp.alerts[bad]
+      drawtype: FILLED_REGION
+    - color: FFB300
+      item:
+        host: otp by SNMP
+        key: otp.alerts[warn]
+      sortorder: '1'
+      drawtype: FILLED_REGION
+  - uuid: 0aa5fce6768247e0b37fb793198de85b
+    name: 'otp: Mail queue'
+    graph_items:
+    - color: FF8F00
+      item:
+        host: otp by SNMP
+        key: otp.mail[waiting]
+    - color: 2774A4
+      item:
+        host: otp by SNMP
+        key: otp.mail[sending]
+      sortorder: '1'
+    - color: E53935
+      item:
+        host: otp by SNMP
+        key: otp.mail[failed]
+      sortorder: '2'
+  - uuid: 343b9467bf664e1780bda27a107ec3b3
+    name: 'otp: Clock'
+    graph_items:
+    - color: 2774A4
+      item:
+        host: otp by SNMP
+        key: otp.clock.offset
+    - color: FF8F00
+      item:
+        host: otp by SNMP
+        key: otp.clock.skew
+      sortorder: '1'
