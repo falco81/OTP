@@ -29,7 +29,9 @@ async function admin(p) {
   await p.goto(URL); await p.waitForTimeout(1000);
   await p.fill('#in-name', 'admin'); await p.fill('#in-pass', PW); await p.keyboard.press('Enter');
   await p.waitForTimeout(2500);
-  await p.goto(URL + '#settings/people'); await p.waitForTimeout(3000);
+  // the pages in English, whatever the account was left in (its own language wins over the cookie)
+  await p.evaluate(() => fetch('?api=prefs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: 'en'})}));
+  await p.goto(URL + '#settings/people'); await p.reload(); await p.waitForTimeout(3000);
   await p.waitForSelector('.cert-crl-t', { timeout: 20000 }).catch(() => {});
 }
 const top = (p, sel) => p.$eval(sel, e => e.getBoundingClientRect().top).catch(() => null);
@@ -98,12 +100,17 @@ async function center(p, sel) { await p.$eval(sel, e => e.scrollIntoView({ block
   }
   p = await page(b, null, 'cs', 1400, 900);
   await admin(p);
+  // the language of the pages is the account's own: Czech for this look, English again after
+  await p.evaluate(() => fetch('?api=prefs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: 'cs'})}));
+  await p.goto(URL + '#settings/people'); await p.reload(); await p.waitForTimeout(4000);
+  await p.waitForSelector('.cert-crl-t', { timeout: 20000 }).catch(() => {});
   await p.click('tr.cert-crl-row td.cert-crl-chev').catch(() => {});
   await p.waitForTimeout(600);
   await p.$eval('#cert-host .cert-crl-head', e => e.scrollIntoView({ block: 'start' })).catch(() => {});
   const cz = await p.textContent('#cert-host');
   ok('in Czech: the table\'s words', /Seznamy odvolaných certifikátů/.test(cz) && /Číslo CRL/.test(cz), cz.slice(0, 160));
   await p.screenshot({ path: SHOTS + '/07-table-expanded-cs.png' });
+  await p.evaluate(() => fetch('?api=prefs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: 'en'})}));
   await p.context().close();
   setup('down');
   await b.close();

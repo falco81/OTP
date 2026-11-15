@@ -122,11 +122,20 @@ def _certlogin_do(h):
             raise ApiError(404, str(e))
         return dict(asked, message=('every node fetches the CRLs again' if act == 'crl_fetch'
                                     else 'the CRLs are cleared on every node'))
+    if act in ('ocsp_fetch', 'ocsp_clear'):
+        # Ask again / Clear of the OCSP answers (1.0.279): asked of every node, each does it itself.
+        try:
+            asked = ocsp_ask_all(h.d, act[5:], b.get('url'), s['name'])
+        except ValueError as e:
+            raise ApiError(404, str(e))
+        return dict(asked, message=('every responder is asked again' if act == 'ocsp_fetch'
+                                    else 'the OCSP answers are cleared on every node'))
     if act == 'result':
         ident = str(b.get('id') or '')
-        got = node_ask_results(h.store, 'crl_fetch', ident)
-        for n, v in node_ask_results(h.store, 'crl_clear', ident).items():
-            got[n] = got.get(n) or v
+        got = {}
+        for kind in ('crl_fetch', 'crl_clear', 'ocsp_fetch', 'ocsp_clear'):
+            for n, v in node_ask_results(h.store, kind, ident).items():
+                got[n] = got.get(n) or v
         return {'nodes': got}
     if act == 'ca_add':
         try:

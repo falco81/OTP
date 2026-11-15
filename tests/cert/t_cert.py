@@ -274,12 +274,14 @@ admin.j('login', {'name': 'admin', 'password': PW})
 
 # certificate only
 st, got = settings(admin_password_off=1)
-ok('no password: refused from a password\'s sign-in', st == 400 and 'first, then switch the password off' in (got.get('error') or ''), got)
+ok('no password: refused from a password\'s sign-in', st == 400 and 'sign in with Windows or a certificate first' in (got.get('error') or ''), got)
 cb = Browser('nested')
 said, who = cb.cert_login()
 st, got = settings(cb, admin_password_off=1)
 ok('switched on from a certificate\'s sign-in (nested, full admin)', st == 200, got)
 time.sleep(1.5)
+ok('1.0.278: the sign-ins made with a password ended (the local administrator\'s)', not (admin.j('whoami')[1] or {}).get('who'))
+ok('1.0.278: ...the certificate\'s, which switched it, kept', ((cb.j('whoami')[1] or {}).get('who') or {}).get('name') == 'nested')
 st, hd, page = Browser().raw('https://127.0.0.1/admin/')
 ok('the sign-in page: no password, "a certificate only"', b'id="signin-form" autocomplete="on" hidden' in page
    and b'with a certificate only' in page and b'id="cert-go"' in page, page[:0])
@@ -342,7 +344,7 @@ st, got = admin.j('login', {'name': 'admin', 'password': PW})
 ok('the way back as root: otp --set admin_password_off=0', st == 200, got)
 pg = Browser().raw('https://127.0.0.1/admin/')[2]
 ok('1.0.277: with a password, the certificate a button (not by itself)', b'data-cert-auto=""' in pg, pg[:0])
-st, got = settings(admin_cert_auto=1)
+st, got = settings(admin, admin_cert_auto=1)
 time.sleep(1.5)
 pg = Browser().raw('https://127.0.0.1/admin/')[2]
 ok('1.0.277: ...by itself when the sign-in page opens: the page tries it', st == 200 and b'data-cert-auto="1"' in pg, got)
@@ -350,7 +352,7 @@ if FAR and not FAR.startswith('127.'):
     fp = far_page()
     ok('1.0.277: ...from another machine too: the form and the certificate, tried by itself', b'id="in-name"' in fp
        and b'id="signin-form" autocomplete="on">' in fp and b'id="cert-go"' in fp and b'data-cert-auto="1"' in fp, fp[-600:])
-settings(admin_cert_auto=0)
+settings(admin, admin_cert_auto=0)
 
 # the events
 st, ev = admin.j('events')
@@ -359,7 +361,7 @@ ok('the events: signed in with a certificate (its subject, serial), refused ones
    'the certificate CN=falco' in words and 'a sign-in with a certificate from' in words, words[:200])
 
 # off again
-st, got = settings(admin_cert=0)
+st, got = settings(admin, admin_cert=0)
 ok('switched off', st == 200, got)
 ok('root takes the port away again', helper(lambda: not os.path.exists(conf) and not listening(PORT)))
 st, got = Browser().j('cert-nonce', {})
@@ -367,7 +369,7 @@ ok('... and the button: 404', st == 404, st)
 # leave as found
 for c in (admin.j('certlogin')[1].get('cas') or []):
     admin.j('certlogin', {'action': 'ca_drop', 'sha256': c['sha256']})
-settings(admin_directory='', admin_group_full='', admin_group_readonly='', login_tries=5)
+settings(admin, admin_directory='', admin_group_full='', admin_group_readonly='', login_tries=5)
 if not had_corp:
     for d in admin.j('directories')[1].get('directories') or []:
         if d.get('name') == 'corp':

@@ -79,7 +79,7 @@ class Browser(object):
 
 
 # As out of the box, whatever a run before left (root, on the server).
-subprocess.run(['otp', '--set', 'admin_kerberos=0', '--set', 'admin_password_off=0', '--set', 'admin_2fa=0'],
+subprocess.run(['otp', '--set', 'admin_kerberos=0', '--set', 'admin_cert=0', '--set', 'admin_password_off=0', '--set', 'admin_2fa=0'],
                capture_output=True)
 for _ in range(30):
     st, hd, page = Browser().call('')
@@ -243,7 +243,7 @@ time.sleep(1.2)
 # -- only Windows: no password on the sign-in page
 st, got = settings(admin_password_off=1)
 ok('no password: refused from a sign-in made with a password (so nobody locks themselves out)',
-   st == 400 and 'first, then switch the password off' in (got.get('error') or ''), (st, got))
+   st == 400 and 'sign in with Windows or a certificate first' in (got.get('error') or ''), (st, got))
 kb = Browser()
 st, _, got = kb.j('kerberos-login', {}, neg('nested'))
 ok('nested (full admin) signs in with Windows', st == 200 and got.get('who', {}).get('role') == 'fulladmin', (st, got))

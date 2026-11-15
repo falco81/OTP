@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.277'
+__version__ = '1.0.278'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -237,6 +237,9 @@ DEFAULTS = {
     'admin_cert_port': 8443,
     'admin_cert_map': 'compat',
     'admin_cert_crl': 1,
+    'admin_cert_crl_ldap': 0,
+    'admin_cert_ocsp': 'off',
+    'admin_cert_ocsp_url': '',
     # --- a second step for the administration (1.0.125) -------------------
     'admin_2fa': 0,
     'admin_2fa_app': 1,
@@ -571,7 +574,8 @@ TUNABLE = {
     'login_tries': (1, 100), 'login_wait_min': (1, 1440),
     'admin_kerberos': (0, 1), 'admin_kerberos_auto': (0, 1), 'admin_password_off': (0, 1),
     'admin_cert': (0, 1), 'admin_cert_auto': (0, 1), 'admin_cert_port': (1025, 65535), 'admin_cert_map': ('compat', 'strong', 'upn'),
-    'admin_cert_crl': (0, 1),
+    'admin_cert_crl': (0, 1), 'admin_cert_crl_ldap': (0, 1),
+    'admin_cert_ocsp': ('off', 'first', 'only', 'both'),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
@@ -637,6 +641,8 @@ TUNABLE = {
 }
 
 CHOICE_WORDS = {
+    'admin_cert_ocsp': {'off': 'off - the CRLs alone', 'first': 'first - OCSP, its CRL when it does not answer',
+                        'only': 'only - OCSP alone, no answer no sign-in', 'both': 'both - OCSP and the CRL'},
     'acme_challenge': {'http-01': 'HTTP-01 - the CA asks port 80 of the name',
                        'dns-01': 'DNS-01 - a TXT record in DNS (no port open to the internet)'},
     'acme_dns': {'manual': 'by hand - the record is shown here, you put it in',
@@ -852,6 +858,9 @@ NAMES = {
     'admin_cert_port': 'The certificate\u2019s own port',
     'admin_cert_map': 'Which account a certificate is',
     'admin_cert_crl': 'Check that a certificate is not revoked (CRL)',
+    'admin_cert_crl_ldap': 'CRLs from the directory (LDAP) too',
+    'admin_cert_ocsp': 'Ask an OCSP responder',
+    'admin_cert_ocsp_url': 'OCSP responder of its own',
     'admin_2fa': 'A second step when signing in to these pages',
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
@@ -1461,6 +1470,19 @@ SAYS = {
     'admin_cert_crl': 'The CRL at the certificate\u2019s CRL Distribution Point (http), kept until its next '
                       'update: no CRL to be had, no sign-in. Off: revocation is not checked - a lost card '
                       'signs in until its account is switched off in AD.',
+    'admin_cert_crl_ldap': 'A CRL Distribution Point in the directory (ldap:///CN=...,CN=CDP,CN=Public Key '
+                           'Services,...) is read too - after the http ones - with the connection of the '
+                           'directory set for administrators, never the host written in the address; only '
+                           'a CDP object of the configuration\u2019s Public Key Services, only its CRL. '
+                           'Off: only http.',
+    'admin_cert_ocsp': 'off: the CRLs alone (as before). first: the OCSP responder (AD CS Online Responder) '
+                       'of each certificate - and of each authority above it but the root - and its CRL '
+                       'when it does not answer. only: OCSP alone - no answer, no sign-in. both: OCSP and '
+                       'the CRL, both must say good. An answer is checked by openssl against the '
+                       'authorities put in and used ten minutes at most.',
+    'admin_cert_ocsp_url': 'An http address asked for every certificate instead of the one each names '
+                           '(Authority Information Access) - for certificates issued before the responder '
+                           'was there. Empty: each certificate\u2019s own.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
                  'and sets it up (an authenticator app, a code sent to an address or a phone '
@@ -1819,7 +1841,8 @@ PANES = {
     # switches beside what each card says and shows - Windows, a certificate, and the sign-in page
     # with the one setting the two share.
     'kerberos': ['admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm'],
-    'certlogin': ['admin_cert', 'admin_cert_auto', 'admin_cert_port', 'admin_cert_map', 'admin_cert_crl'],
+    'certlogin': ['admin_cert', 'admin_cert_auto', 'admin_cert_port', 'admin_cert_map', 'admin_cert_crl',
+                  'admin_cert_crl_ldap', 'admin_cert_ocsp', 'admin_cert_ocsp_url'],
     'signin': ['admin_password_off'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
            'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
@@ -1904,7 +1927,9 @@ ONLY_WHEN = {
     'admin_kerberos_auto': ['admin_kerberos', '1'], 'admin_kerberos_realm': ['admin_kerberos', '1'],
     'admin_password_off': ['admin_directory', '*'],
     'admin_cert': ['admin_directory', '*'], 'admin_cert_port': ['admin_cert', '1'],
-    'admin_cert_map': ['admin_cert', '1'], 'admin_cert_crl': ['admin_cert', '1'], 'admin_cert_auto': ['admin_cert', '1'],
+    'admin_cert_map': ['admin_cert', '1'], 'admin_cert_crl': ['admin_cert', '1'],
+    'admin_cert_crl_ldap': ['admin_cert_crl', '1'], 'admin_cert_ocsp': ['admin_cert', '1'],
+    'admin_cert_ocsp_url': ['admin_cert_ocsp', 'off-not'], 'admin_cert_auto': ['admin_cert', '1'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
     'admin_2fa_passkey': ['admin_2fa', '1'],

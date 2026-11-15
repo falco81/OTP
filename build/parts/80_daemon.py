@@ -1430,6 +1430,11 @@ class Daemon(object):
         why_in = signin_ways_problem(self.store, checked)
         if why_in:
             raise BadSetting(why_in)
+        # The responder of its own is asked as a CRL's address is (1.0.279): http, no loopback,
+        # link-local or metadata address - refused when saved, not found out at a sign-in.
+        if str(checked.get('admin_cert_ocsp_url') or '').strip() and not cdp_ok(checked['admin_cert_ocsp_url'].strip()):
+            raise BadSetting('admin_cert_ocsp_url: not an address otp asks (http only, no user or password in it; '
+                             'no loopback, link-local or metadata address)')
         # The balancer's port on the nodes clashes with nothing (1.0.262), the batch as saved
         others = None
         if many and any(k in checked for k in ('web_proxy', 'web_proxy_port', 'admin_cert',
@@ -1613,7 +1618,11 @@ class Daemon(object):
                                          'sign-in(s) to the pages ended' % gone, 'warn', who=by)
             except Exception as e:                      # noqa: BLE001
                 log('the sign-ins to the pages could not be ended: %s' % e, 'warn')
-        if not was_pw_off and admin_password_off_now():
+        def _after(k):
+            return checked[k] if k in checked else CONFIG.get(k)
+        pw_off_after = bool(_setting_on(_after('admin_password_off')) and _after('admin_directory') and (
+            _setting_on(_after('admin_kerberos')) or _setting_on(_after('admin_cert'))))
+        if not was_pw_off and pw_off_after:
             # No password at all, now in effect (1.0.278): the sign-ins opened with a password end -
             # they stayed whole for hours after. Windows' and a certificate's stay, and the saver's.
             try:
@@ -2092,6 +2101,7 @@ class Daemon(object):
                 except Exception as e:          # noqa: BLE001
                     log_sparing('selinux-tick', 'SELinux: %s' % e, 'warn', every=600)
                 try:
+                    cert_ldap_hook(self)        # CRLs from the directory, with its connection (1.0.279)
                     cert_tick(self.store)       # the authorities of certificates on this node (1.0.275)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('cert-tick', 'certificates: %s' % e, 'warn', every=600)

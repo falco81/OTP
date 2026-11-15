@@ -41,7 +41,14 @@ function otp_cert_back(string $said = ''): void
     if (!preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])\z/', $host)) {
         $host = (string) ($_SERVER['SERVER_NAME'] ?? 'localhost');
     }
-    $to = 'https://' . $host . '/admin/' . ($said !== '' ? '?certsaid=' . rawurlencode(substr($said, 0, 300)) : '');
+    /* Why not, in a cookie of this site for two minutes (1.0.278) - not as words in the address:
+       a link of anybody's put any text on this sign-in page as a refusal, and stopped the
+       certificate being tried by itself in that tab. The address says only that one is there. */
+    if ($said !== '') {
+        setcookie('otp_certsaid', substr($said, 0, 300), ['expires' => time() + 120, 'path' => OTP_COOKIE_PATH,
+                                                         'secure' => true, 'httponly' => true, 'samesite' => 'Lax']);
+    }
+    $to = 'https://' . $host . '/admin/' . ($said !== '' ? '?certsaid=1' : '');
     header('Cache-Control: no-store');
     header('Location: ' . $to, true, 303);
     exit;
@@ -596,6 +603,13 @@ if (!$me && !otp_local()) {
     if (is_array($health) && array_key_exists('password', $health)) $keep['password'] = $health['password'] !== false;
     $health = $keep;
 }
+/* The certificate's port said why not (1.0.278): read once, from its cookie. */
+$certsaid = '';
+if (isset($_GET['certsaid']) && isset($_COOKIE['otp_certsaid'])) {
+    $certsaid = substr((string) $_COOKIE['otp_certsaid'], 0, 300);
+    setcookie('otp_certsaid', '', ['expires' => time() - 3600, 'path' => OTP_COOKIE_PATH,
+                                   'secure' => true, 'httponly' => true, 'samesite' => 'Lax']);
+}
 $initial = $me ? (otp_get('/api/status', 8.0) ?: null) : null;
 /* The sign-in's picture, when it is to be shown here too (1.0.71). */
 $art_info = $me ? null : otp_get('/api/portal/info', 3.0);
@@ -664,7 +678,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
       <div class="said" id="in-said"></div>
     </form>
     <?php if (!empty($health['kerberos']) || !empty($health['cert'])): ?>
-    <div id="krb-box" class="krb-box"<?= $mfa !== '' ? ' hidden' : '' ?>
+    <div id="krb-box" class="krb-box"<?= $mfa !== '' ? ' hidden' : '' ?> data-certsaid="<?= h($certsaid) ?>"
          data-auto="<?= (!empty($health['kerberos_auto']) || ($pw_off && !empty($health['kerberos']))) ? '1' : '' ?>"
          data-cert-auto="<?= (!empty($health['cert_auto']) || ($pw_off && !empty($health['cert']) && empty($health['kerberos']))) ? '1' : '' ?>">
       <?php if ($pw_off): ?>
@@ -759,7 +773,9 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
   if ($('cert-go')) $('cert-go').onclick = certGo;
   var certRefused = false;
   try {
-    var cs = new URLSearchParams(location.search).get('certsaid');
+    var cs = new URLSearchParams(location.search).get('certsaid') !== null && $('krb-box')
+             ? ($('krb-box').getAttribute('data-certsaid') || '') : '';
+    if (new URLSearchParams(location.search).get('certsaid') !== null && !cs) history.replaceState(null, '', location.pathname);
     if (cs) { certRefused = true; try { sessionStorage.setItem('otp.cert.tried', '1'); } catch (e) { } }
     if (cs && $('krb-said')) {
       $('krb-said').className = 'said bad';

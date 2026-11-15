@@ -1024,7 +1024,7 @@ class Ldap(object):
     @staticmethod
     def _entry_of(body):
         tag, dn_body, at = _ber_read(body)
-        entry = {'dn': dn_body.decode('utf-8', 'replace'), 'attrs': {}}
+        entry = {'dn': dn_body.decode('utf-8', 'replace'), 'attrs': {}, 'raw': {}}
         tag, attrs_body, _ = _ber_read(body, at)
         inner = 0
         while inner < len(attrs_body):
@@ -1039,5 +1039,12 @@ class Ldap(object):
                 got.append(value.hex() if name.lower() == b'objectsid' else
                            value.decode('utf-8', 'replace'))
             entry['attrs'][name.decode('utf-8', 'replace')] = got
+            if name.split(b';', 1)[0].lower() in (b'certificaterevocationlist', b'deltarevocationlist'):
+                # A CRL as it is (1.0.279): binary - read from the directory's CDP object.
+                raw, deep = [], 0
+                while deep < len(values):
+                    _t, value, deep = _ber_read(values, deep)
+                    raw.append(bytes(value))
+                entry['raw'][name.decode('utf-8', 'replace')] = raw
         return entry
 

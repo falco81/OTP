@@ -131,8 +131,11 @@ const name = w => (w && w.name) || '-';
   p = await page('none', 'falco', 2);
   // the page as a tab that tried the certificate already sees it (otherwise it is gone to the port at once)
   await p.addInitScript(() => { try { if (location.port !== '8443' && !sessionStorage.getItem('t.look')) { sessionStorage.setItem('t.look', '1'); sessionStorage.setItem('otp.cert.tried', '1'); } } catch (e) {} });
-  await p.goto(URL); await p.waitForTimeout(1200);
-  const formHidden = await p.$eval('#signin-form', f => f.hidden).catch(() => null);
+  let formHidden = null;
+  for (let i = 0; i < 10 && formHidden !== true; i++) {     // the daemon reads the command line's settings within seconds
+    await p.goto(URL); await p.waitForTimeout(1200);
+    formHidden = await p.$eval('#signin-form', f => f.hidden).catch(() => null);
+  }
   await p.context().close();
   p = await page('none', 'falco', 2);
   await p.goto(URL); await p.waitForTimeout(5000);

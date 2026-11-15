@@ -49,6 +49,68 @@ How this way sits beside a password and the other way on one sign-in page (since
 6. **Try my certificate** opens the port in a new tab: the browser offers a certificate and the
    page says who it would sign in, and as what - nothing is signed in.
 
+## Revocation (CRL)
+
+Since 1.0.278, as the crl-revocation-kit says it (acme 1.0.104). With *Check that a certificate is not
+revoked* on (`admin_cert_crl`, the default):
+
+- **No CRL, no sign-in.** When a CRL cannot be had and no good copy is kept, nobody signs in with a
+  certificate it covers.
+- **Which CRLs**: the one at the certificate's *CRL Distribution Point* (up to three of its `http://`
+  addresses, the first that answers), its **delta CRL** when the certificate or its CRL names one
+  (*Freshest CRL*; a delta named and not to be had means no sign-in), and the same for **every
+  authority above it among those put in, except the root** (an issuing authority revoked by its root
+  signs nobody in). Then one `openssl verify -crl_check_all [-use_deltas]` against the authorities put
+  in alone - never the system's store. An authority above the person's certificate that names **no**
+  CRL at all is not checked (it signed people in before 1.0.278 and still does), and then only the
+  person's certificate is checked against its CRLs (`-crl_check`); give every issuing authority a CDP
+  over http to have them all checked.
+- **Only for a certificate whose chain is already good**: a CRL address written into just anybody's
+  certificate is never fetched.
+- **When**: at a sign-in, or *Fetch now*. A CRL is used for ten minutes at most, or until its next
+  update if sooner; a failed fetch less than a minute ago is not tried again. When its address does
+  not answer, the last good one is kept until its next update - then nothing. A CRL already past its
+  next update when fetched counts as none.
+- **From where**: **http only** (no https, ldap, or a name and password in the address), by **this
+  node's own resolver** (`/etc/hosts`, the DNS of Settings → Network) and **never through the proxy**
+  - AD CS publishes its CDPs inside. Every address the name has is checked, and none may be loopback,
+  link-local, multicast, unspecified, reserved or a cloud's metadata service (169.254.169.254 and the
+  others, in any spelling of the number); private addresses (RFC 1918, fc00::/7) are fine. The
+  connection is made to the address checked - the name is not looked up again; no redirect is
+  followed, 8 MB and 15 s at most.
+- **Each node fetches and keeps its own** - a node that cannot reach a CDP refuses on its own. It
+  publishes only facts and dates of them (never a CRL), at most 24.
+
+**The lag**: a card revoked at the authority stops signing in once the authority has **published** a
+CRL listing it, plus up to ten minutes. With AD CS's defaults (base weekly, delta daily) that can be
+a day. After revoking a lost card, publish by hand on the authority - `certutil -CRL` - then press
+**Fetch now**.
+
+**The network**: every node must reach every CDP over http - the person's issuing authority's, and
+the issuing authority's own (the root's CRL). Allow them through the firewall from the nodes; they
+are fetched straight, never through the proxy.
+
+### On the card
+
+*Settings → Accounts → Signing in with a certificate → Revocation lists (CRL)*: one row for each CRL
+a node keeps, and one for each CRL the authorities name that has not been fetched yet. The pill of
+its next update says, in this order: **not fetched yet** (grey), **run out** or **not had** (red -
+nobody signs in with a certificate it covers), **within a day** (amber; AD CS's delta CRLs always
+are), **last fetch failed** (amber - the last good one is kept until its next update), **good**. A row
+opens to this update, next update, number, size, how many are revoked, the signature (checked by
+openssl against the authorities put in), the issuer, the error, the address and **each node's**
+fetch. **Fetch now** and **Clear all** (and each row's own two buttons) are asked of every node -
+each does it itself - and a box shows each node's answer as it comes. A full administrator only;
+each is written to the events.
+
+### On the command line
+
+```
+otp --cert-crl [--json]        the table, as text
+otp --cert-crl-fetch [URL]     Fetch now - every CRL, or one - on every node; waits a minute; exit 1 if any failed
+otp --cert-crl-clear [URL]     Clear - one, or all (asks; --yes) - on every node
+```
+
 ## On the sign-in page
 
 **Sign in with a certificate** below the form: the browser goes to `https://<name>:8443/admin/`,
@@ -91,7 +153,7 @@ the client's certificate on. Open the port, or sign in to the nodes' own names.
 | *the certificate is not taken: certificate has expired* | Run out. |
 | *the certificate is not taken: unable to get local issuer certificate* | Its authority is not put in - put in the issuing authority and the root. |
 | *... unsuitable certificate purpose* / *not for signing in* | No Client Authentication or Smart Card Logon. |
-| *the CRL at ... could not be had* | The CDP does not answer from the nodes (the firewall, the proxy); with revocation checked nobody signs in until it does. |
+| *the CRL at ... could not be had* | The CDP does not answer from the nodes (the firewall; it is fetched straight, never through the proxy - http only, the node's own DNS); with revocation checked nobody signs in until it does. Settings → Accounts → the certificate's card → Revocation lists says which, on which node. |
 | *names no user* | No UPN in the Subject Alternative Name - fix the template. |
 | *of another account: its SID is ...* | The SID in it is not the account's (the UPN was moved to somebody else). |
 | *names no SID of its account* | `strong`, and a certificate from before KB5014754 or an offline template. |

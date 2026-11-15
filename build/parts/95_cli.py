@@ -829,6 +829,15 @@ def build_parser():
     g.add_argument('--cert-crl-clear', metavar='URL', nargs='?', const='',
                    help='forget the CRLs kept (or the one at URL) on every node - the next sign-in fetches '
                         'them again (all of them: asks; --yes)')
+    g.add_argument('--cert-ocsp', action='store_true',
+                   help='the OCSP answers kept for the sign-in with a certificate: certificate, status, responder, '
+                        'dates, errors - every node\'s (1.0.279)')
+    g.add_argument('--cert-ocsp-fetch', metavar='KEY', nargs='?', const='',
+                   help='ask every responder again (or the one of KEY, as --cert-ocsp --json says it) - on every '
+                        'node; exit 1 if one did not answer')
+    g.add_argument('--cert-ocsp-clear', metavar='KEY', nargs='?', const='',
+                   help='forget the OCSP answers (or the one of KEY) on every node - asked again at the next '
+                        'sign-in (all of them: asks; --yes)')
     g.add_argument('--reset-2fa', metavar='NAME', help='take away the second step an account set '
                    'up for these pages: it sets it up again at its next sign-in')
     g.add_argument('--note', metavar='TEXT', default='', help='a note beside what is made')
@@ -1848,6 +1857,76 @@ def cli_cert_crl(args, pal, store):
             print('  node %-12s %s%s' % (
                 n['node'], 'fetched %s' % stamp(n.get('at')) if n.get('ok') else 'not had',
                 ('  (%s, %s)' % (n['err'], stamp(n.get('err_at')))) if n.get('err') else ''))
+    return 0
+
+
+def cli_cert_ocsp(args, pal, store):
+    """otp --cert-ocsp, --cert-ocsp-fetch [KEY], --cert-ocsp-clear [KEY] (1.0.279): as the card's table of
+    the OCSP answers, its Ask again and Clear - the same rules and events."""
+    by = 'root on %s' % node_name()
+    act = 'fetch' if args.cert_ocsp_fetch is not None else ('clear' if args.cert_ocsp_clear is not None else '')
+    if act:
+        key = (args.cert_ocsp_fetch if act == 'fetch' else args.cert_ocsp_clear) or ''
+        if act == 'clear' and not key:
+            cli_sure(args, 'every OCSP answer kept forgotten on every node - while a responder does not answer, '
+                           'nobody signs in with a certificate it should say of')
+        d = Daemon(store, serve=False)
+        try:
+            asked = ocsp_ask_all(d, act, key, by)
+        except ValueError as e:
+            raise SystemExit('otp: %s' % e)
+        got = cli_ask_wait(store, 'ocsp_' + act, asked, 60)
+        if args.json:
+            print(json.dumps({'nodes': got}, default=str))
+            return 0 if all(v and v.get('ok') for v in got.values()) else 1
+        bad = False
+        for n, v in sorted(got.items()):
+            if not v:
+                bad = True
+                print(pal.warn_line('%s: no answer in a minute - is otp running there?' % n))
+                continue
+            rows = v.get('crls') or []
+            if v.get('error'):
+                bad = True
+                print(pal.warn_line('%s: %s' % (n, v['error'])))
+            elif act == 'clear':
+                print(pal.ok_line('%s: %d answer(s) forgotten' % (n, len(rows))))
+            else:
+                print((pal.ok_line if v.get('ok') else pal.warn_line)('%s: %d of %d responder(s) answered' % (
+                    n, sum(1 for r in rows if r.get('ok')), len(rows))))
+                bad = bad or not v.get('ok')
+            for r in rows:
+                print('  %-64s %s' % (str(r.get('url'))[:64], (r.get('status') or 'ok') if r.get('ok')
+                                      else 'NO ANSWER: %s' % r.get('err')))
+        return 1 if bad else 0
+    rows = ocsp_view_rows(store)
+    if args.json:
+        print(json.dumps({'ocsp': ocsp_mode(), 'answers': rows}, default=str))
+        return 0
+    print('OCSP: %s%s' % (ocsp_mode(), (' - one responder for all: %s' % CONFIG.get('admin_cert_ocsp_url'))
+                          if str(CONFIG.get('admin_cert_ocsp_url') or '').strip() else ''))
+    if not rows:
+        print(pal.ok_line('no OCSP answer kept - a responder is asked at the first sign-in (or otp --cert-ocsp-fetch)'))
+        return 0
+    now = time.time()
+    for c in rows:
+        st = c.get('status') or 'NO ANSWER'
+        if c.get('status') == 'good' and c.get('next') and float(c['next']) <= now:
+            st = 'run out'
+        elif c.get('status') == 'good' and c.get('err'):
+            st = 'good - the last answer kept (the latest asking failed)'
+        line = '%s  %s' % (c.get('subject') or '?', st)
+        print(pal.ok_line(line) if st == 'good' else pal.warn_line(line))
+        print('  responder     %s' % c.get('url'))
+        print('  issued by     %s, serial %s' % (c.get('issuer') or '-', c.get('serial') or '-'))
+        if c.get('status'):
+            print('  this update %s, next update %s%s' % (stamp(c.get('this')), stamp(c.get('next')),
+                                                       (', signed by %s' % c['responder']) if c.get('responder') else ''))
+        if c.get('status') == 'revoked':
+            print('  revoked %s%s' % (stamp(c.get('revoked_at')), (' (%s)' % c['reason']) if c.get('reason') else ''))
+        for n in c.get('nodes') or []:
+            print('  node %-12s %s%s' % (n['node'], ('asked %s' % stamp(n.get('at'))) if n.get('status') else 'no answer',
+                                         ('  (%s, %s)' % (n['err'], stamp(n.get('err_at')))) if n.get('err') else ''))
     return 0
 
 def cli_sure(args, what):
@@ -4005,6 +4084,8 @@ def cli_main(argv=None):
 
     if args.cert_crl or args.cert_crl_fetch is not None or args.cert_crl_clear is not None:
         return cli_cert_crl(args, pal, store)
+    if args.cert_ocsp or args.cert_ocsp_fetch is not None or args.cert_ocsp_clear is not None:
+        return cli_cert_ocsp(args, pal, store)
 
     if args.cert or args.cert_ca or args.cert_ca_drop:
         if args.cert_ca:

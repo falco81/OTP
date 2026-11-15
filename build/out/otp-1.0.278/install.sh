@@ -400,6 +400,10 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     fi
     [[ -e /etc/nginx/conf.d/otp_vip.conf ]] && run rm -f /etc/nginx/conf.d/otp_vip.conf
     [[ -e /etc/nginx/conf.d/otp_lbport.conf ]] && run rm -f /etc/nginx/conf.d/otp_lbport.conf
+    # The certificate's own server and its authorities (1.0.278): left, they named nginx's zones of
+    # otp.conf, gone - nginx did not start again at all.
+    [[ -e /etc/nginx/conf.d/otp_certlogin.conf ]] && run rm -f /etc/nginx/conf.d/otp_certlogin.conf
+    [[ -e /etc/nginx/certs/otp-certlogin-ca.pem ]] && run rm -f /etc/nginx/certs/otp-certlogin-ca.pem
     [[ -e /usr/libexec/keepalived/otp-vip-check ]] && run rm -f /usr/libexec/keepalived/otp-vip-check
     for one in "$UNIT_FILE" "$LOGROTATE_FILE" "$CONSOLE_SYSCTL" "$RCVBUF_SYSCTL" "$NGINX_CONF" "$BIN_LINK" \
                "$UPGRADE_PATH_UNIT" "$UPGRADE_SERVICE_UNIT" "$WEB_PATH_UNIT" "$WEB_SERVICE_UNIT" \
@@ -421,7 +425,13 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     [[ -d "$WEB_DIR" ]] && run rm -rf "$WEB_DIR"
     run systemctl daemon-reload
     for unit in $(php_fpm_units); do run systemctl restart "$unit" || true; done
-    command -v nginx >/dev/null && run systemctl reload nginx 2>/dev/null || true
+    if command -v nginx >/dev/null; then
+        if nginx -t >/dev/null 2>&1; then
+            run systemctl reload nginx 2>/dev/null || true
+        else
+            say "nginx does not read its configuration any more - nginx -t says why; otp's files are gone"
+        fi
+    fi
     good "Gone. $STATE_DIR and $CONFIG_DIR were left alone."
     say "To remove the rest:  rm -rf $STATE_DIR $CONFIG_DIR $LOG_DIR; userdel $SERVICE_USER; userdel $POOL_USER; groupdel $WEB_GROUP"
     # What it opened and made beside it, said rather than guessed at (1.0.44).

@@ -2686,6 +2686,7 @@ $('log-read').onclick = function () {
 var RAIL = {pinned: false, open: null, shut: null};
 function showPane(name) {
   if (!$('pane-' + name)) name = 'radius';
+  if (name !== PANE) paneLetGo();
   PANE = name;
   document.querySelectorAll('#ctl-nav button[data-pane]').forEach(function (b) {
     b.classList.toggle('on', b.dataset.pane === name);
@@ -2987,7 +2988,7 @@ function smsTelExtra() {
     busy(go, true);
     clear(out);
     out.appendChild(el('p', 'note', 'Asking the gateway…'));
-    api('mail', {action: 'tel_test'}).then(function (d) {
+    apiAnswer('mail', {action: 'tel_test'}).then(function (d) {
       busy(go, false);
       clear(out);
       var steps = el('div', 'tel-steps');
@@ -3618,6 +3619,19 @@ function markDirty(item, s) {
   markDirtyCount();
   applyOnlyWhen();
 }
+/* What a switch changes below it (the words "Not in use while ... is off" coming or going) never
+   shortens the pane while it is worked in (1.0.278): scrolled to its end, everything slid down by
+   that much. Held until another pane is shown or the settings are read again. */
+function paneHeld(fn) {
+  /* Its height set before the change - measured after it, the scroll had been cut short already. */
+  var pane = $('pane-' + PANE);
+  var was = pane && !pane.hidden ? pane.getBoundingClientRect().height : 0;
+  if (was) pane.style.minHeight = Math.ceil(was) + 'px';
+  fn();
+}
+function paneLetGo() {
+  document.querySelectorAll('[id^="pane-"]').forEach(function (p) { if (p.style.minHeight) p.style.minHeight = ''; });
+}
 /* Changes that are not settings (1.0.56) - the firewall, the VIP address,
    a certificate authority pasted in - wait for the same save bar:
    PENDING[key] = {save: function () -> Promise (false: not done), reset}. */
@@ -3661,7 +3675,8 @@ function askThen(title, words, buttonWords, danger) {
     }, 300);
   });
 }
-function applyOnlyWhen() {
+function applyOnlyWhen() { paneHeld(applyOnlyWhenNow); }
+function applyOnlyWhenNow() {
   applySubs();
   var rules = (SETTINGS && SETTINGS.only_when) || {};
   /* A setting is asleep when the one it depends on says so - and also when
@@ -7038,7 +7053,7 @@ if ($('db-engine-test')) {
   };
   $('db-check').onclick = function () {
     busy($('db-check'), true);
-    api('db', {action: 'check'}).then(function (d) {
+    apiAnswer('db', {action: 'check'}).then(function (d) {
       modal(d.ok ? 'Nothing in it is broken' : 'Something in it is broken', function (body) {
         var ul = el('ul', 'note');
         (d.said || []).forEach(function (one) { ul.appendChild(noI18n(el('li', 'mono small', one))); });
@@ -8356,7 +8371,9 @@ function nodeSave(s, node, value, then) {
   var want = {};
   want[s.key] = typeof s.default === 'number' ? Number(value)
     : (typeof s.default === 'boolean' ? (value === true || value === 'true' || value === '1' || value === 1) : value);
-  return api('settings', {settings: want, node: node}).then(function (r) { toast(r.message, 'good'); then(); }).catch(oops);
+  /* Refused, drawn again as it is (1.0.278): the node's switch stayed flipped as if saved. */
+  return api('settings', {settings: want, node: node}).then(function (r) { toast(r.message, 'good'); then(); })
+    .catch(function (e) { oops(e); if (then) then(); });
 }
 function nodeEdit(s, node, current, then) {
   var box;
@@ -20007,10 +20024,19 @@ function krbPick() {
   input.click();
   setTimeout(function () { input.remove(); }, 60000);
 }
+/* An answer that says no as its result (1.0.278): {ok: false, said...} with 200 is what a test found,
+   not a failure of the asking - api() threw it as "HTTP 200", and the button said no ticket, the
+   database's check a puzzle, the gateway's test nothing of its steps. */
+function apiAnswer(what, body) {
+  return api(what, body).catch(function (e) {
+    if (e && e.status >= 200 && e.status < 300 && e.data && e.data.ok === false && !e.data.error) return e.data;
+    throw e;
+  });
+}
 function krbTryMine(b, out) {
   busy(b, true);
   clear(out);
-  api('kerberos-check', {}).then(function (r) {
+  apiAnswer('kerberos-check', {}).then(function (r) {
     busy(b, false);
     var line = el('div', 'krb-try');
     if (r.ok) {
@@ -20058,7 +20084,9 @@ function drawKrb() {
    ['NTLM', 'never taken', '']].forEach(function (r) {
     facts.appendChild(el('span', 'k', r[0]));
     var v = el('span', 'v');
-    v.appendChild(r[0] === 'Realm' || r[0] === 'Directory' ? noI18n(el('span', r[0] === 'Realm' ? 'mono' : '', r[1])) : el('span', '', r[1]));
+    /* A name as it is; the words said when there is none are translated (1.0.278). */
+    v.appendChild((r[0] === 'Realm' && d.realm) || (r[0] === 'Directory' && d.directory)
+      ? noI18n(el('span', r[0] === 'Realm' ? 'mono' : '', r[1])) : el('span', '', r[1]));
     if (r[2]) v.appendChild(el('span', 'sub', r[2]));
     facts.appendChild(v);
   });
@@ -20218,7 +20246,7 @@ function drawSignin() {
    node), how a certificate is matched to an account, the CRLs fetched, each node (the authorities
    written, nginx listening on the port), a try of this browser's certificate, and the guides:
    the template of AD CS, a YubiKey, the browsers. */
-var CERTL = {d: null};
+var CERTL = {d: null, crlOpen: {}, crlAsk: null, crlSaid: null};
 function loadCert() {
   var host = $('cert-host');
   if (!host) return;
@@ -20241,10 +20269,15 @@ function certPick() {
   input.click();
   setTimeout(function () { input.remove(); }, 60000);
 }
-function drawCert() {
-  var d = CERTL.d, host = $('cert-host');
-  if (!host || !d) return;
-  clear(host);
+/* Drawn in one step and the place kept (1.0.278): a row opened, a node's answer, a refresh. */
+function drawCert(anchor) {
+  var host = $('cert-host');
+  if (!host || !CERTL.d) return;
+  redrawKeepingPlace(host, drawCertInto, {anchor: anchor});
+  drawSignin();
+}
+function drawCertInto(host) {
+  var d = CERTL.d;
   var cbad = !!(d.on && d.problems && d.problems.length);
   var chips = el('div', 'lb-facts cert-chips');
   var chip = function (cls, words) { var c = el('span', 'cchip ' + cls); c.appendChild(el('span', '', words)); chips.appendChild(c); return c; };
@@ -20324,19 +20357,7 @@ function drawCert() {
   };
   row.appendChild(tryb);
   host.appendChild(row);
-  if (d.crls && d.crls.length) {
-    host.appendChild(el('h3', 'peek-h', 'Revocation lists fetched'));
-    host.appendChild(listTable(['Address', 'State', 'Fetched', 'Next update'], d.crls, function (c) {
-      var tr = el('tr');
-      tr.appendChild(noI18n(el('td', 'mono small', c.url)));
-      var s = el('td'); s.appendChild(el('span', 'tag ' + (c.ok ? 'ok' : 'crit'), c.ok ? 'good' : 'not had'));
-      if (c.err) s.appendChild(noI18n(el('span', 'sub', c.err)));
-      tr.appendChild(s);
-      tr.appendChild(c.at ? stampCell(c.at) : el('td', 'muted', '–'));
-      tr.appendChild(c.next ? stampCell(c.next) : el('td', 'muted', '–'));
-      return tr;
-    }));
-  }
+  certCrls(host, d);
   host.appendChild(el('h3', 'peek-h', 'Each node'));
   host.appendChild(listTable(['Node', 'Heard from', 'The authorities', 'nginx on port ' + d.port, 'Trouble'], d.nodes || [], function (n) {
     var tr = el('tr');
@@ -20371,5 +20392,236 @@ function drawCert() {
     ul2.appendChild(li);
   });
   host.appendChild(ul2);
-  drawSignin();
+}
+/* ---- the CRLs of the sign-in with a certificate (1.0.278, the crl-revocation-kit) -----------
+   One row for each CRL - kept on a node, or named by an authority put in and not fetched yet - its
+   next update as a pill (green good, amber within a day or its last fetch failed, red not had or
+   run out); a row opens to the details and each node's fetch. Fetch now and Clear (all, or one row)
+   are asked of every node: each does it itself, and the card follows their answers. */
+function certTag(cls, words) { return el('span', 'tag ' + cls, words); }
+function certCrlState(c) {
+  var now = Date.now() / 1000;
+  if (!c.fetched) return ['dim', 'not fetched yet'];
+  if (!c.ok) return ['crit', c.next && c.next <= now && !c.err ? 'run out' : 'not had'];
+  if (c.next && c.next - now < 86400) return ['warn', 'within a day'];
+  if (c.err) return ['warn', 'last fetch failed'];
+  return ['ok', 'good'];
+}
+function certCrlAsk(act, url, anchor) {
+  if (CERTL.crlAsk) return;
+  var ask = CERTL.crlAsk = {act: act, url: url || '', nodes: {}, done: false};
+  askNodes('certlogin', {action: 'crl_' + act, url: url || ''}, function (n, got) {
+    ask.nodes[n] = got;
+    loadCert();
+  }, function () {
+    ask.done = true;
+    CERTL.crlAsk = null;
+    CERTL.crlSaid = ask;
+    var bad = Object.keys(ask.nodes).filter(function (n) { return !ask.nodes[n] || !ask.nodes[n].ok; });
+    toast(act === 'clear' ? 'cleared on every node' : (bad.length ? 'fetched - not everything on every node' : 'fetched on every node'), bad.length ? 'warn' : 'good');
+    loadCert();
+  }).then(function (x) {
+    /* The box at its final shape at once: a line for every node, "waiting" until it answers. */
+    (x.nodes || []).forEach(function (n) { if (!(n in ask.nodes)) ask.nodes[n] = null; });
+    drawCert(anchor);
+  }).catch(function (e) { CERTL.crlAsk = null; oops(e); drawCert(anchor); });
+  drawCert(anchor);
+}
+function certCrlSaid(host) {
+  var ask = CERTL.crlAsk || CERTL.crlSaid;
+  if (!ask) return;
+  var box = el('div', 'cert-crl-said');
+  box.dataset.key = 'crl-said';
+  var head = el('div', 'cert-crl-said-h');
+  head.appendChild(el('b', '', ask.act === 'clear' ? (ask.url ? 'Clear one CRL' : 'Clear every CRL') : (ask.url ? 'Fetch one CRL now' : 'Fetch every CRL now')));
+  if (ask.url) head.appendChild(noI18n(el('span', 'mono small', ask.url)));
+  if (!ask.done) head.appendChild(el('span', 'muted small', 'asked of every node…'));
+  else {
+    var x = iconButton('close', 'Hide this');
+    x.dataset.key = 'crl-said-x';
+    x.onclick = function () { CERTL.crlSaid = null; drawCert(x); };
+    head.appendChild(x);
+  }
+  box.appendChild(head);
+  Object.keys(ask.nodes).sort().forEach(function (n) {
+    var got = ask.nodes[n], line = el('div', 'cert-crl-said-n');
+    line.appendChild(noI18n(el('span', 'mono', n)));
+    if (!got) line.appendChild(certTag('dim', 'waiting'));
+    else if (got.error) { line.appendChild(certTag('crit', 'failed')); line.appendChild(el('span', 'small bad', got.error)); }
+    else {
+      var rows = got.crls || [], ok = rows.filter(function (r) { return r.ok; }).length;
+      if (ask.act === 'clear') line.appendChild(certTag('ok', 'cleared'));
+      else line.appendChild(certTag(ok === rows.length ? 'ok' : 'crit', ok === rows.length ? 'fetched' : 'not everything'));
+      line.appendChild(el('span', 'muted small', ask.act === 'clear' ? rows.length + ' forgotten' : ok + ' of ' + rows.length + ' fetched'));
+      rows.filter(function (r) { return !r.ok; }).forEach(function (r) {
+        var e = el('div', 'cert-crl-said-e small');
+        e.appendChild(noI18n(el('span', 'mono', r.url)));
+        e.appendChild(noI18n(el('span', 'bad', r.err || '')));
+        line.appendChild(e);
+      });
+    }
+    box.appendChild(line);
+  });
+  host.appendChild(box);
+}
+function certCrls(host, d) {
+  var crls = d.crls || [], full = ME && ME.role === 'fulladmin';
+  var head = el('div', 'cert-crl-head');
+  head.appendChild(el('h3', 'peek-h', 'Revocation lists (CRL)'));
+  if (full && (crls.length || CERTL.crlAsk)) {
+    var row = el('div', 'btnrow');
+    var busyNow = !!CERTL.crlAsk;
+    var fb = cmdButton(busyNow && CERTL.crlAsk.act === 'fetch' ? 'Fetching…' : 'Fetch now', 'refresh', 'small');
+    fb.id = 'cert-crl-fetch';
+    fb.dataset.key = 'crl-fetch';
+    explain(fb, 'Every CRL fetched again now - on every node of the cluster, each itself: those kept and those the authorities name. One that cannot be fetched lets nobody in: the last good one is kept until its next update, else nobody signs in with a certificate of it.');
+    fb.disabled = busyNow;
+    fb.onclick = function () { certCrlAsk('fetch', '', fb); };
+    var cb = cmdButton('Clear all', 'broom', 'small danger');
+    cb.id = 'cert-crl-clear';
+    cb.dataset.key = 'crl-clear';
+    explain(cb, 'Forget the CRLs kept on every node: the next sign-in (or Fetch now) fetches them again.');
+    cb.disabled = busyNow || !crls.some(function (c) { return c.fetched; });
+    cb.onclick = function () {
+      confirmThen('Clear every CRL?', 'Every node forgets the CRLs it keeps; the next sign-in fetches them again. While an address does not answer then, nobody signs in with a certificate of its authority - the last good CRL is gone too.', 'Clear them', function () { certCrlAsk('clear', '', cb); }, true);
+    };
+    row.appendChild(fb);
+    row.appendChild(cb);
+    head.appendChild(row);
+  }
+  host.appendChild(head);
+  certCrlSaid(host);
+  if (!crls.length) {
+    host.appendChild(el('p', 'note', d.crl ? 'None yet: the CRL at a certificate’s CRL Distribution Point is fetched at its first sign-in and kept until its next update.' : 'Revocation is not checked (admin_cert_crl is off).'));
+    return;
+  }
+  host.appendChild(el('p', 'note', 'Fetched at a sign-in, at most every ten minutes, and kept until the next update - over http, by each node itself, never through the proxy; its signature is checked by openssl against the authorities put in. A row opens to its details and each node’s fetch.'));
+  var t = el('table', 'rows krb-t cert-crl-t');
+  var hr = el('tr', 'cert-crl-hr');
+  ['', 'Address', 'Issued by', 'Type', 'Next update', 'Revoked', 'Fetched', ''].forEach(function (h) { hr.appendChild(el('th', '', h)); });
+  t.appendChild(hr);
+  var cell = function (tr, label, cls) {
+    var td = el('td', cls || '');
+    if (label) td.appendChild(el('span', 'cert-crl-lab', label));
+    tr.appendChild(td);
+    return td;
+  };
+  crls.forEach(function (c) {
+    var open = !!CERTL.crlOpen[c.url], st = certCrlState(c);
+    var tr = el('tr', 'cert-crl-row' + (open ? ' open' : ''));
+    tr.dataset.key = 'crl-row:' + c.url;
+    tr.tabIndex = 0;
+    tr.setAttribute('aria-expanded', open ? 'true' : 'false');
+    var toggle = function () { CERTL.crlOpen[c.url] = !CERTL.crlOpen[c.url]; drawCert(tr); };
+    tr.onclick = function (ev) { if (ev.target.closest('button,.copyable')) return; toggle(); };
+    tr.onkeydown = function (ev) { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target === tr) { ev.preventDefault(); toggle(); } };
+    var chev = cell(tr, '', 'cert-crl-chev');
+    chev.appendChild(el('span', 'cert-crl-arrow', '▸'));
+    var a = cell(tr, '', 'cert-crl-url');
+    var u = noI18n(el('span', 'mono', c.url));
+    u.title = c.url;
+    var ain = el('div', 'cert-crl-url-in');
+    ain.appendChild(u);
+    var cp = iconButton('copy', 'Copy the address');
+    cp.onclick = function (ev) { ev.stopPropagation(); copyText(c.url, cp, 'the address copied'); };
+    ain.appendChild(cp);
+    a.appendChild(ain);
+    var iss = cell(tr, 'Issued by', 'cert-crl-iss');
+    if (c.issuer) {
+      var cnm = /(?:^|,)\s*CN=([^,]+)/i.exec(String(c.issuer));
+      var dn = noI18n(el('span', 'small', cnm ? cnm[1] : String(c.issuer)));
+      dn.title = String(c.issuer);
+      iss.appendChild(dn);
+    } else if ((c.of || []).length) {
+      iss.appendChild(el('span', 'muted small', 'named by '));
+      iss.appendChild(noI18n(el('span', 'mono small', c.of.join('; '))));
+    } else iss.appendChild(el('span', 'muted', '–'));
+    var ty = cell(tr, 'Type');
+    ty.appendChild(certTag(c.delta ? 'info' : 'dim', c.delta ? 'delta' : 'base'));
+    var nu = cell(tr, 'Next update', 'cert-crl-next');
+    nu.appendChild(certTag(st[0], st[1]));
+    if (c.next) nu.appendChild(noI18n(el('span', 'small', stamp(c.next))));
+    var rv = cell(tr, 'Revoked', 'cert-crl-num');
+    rv.appendChild(noI18n(el('span', '', c.revoked === null || c.revoked === undefined ? '–' : num(c.revoked))));
+    var fa = cell(tr, 'Fetched', 'cert-crl-at');
+    fa.appendChild(noI18n(el('span', 'small', c.fetched && c.ok && c.at ? stamp(c.at) : '–')));
+    var act = cell(tr, '', 'cert-crl-act');
+    if (full) {
+      var f1 = iconButton('refresh', 'Fetch this CRL now - on every node');
+      f1.dataset.key = 'crl-f1:' + c.url;
+      f1.disabled = !!CERTL.crlAsk;
+      f1.onclick = function (ev) { ev.stopPropagation(); certCrlAsk('fetch', c.url, tr); };
+      act.appendChild(f1);
+      if (c.fetched) {
+        var c1 = iconButton('broom', 'Clear this CRL on every node - fetched again at the next sign-in');
+        c1.dataset.key = 'crl-c1:' + c.url;
+        c1.disabled = !!CERTL.crlAsk;
+        c1.onclick = function (ev) { ev.stopPropagation(); certCrlAsk('clear', c.url, tr); };
+        act.appendChild(c1);
+      }
+    }
+    t.appendChild(tr);
+    if (!open) return;
+    var dr = el('tr', 'cert-crl-more');
+    dr.dataset.key = 'crl-more:' + c.url;
+    var td = el('td', '');
+    td.colSpan = 8;
+    var grid = el('div', 'cert-crl-grid');
+    var fact = function (label, value) {
+      var f = el('div', 'cert-crl-fact');
+      f.appendChild(el('div', 'cert-crl-k', label));
+      var v = el('div', 'cert-crl-v');
+      (Array.isArray(value) ? value : [value]).forEach(function (x) { v.appendChild(typeof x === 'string' ? el('span', '', x) : x); });
+      f.appendChild(v);
+      grid.appendChild(f);
+    };
+    var sig = {ok: ['ok', 'good - checked by openssl against the authorities put in'], bad: ['crit', 'NOT good - openssl does not take it: nobody signs in by it'], unknown: ['warn', 'not checked - its authority is not put in']}[c.sig];
+    if (c.fetched && c.ok) {
+      var data = function (x) { return noI18n(el('span', '', x)); };
+      fact('This update', data(c.this ? stamp(c.this) : '–'));
+      fact('Next update', data(c.next ? stamp(c.next) : '–'));
+      fact('CRL number', noI18n(el('span', 'mono', c.number || '–')));
+      fact('Size', data(c.size ? bytes(c.size) + (c.size >= 1024 ? ' (' + num(c.size) + ' B)' : '') : '–'));
+      fact('Revoked', data(c.revoked === null || c.revoked === undefined ? '–' : num(c.revoked)));
+      fact('Signature', sig ? [certTag(sig[0], sig[0] === 'ok' ? 'checked' : (sig[0] === 'crit' ? 'bad' : 'not checked')), el('span', 'small muted', sig[1])] : el('span', 'muted', 'checked by openssl at each sign-in'));
+    } else {
+      fact('State', c.fetched ? el('span', 'bad', 'not had - nobody signs in with a certificate whose revocation it should say') : el('span', 'muted', 'not fetched yet - at the first sign-in that needs it, or Fetch now'));
+    }
+    if (c.issuer) fact('Issued by', noI18n(el('span', 'mono', c.issuer)));
+    if ((c.of || []).length) fact('Named by the authority', noI18n(el('span', 'mono', c.of.join('; '))));
+    fact('Type', c.delta ? 'delta CRL (Freshest CRL) - applied over its base CRL' : 'base CRL');
+    if (c.err) fact('Last error', [noI18n(el('span', 'bad', c.err)), noI18n(el('span', 'muted small', c.err_at ? ' ' + stamp(c.err_at) : ''))]);
+    var addr = el('div', 'cert-crl-addr');
+    addr.appendChild(copyOnClick(noI18n(el('span', 'mono', c.url)), c.url, 'the address copied'));
+    var cpb = cmdButton('Copy', 'copy', 'small');
+    cpb.onclick = function () { copyText(c.url, cpb, 'the address copied'); };
+    addr.appendChild(cpb);
+    fact('Address', addr);
+    td.appendChild(grid);
+    if ((c.nodes || []).length) {
+      var nt = el('table', 'cert-crl-nodes');
+      var nh = el('tr', '');
+      ['Node', 'Fetched', 'Next update', 'CRL number', 'Last error'].forEach(function (h) { nh.appendChild(el('th', '', h)); });
+      nt.appendChild(nh);
+      c.nodes.forEach(function (n) {
+        var r = el('tr', '');
+        var nc = function (label, x) { var td2 = el('td', ''); td2.appendChild(el('span', 'cert-crl-lab', label)); td2.appendChild(x); r.appendChild(td2); };
+        nc('Node', noI18n(el('span', 'mono', n.node)));
+        nc('Fetched', n.ok ? noI18n(el('span', '', stamp(n.at))) : certTag('crit', 'not had'));
+        nc('Next update', noI18n(el('span', '', n.next ? stamp(n.next) : '–')));
+        nc('CRL number', noI18n(el('span', 'mono', n.number || '–')));
+        nc('Last error', noI18n(el('span', 'small ' + (n.err ? 'bad' : 'muted'), n.err ? n.err + (n.err_at ? ' (' + stamp(n.err_at) + ')' : '') : '–')));
+        nt.appendChild(r);
+      });
+      var nw = el('div', 'cert-crl-nw');
+      nw.appendChild(el('div', 'cert-crl-k', 'Each node'));
+      nw.appendChild(nt);
+      td.appendChild(nw);
+    }
+    dr.appendChild(td);
+    t.appendChild(dr);
+  });
+  var wrap = el('div', 'krb-tw cert-crl-tw');
+  wrap.appendChild(t);
+  host.appendChild(wrap);
 }
