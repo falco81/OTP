@@ -512,7 +512,7 @@ if (isset($_GET['api'])) {
         'portal-sso' => '/api/portal-sso',
         'mfa' => '/api/auth/mfa', 'passkeys' => '/api/auth/passkeys',
         'sshkeys' => '/api/sshkeys', 'osroots' => '/api/osroots', 'osusers' => '/api/osusers', 'settings-nodes' => '/api/settings/nodes', 'osup' => '/api/osup', 'alerts' => '/api/alerts', 'sshd' => '/api/sshd', 'hisec' => '/api/hisec', 'acme' => '/api/acme', 'siem' => '/api/siem', 'isemon' => '/api/isemon', 'proxy' => '/api/proxy', 'logs' => '/api/logs',
-        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp',
+        'dbtls' => '/api/dbtls', 'metrics' => '/api/metrics', 'snmp' => '/api/snmp', 'snmpfile' => '/api/snmpfile',
         'acme-push' => '/api/acme-push',
         'split' => '/api/split',
         'load' => '/api/load',
