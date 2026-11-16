@@ -81,8 +81,9 @@ def _auth_kerberos(h):
                        extra={'code': 'kerberos'})
     try:
         ok = admin_from_directory(h, user, '', proven=True)
-    except ApiError:
-        h.failed(key)
+    except ApiError as e:
+        if e.status < 500:              # the directory not reached is no wrong try (1.0.287)
+            h.failed(key)
         raise
     if not ok or ok.get('disabled'):
         h.failed(key)

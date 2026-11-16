@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.286'
+__version__ = '1.0.287'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2346,13 +2346,13 @@ def check_setting(key, value):
     if key == 'web_proxy_from':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
-                ipaddress.ip_network(one, strict=False)
+                plain_net(one)                  # no scope id (1.0.287): root's helper refuses one
             except ValueError:
                 raise BadSetting('web_proxy_from: %r is not an address or a network' % one)
     if key == 'portal_sso_from':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
-                ipaddress.ip_network(one, strict=False)
+                plain_net(one)                  # no scope id (1.0.287): root's helper refuses one
             except ValueError:
                 raise BadSetting('portal_sso_from: %r is not an address or a network' % one)
     if key == 'admin_kerberos_realm' and str(got).strip() and \
@@ -2403,7 +2403,7 @@ def check_setting(key, value):
     if key == 'radius_guard_trusted':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
-                ipaddress.ip_network(one, strict=False)
+                plain_net(one)                  # no scope id (1.0.287): root's helper refuses one
             except ValueError:
                 raise BadSetting('radius_guard_trusted: %r is not an address or a network' % one)
     if key in ('mail_dns', 'acme_resolvers'):
@@ -2418,13 +2418,13 @@ def check_setting(key, value):
     if key == 'metrics_from':
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
-                ipaddress.ip_network(one, strict=False)
+                plain_net(one)                  # no scope id (1.0.287): root's helper refuses one
             except ValueError:
                 raise BadSetting('metrics_from: %r is not an address or a network' % one)
     if key in ('snmp_from',):
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
-                ipaddress.ip_network(one, strict=False)
+                plain_net(one)                  # no scope id (1.0.287): root's helper refuses one
             except ValueError:
                 raise BadSetting('snmp_from: %r is not an address or a network' % one)
     if key == 'snmp_bind' and str(got).strip():
@@ -2581,6 +2581,9 @@ CONFIG_LOADED = [False]
 NAME_HELD = [False]               # the daemon running: its node's name kept until it starts again
 
 
+CONFIG_READ_SIG = [None]
+
+
 def load_config(path=None, saved=None):
     """The defaults, with config.json over them and anything saved over that."""
     global CONFIG, FILE_CONFIG, FILE_KEYS
@@ -2588,8 +2591,10 @@ def load_config(path=None, saved=None):
     fresh = dict(DEFAULTS)
     named, refused, unknown = set(), [], []
     try:
-        with open(where, encoding='utf-8') as f:
-            given = json.load(f)
+        raw = Path(where).read_bytes()
+        given = json.loads(raw.decode('utf-8'))
+        if Path(where) == Path(CONFIG_FILE):
+            CONFIG_READ_SIG[0] = hashlib.sha256(raw).hexdigest()    # what was read (1.0.287)
         if not isinstance(given, dict):
             raise ValueError('the config file is not an object')
         for key, value in given.items():
@@ -2691,7 +2696,17 @@ def write_replacing(path, text, mode=0o640, owner=None):
             os.fchown(fd, owner[0], owner[1])
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())                # on the disk before the name (1.0.287)
         os.replace(tmp, str(path))
+        try:
+            dfd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
         if path.name == 'secrets.key':
             sealing_key_forget()        # the key just written taken at once (1.0.265)
     except BaseException:
@@ -3086,10 +3101,10 @@ def log_sparing(key, words, level='warn', every=30):
     """A line that can come thousands of times a second (a database gone,
     a flood): written once per `every` seconds a key, with how many were left
     out since (1.0.59) - a database outage under load wrote 50 MB of log."""
-    t = time.time()
+    t = time.monotonic()                        # not stepped with the clock (1.0.287)
     with _LOG_LOCK:
-        at, quiet = _LOG_SPARING.get(key, (0.0, 0))
-        if t - at < every:
+        at, quiet = _LOG_SPARING.get(key, (None, 0))
+        if at is not None and t - at < every:
             _LOG_SPARING[key] = (at, quiet + 1)
             return
         _LOG_SPARING[key] = (t, 0)

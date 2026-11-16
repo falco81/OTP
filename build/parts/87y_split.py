@@ -83,9 +83,8 @@ def split_preferred_name(store=None):
     if int(CONFIG.get('ha_slot') or 1) == 1:
         return node_name()
     if store is not None:
-        for n in ha_nodes(store):
-            if not n.get('me'):
-                return n['name']
+        for n in ha_peer_rows(store):           # the live one first (1.0.287)
+            return n['name']
     return ''
 
 
@@ -392,6 +391,12 @@ def split_step(store, now=None, peer=None, arbiter=None):
         SPLIT.update(arb=[], arb_state=arbiter, arb_at=mono)
     elif mode == 'arbiter' or mono - SPLIT['arb_at'] > 30:
         got, verdict = split_arbiter_check()
+        if verdict is False and SPLIT.get('arb_state') is True:
+            SPLIT['arb_miss'] = int(SPLIT.get('arb_miss') or 0) + 1
+            if SPLIT['arb_miss'] < 3:
+                verdict = True                  # one lost answer is not the arbiter gone (1.0.287)
+        else:
+            SPLIT['arb_miss'] = 0
         SPLIT.update(arb=got, arb_state=verdict, arb_at=mono)
     after = max(5, int(CONFIG.get('split_after_s') or 20))
     silent = mono - SPLIT['peer_ok_at']
@@ -530,8 +535,8 @@ def split_preferred_unable(store):
         row = clock_state_of(store, name) or {}
         # Its word from about when the nodes lost each other (1.0.226), not an old one: aside
         # long ago and serving since, both nodes answered while apart.
-        recent = fnum(row.get('at')) >= (SPLIT['apart_since'] or time.time()) - \
-            max(5, int(CONFIG.get('split_after_s') or 20)) - 30
+        recent = fnum(row.get('at')) - (clock_skew_of(store, name) or 0.0) >= \
+            (SPLIT['apart_since'] or time.time()) - max(5, int(CONFIG.get('split_after_s') or 20)) - 30
         # And still fresh, by the measured difference of the clocks (1.0.227): the preferred
         # node, aside for its clock, answers again once this one's row reads stale to it
         # (25 s) - this node gives way a little after, so the two do not both go on.

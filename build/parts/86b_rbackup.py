@@ -1030,6 +1030,7 @@ def rb_said(e):
 
 
 def rb_transport(t):
+    hisec_backup_target(dict(t, enabled=1))         # used: high security's rules (1.0.287)
     return {'folder': RbFolder, 'ftp': RbFtp, 'ftps': RbFtp, 'sftp': RbSsh, 'scp': RbSsh,
             'smb': RbSmb}[t['kind']](t)
 
@@ -2061,19 +2062,23 @@ def rb_fetch(store, tid, name, dst):
         listed = next((int(x.get('size') or 0) for x in tr.list() if x.get('name') == name), None)
         if listed is None:
             raise ValueError('%s is not at the destination any more' % name)
-        cap = listed + (1 << 20) if listed > 0 else 0     # 0: the destination does not say (FTP)
         try:
             free = shutil.disk_usage(os.path.dirname(os.path.abspath(dst)) or '.').free
         except OSError:
             free = None
-        if cap and free is not None and free < cap + BACKUP_ROOM_MIN:
+        exact = listed > 0
+        cap = listed + (1 << 20) if exact else 0
+        if not exact:
+            # Not said (1.0.287): never more than the room there is, less the room kept free.
+            cap = max(16 << 20, (free - BACKUP_ROOM_MIN) if free is not None else (8 << 30))
+        if exact and free is not None and free < cap + BACKUP_ROOM_MIN:
             raise ValueError('no room for %s here (%d MB, %d MB free)' % (name, cap >> 20, free >> 20))
         RB_FETCH.cap = cap or None
         try:
             tr.get(name, dst)
         finally:
             RB_FETCH.cap = None
-        if cap and os.path.getsize(dst) > cap:
+        if exact and os.path.getsize(dst) > cap:
             raise ValueError('%s came larger than the destination says it is - not taken' % name)
     finally:
         tr.close()

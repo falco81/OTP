@@ -61,7 +61,13 @@ class Browser(object):
 
     def alive(self):
         """One check as the page's picture makes it: (HTTP status, the picture's width or None)."""
-        st, hd, raw = self.raw('https://127.0.0.1:8443/admin/?api=cert-alive&r=1')
+        # The check's key as the page has it (1.0.287): from whoami; without it the check changes nothing.
+        k = ''
+        try:
+            k = ((self.j('whoami')[1].get('who') or {}).get('card') or {}).get('key') or ''
+        except Exception:                               # noqa: BLE001
+            k = ''
+        st, hd, raw = self.raw('https://127.0.0.1:8443/admin/?api=cert-alive&k=%s&r=1' % k)
         wide = raw[6] if st == 200 and 'image/gif' in (hd.get('Content-Type') or '') and len(raw) > 7 else None
         return st, wide, hd
 
@@ -126,6 +132,11 @@ ok('the local administrator signs in (a password)', st == 200, got)
 
 def settings(**kv):
     st, got = admin.j('settings', {'settings': kv})
+    for _ in range(10):                 # nginx's rate (429): asked again a moment later
+        if st != 429:
+            break
+        time.sleep(3)
+        st, got = admin.j('settings', {'settings': kv})
     if st != 200:
         print('   settings', kv, st, str(got)[:200])
     time.sleep(1.2)
@@ -172,8 +183,10 @@ o2 = subprocess.run(['openssl', 's_client', '-connect', '127.0.0.1:8443', '-sess
                     input='', capture_output=True, text=True, timeout=60).stdout
 ok('...TLS 1.3: no ticket to take it up again', 'Reused,' not in o2, re.findall(r'(New|Reused),[^\n]*', o2))
 st, me = falco.j('whoami')
-ok('...whoami: the page told how (signout, 5 s, grace 30, port 8443)', (me.get('who') or {}).get('card') ==
-   {'mode': 'signout', 'every': 5, 'grace': 30, 'port': 8443, 'out': False, 'stale': False}, (me.get('who') or {}).get('card'))
+card_said = dict((me.get('who') or {}).get('card') or {})
+card_key = card_said.pop('key', None)
+ok('...whoami: the page told how (signout, 5 s, grace 30, port 8443)', card_said ==
+   {'mode': 'signout', 'every': 5, 'grace': 30, 'port': 8443, 'out': False, 'stale': False}, card_said)
 csp = page_csp(falco)
 ok('...the page\'s policy lets in pictures of the port, that one address only', "img-src 'self' data: https://127.0.0.1:8443;" in csp
    and "connect-src 'self';" in csp, csp)
@@ -187,6 +200,12 @@ ok('...the pages answer', st == 200, st)
 st, w, hd = Browser(jar=http.cookiejar.CookieJar()).alive()
 # 1.0.286: no cookie at all - a picture 3 px wide (the page then says so on 443); 403 before it
 ok('no session at all: nothing asked (3 px from 1.0.286, 403 before)', (st, w) == (200, 3) or st == 403, (st, w))
+if VER >= '1.0.287':
+    # A page of another host of the same site (1.0.287): the session's cookie goes with a picture, not its key.
+    st, hd, raw = Browser(jar=falco.jar).raw('https://127.0.0.1:8443/admin/?api=cert-alive&k=0123abcd&r=1')
+    ok('a check without the page\'s key (another site\'s page): nothing changed, 1 px', st == 200 and raw[6] == 1 and
+       falco.j('status')[0] == 200, st)
+    ok('...the key is the session\'s (32 hex)', bool(card_key) and len(card_key) == 32, card_key)
 st, w, hd = Browser(jar=falco.jar).alive()
 ok('signout: the card out (no certificate) - 403', st == 403, (st, w))
 st, me = falco.j('whoami')

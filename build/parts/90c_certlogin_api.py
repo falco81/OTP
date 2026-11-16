@@ -120,7 +120,8 @@ def _auth_cert(h):
     try:
         f, said = cert_who(h, pem)
     except CertError as e:
-        h.failed(key)
+        if not isinstance(e, CrlRefused):   # a revocation server not reached is no wrong try (1.0.287)
+            h.failed(key)
         h.store.add_event('sign-ins', 'a sign-in with a certificate from %s was refused: %s'
                           % (h.client_ip(), e), 'warn')
         if isinstance(e, CrlRefused):
@@ -156,8 +157,9 @@ def _auth_cert(h):
                        extra={'code': 'certificate'})
     try:
         ok = admin_from_directory(h, name, '', proven=True)
-    except ApiError:
-        h.failed(key)
+    except ApiError as e:
+        if e.status < 500:              # the directory not reached is no wrong try (1.0.287)
+            h.failed(key)
         raise
     if ok and str(ok.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
         h.failed(key)
@@ -252,8 +254,10 @@ def card_unable(h, s, why):
         return False
     if not card_unable_now(s):
         d = s['data']
+        if h.store.session_merge(s['id'], {'card_ok': -1, 'card_out': None},
+                                 expect={'card_ok': d.get('card_ok')}) is False:
+            return False                # found meanwhile (1.0.287): a card out, not "cannot be checked"
         d['card_ok'], d['card_out'] = -1, None
-        h.store.session_merge(s['id'], {'card_ok': -1, 'card_out': None})
         who = s.get('name') or '?'
         h.store.add_event('sign-ins', 'the card of %s\'s sign-in cannot be checked in this browser - %s: it is '
                           'not watched (Settings - Accounts - Signing in with a certificate - A browser that '
@@ -265,11 +269,16 @@ def card_bound(s):
     return card_mode() != 'off' and bool(odict((s or {}).get('data')).get('card')) and not card_unable_now(s)
 
 
-def card_conf(state):
-    """What the page is to do: None, or {mode, every, grace, port, out}."""
+def card_key(token):
+    """The key of a sign-in's checks (1.0.287) - from its token, which only its own pages hold."""
+    return hashlib.sha256(('otp-card-check:' + str(token or '')).encode()).hexdigest()[:32]
+
+
+def card_conf(state, token=''):
+    """What the page is to do: None, or {mode, every, grace, port, out, key}."""
     if not state:
         return None
-    return {'mode': card_mode(), 'every': card_every(), 'grace': card_grace(),
+    return {'mode': card_mode(), 'every': card_every(), 'grace': card_grace(), 'key': card_key(token),
             'port': int(CONFIG.get('admin_cert_port') or 8443), 'out': state == 'out', 'stale': state == 'stale'}
 
 
@@ -342,8 +351,14 @@ def _auth_card(h):
         return {'watched': False, 'alive': False, 'gone': True}
     if not card_bound(s):
         return {'watched': False, 'alive': True, 'gone': False}
+    # The page's own key (1.0.287): without it (another host's page of the same site - or a page loaded
+    # before the upgrade) only the card found counts - a stranger's page cannot make the card sign; nothing
+    # else is changed or told.
+    keyed = hmac.compare_digest(str(h.body().get('k') or ''), card_key(h.headers.get('X-Otp-Session')))
     d = s['data']
     pem = str(h.body().get('cert') or '')
+    if not keyed and (not pem or cert_sha(pem) != d.get('card')):
+        return {'watched': False, 'alive': True, 'gone': False}
     fp = cert_sha(pem) if pem else ''
     if fp and fp != d.get('card'):
         card_end(h, s, 'another certificate than the one signed in with was offered (the card was changed)')

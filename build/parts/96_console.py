@@ -3455,7 +3455,7 @@ def console_login_tick(daemon):
                     if 'users' in want:
                         ask['users'] = want['users']
                     root_ask('console.ask', 'console.json', ask, 60)
-                except ValueError as e:
+                except (ValueError, OSError) as e:      # a full disk too (1.0.287)
                     err = str(e)[:300]
                     log('the console at login could not be switched: %s' % err, 'warn')
                 on, users = console_flag_lines()

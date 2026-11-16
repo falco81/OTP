@@ -4069,9 +4069,20 @@ def cli_main(argv=None):
         return 0
 
     if args.passwd:
+        one = store.account(args.passwd)
+        if one and one.get('source') == 'directory':
+            # Its password is the directory's; its row signed again as it is (1.0.287) - root's way back
+            # for one the guard refuses.
+            store.set_account(args.passwd, must_change=0, _resign=True)
+            print('%s is an account of the directory: its row is signed again as it is (its password is the '
+                  'directory\'s)' % one['name'])
+            return 0
         pw = ask_password('a new password for %s' % args.passwd)
         try:
-            store.set_account(args.passwd, password=pw, must_change=0)
+            one = store.account(args.passwd)
+            if one and one.get('source') == 'directory':
+                raise ValueError('%s is an account of the directory - its password is the directory\'s' % args.passwd)
+            store.set_account(args.passwd, password=pw, must_change=0, _resign=True)
         except ValueError as e:
             raise SystemExit('otp: %s' % e)
         # As the pages do (1.0.44): a new password ends the old sign-ins.
@@ -4213,6 +4224,9 @@ def cli_main(argv=None):
                     and acc.get('role') == 'fulladmin' and not store.fulladmins_left(but=name):
                 raise ValueError('that is the last full administrator who can sign in')
             if flag == 'set_role':
+                if acc.get('source') == 'directory':
+                    raise ValueError('%s is an account of the directory - its groups there give its role '
+                                     '(1.0.287)' % name)
                 store.set_account(name, role=args.role)
             elif flag == 'del_user':
                 cli_sure(args, 'the account %s is removed' % acc['name'])
@@ -4857,7 +4871,7 @@ def cli_main(argv=None):
             # A setting known not to be one is not taken for a secret (1.0.207):
             # acme_key, admin_show_key, token_names_case were refused.
             secretish = [k for k in keys(body) if k in SECRET_KEYS or (re.search(
-                r'pass|secret|token|key|pin', k, re.I) and not (k in DEFAULTS and k not in
+                r'pass|secret|token|key|pin|(^|_)pw$', k, re.I) and not (k in DEFAULTS and k not in
                                                                 SECRET_KEYS))]
             if args.api[2] != '-' and secretish:
                 raise SystemExit('otp: %s - a secret is not taken written out on the command '

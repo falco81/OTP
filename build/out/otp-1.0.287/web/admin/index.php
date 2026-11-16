@@ -81,7 +81,8 @@ function otp_cert_port(): void
                  4 => 'R0lGODlhBAABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAAEAAEAAAgGAAEIBBAQADs='];
         $wide = 0;
         if (otp_session() !== '') {
-            [$status, $body] = otp_call('/api/auth/card', 'POST', ['cert' => $pem], 10.0);
+            $k = preg_replace('/[^0-9a-f]/', '', substr((string) ($_GET['k'] ?? ''), 0, 64));
+            [$status, $body] = otp_call('/api/auth/card', 'POST', ['cert' => $pem, 'k' => $k], 10.0);
             $d = $status === 200 ? json_decode((string) $body, true) : null;
             if (is_array($d) && empty($d['gone'])) {
                 $wide = !empty($d['unable']) ? 4 : (!empty($d['alive']) ? 1 : 2);

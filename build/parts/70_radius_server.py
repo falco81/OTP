@@ -166,13 +166,17 @@ def realm_names(user, realm):
     return out
 
 
+# The request's Proxy-State, measured for the reply it goes back in (1.0.287) - one request a thread.
+RADIUS_PROXY_STATE = threading.local()
+
+
 def reply_too_long(pairs):
     """Why an Accept with these pairs could not be sent, or '' (1.0.255): measured as the
     answer is built - the header, a Message-Authenticator where one is sent - before the code
     is used. The request's Proxy-State is added when it is sent, and checked again there."""
     try:
         size = 20 + (18 if CONFIG.get('radius_reply_ma', 1) else 0) + \
-            sum(len(attr_bytes(n, v)) for n, v in pairs)
+            sum(len(attr_bytes(n, v)) for n, v in pairs) + int(getattr(RADIUS_PROXY_STATE, 'size', 0) or 0)
     except (RadiusError, ValueError, struct.error) as e:
         return 'the answer cannot be built: %s' % e
     if size > 4096:
@@ -1359,6 +1363,7 @@ class RadiusServer(object):
             return True
         try:
             addr = ipaddress.ip_address(ip)
+            addr = getattr(addr, 'ipv4_mapped', None) or addr      # ::ffff:a.b.c.d is a.b.c.d (1.0.287)
             return any(r.get('_net') is not None and addr.version == r['_net'].version and addr in r['_net']
                        for r in rows)
         except (ValueError, TypeError, KeyError):
@@ -1777,6 +1782,7 @@ class RadiusServer(object):
             REQUEST_PLACE.v = guard_source(w)
         except Exception:                               # noqa: BLE001
             REQUEST_PLACE.v = ''
+        RADIUS_PROXY_STATE.size = sum(len(ps) + 2 for ps in pkt.all(33))
         try:
             if blocked:
                 d = Decision()

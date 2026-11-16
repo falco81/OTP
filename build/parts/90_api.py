@@ -387,6 +387,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         ad = self.d.dirs.get(str(CONFIG.get('admin_directory') or '').lower())
         if not ad:
             self.end_all(name, 'the directory administrators sign in against is gone')
+        if not dbguard_directory_ok(self.store.db, ad.name):
+            # Not as otp wrote it (1.0.287): not asked - and signed out, as a sign-in is refused.
+            self.end_all(name, 'the directory %s is not as otp wrote it' % ad.name)
         try:
             who, how = admin_name_parts(name)
             entry = ad.find_user(who, how)
@@ -1265,6 +1268,11 @@ def admin_from_directory(h, name, password, proven=False):
             # it is seen.
             h.store.add_event('accounts', 'the directory account of %s is another one now: '
                               '%s (was %s)' % (name, entry['dn'], acc['dn']), 'warn')
+        if not dbguard_account_ok(h.store.db, acc):
+            # Not as otp wrote it (1.0.287): refused as a sign-in, never signed again with what is in it.
+            h.store.add_event('sign-ins', 'the account %s is not as otp wrote it in the database - not let in'
+                              % name, 'bad', who=name)
+            raise ApiError(401, 'that account may not sign in here')
         h.store.set_account(name, role=role, display=entry.get('display') or '',
                             dn=entry['dn'], group_list=groups)
     elif CONFIG.get('ha_mode') == 'replicated' and not ha_lead(h.store):
@@ -1348,7 +1356,8 @@ def _login(h):
         try:
             ok = admin_from_directory(h, name, password)
         except ApiError as e:
-            h.failed(key)
+            if e.status < 500:          # the directory not reached is no wrong password (1.0.287)
+                h.failed(key)
             h.store.add_event('sign-ins', '%s could not sign in from %s: %s'
                               % (name, h.client_ip(), e), 'warn')
             raise
@@ -1430,12 +1439,7 @@ def set_cols_editing(token, on):
     store, row = _session_row(token)
     if not row:
         return False
-    data = row['data']
-    if on:
-        data['cols_edit'] = 1
-    else:
-        data.pop('cols_edit', None)
-    store.session_set_data(row['id'], data)
+    store.session_merge(row['id'], {'cols_edit': 1 if on else None})     # that key alone (1.0.287)
     return bool(on)
 
 
@@ -1554,7 +1558,7 @@ def _whoami(h):
     # first frame, rather than as it comes and then again.
     return {'idle_min': int(CONFIG.get('session_idle_min') or 120),
             'who': {'name': acc['name'], 'role': '' if card in ('out', 'stale') else acc['role'],
-                    'card': card_conf(card), 'source': acc.get('source'),
+                    'card': card_conf(card, h.headers.get('X-Otp-Session')), 'source': acc.get('source'),
                     'display': acc.get('display') or '', 'must_change': bool(
                         acc.get('must_change')), 'prefs': prefs,
                     'cols': h.store.user_cols(acc['name']),
@@ -4350,6 +4354,9 @@ def _db_download_ticket(h, s, b):
             keyf = _key_beside(src)
             # The key beside a kept one is the one that opens it - the one in
             # use now may be newer.
+            if not keyf.is_file():
+                raise ApiError(409, 'no .key lies beside %s - which key opens it is not known here: '
+                                    'download it without the key' % src.name)
             if keyf.is_file() and sealing_key() and \
                     keyf.read_text().strip() != sealing_key().hex():
                 raise ApiError(409, 'the key beside %s is not the one in use now: download it '
@@ -4982,6 +4989,13 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
         except (ValueError, TypeError) as e:
             raise ApiError(400, 'the TLS of %s in the file: %s' % (t, e))
     vip_in = web.get('vip')
+    if isinstance(vip_in, dict) and not vip_in.get('address'):
+        # No address: nothing of it is on (1.0.287), and its number read as the pages read it.
+        vip_in['on'] = False
+        try:
+            vip_in['vrid'] = max(1, min(255, int(vip_in.get('vrid') or 51)))
+        except (TypeError, ValueError):
+            vip_in['vrid'] = 51
     if isinstance(vip_in, dict) and vip_in.get('address'):
         try:
             vip_in.update(vip_checked(vip_in, store))
@@ -5018,13 +5032,15 @@ def config_import(store, daemon, conf, by, keep_account='', access_check=None, n
             said['directories'] += 1
         for r in conf.get('realms') or []:
             r = dict(r)
-            old = next((x for x in store.realms() if x['name'] == r.get('name')), None)
+            old = next((x for x in store.realms() if x['name'].strip().lower() ==
+                        str(r.get('name') or '').strip().lower()), None)      # in any case (1.0.287)
             r['id'] = old['id'] if old else None
             store.realm_save(r, by)
             said['realms'] += 1
         for c in conf.get('clients') or []:
             c = dict(c)
-            old = next((x for x in store.clients() if x['name'] == c.get('name')), None)
+            old = next((x for x in store.clients() if x['name'].strip().lower() ==
+                        str(c.get('name') or '').strip().lower()), None)      # in any case (1.0.287)
             c['id'] = old['id'] if old else None
             if is_masked(c.get('secret')) and not old:
                 # Said, not left out without a word (1.0.103): an export without

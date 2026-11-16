@@ -1976,7 +1976,8 @@ class Daemon(object):
         # logrotate reloads.
         self.hup_asked = HUP_ASKED
         try:
-            self.conf_sig = hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
+            # The bytes load_config read (1.0.287): a change made while the daemon started is one.
+            self.conf_sig = CONFIG_READ_SIG[0] or hashlib.sha256(CONFIG_FILE.read_bytes()).hexdigest()
         except OSError:
             self.conf_sig = None
         signal.signal(signal.SIGHUP, self._hup_signal)
@@ -2729,6 +2730,22 @@ def db_job(what, work):
     with DB_JOB_LOCK:
         if DB_JOB['running']:
             raise ValueError('%s is going on already' % DB_JOB['what'])
+        if RESTORE_ONE.locked():
+            raise ValueError('a database is being put back - wait for it to end')      # 1.0.287
+        try:
+            here = json.loads(HA_STORE['store'].get_meta('db_job:' + node_name()) or 'null') or {}
+        except Exception:                               # noqa: BLE001
+            here = {}
+        pid = int(here.get('pid') or 0) if isinstance(here, dict) else 0
+        if pid and pid != os.getpid() and here.get('running') and time.time() - float(here.get('at') or 0) < 300:
+            try:
+                os.kill(pid, 0)
+                raise ValueError('%s is going on on this node (otp on the command line) - wait for it to end'
+                                 % (here.get('what') or 'a job on the database'))
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                raise ValueError('a database is being put back on this node - wait for it to end')
         DB_JOB.update({'id': DB_JOB['id'] + 1, 'what': what, 'running': True, 'done': 0,
                        'whole': 0, 'says': '', 'error': '', 'result': None,
                        'began': time.time(), 'ended': 0})

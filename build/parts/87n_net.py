@@ -1143,7 +1143,8 @@ def net_local_trial_set(job, ask):
         if ask.get('rollback') or not job.get('snap') or not int(job.get('trial_min') or 0):
             return
         write_replacing(NET_LOCAL_TRIAL, json.dumps({
-            'id': job.get('id'), 'snap': job['snap'],
+            'id': job.get('id'), 'snap': job['snap'], 'set': time.time(),
+            'trial_min': int(job.get('trial_min') or 0),
             'until': time.time() + NET_REBOOT_GIVE_UP_S + 60 * int(job.get('trial_min') or 0) + 300}),
             0o600)
     except Exception as e:                              # noqa: BLE001
@@ -1186,7 +1187,15 @@ def net_local_trial_lost():
         except OSError:
             pass
         return
-    if time.time() < fnum(t.get('until')) or time.time() - fnum(t.get('asked')) < 600:
+    until = fnum(t.get('until'))
+    try:
+        started = float(boot_time() or 0)
+    except Exception:                                   # noqa: BLE001
+        started = 0.0
+    if t.get('set') and started > fnum(t.get('set')):
+        # Started again since the change (1.0.287): the trial's minutes from that start.
+        until = min(until, started + 60 * int(t.get('trial_min') or 0) + 300)
+    if time.time() < until or time.time() - fnum(t.get('asked')) < 600:
         return
     log('network: the change on trial was not kept and the database cannot be reached - the '
         'network kept before it comes back', 'warn')

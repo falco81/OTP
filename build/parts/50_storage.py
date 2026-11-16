@@ -67,6 +67,14 @@ def plain_ip(text, how='network'):
     return got
 
 
+def plain_net(text):
+    """A network - /24 or /255.255.255.0 - as ipaddress reads it; never a scope id (1.0.287)."""
+    said = str(text or '').strip()
+    if not re.match(r'^[0-9A-Fa-f:.]+(/[0-9.]{1,15})?\Z', said):
+        raise ValueError('%r is not a plain address or network' % said[:60])
+    return ipaddress.ip_network(said, strict=False)
+
+
 def address_net(text):
     """An address or a range of them, as a network - ValueError if neither."""
     said = str(text or '').strip()
@@ -935,7 +943,7 @@ class Storage(object):
             dbguard_account_sign(self.db, name)
         return got
 
-    def set_account(self, name, **fields):
+    def set_account(self, name, _resign=False, **fields):
         one = self.account(name)
         if not one:
             raise ValueError('there is no account called %s' % name)
@@ -949,6 +957,10 @@ class Storage(object):
         if not set(fields) & set(ACCOUNT_SIGNED):
             self.db.update('accounts', one['id'], fields)
             return
+        if not _resign and not dbguard_account_ok(self.db, one):
+            # Not as otp wrote it (1.0.287): never signed now with what somebody else put in.
+            raise ValueError('the account %s is not as otp wrote it in the database - nothing of it is '
+                             'changed; as root: otp --passwd %s signs it again as it is now' % (name, name))
         with self.db.transaction():                 # with its signature (1.0.234)
             self.db.update('accounts', one['id'], fields)
             dbguard_account_sign(self.db, fields.get('name') or one['name'])

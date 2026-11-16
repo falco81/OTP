@@ -411,12 +411,18 @@ def alert_problems(store, lang='en'):
     # Backups: the nightly copy of each node, and the backups sent away.
     if CONFIG.get('alerts_backup', 1):
         if CONFIG.get('backup_daily'):
+            shared = CONFIG.get('ha_mode') != 'replicated'
+            newest = max([fnum((health.get(x) or {}).get('last_backup')) for x in names] or [0])
+            said_shared = False
             for n in names:
                 h = health.get(n) or {}
                 if not h:
                     continue
-                last = fnum(h.get('last_backup'))
+                last = newest if shared else fnum(h.get('last_backup'))
+                if shared and said_shared:
+                    continue
                 if now - last > 36 * 3600:
+                    said_shared = shared
                     add('backup:' + n, 'warn', n,
                         _al(lang, 'Noční záloha na %s chybí' % n, 'No nightly copy on %s' % n),
                         _al(lang, 'Poslední je z %s.' % _al_when(last) if last else
@@ -932,7 +938,7 @@ def alert_send(store, msg, to, kind, keys):
              'subject': str(msg.get('Subject') or '')[:200], 'node': node_name()}
     try:
         mail_deliver(store, msg, to, kind='alert', purpose=kind)
-    except MailError as e:
+    except Exception as e:                              # noqa: BLE001 - not a MailError alone (1.0.287)
         # Waiting for another try in the outgoing mail is sent as far as the
         # alerts go: it is not made again every minute.
         entry.update(ok=False, said=str(e)[:200], queued=getattr(e, 'queued', '') or '')

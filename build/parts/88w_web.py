@@ -1132,7 +1132,7 @@ def realip_desired(store):
         for w in re.split(r'[\s,;]+', str(CONFIG.get('web_proxy_from') or '')):
             if w:
                 try:
-                    nets.append(str(ipaddress.ip_network(w, strict=False)))
+                    nets.append(str(plain_net(w)))     # no scope id (1.0.287)
                 except ValueError:
                     continue
         head = str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For')
@@ -1158,7 +1158,7 @@ def web_proxy_nets():
     for w in re.split(r'[\s,;]+', str(CONFIG.get('web_proxy_from') or '')):
         if w:
             try:
-                nets.append(str(ipaddress.ip_network(w, strict=False)))
+                nets.append(str(plain_net(w)))         # no scope id (1.0.287)
             except ValueError:
                 continue
     return nets
@@ -2077,7 +2077,14 @@ def fw_auto(store, node):
                                'source': a} for a in nc['allow']]})
     # SNMPv3 (1.0.182): from the networks set, or from everywhere.
     if CONFIG.get('snmp'):
-        nets = [w for w in re.split(r'[\s,;]+', str(CONFIG.get('snmp_from') or '')) if w]
+        nets = []
+        for w in re.split(r'[\s,;]+', str(CONFIG.get('snmp_from') or '')):
+            try:
+                nets.append(str(plain_net(w))) if w else None     # no scope id (1.0.287)
+            except ValueError:
+                continue
+        if not nets and str(CONFIG.get('snmp_from') or '').strip():
+            nets = ['127.0.0.1/32']     # every one left out: closed, never opened to everybody
         port = str(int(CONFIG.get('snmp_port') or 161))
         out.append({'key': 'snmp', 'title': 'SNMPv3', 'why': 'the monitoring asks each node '
                     '(Settings → Monitoring); from the networks set there only',

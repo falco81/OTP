@@ -258,6 +258,8 @@ def make_dump(store, label='daily', folder=None):
     backup_room_check(store, folder)            # never the disk filled (1.0.149)
     info = dump_info(engine)
     kind = engine if info['ready'] else 'copy'
+    if label == 'daily' and CONFIG.get('ha_mode') == 'replicated' and engine in ('postgres', 'mariadb'):
+        kind = 'copy'           # 1.0.287: the night's - the one a replicated node can put back
     name = 'otp-%s-%s-%s%s' % (engine if kind != 'copy' else 'copy', _stamp(),
                               re.sub(r'[^a-z-]', '', label) or 'daily', DUMP_SUFFIX[kind])
     target = folder / name
@@ -544,6 +546,44 @@ def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=Tru
         # One at a time on the cluster (1.0.211).
         raise ValueError('%s is going on on %s - wait for it to end'
                          % (other.get('what') or 'a job on the database', other['node']))
+    # Inside a job of its own (an upload, a remote backup put back) the job says it to the other node.
+    in_job = bool(DB_JOB.get('running')) and threading.current_thread().name == 'db-job'
+    if not in_job and DB_JOB.get('running'):
+        raise ValueError('%s is going on - wait for it to end' % (DB_JOB.get('what') or 'a job on the database'))
+    if not in_job and not DB_JOB.get('running'):
+        # Another process of this node (otp --restore beside the daemon) at it now (1.0.287).
+        try:
+            here = json.loads(store.get_meta('db_job:' + node_name()) or 'null') or {}
+            if here.get('running') and time.time() - float(here.get('at') or 0) < 300:
+                raise ValueError('%s is going on on this node - wait for it to end'
+                                 % (here.get('what') or 'a job on the database'))
+        except (TypeError, AttributeError):
+            pass
+    if not RESTORE_ONE.acquire(blocking=False):
+        raise ValueError('a database is being put back already - wait for it to end')
+    beat = threading.Event()
+    try:
+        if not in_job:
+            said = {'running': True, 'what': 'putting a database back', 'began': time.time(), 'pid': os.getpid()}
+            job_publish(said)
+
+            def _beat():
+                while not beat.wait(30):
+                    job_publish(said)
+            threading.Thread(target=_beat, name='restore-beat', daemon=True).start()
+        return _db_file_restore_one(store, path, by, key_file, from_name, need_admin, said_kind=kind)
+    finally:
+        beat.set()
+        if not in_job:
+            job_publish({'running': False, 'what': 'putting a database back', 'ended': time.time()})
+        RESTORE_ONE.release()
+
+
+RESTORE_ONE = threading.Lock()
+
+
+def _db_file_restore_one(store, path, by, key_file, from_name, need_admin, said_kind):
+    kind = said_kind
     if CONFIG.get('ha_mode') == 'replicated' and kind in ('postgres', 'mariadb'):
         raise ValueError('a dump puts tables back by making them again, which replication '
                          'does not carry to the other node: put a copy back instead (it goes '

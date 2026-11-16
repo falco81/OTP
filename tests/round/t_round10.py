@@ -112,7 +112,8 @@ try:
         st.db.run('DELETE FROM meta WHERE k = ?', (k,))
     otp.db_file_restore(st, dump, 'admin', from_name=dump.name)
     ok('a PostgreSQL dump put back: the other node\'s old heartbeat and a job "running" not brought back',
-       st.get_meta('node:r10b') is None and st.get_meta('db_job:r10a') is None and not otp.in_cluster(st))
+       st.get_meta('node:r10b') is None and not (json.loads(st.get_meta('db_job:r10a') or 'null') or {}).get('running')
+       and not otp.in_cluster(st), (st.get_meta('node:r10b'), st.get_meta('db_job:r10a')))
     ok('... acme push\'s nonces are this node\'s own too', 'acme_push:nonces' in otp.META_TRANSIENT)
     # ---- the import --------------------------------------------------------------------------
     d = otp.Daemon(st, serve=False)

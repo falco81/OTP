@@ -103,7 +103,7 @@ def ntp_checked(b):
         if not a:
             continue
         try:
-            allow.append(str(ipaddress.ip_network(a, strict=False)))
+            allow.append(str(plain_net(a)))   # no scope id (1.0.287): root refused it
         except ValueError:
             raise ValueError('%r is not a network (192.0.2.0/24)' % a)
     out['allow'] = allow[:20]

@@ -1,0 +1,23 @@
+#!/bin/bash
+# systemctl in a container without systemd (tests): logged; nginx and php-fpm started and reloaded by hand,
+# otp's own units left to the test scripts (startd.sh, rootloop.sh).
+echo "$(date +%T) systemctl $*" >> /tmp/claude-0/systemctl.log
+args=(); for a in "$@"; do case "$a" in --*|-q) ;; *) args+=("$a");; esac; done
+verb=${args[0]:-}; unit=${args[1]:-}; unit=${unit%.service}
+fpm() { ls /usr/sbin/php-fpm* 2>/dev/null | head -1; }
+case "$verb:$unit" in
+  start:nginx|restart:nginx) pgrep -x nginx >/dev/null && nginx -s reload || nginx ;;
+  reload:nginx|reload-or-restart:nginx|try-reload-or-restart:nginx) pgrep -x nginx >/dev/null && nginx -s reload || nginx ;;
+  stop:nginx) nginx -s stop 2>/dev/null ;;
+  is-active:nginx) pgrep -x nginx >/dev/null ;;
+  start:php*-fpm|restart:php*-fpm|reload:php*-fpm) p=$(pgrep -o -f "php-fpm: master"); if [ -n "$p" ]; then kill "$p"; for i in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done; fi; $(fpm) -D || { sleep 1; $(fpm) -D; } ;;
+  is-active:php*-fpm) pgrep -f "php-fpm: master" >/dev/null || $(fpm) -D ;;   # a container restarted: started again
+  start:otp|restart:otp|enable:otp) bash /home/claude/ws/tests/dg/startd.sh >/dev/null 2>&1; sleep 3 ;;
+  stop:otp|disable:otp) for p in $(pgrep -f "^/usr/local/lib/otp/python /usr/local/lib/otp/otp.py --daemon"); do kill $p; done ;;
+  is-active:otp) m=$(pgrep -af "^/usr/local/lib/otp/python /usr/local/lib/otp/otp.py --daemon"); [ -n "$m" ]; exit $? ;;
+  is-active:*) exit 3 ;;
+  is-enabled:*) exit 1 ;;
+  cat:php-fpm) ls /usr/sbin/php-fpm >/dev/null 2>&1 ;;
+  list-unit-files:*) for f in /usr/sbin/php-fpm*; do [ -e "$f" ] && echo "$(basename $f).service enabled enabled"; done ;;
+esac
+exit 0

@@ -18,7 +18,7 @@ def sso_nets(conf=None):
         if not w:
             continue
         try:
-            out.append(ipaddress.ip_network(w, strict=False))
+            out.append(plain_net(w))      # no scope id (1.0.287)
         except ValueError:
             continue
     return out
@@ -73,6 +73,13 @@ def _portal_sso(h):
     name = str(b.get('name') or '').strip()
     given = str(b.get('key') or '')
     peer = str(h.headers.get('X-Otp-Peer') or '').strip()
+    s0 = h.session('portal')
+    if s0:
+        d0 = s0.get('data') or {}
+        full0 = Authenticator.full_name(name, CONFIG.get('portal_realm') or CONFIG.get('default_realm') or '') \
+            if name else ''
+        if not (d0.get('sso') and str(d0.get('login') or '').lower() == str(full0 or '').lower()):
+            h.store.session_end(h.headers.get('X-Otp-Session'))       # 1.0.287
     # Counted per address and per name as the sign-in is - more loosely per address: without
     # "Behind a load balancer" every client is the balancer's address.
     tries = int(CONFIG.get('portal_tries') or 5)

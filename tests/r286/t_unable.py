@@ -40,6 +40,11 @@ ok('the local administrator signs in', st == 200, got)
 
 def settings(**kv):
     st, got = admin.j('settings', {'settings': kv})
+    for _ in range(10):                 # nginx's rate (429): asked again a moment later
+        if st != 429:
+            break
+        time.sleep(3)
+        st, got = admin.j('settings', {'settings': kv})
     if st != 200:
         print('   settings', kv, st, str(got)[:200])
     time.sleep(1.2)
