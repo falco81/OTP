@@ -562,6 +562,7 @@ if (isset($_GET['api'])) {
         'after' => '/api/after',
         'kerberos' => '/api/kerberos',
         'certlogin' => '/api/certlogin',
+        'db-agent' => '/api/db-agent',
     ];
     $writes = [
         'token' => '/api/token', 'token-import' => '/api/token/import', 'tokens-backup' => '/api/tokens/backup', 'tokens-export' => '/api/tokens/export',
@@ -586,6 +587,7 @@ if (isset($_GET['api'])) {
         'kerberos' => '/api/kerberos',
         'certlogin' => '/api/certlogin',
         'card-gone' => '/api/auth/cardgone',
+        'db-agent' => '/api/db-agent',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -594,7 +596,8 @@ if (isset($_GET['api'])) {
             echo json_encode(['ok' => false, 'error' => 'unknown endpoint']);
             exit;
         }
-        otp_relay($writes[$what], 'POST', sent_json(), 90.0);
+        // the database server's agent (1.0.289): a restart through it waits up to 240 s
+        otp_relay($writes[$what], 'POST', sent_json(), $what === 'db-agent' ? 300.0 : 90.0);
         exit;
     }
     if (!isset($reads[$what])) {

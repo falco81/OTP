@@ -10,6 +10,10 @@ request, every check of a code, every event.
 | MariaDB / MySQL | a database server you already run, or two otp servers on one database | `python3-PyMySQL` (`--with-db mariadb`) |
 | PostgreSQL | the same | `python3-psycopg2` (`--with-db postgres`) |
 
+A PostgreSQL or MariaDB on a server of its own can be looked after by otp as one on its own
+machine - its certificate, its settings and their restart, its firewall - through a small
+agent installed there (`install.sh --db-server`, 1.0.289): [external-database.md](external-database.md).
+
 The database's own address cannot live in the database, so `db_engine`,
 `db_host`, `db_port`, `db_name`, `db_user`, `db_password` and `db_timeout_s`
 are kept in `/etc/otp/config.json`. Everything else saved on the pages

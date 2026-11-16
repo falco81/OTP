@@ -4070,3 +4070,99 @@ td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
 .cw-until{color:var(--warn);font-weight:600;font-size:13.5px;margin:0 0 18px}
 .cw-hint{margin:0 0 14px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;color:var(--tx-dim);font-size:12.5px;line-height:1.5;text-align:left}
 @media (prefers-reduced-motion:reduce){.cw-arc{transition:none}}
+
+/* ---- The database on a server of its own (1.0.289, otp-db-agent) --------------------------
+   The pill of the database servers on a card's heading, the card of Settings -> The database,
+   its wizard, the rows on Database -> TLS, High availability and the firewall. */
+.dbs-pill{display:inline-flex;align-items:center;gap:2px;margin-left:10px;vertical-align:middle;
+  border:1px solid color-mix(in srgb,var(--violet) 40%,var(--line));border-radius:999px;padding:2px 4px;
+  font-size:11.5px;font-weight:600;letter-spacing:0;text-transform:none;line-height:1;cursor:default;
+  background:color-mix(in srgb,var(--violet) 7%,transparent)}
+.dbs-pill.diff{border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
+.dbs-pill:hover{background:var(--panel2)}
+.dbs-one{display:inline-flex;align-items:center;gap:4px;padding:1px 4px}
+.dbs-one + .dbs-one{border-left:1px solid var(--line)}
+.dbs-one .dot{width:7px;height:7px}
+.dbs-n{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx-dim);font-weight:500}
+.dot.off{background:var(--tx-mut)}
+.dbs-hero{display:flex;gap:14px;align-items:center;padding:14px 16px;border:1px solid var(--line);border-radius:14px;
+  background:var(--panel2);margin:2px 0 14px;border-left:4px solid var(--violet)}
+.dbs-hero.good{border-left-color:var(--ok)} .dbs-hero.warn{border-left-color:var(--warn)} .dbs-hero.bad{border-left-color:var(--crit)}
+.dbs-hero-ic{flex:none;width:46px;height:46px;border-radius:13px;display:grid;place-items:center;
+  color:var(--violet);background:var(--violet-bg)}
+.dbs-hero.good .dbs-hero-ic{color:var(--ok);background:var(--ok-bg)}
+.dbs-hero.warn .dbs-hero-ic{color:var(--warn);background:var(--warn-bg)}
+.dbs-hero.bad .dbs-hero-ic{color:var(--crit);background:var(--crit-bg)}
+.dbs-hero-w{flex:1;min-width:0;overflow-wrap:anywhere}
+.dbs-hero-w > b{display:block;font-size:15px;margin-bottom:3px}
+.dbs-hero-w .small{color:var(--tx-dim)}
+.dbs-state{flex:none;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;font-size:12.5px;
+  font-weight:600;border:1px solid var(--line);white-space:nowrap}
+.dbs-state.ok{color:var(--ok);background:var(--ok-bg);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.dbs-state.bad{color:var(--crit);background:var(--crit-bg);border-color:color-mix(in srgb,var(--crit) 40%,transparent)}
+.dbs-state.warn{color:var(--warn);background:var(--warn-bg)}
+.dbs-state .dbs-ago{font-weight:400;opacity:.8}
+.dbs-said{margin:-6px 0 12px}
+.dbs-next{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between;margin:0 0 14px}
+.dbs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr));gap:12px}
+.dbs-tile{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--panel)}
+.dbs-tile.me{border-color:color-mix(in srgb,var(--violet) 45%,var(--line));box-shadow:0 0 0 1px color-mix(in srgb,var(--violet) 25%,transparent) inset}
+.dbs-tile.bad{border-color:color-mix(in srgb,var(--crit) 55%,var(--line))}
+.dbs-tile-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.dbs-tile-top .dot{width:9px;height:9px}
+.dbs-tile-n{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px}
+.dbs-eng{margin-left:auto;font-size:12px;color:var(--tx-dim)}
+.dbs-kvs{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:4px 16px}
+.dbs-kv{display:flex;flex-direction:column;gap:1px;min-width:0;padding:3px 0;border-bottom:1px dashed var(--line)}
+.dbs-kv.wide{grid-column:span 2}
+.dbs-kv .k{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut);font-weight:700}
+.dbs-kv .v{font-size:13px;overflow-wrap:anywhere}
+.dbs-kv .v .good{color:var(--ok)} .dbs-kv .v .bad{color:var(--crit)}
+.dbs-diskv{display:flex;align-items:center;gap:10px}
+.dbs-bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden;max-width:220px}
+.dbs-bar > span{display:block;height:100%;background:var(--violet);border-radius:3px}
+.dbs-bar.warm > span{background:var(--warn)} .dbs-bar.hot > span{background:var(--crit)}
+.dbs-tile-said{margin-top:8px;overflow-wrap:anywhere}
+.dbs-acts{margin-top:14px}
+.dbs-wiz{min-height:540px}
+.dbs-eng-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr));gap:10px}
+.dbs-steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:12px}
+.dbs-steps li > span,.dbs-steps li > b{display:block;margin-bottom:4px}
+.dbs-cmd{display:flex;gap:8px;align-items:flex-start;margin:4px 0}
+.dbs-cmd pre{flex:1;min-width:0;margin:0;padding:8px 12px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);
+  font-size:12.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
+textarea.dbs-code{width:100%;font-size:12.5px;resize:vertical;min-height:72px}
+.dbs-code-said{min-height:22px;margin:-4px 0 10px;font-size:13px}
+.dbs-code-said.good{color:var(--ok)} .dbs-code-said.bad{color:var(--crit)}
+.dbs-sw{display:flex;align-items:center;gap:10px;font-weight:600;cursor:pointer}
+.dbs-result{margin-top:14px;display:flex;flex-direction:column;gap:12px}
+.dbs-grid.one{grid-template-columns:1fr}
+.dbs-ha{margin-top:16px}
+.dbs-ha-n{white-space:nowrap}
+.dbs-ha-n .dot,.dbs-hal-n .dot{margin-right:6px;vertical-align:middle}
+.dbs-dir{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx-dim)}
+.dbs-hal-n{display:flex;align-items:center}
+.dbs-make{border:1px solid color-mix(in srgb,var(--violet) 35%,var(--line));border-radius:12px;padding:14px 16px;margin:0 0 16px;
+  background:color-mix(in srgb,var(--violet) 5%,transparent)}
+.dbs-make input.bad{border-color:var(--crit)}
+.dbs-make-cmds{margin-top:6px}
+.fw-node.db{cursor:default;border-style:dashed;border-color:color-mix(in srgb,var(--violet) 45%,var(--line))}
+.fw-dbs{margin-top:6px}
+.dbw-agent{margin:12px 0 0}
+@media (max-width:760px){
+  .dbs-hero{flex-wrap:wrap;padding:12px}
+  .dbs-state{order:3}
+  .dbs-kvs{grid-template-columns:1fr}
+  .dbs-kv.wide{grid-column:auto}
+  .dbs-cmd{flex-direction:column;align-items:stretch}
+  .dbs-wiz{min-height:0}
+}
+.dbs-lead{display:flex;gap:14px;align-items:flex-start;margin:0 0 14px}
+.dbs-lead-ico{flex:none;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;
+  color:var(--violet);background:color-mix(in srgb,var(--violet) 12%,transparent)}
+.dbs-lead .note{margin:4px 0 0}
+h4.dbw-h{margin:16px 0 8px;font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut)}
+.wiz-step.dbs-back{cursor:pointer}
+.dbs-live .si-row.run .dot{animation:dbsPulse 1s ease-in-out infinite alternate}
+@keyframes dbsPulse{from{opacity:.35}to{opacity:1}}
+.dbs-live-said{overflow-wrap:anywhere}

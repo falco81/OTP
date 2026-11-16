@@ -59,6 +59,21 @@ DB_RESTART_AGAIN=""
 PHP_UPDATE="yes"
 # What this run found as root, for root-facts.json (1.0.258): the daemon cannot see it itself.
 FACT_NGINX_ADD=""
+# A database server of its own for otp, and its agent (1.0.289, deploy/db-server.sh): nothing of
+# it runs without --db-server or --db-agent.
+DB_SERVER=""
+DB_AGENT=""
+DB_AGENT_NEW_CODE=""
+DB_AGENT_PORT="9443"
+DB_AGENT_PORT_GIVEN=""
+OTP_NODES=""
+DBS_NAME="otp"
+DBS_USER="otp"
+DBS_PASSWORD=""
+DBS_PASSWORD_FILE=""
+DBS_PASSWORD_ARGV=""
+DBS_ENGINE=""
+DBS_PORT=""
 FACT_NGINX_GUARD=""
 FACT_SELINUX_MODULE=""
 FACT_FIREWALL=""
@@ -284,6 +299,26 @@ Usage: sudo ./install.sh [options]
   --dry-run                 print what would happen and change nothing
   --yes                     never ask; take the defaults
   --help                    this
+
+  A database server of its own for otp (docs/external-database.md) - run on THAT
+  server, never on the otp node; nothing of otp itself is installed:
+  --db-server ENGINE        postgres: PostgreSQL 16 (EL: postgresql:16 module or PGDG;
+                            Debian/Ubuntu: PGDG), initialised, started, listening, wal_level
+                            logical, the database and the account for otp;
+                            mariadb: the distribution's MariaDB, secured, the same
+                            ...and otp-db-agent, the firewall for the otp nodes, a join code
+  --db-agent                otp-db-agent alone, for a database server installed already
+                            (run again: upgraded, its nodes stay joined)
+  --db-agent-port N         the agent's port (9443)
+  --new-code                a join code printed even though the agent was installed already
+                            (only a new install prints one by itself - an upgrade does not)
+  --otp-node ADDRESS        an otp node using this server (again for each one): let into
+                            pg_hba.conf / the accounts and the firewall
+  --db-name NAME --db-user NAME   otp's database and account (otp, otp)
+  --db-password-file FILE   the account's password, the first line of FILE (made up and shown
+                            once without it; --db-password PASS works too, but every account
+                            on the machine sees a command line)
+  --db-server/--db-agent --uninstall   the agent taken away; the database stays
 EOF
 }
 
@@ -317,6 +352,16 @@ while [[ $# -gt 0 ]]; do
         --rewrite-nginx)   REWRITE_NGINX="yes"; shift;;
         --uninstall)       DO_UNINSTALL="yes"; shift;;
         --dry-run)         DRY_RUN="yes"; shift;;
+        --db-server)       DB_SERVER="${2:-}"; shift 2;;
+        --db-agent)        DB_AGENT="yes"; shift;;
+        --new-code)        DB_AGENT_NEW_CODE="yes"; shift;;
+        --db-agent-port)   DB_AGENT_PORT="${2:-}"; DB_AGENT_PORT_GIVEN="yes"; shift 2;;
+        --otp-node)        OTP_NODES="${OTP_NODES:+$OTP_NODES }${2:-}"; shift 2;;
+        --db-name)         DBS_NAME="${2:-}"; shift 2;;
+        --db-user)         DBS_USER="${2:-}"; shift 2;;
+        --db-password)     DBS_PASSWORD="${2:-}"; DBS_PASSWORD_ARGV="yes"; shift 2;;
+        --db-password-file) DBS_PASSWORD_FILE="${2:-}"; shift 2;;
+        --db-engine)       DBS_ENGINE="${2:-}"; shift 2;;
         -y|--yes)          ASSUME_YES="yes"; shift;;
         -h|--help)         usage; exit 0;;
         *) fail "I do not know the option $1 — try --help";;
@@ -349,6 +394,22 @@ for v in ADMIN_ALLOW PORTAL_ALLOW RADIUS_FROM; do
     [[ -n "${!v}" ]] && { cidr_list_ok "${!v}" || fail "$v takes addresses and networks, comma separated"; }
 done
 
+# The database server's own options (1.0.289): the password from a file, never asked on a
+# command line; --new-code only there.
+if [[ -n "$DBS_PASSWORD_FILE" ]]; then
+    [[ -f "$DBS_PASSWORD_FILE" && -r "$DBS_PASSWORD_FILE" ]] || fail "--db-password-file: $DBS_PASSWORD_FILE cannot be read"
+    IFS= read -r DBS_PASSWORD < "$DBS_PASSWORD_FILE" || true
+    [[ -n "$DBS_PASSWORD" ]] || fail "--db-password-file: $DBS_PASSWORD_FILE has no password on its first line"
+elif [[ -n "${DBS_PASSWORD_ARGV:-}" ]]; then
+    warn "--db-password is on the command line, where every account on this machine sees it: --db-password-file FILE is better"
+fi
+if [[ -n "$DB_AGENT_NEW_CODE" && -z "$DB_SERVER" && -z "$DB_AGENT" ]]; then
+    fail "--new-code is for the database server: install.sh --db-agent --new-code there (or python3 -I /usr/local/lib/otp-db-agent/otp_db_agent.py --new-code)"
+fi
+if [[ -z "$DB_SERVER" && -z "$DB_AGENT" ]] && [[ -n "$OTP_NODES$DBS_PASSWORD_FILE$DBS_PASSWORD_ARGV$DBS_ENGINE$DB_AGENT_PORT_GIVEN" ]]; then
+    fail "--otp-node, --db-password(-file), --db-engine and --db-agent-port are for the database server: with --db-server or --db-agent"
+fi
+
 [[ $EUID -eq 0 ]] || fail "run this as root: sudo ./install.sh"
 [[ -f "$SOURCE_DIR/otp.py" ]] || fail "otp.py is not beside this script; run it from inside the unpacked folder"
 
@@ -359,6 +420,14 @@ case "$( . /etc/os-release 2>/dev/null; printf '%s%s' "${ID:-}" "${ID_LIKE:-}" )
     *debian*|*ubuntu*) PKG="apt";;
     *) PKG="";;
 esac
+
+if [[ -n "$DB_SERVER" || -n "$DB_AGENT" ]]; then
+    # A database server of its own and its agent (1.0.289): this, and nothing else of otp.
+    # shellcheck source=deploy/db-server.sh
+    . "$SOURCE_DIR/deploy/db-server.sh"
+    db_server_main
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Taking it away
@@ -384,6 +453,15 @@ if [[ -n "$DO_UNINSTALL" ]]; then
         fail "removing is never a default: run --uninstall on a terminal, it asks"
     fi
     ASSUME_YES="" confirm "Go ahead?" n || { say "Nothing was changed."; exit 0; }
+    # A database agent this node joined stays joined (1.0.289), as $STATE_DIR is kept: otp
+    # installed again goes on with it. A node going away for good leaves it first with
+    # otp --db-agent-leave --yes, or is taken away on the database server:
+    # otp_db_agent.py --forget NODE.
+    if [[ -f "$STATE_DIR/db-agent/agent.json" ]]; then
+        say "This node stays joined to its database agent (kept in $STATE_DIR/db-agent). Going away"
+        say "for good: otp --db-agent-leave --yes before this, or otp_db_agent.py --forget NODE"
+        say "on the database server."
+    fi
     # An upgrade going on is not cut off under its own feet (1.0.44) - looked
     # at before anything is stopped or taken away (1.0.146).
     if [[ -z "$DRY_RUN" ]] && systemctl is-active --quiet otp-upgrade.service 2>/dev/null; then
