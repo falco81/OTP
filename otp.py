@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.290'
+__version__ = '1.0.291'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -19379,6 +19379,16 @@ def engine_asked(given):
         c['db_password'] = ''
     if c.get('db_engine') not in ('sqlite', 'mariadb', 'postgres'):
         raise ValueError('the engine is sqlite, mariadb or postgres')
+    # Nor the encryption of the server in use (1.0.291, with a database agent): verify-full and
+    # the authority of the server in use are that server's - carried to another one, a MariaDB
+    # without TLS yet was asked for it, a PostgreSQL checked against an authority that never
+    # signed its certificate. Off unless asked; Database -> TLS turns it on there afterwards.
+    # Without an agent as it always was.
+    if c.get('db_engine') != 'sqlite' and (given or {}).get('db_tls') is None and \
+            'db_agent_on' in globals() and db_agent_on() and db_other_server(c):
+        c['db_tls'] = ''
+        if (given or {}).get('db_tls_ca') is None:
+            c['db_tls_ca'] = ''
     for k in ('db_name', 'db_user'):
         if c['db_engine'] != 'sqlite' and not DB_IDENT.match(str(c.get(k) or '')):
             raise ValueError('%s is letters, digits and _ only, starting with a letter' % k)
@@ -19714,6 +19724,16 @@ def db_move(store, c, by):
                 tally[table] = done
                 progress(sum(tally.values()), whole, '%s: %s' % (table, done))
             load_tables(far, copy, say=along)
+            # What the rows say of the database server in use is not true of another one
+            # (1.0.291, with a database agent): its certificate from otp's authority, what its
+            # agent said, the meter's reading. The new server's are written as they come.
+            if 'db_agent_on' in globals() and db_agent_on() and db_other_server(c):
+                for k in DB_SERVER_ROWS:
+                    try:
+                        far.run('DELETE FROM meta WHERE k = ?', (k + node_name(),))
+                    except Exception as e:              # noqa: BLE001
+                        log('the rows of the old database server could not be left out: %s' % e,
+                            'warn')
             dbguard_resign(SimpleStore(far))       # the rows carried signed there (1.0.231)
             after = {t: int(far.value('SELECT COUNT(*) FROM %s' % t) or 0)
                      for t in TABLES if t != 'meta'}
@@ -51413,6 +51433,8 @@ def _db(h):
             # The move to another database is not for a node of a cluster (1.0.214):
             # the page's wizard says so before it starts.
             'cluster': in_cluster(h.store), 'ha_mode': CONFIG.get('ha_mode') or '',
+            # This node's database agent, for the move wizard (1.0.291) - only with one.
+            **({'agent': db_move_agent_info()} if db_agent_on() else {}),
             # Its own key (1.0.249): in place of 'drivers' the card said "no driver - install
             # undefined" everywhere.
             'driver_here': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
@@ -51705,6 +51727,16 @@ def _db_do(h):
             return tune_restart(h.store, s['name'])
         except ValueError as e:
             raise ApiError(400, str(e))
+    if in_cluster(h.store) and act in ('move', 'use', 'empty', 'setup') and \
+            CONFIG.get('ha_mode') == 'replicated' and db_agent_here():
+        # Each node's database on a server of its own (1.0.291): said so, with the way out.
+        raise ApiError(409, 'this node is one of a cluster (replicated - each node\'s database on a server of its own, '
+                            'looked after by its agent, the two replicating): its database is the '
+                            'cluster\'s. Moving it - to another engine, another server or back onto '
+                            'this machine - would break the replication and leave the other node on '
+                            'its own. Switch the replication off first (Settings → High availability), '
+                            'then otp --ha-standalone --yes on both nodes; move it; build the cluster '
+                            'again.')
     if in_cluster(h.store) and act in ('move', 'use', 'empty'):
         raise ApiError(409, 'this node is one of a cluster: its database is not moved from here '
                             '(switch the replication off first - Settings → High availability)')
@@ -51721,6 +51753,10 @@ def _db_do(h):
             if act == 'try':
                 got = db_try(c)
                 got['in_use'] = db_same_place(h.store, c)
+                if db_agent_on():
+                    # The server of this node's database agent (1.0.291): made there by the
+                    # agent - no administrator typed in.
+                    got['agent_server'] = db_agent_is_target(c)
                 return got
             if act == 'setup':
                 if c['db_engine'] == 'sqlite':
@@ -51729,6 +51765,21 @@ def _db_do(h):
                 fresh = ''
                 if first.get('reached') and first.get('writable'):
                     made = ['the database and the account are there already, and it gets in']
+                elif b.get('by_agent'):
+                    # Made for me on the server of this node's database agent (1.0.291): the
+                    # database, the account with its password (made up when none is given),
+                    # this node let in (pg_hba.conf, or 'user'@'node'), the firewall.
+                    if not db_agent_on() or not db_agent_is_target(c):
+                        raise ApiError(400, 'only the server of this node\'s database agent is '
+                                            'made by otp itself: give an administrator of that '
+                                            'server instead')
+                    if not c.get('db_password'):
+                        fresh = c['db_password'] = db_password_made()
+                    try:
+                        made = db_agent_dbmake(c)
+                    except ValueError as e:
+                        raise ApiError(400, 'its agent did not make it: %s' % e)
+                    made = made or ['made by its agent']
                 else:
                     who = str(b.get('admin_user') or '').strip()
                     if not who:
@@ -51854,15 +51905,26 @@ def _db_do(h):
                         far.close()
                 except Exception as e:                  # noqa: BLE001
                     log('the codes used lately could not be carried across: %s' % e, 'warn')
+                was_here = db_agent_here()
                 write_file_settings({k: c[k] for k in DB_KEYS})
                 h.store.add_event('settings', '%s switched the database to %s at %s; the '
                                   'daemon starts again on it' % (s['name'], words, db_where(c)),
                                   'warn', who=s['name'])
+                # Moved off the server of this node's database agent (1.0.291): the agent is
+                # no longer this node's - let go after the switch, never before (until
+                # config.json names the new database, the agent is as it was).
+                agent_said = ''
+                if db_agent_on():
+                    try:
+                        agent_said = db_agent_after_move(h.store, was_here, c, s['name'])
+                    except Exception as e:              # noqa: BLE001
+                        log('the database agent could not be let go after the move: %s - otp '
+                            '--db-agent-forget --yes' % e, 'warn')
                 log('the database is now %s; starting again on it' % db_where(c), 'warn')
                 # systemd starts it again (Restart=always), on the new one.
                 threading.Timer(1.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
-                return {'message': 'the daemon starts again on %s in a moment' % words,
-                        'restarting': True}
+                return dict({'message': 'the daemon starts again on %s in a moment' % words,
+                             'restarting': True}, **({'agent': agent_said} if agent_said else {}))
         if act == 'check':
             own = db_own(h.store)
             try:
@@ -63439,13 +63501,74 @@ def db_agent_dbmake(c):
     peers = [x for x in (me, '127.0.0.1') if x]
     got = db_agent_call('dbmake', {'name': c['db_name'], 'user': c['db_user'],
                                    'password': c['db_password'], 'peers': peers}, timeout=120)
-    said = list(got.get('said') or [])
+    said = [x for x in (got.get('said') or []) if 'has to start again' not in str(x)]
+    # PostgreSQL listening on its network addresses only from a restart on (1.0.291): started
+    # again by its agent - unless this node's own database runs on it now, which is not
+    # stopped under it from here (the server's administrator restarts it, or the card does).
+    if got.get('pg_restart_needed'):
+        if db_agent_here():
+            said.append('PostgreSQL there has to start again for listen_addresses: this node\'s '
+                        'database runs on it now - Settings -> The database -> Database server '
+                        '-> Restart the database…')
+        else:
+            try:
+                db_agent_restart()
+                said.append('PostgreSQL started again by its agent (listen_addresses)')
+            except ValueError as e:
+                said.append('PostgreSQL there has to start again for listen_addresses, and its '
+                            'agent could not: %s' % e)
     # The database's port opened to this node where firewalld runs there (1.0.289).
     try:
         said += list(db_agent_fw([me]).get('said') or [])
     except ValueError as e:
         said.append('the firewall of the database server was not opened to this node: %s' % e)
     return said
+
+
+def db_other_server(c):
+    """Whether `c` names another database server than the one in use (its engine, address or
+    port) - not merely another database on it (1.0.291)."""
+    eng = str(c.get('db_engine') or '')
+    if eng != str(CONFIG.get('db_engine') or 'sqlite'):
+        return True
+    if eng == 'sqlite':
+        return False
+
+    def norm(h):
+        h = str(h or '').strip().strip('[]').lower()
+        return '127.0.0.1' if h in ('', 'localhost', '127.0.0.1', '::1') else h
+    dflt = 5432 if eng == 'postgres' else 3306
+    try:
+        return norm(c.get('db_host')) != norm(CONFIG.get('db_host')) or \
+            int(c.get('db_port') or dflt) != int(CONFIG.get('db_port') or dflt)
+    except (TypeError, ValueError):
+        return True
+
+
+def db_move_agent_info():
+    """This node's database agent, for the move wizard (1.0.291): the server it makes a
+    database on (make it for me), and whether this node's database is there now - or None."""
+    a = db_agent()
+    if not a:
+        return None
+    eng = a.get('engine') or 'postgres'
+    try:
+        port = int(a.get('pg_port' if eng == 'postgres' else 'my_port') or 0)
+    except (TypeError, ValueError):
+        port = 0
+    try:
+        here = bool(db_agent_here())
+    except Exception:                                   # noqa: BLE001
+        here = False
+    return {'host': a.get('host'), 'port': a.get('port'), 'engine': eng,
+            'db_host': a.get('db_host') or a.get('host'),
+            'db_port': port or (5432 if eng == 'postgres' else 3306), 'here': here,
+            'layout_b': bool(here and CONFIG.get('ha_mode') == 'replicated')}
+
+
+# The rows that say something of the database SERVER in use, not of otp (1.0.291): not true of
+# another server, so not carried onto one - the new server's are written as they come.
+DB_SERVER_ROWS = ('dbtls:server:', 'dbagent:node:', 'load:db:')
 
 
 def db_agent_is_target(c):
