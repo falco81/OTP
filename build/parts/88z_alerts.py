@@ -750,6 +750,12 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                 add('selinux:' + n, 'warn', n,
                     _al(lang, 'SELinux na %s: něco není, jak otp potřebuje' % n, 'SELinux on %s: something is not as otp needs it' % n),
                     '; '.join(probs)[:300], 'hisec')
+    # The database servers looked after by agents (1.0.289): none without an agent.
+    try:
+        for p in _db_agent_alerts(store, lang):
+            add(p['key'], p['level'], p.get('node') or '', p['title'], p['words'], p.get('pane') or 'db')
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('alerts-dbagent', 'the alerts of the database agent: %s' % e, 'warn', every=600)
     # The security check (off by default).
     if CONFIG.get('alerts_hisec'):
         try:

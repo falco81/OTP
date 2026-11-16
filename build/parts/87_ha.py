@@ -1082,6 +1082,8 @@ def pg_admin(sql, port=5432, db='postgres', secret=False):
 
 
 def pg_local_running(port=5432):
+    if db_agent_here():
+        return db_agent_running()       # on a server of its own (1.0.289)
     try:
         return pg_admin('SELECT 1', port) == '1'
     except Exception:                                   # noqa: BLE001
@@ -1090,6 +1092,16 @@ def pg_local_running(port=5432):
 
 def pg_install_local(major, say):
     """PostgreSQL `major` on this machine, installed, initialised and running."""
+    if db_agent_here():
+        # The agent first (1.0.289): away, it was said that PostgreSQL was not installed.
+        try:
+            db_agent_call('status', timeout=20)
+        except ValueError as e:
+            raise ValueError('%s - start it on the database server %s (systemctl start '
+                             'otp-db-agent), then run this again' % (e, db_agent_db_host()))
+        raise ValueError('PostgreSQL does not answer on the database server %s (its agent does): '
+                         'install it there (install.sh --db-server postgres) and start it'
+                         % db_agent_db_host())
     if shutil.which('dnf'):
         say('installing PostgreSQL %s (dnf)' % major)
         subprocess.run(['dnf', '-y', 'module', 'reset', 'postgresql'], capture_output=True)
@@ -1123,6 +1135,9 @@ def pg_install_local(major, say):
 
 
 def pg_restart_local(port=5432):
+    if db_agent_here():
+        db_agent_restart()              # through the agent of its server (1.0.289)
+        return
     unit = tune_restart_unit()
     if unit:
         subprocess.run(['systemctl', 'restart', unit], capture_output=True)
@@ -1166,6 +1181,10 @@ def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
     WAL, listening on the network, the peer let in, the account able to
     replicate and to subscribe, the database there. True when it has to be
     restarted for it."""
+    if db_agent_here():
+        # The same on a server of its own, by its agent (1.0.289).
+        return db_agent_prepare(peer, name, user, password, say,
+                                extra=[own_address] if own_address else ())
     pg_names_otps(port, name, user)
     major = int(pg_admin('SHOW server_version_num', port)) // 10000
     if major < 16:
@@ -1231,6 +1250,9 @@ def pg_prepare_local(port, peer, name, user, password, say, own_address=''):
 
 
 def pg_publication(port, name):
+    if db_agent_here():
+        db_agent_publication(name)      # FOR ALL TABLES needs a superuser: the agent's (1.0.289)
+        return
     if pg_admin("SELECT 1 FROM pg_publication WHERE pubname = '%s'" % HA_PUB_OLD, port, name) == '1':
         pg_admin('ALTER PUBLICATION %s RENAME TO %s' % (HA_PUB_OLD, HA_PUB), port, name)
     if pg_admin("SELECT 1 FROM pg_publication WHERE pubname = '%s'" % HA_PUB, port, name) != '1':

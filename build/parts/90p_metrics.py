@@ -151,6 +151,11 @@ def metrics_text(daemon):
               [({'key': k, 'level': p.get('level') or ''}, 1) for k, p in sorted(probs.items())])
     except Exception as e:                              # noqa: BLE001
         log_sparing('metrics-alerts', 'Prometheus, the alerts: %s' % e, 'warn', every=600)
+    try:
+        for name, words, kind, rows in _db_agent_metrics(store):     # only with an agent (1.0.289)
+            m.put(name, kind, words, rows)
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('metrics-dbagent', 'Prometheus, the database agent: %s' % e, 'warn', every=600)
     m.put('otp_high_security', 'gauge', 'Whether high security is on.',
           [({}, 1 if CONFIG.get('high_security') else 0)])
     m.put('otp_scrape_seconds', 'gauge', 'How long this answer took.',

@@ -105,6 +105,9 @@ def hatls_ca_make(store, by):
             'at': now, 'by': by}]
     cas += [x for x in ca['cas'] if fnum(x.get('end')) > now][:3]
     store.set_meta('hatls:ca', json.dumps({'cas': cas}))
+    # The agent told the cluster's authorities again (1.0.289): it knows by them which cluster
+    # the database server's certificate is.
+    DBAGENT_STATE['trust_due'] = True
     return cas[0]
 
 
@@ -117,7 +120,7 @@ def hatls_trust(ca):
 def hatls_names(peer_host=''):
     names = [node_name(), 'localhost', '127.0.0.1', '::1']
     for n in (CONFIG.get('ha_address'), node_address(), socket.gethostname(), socket.getfqdn(),
-              peer_host):
+              peer_host) + ((db_agent_db_host(),) if db_agent_here() else ()):
         n = str(n or '').strip()
         if n and n not in names:
             names.append(n)
@@ -462,6 +465,10 @@ def pgtls_send(data, wait_s=None):
     link's TLS used the same file and the same temporary name, and one of
     them waited for an answer that never came. wait_s 0 (the main loop, 1.0.255):
     PgtlsBusy at once instead of waiting - tried again at its next pass."""
+    if db_agent_here():
+        # The database on a server of its own (1.0.289): its agent does it, the answer written
+        # to the same file - every reader of it as it was.
+        return db_agent_pgtls_send(data)
     if wait_s is None:
         wait_s = getattr(PGTLS_WAIT, 's', 30)
     if wait_s <= 0:
@@ -530,7 +537,8 @@ def hatls_own_cert(store):
         raise ValueError('the cluster has no authority that is still good')
     ctx = ssl.create_default_context(cadata=trust)
     ctx.check_hostname = False
-    s = socket.create_connection(('127.0.0.1', int(CONFIG.get('db_port') or 5432)), timeout=5)
+    s = socket.create_connection((db_agent_db_host() if db_agent_here() else '127.0.0.1',
+                                  int(CONFIG.get('db_port') or 5432)), timeout=5)
     try:
         s.sendall(struct.pack('!II', 8, 80877103))           # SSLRequest
         if s.recv(1) != b'S':

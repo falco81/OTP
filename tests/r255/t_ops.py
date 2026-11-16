@@ -124,7 +124,8 @@ g = {'__name__': 'ops', 'CONFIG': CONFIG, 'FILE_CONFIG': FILE_CONFIG, 'STATE_DIR
      'host_nodes': lambda store: [NODE[0]] + [n['name'] for n in NODES if n['name'] != NODE[0]],
      'log': lambda *a, **k: LOGS.append(a), 'log_sparing': lambda *a, **k: None,
      'BACKUP_ROOM_MIN': 128 << 20, 'scrub_secret': lambda s: s,
-     'route': lambda *a, **k: (lambda f: f)}
+     'route': lambda *a, **k: (lambda f: f),
+     'db_agent_here': lambda: False}   # 1.0.289: no database agent on these nodes
 HEAD = ('import os, re, json, time, secrets, shutil, socket, ipaddress, threading, tempfile, '
         'subprocess, hashlib, zlib\nfrom pathlib import Path\nfrom datetime import datetime, '
         'timedelta\n')

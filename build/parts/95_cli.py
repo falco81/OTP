@@ -1101,6 +1101,7 @@ def build_parser():
     g.add_argument('--discard-local', action='store_true',
                    help='--ha-join: go on even though this node holds tokens of its own, which '
                         'joining throws away (1.0.59: --yes alone no longer means that)')
+    _db_agent_cli_args(p)           # the database on a server of its own (1.0.289)
     return p
 
 
@@ -2709,6 +2710,9 @@ def cli_main(argv=None):
             print(pal.dim('(otp --help for everything it does; the daemon itself is '
                           'systemctl status otp)'))
     _LOG_TO_STDERR = False
+    got = _db_agent_cli(args)       # --db-agent-* (1.0.289); None when none was asked
+    if got is not None:
+        return got
     if args.rename_from_opt:
         return rename_from_opt(lambda words: print(pal.ok_line(words)))
     if args.ha_setup or args.ha_join or args.ha_bundle or args.trusted_proxy or args.ha_resync \
@@ -3206,6 +3210,11 @@ def cli_main(argv=None):
                 'UDP %s (%s) %s' % (port, kind, 'is being listened on' if taken
                                     else 'is free: nothing answers RADIUS there')))
         print(pal.ok_line('the database: %s (%s)' % (store.db.where(), store.db.version())))
+        try:
+            for line in _db_agent_status_lines(store, pal):     # only with an agent (1.0.289)
+                print(line)
+        except Exception as e:                          # noqa: BLE001
+            print(pal.warn_line('the database agent: %s' % e))
         t = s['tokens']
         print('  tokens: %d in use, %d waiting for a code, %d switched off; %d used in the '
               'last 30 days' % (t.get('active', 0), t.get('pending', 0), t.get('disabled', 0),
