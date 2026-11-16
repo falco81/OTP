@@ -1962,6 +1962,9 @@ class Daemon(object):
         threading.Thread(target=dbtls_watch, args=(self,), name='dbtls-watch', daemon=True).start()
         # The database on a server of its own (1.0.289): its agent watched - nothing without one.
         _db_agent_start(self)
+        # This machine's database as a database server (1.0.292): looked at only with
+        # db_local_card on - off, the thread reads the setting and nothing else.
+        _db_local_start(self)
         # The performance meter (1.0.253): a reading a second, and its row for the other node, only
         # while a page looks; nobody looking, or off, they wait and read nothing.
         threading.Thread(target=load_sampler, args=(self,), name='load-sample', daemon=True).start()
@@ -2809,7 +2812,8 @@ def db_move(store, c, by):
             # What the rows say of the database server in use is not true of another one
             # (1.0.291, with a database agent): its certificate from otp's authority, what its
             # agent said, the meter's reading. The new server's are written as they come.
-            if 'db_agent_on' in globals() and db_agent_on() and db_other_server(c):
+            if 'db_agent_on' in globals() and (db_agent_on() or db_local_on()) and \
+                    db_other_server(c):
                 for k in DB_SERVER_ROWS:
                     try:
                         far.run('DELETE FROM meta WHERE k = ?', (k + node_name(),))

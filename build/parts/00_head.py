@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.291'
+__version__ = '1.0.292'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -497,6 +497,8 @@ DEFAULTS = {
     'ui_lang': 'cs',
     # The performance meter in the header (1.0.253): off, nothing is read.
     'perf_meter': False,
+    # This machine's PostgreSQL or MariaDB drawn as a database server (1.0.292, off: as before)
+    'db_local_card': False,
     'api_port': 9861,
     'debug': False,
     'debug_radius': 1,
@@ -1055,6 +1057,7 @@ NAMES = {
     'site_name': 'What to call this installation',
     'ui_lang': 'Language of the pages',
     'perf_meter': 'The performance meter in the header',
+    'db_local_card': 'Show this machine’s database as a database server',
     'api_port': 'API port (localhost)',
     'debug': 'Debug log',
     'debug_radius': '...every RADIUS request step by step',
@@ -1811,6 +1814,15 @@ SAYS = {
                  'own name.',
     'ui_lang': 'The language every page opens in until somebody chooses another for '
                'themselves.',
+    'db_local_card': 'PostgreSQL or MariaDB on the same machine as otp drawn as a database '
+                     'server, in a card above Encryption to the database server: a tile for each '
+                     'node’s own - its version, running for how long, TLS and its certificate, '
+                     'the connections, its data’s disk, the memory, the processors and the load. '
+                     'Each node looks at its own every 30 s with its own connection and tells the '
+                     'other node in its row of the database, as it does everything else - no '
+                     'agent, nothing more opened or allowed. Off: nothing of it is read, written '
+                     'or shown. Not for SQLite, nor with otp-db-agent (which has a card of its '
+                     'own).',
     'perf_meter': 'How busy the server is - the processor, the memory, the disks and the '
                   'network - beside the state at the top of every page, for full '
                   'administrators; pointed at, each part shows its details. In a cluster both '
@@ -1881,8 +1893,8 @@ PANES = {
                   'admin_cert_card_s', 'admin_cert_card_grace_s', 'admin_cert_card_unable'],
     'signin': ['admin_password_off'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
-           'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
-           'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
+           'db_timeout_s', 'db_tls', 'db_tls_ca', 'db_local_card', 'backup_daily',
+           'backup_keep', 'backup_at', 'retain_radius_days', 'retain_otp_days', 'retain_events_days'],
     'ha': ['node_name'],
     'backup': ['rbackup', 'rbackup_at', 'rbackup_every', 'rbackup_day', 'rbackup_keep',
                'rbackup_keep_days', 'rbackup_password', 'rbackup_verify'],
@@ -1974,6 +1986,7 @@ ONLY_WHEN = {
     'db_host': ['db_engine', 'sqlite-not'], 'db_port': ['db_engine', 'sqlite-not'],
     'db_name': ['db_engine', 'sqlite-not'], 'db_user': ['db_engine', 'sqlite-not'],
     'db_password': ['db_engine', 'sqlite-not'], 'db_timeout_s': ['db_engine', 'sqlite-not'],
+    'db_local_card': ['db_engine', 'sqlite-not'],
     'backup_keep': ['backup_daily', '1'], 'backup_at': ['backup_daily', '1'],
     'rbackup_at': ['rbackup', '1'], 'rbackup_every': ['rbackup', '1'],
     'rbackup_day': ['rbackup_every', 'weekly'],
