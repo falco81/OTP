@@ -10,11 +10,11 @@ Without an agent nothing changes. A node with no file `/var/lib/otp/db-agent/age
 every path it always took: nothing new runs, is asked, said or drawn. A database elsewhere with
 no agent stays its administrator's, and otp only connects to it.
 
-This release covers **layout A**: one otp node, or two that share one database, and its
-database server. High availability with each node's database on a server of its own (layout B,
-`--ha-peer-node`) comes in a later release. So do the move wizard's *make it for me* on the
-agent's server, this machine's database shown as a database server (`db_local_card`), and the
-database servers' rows in the header's meter.
+**Layout A**: one otp node, or two that share one database, and its database server.
+**Layout B** (1.0.290): high availability with each node's database on a server of its own,
+the two servers replicating (see *High availability* below). The move wizard's *make it for me*
+on the agent's server, this machine's database shown as a database server (`db_local_card`),
+and the database servers' rows in the header's meter come in a later release.
 
 ```
    otp1 (192.0.2.11)                                    db1 (192.0.2.21)
@@ -213,12 +213,69 @@ The agent's version is its program. The node compares the SHA-256 of `otp_db_age
 `otp_pg_ops.py` and `otp_web.py` with the files it ships, so a release that did not change the
 agent says nothing.
 
+## High availability (layout B)
+
+PostgreSQL 16 or later only. otp1 uses db1, otp2 uses db2, and db1 and db2 replicate both ways
+(logical replication, as two nodes with a PostgreSQL each). The VIP address, keepalived, the
+leader, the split handling and the clocks stay the **otp nodes'** own. The link between the
+two database servers is encrypted with certificates from otp's authority, put in by their agents.
+
+```
+                    VRRP VIP 192.0.2.10 (keepalived - the nodes' own)
+             ┌────────────────────────────────────────────────────┐
+        ┌────┴────┐  heartbeat, leader, split handling, clocks ┌───┴─────┐
+        │ otp1    │◄──────────────────────────────────────────►│ otp2    │
+        │ .11     │       (--ha-peer-node: the other otp node) │ .12     │
+        └──┬───┬──┘                                            └──┬───┬──┘
+  agent 9443│   │5432 TLS verify-full              agent 9443 │   │5432 TLS verify-full
+           ▼   ▼                                                ▼   ▼
+        ┌─────────┐   logical replication, both ways      ┌─────────┐
+        │ db1 .21 │◄─────────────────────────────────────►│ db2 .22 │
+        │ PG 16 + │   hostssl, verify-full                │ PG 16 + │
+        │ agent   │   (--ha-peer: the other DATABASE)     │ agent   │
+        └─────────┘                                       └─────────┘
+```
+
+1. On each database server: `./install.sh --db-server postgres --otp-node OTP1 --otp-node OTP2`.
+2. otp1: `otp --db-agent-join -` (db1's code), then its database moved onto db1.
+3. otp1: `otp --ha-setup --ha-peer DB2 --ha-peer-node OTP2 --node-name otp1`. **`--ha-peer` is
+   the other database server, `--ha-peer-node` the other otp node.** db1's agent prepares db1
+   (wal_level, listening, pg_hba.conf for db2, otp2 and otp1), restarts it, publishes the tables
+   and opens its firewall. `ha_address` is db1; `agent.json` keeps `peer_node` (otp2) and
+   `node_address` (otp1's own address toward otp2). The bundle carries `peer.node`.
+4. otp2: `otp --db-agent-join -` (db2's code), then `otp --ha-join BUNDLE --node-name otp2`: db2
+   is prepared by its agent, every row is copied from db1, both subscriptions are made,
+   config.json gets `db_host` = db2, and db2's agent is told the cluster's authorities.
+5. On either node: `otp --ha-tls-repair` (or *High availability → Repair*): each node issues its
+   server's certificate, its agent puts it in - verify-full, hostssl.
+
+*High availability → Making it two* shows these commands filled in, on a node whose database is
+on its agent's server.
+
+What is the nodes' own takes the other **otp node** (`peer_node`), never the other database
+server: the clocks' peers, the addresses the firewall always lets in, keepalived's other node
+and its own address (`node_address`), the split's look at the other machine. The other database
+server's clock is said as *the database server of otp2* and never corrects the heartbeats.
+
+Rebuild (`otp --ha-resync`), pause and resume, renewals and the authority's roll work as with a
+PostgreSQL on each node; the root parts go through the agents. A node's own address changed on
+*Settings → Network*: its agent lets the new address into its server before anything changes,
+and the other node's agent does once the replicated row comes over.
+
+Without `--ha-peer-node` and without an agent, `--ha-setup` is what it always was: `--ha-peer`
+is the other node. `--ha-peer-node` on a node whose database is not on its agent's server is
+refused. MariaDB does not replicate; the shared layout (`--ha-shared`) is unchanged - that
+server stays its administrator's.
+
 ## Leaving
 
 - `otp --db-agent-forget --yes`, or *Forget the agent…*: the agent takes this node off its list
   (`leave`), and the node goes back to `db_admin local` (`agent.json.forgotten` is kept). The
   database is not touched. An agent that does not answer keeps the node's certificate until
   `otp_db_agent.py --forget NODE` is run on its server.
+- In layout B the agent is not forgotten while the replication runs through it: `--db-agent-forget`,
+  `--db-agent-leave` and the card refuse it - take the cluster apart first
+  (`otp --ha-standalone`).
 - `install.sh --uninstall` on a node keeps the join (it keeps `/var/lib/otp`). A node going away
   for good runs `otp --db-agent-leave --yes` first.
 - On the database server: `otp_db_agent.py --status` lists the nodes, and those not heard from

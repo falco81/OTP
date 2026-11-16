@@ -4166,3 +4166,9 @@ h4.dbw-h{margin:16px 0 8px;font-size:12px;letter-spacing:.6px;text-transform:upp
 .dbs-live .si-row.run .dot{animation:dbsPulse 1s ease-in-out infinite alternate}
 @keyframes dbsPulse{from{opacity:.35}to{opacity:1}}
 .dbs-live-said{overflow-wrap:anywhere}
+
+/* Making it two with each node's database on a server of its own (1.0.290) */
+.dbs-make .ha-lead{display:flex;gap:12px;align-items:flex-start;margin-bottom:10px}
+.dbs-make .ha-lead-ico{color:var(--violet);flex:none;margin-top:2px}
+.dbs-make .ha-lead p{margin:4px 0 0}
+.dbs-make .formgrid{margin-bottom:8px}

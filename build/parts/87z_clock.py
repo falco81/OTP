@@ -123,6 +123,11 @@ def clock_peer_skew(store):
     if CONFIG.get('ha_mode') == 'replicated' and CONFIG.get('ha_peer'):
         conf = ha_peer_conf(timeout=2)
         name = next((n['name'] for n in ha_peer_rows(store)), 'the other node')
+        if 'db_agent_layout_b' in globals() and db_agent_layout_b():
+            # Layout B (1.0.290): ha_peer is the other DATABASE server, another machine than the
+            # other node - its clock said as that server's, never taken for the node's (the
+            # heartbeats are not corrected by it).
+            name = CLOCK_PEER_DB % name
     elif store.db.engine in ('postgres', 'mariadb') and in_cluster(store):
         conf = {k: CONFIG.get(k) for k in DB_KEYS}
         name = CLOCK_DB_SERVER
@@ -166,6 +171,7 @@ def clock_peer_skew(store):
 
 
 CLOCK_DB_SERVER = 'the database server'
+CLOCK_PEER_DB = 'the database server of %s'     # layout B: the other node's own server (1.0.290)
 
 
 # ---- the directory -----------------------------------------------------------------------------

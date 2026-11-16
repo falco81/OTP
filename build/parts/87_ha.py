@@ -669,6 +669,9 @@ def ha_replicated_bundle_data(store):
                      'port': int(CONFIG.get('db_port') or 5432)},
             'cluster': CONFIG.get('site_name') or 'otp'}
     data['db']['db_host'] = data['peer']['address']
+    if 'db_agent_layout_b' in globals() and db_agent_layout_b():
+        # Layout B (1.0.290): the node itself, apart from its database server.
+        data['peer']['node'] = ha_own_node()
     return data
 
 

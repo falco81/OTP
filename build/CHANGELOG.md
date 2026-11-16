@@ -4,6 +4,18 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.290 — 16 November 2026
+
+**High availability with each node's database on a server of its own** (layout B of isemon's external-database kit): otp1 on db1, otp2 on db2, the two database servers replicating both ways, set up, encrypted and looked after by otp through both nodes' otp-db-agent. PostgreSQL 16 or later. Without an agent nothing changes: `--ha-setup` is what it always was. docs/external-database.md → *High availability (layout B)*.
+
+- **`otp --ha-setup --ha-peer DB2 --ha-peer-node OTP2`**: `--ha-peer` is the other DATABASE server, the new **`--ha-peer-node`** the other otp node. This node's agent prepares its database server (wal_level, listening, pg_hba.conf for the other server, the other node and this one), restarts it, publishes the tables and opens its firewall; the bundle carries this node's own address beside its database server's, and the steps for the other database server and the second node are printed. `--ha-peer-node` without an agent, or the same address as `--ha-peer`, is refused.
+- **`otp --ha-join`** on a node joined to its database server's agent: its database goes onto that server - prepared by the agent, every row copied, both subscriptions - config.json points at it, and the agent is told the cluster's authorities.
+- What is the nodes' own takes the other **otp node**, never the other database server: keepalived's other node and this node's own address, the addresses the firewall always lets in, the clocks' peers, the split's look at the other machine. The other database server's clock is said as *the database server of otp2* and never corrects the heartbeats.
+- The link between the two database servers (`otp --ha-tls-repair`, *High availability → Repair*): each node issues its server's certificate and its agent puts it in - verify-full, hostssl. Rebuild (`--ha-resync`), pause, renewals and the authority's roll go through the agents as on a PostgreSQL of each node's own.
+- *High availability → Making it two* on a node whose database is on its agent's server: **Each node's database on a server of its own** - the commands filled in from what is typed (in Czech too).
+- The agent is not forgotten while the replication runs through it (`--db-agent-forget`, `--db-agent-leave`, the card).
+- Later releases: the move wizard's *make it for me* on the agent's server, this machine's database shown as a database server, the servers in the header's meter.
+
 ## 1.0.289 — 16 November 2026
 
 **The database on a server of its own, looked after by otp-db-agent** (isemon's external-database kit, 2nd edition) - layout A: one otp node, or two that share one database, and its database server. Without an agent nothing changes: no file `/var/lib/otp/db-agent/agent.json`, every path as it was. docs/external-database.md.

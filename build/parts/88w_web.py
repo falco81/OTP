@@ -1029,7 +1029,7 @@ def vip_family_fix(store, vip):
         vip['own'] = vip_pick([node_address()] + mine, addr, skip)
     if vip.get('peer') and not vip_of_family(vip['peer'], addr):
         me = node_name()
-        cands = [vip_plain(CONFIG.get('ha_peer'), addr), vip_plain(vip_peer_seen(store), addr)]
+        cands = [vip_plain((ha_peer_node() if 'ha_peer_node' in globals() else CONFIG.get('ha_peer')), addr), vip_plain(vip_peer_seen(store), addr)]
         for n in ha_nodes(store):
             if n['name'] == me:
                 continue
@@ -1077,7 +1077,7 @@ def vip_peer_want(store, like=''):
     heartbeat's address is not taken: that is the source of its default route, on a pair with
     two networks not the one VRRP goes over. Else ha_peer, as before. Replicating: ha_peer, as
     before - it is moved with the address (ha_readdress)."""
-    peer = str(CONFIG.get('ha_peer') or '')
+    peer = str((ha_peer_node() if 'ha_peer_node' in globals() else CONFIG.get('ha_peer')) or '')         # layout B (1.0.290): the other otp node
     if CONFIG.get('ha_mode') == 'shared':
         said = vip_peer_published(store, like)
         if said and _cert_name_key(said) != _cert_name_key(peer):
@@ -1228,7 +1228,8 @@ def web_desired(store):
         vip = {'on': True, 'address': v.get('address'), 'fqdn': v.get('fqdn') or '',
                'address6': v.get('address6') or '',
                'vrid': int(v.get('vrid') or 51), 'auth': vip_auth(),
-               'own': vip_plain(CONFIG.get('ha_address') or node_address(), v.get('address')),
+               # this node itself - not its database server in layout B (1.0.290)
+               'own': vip_plain((ha_own_node() if 'ha_own_node' in globals() else (CONFIG.get('ha_address') or node_address())), v.get('address')),
                'peer': vip_plain(vip_peer_want(store, v.get('address')), v.get('address')),
                'iface': odict(v.get('ifaces')).get(me, '')}
         vip_family_fix(store, vip)
@@ -1896,10 +1897,12 @@ def cluster_addresses(store, node):
         if n['name'] != node and n.get('address') and dbguard_node_ok(store, n['name']):
             out.add(n['address'])
     if CONFIG.get('ha_mode'):
-        if node == me and CONFIG.get('ha_peer'):
-            out.add(CONFIG['ha_peer'])
+        # The other otp node / this one (layout B, 1.0.290: not their database servers).
+        other = (ha_peer_node() if 'ha_peer_node' in globals() else CONFIG.get('ha_peer'))
+        if node == me and other:
+            out.add(other)
         if node != me:
-            out.add(CONFIG.get('ha_address') or node_address())
+            out.add((ha_own_node() if 'ha_own_node' in globals() else (CONFIG.get('ha_address') or node_address())))
     v = vip_conf(store)
     if v.get('on') and v.get('address'):
         out.add(str(v['address']).split('/')[0])

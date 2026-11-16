@@ -6877,7 +6877,10 @@ def _ha(h):
              for n in ha_nodes(h.store)]
     if db_agent_on():
         # The database servers of their own beside the nodes (1.0.289).
-        return dict(_ha_view(h, me, nodes), db_admin=db_admin(), dbservers=db_agent_servers(h.store))
+        # db_here (1.0.290): this node's database is on its agent's server - Making it two shows
+        # the steps of layout B then.
+        return dict(_ha_view(h, me, nodes), db_admin=db_admin(), dbservers=db_agent_servers(h.store),
+                    db_here=db_agent_here())
     return _ha_view(h, me, nodes)
 
 

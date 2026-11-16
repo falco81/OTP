@@ -50,7 +50,8 @@ def ntp_conf(store):
 def ntp_desired(store):
     c = ntp_conf(store)
     peers = []
-    other = CONFIG.get('ha_peer') if CONFIG.get('ha_mode') else ''
+    # The other otp node - not its database server in layout B (1.0.290).
+    other = (ha_peer_node() if 'ha_peer_node' in globals() else CONFIG.get('ha_peer')) if CONFIG.get('ha_mode') else ''
     if not other and c.get('manage') and c.get('peers') and in_cluster(store):
         other = vip_peer_seen(store)            # a shared database's cluster (1.0.211)
     if c.get('manage') and c.get('peers') and other:

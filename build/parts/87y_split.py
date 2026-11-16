@@ -496,7 +496,7 @@ def split_step(store, now=None, peer=None, arbiter=None):
 def split_peer_host_up():
     """Whether the other node's machine takes a connection on another port than its
     database's - its web pages or SSH (1.0.227): up, with only its database refusing."""
-    host = str(CONFIG.get('ha_peer') or '').strip()
+    host = str((ha_peer_node() if 'ha_peer_node' in globals() else CONFIG.get('ha_peer')) or '').strip()     # the other node's machine (layout B: not its database server)
     if not host:
         return False
     seen = SPLIT_HOST_SEEN
