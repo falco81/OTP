@@ -700,6 +700,10 @@ def certlogin_server(block, port, ca_path, card=False):
         out += ['    ssl_session_cache off;', '    ssl_session_tickets off;', '    keepalive_timeout 0;']
     else:
         out += keep
+    # Only GET and HEAD, no body to speak of, never a multipart one (1.0.287) - as otp's other servers.
+    out += ['    client_max_body_size 16k;',
+            '    if ($request_method !~ ^(GET|HEAD)$) { return 405; }',
+            '    if ($http_content_type ~* "multipart") { return 403; }']
     # A certificate nginx itself refuses (run out, not for a client): the page says why - not
     # nginx's own "400 The SSL certificate error".
     fail = [x for x in inner if 'arg_api' not in x and 'only the sign-in' not in x] + \

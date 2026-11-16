@@ -10111,8 +10111,16 @@ function certWatchLater(conf) {
   if (ME && ME.card) { certWatchStart(conf); return; }
   var unsaved = (typeof DIRTY === 'object' && DIRTY && Object.keys(DIRTY).length) ||
                 (typeof PENDING === 'object' && PENDING && Object.keys(PENDING).length);
-  if (!unsaved) location.reload();
-  else if (!CW.said) { CW.said = true; toast('The card you signed in with is watched from now on - save and reload the page.', 'warn'); }
+  var again = false;
+  try { again = !!sessionStorage.getItem('otp.card.reloaded'); } catch (e) { again = true; }
+  if (!unsaved && !again) {
+    try { sessionStorage.setItem('otp.card.reloaded', '1'); } catch (e) { }
+    location.reload();
+  } else if (!CW.said) {
+    CW.said = true;
+    toast(again ? 'The card you signed in with cannot be checked from this address of the pages - open them by the server\'s name.'
+                : 'The card you signed in with is watched from now on - save and reload the page.', 'warn');
+  }
 }
 function certWatchNow() { if (CW.conf && !CW.busy) certWatchNext(0); }
 function certWatchNext(ms) {
@@ -10172,7 +10180,8 @@ function certWatchCheck() {
   to = setTimeout(function () { fin(0); }, 20000);
   img.onload = function () { var nw = img.naturalWidth; fin(nw >= 2 && nw <= 4 ? nw : 1); };
   img.onerror = function () { fin(0); };
-  img.src = 'https://' + location.hostname + ':' + c.port + '/admin/?api=cert-alive&r=' + Date.now().toString(36);
+  img.src = 'https://' + location.hostname + ':' + c.port + '/admin/?api=cert-alive&k=' + encodeURIComponent(c.key || '') +
+    '&r=' + Date.now().toString(36);
 }
 /* Not watched from now on (1.0.286): the checks stop, the notice goes, and the person is told why. */
 function certWatchUnable() {
@@ -10286,7 +10295,10 @@ window.addEventListener('storage', function (e) {
   var v = certWatchShared();
   if (v && v.w !== 1) certWatchNow();
 });
-if (typeof ME !== 'undefined' && ME && ME.card) certWatchStart(ME.card);
+if (typeof ME !== 'undefined' && ME && ME.card) {
+  try { sessionStorage.removeItem('otp.card.reloaded'); } catch (e) { }
+  certWatchStart(ME.card);
+}
 
 
 /* ---- upgrades and maintenance (1.0.37) ------------------------------------ */
@@ -20946,7 +20958,7 @@ function csrMake(o) {
     if (gn.length) exts.push(derSeq(derOid(CSR_OID.san), derOctets(der(0x30, derCat.apply(null, gn)))));
     if ((o.eku || []).length) exts.push(derSeq(derOid(CSR_OID.eku), derOctets(der(0x30, derCat.apply(null, o.eku.map(derOid))))));
     /* digitalSignature (+ keyEncipherment for RSA), critical */
-    exts.push(derSeq(derOid(CSR_OID.ku), der(0x01, [0xff]), derOctets(derBits(ec ? [0x80] : [0xa0], 5))));
+    exts.push(derSeq(derOid(CSR_OID.ku), der(0x01, [0xff]), derOctets(derBits(ec ? [0x80] : [0xa0], ec ? 7 : 5))));
     if (o.template) exts.push(derSeq(derOid(CSR_OID.template), derOctets(derBmp(o.template))));
     var attrs = der(0xa0, derSeq(derOid(CSR_OID.extReq), derSet(der(0x30, derCat.apply(null, exts)))));
     var info = derSeq(derIntNum(0), name, Array.prototype.slice.call(new Uint8Array(spki)), attrs);
