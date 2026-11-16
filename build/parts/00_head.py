@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.285'
+__version__ = '1.0.286'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -247,6 +247,9 @@ DEFAULTS = {
     'admin_cert_card': 'off',
     'admin_cert_card_s': 15,
     'admin_cert_card_grace_s': 30,
+    # A browser whose checks have never once found the card (1.0.286): an iPad's Safari signs nothing
+    # in the background - allow: that sign-in is not watched (said in the events); signout: as a card out.
+    'admin_cert_card_unable': 'allow',
     # --- a second step for the administration (1.0.125) -------------------
     'admin_2fa': 0,
     'admin_2fa_app': 1,
@@ -584,7 +587,7 @@ TUNABLE = {
     'admin_cert_crl': (0, 1), 'admin_cert_crl_ldap': (0, 1),
     'admin_cert_ocsp': ('off', 'first', 'only', 'both'),
     'admin_cert_card': ('off', 'signout', 'grace'), 'admin_cert_card_s': (5, 300),
-    'admin_cert_card_grace_s': (5, 600),
+    'admin_cert_card_grace_s': (5, 600), 'admin_cert_card_unable': ('allow', 'signout'),
     'admin_2fa': (0, 1), 'admin_2fa_app': (0, 1), 'admin_2fa_mail': (0, 1), 'admin_2fa_sms': (0, 1), 'admin_2fa_passkey': (0, 1),
     'isemon': (0, 1), 'isemon_detail': (0, 1), 'isemon_events': (0, 1),
     'isemon_verify': (0, 1), 'isemon_mtls': (0, 1), 'metrics': (0, 1),
@@ -653,6 +656,7 @@ CHOICE_WORDS = {
     'admin_cert_ocsp': {'off': 'off - the CRLs alone', 'first': 'first - OCSP, its CRL when it does not answer',
                         'only': 'only - OCSP alone, no answer no sign-in', 'both': 'both - OCSP and the CRL'},
     'admin_cert_card': {'off': 'off', 'signout': 'signout', 'grace': 'grace'},
+    'admin_cert_card_unable': {'allow': 'allow', 'signout': 'signout'},
     'acme_challenge': {'http-01': 'HTTP-01 - the CA asks port 80 of the name',
                        'dns-01': 'DNS-01 - a TXT record in DNS (no port open to the internet)'},
     'acme_dns': {'manual': 'by hand - the record is shown here, you put it in',
@@ -874,6 +878,7 @@ NAMES = {
     'admin_cert_card': 'When the card is taken out',
     'admin_cert_card_s': 'Checked every (seconds)',
     'admin_cert_card_grace_s': '...put back within (seconds)',
+    'admin_cert_card_unable': 'A browser that cannot be checked',
     'admin_2fa': 'A second step when signing in to these pages',
     'admin_2fa_app': '...with an authenticator app',
     'admin_2fa_mail': '...with a code by e-mail',
@@ -1501,11 +1506,18 @@ SAYS = {
                        'has to sign - and the first time it is not there the session ends and the sign-in page '
                        'comes. grace: the page says the card is out and waits; the session ends unless it is back '
                        'in time. Another card than the one signed in with ends it at once. The server ends a '
-                       'watched session too when the page stops asking.',
+                       'watched session too when the card stays out; a page that stops asking (a tablet '
+                       'asleep) is held - nothing answered - until a check finds the card again.',
     'admin_cert_card_s': 'How often the card is checked. Each check is a signature by the card (no PIN while it '
                          'stays in; a YubiKey with touch or PIN policy "always" asks every time - leave this off '
                          'for one). A tab in the background is checked about once a minute.',
     'admin_cert_card_grace_s': 'With grace: how long the card may be out before the session ends.',
+    'admin_cert_card_unable': 'A browser whose very first check in the background does not find the card cannot '
+                              'be checked at all - an iPad\'s Safari signs nothing for a page in the background, '
+                              'though the card is in. allow: that sign-in is simply not watched, and Events say so '
+                              'and why. signout: it is signed out as if the card were out - such a browser cannot '
+                              'stay signed in with this on. Once a check has found the card, a later one that does '
+                              'not is a card taken out, whatever this says.',
     'admin_2fa': 'After the password, every account - local or from the directory - gives a '
                  'code too. Its own, not a VPN token: the first time, the account chooses how '
                  'and sets it up (an authenticator app, a code sent to an address or a phone '
@@ -1866,7 +1878,7 @@ PANES = {
     'kerberos': ['admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm'],
     'certlogin': ['admin_cert', 'admin_cert_auto', 'admin_cert_port', 'admin_cert_map', 'admin_cert_crl',
                   'admin_cert_crl_ldap', 'admin_cert_ocsp', 'admin_cert_ocsp_url', 'admin_cert_card',
-                  'admin_cert_card_s', 'admin_cert_card_grace_s'],
+                  'admin_cert_card_s', 'admin_cert_card_grace_s', 'admin_cert_card_unable'],
     'signin': ['admin_password_off'],
     'db': ['db_engine', 'db_host', 'db_port', 'db_name', 'db_user', 'db_password',
            'db_timeout_s', 'db_tls', 'db_tls_ca', 'backup_daily', 'backup_keep', 'backup_at',
@@ -1955,7 +1967,7 @@ ONLY_WHEN = {
     'admin_cert_crl_ldap': ['admin_cert_crl', '1'], 'admin_cert_ocsp': ['admin_cert', '1'],
     'admin_cert_ocsp_url': ['admin_cert_ocsp', 'off-not'], 'admin_cert_auto': ['admin_cert', '1'],
     'admin_cert_card': ['admin_cert', '1'], 'admin_cert_card_s': ['admin_cert_card', 'off-not'],
-    'admin_cert_card_grace_s': ['admin_cert_card', 'grace'],
+    'admin_cert_card_grace_s': ['admin_cert_card', 'grace'], 'admin_cert_card_unable': ['admin_cert_card', 'off-not'],
     'admin_2fa_app': ['admin_2fa', '1'], 'admin_2fa_mail': ['admin_2fa', '1'],
     'admin_2fa_sms': ['admin_2fa', '1'],
     'admin_2fa_passkey': ['admin_2fa', '1'],

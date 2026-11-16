@@ -39,7 +39,13 @@ if what[0] in ('nomfa', 'down'):
     subprocess.run(['otp', '--admin-2fa', 'off'], capture_output=True)
     subprocess.run(['otp', '--set', 'admin_password_off=0'], capture_output=True)
     time.sleep(5)
-st, got = call('login', {'name': 'admin', 'password': PW})
+# The daemon reads a setting changed by root (otp --set admin_password_off=0) a few seconds later: asked again
+# until it signs the administrator in with the password (a fixed 4 s was not always enough).
+for _ in range(40):
+    st, got = call('login', {'name': 'admin', 'password': PW})
+    if st == 200:
+        break
+    time.sleep(1)
 if st != 200:
     raise SystemExit('admin sign-in: %s' % got)
 if what[0] == 'up':

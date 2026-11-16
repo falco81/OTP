@@ -59,7 +59,7 @@ DBGUARD_SETTINGS = frozenset((
     'upgrade_check', 'upgrade_url', 'high_security', 'admin_directory', 'admin_group_full',
     'admin_group_token', 'admin_group_readonly', 'admin_2fa', 'admin_2fa_app', 'admin_2fa_mail',
     'admin_2fa_sms', 'admin_2fa_passkey', 'admin_kerberos', 'admin_kerberos_auto', 'admin_kerberos_realm', 'admin_password_off', 'admin_cert', 'admin_cert_auto', 'admin_cert_port', 'admin_cert_crl_ldap', 'admin_cert_ocsp', 'admin_cert_ocsp_url',
-    'admin_cert_card', 'admin_cert_card_s', 'admin_cert_card_grace_s',
+    'admin_cert_card', 'admin_cert_card_s', 'admin_cert_card_grace_s', 'admin_cert_card_unable',
     'admin_cert_map', 'admin_cert_crl', 'session_hours', 'session_idle_min', 'login_tries', 'login_wait_min',
     'mail_mode', 'mail_from', 'smtp_host', 'smtp_port', 'smtp_security', 'smtp_auth',
     'smtp_user', 'smtp_password', 'sms_mode', 'sms_url', 'sms_token', 'sms_spool_dir',

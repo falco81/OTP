@@ -72,16 +72,26 @@ function otp_cert_port(): void
         if (strlen($pem) > 20000) {
             $pem = '';
         }
-        $d = null;
+        /* 1.0.286: 3 wide - no cookie came with the check (the page then says so on 443, where its cookie
+           does come); 4 wide - this browser cannot be checked (its checks never once found the card): it is
+           not watched. */
+        $gifs = [1 => 'R0lGODlhAQABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAABAAEAAAgEAAEEBAA7',
+                 2 => 'R0lGODlhAgABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAACAAEAAAgFAAEACAgAOw==',
+                 3 => 'R0lGODlhAwABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAADAAEAAAgFAAEIDAgAOw==',
+                 4 => 'R0lGODlhBAABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAAEAAEAAAgGAAEIBBAQADs='];
+        $wide = 0;
         if (otp_session() !== '') {
             [$status, $body] = otp_call('/api/auth/card', 'POST', ['cert' => $pem], 10.0);
             $d = $status === 200 ? json_decode((string) $body, true) : null;
+            if (is_array($d) && empty($d['gone'])) {
+                $wide = !empty($d['unable']) ? 4 : (!empty($d['alive']) ? 1 : 2);
+            }
+        } else {
+            $wide = 3;
         }
-        if (is_array($d) && empty($d['gone'])) {
+        if ($wide > 0) {
             header('Content-Type: image/gif');
-            echo base64_decode(!empty($d['alive'])
-                ? 'R0lGODlhAQABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAABAAEAAAgEAAEEBAA7'
-                : 'R0lGODlhAgABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAACAAEAAAgFAAEACAgAOw==');
+            echo base64_decode($gifs[$wide]);
             exit;
         }
         http_response_code(403);
