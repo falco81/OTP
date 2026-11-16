@@ -10099,7 +10099,7 @@ function certWatchStart(conf) {
   if (!conf || !conf.port || (conf.mode !== 'signout' && conf.mode !== 'grace')) return;
   if (CW.conf) { CW.conf = conf; return; }
   CW.conf = conf; CW.gen++;
-  if (conf.out) { CW.out = Date.now(); certWatchLayer(true); }
+  if (conf.out) { CW.out = Date.now() - Math.max(0, Number(conf.out_for) || 0) * 1000; certWatchLayer(true); }
   /* The first check soon: a card taken out while the page loaded is seen at once (and a session held
      while its page slept is let go as soon as the card is found). */
   certWatchNext(conf.out || conf.stale ? 300 : 1500);
@@ -10153,9 +10153,10 @@ function certWatchCheck() {
     var took = Date.now() - began;
     if (w === 1) { CW.misses = 0; certWatchIn(); return; }
     if (w === 2) { CW.misses = 0; certWatchOut(took); return; }
-    /* This browser cannot be checked (1.0.286): its checks never once found the card - an iPad's Safari
-       signs nothing for a page in the background. */
+    /* This browser cannot be checked (1.0.286): its checks never once found the card. */
     if (w === 4) { certWatchUnable(); return; }
+    /* The server ended the sign-in just now (1.0.288): said why, and nothing tried by itself. */
+    if (w === 5 || w === 6) { certWatchEnd(w === 6 ? 'other' : (CW.out ? 'late' : 'out')); return; }
     /* No picture at all: the handshake failed (nothing to sign it with), or the session is over (403).
        Once more after a moment - one lost connection is not a card taken out; then the pages are told
        (the server holds or ends the sign-in, and says so in the events). */
@@ -10178,7 +10179,14 @@ function certWatchCheck() {
   /* A check left without an answer for 20 s: counted as none (fail closed); the browser may still be
      waiting on a window of the card's - no new check starts until this one is over. */
   to = setTimeout(function () { fin(0); }, 20000);
-  img.onload = function () { var nw = img.naturalWidth; fin(nw >= 2 && nw <= 4 ? nw : 1); };
+  setTimeout(function () {
+    if (done || g !== CW.gen || CW.out) return;
+    if (c.mode === 'grace') { CW.out = began; certWatchLayer(true); }
+    api('card-gone', {why: 'waiting'}).then(function (d) {
+      if (g === CW.gen && d && d.gone) certWatchEnd('out');
+    }, function () { });
+  }, 4000);
+  img.onload = function () { var nw = img.naturalWidth; fin(nw >= 2 && nw <= 6 ? nw : 1); };
   img.onerror = function () { fin(0); };
   img.src = 'https://' + location.hostname + ':' + c.port + '/admin/?api=cert-alive&k=' + encodeURIComponent(c.key || '') +
     '&r=' + Date.now().toString(36);
@@ -10188,7 +10196,7 @@ function certWatchUnable() {
   CW.gen++; CW.conf = null; CW.out = 0;
   if (CW.timer) clearTimeout(CW.timer);
   certWatchLayer(false);
-  toast('This browser cannot have the card checked (as an iPad cannot): this sign-in is not watched.', 'warn');
+  toast('This browser cannot have the card checked: this sign-in is not watched.', 'warn');
 }
 function certWatchIn() {
   var c = CW.conf;
@@ -10239,6 +10247,7 @@ function certWatchLayer(on) {
     box.appendChild(ring);
     box.appendChild(el('h3', '', 'Put the card back'));
     box.appendChild(el('p', 'cw-p', 'The smart card or YubiKey was taken out, so this sign-in is locked. Put it back - the page goes on where you left off.'));
+    box.appendChild(el('p', 'cw-hint', 'A window asking for the smart card: put the card back and press OK there - not Cancel. After Cancel the browser offers no card here until it is closed and opened again.'));
     var until = el('div', 'cw-until', '');
     until.id = 'cw-until';
     box.appendChild(until);

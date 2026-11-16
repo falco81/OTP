@@ -78,7 +78,11 @@ function otp_cert_port(): void
         $gifs = [1 => 'R0lGODlhAQABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAABAAEAAAgEAAEEBAA7',
                  2 => 'R0lGODlhAgABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAACAAEAAAgFAAEACAgAOw==',
                  3 => 'R0lGODlhAwABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAADAAEAAAgFAAEIDAgAOw==',
-                 4 => 'R0lGODlhBAABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAAEAAEAAAgGAAEIBBAQADs='];
+                 4 => 'R0lGODlhBAABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAAEAAEAAAgGAAEIBBAQADs=',
+                 /* 1.0.288: 5 wide - the sign-in ended just now for its card, 6 - for another card: the page
+                    says why and tries nothing by itself (a 403 left it without a word). */
+                 5 => 'R0lGODlhBQABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAAFAAEAAAgGAAEIFBgQADs=',
+                 6 => 'R0lGODlhBgABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAAGAAEAAAgGAAEIHBgQADs='];
         $wide = 0;
         if (otp_session() !== '') {
             $k = preg_replace('/[^0-9a-f]/', '', substr((string) ($_GET['k'] ?? ''), 0, 64));
@@ -86,6 +90,8 @@ function otp_cert_port(): void
             $d = $status === 200 ? json_decode((string) $body, true) : null;
             if (is_array($d) && empty($d['gone'])) {
                 $wide = !empty($d['unable']) ? 4 : (!empty($d['alive']) ? 1 : 2);
+            } elseif (is_array($d) && !empty($d['watched'])) {
+                $wide = ($d['why'] ?? '') === 'other' ? 6 : 5;
             }
         } else {
             $wide = 3;
@@ -615,8 +621,8 @@ if ($mfa !== '') { $me = null; }
 if (is_array($me) && is_array($me['card'] ?? null)) {
     $cwp = (int) ($me['card']['port'] ?? 0);
     $cwh = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
-    if ($cwp >= 1025 && $cwp <= 65535 && preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])\z/', $cwh)) {
-        otp_csp($nonce, 'https://' . $cwh . ':' . $cwp);
+    if ($cwp >= 1025 && $cwp <= 65535) {
+        otp_csp($nonce, preg_match('/^[A-Za-z0-9.-]{1,253}\z/', $cwh) ? 'https://' . $cwh . ':' . $cwp : 'https:');
     } else {
         $me['card'] = null;
     }
