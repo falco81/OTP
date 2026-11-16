@@ -10145,13 +10145,18 @@ function certWatchCheck() {
     var took = Date.now() - began;
     if (w === 1) { CW.misses = 0; certWatchIn(); return; }
     if (w === 2) { CW.misses = 0; certWatchOut(took); return; }
+    /* This browser cannot be checked (1.0.286): its checks never once found the card - an iPad's Safari
+       signs nothing for a page in the background. */
+    if (w === 4) { certWatchUnable(); return; }
     /* No picture at all: the handshake failed (nothing to sign it with), or the session is over (403).
        Once more after a moment - one lost connection is not a card taken out; then the pages are told
        (the server holds or ends the sign-in, and says so in the events). */
     CW.misses += 1;
-    if (CW.misses < 2 && !CW.out) { certWatchNext(1500); return; }
-    api('card-gone', {}).then(function (d) {
+    if (w !== 3 && CW.misses < 2 && !CW.out) { certWatchNext(1500); return; }
+    /* w 3: the picture came, but no cookie came with it - said as such (here, on 443, the cookie comes). */
+    api('card-gone', {why: w === 3 ? 'nocookie' : 'nopicture'}).then(function (d) {
       if (g !== CW.gen) return;
+      if (d && d.unable) { certWatchUnable(); return; }
       if (!d || !d.watched) { certWatchNext(c.every * 1000); return; }
       if (d.gone) { certWatchEnd(CW.out ? 'late' : 'out'); return; }
       certWatchOut(took);
@@ -10165,9 +10170,16 @@ function certWatchCheck() {
   /* A check left without an answer for 20 s: counted as none (fail closed); the browser may still be
      waiting on a window of the card's - no new check starts until this one is over. */
   to = setTimeout(function () { fin(0); }, 20000);
-  img.onload = function () { fin(img.naturalWidth === 2 ? 2 : 1); };
+  img.onload = function () { var nw = img.naturalWidth; fin(nw >= 2 && nw <= 4 ? nw : 1); };
   img.onerror = function () { fin(0); };
   img.src = 'https://' + location.hostname + ':' + c.port + '/admin/?api=cert-alive&r=' + Date.now().toString(36);
+}
+/* Not watched from now on (1.0.286): the checks stop, the notice goes, and the person is told why. */
+function certWatchUnable() {
+  CW.gen++; CW.conf = null; CW.out = 0;
+  if (CW.timer) clearTimeout(CW.timer);
+  certWatchLayer(false);
+  toast('This browser cannot have the card checked (as an iPad cannot): this sign-in is not watched.', 'warn');
 }
 function certWatchIn() {
   var c = CW.conf;
@@ -20663,7 +20675,8 @@ function drawCertInto(host) {
    ['Second step after it', d.mfa ? 'asked' : 'off', ''],
    ['When the card is taken out', d.watch === 'signout' ? 'signed out at the next check (every ' + d.watch_s + ' s)'
      : d.watch === 'grace' ? 'a notice, then signed out unless it is back within ' + d.watch_grace_s + ' s (checked every ' + d.watch_s + ' s)'
-     : 'nothing - the session goes on', 'admin_cert_card: ' + (d.watch || 'off')],
+     : 'nothing - the session goes on', 'admin_cert_card: ' + (d.watch || 'off') +
+     (d.watch && d.watch !== 'off' ? ' · admin_cert_card_unable: ' + (d.watch_unable || 'allow') : '')],
    ['By itself on the sign-in page', d.auto ? 'yes - at once, the form if it did not work' : 'no - a button under the form', ''],
    ['A password on the sign-in page', d.password_off ? 'not offered - only Windows or a certificate' : 'offered beside it', d.password_off ? 'root: otp --set admin_password_off=0' : '']].forEach(function (r) {
     facts.appendChild(el('span', 'k', r[0]));
