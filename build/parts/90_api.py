@@ -1558,7 +1558,7 @@ def _whoami(h):
     # first frame, rather than as it comes and then again.
     return {'idle_min': int(CONFIG.get('session_idle_min') or 120),
             'who': {'name': acc['name'], 'role': '' if card in ('out', 'stale') else acc['role'],
-                    'card': card_conf(card, h.headers.get('X-Otp-Session')), 'source': acc.get('source'),
+                    'card': card_conf(card, h.headers.get('X-Otp-Session'), s), 'source': acc.get('source'),
                     'display': acc.get('display') or '', 'must_change': bool(
                         acc.get('must_change')), 'prefs': prefs,
                     'cols': h.store.user_cols(acc['name']),

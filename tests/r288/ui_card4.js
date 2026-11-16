@@ -98,7 +98,8 @@ const HOLD = /:8443\/admin\/\?api=cert-alive/;
   await p.reload();
   await p.waitForSelector('#cw-layer', { timeout: 15000 }).catch(() => {});
   const after = Number(await p.textContent('#cw-n').catch(() => '0'));
-  ok('F5 during the countdown: it goes on, not from the full time again', after > 0 && after <= before + 1 && after < 58, before + ' -> ' + after);
+  /* the server counts from when it was told (the 4 s check), the page from the check's start */
+  ok('F5 during the countdown: it goes on, not from the full time again', after > 0 && after <= before + 6 && after < 58, before + ' -> ' + after);
   /* the card back */
   await ctx.unroute(HOLD);
   await p.waitForSelector('#cw-layer', { state: 'detached', timeout: 20000 }).catch(() => {});
@@ -125,8 +126,10 @@ const HOLD = /:8443\/admin\/\?api=cert-alive/;
   await certIn(p);
   await p.waitForTimeout(6000);
   await ctx.route(HOLD, r => r.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from('R0lGODlhBQABAIEAAAAAAP///wAAAAAAACH5BAEAAAAALAAAAAAFAAEAAAgGAAEIFBgQADs=', 'base64') }));
-  await p.waitForSelector('#in-name, #cert-go', { timeout: 20000 }).catch(() => {});
-  const said = await p.textContent('#krb-said, #in-said').catch(() => '');
+  await p.waitForURL(u => !/api=/.test(String(u)), { timeout: 20000 }).catch(() => {});
+  await p.waitForSelector('.said.bad', { timeout: 20000 }).catch(() => {});
+  const said = await p.evaluate(() => Array.from(document.querySelectorAll('.said')).map(e => e.textContent).join(' | ')).catch(() => '');
+  await p.screenshot({ path: SHOTS + '/12-ended-5px-en.png' });
   ok('ended by the server (5 px): the sign-in page says the card was taken out', /taken out/.test(said || ''), said);
   ok('...nothing tried by itself (no certificate sign-in started)', !/api=cert-login/.test(p.url()), p.url());
   ok('no errors on the pages', p.errs.length === 0, p.errs.join(' | '));

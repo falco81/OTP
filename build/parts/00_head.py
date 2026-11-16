@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.287'
+__version__ = '1.0.288'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1513,7 +1513,7 @@ SAYS = {
                          'for one). A tab in the background is checked about once a minute.',
     'admin_cert_card_grace_s': 'With grace: how long the card may be out before the session ends.',
     'admin_cert_card_unable': 'A browser whose very first check in the background does not find the card cannot '
-                              'be checked at all - an iPad\'s Safari signs nothing for a page in the background, '
+                              'be checked at all - some browsers sign nothing for a page in the background, '
                               'though the card is in. allow: that sign-in is simply not watched, and Events say so '
                               'and why. signout: it is signed out as if the card were out - such a browser cannot '
                               'stay signed in with this on. Once a check has found the card, a later one that does '

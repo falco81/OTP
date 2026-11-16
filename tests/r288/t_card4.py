@@ -102,8 +102,12 @@ st, w, hd = Browser('falco').alive()
 ok('no session: 3 px (no cookie), as before', (st, w) == (200, 3), (st, w))
 gone = Browser('falco')
 gone.cert_login()
+import http.cookiejar
+kept = http.cookiejar.CookieJar()       # the cookie as a page still holding it would send it
+for c in gone.jar:
+    kept.set_cookie(c)
 gone.j('logout', {})
-st, w, hd = Browser('falco', jar=gone.jar).alive()
+st, w, hd = Browser('falco', jar=kept).alive()
 ok('a session over: 403, as before', st == 403, (st, w))
 
 # the page's policy

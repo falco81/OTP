@@ -4068,4 +4068,5 @@ td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
 .cw-box h3{margin:16px 0 8px;font-size:21px;color:var(--tx)}
 .cw-p{margin:0 0 14px;color:var(--tx-dim);font-size:14px;line-height:1.55}
 .cw-until{color:var(--warn);font-weight:600;font-size:13.5px;margin:0 0 18px}
+.cw-hint{margin:0 0 14px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;color:var(--tx-dim);font-size:12.5px;line-height:1.5;text-align:left}
 @media (prefers-reduced-motion:reduce){.cw-arc{transition:none}}

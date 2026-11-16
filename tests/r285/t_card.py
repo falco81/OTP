@@ -21,6 +21,11 @@ def ok(w, c, more=''):
     print(('ok   ' if c else 'FAIL ') + w + ('' if c or not more else ' (%s)' % str(more)[:400]), flush=True)
 
 
+# 1.0.288: the server's end said by the picture - 5 px (the card out), 6 px (another card); a bare 403 before
+def ended(st, w, why):
+    return st == 403 if VER < '1.0.288' else (st, w) == (200, why)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **k):
         return None
@@ -185,6 +190,7 @@ ok('...TLS 1.3: no ticket to take it up again', 'Reused,' not in o2, re.findall(
 st, me = falco.j('whoami')
 card_said = dict((me.get('who') or {}).get('card') or {})
 card_key = card_said.pop('key', None)
+card_said.pop('out_for', None)          # 1.0.288
 ok('...whoami: the page told how (signout, 5 s, grace 30, port 8443)', card_said ==
    {'mode': 'signout', 'every': 5, 'grace': 30, 'port': 8443, 'out': False, 'stale': False}, card_said)
 csp = page_csp(falco)
@@ -207,13 +213,13 @@ if VER >= '1.0.287':
        falco.j('status')[0] == 200, st)
     ok('...the key is the session\'s (32 hex)', bool(card_key) and len(card_key) == 32, card_key)
 st, w, hd = Browser(jar=falco.jar).alive()
-ok('signout: the card out (no certificate) - 403', st == 403, (st, w))
+ok('signout: the card out (no certificate) - 403 (5 px from 1.0.288)', ended(st, w, 5), (st, w))
 st, me = falco.j('whoami')
 ok('...signed out', st == 200 and not me.get('who'), me)
 ok('...said in the events', events('falco was signed out: the card they signed in with was taken out'))
 falco.cert_login()
 st, w, hd = Browser('falco-sid2', jar=falco.jar).alive()
-ok('another card than the one signed in with - 403', st == 403, st)
+ok('another card than the one signed in with - 403 (6 px from 1.0.288)', ended(st, w, 6), (st, w))
 st, me = falco.j('whoami')
 ok('...signed out', not me.get('who'), me)
 ok('...said: the card was changed', events('another certificate than the one signed in with was offered (the card was changed)'))
@@ -248,12 +254,12 @@ ok('...said in the events: out, back', events('falco: the card they signed in wi
 Browser(jar=falco.jar).alive()
 age('card_out', 40)
 st, w, hd = Browser(jar=falco.jar).alive()
-ok('...out longer than the grace: 403, signed out', st == 403 and not falco.j('whoami')[1].get('who'), st)
+ok('...out longer than the grace: 403 (5 px from 1.0.288), signed out', ended(st, w, 5) and not falco.j('whoami')[1].get('who'), st)
 ok('...said: not put back in time', events('falco was signed out: the card they signed in with was not put back in time'))
 falco.cert_login()
 falco.alive()
 st, w, hd = Browser('falco-sid2', jar=falco.jar).alive()
-ok('grace: another card - 403 at once', st == 403 and not falco.j('whoami')[1].get('who'), st)
+ok('grace: another card - 403 (6 px from 1.0.288) at once', ended(st, w, 6) and not falco.j('whoami')[1].get('who'), st)
 falco.cert_login()
 falco.alive()
 st, got = falco.j('card-gone', {})

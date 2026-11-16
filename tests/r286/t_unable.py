@@ -24,6 +24,7 @@ src = open(os.path.join(HERE, '..', 'r285', 't_card.py')).read()
 g = {'__name__': 't_card_lib', '__file__': os.path.join(HERE, '..', 'r285', 't_card.py'), 'sys': sys}
 exec(compile(src[:src.index("print(setup('up').strip())")], 't_card', 'exec'), g)
 Browser, setup, helper, CONF = g['Browser'], g['setup'], g['helper'], g['CONF']
+ended = g['ended']
 PW = g['PW']
 
 
@@ -103,7 +104,7 @@ falco.alive()
 falco = Browser('falco')
 falco.cert_login()
 st, w, hd = Browser('falco-sid2', jar=falco.jar).alive()
-ok('another card, before any check found the card: 403, signed out', st == 403 and not falco.j('whoami')[1].get('who'), st)
+ok('another card, before any check found the card: 403 (6 px from 1.0.288), signed out', ended(st, w, 6) and not falco.j('whoami')[1].get('who'), st)
 
 # signout: never found, no card - as before
 settings(admin_cert_card_unable='signout')

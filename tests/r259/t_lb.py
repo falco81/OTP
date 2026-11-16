@@ -269,6 +269,8 @@ ok('the database guard knows web_proxy_port', "'web_proxy_port'" in src_of('50g_
 CONF = {}
 w = {'re': re, 'ipaddress': ipaddress, 'CONFIG': CONF, 'saved_keys': lambda st: set(CONF.get('_saved', ()))}
 exec(defs('88w_web.py', ['realip_desired', 'web_proxy_nets', 'lbport_desired']), w)
+if 'def plain_net(' in src_of('50_storage.py'):     # 1.0.287: the networks read by plain_net
+    exec(defs('50_storage.py', ['plain_net']), w)
 CONF.update(web_proxy=1, web_proxy_from='192.0.2.6 10.0.0.0/8 bad', web_proxy_header='proxy_protocol', web_proxy_recursive=1, web_proxy_port=8443)
 ok('with the PROXY protocol: 443 believes nobody\'s header', w['realip_desired'](None) == {'from': [], 'header': '', 'recursive': False})
 ok('...and the balancer\'s port gets it, never recursive', w['lbport_desired'](None) == {'port': 8443, 'from': ['192.0.2.6/32', '10.0.0.0/8'], 'header': 'proxy_protocol', 'recursive': False}, w['lbport_desired'](None))

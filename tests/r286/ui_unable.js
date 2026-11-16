@@ -58,8 +58,8 @@ async function toastText(p) { return p.evaluate(() => (document.getElementById('
   await ctx.route(ALIVE, r => r.abort('failed'));
   await certIn(p);
   await p.waitForFunction(() => /cannot have the card checked/.test((document.getElementById('toast') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
-  ok('allow: the pictures never arrive - the person told "This browser cannot have the card checked (as an iPad cannot): this sign-in is not watched."',
-     /This browser cannot have the card checked \(as an iPad cannot\): this sign-in is not watched\./.test(await toastText(p)), await toastText(p));
+  ok('allow: the pictures never arrive - the person told "This browser cannot have the card checked: this sign-in is not watched." (1.0.288; with "as an iPad cannot" before)',
+     /This browser cannot have the card checked( \(as an iPad cannot\))?: this sign-in is not watched\./.test(await toastText(p)), await toastText(p));
   await p.screenshot({ path: SHOTS + '/08-unable-en.png' });
   ok('...no notice over the page', !(await p.$('#cw-layer')));
   const w = await who(p);
@@ -75,7 +75,7 @@ async function toastText(p) { return p.evaluate(() => (document.getElementById('
   await ctx.route(ALIVE, r => r.abort('failed'));
   await certIn(p);
   await p.waitForFunction(() => /nejde/.test((document.getElementById('toast') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
-  ok('in Czech', /V tomto prohlížeči kartu kontrolovat nejde \(stejně jako na iPadu\): toto přihlášení se nehlídá\./.test(await toastText(p)), await toastText(p));
+  ok('in Czech', /V tomto prohlížeči kartu kontrolovat nejde( \(stejně jako na iPadu\))?: toto přihlášení se nehlídá\./.test(await toastText(p)), await toastText(p));
   await p.screenshot({ path: SHOTS + '/08-unable-cs.png' });
   await ctx.close();
   // found first, then the pictures fail: the card taken out

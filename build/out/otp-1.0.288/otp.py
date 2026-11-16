@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.287'
+__version__ = '1.0.288'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1513,7 +1513,7 @@ SAYS = {
                          'for one). A tab in the background is checked about once a minute.',
     'admin_cert_card_grace_s': 'With grace: how long the card may be out before the session ends.',
     'admin_cert_card_unable': 'A browser whose very first check in the background does not find the card cannot '
-                              'be checked at all - an iPad\'s Safari signs nothing for a page in the background, '
+                              'be checked at all - some browsers sign nothing for a page in the background, '
                               'though the card is in. allow: that sign-in is simply not watched, and Events say so '
                               'and why. signout: it is signed out as if the card were out - such a browser cannot '
                               'stay signed in with this on. Once a check has found the card, a later one that does '
@@ -48602,7 +48602,7 @@ def _whoami(h):
     # first frame, rather than as it comes and then again.
     return {'idle_min': int(CONFIG.get('session_idle_min') or 120),
             'who': {'name': acc['name'], 'role': '' if card in ('out', 'stale') else acc['role'],
-                    'card': card_conf(card, h.headers.get('X-Otp-Session')), 'source': acc.get('source'),
+                    'card': card_conf(card, h.headers.get('X-Otp-Session'), s), 'source': acc.get('source'),
                     'display': acc.get('display') or '', 'must_change': bool(
                         acc.get('must_change')), 'prefs': prefs,
                     'cols': h.store.user_cols(acc['name']),
@@ -55554,17 +55554,40 @@ def card_bound(s):
     return card_mode() != 'off' and bool(odict((s or {}).get('data')).get('card')) and not card_unable_now(s)
 
 
+def card_fresh(h, s):
+    """The mode a watched sign-in's count was made under (1.0.288): another one now - counted afresh."""
+    d = s['data']
+    m = card_mode()
+    if d.get('card_mode') != m:
+        h.store.session_merge(s['id'], {'card_mode': m, 'card_out': None, 'card_seen': None})
+        d['card_mode'] = m
+        d.pop('card_out', None)
+        d.pop('card_seen', None)
+
+
+def card_port_waiting(store):
+    """Root still putting the watched port into nginx (1.0.288): a check that got nothing then says
+    nothing about this browser yet. Only while a request for root waits - and not for ever."""
+    try:
+        f = WEB_DIR / 'request.json'
+        return f.exists() and time.time() - f.stat().st_mtime < 300
+    except OSError:
+        return False
+
+
 def card_key(token):
     """The key of a sign-in's checks (1.0.287) - from its token, which only its own pages hold."""
     return hashlib.sha256(('otp-card-check:' + str(token or '')).encode()).hexdigest()[:32]
 
 
-def card_conf(state, token=''):
-    """What the page is to do: None, or {mode, every, grace, port, out, key}."""
+def card_conf(state, token='', s=None):
+    """What the page is to do: None, or {mode, every, grace, port, out, stale, out_for, key}."""
     if not state:
         return None
+    out = fnum(odict((s or {}).get('data')).get('card_out')) if state == 'out' else 0
     return {'mode': card_mode(), 'every': card_every(), 'grace': card_grace(), 'key': card_key(token),
-            'port': int(CONFIG.get('admin_cert_port') or 8443), 'out': state == 'out', 'stale': state == 'stale'}
+            'port': int(CONFIG.get('admin_cert_port') or 8443), 'out': state == 'out', 'stale': state == 'stale',
+            'out_for': max(0, int(time.time() - out)) if out else 0}
 
 
 def card_end(h, s, why):
@@ -55596,6 +55619,7 @@ def card_due(h, s):
     'gone' (ended just now) - the card out longer than allowed, or its page no longer checking."""
     if not card_bound(s):
         return None
+    card_fresh(h, s)
     d = s['data']
     t = time.time()
     seen = fnum(d.get('card_seen'))
@@ -55636,6 +55660,7 @@ def _auth_card(h):
         return {'watched': False, 'alive': False, 'gone': True}
     if not card_bound(s):
         return {'watched': False, 'alive': True, 'gone': False}
+    card_fresh(h, s)
     # The page's own key (1.0.287): without it (another host's page of the same site - or a page loaded
     # before the upgrade) only the card found counts - a stranger's page cannot make the card sign; nothing
     # else is changed or told.
@@ -55647,8 +55672,10 @@ def _auth_card(h):
     fp = cert_sha(pem) if pem else ''
     if fp and fp != d.get('card'):
         card_end(h, s, 'another certificate than the one signed in with was offered (the card was changed)')
-        return {'watched': True, 'alive': False, 'gone': True}
+        return {'watched': True, 'alive': False, 'gone': True, 'why': 'other'}
     if not fp:
+        if not card_proven(s) and card_port_waiting(h.store):
+            return {'watched': False, 'alive': True, 'gone': False}
         if card_unable(h, s, 'nocert'):
             return {'watched': False, 'alive': True, 'gone': False, 'unable': True}
         st = card_out(h, s, 'the card they signed in with was taken out')
@@ -55683,8 +55710,11 @@ def _auth_cardgone(h):
         raise ApiError(401, 'not signed in, or the sign-in has run out')
     if not card_bound(s):
         return {'watched': False, 'gone': False}
+    card_fresh(h, s)
     why = str(h.body().get('why') or '')
-    if card_unable(h, s, why if why in CARD_UNABLE_WHY else 'nopicture'):
+    if not card_proven(s) and (why == 'waiting' or card_port_waiting(h.store)):
+        return {'watched': False, 'gone': False}
+    if why != 'waiting' and card_unable(h, s, why if why in CARD_UNABLE_WHY else 'nopicture'):
         return {'watched': False, 'gone': False, 'unable': True}
     st = card_out(h, s, 'the card they signed in with was taken out')
     return {'watched': True, 'gone': st == 'gone',
