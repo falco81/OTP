@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.291 — 16 November 2026
+
+**Moving the database onto the server of this node's otp-db-agent, and off it** (isemon's external-database kit, the moves). One rule behind it: a node has one database agent, and it is the agent of the server its database is on. Without an agent nothing changes. docs/external-database.md → *Moving*.
+
+- **Make it for me**: in *Move to another database*, step *Reaching it*, the server of this node's agent offers *Make the database and the account for me* - the agent makes the database and the account (its password made up when none is typed, shown once), lets this node in (`pg_hba.conf`, or `'user'@'node'` on MariaDB) and opens its firewall; no administrator's password typed anywhere. PostgreSQL is started again by its agent when it has to listen on its network addresses first - never while this node's own database runs on it. Elsewhere an administrator of that server is asked, as before; asked of another server, the agent's making is refused.
+- **Off the agent's server** (onto this machine, SQLite, or a server no agent looks after): once the config file is switched, the agent is let go (`agent.json.forgotten`), told this node leaves it, and the wizard's last step and the events say so; its server leaves the pages. Step *What happens* says it beforehand. Onto the agent's server, the step says otp looks after it from the restart on, and Database → TLS comes next.
+- **The encryption is the server's own**: with an agent, the TLS settings of the server in use (`db_tls`, `db_tls_ca`) are no longer carried to another server - verify-full against the old server's authority, or TLS asked of a MariaDB that has none yet, failed either way. Turned on there afterwards (Database → TLS). Without an agent as before.
+- **The old server's rows left behind**: the moved database no longer gets this node's `dbtls:server:`, `dbagent:node:` and `load:db:` rows of the server it left - the new server's are written as they come.
+- **High availability, each node's database on a server of its own**: the move, *Start using it*, *Set it up* and the wizard are refused with words that say so and the way out (switch the replication off, `otp --ha-standalone --yes` on both nodes, move, build the cluster again). A shared cluster's refusal is as it was.
+
 ## 1.0.290 — 16 November 2026
 
 **High availability with each node's database on a server of its own** (layout B of isemon's external-database kit): otp1 on db1, otp2 on db2, the two database servers replicating both ways, set up, encrypted and looked after by otp through both nodes' otp-db-agent. PostgreSQL 16 or later. Without an agent nothing changes: `--ha-setup` is what it always was. docs/external-database.md → *High availability (layout B)*.

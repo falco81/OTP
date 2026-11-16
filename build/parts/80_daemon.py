@@ -2461,6 +2461,16 @@ def engine_asked(given):
         c['db_password'] = ''
     if c.get('db_engine') not in ('sqlite', 'mariadb', 'postgres'):
         raise ValueError('the engine is sqlite, mariadb or postgres')
+    # Nor the encryption of the server in use (1.0.291, with a database agent): verify-full and
+    # the authority of the server in use are that server's - carried to another one, a MariaDB
+    # without TLS yet was asked for it, a PostgreSQL checked against an authority that never
+    # signed its certificate. Off unless asked; Database -> TLS turns it on there afterwards.
+    # Without an agent as it always was.
+    if c.get('db_engine') != 'sqlite' and (given or {}).get('db_tls') is None and \
+            'db_agent_on' in globals() and db_agent_on() and db_other_server(c):
+        c['db_tls'] = ''
+        if (given or {}).get('db_tls_ca') is None:
+            c['db_tls_ca'] = ''
     for k in ('db_name', 'db_user'):
         if c['db_engine'] != 'sqlite' and not DB_IDENT.match(str(c.get(k) or '')):
             raise ValueError('%s is letters, digits and _ only, starting with a letter' % k)
@@ -2796,6 +2806,16 @@ def db_move(store, c, by):
                 tally[table] = done
                 progress(sum(tally.values()), whole, '%s: %s' % (table, done))
             load_tables(far, copy, say=along)
+            # What the rows say of the database server in use is not true of another one
+            # (1.0.291, with a database agent): its certificate from otp's authority, what its
+            # agent said, the meter's reading. The new server's are written as they come.
+            if 'db_agent_on' in globals() and db_agent_on() and db_other_server(c):
+                for k in DB_SERVER_ROWS:
+                    try:
+                        far.run('DELETE FROM meta WHERE k = ?', (k + node_name(),))
+                    except Exception as e:              # noqa: BLE001
+                        log('the rows of the old database server could not be left out: %s' % e,
+                            'warn')
             dbguard_resign(SimpleStore(far))       # the rows carried signed there (1.0.231)
             after = {t: int(far.value('SELECT COUNT(*) FROM %s' % t) or 0)
                      for t in TABLES if t != 'meta'}

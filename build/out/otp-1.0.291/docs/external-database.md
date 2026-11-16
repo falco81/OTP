@@ -12,9 +12,10 @@ no agent stays its administrator's, and otp only connects to it.
 
 **Layout A**: one otp node, or two that share one database, and its database server.
 **Layout B** (1.0.290): high availability with each node's database on a server of its own,
-the two servers replicating (see *High availability* below). The move wizard's *make it for me*
-on the agent's server, this machine's database shown as a database server (`db_local_card`),
-and the database servers' rows in the header's meter come in a later release.
+the two servers replicating (see *High availability* below). Moving onto the agent's server and off it
+(1.0.291, *Moving* below). This machine's database shown as a database server
+(`db_local_card`) and the database servers' rows in the header's meter come in a later
+release.
 
 ```
    otp1 (192.0.2.11)                                    db1 (192.0.2.21)
@@ -266,6 +267,38 @@ Without `--ha-peer-node` and without an agent, `--ha-setup` is what it always wa
 is the other node. `--ha-peer-node` on a node whose database is not on its agent's server is
 refused. MariaDB does not replicate; the shared layout (`--ha-shared`) is unchanged - that
 server stays its administrator's.
+
+## Moving
+
+**A node has one database agent, and it is the agent of the server its database is on.**
+
+| From → to | What to do | `db_admin` afterwards |
+|---|---|---|
+| this machine / SQLite → an agent's server | connect its agent (*Connect a database server…*), then *Move the database onto it…* | `agent:` that agent |
+| agent A's server → agent B's server | connect agent B first - it takes A's place (A is told this node leaves it); then move | `agent:` B |
+| an agent's server → this machine, SQLite, or a server no agent looks after | move | `local` - the agent let go by the move |
+| a node of a cluster | refused: take the cluster apart first | unchanged |
+
+- **Make it for me**: on the agent's server, step *Reaching it* of the wizard offers *Make the
+  database and the account for me* - the agent makes the database, the account (its password
+  made up when none is typed, shown once), lets this node in (`pg_hba.conf`, or `'user'@'node'`
+  on MariaDB) and opens its firewall. PostgreSQL started again by its agent when it must listen
+  on its network addresses first (never while this node's own database runs on it). Elsewhere
+  an administrator of that server is asked, as before.
+- **The encryption is the server's own**: `db_tls` / `db_tls_ca` of the server in use are not
+  carried to another server (another engine, address or port) - turned on there afterwards,
+  *Database → TLS*.
+- **What described the old server is left behind**: the moved database does not get the rows
+  `dbtls:server:NODE`, `dbagent:node:NODE`, `load:db:NODE`; the new server's are written as they
+  come. The database left behind is not touched.
+- **Off the agent's server**: once `config.json` is switched the agent is let go
+  (`agent.json` → `agent.json.forgotten`, as `--db-agent-forget`) and told this node leaves
+  it; the wizard's last step says so. Moving back means connecting it again (a new code).
+- **High availability**: refused on a node of a cluster; with each node's database on a server
+  of its own the refusal says so, with the way out (switch the replication off,
+  `otp --ha-standalone --yes` on both nodes, move, build the cluster again). Connecting another
+  agent in place of the one the cluster's database is on is refused too.
+- Without an agent the wizard is as it always was.
 
 ## Leaving
 

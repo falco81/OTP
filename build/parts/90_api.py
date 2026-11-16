@@ -4260,6 +4260,8 @@ def _db(h):
             # The move to another database is not for a node of a cluster (1.0.214):
             # the page's wizard says so before it starts.
             'cluster': in_cluster(h.store), 'ha_mode': CONFIG.get('ha_mode') or '',
+            # This node's database agent, for the move wizard (1.0.291) - only with one.
+            **({'agent': db_move_agent_info()} if db_agent_on() else {}),
             # Its own key (1.0.249): in place of 'drivers' the card said "no driver - install
             # undefined" everywhere.
             'driver_here': {e: db_driver_here(e) for e in ('postgres', 'mariadb')},
@@ -4552,6 +4554,16 @@ def _db_do(h):
             return tune_restart(h.store, s['name'])
         except ValueError as e:
             raise ApiError(400, str(e))
+    if in_cluster(h.store) and act in ('move', 'use', 'empty', 'setup') and \
+            CONFIG.get('ha_mode') == 'replicated' and db_agent_here():
+        # Each node's database on a server of its own (1.0.291): said so, with the way out.
+        raise ApiError(409, 'this node is one of a cluster (replicated - each node\'s database on a server of its own, '
+                            'looked after by its agent, the two replicating): its database is the '
+                            'cluster\'s. Moving it - to another engine, another server or back onto '
+                            'this machine - would break the replication and leave the other node on '
+                            'its own. Switch the replication off first (Settings → High availability), '
+                            'then otp --ha-standalone --yes on both nodes; move it; build the cluster '
+                            'again.')
     if in_cluster(h.store) and act in ('move', 'use', 'empty'):
         raise ApiError(409, 'this node is one of a cluster: its database is not moved from here '
                             '(switch the replication off first - Settings → High availability)')
@@ -4568,6 +4580,10 @@ def _db_do(h):
             if act == 'try':
                 got = db_try(c)
                 got['in_use'] = db_same_place(h.store, c)
+                if db_agent_on():
+                    # The server of this node's database agent (1.0.291): made there by the
+                    # agent - no administrator typed in.
+                    got['agent_server'] = db_agent_is_target(c)
                 return got
             if act == 'setup':
                 if c['db_engine'] == 'sqlite':
@@ -4576,6 +4592,21 @@ def _db_do(h):
                 fresh = ''
                 if first.get('reached') and first.get('writable'):
                     made = ['the database and the account are there already, and it gets in']
+                elif b.get('by_agent'):
+                    # Made for me on the server of this node's database agent (1.0.291): the
+                    # database, the account with its password (made up when none is given),
+                    # this node let in (pg_hba.conf, or 'user'@'node'), the firewall.
+                    if not db_agent_on() or not db_agent_is_target(c):
+                        raise ApiError(400, 'only the server of this node\'s database agent is '
+                                            'made by otp itself: give an administrator of that '
+                                            'server instead')
+                    if not c.get('db_password'):
+                        fresh = c['db_password'] = db_password_made()
+                    try:
+                        made = db_agent_dbmake(c)
+                    except ValueError as e:
+                        raise ApiError(400, 'its agent did not make it: %s' % e)
+                    made = made or ['made by its agent']
                 else:
                     who = str(b.get('admin_user') or '').strip()
                     if not who:
@@ -4701,15 +4732,26 @@ def _db_do(h):
                         far.close()
                 except Exception as e:                  # noqa: BLE001
                     log('the codes used lately could not be carried across: %s' % e, 'warn')
+                was_here = db_agent_here()
                 write_file_settings({k: c[k] for k in DB_KEYS})
                 h.store.add_event('settings', '%s switched the database to %s at %s; the '
                                   'daemon starts again on it' % (s['name'], words, db_where(c)),
                                   'warn', who=s['name'])
+                # Moved off the server of this node's database agent (1.0.291): the agent is
+                # no longer this node's - let go after the switch, never before (until
+                # config.json names the new database, the agent is as it was).
+                agent_said = ''
+                if db_agent_on():
+                    try:
+                        agent_said = db_agent_after_move(h.store, was_here, c, s['name'])
+                    except Exception as e:              # noqa: BLE001
+                        log('the database agent could not be let go after the move: %s - otp '
+                            '--db-agent-forget --yes' % e, 'warn')
                 log('the database is now %s; starting again on it' % db_where(c), 'warn')
                 # systemd starts it again (Restart=always), on the new one.
                 threading.Timer(1.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
-                return {'message': 'the daemon starts again on %s in a moment' % words,
-                        'restarting': True}
+                return dict({'message': 'the daemon starts again on %s in a moment' % words,
+                             'restarting': True}, **({'agent': agent_said} if agent_said else {}))
         if act == 'check':
             own = db_own(h.store)
             try:

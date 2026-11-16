@@ -867,13 +867,74 @@ def db_agent_dbmake(c):
     peers = [x for x in (me, '127.0.0.1') if x]
     got = db_agent_call('dbmake', {'name': c['db_name'], 'user': c['db_user'],
                                    'password': c['db_password'], 'peers': peers}, timeout=120)
-    said = list(got.get('said') or [])
+    said = [x for x in (got.get('said') or []) if 'has to start again' not in str(x)]
+    # PostgreSQL listening on its network addresses only from a restart on (1.0.291): started
+    # again by its agent - unless this node's own database runs on it now, which is not
+    # stopped under it from here (the server's administrator restarts it, or the card does).
+    if got.get('pg_restart_needed'):
+        if db_agent_here():
+            said.append('PostgreSQL there has to start again for listen_addresses: this node\'s '
+                        'database runs on it now - Settings -> The database -> Database server '
+                        '-> Restart the database…')
+        else:
+            try:
+                db_agent_restart()
+                said.append('PostgreSQL started again by its agent (listen_addresses)')
+            except ValueError as e:
+                said.append('PostgreSQL there has to start again for listen_addresses, and its '
+                            'agent could not: %s' % e)
     # The database's port opened to this node where firewalld runs there (1.0.289).
     try:
         said += list(db_agent_fw([me]).get('said') or [])
     except ValueError as e:
         said.append('the firewall of the database server was not opened to this node: %s' % e)
     return said
+
+
+def db_other_server(c):
+    """Whether `c` names another database server than the one in use (its engine, address or
+    port) - not merely another database on it (1.0.291)."""
+    eng = str(c.get('db_engine') or '')
+    if eng != str(CONFIG.get('db_engine') or 'sqlite'):
+        return True
+    if eng == 'sqlite':
+        return False
+
+    def norm(h):
+        h = str(h or '').strip().strip('[]').lower()
+        return '127.0.0.1' if h in ('', 'localhost', '127.0.0.1', '::1') else h
+    dflt = 5432 if eng == 'postgres' else 3306
+    try:
+        return norm(c.get('db_host')) != norm(CONFIG.get('db_host')) or \
+            int(c.get('db_port') or dflt) != int(CONFIG.get('db_port') or dflt)
+    except (TypeError, ValueError):
+        return True
+
+
+def db_move_agent_info():
+    """This node's database agent, for the move wizard (1.0.291): the server it makes a
+    database on (make it for me), and whether this node's database is there now - or None."""
+    a = db_agent()
+    if not a:
+        return None
+    eng = a.get('engine') or 'postgres'
+    try:
+        port = int(a.get('pg_port' if eng == 'postgres' else 'my_port') or 0)
+    except (TypeError, ValueError):
+        port = 0
+    try:
+        here = bool(db_agent_here())
+    except Exception:                                   # noqa: BLE001
+        here = False
+    return {'host': a.get('host'), 'port': a.get('port'), 'engine': eng,
+            'db_host': a.get('db_host') or a.get('host'),
+            'db_port': port or (5432 if eng == 'postgres' else 3306), 'here': here,
+            'layout_b': bool(here and CONFIG.get('ha_mode') == 'replicated')}
+
+
+# The rows that say something of the database SERVER in use, not of otp (1.0.291): not true of
+# another server, so not carried onto one - the new server's are written as they come.
+DB_SERVER_ROWS = ('dbtls:server:', 'dbagent:node:', 'load:db:')
 
 
 def db_agent_is_target(c):

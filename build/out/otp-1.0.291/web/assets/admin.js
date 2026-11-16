@@ -5928,6 +5928,16 @@ function dbWizard() {
   var d = DBSTATE || {};
   if (d.cluster) {
     modal('Move to another database', function (body) {
+      if (d.agent && d.agent.layout_b) {
+        /* each node's database on a server of its own (1.0.291) */
+        body.appendChild(el('p', 'note warn', 'This node is one of a cluster (replicated - each node’s database on a server of its own, looked after by its agent, the two replicating): its database is the cluster’s. Moving it - to another engine, another server or back onto this machine - would break the replication and leave the other node on its own.'));
+        var how = el('ol', 'ha-steps');
+        how.appendChild(el('li', '', 'Switch the replication off: Settings → High availability → Switch it off…, then as root otp --ha-standalone --yes on both nodes.'));
+        how.appendChild(el('li', '', 'Then move the database here: Settings → The database → Move to another database.'));
+        how.appendChild(el('li', '', 'Then build the cluster again: Settings → High availability → Making it two.'));
+        body.appendChild(how);
+        return;
+      }
       body.appendChild(el('p', 'note warn', 'This node is one of a cluster' + (d.ha_mode ? ' (' + d.ha_mode + ')' : '') + ': its database is the cluster’s, and moving it from here would break the cluster.'));
       body.appendChild(el('p', 'note', 'To move it: make this node one alone first (Settings → High availability → Switch it off), move it here, and build the cluster again from it.'));
     }, [{words: 'Close', close: true}], true);
@@ -6085,7 +6095,32 @@ function dbwDraw() {
         ok = true;
       }
       nextB.disabled = !ok;
-      if (DBW.engine !== 'sqlite' && t.in_use === false && (!t.reached || !t.writable)) {
+      if (DBW.engine !== 'sqlite' && t.in_use === false && (!t.reached || !t.writable) && t.agent_server) {
+        /* The server of this node's database agent (1.0.291): made there by the agent. */
+        var ag = (d.agent || {});
+        var sa = el('div', 'wiz-setup dbw-agent-make');
+        sa.appendChild(el('h4', '', 'Make it for me'));
+        var sn = el('p', 'note');
+        sn.appendChild(document.createTextNode('The server of this node’s database agent ('));
+        sn.appendChild(noI18n(el('span', 'mono', (ag.db_host || ag.host || '') + ':' + (ag.db_port || ''))));
+        sn.appendChild(document.createTextNode('): '));
+        sn.appendChild(el('span', '', 'the agent makes the database and the account there and lets this node in - no administrator’s password typed anywhere.'));
+        sa.appendChild(sn);
+        var mk = cmdButton('Make the database and the account for me', 'db', 'primary');
+        mk.id = 'dbw-agent-make';
+        mk.onclick = function () {
+          busy(mk, true);
+          api('db', {action: 'setup', settings: dbwSettings(), by_agent: true}).then(function (r) {
+            if (r.password) { DBW.addr.password = r.password; DBW.made = r.password; }
+            DBW.agentMade = r.made || [];
+            toast('made by its agent', 'good');
+            run();
+          }).catch(function (e) { busy(mk, false); oops(e); });
+        };
+        sa.appendChild(mk);
+        sa.appendChild(el('p', 'small muted', 'Encryption is that server’s own: after the move, Database → TLS turns it on there (verify-full, its certificate from otp’s authority put in by its agent).'));
+        say.appendChild(sa);
+      } else if (DBW.engine !== 'sqlite' && t.in_use === false && (!t.reached || !t.writable)) {
         /* Not there yet: made here, with an administrator used once. */
         var s = el('div', 'wiz-setup');
         s.appendChild(el('h4', '', 'Set it up'));
@@ -6108,6 +6143,14 @@ function dbwDraw() {
         };
         s.appendChild(go);
         say.appendChild(s);
+      }
+      if (DBW.agentMade && DBW.agentMade.length) {
+        var am = el('div', 'note good dbw-agent-made');
+        am.appendChild(el('div', '', 'What its agent did:'));
+        var aul = el('ul', 'small');
+        DBW.agentMade.forEach(function (x) { aul.appendChild(noI18n(el('li', 'mono', String(x)))); });
+        am.appendChild(aul);
+        say.appendChild(am);
       }
       if (DBW.made) {
         var m = el('div', 'note good');
@@ -6142,6 +6185,12 @@ function dbwDraw() {
     ol.appendChild(el('li', '', 'every table is carried across, in batches, and counted on both sides'));
     var useLi = el('li', '', '');
     ol.appendChild(useLi);
+    /* This node's database agent (1.0.291): onto its server, or off it. */
+    if (d.agent && t.agent_server && !d.agent.here) {
+      ol.appendChild(el('li', 'dbw-agent-onto', 'onto the server of this node’s database agent: otp looks after it from the restart on. Then Database → TLS: verify-full, its certificate from otp’s authority put in by the agent'));
+    } else if (d.agent && d.agent.here && !t.agent_server) {
+      ol.appendChild(el('li', 'warn dbw-agent-off', 'the database leaves the server of this node’s database agent: once the config file is switched, the agent is let go and told this node leaves it - otp asks nothing of it any more and its server leaves this page. To have it looked after again: connect its agent again (a new join code), then move back'));
+    }
     page.appendChild(ol);
     var lab = el('label', 'check small');
     var cb = el('input'); cb.type = 'checkbox'; cb.checked = DBW.use;
@@ -6224,6 +6273,7 @@ function dbwDraw() {
       }
       return api('db', {action: 'use', settings: settings}).then(function (u) {
         line(true, u.message || 'the daemon starts again on it');
+        if (u.agent) line(true, u.agent);
         says.textContent = 'waiting for the daemon to come back…';
         var end = Date.now() + 90000;
         var again = function () {
