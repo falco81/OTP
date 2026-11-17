@@ -661,4 +661,11 @@ def _load(h):
         out['detail'] = load_detail()
     if CONFIG.get('ha_mode'):
         out['others'] = load_others(h.store, since)
+    # The database servers of their own (1.0.293): a row each after the nodes - only with an
+    # agent; without one the answer is as it was.
+    try:
+        if db_agent_on():
+            out['dbservers'] = db_agent_load_rows(h.store)
+    except Exception as e:                              # noqa: BLE001
+        log_sparing('load-db', 'the database servers for the meter: %s' % e, 'warn', every=600)
     return out

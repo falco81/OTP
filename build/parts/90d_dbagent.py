@@ -1262,12 +1262,12 @@ def _db_agent_start(daemon):
 
 
 # ---- the meter in the header: the database servers beside the nodes ---------------------------
-def db_agent_load(fresh=False):
+def db_agent_load(fresh=False, timeout=10):
     """This node's database server, in the shape of server_load() (and its database's own)."""
     now = time.time()
     if not fresh and DBAGENT_STATE['load'] and now - DBAGENT_STATE['load_at'] < 2.5:
         return DBAGENT_STATE['load']
-    got = db_agent_call('load', {'db': CONFIG.get('db_name') or 'otp'}, timeout=10)
+    got = db_agent_call('load', {'db': CONFIG.get('db_name') or 'otp'}, timeout=timeout)
     got.pop('said', None)
     DBAGENT_STATE.update(load=got, load_at=now)
     return got
@@ -1291,10 +1291,19 @@ def db_agent_load_rows(store):
     out = []
     me = node_name()
     if db_agent_on():
-        try:
-            v = dict(db_agent_load())
-        except ValueError as e:
-            v = {'at': time.time(), 'down': True, 'said': str(e)[:200]}
+        # The meter asks every 2 s (1.0.293): an agent known not to answer, or one that did not
+        # answer a moment ago, is not asked again then - the page would wait for it each time.
+        now = time.time()
+        if DBAGENT_STATE['ok'] is False:
+            v = {'at': now, 'down': True, 'said': 'its agent does not answer'}
+        elif now - float(DBAGENT_STATE.get('load_fail_at') or 0) < 10:
+            v = {'at': now, 'down': True, 'said': DBAGENT_STATE.get('load_said') or ''}
+        else:
+            try:
+                v = dict(db_agent_load(timeout=4))
+            except ValueError as e:
+                DBAGENT_STATE.update(load_fail_at=now, load_said=str(e)[:200])
+                v = {'at': now, 'down': True, 'said': str(e)[:200]}
         v.update(kind='db', node=me, host=db_agent_db_host(), age=0.0)
         out.append(v)
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'load:db:%'"):
