@@ -1414,8 +1414,24 @@
   .upband .going{margin-top:8px}
   .upband-how{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin-top:6px;
     color:var(--tx-dim);font-size:12.5px;font-variant-numeric:tabular-nums}
-  .upband-node{display:inline-flex;align-items:center;gap:6px}
-  .upband-line{margin-top:6px;font-size:13px}
+  .upband-how > span + span::before{content:"·";margin-right:8px;color:var(--tx-dim)}
+  .upband-how{gap:4px 8px}
+  /* Every node on a row of its own (1.0.301) */
+  .upband-rows{margin-top:8px;border-top:1px solid rgba(88,166,255,.22)}
+  .upband-row{display:grid;grid-template-columns:minmax(70px,9%) minmax(150px,13%) 64px minmax(0,1fr) auto;gap:4px 14px;
+    align-items:center;padding:6px 0;border-bottom:1px solid rgba(88,166,255,.22);font-size:12.5px;min-width:0}
+  .upband-nm{font-weight:600;overflow-wrap:anywhere}
+  .upband-row.cur .upband-nm{color:var(--info)}
+  .upband-pc{color:var(--tx-dim);font-variant-numeric:tabular-nums}
+  .upband-what{display:flex;flex-wrap:wrap;gap:2px 10px;min-width:0;overflow-wrap:anywhere}
+  .upband-when{color:var(--tx-dim);text-align:right;white-space:nowrap}
+  .upband.bad .upband-rows,.upband.bad .upband-row{border-color:rgba(248,81,73,.25)}
+  .upband.good .upband-rows,.upband.good .upband-row{border-color:rgba(63,185,80,.25)}
+  @media (max-width:700px){
+    .upband-row{grid-template-columns:auto auto 1fr auto}
+    .upband-what{grid-column:1 / -1;order:5}
+  }
+  .upband-line{margin-top:8px;font-size:13px;font-weight:600}
   .upband-line a{margin-left:2px}
   .upband-in{background:var(--info-bg);border:1px solid rgba(88,166,255,.45);border-radius:12px;
     padding:12px 16px;margin:0 0 14px;font-size:13.5px}
@@ -3678,6 +3694,15 @@ table.se-avc-t td,table.se-avc-t td.mono{white-space:normal;word-break:break-wor
 @media (max-width:600px){.se-avc-t tr{display:grid;grid-template-columns:3.4em minmax(0,1fr)}
   .se-avc-t td{border-bottom:0}.se-avc-t td:nth-child(3){grid-column:2;width:auto;padding-top:0}
   .se-avc-t tr{border-bottom:1px solid var(--line)}}
+/* The SELinux pane (1.0.301): a light a node beside the title; nothing refused, said in green */
+.se-card > h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.se-card > h2 .right{margin-left:auto}
+.se-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel2);font-weight:400}
+.se-chip .dot{width:8px;height:8px}
+.se-chip-r{font-size:12px;color:var(--tx-dim);line-height:1}
+.se-chip-r.on{color:var(--info);display:inline-block;animation:turn 1.2s linear infinite}
+.se-none{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid rgba(63,185,80,.5);border-radius:10px;background:var(--ok-bg);font-size:13px}
+.se-none-ico{flex:0 0 auto;width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:rgba(63,185,80,.18);color:var(--ok);font-weight:700}
 /* What SELinux refuses, sorted (1.0.300) */
 .se-find{display:flex;flex-direction:column;gap:10px;min-width:0}
 .se-find-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:14px}

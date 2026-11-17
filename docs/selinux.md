@@ -1,6 +1,6 @@
 # SELinux
 
-*Settings → High security → SELinux* (1.0.233), a card for each node; on the server
+*Settings → SELinux* (1.0.233; a pane of its own since 1.0.301), a card for each node; on the server
 `otp --selinux-check` (as root). **Nothing changes unless somebody asks:** a machine
 where SELinux is disabled stays disabled, and otp runs on it exactly as before.
 
