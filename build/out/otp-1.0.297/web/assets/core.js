@@ -1407,6 +1407,9 @@ function formField(label, input, says) {
      reader says what the box is (1.0.15). A switch is a label of its own
      around a checkbox; that checkbox is what the name points at. */
   var target = input && input._input ? input._input : input;
+  /* A box inside a wrapper (1.0.297): the code box and its send button - the label named nothing. */
+  if (target && target.nodeType === 1 && !/^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName) && target.querySelectorAll &&
+      target.querySelectorAll('input:not([type=hidden]),select,textarea').length === 1) target = target.querySelector('input:not([type=hidden]),select,textarea');
   if (target && target.nodeType === 1 && /^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) {
     if (!target.id) target.id = 'ff-' + (++FORM_FIELD_N);
     l.htmlFor = target.id;
