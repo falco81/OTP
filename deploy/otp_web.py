@@ -6121,6 +6121,584 @@ def se_allowed_now(lines):
     return sorted(now)
 
 
+# ---- What SELinux refuses, sorted by what puts it right (1.0.300) ----------------------------
+# Every refusal since the machine started (since otp's needs were last put in), read with the
+# records of its event - the program (SYSCALL, PROCTITLE), the whole path (PATH), the port -
+# grouped by what was refused, each group put to audit2why and sorted into one kind:
+#   boolean   audit2why names one that is safe to switch on          setsebool -P NAME 1
+#   label     the file is not labelled as the policy says             restorecon -R -v PATH
+#   port      a confined service otp works with on a port of no type  semanage port -a -t T -p P N
+#   rule      nothing of the policy allows it, and exactly that is safe: one rule in otp's own
+#             local module otp_local - each in an optional block, each taken away on its own
+#   nobutton  otp's, but too much to allow from a page - said why, never put right here
+#   other     another program of the machine - shown, never put right here
+#   fixed     put right here; a refusal of it from after that comes back
+# A finding's id is a hash of what was refused (12 hex): the same refusal, the same id at every
+# look. The pages send only ids: every fix is worked out here again, from the audit log.
+SE_LOCAL = 'otp_local'
+SE_LOCAL_CIL = os.environ.get('OTP_SELINUX_LOCAL_CIL',
+                              os.path.join(os.path.dirname(SE_CIL), 'otp_local.cil'))
+SE_LOCAL_RULES = 'selinux-local.json'           # in root's own folder: the rules of otp_local
+SE_FIXED = 'selinux-fixed.json'                 # in root's own folder: what was put right, when
+SE_LIB = os.environ.get('OTP_SELINUX_LIB', '/usr/local/lib/otp')
+# otp's own files and folders: a refusal of a service otp works with is otp's only on these.
+SE_OTP_PATHS = ('/usr/local/lib/otp', '/var/lib/otp', '/var/www/otp', '/run/otp', '/var/run/otp',
+                '/etc/otp', '/var/log/otp', '/etc/pki/otp', '/usr/libexec/keepalived/otp-vip-check',
+                '/etc/nginx/conf.d/otp', '/etc/nginx/certs/otp', '/etc/nginx/otp-backups',
+                '/etc/php-fpm.d/otp.conf', '/run/php-fpm/otp.sock', '/run/php/otp.sock',
+                '/etc/logrotate.d/otp', '/etc/ssh/sshd_config.d/50-otp', '/etc/ssh/sshd_config.d/otp',
+                '/etc/systemd/journald.conf.d/otp', '/etc/rsyslog.d/otp', '/etc/keepalived/keepalived.conf')
+# The programs otp's daemon runs that have a domain of their own (NoNewPrivileges: nnp_transition).
+SE_TOOL_DOMAINS = ('hostname_t', 'ifconfig_t', 'ssh_keygen_t', 'ssh_t', 'ping_t', 'chronyc_t')
+# A port of no type of its own, and the type each confined service otp works with binds/connects to.
+SE_FREE_PORT_TYPES = ('unreserved_port_t', 'port_t', 'hi_reserved_port_t', 'ephemeral_port_t')
+SE_PORT_FOR = {'httpd_t': 'http_port_t', 'sshd_t': 'ssh_port_t', 'chronyd_t': 'ntp_port_t',
+               'postgresql_t': 'postgresql_port_t', 'syslogd_t': 'syslogd_port_t'}
+# Never from a page: what would let a program reach far more than what was refused.
+SE_BAD_TARGETS = ('shadow_t', 'security_t', 'policy_config_t', 'selinux_config_t', 'semanage_store_t',
+                  'semanage_read_lock_t', 'semanage_trans_lock_t', 'load_policy_exec_t', 'kernel_t',
+                  'proc_kcore_t', 'sysctl_kernel_t', 'kmsg_device_t', 'memory_device_t',
+                  'auditd_log_t', 'auditd_etc_t', 'auditd_exec_t', 'audisp_var_run_t',
+                  'passwd_file_t', 'sudo_exec_t', 'sudo_db_t', 'sudo_log_t', 'admin_home_t',
+                  'user_home_t', 'user_home_dir_t', 'home_root_t', 'ssh_home_t', 'sshd_key_t',
+                  'krb5_keytab_t', 'cert_t', 'boot_t', 'fixed_disk_device_t', 'removable_device_t',
+                  'shell_exec_t', 'su_exec_t', 'setfiles_exec_t', 'semanage_exec_t')
+SE_BAD_TARGET_RE = re.compile(r'(?:^sudo_|_home_t$|_home_dir_t$|key_t$|keytab_t$|^secret|_secret_t$|shadow)')
+SE_BAD_PERMS = ('execute', 'execute_no_trans', 'entrypoint', 'execmod', 'execmem', 'execstack',
+                'execheap', 'transition', 'dyntransition', 'ptrace', 'relabelfrom', 'relabelto',
+                'setcurrent', 'setexec', 'setfscreate', 'setkeycreate', 'setsockcreate', 'mounton',
+                'mount', 'remount', 'unmount', 'sys_admin', 'sys_module', 'sys_rawio', 'sys_ptrace',
+                'dac_override', 'dac_read_search', 'setuid', 'setgid', 'setpcap', 'mac_admin',
+                'mac_override', 'load_policy', 'setenforce', 'setbool', 'setcheckreqprot',
+                'sys_boot', 'sys_chroot', 'net_admin', 'fowner', 'fsetid', 'chown', 'linux_immutable',
+                'module_load', 'module_request', 'use_as_override', 'create_files_as', 'syslog_mod')
+SE_BAD_CLASSES = ('security', 'kernel_service', 'key', 'bpf', 'perf_event', 'lockdown', 'capability2',
+                  'cap2_userns', 'cap_userns', 'mac_admin', 'service', 'system', 'passwd', 'nscd',
+                  'dbus', 'netlink_audit_socket', 'netlink_selinux_socket', 'netlink_kobject_uevent_socket')
+SE_GENERIC_TYPES = ('etc_t', 'usr_t', 'bin_t', 'sbin_t', 'lib_t', 'var_t', 'default_t', 'tmp_t',
+                    'root_t', 'device_t', 'file_t', 'unlabeled_t', 'proc_t', 'sysfs_t', 'var_lib_t',
+                    'var_log_t', 'var_run_t', 'var_spool_t', 'etc_runtime_t', 'httpd_sys_content_t',
+                    'tmpfs_t', 'mnt_t', 'src_t', 'usr_tmp_t')
+SE_WRITES = ('write', 'append', 'create', 'unlink', 'rename', 'setattr', 'add_name', 'remove_name',
+             'rmdir', 'link', 'reparent', 'swapon', 'quotaon')
+SE_BAD_BOOL_RE = re.compile(r'(?:exec|unconfined|_manage_all|_read_all|ptrace|^deny_|_all_files|'
+                            r'_full_access|_admin|selinuxuser_|secure_mode|mmap_files|_use_nfs|_use_cifs|_unified|'
+                            r'_enable_homedirs|_anon_write|_all_ports|_relay|_mod_auth_ntlm)')
+SE_KIND_ORDER = ('fixed', 'boolean', 'label', 'port', 'rule', 'nobutton', 'other')
+SE_HEX_KEYS = ('proctitle', 'name', 'path', 'comm', 'exe', 'cwd')
+
+
+def _se_root_json(name, kind):
+    try:
+        fd = os.open(os.path.join(ROOT_STATE_DIR, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd) as f:
+            got = json.load(f)
+        return got if isinstance(got, kind) else kind()
+    except (OSError, ValueError):
+        return kind()
+
+
+def _se_field(line, key):
+    """One field of an audit record: "quoted", or hex (decoded only for the keys that may be),
+    or as it is - never a port taken for hex."""
+    m = re.search(r'(?:^|\s)%s=("([^"]*)"|(\S+))' % re.escape(key), line)
+    if not m:
+        return ''
+    if m.group(2) is not None:
+        return m.group(2)
+    v = m.group(3)
+    if key in SE_HEX_KEYS and len(v) % 2 == 0 and len(v) >= 2 and re.match(r'^[0-9A-Fa-f]+\Z', v):
+        try:
+            return bytes.fromhex(v).replace(b'\0', b' ').decode('utf-8', 'replace').strip()
+        except ValueError:
+            return v
+    return '' if v == '(null)' else v
+
+
+def _se_when(stamp):
+    """An event's time: seconds (raw), or the readable form ausearch -i gives; 0 when unknown."""
+    stamp = stamp.strip()
+    m = re.match(r'^(\d+)(?:\.\d+)?$', stamp)
+    if m:
+        return int(m.group(1))
+    for fmt in ('%m/%d/%Y %H:%M:%S', '%d/%m/%Y %H:%M:%S', '%Y-%m-%d %H:%M:%S', '%m/%d/%y %H:%M:%S'):
+        try:
+            return int(time.mktime(time.strptime(stamp.split('.')[0], fmt)))
+        except ValueError:
+            continue
+    return 0
+
+
+def se_events(since=0.0):
+    """Every refusal since the machine started, with the records of its event: [event], or None
+    without ausearch."""
+    got = _se_run(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR', '-ts', 'boot'], 180, light=True)
+    if got is None:
+        return None
+    events = {}
+    order = []
+    for line in (got.stdout or '').splitlines():
+        m = re.search(r'msg=audit\(([^)]*):(\d+)\)', line)
+        if not m:
+            continue
+        key = m.group(1).strip() + ':' + m.group(2)
+        if key not in events:
+            events[key] = {'at': _se_when(m.group(1)), 'avc': [], 'exe': '', 'comm': '', 'proctitle': '',
+                           'paths': [], 'cwd': ''}
+            order.append(key)
+        e = events[key]
+        kind = (re.match(r'^type=(\S+)', line) or [None, ''])[1]
+        if 'avc:' in line and 'denied' in line:
+            e['avc'].append(line)
+        elif kind == 'SELINUX_ERR' or 'SELINUX_ERR' in line[:40]:
+            e.setdefault('err', []).append(line)
+        elif kind == 'SYSCALL':
+            e['exe'] = _se_field(line, 'exe') or e['exe']
+            e['comm'] = _se_field(line, 'comm') or e['comm']
+        elif kind == 'PROCTITLE':
+            e['proctitle'] = _se_field(line, 'proctitle')[:300]
+        elif kind == 'PATH':
+            p = _se_field(line, 'name')
+            if p:
+                e['paths'].append(p)
+        elif kind == 'CWD':
+            e['cwd'] = _se_field(line, 'cwd')
+    out = []
+    for k in order:
+        e = events[k]
+        if since and e['at'] and e['at'] < since:
+            continue
+        if e['avc']:
+            out.append(e)
+    return out
+
+
+def _se_otp_path(p):
+    return bool(p) and any(p == x or p.startswith(x.rstrip('/') + '/') or p.startswith(x + '.')
+                           for x in SE_OTP_PATHS)
+
+
+def se_groups(events):
+    """The refusals grouped by what was refused: {id: group}."""
+    groups = {}
+    for e in events:
+        for line in e['avc']:
+            perms = re.search(r'denied\s+\{([^}]*)\}', line)
+            sc = re.search(r'scontext=(\S+)', line)
+            tc = re.search(r'tcontext=(\S+)', line)
+            cl = re.search(r'tclass=(\S+)', line)
+            if not (perms and sc and tc and cl):
+                continue
+            st = (sc.group(1).split(':') + ['', '', ''])[2]
+            tt = (tc.group(1).split(':') + ['', '', ''])[2]
+            tclass = cl.group(1)
+            pl = sorted(set(perms.group(1).split()))
+            comm = _se_field(line, 'comm') or e['comm']
+            path = _se_field(line, 'path')
+            name = _se_field(line, 'name')
+            if not path:
+                full = [p for p in e['paths'] if p.startswith('/')]
+                if full:
+                    path = full[-1]
+                    if name and not path.endswith('/' + name) and path.endswith('/') is False and \
+                            len(e['paths']) == 1 and tclass not in ('dir',):
+                        pass
+                elif name and name.startswith('/'):
+                    path = name
+            port = ''
+            if tclass in ('tcp_socket', 'udp_socket', 'sctp_socket', 'dccp_socket'):
+                for key in ('src', 'dest'):
+                    v = re.search(r'(?:^|\s)%s=(\d{1,5})(?:\s|$)' % key, line)
+                    if v and (key == 'dest' or 'name_bind' in pl):
+                        port = '%s/%s' % (v.group(1), tclass.split('_')[0])
+                        break
+            where = path or (('port ' + port) if port else (name or ''))
+            gid = hashlib.sha256('|'.join([st, tt, tclass, ' '.join(pl), comm, where]).encode()).hexdigest()[:12]
+            g = groups.get(gid)
+            if g is None:
+                g = groups[gid] = {'id': gid, 'source': st, 'target': tt, 'class': tclass, 'perms': pl,
+                                   'program': comm[:60], 'exe': e['exe'][:200], 'path': path[:300],
+                                   'name': name[:120], 'port': port, 'count': 0, 'first': e['at'],
+                                   'last': e['at'], 'permissive': False, 'line': line,
+                                   'proctitle': e['proctitle'][:200]}
+            g['count'] += 1
+            g['first'] = min(g['first'], e['at'])
+            g['last'] = max(g['last'], e['at'])
+            g['permissive'] = g['permissive'] or 'permissive=1' in line
+            if e['at'] >= g['last']:
+                g['line'] = line
+    return groups
+
+
+def se_why(groups):
+    """audit2why on one refusal of each group: {id: {'allowed', 'te', 'booleans', 'other'}}."""
+    by_avc = {}
+    for gid, g in groups.items():
+        m = re.search(r'msg=audit\(([0-9.]+:\d+)\)', g['line'])
+        if m:
+            by_avc[m.group(1)] = gid
+    if not by_avc:
+        return {}
+    got = _se_run(['audit2why'], 300, light=True,
+                  data=''.join(groups[g]['line'] + '\n' for g in by_avc.values()))
+    if got is None or got.returncode != 0:
+        return {}
+    out = {}
+    cur = None
+    for line in (got.stdout or '').splitlines():
+        m = re.search(r'msg=audit\(([0-9.]+:\d+)\)', line)
+        if m and 'avc:' in line:
+            cur = by_avc.get(m.group(1))
+            if cur:
+                out[cur] = {'allowed': False, 'te': False, 'booleans': [], 'other': ''}
+            continue
+        if cur is None:
+            continue
+        w = out[cur]
+        if 'would be allowed by active policy' in line:
+            w['allowed'] = True
+        elif 'Missing type enforcement (TE) allow rule' in line:
+            w['te'] = True
+        b = re.search(r'The boolean (\S+) was set incorrectly', line) or \
+            re.search(r'setsebool -P (\S+) (?:1|on|true)', line)
+        if b and b.group(1) not in w['booleans']:
+            w['booleans'].append(b.group(1))
+        if re.search(r'constraint|Missing role allow|role transition|MLS', line):
+            w['other'] = line.strip()[:200]
+    return out
+
+
+def se_matchpath(path):
+    """The type the policy says `path` should have (matchpathcon), or None."""
+    fake = os.environ.get('OTP_SELINUX_MATCH')          # tests: {path: type}
+    if fake:
+        try:
+            return (json.load(open(fake)) or {}).get(path)
+        except (OSError, ValueError):
+            return None
+    got = _se_run(['matchpathcon', '-n', path], 30)
+    if got is None or got.returncode != 0:
+        return None
+    parts = (got.stdout or '').strip().split(':')
+    return parts[2] if len(parts) >= 3 else None
+
+
+def _se_whose(g, ports):
+    """otp's, a service otp works with that is not otp's here ('near'), or another program's."""
+    st, tt = g['source'], g['target']
+    title = (g.get('proctitle') or '') + ' ' + (g.get('exe') or '')
+    mine_proc = 'otp.py' in title or (g.get('exe') or '').startswith(SE_LIB + '/') or \
+        (g.get('program') or '').startswith('otp')
+    otp_port = False
+    if g.get('port'):
+        try:
+            otp_port = int(g['port'].split('/')[0]) in ports
+        except ValueError:
+            otp_port = False
+    if st == 'unconfined_service_t':
+        if mine_proc or _se_otp_path(g['path']):
+            return 'otp'
+        # Nothing of the event says which program it was: counted as the services otp works with
+        # (never let through to enforcing for want of a word).
+        return 'other' if (g.get('exe') or g.get('proctitle')) else 'near'
+    if st in SE_TOOL_DOMAINS:
+        return 'otp' if (tt == 'unconfined_service_t' or _se_otp_path(g['path']) or otp_port or mine_proc) else 'other'
+    if st in SE_DOMAINS:
+        return 'otp' if (_se_otp_path(g['path']) or otp_port or mine_proc) else 'near'
+    return 'otp' if (_se_otp_path(g['path']) or mine_proc) else 'other'
+
+
+def _se_danger(g):
+    """Why a refusal is too much to allow from a page, or ''."""
+    tt, perms, cls = g['target'], g['perms'], g['class']
+    if tt in SE_BAD_TARGETS or SE_BAD_TARGET_RE.search(tt):
+        return '%s is security-sensitive (%s) - never allowed from here' % (tt, cls)
+    bad = [p for p in perms if p in SE_BAD_PERMS]
+    if bad:
+        return '%s { %s } would let it run, change or reach far more than this - never allowed from here' % (
+            cls, ' '.join(bad))
+    if cls in SE_BAD_CLASSES:
+        return 'the class %s is the system\'s own - never allowed from here' % cls
+    if tt in SE_GENERIC_TYPES and any(p in SE_WRITES for p in perms):
+        return 'writing to %s (a type of many files of the system) would reach far more than this - never allowed from here' % tt
+    if g['source'] == 'unconfined_service_t' and g['class'] == 'process2' and \
+            not set(perms) <= {'nnp_transition', 'nosuid_transition'}:
+        return 'process2 { %s } - never allowed from here' % ' '.join(perms)
+    return ''
+
+
+def se_rule_text(g):
+    return '(allow %s %s (%s (%s)))' % (g['source'], g['target'], g['class'], ' '.join(g['perms']))
+
+
+def se_findings(r, since=0.0):
+    """The refusals since `since`, sorted into kinds, each with its fix: (list, tool there)."""
+    events = se_events(since)
+    if events is None:
+        return [], False
+    groups = se_groups(events)
+    why = se_why(groups)
+    fixed = _se_root_json(SE_FIXED, dict)
+    ports = set()
+    for p in (r.get('ports') or []):
+        try:
+            ports.add(int(p.get('port')))
+        except (TypeError, ValueError, AttributeError):
+            pass
+    facts = r.get('facts') if isinstance(r.get('facts'), dict) else {}
+    for k in ('api_port', 'db_port'):
+        try:
+            ports.add(int(facts.get(k)))
+        except (TypeError, ValueError):
+            pass
+    for v in (facts.get('radius_ports') or []):
+        try:
+            ports.add(int(v))
+        except (TypeError, ValueError):
+            pass
+    ports.update((1812, 1813, 443, 80, 9861))
+    known_ports = None
+    out = []
+    for gid, g in groups.items():
+        w = why.get(gid) or {}
+        f = {k: g[k] for k in ('id', 'source', 'target', 'class', 'perms', 'program', 'exe', 'path',
+                               'port', 'count', 'first', 'last', 'permissive', 'name')}
+        f['whose'] = _se_whose(g, ports)
+        f['fix'] = None
+        f['why'] = ''
+        done = fixed.get(gid) if isinstance(fixed.get(gid), dict) else None
+        if w.get('allowed'):
+            f['kind'] = 'allowed'
+        elif done and fnum_(done.get('at')) >= g['last']:
+            f['kind'] = 'fixed'
+            f['fixed_at'] = fnum_(done.get('at'))
+            f['fixed_by'] = str(done.get('by') or '')[:100]
+            f['why'] = 'put right %s' % str(done.get('how') or '')[:200]
+        elif f['whose'] != 'otp':
+            f['kind'] = 'other'
+            f['why'] = ('a service otp works with, but not on otp\'s files or ports - look at it before enforcing'
+                        if f['whose'] == 'near' else
+                        'not otp\'s: %s (%s) is another program of this machine - look at it with whoever looks after it'
+                        % (g['program'] or '?', g['source']))
+        else:
+            danger = _se_danger(g)
+            safe_bools = [b for b in w.get('booleans') or []
+                          if re.match(r'^[a-z][a-z0-9_]{1,60}\Z', b) and not SE_BAD_BOOL_RE.search(b)]
+            label_want = None
+            if g['path'] and _se_otp_path(g['path']) and os.path.lexists(g['path']):
+                label_want = se_matchpath(g['path'])
+                now_label = se_label(g['path'])
+                if label_want and now_label == label_want and now_label != g['target']:
+                    f['kind'] = 'allowed'           # labelled as it should be since: settled
+                    out.append(f)
+                    continue
+            port_type = SE_PORT_FOR.get(g['source'])
+            # The pages asking the daemon (or another of otp's ports): the boolean otp needs, not a
+            # type given to the port - whatever audit2why says of it.
+            if not safe_bools and g['source'] == 'httpd_t' and g['perms'] == ['name_connect'] and \
+                    g['target'] in SE_FREE_PORT_TYPES and g['port']:
+                safe_bools = ['httpd_can_network_connect']
+            if safe_bools:
+                f['kind'] = 'boolean'
+                f['fix'] = {'boolean': safe_bools[0], 'cmd': 'setsebool -P %s 1' % safe_bools[0]}
+                f['why'] = 'the boolean %s allows it' % safe_bools[0]
+            elif w.get('booleans'):
+                f['kind'] = 'nobutton'
+                f['why'] = 'only the boolean %s allows it, and it allows far more - never switched on from here' % w['booleans'][0]
+            elif label_want and label_want != g['target'] and not danger:
+                tgt = g['path'] if os.path.isdir(g['path']) else os.path.dirname(g['path'])
+                if not _se_otp_path(tgt):
+                    tgt = g['path']
+                f['kind'] = 'label'
+                f['fix'] = {'restorecon': tgt, 'cmd': 'restorecon -R -v %s' % tgt}
+                f['why'] = '%s is labelled %s - the policy says %s' % (g['path'], g['target'], label_want)
+            elif g['port'] and port_type and g['target'] in SE_FREE_PORT_TYPES and \
+                    set(g['perms']) <= {'name_bind', 'name_connect'}:
+                n, proto = g['port'].split('/')
+                if known_ports is None:
+                    known_ports = se_ports() or {}
+                taken = [t for (t, pr), spans in known_ports.items()
+                         if pr == proto and t not in SE_FREE_PORT_TYPES and any(lo <= int(n) <= hi for lo, hi in spans)]
+                if taken:
+                    f['kind'] = 'nobutton'
+                    f['why'] = 'port %s is %s\'s in the policy - choose another port for it' % (g['port'], taken[0])
+                else:
+                    f['kind'] = 'port'
+                    f['fix'] = {'port': int(n), 'proto': proto, 'type': port_type,
+                                'cmd': 'semanage port -a -t %s -p %s %s' % (port_type, proto, n)}
+                    f['why'] = 'port %s has no type of its own - %s may use %s' % (g['port'], g['source'], port_type)
+            elif danger:
+                f['kind'] = 'nobutton'
+                f['why'] = danger
+            elif w.get('other'):
+                f['kind'] = 'nobutton'
+                f['why'] = 'not a rule that is missing: %s' % w['other']
+            elif not re.match(r'^[a-z][a-z0-9_]{0,80}_t\Z', g['source']) or \
+                    not re.match(r'^[a-z][a-z0-9_]{0,80}_t\Z', g['target']) or \
+                    not re.match(r'^[a-z][a-z0-9_]{0,40}\Z', g['class']) or \
+                    not all(re.match(r'^[a-z][a-z0-9_]{0,40}\Z', p) for p in g['perms']):
+                f['kind'] = 'nobutton'
+                f['why'] = 'it does not read as a plain rule - never allowed from here'
+            else:
+                f['kind'] = 'rule'
+                f['fix'] = {'rule': se_rule_text(g), 'cmd': se_rule_text(g)}
+                f['why'] = 'nothing of the policy allows it: a rule of otp\'s own local module allows exactly this'
+        out.append(f)
+    order = {k: i for i, k in enumerate(SE_KIND_ORDER + ('allowed',))}
+    out.sort(key=lambda x: (order.get(x['kind'], 9), -x['count'], x['id']))
+    return out[:300], True
+
+
+def fnum_(v):
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def se_local_rules():
+    got = _se_root_json(SE_LOCAL_RULES, list)
+    return [x for x in got if isinstance(x, dict) and re.match(r'^[0-9a-f]{12}\Z', str(x.get('id') or ''))
+            and isinstance(x.get('rule'), str)]
+
+
+def se_local_text(rules):
+    lines = ['; otp\'s local rules (otp_local, 1.0.300) - put in from Settings → High security → SELinux',
+             '; ("Put in what is selected") or `otp --selinux fix`, each exactly what SELinux refused',
+             '; here and nothing more. Taken away one by one on the same card (or `otp --selinux-rules',
+             '; --take-away ID`); the module goes with an uninstall. Written by root from its list -',
+             '; never edited by hand: the next change writes it again.', '']
+    for x in rules:
+        lines.append('; %s - %s (%s)' % (x['id'], re.sub(r'[\r\n]', ' ', str(x.get('why') or ''))[:200],
+                                         time.strftime('%Y-%m-%d %H:%M', time.gmtime(fnum_(x.get('at'))))))
+        lines.append('(optional otp_local_%s' % x['id'])
+        lines.append('    %s)' % x['rule'])
+    return '\n'.join(lines) + '\n'
+
+
+def se_local_load(rules, said):
+    """otp_local written from its list and put into the policy - or taken out with the last."""
+    root_state_write(SE_LOCAL_RULES, json.dumps(rules))
+    if not rules:
+        if se_local_in():
+            got = _se_run(['semodule', '-r', SE_LOCAL], 300)
+            if got is None or got.returncode != 0:
+                raise Refused('semodule -r %s: %s' % (SE_LOCAL, ((got.stderr or '') if got else '').strip()[-200:]))
+            said.append('otp\'s local module (%s) taken out of the policy - no rule left in it' % SE_LOCAL)
+        for p in (SE_LOCAL_CIL, SE_LOCAL_CIL + '.in-policy'):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        return
+    text = se_local_text(rules)
+    _put_file(SE_LOCAL_CIL, text)
+    got = _se_run(['semodule', '-i', SE_LOCAL_CIL], 300)
+    if got is None or got.returncode != 0:
+        raise Refused('semodule -i %s: %s' % (SE_LOCAL_CIL, ((got.stderr or got.stdout) if got else
+                                                            'semodule is not on this machine').strip()[-300:]))
+    try:
+        _put_file(SE_LOCAL_CIL + '.in-policy', text)
+    except (OSError, Refused):
+        pass
+    said.append('otp\'s local module (%s) put into the policy - %d rule(s) in it' % (SE_LOCAL, len(rules)))
+
+
+def se_local_in():
+    got = _se_run(['semodule', '-l'], 120, light=True)
+    if got is None or got.returncode != 0:
+        return None
+    return any(line.split()[:1] == [SE_LOCAL] for line in got.stdout.splitlines())
+
+
+def se_fix(r, said):
+    """The findings asked for (ids only), each put right as worked out here again."""
+    ids = r.get('ids')
+    if not isinstance(ids, list) or not ids or len(ids) > 300 or \
+            not all(isinstance(x, str) and re.match(r'^[0-9a-f]{12}\Z', x) for x in ids):
+        raise Refused('a list of the findings\' ids')
+    by = re.sub(r'[\r\n]', ' ', str(r.get('by') or 'root'))[:100]
+    found, tool = se_findings(r, se_applied_at())
+    if not tool:
+        raise Refused('ausearch is not on this machine (dnf install audit)')
+    have = {f['id']: f for f in found}
+    fixed = _se_root_json(SE_FIXED, dict)
+    rules = se_local_rules()
+    new_rules = False
+    now = time.time()
+    for i in ids:
+        f = have.get(i)
+        if f is None:
+            said.append('%s: not refused any more - nothing to do' % i)
+            continue
+        if f['kind'] not in ('boolean', 'label', 'port', 'rule') or not f.get('fix'):
+            said.append('%s: %s - not put right here' % (i, f.get('why') or f['kind']))
+            continue
+        fx = f['fix']
+        how = fx['cmd']
+        if f['kind'] == 'boolean':
+            got = _se_run(['setsebool', '-P', fx['boolean'], '1'], 300)
+            if got is None or got.returncode != 0:
+                said.append('%s: setsebool -P %s 1: %s' % (i, fx['boolean'], ((got.stderr or '') if got else '').strip()[-200:]))
+                continue
+            said.append('the boolean %s on' % fx['boolean'])
+        elif f['kind'] == 'label':
+            if not os.path.lexists(fx['restorecon']):
+                said.append('%s: %s is not there any more' % (i, fx['restorecon']))
+                fixed[i] = {'at': now, 'by': by, 'how': 'gone'}
+                continue
+            got = _se_run(['restorecon', '-R', '-v', fx['restorecon']], 300)
+            if got is None or got.returncode != 0:
+                said.append('%s: restorecon %s: %s' % (i, fx['restorecon'], ((got.stderr or '') if got else '').strip()[-200:]))
+                continue
+            said.append('%s labelled as the policy says' % fx['restorecon'])
+        elif f['kind'] == 'port':
+            got = _se_run(['semanage', 'port', '-a', '-t', fx['type'], '-p', fx['proto'], str(fx['port'])], 300)
+            if got is not None and got.returncode != 0 and 'already defined' in (got.stderr or ''):
+                said.append('%s: port %d/%s is another service\'s in the policy - not taken from it'
+                            % (i, fx['port'], fx['proto']))
+                continue
+            if got is None or got.returncode != 0:
+                said.append('%s: semanage port: %s' % (i, ((got.stderr or '') if got else '').strip()[-200:]))
+                continue
+            said.append('port %d/%s labelled %s' % (fx['port'], fx['proto'], fx['type']))
+        else:
+            if not any(x['id'] == i for x in rules):
+                rules.append({'id': i, 'rule': fx['rule'], 'at': now, 'by': by,
+                              'why': '%s: %s' % (f.get('program') or '?', f.get('why') or ''),
+                              'program': f.get('program') or ''})
+                new_rules = True
+            said.append('rule %s: %s' % (i, fx['rule']))
+        fixed[i] = {'at': now, 'by': by, 'how': how, 'kind': f['kind']}
+    if new_rules:
+        try:
+            se_local_load(rules, said)
+        except Refused:
+            # Not loaded: none of the new rules counts as put right.
+            for x in rules:
+                if x.get('at') == now:
+                    fixed.pop(x['id'], None)
+            root_state_write(SE_LOCAL_RULES, json.dumps([x for x in rules if x.get('at') != now]))
+            raise
+    root_state_write(SE_FIXED, json.dumps({k: v for k, v in fixed.items()
+                                           if isinstance(v, dict) and now - fnum_(v.get('at')) < 400 * 86400}))
+
+
+def se_rule_drop(r, said):
+    i = str(r.get('rule') or '')
+    if not re.match(r'^[0-9a-f]{12}\Z', i):
+        raise Refused('a rule\'s id')
+    rules = se_local_rules()
+    if not any(x['id'] == i for x in rules):
+        raise Refused('otp\'s local module has no rule %s' % i)
+    keep = [x for x in rules if x['id'] != i]
+    se_local_load(keep, said)
+    said.append('rule %s taken away' % i)
+    fixed = _se_root_json(SE_FIXED, dict)
+    if fixed.pop(i, None) is not None:
+        root_state_write(SE_FIXED, json.dumps(fixed))
+
+
 def se_want_checked(r, left_out=None):
     """What the daemon says otp needs here: booleans and ports, checked against what may be.
     left_out (1.0.262): a list a port of a type this helper does not set is said in and left
@@ -6186,7 +6764,31 @@ def se_check(r):
         out['ports'].append(dict(p, labelled=(se_port_has(known, p['type'], p['proto'], p['port'])
                                              if known is not None else None)))
     if on:
-        out['denials'] = se_denials(se_applied_at())
+        # What was refused, sorted by what puts it right (1.0.300); the count before enforcing as
+        # until now - otp's and the services' otp works with - less what was put right here since.
+        since = se_applied_at()
+        found, tool = se_findings(r, since)
+        live = [f for f in found if f['kind'] not in ('allowed', 'fixed')]
+        counted = [f for f in live if f['kind'] != 'other' or f['whose'] == 'near']
+        groups = {}
+        for f in counted:
+            key = (f['source'], f['target'], f['class'], ' '.join(f['perms']))
+            g = groups.setdefault(key, {'source': f['source'], 'target': f['target'], 'class': f['class'],
+                                        'perms': ' '.join(f['perms']), 'count': 0, 'what': '',
+                                        'permissive': False})
+            g['count'] += f['count']
+            g['what'] = ' '.join(x for x in (f['program'], f.get('name') or os.path.basename(f['path'] or '')
+                                             or f['port']) if x)[:120] or g['what']
+            g['permissive'] = g['permissive'] or f['permissive']
+        out['denials'] = {'tool': tool, 'since': since,
+                          'total': sum(f['count'] for f in counted),
+                          'settled': sum(f['count'] for f in found if f['kind'] == 'allowed'),
+                          'groups': sorted(groups.values(), key=lambda g: -g['count'])[:30]}
+        out['findings'] = [f for f in found if f['kind'] != 'allowed']
+        out['counts'] = {k: sum(1 for f in found if f['kind'] == k) for k in SE_KIND_ORDER}
+        out['local_rules'] = [{k: x.get(k) for k in ('id', 'rule', 'why', 'at', 'by', 'program')}
+                              for x in se_local_rules()]
+        out['local_module'] = se_local_in() if out['local_rules'] else None
         # Upgraded from a version before 1.0.248 (1.0.249): when otp's needs were put in was
         # kept in the service's own folder, not read any more (the service could write a time
         # ahead there) - what was refused since the machine started counts again, once.
@@ -6305,6 +6907,17 @@ def se_do(r):
     mode = se_mode()
     if mode == 'absent':
         raise Refused('there is no SELinux on this machine')
+    if do in ('fix', 'rule_drop'):
+        # Put right by id, or a rule of otp's own taken away (1.0.300) - under enforcing too.
+        if mode == 'Disabled':
+            raise Refused('SELinux is disabled - nothing is refused')
+        if do == 'fix':
+            se_fix(r, said)
+        else:
+            se_rule_drop(r, said)
+        out = se_check(r)
+        out['said'] = said
+        return out
     if do == 'prepare':
         if mode == 'Enforcing':
             raise Refused('SELinux is enforcing already')
@@ -6470,6 +7083,23 @@ def se_report_parts(r):
     parts['modules.txt'] = '==== otp\n' + '\n'.join(
         x for x in mods.splitlines() if 'otp' in x.lower()) + '\n\n==== %s\n%s\n==== in the policy\n%s\n' % (
         SE_CIL, _read_or(SE_CIL) or '(not there)', _read_or(SE_CIL + '.in-policy') or '(none put in yet)')
+    # The whole machine's side too (1.0.300): every process with its domain, every boolean,
+    # port type and module, what was changed on this machine - whoever writes the module sees
+    # what the policy is here, not only otp's part of it.
+    parts['os/processes.txt'] = '\n'.join(x[:200] for x in ps.splitlines()) + '\n'
+    parts['os/booleans.txt'] = bools
+    parts['os/ports.txt'] = ports
+    parts['os/modules.txt'] = _se_out(['semodule', '-lfull'], 300)
+    parts['os/local-changes.txt'] = '\n'.join(
+        '==== semanage %s -l -C\n%s' % (w, _se_out(['semanage', w, '-l', '-C'], 120))
+        for w in ('boolean', 'port', 'fcontext', 'login', 'user', 'module', 'permissive'))
+    parts['os/semanage-export.txt'] = _se_out(['semanage', 'export'], 300)
+    parts['os/listening.txt'] = _se_out(['ss', '-lntupZ'], 60, light=False)
+    parts['findings.json'] = json.dumps({'findings': check.get('findings') or [],
+                                         'local_rules': check.get('local_rules') or []},
+                                        indent=1, sort_keys=True)
+    parts['modules.txt'] += '\n==== %s (the local rules of otp)\n%s\n' % (
+        SE_LOCAL_CIL, _read_or(SE_LOCAL_CIL) or '(none)')
     parts['README.txt'] = (
         'otp - what SELinux says on this node, for whoever writes otp\'s module (otp_server).\n'
         'Made %s. Nothing was changed to make it.\n\n'
@@ -6478,7 +7108,10 @@ def se_report_parts(r):
         'audit2why.txt   why; audit2allow.te: what would allow it - a hint, not to be loaded\n'
         'labels.txt      the labels of otp\'s files and what the policy says they should be\n'
         'processes.txt   the domains the programs run in; ports.txt, booleans.txt, modules.txt\n'
-        'system.txt      the system, the policy and the packages; otp.json: what otp uses here\n\n'
+        'system.txt      the system, the policy and the packages; otp.json: what otp uses here\n'
+        'findings.json   what was refused, sorted by what puts it right; the local rules of otp\n'
+        'os/             the whole machine: every process, boolean, port type, module, the local\n'
+        '                changes (semanage -l -C, semanage export), every listening socket\n\n'
         'No password, key or token of otp is in it. The audit log holds the command lines of the\n'
         'programs refused something: otp never puts a secret on one - other programs on this\n'
         'machine may. Look through avc*.txt before sending it on.\n' % time.strftime('%Y-%m-%d %H:%M:%S'))
@@ -6579,6 +7212,20 @@ def se_report(c):
     for g in d['groups'][:15]:
         lines.append('    %4dx %s -> %s %s { %s } %s' % (g['count'], g['source'], g['target'],
                                                          g['class'], g['perms'], g['what']))
+    # What was refused, sorted (1.0.300): each with its id and what puts it right.
+    names = {'fixed': 'put right', 'boolean': 'a boolean', 'label': 'a label', 'port': 'a port',
+             'rule': 'a rule of otp\'s', 'nobutton': 'not for a button', 'other': 'not otp\'s'}
+    for f in (c.get('findings') or [])[:40]:
+        lines.append('    %s %-16s %4dx %s %s -> %s %s { %s }%s' % (
+            f['id'], names.get(f['kind'], f['kind']), f['count'], f.get('program') or '?', f['source'],
+            f['target'], f['class'], ' '.join(f['perms']),
+            (' ' + (f['path'] or ('port ' + f['port'] if f.get('port') else ''))) if (f.get('path') or f.get('port')) else ''))
+        if f.get('fix'):
+            lines.append('                 -> %s' % f['fix']['cmd'])
+        elif f.get('why'):
+            lines.append('                 %s' % f['why'])
+    for x in c.get('local_rules') or []:
+        lines.append('  otp_local %s: %s' % (x['id'], x['rule']))
     lines.append('ready for enforcing' if c.get('ready') else
                  ('enforcing' if c['mode'] == 'Enforcing' and not c['problems'] else
                   'not ready: ' + '; '.join(c['problems'][:6]) if c['problems'] else ''))

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.299'
+__version__ = '1.0.300'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -42240,7 +42240,8 @@ def _ask_isemon_tls(daemon, args):
 # The first look two minutes after the start (1.0.234), not at once: the helper's semanage and
 # ausearch take a core for seconds, beside a daemon that has just begun to answer.
 SE_WORK = {'busy': False, 'seen': time.time() - 1800 + 120, 'tried': ''}
-SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive', 'report')
+SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive', 'report', 'fix', 'rule_drop')
+SE_STEPS = ('prepare', 'enforce', 'permissive', 'fix', 'rule_drop')     # a step: done once, said in Events
 SE_REPORT_KEEP_S = 3600        # a report in the database an hour at most (1.0.236)
 SE_REPORT_MOST = 4 * 1024 * 1024
 SE_EVERY = 1800
@@ -42370,12 +42371,21 @@ def selinux_view(store):
     return {'nodes': out, 'reports': selinux_reports(store)}
 
 
-def selinux_ask(store, node, action, by):
+def selinux_ask(store, node, action, by, ids=None, rule=None):
     known = [node_name()] + [n['name'] for n in ha_nodes(store)]
     if node not in known:
         raise ValueError('there is no node %s' % node)
     if action not in SE_ACTIONS:
         raise ValueError('check, prepare, enforce or permissive')
+    # Put right by id, a rule taken away (1.0.300): only ids travel - that node's root helper finds
+    # each in its own audit log again and works out what to do itself.
+    if action == 'fix':
+        if not isinstance(ids, list) or not ids or len(ids) > 300 or \
+                not all(isinstance(x, str) and re.match(r'^[0-9a-f]{12}\Z', x) for x in ids):
+            raise ValueError('what to put right: the findings\' ids')
+        ids = sorted(set(ids))
+    if action == 'rule_drop' and not (isinstance(rule, str) and re.match(r'^[0-9a-f]{12}\Z', rule)):
+        raise ValueError('which rule: its id')
     if action == 'permissive' and _hs_on():
         # A step down, as TLS between the databases switched off (1.0.249): refused while high
         # security is on - said afterwards only, before.
@@ -42385,15 +42395,28 @@ def selinux_ask(store, node, action, by):
     # was written over, and "enforcing" never happened - said nowhere.
     was = _meta_json(store, 'host:selinux:want:' + node) or {}
     now = _meta_json(store, 'host:selinux:now:' + node) or {}
-    if action in ('check', 'report') and was.get('do') in ('prepare', 'enforce', 'permissive') and \
+    if action in ('check', 'report') and was.get('do') in SE_STEPS and \
             was.get('id') != now.get('done') and time.time() - fnum(was.get('at')) < 3600:
         if action == 'check':
             return          # the step looks again when it is done
         raise ValueError('%s has not done the step asked of it yet (%s) - ask for the report after it'
                          % (node, was.get('do')))
-    store.set_meta('host:selinux:want:' + node, json.dumps({
-        'id': secrets.token_hex(6), 'do': action, 'by': by, 'at': time.time()}))
-    if action == 'report':
+    if action in ('fix', 'rule_drop') and was.get('do') in SE_STEPS and was.get('id') != now.get('done') and \
+            time.time() - fnum(was.get('at')) < 600:
+        raise ValueError('%s has not done the step asked of it yet (%s) - wait for it' % (node, was.get('do')))
+    row = {'id': secrets.token_hex(6), 'do': action, 'by': by, 'at': time.time()}
+    if action == 'fix':
+        row['ids'] = ids
+    if action == 'rule_drop':
+        row['rule'] = rule
+    store.set_meta('host:selinux:want:' + node, json.dumps(row))
+    if action == 'fix':
+        store.add_event('settings', '%s asked SELinux on %s: put right %d thing(s) refused (%s)' % (
+            by, node, len(ids), ', '.join(ids[:8]) + (' ...' if len(ids) > 8 else '')), 'warn', who=by)
+    elif action == 'rule_drop':
+        store.add_event('settings', '%s asked SELinux on %s: take away otp\'s local rule %s' % (by, node, rule),
+                        'warn', who=by)
+    elif action == 'report':
         store.add_event('settings', '%s asked for the SELinux report of %s' % (by, node), 'info', who=by)
     elif action != 'check':
         store.add_event('settings', '%s asked SELinux on %s: %s' % (by, node, {
@@ -42417,7 +42440,7 @@ def selinux_tick(daemon):
     # A step tried is not tried again (1.0.234): with its answer not written (the database
     # away), it ran again every 5 s - "enforce" and "prepare" over and over.
     asked = bool(want) and want.get('id') != now.get('done') and want.get('id') != SE_WORK['tried']
-    if asked and want.get('do') in ('prepare', 'enforce', 'permissive') and \
+    if asked and want.get('do') in SE_STEPS and \
             time.time() - fnum(want.get('at')) > SE_STEP_STALE_S:
         # A step asked of a node that was away is not done days later (1.0.270): high security
         # may have been switched on since, and nobody waits for it - said, and left.
@@ -42448,8 +42471,12 @@ def selinux_tick(daemon):
             data = odict(now.get('data'))
             said = []
             try:
-                data = root_ask('selinux.ask', 'selinux.json',
-                                dict(selinux_want(store), do=do), 120 if do == 'check' else 600)
+                ask = dict(selinux_want(store), do=do)
+                if do == 'fix':
+                    ask.update(ids=want.get('ids') or [], by=str(want.get('by') or '')[:100])
+                elif do == 'rule_drop':
+                    ask.update(rule=str(want.get('rule') or ''), by=str(want.get('by') or '')[:100])
+                data = root_ask('selinux.ask', 'selinux.json', ask, 120 if do == 'check' else 600)
                 said = data.pop('said', []) if isinstance(data, dict) else []
             except ValueError as e:
                 err = str(e)[:400]
@@ -42501,6 +42528,11 @@ def selinux_problems(store, node=None):
     if d.get('mode') not in ('Enforcing', 'Permissive'):
         return []
     out = list(d.get('problems') or [])
+    # How many of them the card puts right (1.0.300).
+    n = sum(int(v or 0) for k, v in odict(d.get('counts')).items() if k in ('boolean', 'label', 'port', 'rule'))
+    if n and out:
+        out.append('%d of what SELinux refused can be put right on the card (Settings → High security → '
+                   'SELinux, "Put in what is selected")' % n)
     if d.get('mode') == 'Permissive' and not out:
         out.append('SELinux is permissive: nothing is refused - otp is ready for enforcing')
     return out
@@ -57661,10 +57693,12 @@ def _selinux_do(h):
             return {'message': 'asked: every node makes its report within a minute' if not busy else
                     'asked - not %s: a step asked of it is not done yet' % ', '.join(busy),
                     'busy': busy}
-        selinux_ask(h.store, node, action, s['name'])
+        selinux_ask(h.store, node, action, s['name'], ids=b.get('ids'), rule=b.get('rule'))
     except ValueError as e:
         raise ApiError(400, str(e))
     return {'message': {'check': 'asked: %s looks within seconds',
+                        'fix': 'asked: %s puts right what was selected within seconds',
+                        'rule_drop': 'asked: %s takes the rule away within seconds',
                         'prepare': 'asked: %s makes SELinux ready and permissive within seconds',
                         'enforce': 'asked: %s switches SELinux to enforcing within seconds',
                         'permissive': 'asked: %s switches SELinux to permissive within seconds',
@@ -69079,6 +69113,14 @@ def build_parser():
                    metavar='STEP', help='SELinux on this machine, as on the pages: check, prepare '
                    '(permissive at the next start, from disabled), apply (put in what otp needs, '
                    'while permissive), enforce, permissive - asked first unless --yes (as root)')
+    g.add_argument('--selinux-fix', nargs='+', metavar='ID',
+                   help='put right what SELinux refused, by the ids --selinux-check lists (or "all" '
+                        'that may be): a boolean, a label, a port, a rule of otp\'s own local module '
+                        '(otp_local) - listed and asked first unless --yes (as root)')
+    g.add_argument('--selinux-rules', action='store_true',
+                   help='the rules of otp\'s own local SELinux module (otp_local) (as root)')
+    g.add_argument('--selinux-take-away', metavar='ID',
+                   help='take one rule of otp\'s local SELinux module away (as root)')
     g.add_argument('--selinux-report', nargs='?', const='', metavar='FILE',
                    help='what SELinux says on this machine, for whoever writes otp\'s module: one '
                         'file (/root/otp-selinux-report-NODE-DATE.tar.gz unless named); nothing '
@@ -71178,7 +71220,8 @@ def cli_main(argv=None):
             pass
         print(json.dumps(got))
         return 0
-    if args.selinux_check or args.selinux or args.selinux_report is not None:
+    if args.selinux_check or args.selinux or args.selinux_report is not None or args.selinux_fix or \
+            args.selinux_rules or args.selinux_take_away:
         return cli_selinux(args, pal)
     if args.dir_caps or args.dir_cap or args.dir_policy or args.dir_sample or args.guard_status:
         return cli_dir_guard(args, pal)
@@ -73451,6 +73494,8 @@ def cli_selinux(args, pal):
         print('  look through avc*.txt in it before sending it on: the audit log holds the command '
               'lines of the programs SELinux refused something to')
         return 0
+    if args.selinux_fix or args.selinux_rules or args.selinux_take_away:
+        return cli_selinux_fix(args, pal, want)
     step = args.selinux or 'check'
     if step == 'check':
         got = _selinux_helper(['--selinux-check', '--want-stdin'] + (['--json'] if args.json else []),
@@ -73479,6 +73524,69 @@ def cli_selinux(args, pal):
                 print('nothing done')
                 return 1
         got = _selinux_helper(['--selinux-do', step] + (['--json'] if args.json else []), want)
+    sys.stdout.write(got.stdout)
+    sys.stderr.write(got.stderr)
+    return got.returncode
+
+
+def cli_selinux_fix(args, pal, want):
+    """otp --selinux-fix ID...|all, --selinux-rules, --selinux-take-away ID (1.0.300): as on the card."""
+    got = _selinux_helper(['--selinux-check', '--want-stdin', '--json'], want, 600)
+    try:
+        c = json.loads(got.stdout or '{}')
+    except ValueError:
+        sys.stderr.write(got.stderr)
+        raise SystemExit('otp: the root helper did not say how SELinux is here')
+    rules = c.get('local_rules') or []
+    if args.selinux_rules:
+        if args.json:
+            print(json.dumps(rules))
+            return 0
+        if not rules:
+            print('otp\'s local module (otp_local) has no rule')
+        for x in rules:
+            print('%s  %s\n              %s - put in %s by %s' % (x['id'], x['rule'], x.get('why') or '',
+                                                         time.strftime('%Y-%m-%d %H:%M', time.localtime(float(x.get('at') or 0))),
+                                                         x.get('by') or '?'))
+        return 0
+    try:
+        base = json.loads(want or '{}')
+    except ValueError:
+        base = {}
+    base['by'] = cli_who()
+    if args.selinux_take_away:
+        rule = next((x for x in rules if x['id'] == args.selinux_take_away), None)
+        if rule is None:
+            raise SystemExit('otp: otp\'s local module has no rule %s (otp --selinux-rules)' % args.selinux_take_away)
+        words = 'the rule %s taken away from otp\'s local module: %s' % (rule['id'], rule['rule'])
+        base.update(rule=rule['id'])
+        do = 'rule_drop'
+    else:
+        found = c.get('findings') or []
+        fixable = [f for f in found if f.get('kind') in ('boolean', 'label', 'port', 'rule') and f.get('fix')]
+        ids = [f['id'] for f in fixable] if args.selinux_fix == ['all'] else args.selinux_fix
+        pick = [f for f in fixable if f['id'] in ids]
+        other = [i for i in ids if i not in [f['id'] for f in pick]]
+        for i in other:
+            f = next((x for x in found if x['id'] == i), None)
+            print(pal.warn_line('%s: %s' % (i, (f.get('why') or f.get('kind')) if f else 'not refused here (otp --selinux-check lists the ids)')))
+        if not pick:
+            print('nothing to put right')
+            return 1 if other else 0
+        print('root does exactly this - nothing else:')
+        for f in pick:
+            print('  %s  %s\n      %s: %s -> %s %s { %s }' % (f['id'], f['fix']['cmd'], f.get('program') or '?', f['source'],
+                                                         f['target'], f['class'], ' '.join(f['perms'])))
+        words = '%d thing(s) put right' % len(pick)
+        base.update(ids=[f['id'] for f in pick])
+        do = 'fix'
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit('otp: %s - add --yes to do it without a terminal' % words)
+        if input('%s. Go on? [y/N] ' % words).strip().lower() not in ('y', 'yes'):
+            print('nothing done')
+            return 1
+    got = _selinux_helper(['--selinux-do', do] + (['--json'] if args.json else []), json.dumps(base))
     sys.stdout.write(got.stdout)
     sys.stderr.write(got.stderr)
     return got.returncode
