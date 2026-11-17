@@ -490,6 +490,11 @@ class ListQuery(object):
                 net = ipaddress.ip_network(low, strict=False)
             except ValueError:
                 raise ListQueryError('%r is not an address or a range of them' % item)
+            if net.version == 4 and net.prefixlen == 32:
+                # One address (1.0.294): its pattern was "a.b.c.d.%" and found nothing.
+                one = str(net.network_address)
+                c = "LOWER(COALESCE(%s, ''))" % col
+                return ("(%s = ? OR %s LIKE ? ESCAPE '!')" % (c, c), [one, like_pattern(one) + ':%'])
             if net.version == 4 and net.prefixlen % 8 == 0:
                 keep = '.'.join(str(net.network_address).split('.')[:net.prefixlen // 8])
                 return ("LOWER(%s) LIKE ? ESCAPE '!'" % col,
@@ -1947,7 +1952,8 @@ class Storage(object):
 
     # ---- tokens --------------------------------------------------------------
     TOKEN_SORTS = {'name': 'name', 'created': 'created', 'last_used': 'last_used',
-                   'state': 'state', 'failures': 'failures', 'scratch_left': 'scratch_left'}
+                   'state': 'state', 'failures': 'failures', 'scratch_left': 'scratch_left',
+                   'locked_until': 'locked_until'}   # 1.0.294: the quick view's locked ones
 
     def token(self, name):
         return self.db.row('SELECT * FROM tokens WHERE name = ?', (norm_name(name),))

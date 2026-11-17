@@ -898,14 +898,16 @@ function peekActivity(title, result, jumpWords) {
        rows fetched. */
     if (result !== 'accept' && (dash.top_reasons || []).length) top = dash.top_reasons;
     body.appendChild(peekFacts([[result === 'accept' ? 'Let in' : 'Refused', num(d.total)],
-      result === 'accept' ? ['People', num(top.length)] : ['Wrong codes', num(dash.otp_bad || 0)],
+      result === 'accept' ? ['People', num(dash.people != null ? dash.people : top.length)] : ['Wrong codes', num(dash.otp_bad || 0)],
       ['Newest', rows.length ? ago(rows[0].ts) : '–']]));
     if (top.length) {
       body.appendChild(el('h4', '', result === 'accept' ? 'Who' : 'Why'));
       var t = el('div');
       facet(t, top.slice(0, 8), result === 'accept' ? 'good' : 'reject', function (r) {
         closeModal();
-        openRequests(result === 'accept' ? {name: r.said, result: result} : {reason: r.said, result: result});
+        /* The day the view counted (1.0.294), not the Log's last window. */
+        var day = Date.now() / 1000 - 86400;
+        openRequests(result === 'accept' ? {name: r.said, result: result, since: day} : {reason: r.said, result: result, since: day});
       });
       body.appendChild(t);
     }
@@ -915,13 +917,18 @@ function peekActivity(title, result, jumpWords) {
       go: function () { openRequests({result: result, since: Date.now() / 1000 - 86400}); }});
 }
 function peekTokensCard() {
-  peek('Tokens', function () { return api('tokens&limit=1000&sort=last_used&desc=1'); }, function (body, d) {
+  /* The locked ones asked for on their own (1.0.294): out of the newest used 1000 a token locked
+     before it was ever used was missing, and "never used" counted only those 1000. */
+  peek('Tokens', function () {
+    return Promise.all([api('tokens&limit=1000&sort=last_used&desc=1'), api('tokens&limit=200&sort=locked_until&desc=1')])
+      .then(function (two) { two[0].lockrows = two[1].rows || []; return two[0]; });
+  }, function (body, d) {
     var t = (STATUS || {}).tokens || {};
     body.appendChild(peekFacts([['All', num(t.all)], ['In use', num(t.active)], ['Waiting for a code', num(t.pending)],
       ['Switched off', num(t.disabled)], ['Used in 30 days', num(t.used_30d)]]));
     var rows = (d.rows || d.tokens || []);
-    var locked = rows.filter(function (r) { return r.locked_until && r.locked_until * 1000 > Date.now(); });
-    var never = rows.filter(function (r) { return !r.last_used; }).length;
+    var locked = (d.lockrows || rows).filter(function (r) { return r.locked_until && r.locked_until * 1000 > Date.now(); });
+    var never = (d.counts && d.counts.never_used != null) ? d.counts.never_used : rows.filter(function (r) { return !r.last_used; }).length;
     body.appendChild(el('p', 'note', num(never) + ' never used yet' + (locked.length ? ' · ' + num(locked.length) + ' locked out after wrong codes' : '') + '.'));
     if (locked.length) {
       body.appendChild(el('h4', '', 'Locked out now'));

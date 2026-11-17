@@ -271,7 +271,7 @@ def _db_agent_pins_from(agent, conf):
                          a.get('agent_cert_end')})
 
 
-def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True):
+def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True, retry=True):
     """One of the agent's operations, signed; its answer (a dict) or ValueError."""
     a = conf or db_agent()
     if not a:
@@ -299,7 +299,8 @@ def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True):
             # the agent starting its listening side again (a new certificate, a node joined):
             # its old side still answers for a moment - a reset or a certificate not pinned
             # before anything was sent, or a look, is tried once more (1.0.289)
-            if attempt == 0 and (op in ('status', 'load') or isinstance(e, DbAgentNotSent)):
+            if attempt == 0 and retry and (op in ('status', 'load') or
+                                           isinstance(e, DbAgentNotSent)):
                 time.sleep(1.5)
                 continue
             raise ValueError('the database agent at %s:%s does not answer: %s'
@@ -443,10 +444,15 @@ def db_agent_join(store, code, addr='', db_host='', by='command line', say=None)
     data = db_agent_code(code)
     host, port = data['h'], data['p']
     if addr:
-        m = re.fullmatch(r'\[?([^\]]+?)\]?(?::(\d{1,5}))?', str(addr).strip())
-        if not m:
-            raise ValueError('the agent\'s address is HOST or HOST:PORT')
-        host, port = m.group(1), int(m.group(2) or port)
+        a = str(addr).strip()
+        if a.count(':') > 1 and not a.startswith('['):
+            # A bare IPv6 address (1.0.294): its last group was taken for the port.
+            host = a
+        else:
+            m = re.fullmatch(r'\[?([^\]]+?)\]?(?::(\d{1,5}))?', a)
+            if not m:
+                raise ValueError('the agent\'s address is HOST or HOST:PORT')
+            host, port = m.group(1), int(m.group(2) or port)
     # One agent per node (1.0.289): another one joined replaces the one there is - refused
     # while this node is one of a cluster whose database is on that one's server (the
     # replication runs through it).
@@ -1262,12 +1268,13 @@ def _db_agent_start(daemon):
 
 
 # ---- the meter in the header: the database servers beside the nodes ---------------------------
-def db_agent_load(fresh=False, timeout=10):
+def db_agent_load(fresh=False, timeout=10, retry=True):
     """This node's database server, in the shape of server_load() (and its database's own)."""
     now = time.time()
     if not fresh and DBAGENT_STATE['load'] and now - DBAGENT_STATE['load_at'] < 2.5:
         return DBAGENT_STATE['load']
-    got = db_agent_call('load', {'db': CONFIG.get('db_name') or 'otp'}, timeout=timeout)
+    got = db_agent_call('load', {'db': CONFIG.get('db_name') or 'otp'}, timeout=timeout,
+                        retry=retry)
     got.pop('said', None)
     DBAGENT_STATE.update(load=got, load_at=now)
     return got
@@ -1300,9 +1307,11 @@ def db_agent_load_rows(store):
             v = {'at': now, 'down': True, 'said': DBAGENT_STATE.get('load_said') or ''}
         else:
             try:
-                v = dict(db_agent_load(timeout=4))
+                # Once, not tried again (1.0.294): the meter waited 4 + 1.5 + 4 s, and the pause
+                # counted from before it was spent; it counts from the failure now.
+                v = dict(db_agent_load(timeout=4, retry=False))
             except ValueError as e:
-                DBAGENT_STATE.update(load_fail_at=now, load_said=str(e)[:200])
+                DBAGENT_STATE.update(load_fail_at=time.time(), load_said=str(e)[:200])
                 v = {'at': now, 'down': True, 'said': str(e)[:200]}
         v.update(kind='db', node=me, host=db_agent_db_host(), age=0.0)
         out.append(v)

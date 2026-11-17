@@ -471,13 +471,27 @@ def radius_ask(server, port, secret, user, password, nas_ip='127.0.0.1', timeout
     data, auth = build_request(code, ident, pairs, secret_b,
                                password=password if code == ACCESS_REQUEST else None)
     family = socket.AF_INET6 if ':' in str(server) else socket.AF_INET
-    sock = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        raise RadiusError('the port is a number')
+    if not 0 < port < 65536:
+        raise RadiusError('the port is 1 to 65535')
+    try:
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+    except OSError as e:
+        raise RadiusError('cannot ask %s:%s: %s' % (server, port, e))
     sock.settimeout(float(timeout))
     began = time.time()
     try:
         bad = False
         for _ in range(max(1, int(tries))):
-            sock.sendto(data, (server, int(port)))
+            # A name that does not resolve, or no route to it (1.0.294): said as the answer, it
+            # was an error of the page.
+            try:
+                sock.sendto(data, (server, port))
+            except OSError as e:
+                raise RadiusError('cannot reach %s:%s: %s' % (server, port, e))
             # One deadline per try (1.0.57): a stream of other packets reset
             # the timeout on every one and the wait never ended; a forged
             # answer is skipped, not taken for the server's.
@@ -489,6 +503,9 @@ def radius_ask(server, port, secret, user, password, nas_ip='127.0.0.1', timeout
                     got, src = sock.recvfrom(4096)
                 except socket.timeout:
                     break
+                except OSError as e:
+                    # An ICMP "port unreachable" comes back as a refusal (1.0.294).
+                    raise RadiusError('%s:%s refused it: %s' % (server, port, e))
                 if len(got) < 20 or got[1] != ident or got[0] not in (
                         ACCESS_ACCEPT, ACCESS_REJECT, ACCESS_CHALLENGE, ACCOUNTING_RESPONSE):
                     continue

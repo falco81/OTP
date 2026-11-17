@@ -3557,9 +3557,12 @@ def radtest_do(store, daemon, by, src, b):
     code, words, took = radius_ask(server, port, secret, user, password,
                                    extra=[('State', '0x' + state)] if state else ())
     got_state = next((v for k, v in words if k == 'State'), '')
+    # The row of the log only for a test of this machine (1.0.294): another server's answer is
+    # in that server's log, and the newest row of the name here was some other request.
     row = store.db.row("SELECT id FROM radius_log WHERE username = ? ORDER BY id DESC "
                        "LIMIT 1", (Authenticator.full_name(
-                           user, (store.client_for('127.0.0.1') or {}).get('realm', '')),))
+                           user, (store.client_for('127.0.0.1') or {}).get('realm', '')),)) \
+        if server in ('127.0.0.1', '::1', 'localhost') else None
     return {'result': {2: 'accept', 3: 'reject', 11: 'challenge'}.get(code, str(code)),
             'answer': words, 'took_ms': took, 'row': row['id'] if row else None,
             'how': 'udp', 'node': node_name(), 'cli': 'radtest %s %s %s %d <secret>' % (
