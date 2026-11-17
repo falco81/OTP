@@ -21863,7 +21863,9 @@ function dbaDraw(host, d) {
   var w = d.where || {};
   var me = (d.servers || []).filter(function (s) { return s.me; })[0] || null;
   var full = typeof ME === 'object' && ME && ME.role === 'fulladmin';
-  if (!dbaOn(d)) {
+  /* This node's own agent (1.0.295): the other node's server's row alone drew the card of an
+     agent of this node's - Move, Restart, Renew and Forget for an agent it does not have. */
+  if (String(d.db_admin || '').indexOf('agent:') !== 0) {
     /* A server elsewhere, its administrator's: otp only connects to it. */
     var t0 = el('b', '');
     t0.appendChild(noI18n(el('span', '', dbaEngine(w.engine) + ' ')));
@@ -21871,6 +21873,11 @@ function dbaDraw(host, d) {
     t0.appendChild(el('span', '', ' - a server no agent looks after'));
     host.appendChild(dbaHero('plain', 'db', t0,
       'otp only connects to it: its certificate, its settings and their restart are its administrator’s. With otp-db-agent on that server otp looks after it as it would one on this machine - and the meter in the header shows it.'));
+    if ((d.servers || []).length) {
+      var og = el('div', 'dbs-grid');
+      d.servers.forEach(function (s) { og.appendChild(dbaTile(s, d)); });
+      host.appendChild(og);
+    }
     var row = el('div', 'btnrow');
     if (full) {
       var c = cmdButton('Connect a database server…', 'plug', 'primary');
@@ -22363,18 +22370,26 @@ function dbaHa(d) {
       var other = s.me ? byNode[peerNode] : (dbs.filter(function (x) { return x.me; })[0]);
       var rep = el('td', 'small');
       var arrow = noI18n(el('span', 'dbs-dir', dbaLabel(s, dbs) + ' → ' + (other ? dbaLabel(other, dbs) : '?')));
-      rep.appendChild(arrow);
+      /* No replication (1.0.295): standalone, or both nodes on one server - not a red "not set
+         up", there is none to set up. */
+      var norep = d.mode !== 'replicated';
+      if (!norep) rep.appendChild(arrow);
       var ok = false, words = 'not set up', behind;
-      if (s.me) {
+      if (norep) {
+        rep.appendChild(el('span', 'muted', '– no replication'));
+        tr.appendChild(rep);
+      } else if (s.me) {
         var out = (r.outgoing || [])[0];
         if (out) { ok = out.active && out.wal_status !== 'lost'; words = out.wal_status === 'lost' ? 'lost' : (out.active ? 'taken' : 'waiting'); behind = out.behind; }
       } else {
         var inn = (r.incoming || [])[0];
         if (inn) { ok = inn.enabled && inn.running; words = !inn.enabled ? 'paused' : (inn.running ? 'running' : 'not running'); }
       }
-      rep.appendChild(document.createTextNode(' '));
-      rep.appendChild(el('span', 'tag ' + (ok ? 'ok' : (words === 'paused' || words === 'waiting' ? 'warn' : 'crit')), words));
-      tr.appendChild(rep);
+      if (!norep) {
+        rep.appendChild(document.createTextNode(' '));
+        rep.appendChild(el('span', 'tag ' + (ok ? 'ok' : (words === 'paused' || words === 'waiting' ? 'warn' : 'crit')), words));
+        tr.appendChild(rep);
+      }
       tr.appendChild(el('td', 'num', behind !== undefined && behind !== null ? bytes(behind) : '–'));
       var ln = linkOf[s.node] || {};
       var lk = el('td', 'small');

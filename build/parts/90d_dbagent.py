@@ -1276,6 +1276,9 @@ def db_agent_load(fresh=False, timeout=10, retry=True):
     got = db_agent_call('load', {'db': CONFIG.get('db_name') or 'otp'}, timeout=timeout,
                         retry=retry)
     got.pop('said', None)
+    # When this node read it, by this node's clock (1.0.295): the database server's own clock
+    # behind made its row late in the meter for good, an hour behind left it out.
+    got['at'] = time.time()
     DBAGENT_STATE.update(load=got, load_at=now)
     return got
 
@@ -1315,9 +1318,13 @@ def db_agent_load_rows(store):
                 v = {'at': now, 'down': True, 'said': str(e)[:200]}
         v.update(kind='db', node=me, host=db_agent_db_host(), age=0.0)
         out.append(v)
+    try:
+        nodes = set(host_nodes(store))
+    except Exception:                                   # noqa: BLE001
+        nodes = None
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'load:db:%'"):
         n = str(r['k'])[len('load:db:'):]
-        if n == me:
+        if n == me or (nodes is not None and n not in nodes):
             continue
         try:
             v = json.loads(r['v'] or '{}')
@@ -1350,6 +1357,12 @@ def db_agent_servers(store):
     except Exception:                                   # noqa: BLE001
         rows = []
     now = time.time()
+    # Only of the nodes there are (1.0.295): a node forgotten or renamed left its server's tile,
+    # pills and alert behind for good.
+    try:
+        nodes = set(host_nodes(store))
+    except Exception:                                   # noqa: BLE001
+        nodes = None
     for r in rows:
         try:
             v = json.loads(r['v'] or '{}')
@@ -1358,6 +1371,8 @@ def db_agent_servers(store):
         if not isinstance(v, dict):
             continue
         n = str(r['k'])[len('dbagent:node:'):]
+        if nodes is not None and n not in nodes:
+            continue
         fresh = now - float(v.get('at') or 0) < max(3 * DBAGENT_EVERY, 120)
         v.update(kind='db', name='db:%s' % n, node=n, me=n == node_name(),
                  alive=bool(v.get('ok')) and fresh, stale=not fresh)

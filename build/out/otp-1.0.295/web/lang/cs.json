@@ -3,7 +3,7 @@
   "code": "cs",
   "name": "Čeština",
   "english": "Czech",
-  "version": "1.0.294",
+  "version": "1.0.295",
   "made": "2026-10-23",
   "about": "Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen \"text\", nikdy \"source\". Prázdný text znamená: zobrazit anglicky."
  },
@@ -27469,38 +27469,42 @@
    "text": "– (vynulováno)"
   },
   "s6866": {
+   "source": "– no replication",
+   "text": "– bez replikace"
+  },
+  "s6867": {
    "source": "… in (minutes)",
    "text": "… za (minut)"
   },
-  "s6867": {
+  "s6868": {
    "source": "…and also the names ending in @",
    "text": "…a také jména končící na @"
   },
-  "s6868": {
+  "s6869": {
    "source": "…and its IPv6 address (optional)",
    "text": "…a její IPv6 adresa (volitelně)"
   },
-  "s6869": {
+  "s6870": {
    "source": "…in the first updates",
    "text": "…v prvních aktualizacích"
   },
-  "s6870": {
+  "s6871": {
    "source": "…or Internet Options → Security → Local intranet → Sites: ",
    "text": "…nebo Možnosti Internetu → Zabezpečení → Místní intranet → Weby: "
   },
-  "s6871": {
+  "s6872": {
    "source": "↑ ↓ and Tab or Enter take one · Esc closes",
    "text": "↑ ↓ a Tab nebo Enter vybere · Esc zavře"
   },
-  "s6872": {
+  "s6873": {
    "source": "✓ RIGHT",
    "text": "✓ SPRÁVNĚ"
   },
-  "s6873": {
+  "s6874": {
    "source": "✗ WRONG",
    "text": "✗ ŠPATNĚ"
   },
-  "s6874": {
+  "s6875": {
    "source": "✗: a token is there under that name already - left as it is; take one of the two away by hand.",
    "text": "✗: pod tím jménem už token je – zůstává, jak je; jeden z nich odeberte ručně."
   }

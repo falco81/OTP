@@ -221,6 +221,7 @@ out['err'] = e
 rows = (g or {}).get('dbservers') or []
 out['n'] = len(rows); out['r'] = rows[0] if rows else {}
 now = time.time()
+st.set_meta('node:n2', json.dumps({'at': now, 'name': 'n2'}))   # a node of the cluster (1.0.295)
 st.set_meta('load:db:n2', json.dumps({'at': now - 30, 'kind': 'db', 'node': 'n2', 'host': '192.0.2.7', 'cpu': 5.0, 'mem_used': 1, 'mem_total': 2,
                                       'db': {'running': True}}))
 st.set_meta('load:db:n3', json.dumps({'at': now - 7200, 'kind': 'db', 'node': 'n3'}))

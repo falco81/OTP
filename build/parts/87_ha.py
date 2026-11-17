@@ -376,6 +376,12 @@ def ha_forget(store, name):
     if not alive:
         store.drop_meta('maint:' + name)
         store.drop_meta('upgrade:node:' + name)
+        # Its database server's rows too (1.0.295): its tile, its pills on the cards, its
+        # "does not answer" alert and its row of the meter stayed for good.
+        try:
+            db_agent_rows_drop(store.db, name)
+        except Exception:                               # noqa: BLE001
+            pass
     CLUSTER_WITH.discard('cluster:with:' + name)
 
 
