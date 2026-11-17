@@ -1502,12 +1502,22 @@ def alerts_tick(daemon):
                                     alert_problems(store, 'en'))
                 except Exception as e:              # noqa: BLE001
                     log_sparing('snmp-traps', 'SNMPv3 traps: %s' % e, 'warn', every=900)
-            if CONFIG.get('report') and report_due():
+            if CONFIG.get('report') and report_due() and \
+                    time.monotonic() - float(ALERT_WORK.get('report_fail') or -1e9) > 1800:
                 since, until, pid = report_period()
                 was_sent = store.get_meta('report:sent')
                 if was_sent != pid and claim_once(store, 'report:sent', pid):
                     try:
-                        report_send(store, since, until, reader=daemon.reader())
+                        entry = report_send(store, since, until, reader=daemon.reader())
+                        # Its mail did not go and is not waiting for another try (1.0.296): mail
+                        # off, or refused for good - the period given back and tried again in
+                        # 30 min; it was kept as sent and that report never went.
+                        if not entry.get('ok') and entry.get('queued') != 'waiting':
+                            ALERT_WORK['report_fail'] = time.monotonic()
+                            if store.get_meta('report:sent') == pid:
+                                store.set_meta('report:sent', was_sent or '')
+                            log_sparing('report-fail', 'the report did not go: %s'
+                                        % entry.get('said'), 'warn', every=3600)
                     except Exception as e:      # noqa: BLE001
                         # The period given back (1.0.207): claimed before it was
                         # made, a report that failed to be made was never tried again.
