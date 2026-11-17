@@ -1857,7 +1857,7 @@
   .set-item.tall > label{max-width:none}
 
   /* ---- 1.0.8: sections in large popups, item cards, quieter details ---- */
-  .msects{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;margin:16px 0 6px}
+  .msects{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(330px,100%),1fr));gap:14px;margin:16px 0 6px}
   .msect{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px 16px 16px;
     display:flex;flex-direction:column;gap:8px;min-width:0}
   .msect.wide{grid-column:1 / -1}
@@ -2956,7 +2956,7 @@ td.tok-note{min-width:150px;max-width:280px;overflow-wrap:anywhere}
 .rb-fact.good .v{color:var(--ok)} .rb-fact.bad .v{color:var(--crit);font-weight:700} .rb-fact.warn .v{color:var(--warn)}
 .rb-hero-acts{display:flex;gap:8px;flex-wrap:wrap}
 .rb-hero .going{margin-top:14px}
-.rb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+.rb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr));gap:12px}
 .rb-card{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
 .rb-card.off{opacity:.62}
 .rb-card-top{display:flex;align-items:center;gap:10px}
@@ -3091,6 +3091,7 @@ button.mebtn { cursor: pointer; }
 .ntp-servers{display:flex;flex-direction:column;gap:8px;margin:6px 0 10px}
 .ntp-srv{display:grid;grid-template-columns:minmax(200px,2fr) minmax(160px,1fr) auto auto auto auto;gap:10px;align-items:center}
 .ntp-srv .check{white-space:nowrap}
+@media (max-width:640px){.ntp-srv{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 #ntp-host .pw-grid{margin-bottom:12px}
 #ntp-host .ntp-node .btnrow{margin-top:12px}
 .ntp-node .net-facts{grid-template-columns:repeat(3,minmax(0,1fr))}

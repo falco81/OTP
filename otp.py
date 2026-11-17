@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.293'
+__version__ = '1.0.294'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -6969,13 +6969,27 @@ def radius_ask(server, port, secret, user, password, nas_ip='127.0.0.1', timeout
     data, auth = build_request(code, ident, pairs, secret_b,
                                password=password if code == ACCESS_REQUEST else None)
     family = socket.AF_INET6 if ':' in str(server) else socket.AF_INET
-    sock = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        raise RadiusError('the port is a number')
+    if not 0 < port < 65536:
+        raise RadiusError('the port is 1 to 65535')
+    try:
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+    except OSError as e:
+        raise RadiusError('cannot ask %s:%s: %s' % (server, port, e))
     sock.settimeout(float(timeout))
     began = time.time()
     try:
         bad = False
         for _ in range(max(1, int(tries))):
-            sock.sendto(data, (server, int(port)))
+            # A name that does not resolve, or no route to it (1.0.294): said as the answer, it
+            # was an error of the page.
+            try:
+                sock.sendto(data, (server, port))
+            except OSError as e:
+                raise RadiusError('cannot reach %s:%s: %s' % (server, port, e))
             # One deadline per try (1.0.57): a stream of other packets reset
             # the timeout on every one and the wait never ended; a forged
             # answer is skipped, not taken for the server's.
@@ -6987,6 +7001,9 @@ def radius_ask(server, port, secret, user, password, nas_ip='127.0.0.1', timeout
                     got, src = sock.recvfrom(4096)
                 except socket.timeout:
                     break
+                except OSError as e:
+                    # An ICMP "port unreachable" comes back as a refusal (1.0.294).
+                    raise RadiusError('%s:%s refused it: %s' % (server, port, e))
                 if len(got) < 20 or got[1] != ident or got[0] not in (
                         ACCESS_ACCEPT, ACCESS_REJECT, ACCESS_CHALLENGE, ACCOUNTING_RESPONSE):
                     continue
@@ -7798,6 +7815,11 @@ class ListQuery(object):
                 net = ipaddress.ip_network(low, strict=False)
             except ValueError:
                 raise ListQueryError('%r is not an address or a range of them' % item)
+            if net.version == 4 and net.prefixlen == 32:
+                # One address (1.0.294): its pattern was "a.b.c.d.%" and found nothing.
+                one = str(net.network_address)
+                c = "LOWER(COALESCE(%s, ''))" % col
+                return ("(%s = ? OR %s LIKE ? ESCAPE '!')" % (c, c), [one, like_pattern(one) + ':%'])
             if net.version == 4 and net.prefixlen % 8 == 0:
                 keep = '.'.join(str(net.network_address).split('.')[:net.prefixlen // 8])
                 return ("LOWER(%s) LIKE ? ESCAPE '!'" % col,
@@ -9255,7 +9277,8 @@ class Storage(object):
 
     # ---- tokens --------------------------------------------------------------
     TOKEN_SORTS = {'name': 'name', 'created': 'created', 'last_used': 'last_used',
-                   'state': 'state', 'failures': 'failures', 'scratch_left': 'scratch_left'}
+                   'state': 'state', 'failures': 'failures', 'scratch_left': 'scratch_left',
+                   'locked_until': 'locked_until'}   # 1.0.294: the quick view's locked ones
 
     def token(self, name):
         return self.db.row('SELECT * FROM tokens WHERE name = ?', (norm_name(name),))
@@ -50747,9 +50770,12 @@ def radtest_do(store, daemon, by, src, b):
     code, words, took = radius_ask(server, port, secret, user, password,
                                    extra=[('State', '0x' + state)] if state else ())
     got_state = next((v for k, v in words if k == 'State'), '')
+    # The row of the log only for a test of this machine (1.0.294): another server's answer is
+    # in that server's log, and the newest row of the name here was some other request.
     row = store.db.row("SELECT id FROM radius_log WHERE username = ? ORDER BY id DESC "
                        "LIMIT 1", (Authenticator.full_name(
-                           user, (store.client_for('127.0.0.1') or {}).get('realm', '')),))
+                           user, (store.client_for('127.0.0.1') or {}).get('realm', '')),)) \
+        if server in ('127.0.0.1', '::1', 'localhost') else None
     return {'result': {2: 'accept', 3: 'reject', 11: 'challenge'}.get(code, str(code)),
             'answer': words, 'took_ms': took, 'row': row['id'] if row else None,
             'how': 'udp', 'node': node_name(), 'cli': 'radtest %s %s %s %d <secret>' % (
@@ -62929,7 +62955,7 @@ def _db_agent_pins_from(agent, conf):
                          a.get('agent_cert_end')})
 
 
-def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True):
+def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True, retry=True):
     """One of the agent's operations, signed; its answer (a dict) or ValueError."""
     a = conf or db_agent()
     if not a:
@@ -62957,7 +62983,8 @@ def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True):
             # the agent starting its listening side again (a new certificate, a node joined):
             # its old side still answers for a moment - a reset or a certificate not pinned
             # before anything was sent, or a look, is tried once more (1.0.289)
-            if attempt == 0 and (op in ('status', 'load') or isinstance(e, DbAgentNotSent)):
+            if attempt == 0 and retry and (op in ('status', 'load') or
+                                           isinstance(e, DbAgentNotSent)):
                 time.sleep(1.5)
                 continue
             raise ValueError('the database agent at %s:%s does not answer: %s'
@@ -63101,10 +63128,15 @@ def db_agent_join(store, code, addr='', db_host='', by='command line', say=None)
     data = db_agent_code(code)
     host, port = data['h'], data['p']
     if addr:
-        m = re.fullmatch(r'\[?([^\]]+?)\]?(?::(\d{1,5}))?', str(addr).strip())
-        if not m:
-            raise ValueError('the agent\'s address is HOST or HOST:PORT')
-        host, port = m.group(1), int(m.group(2) or port)
+        a = str(addr).strip()
+        if a.count(':') > 1 and not a.startswith('['):
+            # A bare IPv6 address (1.0.294): its last group was taken for the port.
+            host = a
+        else:
+            m = re.fullmatch(r'\[?([^\]]+?)\]?(?::(\d{1,5}))?', a)
+            if not m:
+                raise ValueError('the agent\'s address is HOST or HOST:PORT')
+            host, port = m.group(1), int(m.group(2) or port)
     # One agent per node (1.0.289): another one joined replaces the one there is - refused
     # while this node is one of a cluster whose database is on that one's server (the
     # replication runs through it).
@@ -63920,12 +63952,13 @@ def _db_agent_start(daemon):
 
 
 # ---- the meter in the header: the database servers beside the nodes ---------------------------
-def db_agent_load(fresh=False, timeout=10):
+def db_agent_load(fresh=False, timeout=10, retry=True):
     """This node's database server, in the shape of server_load() (and its database's own)."""
     now = time.time()
     if not fresh and DBAGENT_STATE['load'] and now - DBAGENT_STATE['load_at'] < 2.5:
         return DBAGENT_STATE['load']
-    got = db_agent_call('load', {'db': CONFIG.get('db_name') or 'otp'}, timeout=timeout)
+    got = db_agent_call('load', {'db': CONFIG.get('db_name') or 'otp'}, timeout=timeout,
+                        retry=retry)
     got.pop('said', None)
     DBAGENT_STATE.update(load=got, load_at=now)
     return got
@@ -63958,9 +63991,11 @@ def db_agent_load_rows(store):
             v = {'at': now, 'down': True, 'said': DBAGENT_STATE.get('load_said') or ''}
         else:
             try:
-                v = dict(db_agent_load(timeout=4))
+                # Once, not tried again (1.0.294): the meter waited 4 + 1.5 + 4 s, and the pause
+                # counted from before it was spent; it counts from the failure now.
+                v = dict(db_agent_load(timeout=4, retry=False))
             except ValueError as e:
-                DBAGENT_STATE.update(load_fail_at=now, load_said=str(e)[:200])
+                DBAGENT_STATE.update(load_fail_at=time.time(), load_said=str(e)[:200])
                 v = {'at': now, 'down': True, 'said': str(e)[:200]}
         v.update(kind='db', node=me, host=db_agent_db_host(), age=0.0)
         out.append(v)
