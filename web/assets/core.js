@@ -215,6 +215,8 @@ function apiLatest(key, what, body) {
 function apiLatestOut(key) { return !!LATEST_OUT[key]; }
 function oops(e) {
   if (e && e.stopped) return;           /* somebody stopped it: not a fault */
+  /* An upgrade restarting what answers these pages (1.0.299): the band says so, once. */
+  if (e && (e.upgrading || (e.unreachable && typeof upgradeExpected === 'function' && upgradeExpected()))) return;
   /* An account that must set its own password first: every page answers
      "change your password first" - said once, by its own form (1.0.103). */
   if (typeof ME === 'object' && ME && ME.must_change && e && e.status === 403) return;
@@ -1202,6 +1204,8 @@ function api(what, body, wait, ctl) {
     var err = new Error(late ? 'the server did not answer in ' + limit + ' s'
                              : 'the server could not be reached');
     err.unreachable = true;
+    /* nginx and PHP restarting in an upgrade the page knows of (1.0.299): expected. */
+    if (typeof upgradeExpected === 'function' && upgradeExpected()) err.upgrading = true;
     throw err;
   }).then(function (r) {
     clearTimeout(timer);
@@ -1229,10 +1233,22 @@ function api(what, body, wait, ctl) {
         if (r.status === 502 || r.status === 503 || r.status === 504) {
           var down = new Error('the server is not answering just now - try again in a moment');
           down.unreachable = true;     /* nginx with nothing behind it - a restart */
+          if (typeof upgradeExpected === 'function' && upgradeExpected()) down.upgrading = true;
           throw down;
         }
         if (r.status === 413) throw new Error('that is more than the server takes');
         throw new Error('the page got something that is not an answer');
+      }
+      if (r.status === 503 && data && data.upgrading && typeof data.upgrading === 'object') {
+        /* The daemon away while this node is upgraded (1.0.299): how far it is, from the file
+           the pages read themselves - expected, never a red toast. */
+        if (typeof upgradeHeard === 'function') upgradeHeard(data.upgrading, 'api');
+        var up = new Error(data.error || 'otp is being upgraded - back in a moment');
+        up.status = 503;
+        up.unreachable = true;
+        up.upgrading = data.upgrading.state === 'running';
+        up.data = data;
+        throw up;
       }
       if (r.status === 503 && data && data.busy) {
         if (ctl && ctl.stopped) throw stoppedErr();

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.298'
+__version__ = '1.0.299'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -28481,12 +28481,53 @@ def upgrade_start(store, by, pages=False):
             store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)',
                          (k, json.dumps({'state': 'none'})))
     plan = {'id': ident, 'version': meta['version'], 'sha': meta['sha'], 'order': order,
-            'by': by, 'at': time.time(), 'from': me, 'downgrade': bool(meta.get('downgrade'))}
+            'by': by, 'at': time.time(), 'from': me, 'downgrade': bool(meta.get('downgrade')),
+            'was': __version__}
     store.set_meta('upgrade:plan', json.dumps(plan))
     store.add_event('starting and stopping', '%s started %s %s: %s, one at a time' % (
         by, 'going back to' if plan['downgrade'] else 'the upgrade to', meta['version'],
         ', '.join(order)), 'warn', who=by)
     return upgrade_plan(store)
+
+
+UPG_BRIEF = {'at': -10.0, 'v': None}
+
+
+def upgrade_brief(store):
+    """The upgrade at a glance, for the band every page shows under its header (1.0.299): while
+    it runs, and for 10 min after it ended (a page asking a moment later still sees how it
+    ended) - not a cancelled one. Read at most every 2 s; never in the way of the status."""
+    now = time.monotonic()
+    if now - UPG_BRIEF['at'] < 2:
+        return UPG_BRIEF['v']
+    UPG_BRIEF['at'] = now
+    v = None
+    try:
+        plan = upgrade_plan(store)
+        # One ended and hidden on Settings → Upgrades (Hide this) is not shown in the band either.
+        if plan and plan.get('state') != 'running' and \
+                store.get_meta('upgrade:seen') == str(plan.get('id') or plan.get('at')):
+            plan = None
+        if plan and plan.get('state') in ('running', 'done', 'failed'):
+            steps = plan.get('steps') or []
+            last = max([fnum(s.get('at')) for s in steps] + [fnum(plan.get('at'))])
+            if plan['state'] == 'running' or time.time() - last < 600:
+                keep = ('name', 'state', 'part', 'part_words', 'at', 'asked', 'began')
+                rows = []
+                for s in steps:
+                    row = {k: s.get(k) for k in keep if s.get(k) is not None}
+                    if s.get('said'):
+                        row['said'] = str(s.get('said'))[:300]
+                    rows.append(row)
+                v = {'id': str(plan.get('id') or ''), 'version': str(plan.get('version') or ''),
+                     'from': str(plan.get('was') or ''), 'by': str(plan.get('by') or '')[:100],
+                     'at': fnum(plan.get('at')), 'state': plan['state'],
+                     'downgrade': bool(plan.get('downgrade')), 'drain_s': UPGRADE_DRAIN_S,
+                     'ended': 0 if plan['state'] == 'running' else last, 'steps': rows}
+    except Exception:                                   # noqa: BLE001
+        v = UPG_BRIEF['v']
+    UPG_BRIEF['v'] = v
+    return v
 
 
 def upgrade_cancel(store, by):
@@ -48892,6 +48933,8 @@ def _status(h):
         out['after'] = {'n': a['n'], 'level': a['level']}
     except Exception:                                   # noqa: BLE001
         out['after'] = {'n': 0, 'level': ''}
+    # The upgrade at a glance (1.0.299): the band under every page's header.
+    out['upgrading'] = upgrade_brief(h.store)
     return out
 
 

@@ -214,6 +214,80 @@ function otp_call(string $path, string $method = 'GET', array|object|null $paylo
     return [$status, $reply];
 }
 
+/**
+ * How far an upgrade of this node is (1.0.299), or null: .upgrade.json beside these pages, which
+ * root writes whole (otp_upgrade.py, install.sh --upgrade) and nginx never serves (a dot name).
+ * Read from the disk, not through the daemon - it is what restarts. Believed only as written:
+ * running for 30 min after its last word, done or failed for 10; one of the three states, its
+ * time not ahead. Who asked, why it failed and its id only for a page with a session ($full).
+ */
+function otp_upgrading(bool $full = false): ?array
+{
+    static $got = false;
+    if ($got === false) {
+        $got = null;
+        $f = __DIR__ . '/.upgrade.json';
+        $raw = is_link($f) ? false : @file_get_contents($f, false, null, 0, 65536);
+        $d = is_string($raw) ? json_decode($raw, true) : null;
+        if (is_array($d)) {
+            $state = (string) ($d['state'] ?? '');
+            $keep = ['running' => 1800, 'done' => 600, 'failed' => 600][$state] ?? 0;
+            $at = is_numeric($d['at'] ?? null) ? (int) $d['at'] : 0;
+            $now = time();
+            if ($keep > 0 && $at > 0 && $at <= $now + 60 && $now - $at <= $keep) {
+                $t = static function ($v, int $most): string {
+                    $s = preg_replace('/[\x00-\x1f\x7f]/', '', is_scalar($v) ? (string) $v : '');
+                    $s = substr((string) $s, 0, $most);
+                    return preg_match('//u', $s) ? $s : '';
+                };
+                $ver = static function ($v): string {
+                    return is_string($v) && preg_match('/^\d{1,4}\.\d{1,4}\.\d{1,6}\z/', $v) ? $v : '';
+                };
+                $n = static function ($v, int $hi): int {
+                    return is_numeric($v) ? max(0, min($hi, (int) $v)) : 0;
+                };
+                $got = [
+                    'state' => $state, 'version' => $ver($d['version'] ?? ''), 'from' => $ver($d['from'] ?? ''),
+                    'node' => (string) preg_replace('/[^A-Za-z0-9._-]/', '', $t($d['node'] ?? '', 64)),
+                    'part' => $n($d['part'] ?? 0, 99), 'parts' => $n($d['parts'] ?? 0, 99),
+                    'words' => $t($d['words'] ?? '', 200),
+                    'started' => $n($d['started'] ?? 0, PHP_INT_MAX), 'at' => $at,
+                    'downgrade' => ($d['downgrade'] ?? false) === true,
+                    'by' => $t($d['by'] ?? '', 100), 'said' => $t($d['said'] ?? '', 300),
+                    'id' => (string) preg_replace('/[^A-Za-z0-9._-]/', '', $t($d['id'] ?? '', 64)),
+                ];
+                if ($got['version'] === '') {
+                    $got = null;
+                }
+            }
+        }
+    }
+    if ($got === null) {
+        return null;
+    }
+    $out = $got;
+    if (!$full) {
+        unset($out['by'], $out['said'], $out['id']);
+    }
+    return $out;
+}
+
+/** The answer of a daemon away while this node is upgraded (1.0.299): 503, and how far it is -
+ *  the pages take it as expected, not as "down". False when no upgrade is known here. */
+function otp_upgrading_answer(): bool
+{
+    $u = otp_upgrading(otp_session() !== '');
+    if ($u === null) {
+        return false;
+    }
+    http_response_code(503);
+    echo json_encode(['ok' => false, 'upgrading' => $u, 'error' => $u['state'] === 'running'
+        ? 'otp is being upgraded to ' . $u['version'] . ' - back in a moment'
+        : 'the daemon is not answering — is otp.service running?'],
+        JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    return true;
+}
+
 /** Call the daemon and return the decoded reply, or null. */
 function otp_get(string $path, float $timeout = 30.0): ?array
 {
@@ -225,14 +299,18 @@ function otp_get(string $path, float $timeout = 30.0): ?array
     return is_array($data) ? $data : null;
 }
 
-/** Pass a daemon reply straight through to the browser. */
+/** Pass a daemon reply straight through to the browser. $alter (1.0.299): an answer of 200
+ *  changed on its way (decoded as objects, so {} stays {}), or null to pass it as it came. */
 function otp_relay(string $path, string $method = 'GET', array|object|null $payload = null,
-                      float $timeout = 30.0): void
+                      float $timeout = 30.0, ?callable $alter = null): void
 {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
 
     if (otp_token() === null) {
+        if (otp_upgrading_answer()) {
+            return;
+        }
         http_response_code(503);
         /* Where the token lives is for whoever is on the machine; from
            anywhere else it is a daemon that is not answering. */
@@ -244,10 +322,24 @@ function otp_relay(string $path, string $method = 'GET', array|object|null $payl
     }
     [$status, $body] = otp_call($path, $method, $payload, $timeout);
     if ($status === 0) {
+        if (otp_upgrading_answer()) {
+            return;
+        }
         http_response_code(503);
         echo json_encode(['ok' => false, 'error' =>
             'the daemon is not answering — is otp.service running?']);
         return;
+    }
+    if ($alter !== null && $status === 200) {
+        $data = json_decode($body);
+        if (is_object($data)) {
+            $data = $alter($data);
+            $again = is_object($data) ? json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                                                          | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PRESERVE_ZERO_FRACTION) : false;
+            if (is_string($again)) {
+                $body = $again;
+            }
+        }
     }
     /* A 401 is no longer taken as the end of the session here (1.0.73): while
        the web address moves between the nodes, or a node restarts during an

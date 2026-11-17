@@ -239,6 +239,17 @@ if (isset($_GET['api'])) {
     if ($what === 'logo' && !$post) {
         otp_serve_logo();
     }
+    if ($what === 'upgrade-state' && !$post) {
+        /* How far an upgrade of this node is (1.0.299), without the daemon: the pages ask this
+           while it restarts - and whether it answers again, and the version of these files. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$hs] = otp_call('/api/health', 'GET', null, 3.0);
+        echo json_encode(['ok' => true, 'upgrading' => otp_upgrading(otp_session() !== ''),
+                          'pages' => OTP_VERSION, 'api' => $hs === 200],
+                         JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
     if ($post) {
         otp_guard_post();
     }
@@ -608,7 +619,16 @@ if (isset($_GET['api'])) {
     }
     $query = $_GET;
     unset($query['api']);
-    otp_relay($reads[$what] . ($query ? '?' . http_build_query($query) : ''), 'GET', null, 60.0);
+    /* The status with this node's upgrade file in it, when there is one (1.0.299): the band
+       appears at once, before anything restarts - and an upgrade by hand (no plan) too. */
+    $alter = null;
+    if ($what === 'status' && otp_upgrading(true) !== null) {
+        $alter = static function (object $d): object {
+            $d->upgrade_file = otp_upgrading(true);
+            return $d;
+        };
+    }
+    otp_relay($reads[$what] . ($query ? '?' . http_build_query($query) : ''), 'GET', null, 60.0, $alter);
     exit;
 }
 
@@ -632,6 +652,10 @@ if (is_array($me) && is_array($me['card'] ?? null)) {
 }
 $health  = otp_get('/api/health', 5.0);
 $alive   = is_array($health);
+/* This node being upgraded (1.0.299): the sign-in page says so itself, from the file, and loads
+   again when the daemon is back - not "the daemon is not answering". */
+$upg     = $me ? null : otp_upgrading(otp_session() !== '');
+$upg_run = is_array($upg) && $upg['state'] === 'running';
 $token_there = file_exists(OTP_TOKEN);
 $token_ok    = otp_token() !== null;
 $web_user    = function_exists('posix_getpwuid') && function_exists('posix_geteuid')
@@ -709,6 +733,20 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         <span class="mono">usermod -a -G otp-web <?= h($web_user) ?></span><br>
         <span class="mono">systemctl restart php-fpm nginx</span>
       </div>
+    <?php endif; ?>
+    <?php if ($upg_run):
+        $upg_pc = $upg['parts'] > 0 ? (int) round(100 * max(0, $upg['part'] - 1) / $upg['parts']) : 3; ?>
+      <div class="upband-in" id="upband-in" data-alive="<?= $alive ? '1' : '' ?>">
+        <b><?= $upg['downgrade'] ? 'otp is being taken back to' : 'otp is being upgraded to' ?> <span data-no-i18n><?= h($upg['version']) ?></span></b>
+        <div class="up-bar"><span id="upband-in-bar" style="width:<?= $upg_pc ?>%"></span></div>
+        <div class="small muted"><span id="upband-in-words"><?= h($upg['words']) ?></span><?php if ($upg['parts'] > 0): ?> · <span id="upband-in-step" data-no-i18n><?= h($upg['part'] . ' / ' . $upg['parts']) ?></span><?php endif; ?></div>
+        <div class="small">otp.service and these pages restart once - this page loads again by itself when they are back.</div>
+      </div>
+    <?php elseif (is_array($upg) && $upg['state'] === 'failed'): ?>
+      <div class="offline">The upgrade to otp <span data-no-i18n><?= h($upg['version']) ?></span> failed<?= $upg['said'] !== '' ? ': <span data-no-i18n>' . h($upg['said']) . '</span>' : '' ?></div>
+    <?php endif; ?>
+    <?php if ($token_ok || !$token_there): ?>
+    <?php if ($upg_run): ?>
     <?php elseif (!$alive): ?>
       <div class="offline">The daemon is not answering. Nobody can sign in until
         <span class="mono">otp.service</span> is running:<br>
@@ -720,6 +758,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <?php elseif (empty($health['users'])): ?>
       <div class="offline">There is no account on this machine yet. Make one on the server:<br>
         <span class="mono">otp --add-user yourname --role fulladmin</span></div>
+    <?php endif; ?>
     <?php endif; ?>
     <div id="mfa-box" data-stage="<?= h($mfa) ?>" hidden></div>
     <?php $pw_off = is_array($health) && array_key_exists('password', $health) && $health['password'] === false
@@ -773,6 +812,28 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
 </div>
 <script nonce="<?= h($nonce) ?>" src="/assets/core.js?v=<?= h(OTP_VERSION) ?>"></script>
 <script nonce="<?= h($nonce) ?>">
+/* This node being upgraded (1.0.299): asked every 2 s how far it is; loaded again once the daemon
+   answers after having been away, or the upgrade has ended. */
+(function () {
+  var box = document.getElementById('upband-in');
+  if (!box) return;
+  var down = box.getAttribute('data-alive') !== '1', gone = 0;
+  function ask() {
+    fetch('?api=upgrade-state', {credentials: 'same-origin', cache: 'no-store'}).then(function (r) { return r.json(); }).then(function (d) {
+      gone = 0;
+      var u = d && d.upgrading;
+      if (u && u.state === 'running') {
+        var w = document.getElementById('upband-in-words'), s = document.getElementById('upband-in-step'), b = document.getElementById('upband-in-bar');
+        if (w && u.words) w.textContent = (typeof i18nText === 'function' && i18nText(u.words)) || u.words;
+        if (s && u.parts) s.textContent = u.part + ' / ' + u.parts;
+        if (b && u.parts) b.style.width = Math.round(100 * Math.max(0, u.part - 1) / u.parts) + '%';
+      }
+      if (!d.api) { down = true; return; }
+      if (down || !u || u.state !== 'running') { location.reload(); return; }
+    }).catch(function () { down = true; gone++; }).then(function () { setTimeout(ask, 2000); });
+  }
+  setTimeout(ask, 2000);
+}());
 (function () {
   var form = $('signin-form'), said = $('in-said'), go = $('in-go');
   /* The language, chosen before signing in - as on the enrolment pages (1.0.15). */
@@ -930,6 +991,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <b>live</b><br><span id="updated-at">…</span></div>
 </header>
 
+<div id="upband" class="upband" hidden aria-live="polite"></div>
 <div id="offline" class="offline" hidden></div>
 <div id="phpsafety" class="offline" hidden></div>
 <div id="problems" class="offline warnish" hidden></div>

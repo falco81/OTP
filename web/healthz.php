@@ -6,7 +6,19 @@ declare(strict_types=1);
 require_once __DIR__ . '/otp-api.php';
 header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store');
+/* This node being upgraded (1.0.299): a monitor sees maintenance, not "down" - the same 503. */
+function otp_health_upgrading(): void
+{
+    $u = otp_upgrading();
+    if ($u === null || $u['state'] !== 'running') {
+        return;
+    }
+    http_response_code(503);
+    echo 'maintenance ' . $u['node'] . ': being upgraded to ' . $u['version'] . "\n";
+    exit;
+}
 if (otp_token() === null) {
+    otp_health_upgrading();
     // Said as it is (1.0.36): the daemon may well be up; it is the pages
     // that cannot reach it.
     http_response_code(503);
@@ -23,6 +35,7 @@ if (!in_array($check, ['web', 'radius', 'all'], true)) {
 }
 $got = otp_get('/api/health' . ($check === 'all' ? '?check=all' : ''), 3.0);
 if (!is_array($got) || empty($got['ok'])) {
+    otp_health_upgrading();
     http_response_code(503);
     echo "down: the daemon is not answering\n";
     exit;
