@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.295'
+__version__ = '1.0.296'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -15819,6 +15819,9 @@ class RadiusServer(object):
         self.readers = []
         self.stop_flag = False
         self.counts = collections.Counter()
+        # Every worker counts (1.0.296): `+= 1` from several threads lost some, and /metrics read
+        # the Counter while a new key went in.
+        self.counts_lock = threading.Lock()
         self.bound = []
         self.trouble = ''
 
@@ -16040,7 +16043,7 @@ class RadiusServer(object):
                     self.jobs.put_nowait((kind, via, data, peer, time.time()),
                                          key=radius_fair_key(data, peer[0]) if self.fair_known(peer[0]) else '*')
             except queue.Full:
-                self.counts['overflow'] += 1
+                self.count('overflow')
 
     def fair_known(self, ip):
         """Whether a packet's address is one of the clients, for its line in the queue (1.0.280): an
@@ -16073,7 +16076,7 @@ class RadiusServer(object):
             # up behind a slow directory, each using its code up. 4 s (1.0.265):
             # see RADIUS_STALE_S.
             if time.time() - arrived > radius_stale_s():
-                self.counts['stale'] += 1
+                self.count('stale')
                 with self.unknown_lock:
                     self.quiet['too old to answer'] += 1
                 continue
@@ -16085,7 +16088,7 @@ class RadiusServer(object):
                 self.handle(kind, sock, data, peer, arrived)
             except DbError as e:
                 # Not answered, as any request while the database is away.
-                self.counts['no_database'] += 1
+                self.count('no_database')
                 DB_TROUBLE_SEEN.update(at=time.time(), said=str(e).split('\n')[0][:200])
                 log_sparing('radius-db', 'RADIUS requests go unanswered: %s'
                             % str(e).split('\n')[0][:200], 'error')
@@ -16120,7 +16123,7 @@ class RadiusServer(object):
         ip, port = peer[0], peer[1]
         if ip.startswith('::ffff:'):
             ip = ip[7:]
-        self.counts['packets'] += 1
+        self.count('packets')
         self.sum_up()
         # In maintenance nothing is answered (1.0.37): the VPN takes this
         # node for down and asks the other, as it would any node that is.
@@ -16129,13 +16132,13 @@ class RadiusServer(object):
         # answered on while the VIP address moves - a code was let in here and again on the
         # other node, and a right code refused by a clock that is off.
         if m.get('on') and (m.get('split') or m.get('clock') or not self.draining()):
-            self.counts['maintenance'] += 1
+            self.count('maintenance')
             return
         client = self.d.store.client_for(ip)
         try:
             pkt = Packet.parse(data)
         except RadiusError as e:
-            self.counts['malformed'] += 1
+            self.count('malformed')
             # Only from a client is one written down, and then sparingly:
             # anybody can send junk to the port, from any address.
             if client:
@@ -16146,7 +16149,7 @@ class RadiusServer(object):
                                else 'malformed, from other addresses'] += 1
             return
         if not client:
-            self.counts['unknown'] += 1
+            self.count('unknown')
             self.drop(ip, port, pkt.text(1), 'the address %s is not one of the clients' % ip,
                       pkt=pkt, unknown=True)
             return
@@ -16165,7 +16168,7 @@ class RadiusServer(object):
             with self.seen_lock:
                 got = seen.get(key)
                 if got and arrived - got[0] < window:
-                    self.counts['repeated'] += 1
+                    self.count('repeated')
                     # A refusal sent late is given to a repeat once it went
                     # (1.0.136) - before, the NAS's repeats got nothing and it
                     # took the server for dead.
@@ -16275,7 +16278,7 @@ class RadiusServer(object):
         address only once a minute, so a VPN pointed here before it was
         added does not fill the log, and never more than 30 a minute in
         all, so a flood from made-up addresses does not either (1.0.33)."""
-        self.counts['dropped'] += 1
+        self.count('dropped')
         if unknown or sparing:
             if unknown and not CONFIG.get('radius_unknown_log', 1):
                 return
@@ -16414,7 +16417,7 @@ class RadiusServer(object):
             return None
         if not self.ma_check(pkt, client, secret, ip, port):
             return None
-        self.counts['status'] += 1
+        self.count('status')
         return build_reply(pkt, ACCESS_ACCEPT, [attr_bytes('Reply-Message', 'otp is alive')],
                            secret, True)
 
@@ -16491,7 +16494,7 @@ class RadiusServer(object):
             # The database gone (1.0.59): no answer, as a node in maintenance
             # gives none - the VPN asks the other node, where a refusal would
             # have refused everybody until the database was back.
-            self.counts['no_database'] += 1
+            self.count('no_database')
             # Told to the alerts too (1.0.207): only a DbError out of handle() was,
             # and the common case went unanswered with no word to anybody.
             DB_TROUBLE_SEEN.update(at=time.time(), said=str(e).split('\n')[0][:200])
@@ -16504,7 +16507,7 @@ class RadiusServer(object):
                 # statement or a lock that ran out (1.0.149): as when it is
                 # gone, no answer. A refusal refused everybody with a right
                 # code, and the VPN never asked the other node.
-                self.counts['no_database'] += 1
+                self.count('no_database')
                 DB_TROUBLE_SEEN.update(at=time.time(), said=str(e).split('\n')[0][:200])
                 log_sparing('radius-db', 'RADIUS requests go unanswered: the database is not '
                             'answering (%s)' % str(e).split('\n')[0][:200], 'error')
@@ -16518,7 +16521,7 @@ class RadiusServer(object):
             d.step('the decision', False, 'it could not be made: %s' % e)
             d.refuse('the token server could not decide: %s' % str(e)[:120])
         if getattr(d, 'silent', ''):
-            self.counts['no_directory'] += 1
+            self.count('no_directory')
             log_sparing('radius-nodir', 'RADIUS requests left to the other node: %s' % d.silent, 'warn')
             # Written down as every other (1.0.224): "why was I not let in" answered by its row.
             try:
@@ -16548,19 +16551,16 @@ class RadiusServer(object):
                 if d.result == 'accept':
                     d.refuse('the answer cannot be built whole: %s' % e)
         if d.result == 'accept':
-            self.counts['accept'] += 1
             code = ACCESS_ACCEPT
         elif d.result == 'challenge' and d.state:
             # The second window (1.0.76): the State the VPN sends back with
             # the code, and the words it shows. Nothing that lets in.
-            self.counts['challenge'] += 1
             code = ACCESS_CHALLENGE
             pairs = [attr_bytes('State', '0x' + bytes(d.state).hex())]
             said = (d.message or '').encode('utf-8')[:253].decode('utf-8', 'ignore')
             if said:
                 pairs.append(attr_bytes('Reply-Message', said))
         else:
-            self.counts['reject'] += 1
             code = ACCESS_REJECT
             # The reason is cut by bytes, not characters, so a reason full of
             # accented letters still fits the attribute; and if the attribute
@@ -16586,12 +16586,13 @@ class RadiusServer(object):
             # without the attributes that limit what it lets in to.
             d.step('the answer', False, '%s - refused, since it cannot be sent whole' % e)
             if code == ACCESS_ACCEPT:
-                self.counts['accept'] -= 1
-                self.counts['reject'] += 1
                 d.refuse('the answer would be longer than a RADIUS packet may be: too many '
                          'reply attributes in the realm and its groups')
                 code = ACCESS_REJECT
             reply = build_reply(pkt, code, [], secret, bool(CONFIG.get('radius_reply_ma', 1)))
+        # Counted once, as it goes out (1.0.296): an Accept too long to send was counted and
+        # taken back, and a counter of /metrics went down - a reset to Prometheus.
+        self.count({ACCESS_ACCEPT: 'accept', ACCESS_CHALLENGE: 'challenge'}.get(code, 'reject'))
         took = int((time.time() - arrived) * 1000)
         # The answer goes out before anything is written down (1.0.33): a
         # database that is slow or locked delays the log, not the person -
@@ -16635,7 +16636,7 @@ class RadiusServer(object):
             if len(self.late) >= 10000:
                 # Dropped, not sent at once (1.0.57): sent at once, a flood
                 # of wrong guesses went round the delay. The NAS asks again.
-                self.counts['late_dropped'] += 1
+                self.count('late_dropped')
                 return
             heapq.heappush(self.late, (time.monotonic() + wait, id(data), sock, data, peer))
             if self.late_thread is None or not self.late_thread.is_alive():
@@ -16674,7 +16675,7 @@ class RadiusServer(object):
             k = ((client or {}).get('name') or ip, d.reason[:60])
             now = time.time()
             if now - self.SPARSE.get(k, 0) < 60:
-                self.counts['not_written'] += 1
+                self.count('not_written')
                 return
             if len(self.SPARSE) > 5000:
                 self.SPARSE.clear()
@@ -16718,7 +16719,7 @@ class RadiusServer(object):
                 return None
             if not self.ma_check(pkt, client, secret, ip, port):
                 return None
-            self.counts['status'] += 1
+            self.count('status')
             return build_reply(pkt, ACCOUNTING_RESPONSE, [], secret, True)
         # Sparingly, as on the other port (1.0.59): neither is proven to come
         # from the client, and each one was a row in the database.
@@ -16738,7 +16739,7 @@ class RadiusServer(object):
             self.drop(ip, port, pkt.text(1), 'the Message-Authenticator of the accounting '
                       'request is wrong', pkt=pkt, client=client, sparing=True)
             return None
-        self.counts['accounting'] += 1
+        self.count('accounting')
         words = pkt.words()
         w = dict(words)
         self.d.store.radius_add({
@@ -16780,8 +16781,14 @@ class RadiusServer(object):
             ('Totp-Request-Id', rid)]
         sh.detail_line(ip, 'reply-detail', time.time(), answer)
 
+    def count(self, k, n=1):
+        with self.counts_lock:
+            self.counts[k] += n
+
     def state(self):
-        return {'listening': self.bound, 'trouble': self.trouble, 'counts': dict(self.counts),
+        with self.counts_lock:
+            counts = dict(self.counts)
+        return {'listening': self.bound, 'trouble': self.trouble, 'counts': counts,
                 'queued': self.jobs.qsize() + self.acct_jobs.qsize(),
                 'workers': RADIUS_WORKERS_RUNNING[0], 'rcvbuf': dict(self.rcvbuf)}
 # ---- RADIUS: guessing from one place held back (1.0.137) -----------------------------
@@ -46031,12 +46038,22 @@ def alerts_tick(daemon):
                                     alert_problems(store, 'en'))
                 except Exception as e:              # noqa: BLE001
                     log_sparing('snmp-traps', 'SNMPv3 traps: %s' % e, 'warn', every=900)
-            if CONFIG.get('report') and report_due():
+            if CONFIG.get('report') and report_due() and \
+                    time.monotonic() - float(ALERT_WORK.get('report_fail') or -1e9) > 1800:
                 since, until, pid = report_period()
                 was_sent = store.get_meta('report:sent')
                 if was_sent != pid and claim_once(store, 'report:sent', pid):
                     try:
-                        report_send(store, since, until, reader=daemon.reader())
+                        entry = report_send(store, since, until, reader=daemon.reader())
+                        # Its mail did not go and is not waiting for another try (1.0.296): mail
+                        # off, or refused for good - the period given back and tried again in
+                        # 30 min; it was kept as sent and that report never went.
+                        if not entry.get('ok') and entry.get('queued') != 'waiting':
+                            ALERT_WORK['report_fail'] = time.monotonic()
+                            if store.get_meta('report:sent') == pid:
+                                store.set_meta('report:sent', was_sent or '')
+                            log_sparing('report-fail', 'the report did not go: %s'
+                                        % entry.get('said'), 'warn', every=3600)
                     except Exception as e:      # noqa: BLE001
                         # The period given back (1.0.207): claimed before it was
                         # made, a report that failed to be made was never tried again.
