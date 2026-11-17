@@ -254,7 +254,12 @@ def rb_verified_forget(store, at=None):
         keep = [] if at is None else [x for x in rows if abs(fnum(x.get('at')) - at) > 0.001]
         if len(keep) != len(rows):
             n += len(rows) - len(keep)
-            store.set_meta(r['k'], json.dumps(keep))
+            # Another node's row by UPDATE only (1.0.298), as the history's: set_meta may insert,
+            # and the two nodes writing it at once met as one key twice in the replication.
+            if r['k'] == 'rbackup:verified:' + node_name():
+                store.set_meta(r['k'], json.dumps(keep))
+            else:
+                store.db.run('UPDATE meta SET v = ? WHERE k = ?', (json.dumps(keep), r['k']))
     return n
 
 
@@ -287,6 +292,14 @@ def rb_verify_due(store):
     """Weekly: a week since this node last tried one."""
     if (CONFIG.get('rbackup_verify') or 'off') != 'weekly':
         return False
+    # Not with no destination switched on (1.0.298): it failed at once, wrote nothing, and was
+    # started again every hour for good.
+    try:
+        if not any(t.get('enabled') for t in rb_targets(store)):
+            return False
+    except Exception:                                   # noqa: BLE001
+        pass
     rows = _meta_json(store, 'rbackup:verified:' + node_name(), list) or []
-    last = float(rows[0].get('at') or 0) if isinstance(rows, list) and rows else 0
+    first = rows[0] if isinstance(rows, list) and rows else None
+    last = fnum(first.get('at')) if isinstance(first, dict) else 0
     return time.time() - last > 7 * 86400

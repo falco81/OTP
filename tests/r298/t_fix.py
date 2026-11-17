@@ -120,7 +120,7 @@ class Ag(object):
 
 
 class Dm(object):
-    store, radius = st, None
+    store, radius, started = st, None, time.time()
 
 
 rows = m.snmp_mib(Dm(), Ag())

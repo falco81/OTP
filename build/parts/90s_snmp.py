@@ -343,7 +343,9 @@ def snmp_mib(daemon, agent):
                 rows += [(B + (6, 1, 1, 1, i), 'int', i), (B + (6, 1, 1, 2, i), 'str', t),
                          (B + (6, 1, 1, 3, i), 'str', info.get('cn') or ''),
                          (B + (6, 1, 1, 4, i), 'int', int((end - time.time()) // 86400)),
-                         (B + (6, 1, 1, 5, i), 'int', end)]
+                         # Integer32 (1.0.298): a certificate ending after 2038 was 5 bytes and a
+                         # strict manager refused the whole answer.
+                         (B + (6, 1, 1, 5, i), 'int', max(-2 ** 31, min(end, 2 ** 31 - 1)))]
     except Exception:                                   # noqa: BLE001
         pass
     if db_ok and in_cluster(store):
