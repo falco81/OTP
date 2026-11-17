@@ -135,6 +135,8 @@ const health = () => { try { return execSync('curl -sk -m 5 -w "|%{http_code}" h
   await p.waitForTimeout(6000);
   l = await look();
   ok('a plan ended lately, an upgrade by hand now: the band says the one that runs', /being upgraded to 9\.9\.7/i.test(l.band) && /step 2 of 8/i.test(l.band) && !/1\.0\.200/.test(l.band), l);
+  ok('...this node on a row of its own, its step in it', await p.evaluate(() => document.querySelectorAll('#upband .upband-row').length === 1
+     && /step 2 of 8/i.test(document.querySelector('#upband .upband-row .upband-what').innerText)));
   await p.unrouteAll({ behavior: 'ignoreErrors' });
   try { fs.unlinkSync(F); } catch (e) { }
 
@@ -149,7 +151,23 @@ const health = () => { try { return execSync('curl -sk -m 5 -w "|%{http_code}" h
   await p.unrouteAll({ behavior: 'ignoreErrors' }); await p.route(/\?api=status(&|$)/, plan('9.9.8'));
   await p.waitForTimeout(6000);
   l = await look();
-  ok('HA: both nodes in the band, one at a time', /nodea/.test(l.band) && /nodeb/.test(l.band) && /one at a time/i.test(l.band) && /the pages/i.test(l.band), l);
+  ok('HA: both nodes in the band, one at a time', /nodea/.test(l.band) && /nodeb/.test(l.band) && /node at a time/i.test(l.band) && /the pages/i.test(l.band), l);
+  const rows = await p.evaluate(() => Array.from(document.querySelectorAll('#upband .upband-row')).map(r => ({
+    cur: r.classList.contains('cur'), name: (r.querySelector('.upband-nm') || {}).innerText, tag: (r.querySelector('.tag') || {}).innerText,
+    pc: (r.querySelector('.upband-pc') || {}).innerText, what: (r.querySelector('.upband-what') || {}).innerText, when: (r.querySelector('.upband-when') || {}).innerText })));
+  ok('HA: a row for each node, one under the other - name, step, how far, what happened, when', rows.length === 2 && rows[0].name === 'nodea'
+     && rows[1].name === 'nodeb' && /done/i.test(rows[0].tag) && /being put in/i.test(rows[1].tag) && rows[0].pc === '100 %'
+     && /the pages/i.test(rows[1].what) && /ago|s$/.test(rows[1].when), rows);
+  ok('...the node whose turn it is in the colour of a link', !rows[0].cur && rows[1].cur, rows);
+  await p.unrouteAll({ behavior: 'ignoreErrors' }); await p.route(/\?api=status(&|$)/, async (r) => {
+    const res = await r.fetch(); const d = await res.json();
+    d.upgrading = { id: 'p2', version: '9.9.8', from: '1.0.1', by: 'admin', at: now() - 9, state: 'running', downgrade: false, drain_s: 20, ended: 0,
+      steps: [{ name: 'otp1', state: 'waiting' }, { name: 'otp2', state: 'draining', at: now() - 8, said: 'in maintenance' }] };
+    try { await r.fulfill({ response: res, body: JSON.stringify(d) }); } catch (e) { }
+  });
+  await p.waitForTimeout(6000);
+  const cur = await p.evaluate(() => Array.from(document.querySelectorAll('#upband .upband-row.cur .upband-nm')).map(x => x.innerText));
+  ok('...the one being taken out of service, not the one waiting before it in the list', JSON.stringify(cur) === '["otp2"]', cur);
   await p.evaluate(() => { window.__mark = 1; try { sessionStorage.removeItem('otp.upg.reload'); } catch (e) { } });
   await p.waitForTimeout(5000);
   ok('...the node answering is still the old version: not loaded again', await p.evaluate(() => window.__mark === 1));

@@ -6563,7 +6563,7 @@ def se_local_rules():
 
 
 def se_local_text(rules):
-    lines = ['; otp\'s local rules (otp_local, 1.0.300) - put in from Settings → High security → SELinux',
+    lines = ['; otp\'s local rules (otp_local, 1.0.300) - put in from Settings → SELinux',
              '; ("Put in what is selected") or `otp --selinux fix`, each exactly what SELinux refused',
              '; here and nothing more. Taken away one by one on the same card (or `otp --selinux-rules',
              '; --take-away ID`); the module goes with an uninstall. Written by root from its list -',

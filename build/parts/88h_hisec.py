@@ -298,7 +298,7 @@ def hisec_findings(store, conf=None):
     # disabled, nothing - as until now.
     for n in host_nodes(store):
         for p in selinux_problems(store, n)[:6]:
-            warn.append(_hs_item('check', 'SELinux on %s: %s' % (n, p), 'SELinux', 'hisec'))
+            warn.append(_hs_item('check', 'SELinux on %s: %s' % (n, p), 'SELinux', 'selinux'))
     # Domain controllers given by their address while their certificate is checked (1.0.267):
     # a controller replaced (Windows Server 2025) comes with a certificate of its name only.
     for d in store.directories():

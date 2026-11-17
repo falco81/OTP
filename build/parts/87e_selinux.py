@@ -299,8 +299,8 @@ def selinux_problems(store, node=None):
     # How many of them the card puts right (1.0.300).
     n = sum(int(v or 0) for k, v in odict(d.get('counts')).items() if k in ('boolean', 'label', 'port', 'rule'))
     if n and out:
-        out.append('%d of what SELinux refused can be put right on the card (Settings → High security → '
-                   'SELinux, "Put in what is selected")' % n)
+        out.append('%d of what SELinux refused can be put right on the card (Settings → SELinux, '
+                   '"Put in what is selected")' % n)
     if d.get('mode') == 'Permissive' and not out:
         out.append('SELinux is permissive: nothing is refused - otp is ready for enforcing')
     return out

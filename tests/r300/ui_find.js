@@ -54,7 +54,7 @@ const VIEW = { nodes: [{ name: 'vm', me: true, state: perm, at: now, error: '', 
     await p.keyboard.press('Enter');
     await p.waitForTimeout(2500);
     await p.evaluate(async (l) => { await fetch('?api=prefs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: l})}); }, lang);
-    await p.goto('https://127.0.0.1/admin/#settings/hisec'); await p.reload(); await p.waitForTimeout(3500);
+    await p.goto('https://127.0.0.1/admin/#settings/selinux'); await p.reload(); await p.waitForTimeout(3500);
     const vm = p.locator('.se-node').first(), o2 = p.locator('.se-node').nth(1);
     const kinds = await vm.locator('.se-kind').evaluateAll(xs => xs.map(x => x.className.replace(/.*se-k-/, '')));
     ok(tag + 'each kind in its group, in order', JSON.stringify(kinds) === JSON.stringify(['fixed', 'boolean', 'label', 'port', 'rule', 'nobutton', 'other']), kinds);
@@ -90,13 +90,15 @@ const VIEW = { nodes: [{ name: 'vm', me: true, state: perm, at: now, error: '', 
     const enfBtn = vm2.locator('.se-btns button', { hasText: /enforcing/i });
     ok(tag + 'enforcing locked while anything is left', await enfBtn.count() === 1 && await enfBtn.isDisabled());
     ok(tag + '...the verdict says how many of each', /4 /.test(await vm2.locator('.se-verdict').innerText()) && /1 /.test(await vm2.locator('.se-verdict').innerText()));
-    ok(tag + 'the enforcing node with nothing refused: only "Back to permissive", as before', await o2.locator('button').count() === 1 && await o2.locator('.se-find').count() === 0);
+    ok(tag + 'the enforcing node with nothing refused: only "Back to permissive", as before; "refused nothing" said', await o2.locator('button').count() === 1 && await o2.locator('.se-none').count() === 1);
     if (lang === 'cs') ok(tag + 'in Czech', /Co SELinux odpírá/.test(await vm2.innerText()) && /Nasadit vybrané/.test(await vm2.innerText()) && /Lokální pravidla otp/.test(await vm2.innerText()), (await vm2.innerText()).slice(0, 300));
     const over = await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     ok(tag + 'no horizontal scroll', over <= 0, over);
     const out = await vm2.evaluate(n => { const r = n.getBoundingClientRect(); return Math.max(0, ...Array.from(n.querySelectorAll('.se-find *')).map(x => x.getBoundingClientRect().right - r.right)); });
     ok(tag + 'the findings stay inside the node\'s box', out <= 1, out);
     ok(tag + 'no page errors', errs.length === 0, errs);
+    /* the language put back: the tests after this one read the pages in English */
+    await p.evaluate(async () => { await fetch('?api=prefs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: 'en'})}); });
     await ctx.close();
   }
   await b.close();

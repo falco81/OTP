@@ -147,7 +147,7 @@ ok('root-parts: no root-facts.json (install.sh before 1.0.258) - needed',
 st, det = ck('root-parts', F(root={'installer': '1.0.257'}))
 ok('root-parts: install.sh 1.0.257 under otp %s - needed, sig its version' % VER, st == 'needed' and det['sig'] == '1.0.257')
 ok('root-parts: install.sh of this version or newer - done', ck('root-parts', F())[0] == 'done' and
-   ck('root-parts', F(root={'installer': '1.0.300'}))[0] == 'done')
+   ck('root-parts', F(root={'installer': '9.9.9'}))[0] == 'done')
 ok('root-parts: a file that is not JSON - needed', ck('root-parts', F(root={}))[0] == 'needed')
 ok('upgrade-helper: otp-upgrade.path missing - needed; there - done',
    ck('upgrade-helper', F(upgrade_path=False))[0] == 'needed' and ck('upgrade-helper', F())[0] == 'done')
@@ -551,9 +551,10 @@ ok('docs: a section in upgrades.md', '## To be done by hand (1.0.258)' in doc an
 
 # ---- Czech ------------------------------------------------------------------------------------------------
 sys.path.insert(0, '/home/claude/i18n')
-import cs_266, cs_270
+import cs_266, cs_270, cs_301
 # The entries of later versions in the dictionaries of theirs (1.0.268).
-S, P = dict(cs_266.S266, **cs_270.S270), dict(cs_266.P266, **cs_270.P270)
+# The words of the entries: cs_266, cs_270 - and cs_301 (SELinux on its own pane).
+S, P = dict(cs_266.S266, **cs_270.S270, **cs_301.S301), dict(cs_266.P266, **cs_270.P270, **cs_301.P301)
 ok('Czech: every text given', all(v.strip() for v in list(S.values()) + list(P.values())))
 ok('Czech: the {0} of each pattern kept', all(set(re.findall(r'\{\d', k)) == set(re.findall(r'\{\d', v)) for k, v in P.items()), [k for k, v in P.items() if set(re.findall(r'\{\d', k)) != set(re.findall(r'\{\d', v))])
 

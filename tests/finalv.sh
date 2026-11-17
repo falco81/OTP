@@ -14,6 +14,11 @@ one() {   # one test: its last lines that count
   esac
   echo "== $t ${r:-(nothing said)}"
 }
+# What the tests need running (1.0.301): a container started again leaves PostgreSQL and the mock AD down,
+# and whole groups failed with "the directory cannot be reached" - said at once, as a failure.
+for pp in 5432:PostgreSQL 3899:the-mock-AD 443:nginx; do
+  ss -ltn | grep -q ":${pp%%:*} " || echo "== preflight FAIL ${pp#*:} is not listening on ${pp%%:*} (after a restart of the container: up.sh)"
+done
 bash suite.sh $V
 # dg/t_root puts an older version in (the way back): this one installed again
 (cd ../build/out/otp-$V && bash install.sh --yes >/tmp/claude-0/finalv-install.log 2>&1) || echo "== install of $V again: FAIL"

@@ -365,26 +365,50 @@ function drawUpband() {
   host.appendChild(head);
   var pc = upgPercent(p, u);
   host.appendChild(upBar(pc, failed ? 'bad' : (state === 'done' ? 'good' : ''), null, true));
+  /* How far as a whole, then every node on a row of its own (1.0.301, as acme draws it): its name,
+     its step, how far, what happened, when - the one whose turn it is in the colour of a link. */
+  var turn = p ? ((p.steps || []).filter(function (st) { return /^(draining|installing|checking|failed)$/.test(st.state || ''); })[0]
+    || (p.steps || []).filter(function (st) { return st.state !== 'done'; })[0]) : null;
   var how = el('div', 'upband-how');
   how.appendChild(noI18n(el('span', '', num(pc) + ' %')));
-  var turn = p ? (p.steps || []).filter(function (st) { return st.state !== 'done'; })[0] : null;
-  var mine = u && (!p || (turn && u.node === turn.name && (!u.id || u.id === p.id)));
-  if (p && (p.steps || []).length > 1) {
-    (p.steps || []).forEach(function (st) {
-      var one = el('span', 'upband-node');
-      one.appendChild(noI18n(el('b', '', st.name)));
-      var w = UP_STATE[st.state] || UP_STATE.waiting;
-      one.appendChild(el('span', 'tag ' + w[1], w[0]));
-      how.appendChild(one);
-    });
+  if (p && turn && state === 'running') {
+    var tw = el('span', '');
+    tw.appendChild(noI18n(el('span', '', turn.name + ': ')));
+    tw.appendChild(el('span', '', (UP_STATE[turn.state] || UP_STATE.waiting)[0]));
+    how.appendChild(tw);
   }
-  if (state === 'running') {
-    var words = mine ? u.words : (turn && turn.part_words) || '';
-    if (!words && turn) words = (UP_STATE[turn.state] || UP_STATE.waiting)[0];
-    if (words) how.appendChild(el('span', '', words));
-    if (mine && u.parts) how.appendChild(el('span', '', 'step ' + Math.min(u.part, u.parts) + ' of ' + u.parts));
-  }
+  if (p) how.appendChild(el('span', '', (p.steps || []).filter(function (st) { return st.state === 'done'; }).length + ' of '
+    + (p.steps || []).length + ' node(s) done'));
   host.appendChild(how);
+  var fileOf = function (st) { return !!u && (st._file || (u.node === st.name && (!u.id || !p || u.id === p.id))); };
+  var filePc = function () { return u.state !== 'running' ? 100 : (u.parts ? Math.round(100 * Math.min(1, Math.max(0, u.part - 1) / u.parts)) : 3); };
+  var rows = p ? (p.steps || []) : [{name: u.node || '', state: u.state === 'running' ? 'installing' : u.state, at: u.at, _file: true}];
+  var tb = el('div', 'upband-rows');
+  rows.forEach(function (st) {
+    var r = el('div', 'upband-row' + (turn && state === 'running' && st.name === turn.name ? ' cur' : ''));
+    r.appendChild(noI18n(el('span', 'upband-nm', st.name || '–')));
+    var w = UP_STATE[st.state] || UP_STATE.waiting;
+    var sc = el('span', 'upband-st');
+    sc.appendChild(el('span', 'tag ' + w[1], w[0]));
+    r.appendChild(sc);
+    var mineRow = fileOf(st);
+    var npc = st._file ? filePc() : (mineRow && st.state === 'installing' && u.parts
+      ? Math.round(20 + 62 * Math.min(1, Math.max(0, u.part - 1) / u.parts)) : upPercent(st, p));
+    r.appendChild(noI18n(el('span', 'upband-pc', num(npc) + ' %')));
+    var what = el('span', 'upband-what');
+    if (mineRow && u.state === 'running' && u.words) {
+      what.appendChild(el('span', '', u.words));
+      if (u.parts) what.appendChild(el('span', 'muted', 'step ' + Math.min(u.part, u.parts) + ' of ' + u.parts));
+    } else if (st.state === 'installing' && st.part_words) {
+      what.appendChild(el('span', '', st.part_words));
+    } else if (st.said) {
+      what.appendChild(el('span', '', st.said));
+    }
+    r.appendChild(what);
+    r.appendChild(el('span', 'upband-when', st.at ? ago(st.at) : '–'));
+    tb.appendChild(r);
+  });
+  host.appendChild(tb);
   var line = el('div', 'upband-line');
   if (failed) {
     var bad = p ? (p.steps || []).filter(function (st) { return st.state === 'failed'; })[0] : null;
@@ -410,7 +434,7 @@ function drawUpband() {
       : 'The API of these pages is restarting with the new version - not answering for ' + secs + ' s, asked again every two seconds.'));
   } else {
     line.appendChild(el('span', '', p && (p.steps || []).length > 1
-      ? 'The nodes are upgraded one at a time, each in maintenance while it is - the VPN and these pages go to the other one meanwhile. This page follows it and loads the new version by itself.'
+      ? 'One node at a time: each is taken out of service - the VIP address, the load balancer and the VPN go to the other node - upgraded, checked and put back. This page follows it and loads the new version by itself.'
       : 'otp.service and these pages restart once - for a minute nobody can sign in to the VPN. This page follows it and loads the new version by itself.'));
   }
   host.appendChild(line);
@@ -2947,6 +2971,7 @@ function showPane(name) {
   if (name === 'siem') loadSiem();
   if (name === 'acme') loadAcme(); else acPoll(false);
   if (name === 'hisec') loadHisec();
+  if (name === 'selinux') loadSelinux(); else sePoll(false);      /* a pane of its own (1.0.301) */
   if (name === 'proxy') drawProxy();
   if (name === 'monitor') { drawMonitor(); loadSnmp(); }
   if (name === 'logs') loadLogs();
@@ -19211,7 +19236,6 @@ function drawLogs() {
 var HS_NODES = [];
 function loadHisec() {
   api('hisec').then(function (d) { drawHisec(d); }).catch(oops);
-  loadSelinux();
 }
 /* How High security and the guard against writes stand on each node (1.0.244): a light a
    node under each of the two switches - green on, grey off, dim when the node does not say. */
@@ -20461,7 +20485,7 @@ function seBusy(d) {
 }
 function sePoll(on) {
   if (on && !SE.poll) SE.poll = setInterval(function () {
-    if (TAB !== 'settings' || PANE !== 'hisec') { sePoll(false); return; }
+    if (TAB !== 'settings' || PANE !== 'selinux') { sePoll(false); return; }
     api('selinux').then(function (d) { SE.d = d; drawSelinux(); if (!seBusy(d)) sePoll(false); }).catch(function () {});
   }, 2000);
   if (!on && SE.poll) { clearInterval(SE.poll); SE.poll = null; }
@@ -20490,6 +20514,22 @@ function drawSelinux() {
   clear(host);
   var c = el('div', 'card full se-card');
   var h = el('h2', '', 'SELinux');
+  /* A light for each node (1.0.301): its mode and whether something stands against it; turning
+     while a node has a step to do. */
+  var chip = el('span', 'se-chip');
+  (SE.d.nodes || []).forEach(function (n) {
+    var s = n.state || {}, m = s.mode || '';
+    var k = n.error ? 'bad' : !m ? 'dim' : (m === 'Enforcing' ? ((s.problems || []).length ? 'warn' : 'ok')
+      : m === 'Permissive' ? 'warn' : 'dim');
+    var dt = el('span', 'dot ' + k);
+    dt.title = n.name + ': ' + seModeWords(m);
+    chip.appendChild(dt);
+  });
+  var turning = (SE.d.nodes || []).some(function (n) { return !!n.pending; });
+  var rf = el('span', 'se-chip-r' + (turning ? ' on' : ''), '↻');
+  rf.title = turning ? 'a node is doing what was asked' : 'looked at every half hour';
+  chip.appendChild(rf);
+  h.appendChild(chip);
   var tl = el('span', 'right');
   var look = cmdButton('Look again', 'refresh', 'small');
   look.onclick = function () {
@@ -20506,7 +20546,9 @@ function drawSelinux() {
   h.appendChild(tl);
   c.appendChild(h);
   if (SE.rep) c.appendChild(el('p', 'note small se-rep' + (SE.rep.bad ? ' bad' : ''), SE.rep.words));
-  c.appendChild(el('p', 'note', 'What SELinux refuses to the web server, keepalived, sshd and the rest when it is enforcing - and what otp needs of it on each node. Nothing changes here unless asked: disabled stays disabled. In a cluster, one node at a time - the other answers meanwhile. On the server: otp --selinux-check.'));
+  c.appendChild(el('p', 'note', 'What SELinux refuses to the web server, keepalived, sshd, PostgreSQL and the rest when it is enforcing - and what otp needs of it on each node. Nothing changes here unless asked: disabled stays disabled. In a cluster, one node at a time - the other answers meanwhile. On the server: sudo otp --selinux-check.'));
+  if ((SE.d.nodes || []).length > 1)
+    c.appendChild(el('p', 'note small', 'SELinux is each machine\'s own: every node has its own mode, module, refusals and fixes. What is asked on a node\'s card is asked of that node, and done by its root only - never on the other node.'));
   var grid = el('div', 'se-grid');
   (SE.d.nodes || []).forEach(function (n) { grid.appendChild(seNode(n)); });
   c.appendChild(grid);
@@ -20528,15 +20570,23 @@ function seFixable(f) { return ['boolean', 'label', 'port', 'rule'].indexOf(f.ki
 function seKindWord(k) { return {boolean: 'boolean', label: 'label', port: 'port', rule: 'rule'}[k] || k; }
 function seFindings(box, n, s) {
   var fs = s.findings || [], rules = s.local_rules || [];
-  if (!fs.length && !rules.length) return;
   var sel = SE_SEL[n.name] = SE_SEL[n.name] || {};
   fs.forEach(function (f) { if (seFixable(f) && !(f.id in sel)) sel[f.id] = true; });
   var wrap = el('div', 'se-find');
-  if (fs.length) {
-    var hd = el('div', 'se-find-h');
-    hd.appendChild(el('b', '', 'What SELinux refuses'));
-    hd.appendChild(el('span', 'small muted', (s.denials || {}).since ? 'since otp\'s needs were put in' : 'since the machine started'));
-    wrap.appendChild(hd);
+  var since = (s.denials || {}).since;
+  var hd = el('div', 'se-find-h');
+  hd.appendChild(el('b', '', 'What SELinux refuses'));
+  hd.appendChild(el('span', 'small muted', since ? 'since otp\'s needs were put in' : 'since the machine started'));
+  wrap.appendChild(hd);
+  /* Nothing refused (1.0.301): said so, plainly, as the kit draws it. */
+  if (!fs.length) {
+    var none = el('div', 'se-none');
+    none.appendChild(el('span', 'se-none-ico', '✓'));
+    var nt = el('div', '');
+    nt.appendChild(el('b', '', 'SELinux refused nothing on this node'));
+    nt.appendChild(el('div', 'small', since ? 'Nothing since otp\'s needs were put in.' : 'Nothing since the machine started.'));
+    none.appendChild(nt);
+    wrap.appendChild(none);
   }
   var btn = null, boxes = {};
   var picked = function () { return fs.filter(function (f) { return seFixable(f) && sel[f.id]; }); };

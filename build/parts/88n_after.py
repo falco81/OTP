@@ -325,8 +325,8 @@ after_entry(
             'cmd': 'semodule -i {lib}/otp_server.cil && install -m 0644 {lib}/otp_server.cil '
                    '{lib}/otp_server.cil.in-policy'},
            {'where': 'root', 'lead': 'Then see that nothing else is missing:', 'cmd': 'otp --selinux-check'},
-           {'where': 'pages', 'pane': 'hisec',
-            'words': 'Or on Settings → High security → SELinux: Put in what otp needs (while permissive).'}],
+           {'where': 'pages', 'pane': 'selinux',
+            'words': 'Or on Settings → SELinux: Put in what otp needs (while permissive).'}],
     foot='This band goes by itself once the module is in (SELinux of the node is looked at every '
          'half hour; Look again asks sooner).')
 
@@ -345,8 +345,8 @@ after_entry(
     steps=[{'where': 'root', 'lead': '{lead_what}', 'cmd': 'otp --selinux-check'},
            {'where': 'root', 'lead': 'The report, for whoever looks after otp\'s module:',
             'cmd': 'otp --selinux-report'},
-           {'where': 'pages', 'pane': 'hisec',
-            'words': 'Settings → High security → SELinux says the same, with what otp needs.'}],
+           {'where': 'pages', 'pane': 'selinux',
+            'words': 'Settings → SELinux says the same, with what otp needs.'}],
     foot='This band goes by itself once nothing is refused any more (put right, or after the next '
          'start of the machine). Done takes it away until something more is refused.')
 
@@ -362,8 +362,8 @@ after_entry(
            'klíče, booleany SELinuxu i svůj modul, ale režim SELinuxu patří stroji – teď je tu {mode}. '
            'Vraťte ho, jak byl: připravit (permissive, jeden restart stroje), chvíli bez odmítnutí, '
            'pak enforcing – v clusteru jeden uzel po druhém.',
-    steps=[{'where': 'pages', 'pane': 'hisec',
-            'words': 'Settings → High security → SELinux: Make it ready (permissive), restart the machine, '
+    steps=[{'where': 'pages', 'pane': 'selinux',
+            'words': 'Settings → SELinux: Make it ready (permissive), restart the machine, '
                      'then Switch to enforcing once nothing is refused.'},
            {'where': 'root', 'lead': '{lead}', 'cmd': 'otp --selinux prepare'},
            {'where': 'root', 'lead': 'After the restart, and a while with nothing refused:',

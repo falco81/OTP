@@ -24,7 +24,7 @@ const seed = s => execFileSync('python3', [__dirname + '/ui_selinux_seed.py', s]
       await p.waitForTimeout(2500);
       await p.evaluate(async (l) => { await fetch('?api=prefs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({lang: l})}); }, lang);
       seed('a');
-      await p.goto('https://127.0.0.1/admin/#settings/hisec');
+      await p.goto('https://127.0.0.1/admin/#settings/selinux');
       await p.reload();
       await p.waitForTimeout(3500);
       const nodes = p.locator('.se-node');

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.300'
+__version__ = '1.0.301'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -24870,7 +24870,7 @@ def rb_restore_md(m):
             '  The guard of root\'s actions is on again where it was, and each node\'s connection',
             '  to its own database is encrypted again as the cluster had it (1.0.268). By hand',
             '  still: SELinux\'s mode - Settings -> Upgrade -> To be done by hand says it on each',
-            '  node that was enforcing (Settings -> High security -> SELinux: make it ready, restart,',
+            '  node that was enforcing (Settings -> SELinux: make it ready, restart,',
             '  then enforcing) - and the encryption to a database on another machine (Settings ->',
             '  The database), if it was used.',
             '- Each node sends its own backups; either node\'s newest is the whole cluster\'s data.',
@@ -29874,7 +29874,7 @@ def hisec_findings(store, conf=None):
     # disabled, nothing - as until now.
     for n in host_nodes(store):
         for p in selinux_problems(store, n)[:6]:
-            warn.append(_hs_item('check', 'SELinux on %s: %s' % (n, p), 'SELinux', 'hisec'))
+            warn.append(_hs_item('check', 'SELinux on %s: %s' % (n, p), 'SELinux', 'selinux'))
     # Domain controllers given by their address while their certificate is checked (1.0.267):
     # a controller replaced (Windows Server 2025) comes with a certificate of its name only.
     for d in store.directories():
@@ -42531,8 +42531,8 @@ def selinux_problems(store, node=None):
     # How many of them the card puts right (1.0.300).
     n = sum(int(v or 0) for k, v in odict(d.get('counts')).items() if k in ('boolean', 'label', 'port', 'rule'))
     if n and out:
-        out.append('%d of what SELinux refused can be put right on the card (Settings → High security → '
-                   'SELinux, "Put in what is selected")' % n)
+        out.append('%d of what SELinux refused can be put right on the card (Settings → SELinux, '
+                   '"Put in what is selected")' % n)
     if d.get('mode') == 'Permissive' and not out:
         out.append('SELinux is permissive: nothing is refused - otp is ready for enforcing')
     return out
@@ -45371,7 +45371,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             if probs:
                 add('selinux:' + n, 'warn', n,
                     _al(lang, 'SELinux na %s: něco není, jak otp potřebuje' % n, 'SELinux on %s: something is not as otp needs it' % n),
-                    '; '.join(probs)[:300], 'hisec')
+                    '; '.join(probs)[:300], 'selinux')
     # The database servers looked after by agents (1.0.289): none without an agent.
     try:
         for p in _db_agent_alerts(store, lang):
@@ -46500,8 +46500,8 @@ after_entry(
             'cmd': 'semodule -i {lib}/otp_server.cil && install -m 0644 {lib}/otp_server.cil '
                    '{lib}/otp_server.cil.in-policy'},
            {'where': 'root', 'lead': 'Then see that nothing else is missing:', 'cmd': 'otp --selinux-check'},
-           {'where': 'pages', 'pane': 'hisec',
-            'words': 'Or on Settings → High security → SELinux: Put in what otp needs (while permissive).'}],
+           {'where': 'pages', 'pane': 'selinux',
+            'words': 'Or on Settings → SELinux: Put in what otp needs (while permissive).'}],
     foot='This band goes by itself once the module is in (SELinux of the node is looked at every '
          'half hour; Look again asks sooner).')
 
@@ -46520,8 +46520,8 @@ after_entry(
     steps=[{'where': 'root', 'lead': '{lead_what}', 'cmd': 'otp --selinux-check'},
            {'where': 'root', 'lead': 'The report, for whoever looks after otp\'s module:',
             'cmd': 'otp --selinux-report'},
-           {'where': 'pages', 'pane': 'hisec',
-            'words': 'Settings → High security → SELinux says the same, with what otp needs.'}],
+           {'where': 'pages', 'pane': 'selinux',
+            'words': 'Settings → SELinux says the same, with what otp needs.'}],
     foot='This band goes by itself once nothing is refused any more (put right, or after the next '
          'start of the machine). Done takes it away until something more is refused.')
 
@@ -46537,8 +46537,8 @@ after_entry(
            'klíče, booleany SELinuxu i svůj modul, ale režim SELinuxu patří stroji – teď je tu {mode}. '
            'Vraťte ho, jak byl: připravit (permissive, jeden restart stroje), chvíli bez odmítnutí, '
            'pak enforcing – v clusteru jeden uzel po druhém.',
-    steps=[{'where': 'pages', 'pane': 'hisec',
-            'words': 'Settings → High security → SELinux: Make it ready (permissive), restart the machine, '
+    steps=[{'where': 'pages', 'pane': 'selinux',
+            'words': 'Settings → SELinux: Make it ready (permissive), restart the machine, '
                      'then Switch to enforcing once nothing is refused.'},
            {'where': 'root', 'lead': '{lead}', 'cmd': 'otp --selinux prepare'},
            {'where': 'root', 'lead': 'After the restart, and a while with nothing refused:',

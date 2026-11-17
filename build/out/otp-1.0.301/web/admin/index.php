@@ -1241,6 +1241,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" class="fulladmin-only" data-pane="hisec" data-icon="shield" title="Every way of doing something less safely switched off - and what stands against it now.">High security</button>
+    <button type="button" class="fulladmin-only" data-pane="selinux" data-icon="shield" title="What SELinux refuses on each node, what otp needs of it, what is put right here - and the steps to enforcing.">SELinux</button>
     <button type="button" data-pane="web" data-icon="lock" title="The certificates of the nodes and of the cluster's VIP address, and how TLS is spoken.">Certificates and TLS</button>
     <button type="button" class="fulladmin-only" data-pane="acme" data-icon="lock" title="The certificates ordered from Let's Encrypt (or another ACME CA) and renewed by themselves.">Automatic certificates</button>
     <button type="button" data-pane="fw" data-icon="wall" title="Who may reach the enrolment pages, the administration and the health check; and the machine's firewall (iptables, IPv4 and IPv6) - what otp's functions need opens by itself.">Firewall and access</button>
@@ -1463,8 +1464,16 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         administration open to everybody, exports not locked. It is switched on only once nothing below stands
         against it; while it is on, all of that is refused wherever it is changed and greyed out on the pages.</p></div>
     <div id="hs-host"></div>
-    <div id="se-host"></div>
     <div class="card full"><h2>Settings</h2><div id="sect-hisec"></div></div>
+  </div>
+  <div class="ctl-pane" id="pane-selinux" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">SELinux</h2>
+      <p class="ctl-lede">What SELinux refuses on each node when it is enforcing, and what otp needs of it: its own
+        module (otp_server), the labels of its files, the booleans that let the pages ask the daemon and SSH ask
+        for the code, the ports of sshd and PostgreSQL. Looked at every half hour; what is put right and the
+        steps - made ready and permissive, enforcing, permissive again - are done by each node's root only when
+        asked here or with <span class="mono">sudo otp --selinux</span>.</p></div>
+    <div id="se-host"></div>
   </div>
   <div class="ctl-pane" id="pane-acme" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Automatic certificates</h2>

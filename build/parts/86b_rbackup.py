@@ -1195,7 +1195,7 @@ def rb_restore_md(m):
             '  The guard of root\'s actions is on again where it was, and each node\'s connection',
             '  to its own database is encrypted again as the cluster had it (1.0.268). By hand',
             '  still: SELinux\'s mode - Settings -> Upgrade -> To be done by hand says it on each',
-            '  node that was enforcing (Settings -> High security -> SELinux: make it ready, restart,',
+            '  node that was enforcing (Settings -> SELinux: make it ready, restart,',
             '  then enforcing) - and the encryption to a database on another machine (Settings ->',
             '  The database), if it was used.',
             '- Each node sends its own backups; either node\'s newest is the whole cluster\'s data.',

@@ -749,7 +749,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
             if probs:
                 add('selinux:' + n, 'warn', n,
                     _al(lang, 'SELinux na %s: něco není, jak otp potřebuje' % n, 'SELinux on %s: something is not as otp needs it' % n),
-                    '; '.join(probs)[:300], 'hisec')
+                    '; '.join(probs)[:300], 'selinux')
     # The database servers looked after by agents (1.0.289): none without an agent.
     try:
         for p in _db_agent_alerts(store, lang):
