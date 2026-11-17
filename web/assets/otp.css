@@ -1744,7 +1744,7 @@
   ol.howto li{margin:2px 0}
   ol.howto b{color:var(--tx)}
   .codein{font:600 26px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace !important;
-    letter-spacing:8px;text-align:center;width:220px !important;padding:10px 12px !important}
+    letter-spacing:8px;text-align:center;width:min(100%,290px) !important;padding:10px 12px !important}
   .bigstate{display:flex;gap:14px;align-items:center;margin:4px 0 14px}
   .bigstate .mark{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;flex:none}
   .bigstate .mark.ok{background:var(--ok-bg);color:var(--ok)}

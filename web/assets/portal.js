@@ -590,6 +590,8 @@ function verifyCard() {
   box.inputMode = 'numeric';
   box.maxLength = 32;      /* "12345 67890" fits (1.0.227) */
   box.autocomplete = 'one-time-code';
+  /* Named for a screen reader (1.0.297): it read "000000". */
+  box.setAttribute('aria-label', (typeof i18nText === 'function' && i18nText('The code')) || 'The code');
   noI18n(box);
   var go = cmdButton('Confirm', 'check', 'primary');
   go.type = 'submit';
@@ -633,7 +635,9 @@ function verifyCard() {
       said.className = 'said bad';
       said.textContent = String(e.message || e);
       if (e.status === 410 || /last try|ran out/.test(String(e.message))) {
-        setTimeout(function () { api('me').then(function (d) { ME = d.me; drawPortal(); }).catch(function () { /* the next look draws it */ }); }, 2500);
+        /* Only while this card is still there (1.0.297): "Send it again" pressed meanwhile drew
+           a new one, and this wiped the code being typed into it. */
+        setTimeout(function () { if (!document.body.contains(wrap)) return; api('me').then(function (d) { ME = d.me; drawPortal(); }).catch(function () { /* the next look draws it */ }); }, 2500);
       }
       box.select();
     }).then(function () { busy(go, false); });
@@ -793,6 +797,7 @@ function confirmForm(replacing) {
   box.inputMode = 'numeric';
   box.maxLength = 32;      /* "1234 5678" fits (1.0.227): 8 cut it to 7 digits, counted wrong */
   box.autocomplete = 'one-time-code';
+  box.setAttribute('aria-label', (typeof i18nText === 'function' && i18nText('The code')) || 'The code');
   noI18n(box);
   var go = cmdButton(replacing ? 'Use the new token' : 'Confirm', 'check', 'primary');
   go.type = 'submit';

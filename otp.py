@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.296'
+__version__ = '1.0.297'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -53890,6 +53890,12 @@ def portal_reissue_rest(h, s, b, key):
 @route('POST', '/api/portal/cancel')
 def _portal_cancel(h):
     s = portal_me(h)
+    if odict(s.get('data')).get('verify') and odict(s.get('data')).get('may_replace'):
+        # The address given up while replacing (1.0.297): back to choosing the way - the old
+        # token was proved already, and "Another address or way" asked for its password and a
+        # code again (another sent code used up).
+        portal_data_set(h, s, verify=None)
+        return {'me': portal_state(h, s)}
     if odict(s.get('data')).get('verify') or odict(s.get('data')).get('may_replace'):
         # An address being checked, or a new way being chosen (1.0.76): given
         # up, and the token there is (if any) stays as it is.
