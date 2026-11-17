@@ -641,7 +641,15 @@ def serve_request():
         log_to('refused: %s' % e)
         status(id=ident, state='failed', rc=-1, said=str(e), tail=log_lines[-40:])
         if told.get('version'):
-            pages_tell('failed', ident, words='root checks the package', said=str(e), **told)
+            # What install.sh said when it was stopped (1.0.303) - its step, what runs now - kept:
+            # written over, the pages showed "root checks the package" and lost it.
+            was = pages_said()
+            mine = was.get('id') == ident
+            if not (mine and was.get('state') == 'failed'):
+                pages_tell('failed', ident, part=(was.get('part') or 1) if mine else 1,
+                           parts=(was.get('parts') or 0) if mine else 0,
+                           words=(was.get('words') if mine else '') or 'root checks the package',
+                           said=str(e), **told)
     except Exception as e:                       # noqa: BLE001 - said, never lost
         log_to('broke: %s' % e)
         status(id=ident, state='failed', rc=-2, said='the upgrade broke: %s' % e,

@@ -276,7 +276,9 @@ function otp_upgrading(bool $full = false): ?array
  *  the pages take it as expected, not as "down". False when no upgrade is known here. */
 function otp_upgrading_answer(): bool
 {
-    $u = otp_upgrading(otp_session() !== '');
+    /* Who asked, why it failed and its id never here (1.0.303): the daemon that would say whether
+       the cookie is a real sign-in is what is away - a cookie of the right form was enough. */
+    $u = otp_upgrading(false);
     if ($u === null) {
         return false;
     }

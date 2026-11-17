@@ -245,7 +245,10 @@ if (isset($_GET['api'])) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
         [$hs] = otp_call('/api/health', 'GET', null, 3.0);
-        echo json_encode(['ok' => true, 'upgrading' => otp_upgrading(otp_session() !== ''),
+        /* The whole of it only for a real sign-in (1.0.303), asked of the daemon - not for a cookie
+           of the right form: who asked, why it failed, its id. */
+        $real = $hs === 200 && otp_session() !== '' && otp_whoami() !== null;
+        echo json_encode(['ok' => true, 'upgrading' => otp_upgrading($real),
                           'pages' => OTP_VERSION, 'api' => $hs === 200],
                          JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
@@ -654,7 +657,7 @@ $health  = otp_get('/api/health', 5.0);
 $alive   = is_array($health);
 /* This node being upgraded (1.0.299): the sign-in page says so itself, from the file, and loads
    again when the daemon is back - not "the daemon is not answering". */
-$upg     = $me ? null : otp_upgrading(otp_session() !== '');
+$upg     = $me ? null : otp_upgrading(false);       /* signed out: never who asked, nor why (1.0.303) */
 $upg_run = is_array($upg) && $upg['state'] === 'running';
 $token_there = file_exists(OTP_TOKEN);
 $token_ok    = otp_token() !== null;
@@ -743,7 +746,7 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         <div class="small">otp.service and these pages restart once - this page loads again by itself when they are back.</div>
       </div>
     <?php elseif (is_array($upg) && $upg['state'] === 'failed'): ?>
-      <div class="offline">The upgrade to otp <span data-no-i18n><?= h($upg['version']) ?></span> failed<?= $upg['said'] !== '' ? ': <span data-no-i18n>' . h($upg['said']) . '</span>' : '' ?></div>
+      <div class="offline"><?= h('The upgrade to otp ' . $upg['version'] . ' failed') ?></div>
     <?php endif; ?>
     <?php if ($token_ok || !$token_there): ?>
     <?php if ($upg_run): ?>

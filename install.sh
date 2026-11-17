@@ -2086,11 +2086,16 @@ except Exception:
         fi
         if [[ -n "$MAINT_BY_US" ]]; then
             sleep 3
-            as_otp --maintenance off >/dev/null 2>&1 && warn "this node is back in service - look at what stopped the upgrade"
+            if as_otp --maintenance off >/dev/null 2>&1; then
+                warn "this node is back in service - look at what stopped the upgrade"
+            fi
         fi
+        # Never a failure of its own (1.0.303): under set -e a maintenance that would not go off
+        # ended the EXIT trap here - the pages' file stayed "running" for 30 min.
+        return 0
     }
     # The pages told the end after the rescue (1.0.299): what runs then.
-    trap 'upg_rc=$?; upgrade_rescue "$upg_rc"; upgrade_told_end "$upg_rc"' EXIT
+    trap 'upg_rc=$?; upgrade_rescue "$upg_rc" || true; upgrade_told_end "$upg_rc" || true' EXIT
     # Stopped by a signal (1.0.146) - Ctrl-C, a hang-up, otp_upgrade.py's TERM
     # at its deadline - the exit status was 0 and the rescue did nothing:
     # the node stayed in maintenance.
