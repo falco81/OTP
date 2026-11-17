@@ -152,10 +152,12 @@ def _selinux_do(h):
             return {'message': 'asked: every node makes its report within a minute' if not busy else
                     'asked - not %s: a step asked of it is not done yet' % ', '.join(busy),
                     'busy': busy}
-        selinux_ask(h.store, node, action, s['name'])
+        selinux_ask(h.store, node, action, s['name'], ids=b.get('ids'), rule=b.get('rule'))
     except ValueError as e:
         raise ApiError(400, str(e))
     return {'message': {'check': 'asked: %s looks within seconds',
+                        'fix': 'asked: %s puts right what was selected within seconds',
+                        'rule_drop': 'asked: %s takes the rule away within seconds',
                         'prepare': 'asked: %s makes SELinux ready and permissive within seconds',
                         'enforce': 'asked: %s switches SELinux to enforcing within seconds',
                         'permissive': 'asked: %s switches SELinux to permissive within seconds',

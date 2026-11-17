@@ -744,6 +744,14 @@ def build_parser():
                    metavar='STEP', help='SELinux on this machine, as on the pages: check, prepare '
                    '(permissive at the next start, from disabled), apply (put in what otp needs, '
                    'while permissive), enforce, permissive - asked first unless --yes (as root)')
+    g.add_argument('--selinux-fix', nargs='+', metavar='ID',
+                   help='put right what SELinux refused, by the ids --selinux-check lists (or "all" '
+                        'that may be): a boolean, a label, a port, a rule of otp\'s own local module '
+                        '(otp_local) - listed and asked first unless --yes (as root)')
+    g.add_argument('--selinux-rules', action='store_true',
+                   help='the rules of otp\'s own local SELinux module (otp_local) (as root)')
+    g.add_argument('--selinux-take-away', metavar='ID',
+                   help='take one rule of otp\'s local SELinux module away (as root)')
     g.add_argument('--selinux-report', nargs='?', const='', metavar='FILE',
                    help='what SELinux says on this machine, for whoever writes otp\'s module: one '
                         'file (/root/otp-selinux-report-NODE-DATE.tar.gz unless named); nothing '
@@ -2843,7 +2851,8 @@ def cli_main(argv=None):
             pass
         print(json.dumps(got))
         return 0
-    if args.selinux_check or args.selinux or args.selinux_report is not None:
+    if args.selinux_check or args.selinux or args.selinux_report is not None or args.selinux_fix or \
+            args.selinux_rules or args.selinux_take_away:
         return cli_selinux(args, pal)
     if args.dir_caps or args.dir_cap or args.dir_policy or args.dir_sample or args.guard_status:
         return cli_dir_guard(args, pal)
@@ -5116,6 +5125,8 @@ def cli_selinux(args, pal):
         print('  look through avc*.txt in it before sending it on: the audit log holds the command '
               'lines of the programs SELinux refused something to')
         return 0
+    if args.selinux_fix or args.selinux_rules or args.selinux_take_away:
+        return cli_selinux_fix(args, pal, want)
     step = args.selinux or 'check'
     if step == 'check':
         got = _selinux_helper(['--selinux-check', '--want-stdin'] + (['--json'] if args.json else []),
@@ -5144,6 +5155,69 @@ def cli_selinux(args, pal):
                 print('nothing done')
                 return 1
         got = _selinux_helper(['--selinux-do', step] + (['--json'] if args.json else []), want)
+    sys.stdout.write(got.stdout)
+    sys.stderr.write(got.stderr)
+    return got.returncode
+
+
+def cli_selinux_fix(args, pal, want):
+    """otp --selinux-fix ID...|all, --selinux-rules, --selinux-take-away ID (1.0.300): as on the card."""
+    got = _selinux_helper(['--selinux-check', '--want-stdin', '--json'], want, 600)
+    try:
+        c = json.loads(got.stdout or '{}')
+    except ValueError:
+        sys.stderr.write(got.stderr)
+        raise SystemExit('otp: the root helper did not say how SELinux is here')
+    rules = c.get('local_rules') or []
+    if args.selinux_rules:
+        if args.json:
+            print(json.dumps(rules))
+            return 0
+        if not rules:
+            print('otp\'s local module (otp_local) has no rule')
+        for x in rules:
+            print('%s  %s\n              %s - put in %s by %s' % (x['id'], x['rule'], x.get('why') or '',
+                                                         time.strftime('%Y-%m-%d %H:%M', time.localtime(float(x.get('at') or 0))),
+                                                         x.get('by') or '?'))
+        return 0
+    try:
+        base = json.loads(want or '{}')
+    except ValueError:
+        base = {}
+    base['by'] = cli_who()
+    if args.selinux_take_away:
+        rule = next((x for x in rules if x['id'] == args.selinux_take_away), None)
+        if rule is None:
+            raise SystemExit('otp: otp\'s local module has no rule %s (otp --selinux-rules)' % args.selinux_take_away)
+        words = 'the rule %s taken away from otp\'s local module: %s' % (rule['id'], rule['rule'])
+        base.update(rule=rule['id'])
+        do = 'rule_drop'
+    else:
+        found = c.get('findings') or []
+        fixable = [f for f in found if f.get('kind') in ('boolean', 'label', 'port', 'rule') and f.get('fix')]
+        ids = [f['id'] for f in fixable] if args.selinux_fix == ['all'] else args.selinux_fix
+        pick = [f for f in fixable if f['id'] in ids]
+        other = [i for i in ids if i not in [f['id'] for f in pick]]
+        for i in other:
+            f = next((x for x in found if x['id'] == i), None)
+            print(pal.warn_line('%s: %s' % (i, (f.get('why') or f.get('kind')) if f else 'not refused here (otp --selinux-check lists the ids)')))
+        if not pick:
+            print('nothing to put right')
+            return 1 if other else 0
+        print('root does exactly this - nothing else:')
+        for f in pick:
+            print('  %s  %s\n      %s: %s -> %s %s { %s }' % (f['id'], f['fix']['cmd'], f.get('program') or '?', f['source'],
+                                                         f['target'], f['class'], ' '.join(f['perms'])))
+        words = '%d thing(s) put right' % len(pick)
+        base.update(ids=[f['id'] for f in pick])
+        do = 'fix'
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit('otp: %s - add --yes to do it without a terminal' % words)
+        if input('%s. Go on? [y/N] ' % words).strip().lower() not in ('y', 'yes'):
+            print('nothing done')
+            return 1
+    got = _selinux_helper(['--selinux-do', do] + (['--json'] if args.json else []), json.dumps(base))
     sys.stdout.write(got.stdout)
     sys.stderr.write(got.stderr)
     return got.returncode

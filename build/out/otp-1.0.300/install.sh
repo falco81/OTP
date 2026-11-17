@@ -536,6 +536,10 @@ if [[ -n "$DO_UNINSTALL" ]]; then
     if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="otp_server"{f=1} END{exit !f}'; then
         run semodule -r otp_server 2>/dev/null || warn "SELinux: semodule -r otp_server did not go"
     fi
+    # otp's local rules too (1.0.300): put in from Settings → High security → SELinux.
+    if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="otp_local"{f=1} END{exit !f}'; then
+        run semodule -r otp_local 2>/dev/null || warn "SELinux: semodule -r otp_local did not go"
+    fi
     [[ -d "$LIB_DIR" ]] && run rm -rf "$LIB_DIR"
     [[ -d "$WEB_DIR" ]] && run rm -rf "$WEB_DIR"
     run systemctl daemon-reload
