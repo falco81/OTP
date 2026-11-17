@@ -2723,6 +2723,8 @@ function mfaWay(body, d, kind) {
     pic.appendChild(el('span', 'muted small', 'Making it…'));
     body.appendChild(pic);
     api('mfa', {action: 'enrol_start', kind: 'app'}).then(function (r) {
+      /* Another way chosen meanwhile (1.0.298): its view got this one's code box. */
+      if (!body.contains(pic)) return;
       d.started = null;             /* the code sent before is not the one asked for now (1.0.255) */
       clear(pic);
       var img = el('img');
@@ -2733,7 +2735,7 @@ function mfaWay(body, d, kind) {
       key.title = 'Typed into the app instead of scanning';
       pic.appendChild(key);
       mfaCodeForm(body, d, 'enrol_confirm', 'Sign in');
-    }).catch(function (e) { clear(pic); pic.appendChild(el('p', 'said bad', String(e.message || e))); });
+    }).catch(function (e) { if (!body.contains(pic)) return; clear(pic); pic.appendChild(el('p', 'said bad', String(e.message || e))); });
     return;
   }
   body.appendChild(el('p', 'small muted', kind === 'mail' ? 'The address the codes go to - a code goes there now to prove it is yours.'
@@ -2755,6 +2757,7 @@ function mfaWay(body, d, kind) {
     sent.className = 'said';
     sent.textContent = 'Sending…';
     api('mfa', {action: 'enrol_start', kind: kind, dest: dest.value}).then(function (r) {
+      if (!body.contains(drow)) return;
       mfaSentSay(sent, r.sent_to, r.send && r.send.sent > 1 ? {sent: r.send.sent} : null);
       setButtonIcon(send, icon, 'Send another');
       d.started = {kind: kind, dest: r.sent_to};     /* the way now being proven (1.0.255) */

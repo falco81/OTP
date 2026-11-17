@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.297'
+__version__ = '1.0.298'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -26043,7 +26043,12 @@ def rb_verified_forget(store, at=None):
         keep = [] if at is None else [x for x in rows if abs(fnum(x.get('at')) - at) > 0.001]
         if len(keep) != len(rows):
             n += len(rows) - len(keep)
-            store.set_meta(r['k'], json.dumps(keep))
+            # Another node's row by UPDATE only (1.0.298), as the history's: set_meta may insert,
+            # and the two nodes writing it at once met as one key twice in the replication.
+            if r['k'] == 'rbackup:verified:' + node_name():
+                store.set_meta(r['k'], json.dumps(keep))
+            else:
+                store.db.run('UPDATE meta SET v = ? WHERE k = ?', (json.dumps(keep), r['k']))
     return n
 
 
@@ -26076,8 +26081,16 @@ def rb_verify_due(store):
     """Weekly: a week since this node last tried one."""
     if (CONFIG.get('rbackup_verify') or 'off') != 'weekly':
         return False
+    # Not with no destination switched on (1.0.298): it failed at once, wrote nothing, and was
+    # started again every hour for good.
+    try:
+        if not any(t.get('enabled') for t in rb_targets(store)):
+            return False
+    except Exception:                                   # noqa: BLE001
+        pass
     rows = _meta_json(store, 'rbackup:verified:' + node_name(), list) or []
-    last = float(rows[0].get('at') or 0) if isinstance(rows, list) and rows else 0
+    first = rows[0] if isinstance(rows, list) and rows else None
+    last = fnum(first.get('at')) if isinstance(first, dict) else 0
     return time.time() - last > 7 * 86400
 
 # ---------------------------------------------------------------------------
@@ -60032,7 +60045,9 @@ def snmp_mib(daemon, agent):
                 rows += [(B + (6, 1, 1, 1, i), 'int', i), (B + (6, 1, 1, 2, i), 'str', t),
                          (B + (6, 1, 1, 3, i), 'str', info.get('cn') or ''),
                          (B + (6, 1, 1, 4, i), 'int', int((end - time.time()) // 86400)),
-                         (B + (6, 1, 1, 5, i), 'int', end)]
+                         # Integer32 (1.0.298): a certificate ending after 2038 was 5 bytes and a
+                         # strict manager refused the whole answer.
+                         (B + (6, 1, 1, 5, i), 'int', max(-2 ** 31, min(end, 2 ** 31 - 1)))]
     except Exception:                                   # noqa: BLE001
         pass
     if db_ok and in_cluster(store):
