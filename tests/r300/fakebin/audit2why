@@ -1,0 +1,25 @@
+#!/bin/bash
+# echoes each refusal and its verdict, as audit2why does: "allowed by active policy" for the lines
+# matching a pattern in $S/allowed, a boolean for those matching "PATTERN<TAB>BOOLEAN" in $S/bools,
+# "Missing type enforcement" for the rest (1.0.300: the booleans)
+. "$(dirname "$0")/_common"
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  echo "$line"; echo; echo "	Was caused by:"
+  b=""
+  if [ -s "$S/bools" ]; then
+    while IFS=$'\t' read -r pat name; do
+      [ -n "$pat" ] && printf '%s\n' "$line" | grep -qF -- "$pat" && { b=$name; break; }
+    done < "$S/bools"
+  fi
+  if [ -s "$S/allowed" ] && printf '%s\n' "$line" | grep -qFf "$S/allowed"; then
+    echo "		Unknown - would be allowed by active policy"
+  elif [ -n "$b" ]; then
+    echo "	The boolean $b was set incorrectly. "
+    echo "	Description:"; echo "	Allow $b"; echo; echo "	Allow access by executing:"; echo "	# setsebool -P $b 1"
+  else
+    echo "		Missing type enforcement (TE) allow rule."
+    echo; echo "		You can use audit2allow to generate a loadable module to allow this access."
+  fi
+  echo
+done

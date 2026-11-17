@@ -1,0 +1,7 @@
+#!/bin/bash
+. "$(dirname "$0")/_common"
+touch "$S/modules"
+case "$1" in -l|-lfull) cat "$S/modules";;
+  -i) n=$(basename "$2" .cil); [ -f "$S/fail_load" ] && { echo "Failed to load $n" >&2; exit 1; }
+      grep -qx "$n" "$S/modules" || echo "$n" >> "$S/modules"; cp "$2" "$S/loaded_$n.cil";;
+  -r) grep -vx "$2" "$S/modules" > "$S/m2"; mv "$S/m2" "$S/modules";; esac

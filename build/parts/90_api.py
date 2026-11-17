@@ -1643,6 +1643,8 @@ def _status(h):
         out['after'] = {'n': a['n'], 'level': a['level']}
     except Exception:                                   # noqa: BLE001
         out['after'] = {'n': 0, 'level': ''}
+    # The upgrade at a glance (1.0.299): the band under every page's header.
+    out['upgrading'] = upgrade_brief(h.store)
     return out
 
 

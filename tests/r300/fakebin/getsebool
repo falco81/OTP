@@ -1,0 +1,4 @@
+#!/bin/bash
+. "$(dirname "$0")/_common"
+[ "$(cat "$S/mode")" = Disabled ] && { echo "getsebool:  SELinux is disabled" >&2; exit 1; }
+v=$(cat "$S/bool_$1" 2>/dev/null || echo off); echo "$1 --> $v"

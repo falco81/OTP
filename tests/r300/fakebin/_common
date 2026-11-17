@@ -1,0 +1,3 @@
+# shared by the fake SELinux commands: their state lives in $SEFAKE
+S=${SEFAKE:?SEFAKE}
+echo "$(basename "$0") $*" >> "$S/calls"
