@@ -13,9 +13,9 @@ no agent stays its administrator's, and otp only connects to it.
 **Layout A**: one otp node, or two that share one database, and its database server.
 **Layout B** (1.0.290): high availability with each node's database on a server of its own,
 the two servers replicating (see *High availability* below). Moving onto the agent's server and off it
-(1.0.291, *Moving* below). This machine's database shown as a database server
-(`db_local_card`) and the database servers' rows in the header's meter come in a later
-release.
+(1.0.291, *Moving* below). This machine's database shown as a database server (1.0.292,
+*This machine's database* below). The database servers' rows in the header's meter (1.0.293,
+*Monitoring* below).
 
 ```
    otp1 (192.0.2.11)                                    db1 (192.0.2.21)
@@ -209,6 +209,16 @@ line for the database server.
 | `dbagent:version:NODE` | the agent's program is not the one this otp ships (*older*: `./install.sh --db-agent` there; *newer*: upgrade otp) |
 
 All of them are said in Czech too. Prometheus gets `otp_db_agent_up` and `otp_db_server_up`.
+
+**The meter in the header** (Settings → About → the performance meter, 1.0.293): with an agent,
+a row for each database server after the nodes, in the look chosen, named with a small cylinder -
+the server's own short name (`db1`), or `db·NODE` where that is not one. Its numbers are the
+agent's (`load`), read through it every 2 s while a page looks; the other node's server from
+the row its node writes. Pointed at, its panel: the graph of what was pointed at, **The
+database** (the version, running for how long, the connections, *Waiting to go over
+(replication)*, the size of otp's database, its data's disk, TLS) and **The machine** in numbers.
+An agent that does not answer: the row dimmed and its name red, its panel says so, and the meter
+does not wait for it - it is asked again 10 s later. Without an agent the meter is as before.
 
 The agent's version is its program. The node compares the SHA-256 of `otp_db_agent.py`,
 `otp_pg_ops.py` and `otp_web.py` with the files it ships, so a release that did not change the
