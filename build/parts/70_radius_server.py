@@ -327,9 +327,9 @@ class Authenticator(object):
             return ''
         if not entry or entry.get('many'):
             return ''
-        return self.same_entry(realm, entry)
+        return self.same_entry(realm, entry, gone=gone)
 
-    def same_entry(self, realm, entry, unproven=False):
+    def same_entry(self, realm, entry, unproven=False, gone=None):
         """The token the directory entry has under another spelling, proven its own (by its
         DN), or ''. Used by RADIUS and the enrolment pages alike (1.0.224)."""
         try:
@@ -350,9 +350,13 @@ class Authenticator(object):
             if how2 not in ('upn', 'sam'):
                 how2 = 'upn' if '@' in cand else 'sam'
             other = self.find_person(ad2, cand, how2, r2)
-        except LdapError:
+        except LdapError as e:
             # Not proven either way: RADIUS lets nobody in on it; the enrolment pages
             # (unproven=True) keep the token as the person's, and make no second one.
+            # The directory not reached (1.0.311): said so by the caller - "no token", a refusal
+            # counted as a guess, sent the VPN nowhere else.
+            if gone is not None and isinstance(e, LdapUnreachable) and not unproven:
+                gone.append(e)
             return cand if unproven else ''
         if not other or other.get('many') or \
                 str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():

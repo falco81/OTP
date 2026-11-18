@@ -447,7 +447,7 @@ def upgrade_tick(daemon):
     # one that drains goes back into service, one that installs is checked
     # and comes back - it never stays in maintenance for good.
     if plan and plan['state'] == 'failed':
-        _back_after_marked(store, plan)
+        _back_after_marked(store, plan, daemon)
     if not plan or plan['state'] not in ('running', 'cancelled'):
         return
     me = node_name()
@@ -705,14 +705,41 @@ def _peer_still_at_it(turn):
             pass
 
 
-def _back_after_marked(store, plan):
+def _back_after_marked(store, plan, daemon=None):
     """A node the other one marked failed while it drained, come back on
     its old version (1.0.61): taken out of the maintenance the upgrade put
-    it in, once - nothing else would."""
+    it in, once - nothing else would. Come back on the new version (1.0.311):
+    checked as the step "checking" does, and back in service if it passes -
+    it stayed in maintenance for good, RADIUS silent, the VIP never there."""
     me = node_name()
     row = _meta_json(store, 'upgrade:node:' + me) or {}
     if row.get('id') != plan.get('id') or row.get('state') != 'failed' or \
-            not row.get('marked_by') or row.get('back') or __version__ == plan.get('version'):
+            not row.get('marked_by') or row.get('back'):
+        return
+    if __version__ == plan.get('version'):
+        trouble = []
+        try:
+            store.db.value('SELECT 1')
+        except Exception as e:                          # noqa: BLE001
+            trouble.append('the database: %s' % e)
+        if daemon is not None and not getattr(getattr(daemon, 'radius', None), 'bound', None):
+            trouble.append('RADIUS is not listening')
+        if trouble:
+            return                      # tried again at the next tick; kept out meanwhile
+        if not row.get('was_maint'):
+            try:
+                maintenance_set(store, False, by=plan.get('by') or '')
+            except Exception:                           # noqa: BLE001
+                return
+        row.update(back=True, state='done', at=time.time(),
+                   said='%s - came back as %s after %s marked it failed; checked, back in service'
+                        % (__version__, __version__, row.get('marked_by')))
+        try:
+            _row_write(store, 'upgrade:node:' + me, row, mine=False)
+        except Exception:                               # noqa: BLE001
+            pass
+        log('back in service as %s: the upgrade had been marked failed by %s while this node was away'
+            % (__version__, row.get('marked_by')), 'warn')
         return
     if not row.get('was_maint'):
         try:

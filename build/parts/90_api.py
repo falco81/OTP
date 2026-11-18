@@ -7005,6 +7005,10 @@ def lb_facts(store):
                           'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
                           'recursive': bool(CONFIG.get('web_proxy_recursive', 1)),
                           'port': int(CONFIG.get('web_proxy_port') or 0)},
+            # The certificate sign-in's own port, when it is on (1.0.311): the guides offered 8443 for
+            # the balancer - the same port, refused by the nodes, and a balancer configured by them
+            # would have published the sign-in with a card.
+            'cert_port': int(CONFIG.get('admin_cert_port') or 8443) if CONFIG.get('admin_cert') else 0,
             'access': access, 'portal_sso': bool(CONFIG.get('portal_sso')),
             'fw_managed': _lb_fw_on(store),
             'auth_port': int(CONFIG.get('radius_auth_port') or 1812),

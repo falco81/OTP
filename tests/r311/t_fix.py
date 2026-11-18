@@ -142,7 +142,7 @@ m.CONFIG['admin_cert'], m.CONFIG['admin_cert_port'] = 1, 8443
 why = m.cert_port_problem({'web_proxy_port': '8443', 'web_proxy': '1'}, probe=False)
 ok('3 the nodes refuse the same port for the balancer (as before)', 'admin_cert_port' in why and '9443' in why, why)
 m.CONFIG['admin_cert'] = 0
-JS = open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])) if False else '/home/claude/build/out/otp-%s/web/assets/admin.js' % _OUTV).read()
+JS = open('/home/claude/build/out/otp-%s/web/assets/admin.js' % _OUTV).read()
 fn = JS[JS.index('function lbPortSay'):JS.index('\n', JS.index('function lbPortSay'))]
 out = subprocess.run(['node', '-e', fn + ';console.log([lbPortSay({cert_port: 8443}), lbPortSay({cert_port: 0}), lbPortSay({cert_port: 9443}), lbPortSay(null)].join(","))'],
                      capture_output=True, text=True).stdout.strip()
