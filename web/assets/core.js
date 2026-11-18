@@ -216,7 +216,11 @@ function apiLatestOut(key) { return !!LATEST_OUT[key]; }
 function oops(e) {
   if (e && e.stopped) return;           /* somebody stopped it: not a fault */
   /* An upgrade restarting what answers these pages (1.0.299): the band says so, once. */
-  if (e && (e.upgrading || (e.unreachable && typeof upgradeExpected === 'function' && upgradeExpected()))) return;
+  if (e && (e.upgrading || (e.unreachable && typeof upgradeExpected === 'function' && upgradeExpected()))) {
+    if (!e.post) return;
+    toast('Not saved: otp is being upgraded - try again once it answers', 'bad');
+    return;
+  }
   /* An account that must set its own password first: every page answers
      "change your password first" - said once, by its own form (1.0.103). */
   if (typeof ME === 'object' && ME && ME.must_change && e && e.status === 403) return;
@@ -1284,6 +1288,11 @@ function api(what, body, wait, ctl) {
       }
       return data;
     });
+  }).catch(function (e) {
+    /* Whether it was a change (1.0.304): a save that fails during an upgrade is said - only what
+       is asked again by itself (a look, a list) goes silent while the band explains it. */
+    if (e && typeof e === 'object') e.post = !!opts.method;
+    throw e;
   });
 }
 

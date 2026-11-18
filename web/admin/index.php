@@ -244,12 +244,16 @@ if (isset($_GET['api'])) {
            while it restarts - and whether it answers again, and the version of these files. */
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
-        [$hs] = otp_call('/api/health', 'GET', null, 3.0);
+        [$hs, $hb] = otp_call('/api/health', 'GET', null, 3.0);
+        /* Answering as the sign-in page means it (1.0.304): its database open too - the page loaded
+           again every 2 s while the database was still opening. */
+        $hj = json_decode((string) $hb, true);
+        $up = $hs === 200 && is_array($hj) && !empty($hj['database']['ok']);
         /* The whole of it only for a real sign-in (1.0.303), asked of the daemon - not for a cookie
            of the right form: who asked, why it failed, its id. */
         $real = $hs === 200 && otp_session() !== '' && otp_whoami() !== null;
         echo json_encode(['ok' => true, 'upgrading' => otp_upgrading($real),
-                          'pages' => OTP_VERSION, 'api' => $hs === 200],
+                          'pages' => OTP_VERSION, 'api' => $up],
                          JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
@@ -832,7 +836,23 @@ if ($me && ($_COOKIE['otp_lang'] ?? '') !== $lang) {
         if (b && u.parts) b.style.width = Math.round(100 * Math.max(0, u.part - 1) / u.parts) + '%';
       }
       if (!d.api) { down = true; return; }
-      if (down || !u || u.state !== 'running') { location.reload(); return; }
+      if (down || !u || u.state !== 'running') {
+        /* Never under somebody typing (1.0.304): a name, a password or a code - said, loaded with a press. */
+        var a = document.activeElement;
+        var typing = Array.prototype.some.call(document.querySelectorAll('.signin input:not([type=hidden])'), function (x) {
+          return x === a || (x.value || '') !== '';
+        });
+        if (!typing) { location.reload(); return; }
+        if (!document.getElementById('upband-in-again')) {
+          var again = document.createElement('a');
+          again.id = 'upband-in-again';
+          again.className = 'fgo';
+          again.textContent = (typeof i18nText === 'function' && i18nText('It is back - load the page again')) || 'It is back - load the page again';
+          again.onclick = function () { location.reload(); };
+          box.appendChild(again);
+        }
+        return;
+      }
     }).catch(function () { down = true; gone++; }).then(function () { setTimeout(ask, 2000); });
   }
   setTimeout(ask, 2000);

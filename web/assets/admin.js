@@ -214,7 +214,9 @@ function upgradeHeard(u, from) {
   if (!u || typeof u !== 'object' || !u.version) return;
   if (typeof UP_STATE === 'undefined') { setTimeout(function () { upgradeHeard(u, from); }, 0); return; }
   UPG.u = u;
-  if (from !== 'status') {
+  /* Away only while it runs (1.0.304): a daemon down after the upgrade ended (done, failed) is
+     down - said as such, not "in maintenance" for half an hour. */
+  if (from !== 'status' && u.state === 'running') {
     if (!UPG.away) UPG.away = Date.now();
     UPG.phpAway = false;
   }
@@ -283,7 +285,7 @@ function upgradeReload(to) {
   setTimeout(function () { location.reload(); }, 700);
 }
 function upgLoop() {
-  var want = upgradeRunning() || UPG.reloading || (UPG.away && Date.now() - UPG.away < 30 * 60000);
+  var want = upgradeRunning() || UPG.reloading;
   if (!want) { clearTimeout(UPG.timer); UPG.timer = null; return; }
   if (UPG.timer) return;
   UPG.timer = setTimeout(function () {
@@ -303,7 +305,8 @@ function upgLoop() {
         if (d && d.upgrading) upgradeHeard(d.upgrading, 'state');
       }).catch(function () { UPG.phpAway = true; });
     }).then(function () {
-      if (UPG.away) { $('offline').hidden = true; upgPill(); }
+      if (UPG.away && upgradeRunning()) { $('offline').hidden = true; upgPill(); }
+      else if (!upgradeRunning()) UPG.away = 0;
       drawUpband();
       upgLoop();
     });
