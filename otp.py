@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.311'
+__version__ = '1.0.312'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1380,8 +1380,9 @@ SAYS = {
                     'anywhere, on any node, the directory is no longer asked for that name - only '
                     'these pages wait, the account in the directory stays unlocked. Cleared under '
                     'Locked out. 0: no cap of its own (as until now). RADIUS is not affected.',
-    'dir_pw_window_min': 'How long a wrong directory password counts towards the cap above. As '
-                         'long as the directory\'s "Reset account lockout counter after", or longer.',
+    'dir_pw_window_min': 'The count goes back to 0 once this long has gone by since the last wrong '
+                         'password - as the directory counts it ("Reset account lockout counter after"). '
+                         'As long as that, or longer.',
     'portal_first_code': 'Somebody who has no token yet signs in with their directory name and '
                          'password, and then gets a one-time code to the e-mail address or the '
                          'mobile number the directory has for them - read from it at the sign-in, '
@@ -13504,12 +13505,32 @@ def node_key_times(store, prefix, name):
     return sorted(out)
 
 
-def node_key_add(store, prefix, name, keep, most=None, limit=None):
+def node_key_streak(times, span, now=None):
+    """The times that count now as a directory counts its wrong passwords (1.0.312): its counter
+    goes back to 0 only once `span` has gone by since the LAST one (Active Directory's "Reset
+    account lockout counter after"), not each one `span` after itself. The run of times up to the
+    newest with no gap of `span` in it - none when the newest is `span` old."""
+    now = time.time() if now is None else now
+    ts = sorted(times, key=lambda x: x[0] if isinstance(x, tuple) else x)
+    if not ts:
+        return []
+    at = (lambda x: x[0] if isinstance(x, tuple) else x)
+    if now - at(ts[-1]) >= span:
+        return []
+    i = len(ts) - 1
+    while i > 0 and at(ts[i]) - at(ts[i - 1]) < span:
+        i -= 1
+    return ts[i:]
+
+
+def node_key_add(store, prefix, name, keep, most=None, limit=None, streak=None):
     """`time.time()` added to this node's own row for `name`, written only over
     what was read; the times older than `keep` seconds dropped. True once
     written. With `limit`: False, nothing written, when every node's rows
     together already hold that many - counted again at each try, so of
-    requests at once only as many as the limit get past (1.0.147)."""
+    requests at once only as many as the limit get past (1.0.147). With `streak`
+    (seconds, 1.0.312): only the run of times counted that a directory counts
+    (node_key_streak) - `keep` then long enough to hold that run."""
     k = node_key(prefix, name)
     for _ in range(8):
         t = time.time()
@@ -13521,14 +13542,20 @@ def node_key_add(store, prefix, name, keep, most=None, limit=None):
         times = [x for x in times if t - x < keep]
         if limit is not None:
             others = 0
+            theirs = []
             for r in node_key_rows(store, prefix, name):
                 if r['k'] == k:
                     continue
                 try:
-                    others += len([x for x in json.loads(r['v'] or '[]') if t - float(x) < keep])
+                    got = [float(x) for x in json.loads(r['v'] or '[]') if t - float(x) < keep]
                 except (ValueError, TypeError):
                     continue
-            if others + len(times) >= limit:
+                others += len(got)
+                theirs += got
+            if streak:
+                if len(node_key_streak(theirs + times, streak, t)) >= limit:
+                    return False
+            elif others + len(times) >= limit:
                 return False
         times.append(t)
         if most:
@@ -13537,15 +13564,15 @@ def node_key_add(store, prefix, name, keep, most=None, limit=None):
         if raw is None:
             try:
                 store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, new))
-                return _node_key_recount(store, prefix, name, k, t, keep, limit)
+                return _node_key_recount(store, prefix, name, k, t, keep, limit, streak)
             except Exception:                           # noqa: BLE001
                 continue
         if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
-            return _node_key_recount(store, prefix, name, k, t, keep, limit)
+            return _node_key_recount(store, prefix, name, k, t, keep, limit, streak)
     return False
 
 
-def _node_key_recount(store, prefix, name, k, t, keep, limit):
+def _node_key_recount(store, prefix, name, k, t, keep, limit, streak=None):
     """Counted again once written (1.0.225): two nodes reading the other's row at the same
     moment both got under the limit - one more than it allows. Over it now: this one taken
     back, and not let past."""
@@ -13561,6 +13588,8 @@ def _node_key_recount(store, prefix, name, k, t, keep, limit):
         except (ValueError, TypeError):
             continue
     every.sort()
+    if streak:
+        every = node_key_streak(every, streak, t)
     if (t, k) in every[:limit]:
         return True
     node_key_give_back(store, prefix, name, t)
@@ -48343,9 +48372,12 @@ def dir_pw_take(h, name, directory='', entry=None):
         return ''
     if directory:
         who = '%s|%s' % (who, str(directory).lower())
-    if not node_key_add(h.store, 'adpw', who, span, limit=most):
-        times = sorted(x for x in node_key_times(h.store, 'adpw', who) if time.time() - x < span)
-        wait = max(1, int(((times[-most] + span) - time.time()) // 60) + 1) if len(times) >= most else 1
+    # Counted as the directory counts (1.0.312): its counter goes back to 0 only `span` after the
+    # LAST wrong password. Each one counted `span` after itself, wrong passwords 10 min apart got
+    # past a cap of 3 in 30 min without end - 5 in 40 min locked an account with a threshold of 5.
+    if not node_key_add(h.store, 'adpw', who, span * (most + 1), limit=most, streak=span):
+        run = node_key_streak(node_key_times(h.store, 'adpw', who), span)
+        wait = max(1, int(((run[-1] + span) - time.time()) // 60) + 1) if run else 1
         log_sparing('adpw:' + who, 'wrong directory passwords for %s: the cap of %d in %d min is '
                     'reached - the directory is not asked for that name meanwhile'
                     % (who, most, span // 60), 'warn', every=300)
@@ -48405,7 +48437,8 @@ def lockouts_shared(store):
         # Each directory's own cap (1.0.232): the name counted is "novak|directory".
         name_, _s, dname = who.partition('|')
         most, pspan = dir_pw_cap_of(store, dname)
-        times = sorted(x for x in times if t - x < pspan)
+        # The run the directory counts (1.0.312): free again `pspan` after the last of them.
+        times = node_key_streak(times, pspan, t)
         if not times or most <= 0:
             continue
         locked = len(times) >= most
@@ -48414,7 +48447,7 @@ def lockouts_shared(store):
                      'base': 'dir-passwords',
                      'words': 'wrong directory passwords', 'fails': len(times), 'limit': most,
                      'locked': locked,
-                     'until': (times[len(times) - most] + pspan) if locked else None,
+                     'until': (times[-1] + pspan) if locked else None,
                      'forgets': times[-1] + pspan, 'first': times[0], 'last': times[-1],
                      'others': []})
     after = int(CONFIG.get('lockout_after') or 0)
