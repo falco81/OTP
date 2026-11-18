@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.305'
+__version__ = '1.0.306'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -16204,13 +16204,13 @@ class RadiusServer(object):
             elif pkt.code == ACCESS_REQUEST:
                 remember = None
                 if window:
-                    def remember(b, key=key):
+                    def remember(b, until=0, key=key):
                         # The answer kept for a repeat the moment it is sent
                         # (1.0.101), not after it is written down: a repeat
                         # coming meanwhile got nothing.
                         with self.seen_lock:
                             if key in seen:
-                                seen[key] = (arrived, b)
+                                seen[key] = (arrived, b, until)
                 reply = self.access(pkt, client, ip, port, secret, arrived, sock, peer, remember)
             else:
                 # Not proven to come from the client: written down sparingly
@@ -16610,6 +16610,11 @@ class RadiusServer(object):
             # tie up the workers sleeping.
             reply.late = True
             reply.late_until = time.time() + min(delay, 10000) / 1000.0
+            # Kept for a repeat now, with when it may go (1.0.306): kept only after it was written
+            # down, a repeat coming once the late refusal went - the database slower than the
+            # delay - found nothing and was swallowed as "repeated": the NAS got no answer.
+            if remember is not None:
+                remember(bytes(reply), reply.late_until)
             self.later(min(delay, 10000) / 1000.0, sock, bytes(reply), peer)
         else:
             try:
@@ -45569,7 +45574,15 @@ def alert_send(store, msg, to, kind, keys):
     except Exception as e:                              # noqa: BLE001 - not a MailError alone (1.0.287)
         # Waiting for another try in the outgoing mail is sent as far as the
         # alerts go: it is not made again every minute.
-        entry.update(ok=False, said=str(e)[:200], queued=getattr(e, 'queued', '') or '')
+        left = getattr(e, 'left', None)
+        if isinstance(left, list) and to and len(left) < len(to):
+            # Some took it, the rest refused for good (1.0.306): sent - the same alert went to
+            # every recipient again every 15 min, the report every 30, for as long as one
+            # address was gone.
+            entry.update(said='not delivered to %s: %s' % (', '.join(left)[:200], str(e)[:200]),
+                         partial=True)
+        else:
+            entry.update(ok=False, said=str(e)[:200], queued=getattr(e, 'queued', '') or '')
     # The row of what was sent is the sending node's (1.0.234): a test from another node's pages
     # wrote its older copy back over it, and the same alerts went out again.
     # A report sent from that node's pages too (1.0.271): it wrote its stale copy of the
@@ -45931,11 +45944,13 @@ def report_build(store, since, until, lang='cs'):
     total = acc + rej
     users_bad = db.rows(
         "SELECT username AS who, COUNT(*) AS n, MAX(ts) AS last FROM radius_log WHERE ts >= ? "
-        "AND ts < ? AND packet = 'Access-Request' AND result <> 'accept' AND result <> 'acct' "
+        "AND ts < ? AND packet = 'Access-Request' AND result IN ('reject', 'drop') "
         "GROUP BY username ORDER BY n DESC LIMIT 15", (since, until))
     for u in users_bad:
+        # A refusal, not the challenge of a sign-in in two windows (1.0.306): every user of a
+        # challenge realm was listed, as many times as they signed in.
         r = db.rows("SELECT reason FROM radius_log WHERE username = ? AND ts >= ? AND ts < ? AND "
-                    "result <> 'accept' ORDER BY ts DESC LIMIT 1", (u['who'], since, until))
+                    "result IN ('reject', 'drop') ORDER BY ts DESC LIMIT 1", (u['who'], since, until))
         u['why'] = (r[0].get('reason') if r else '') or ''
         u['good'] = int(db.value("SELECT COUNT(*) FROM radius_log WHERE username = ? AND ts >= ? "
                                  "AND ts < ? AND result = 'accept'", (u['who'], since, until), 0)
@@ -60287,7 +60302,7 @@ def snmp_mib_backup(daemon, store, db_ok):
     except Exception:                                   # noqa: BLE001
         last = 0.0
     rows = [(B + (1, 0), 'int', 1 if CONFIG.get('backup_daily') else 0),
-            (B + (2, 0), 'int', int(last)), (B + (3, 0), 'gauge', _sn_g(now - last) if last else SNMP_MIB_GAUGE_MAX),
+            (B + (2, 0), 'int', _sn_i32(last)), (B + (3, 0), 'gauge', _sn_g(now - last) if last else SNMP_MIB_GAUGE_MAX),
             (B + (4, 0), 'int', 1 if CONFIG.get('rbackup') else 0)]
     mine = [r for r in rb_history(store) if r.get('node') == node_name()] if db_ok and CONFIG.get('rbackup') else []
     ok = [r for r in mine if r.get('ok')]
@@ -60331,9 +60346,18 @@ def snmp_mib_clock(daemon, store, db_ok):
     skew = c.get('skew')
     return [(B + (1, 0), 'int', 1 if c.get('engaged') else 0),
             (B + (2, 0), 'str', str(c.get('mode') or '')),
-            (B + (3, 0), 'int', int(round(float(ref) * 1000)) if isinstance(ref, (int, float)) else 0),
-            (B + (4, 0), 'int', int(round(float(skew) * 1000)) if isinstance(skew, (int, float)) else 0),
-            (B + (5, 0), 'int', int(round(float(c.get('correction') or 0) * 1000)))]
+            (B + (3, 0), 'int', _sn_i32(float(ref) * 1000) if isinstance(ref, (int, float)) else 0),
+            (B + (4, 0), 'int', _sn_i32(float(skew) * 1000) if isinstance(skew, (int, float)) else 0),
+            (B + (5, 0), 'int', _sn_i32(float(c.get('correction') or 0) * 1000))]
+
+
+def _sn_i32(v):
+    """An Integer32 (1.0.306): a clock months off (ms) or a time after 2038 was 5-6 bytes, and a
+    strict manager refused the whole answer - when it mattered most."""
+    try:
+        return max(-2 ** 31, min(2 ** 31 - 1, int(round(float(v)))))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def snmp_mib_logs(daemon, store, db_ok):

@@ -508,7 +508,7 @@ def snmp_mib_backup(daemon, store, db_ok):
     except Exception:                                   # noqa: BLE001
         last = 0.0
     rows = [(B + (1, 0), 'int', 1 if CONFIG.get('backup_daily') else 0),
-            (B + (2, 0), 'int', int(last)), (B + (3, 0), 'gauge', _sn_g(now - last) if last else SNMP_MIB_GAUGE_MAX),
+            (B + (2, 0), 'int', _sn_i32(last)), (B + (3, 0), 'gauge', _sn_g(now - last) if last else SNMP_MIB_GAUGE_MAX),
             (B + (4, 0), 'int', 1 if CONFIG.get('rbackup') else 0)]
     mine = [r for r in rb_history(store) if r.get('node') == node_name()] if db_ok and CONFIG.get('rbackup') else []
     ok = [r for r in mine if r.get('ok')]
@@ -552,9 +552,18 @@ def snmp_mib_clock(daemon, store, db_ok):
     skew = c.get('skew')
     return [(B + (1, 0), 'int', 1 if c.get('engaged') else 0),
             (B + (2, 0), 'str', str(c.get('mode') or '')),
-            (B + (3, 0), 'int', int(round(float(ref) * 1000)) if isinstance(ref, (int, float)) else 0),
-            (B + (4, 0), 'int', int(round(float(skew) * 1000)) if isinstance(skew, (int, float)) else 0),
-            (B + (5, 0), 'int', int(round(float(c.get('correction') or 0) * 1000)))]
+            (B + (3, 0), 'int', _sn_i32(float(ref) * 1000) if isinstance(ref, (int, float)) else 0),
+            (B + (4, 0), 'int', _sn_i32(float(skew) * 1000) if isinstance(skew, (int, float)) else 0),
+            (B + (5, 0), 'int', _sn_i32(float(c.get('correction') or 0) * 1000))]
+
+
+def _sn_i32(v):
+    """An Integer32 (1.0.306): a clock months off (ms) or a time after 2038 was 5-6 bytes, and a
+    strict manager refused the whole answer - when it mattered most."""
+    try:
+        return max(-2 ** 31, min(2 ** 31 - 1, int(round(float(v)))))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def snmp_mib_logs(daemon, store, db_ok):
