@@ -9600,6 +9600,8 @@ function lbSetLine(v) {
     + ' --set web_proxy_recursive=' + (v.layer === 'l4' ? '0' : '1') + ' --set web_proxy_port={pp} --set web_proxy=1'};
 }
 
+/* The balancer's port offered (1.0.311): 8443, or 9443 when the certificate sign-in has 8443. */
+function lbPortSay(lb) { return lb && lb.cert_port === 8443 ? 9443 : 8443; }
 function drawHaLb(d) {
   var host = $('ha-lb');
   var open = {};
@@ -9625,7 +9627,7 @@ function drawHaLb(d) {
     src: LB_UI.src || trusted || LB_UI.lb || '192.0.2.5',
     name: LB_UI.name || (lb.vip && lb.vip.fqdn) || lb.server_name || location.hostname,
     layer: LB_UI.layer || (wp.on && wp.header === 'proxy_protocol' ? 'l4' : 'l7'),
-    pp: LB_UI.pp || String(wp.port || 8443), hc: LB_UI.hc || '/healthz'};
+    pp: LB_UI.pp || String(wp.port || lbPortSay(lb)), hc: LB_UI.hc || '/healthz'};
   host.appendChild(el('p', 'note', 'Both nodes answer everything, so any balancer spreads the people between them - each one kept on one node (persistence), and moved to the other only when that node is taken out. Each node says GET /healthz: 200 "ok NODE" while it really works (the daemon, its database), 503 in maintenance or an upgrade - so the balancer takes it out by itself. Through the balancer only the enrolment pages are published - never the administration, /metrics or /healthz. Pick yours below: the configuration is filled in with this cluster\'s own names, addresses and ports, marked in colour, and follows what you type here.'));
   if (lb.vip && lb.vip.on) {
     host.appendChild(el('p', 'note warn', 'The built-in VIP address ' + lb.vip.address + ' is on: the pages need no balancer of yours. Use one or the other.'));
@@ -9678,7 +9680,7 @@ function drawHaLb(d) {
   var list = el('div', 'lb-list');
   host.appendChild(list);
   function values() {
-    var pp = parseInt(LB_UI.pp || v0.pp, 10) || 8443;
+    var pp = parseInt(LB_UI.pp || v0.pp, 10) || lbPortSay(lb);
     var v = {lb: LB_UI.lb || v0.lb, src: LB_UI.src || v0.src, srcGuess: srcGuess && !LB_UI.src,
              name: LB_UI.name || v0.name, hc: v0.hc, layer: v0.layer,
              pp: pp, secret: LB_SECRET, auth: lb.auth_port || 1812, acct: lb.acct_port || 0, nodes: nodes, wp: wp,
@@ -9711,6 +9713,11 @@ function drawHaLb(d) {
       note('warn', 'Passed through, the balancer cannot see the paths: what keeps the administration from the internet is the nodes themselves - their port ' + v.pp + ' serves the enrolment pages only, and Settings → Firewall and access → who may reach the administration pages must be your own networks only.');
     } else {
       note(v.wp.on ? 'warn' : '', 'No client address: every client is ' + v.src + ' to the nodes. The administration must not be reachable from ' + v.src + ', the sign-in pause and the limit of sign-ins a minute are everybody\'s together, and the logs say the balancer. The PROXY protocol (the layer beside) is better.');
+    }
+    /* The certificate sign-in's own port (1.0.311): not the balancer's - the nodes refuse it, and a
+       balancer sent there would publish the sign-in with a card. */
+    if (lb.cert_port && v.pp === lb.cert_port && v.layer !== 'snat') {
+      note('bad', 'Port ' + v.pp + ' is the certificate sign-in\'s own port (admin_cert_port): the nodes refuse it for the balancer, and a balancer sent there would publish the sign-in with a card to everybody - give the balancer another port (' + (v.pp === 9443 ? 8443 : 9443) + ', say).');
     }
     if (!set.ok) trust.appendChild(lbBlock(set.line, v, ''));
     /* The allow lists as they are. */

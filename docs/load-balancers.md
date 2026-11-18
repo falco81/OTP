@@ -125,6 +125,11 @@ ask 443 (no PROXY protocol there). With `web_proxy_header=proxy_protocol`
 the port takes the PROXY protocol (v1 or v2) and believes it from the
 balancers alone; 443 then believes no header at all. SELinux lets nginx use
 8443; another port needs `semanage port -a -t http_port_t -p tcp PORT`.
+With the sign-in by a certificate or a smart card on (`admin_cert`), its own port
+(`admin_cert_port`, 8443 by default) is not the balancer's: the nodes refuse the same
+port for both, and a balancer sent to it would publish that sign-in - give the
+balancer another one (9443, say, with the `semanage` line above); the guides in
+Settings → High availability offer it by themselves.
 
 ---
 

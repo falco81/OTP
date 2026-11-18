@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.310'
+__version__ = '1.0.311'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -15016,9 +15016,9 @@ class Authenticator(object):
             return ''
         if not entry or entry.get('many'):
             return ''
-        return self.same_entry(realm, entry)
+        return self.same_entry(realm, entry, gone=gone)
 
-    def same_entry(self, realm, entry, unproven=False):
+    def same_entry(self, realm, entry, unproven=False, gone=None):
         """The token the directory entry has under another spelling, proven its own (by its
         DN), or ''. Used by RADIUS and the enrolment pages alike (1.0.224)."""
         try:
@@ -15039,9 +15039,13 @@ class Authenticator(object):
             if how2 not in ('upn', 'sam'):
                 how2 = 'upn' if '@' in cand else 'sam'
             other = self.find_person(ad2, cand, how2, r2)
-        except LdapError:
+        except LdapError as e:
             # Not proven either way: RADIUS lets nobody in on it; the enrolment pages
             # (unproven=True) keep the token as the person's, and make no second one.
+            # The directory not reached (1.0.311): said so by the caller - "no token", a refusal
+            # counted as a guess, sent the VPN nowhere else.
+            if gone is not None and isinstance(e, LdapUnreachable) and not unproven:
+                gone.append(e)
             return cand if unproven else ''
         if not other or other.get('many') or \
                 str(other.get('dn') or '').lower() != str(entry.get('dn') or '').lower():
@@ -28613,7 +28617,7 @@ def upgrade_tick(daemon):
     # one that drains goes back into service, one that installs is checked
     # and comes back - it never stays in maintenance for good.
     if plan and plan['state'] == 'failed':
-        _back_after_marked(store, plan)
+        _back_after_marked(store, plan, daemon)
     if not plan or plan['state'] not in ('running', 'cancelled'):
         return
     me = node_name()
@@ -28871,14 +28875,41 @@ def _peer_still_at_it(turn):
             pass
 
 
-def _back_after_marked(store, plan):
+def _back_after_marked(store, plan, daemon=None):
     """A node the other one marked failed while it drained, come back on
     its old version (1.0.61): taken out of the maintenance the upgrade put
-    it in, once - nothing else would."""
+    it in, once - nothing else would. Come back on the new version (1.0.311):
+    checked as the step "checking" does, and back in service if it passes -
+    it stayed in maintenance for good, RADIUS silent, the VIP never there."""
     me = node_name()
     row = _meta_json(store, 'upgrade:node:' + me) or {}
     if row.get('id') != plan.get('id') or row.get('state') != 'failed' or \
-            not row.get('marked_by') or row.get('back') or __version__ == plan.get('version'):
+            not row.get('marked_by') or row.get('back'):
+        return
+    if __version__ == plan.get('version'):
+        trouble = []
+        try:
+            store.db.value('SELECT 1')
+        except Exception as e:                          # noqa: BLE001
+            trouble.append('the database: %s' % e)
+        if daemon is not None and not getattr(getattr(daemon, 'radius', None), 'bound', None):
+            trouble.append('RADIUS is not listening')
+        if trouble:
+            return                      # tried again at the next tick; kept out meanwhile
+        if not row.get('was_maint'):
+            try:
+                maintenance_set(store, False, by=plan.get('by') or '')
+            except Exception:                           # noqa: BLE001
+                return
+        row.update(back=True, state='done', at=time.time(),
+                   said='%s - came back as %s after %s marked it failed; checked, back in service'
+                        % (__version__, __version__, row.get('marked_by')))
+        try:
+            _row_write(store, 'upgrade:node:' + me, row, mine=False)
+        except Exception:                               # noqa: BLE001
+            pass
+        log('back in service as %s: the upgrade had been marked failed by %s while this node was away'
+            % (__version__, row.get('marked_by')), 'warn')
         return
     if not row.get('was_maint'):
         try:
@@ -54412,6 +54443,10 @@ def lb_facts(store):
                           'header': str(CONFIG.get('web_proxy_header') or 'X-Forwarded-For'),
                           'recursive': bool(CONFIG.get('web_proxy_recursive', 1)),
                           'port': int(CONFIG.get('web_proxy_port') or 0)},
+            # The certificate sign-in's own port, when it is on (1.0.311): the guides offered 8443 for
+            # the balancer - the same port, refused by the nodes, and a balancer configured by them
+            # would have published the sign-in with a card.
+            'cert_port': int(CONFIG.get('admin_cert_port') or 8443) if CONFIG.get('admin_cert') else 0,
             'access': access, 'portal_sso': bool(CONFIG.get('portal_sso')),
             'fw_managed': _lb_fw_on(store),
             'auth_port': int(CONFIG.get('radius_auth_port') or 1812),
