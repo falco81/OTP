@@ -16,9 +16,12 @@ one() {   # one test: its last lines that count
 }
 # What the tests need running (1.0.301): a container started again leaves PostgreSQL and the mock AD down,
 # and whole groups failed with "the directory cannot be reached" - said at once, as a failure.
+down=0
 for pp in 5432:PostgreSQL 3899:the-mock-AD 443:nginx; do
-  ss -ltn | grep -q ":${pp%%:*} " || echo "== preflight FAIL ${pp#*:} is not listening on ${pp%%:*} (after a restart of the container: up.sh)"
+  ss -ltn | grep -q ":${pp%%:*} " || { echo "== preflight FAIL ${pp#*:} is not listening on ${pp%%:*} (after a restart of the container: up.sh)"; down=1; }
 done
+# Not run at all then: a run over a database that is not there says nothing of the version.
+[ $down = 0 ] || { echo "== preflight: not run"; exit 1; }
 bash suite.sh $V
 # dg/t_root puts an older version in (the way back): this one installed again
 (cd ../build/out/otp-$V && bash install.sh --yes >/tmp/claude-0/finalv-install.log 2>&1) || echo "== install of $V again: FAIL"

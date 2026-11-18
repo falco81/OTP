@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.311'
+__version__ = '1.0.312'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1380,8 +1380,9 @@ SAYS = {
                     'anywhere, on any node, the directory is no longer asked for that name - only '
                     'these pages wait, the account in the directory stays unlocked. Cleared under '
                     'Locked out. 0: no cap of its own (as until now). RADIUS is not affected.',
-    'dir_pw_window_min': 'How long a wrong directory password counts towards the cap above. As '
-                         'long as the directory\'s "Reset account lockout counter after", or longer.',
+    'dir_pw_window_min': 'The count goes back to 0 once this long has gone by since the last wrong '
+                         'password - as the directory counts it ("Reset account lockout counter after"). '
+                         'As long as that, or longer.',
     'portal_first_code': 'Somebody who has no token yet signs in with their directory name and '
                          'password, and then gets a one-time code to the e-mail address or the '
                          'mobile number the directory has for them - read from it at the sign-in, '

@@ -905,9 +905,12 @@ def dir_pw_take(h, name, directory='', entry=None):
         return ''
     if directory:
         who = '%s|%s' % (who, str(directory).lower())
-    if not node_key_add(h.store, 'adpw', who, span, limit=most):
-        times = sorted(x for x in node_key_times(h.store, 'adpw', who) if time.time() - x < span)
-        wait = max(1, int(((times[-most] + span) - time.time()) // 60) + 1) if len(times) >= most else 1
+    # Counted as the directory counts (1.0.312): its counter goes back to 0 only `span` after the
+    # LAST wrong password. Each one counted `span` after itself, wrong passwords 10 min apart got
+    # past a cap of 3 in 30 min without end - 5 in 40 min locked an account with a threshold of 5.
+    if not node_key_add(h.store, 'adpw', who, span * (most + 1), limit=most, streak=span):
+        run = node_key_streak(node_key_times(h.store, 'adpw', who), span)
+        wait = max(1, int(((run[-1] + span) - time.time()) // 60) + 1) if run else 1
         log_sparing('adpw:' + who, 'wrong directory passwords for %s: the cap of %d in %d min is '
                     'reached - the directory is not asked for that name meanwhile'
                     % (who, most, span // 60), 'warn', every=300)
@@ -967,7 +970,8 @@ def lockouts_shared(store):
         # Each directory's own cap (1.0.232): the name counted is "novak|directory".
         name_, _s, dname = who.partition('|')
         most, pspan = dir_pw_cap_of(store, dname)
-        times = sorted(x for x in times if t - x < pspan)
+        # The run the directory counts (1.0.312): free again `pspan` after the last of them.
+        times = node_key_streak(times, pspan, t)
         if not times or most <= 0:
             continue
         locked = len(times) >= most
@@ -976,7 +980,7 @@ def lockouts_shared(store):
                      'base': 'dir-passwords',
                      'words': 'wrong directory passwords', 'fails': len(times), 'limit': most,
                      'locked': locked,
-                     'until': (times[len(times) - most] + pspan) if locked else None,
+                     'until': (times[-1] + pspan) if locked else None,
                      'forgets': times[-1] + pspan, 'first': times[0], 'last': times[-1],
                      'others': []})
     after = int(CONFIG.get('lockout_after') or 0)

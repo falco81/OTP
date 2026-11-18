@@ -5117,8 +5117,10 @@ function dpDirCard(x, set) {
     var tiles = el('div', 'dp-tiles');
     function tile(k, v, cls) { var t = el('div', 'dp-tile' + (cls ? ' ' + cls : '')); t.appendChild(el('span', 'dp-v', v)); t.appendChild(el('span', 'dp-k', k)); tiles.appendChild(t); return t; }
     tile('wrong passwords lock it', lk.threshold ? String(lk.threshold) : 'never', lk.threshold ? '' : 'warn');
-    tile('counted over', dpSpan(lk.window_s));
-    tile('locked for', dpSpan(lk.duration_s));
+    /* Never locked (1.0.312): the window and the duration the domain keeps mean nothing - greyed, not
+       shown as if they were in force. */
+    tile('counted over', dpSpan(lk.window_s), lk.threshold ? '' : 'dim');
+    tile('locked for', dpSpan(lk.duration_s), lk.threshold ? '' : 'dim');
     lock.appendChild(tiles);
     lock.appendChild(el('p', 'dp-say', !lk.threshold ? 'The domain never locks an account after wrong passwords.'
       : lk.duration_s === 'manual' ? 'After ' + lk.threshold + ' wrong passwords within ' + dpSpan(lk.window_s) + ' the account is locked until an administrator unlocks it - mail, the VPN and the PC with it.'

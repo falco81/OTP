@@ -431,12 +431,32 @@ def node_key_times(store, prefix, name):
     return sorted(out)
 
 
-def node_key_add(store, prefix, name, keep, most=None, limit=None):
+def node_key_streak(times, span, now=None):
+    """The times that count now as a directory counts its wrong passwords (1.0.312): its counter
+    goes back to 0 only once `span` has gone by since the LAST one (Active Directory's "Reset
+    account lockout counter after"), not each one `span` after itself. The run of times up to the
+    newest with no gap of `span` in it - none when the newest is `span` old."""
+    now = time.time() if now is None else now
+    ts = sorted(times, key=lambda x: x[0] if isinstance(x, tuple) else x)
+    if not ts:
+        return []
+    at = (lambda x: x[0] if isinstance(x, tuple) else x)
+    if now - at(ts[-1]) >= span:
+        return []
+    i = len(ts) - 1
+    while i > 0 and at(ts[i]) - at(ts[i - 1]) < span:
+        i -= 1
+    return ts[i:]
+
+
+def node_key_add(store, prefix, name, keep, most=None, limit=None, streak=None):
     """`time.time()` added to this node's own row for `name`, written only over
     what was read; the times older than `keep` seconds dropped. True once
     written. With `limit`: False, nothing written, when every node's rows
     together already hold that many - counted again at each try, so of
-    requests at once only as many as the limit get past (1.0.147)."""
+    requests at once only as many as the limit get past (1.0.147). With `streak`
+    (seconds, 1.0.312): only the run of times counted that a directory counts
+    (node_key_streak) - `keep` then long enough to hold that run."""
     k = node_key(prefix, name)
     for _ in range(8):
         t = time.time()
@@ -448,14 +468,20 @@ def node_key_add(store, prefix, name, keep, most=None, limit=None):
         times = [x for x in times if t - x < keep]
         if limit is not None:
             others = 0
+            theirs = []
             for r in node_key_rows(store, prefix, name):
                 if r['k'] == k:
                     continue
                 try:
-                    others += len([x for x in json.loads(r['v'] or '[]') if t - float(x) < keep])
+                    got = [float(x) for x in json.loads(r['v'] or '[]') if t - float(x) < keep]
                 except (ValueError, TypeError):
                     continue
-            if others + len(times) >= limit:
+                others += len(got)
+                theirs += got
+            if streak:
+                if len(node_key_streak(theirs + times, streak, t)) >= limit:
+                    return False
+            elif others + len(times) >= limit:
                 return False
         times.append(t)
         if most:
@@ -464,15 +490,15 @@ def node_key_add(store, prefix, name, keep, most=None, limit=None):
         if raw is None:
             try:
                 store.db.run('INSERT INTO meta (k, v) VALUES (?, ?)', (k, new))
-                return _node_key_recount(store, prefix, name, k, t, keep, limit)
+                return _node_key_recount(store, prefix, name, k, t, keep, limit, streak)
             except Exception:                           # noqa: BLE001
                 continue
         if store.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (new, k, raw)):
-            return _node_key_recount(store, prefix, name, k, t, keep, limit)
+            return _node_key_recount(store, prefix, name, k, t, keep, limit, streak)
     return False
 
 
-def _node_key_recount(store, prefix, name, k, t, keep, limit):
+def _node_key_recount(store, prefix, name, k, t, keep, limit, streak=None):
     """Counted again once written (1.0.225): two nodes reading the other's row at the same
     moment both got under the limit - one more than it allows. Over it now: this one taken
     back, and not let past."""
@@ -488,6 +514,8 @@ def _node_key_recount(store, prefix, name, k, t, keep, limit):
         except (ValueError, TypeError):
             continue
     every.sort()
+    if streak:
+        every = node_key_streak(every, streak, t)
     if (t, k) in every[:limit]:
         return True
     node_key_give_back(store, prefix, name, t)
