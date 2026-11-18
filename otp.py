@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.308'
+__version__ = '1.0.309'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -28791,14 +28791,28 @@ def _peer_alive_there(name):
             at = (beat or {}).get('at')
             # No heartbeat there, or none that reads, is not alive (1.0.271): it was taken as
             # beating just now, and while node1 was rebuilt nobody led (no alerts, no claims).
+            # Judged by that machine's own clock (1.0.309): the heartbeat is written there, and the
+            # database answering is there too - this node's clock 2 min ahead took it for gone.
+            there = peer_db_now(far)
             alive = isinstance(at, (int, float)) and not isinstance(at, bool) and \
-                now_minus(at) < 120
+                ((there - float(at)) if there else now_minus(at)) < 120
         finally:
             far.close()
     except Exception:                                   # noqa: BLE001
         alive = False
     PEER_THERE[name] = (time.time(), alive)
     return alive
+
+
+def peer_db_now(far):
+    """The time by the clock of the machine the other node's database is on (1.0.309), or None."""
+    try:
+        if getattr(far, 'engine', '') == 'postgres':
+            v = far.value('SELECT EXTRACT(EPOCH FROM now())')
+            return float(v) if v is not None else None
+    except Exception:                                   # noqa: BLE001
+        return None
+    return None
 
 
 def _peer_still_at_it(turn):
@@ -40955,6 +40969,10 @@ def clock_peer_row(store, now=None):
 
 def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
     """One look. `ref`, `skew`, `dir_ok`, `peer` given only by the tests."""
+    # Its own work timed by a clock that is not stepped (1.0.309): the wall clock is what it watches -
+    # stepped back 5 min, nothing was written nor the directory asked for 5 min, and the last row
+    # ("aside", dated ahead) was read as fresh by the other node all that while.
+    mark = time.monotonic() if now is None else now
     now = time.time() if now is None else now
     if not clock_engaged():
         if CLOCK['role'] != 'serve':
@@ -40998,9 +41016,10 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
             CLOCK.update(skew_err=str(e).split('\n')[0][:160])
     if dir_ok is not None:
         CLOCK.update(dir_ok=None if dir_ok == 'none' else dir_ok, dir_at=now)
-    elif CONFIG.get('health_dir') and now - CLOCK['dir_at'] > CLOCK_DIR_EVERY_S:
+    elif CONFIG.get('health_dir') and (mark - CLOCK.get('dir_mark', -1e12) > CLOCK_DIR_EVERY_S or
+                                       mark < CLOCK.get('dir_mark', -1e12)):
         ok, dirs = clock_dir_check(store)
-        CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now)
+        CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now, dir_mark=mark)
     p = clock_peer_row(store, now) if peer is None else (None if peer == 'none' else peer)
     # No longer kept aside for as long as the nodes are apart (1.0.227): with the other node
     # dead that was for ever, and nobody answered. Its row goes stale and this node answers -
@@ -41026,8 +41045,9 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
             _clock_event(store, 'good', 'this node answers again%s' % (' - ' + why if why else ''))
     else:
         CLOCK['why'] = why
-    if now - CLOCK['written'] > 10:
+    if mark - CLOCK.get('written_mark', -1e12) > 10 or mark < CLOCK.get('written_mark', -1e12):
         CLOCK['written'] = now
+        CLOCK['written_mark'] = mark
         try:
             store.set_meta('clock:state:' + node_name(), json.dumps(clock_state_here(now)))
         except Exception:                               # noqa: BLE001
@@ -47847,16 +47867,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # Kept for the longest wait of any kind (1.0.61), not this
                 # kind's: a 5 min kind tidied away 15 min lockouts.
                 keep_s = max(span, 6 * 3600)
-                for k in [k for k, v in fl.items() if not v or t - v[-1] > keep_s]:
+                info = self.d.login_info
+                # Never a place still blocked (1.0.309): RADIUS's guard keeps its blocks in the same
+                # maps, for up to a week - tidied after 6 h of quiet, a block ended early.
+                held = lambda k: fnum((info.get(k) or {}).get('blocked_until')) > t
+                for k in [k for k, v in fl.items() if (not v or t - v[-1] > keep_s) and not held(k)]:
                     fl.pop(k, None)
-                    self.d.login_info.pop(k, None)
+                    info.pop(k, None)
                 if len(fl) > 50000:
                     # Addresses go before names (1.0.61): many addresses must
                     # not flush the count of the one name being guessed.
                     order = sorted(fl, key=lambda k: (str(k[0]).endswith('-name'),
                                                       fl[k][-1] if fl[k] else 0))
                     for k in order[:len(fl) // 2]:
-                        if k not in keys:
+                        if k not in keys and not held(k):
                             fl.pop(k, None)
                             self.d.login_info.pop(k, None)
         # Each place held on its own (1.0.234): a second count in the same request (the code
