@@ -113,7 +113,9 @@ g = {'__name__': 'auth', '__version__': '1.0.999', 'math': __import__('math'), '
      'sealing_key': lambda: b'k' * 32, 'log': lambda *a, **k: LOGS.append(a),
      'log_sparing': lambda *a, **k: LOGS.append(a), 'ApiError': ApiError,
      'json_obj': lambda raw: (lambda v: v if isinstance(v, dict) else None)(json.loads(raw or 'null')),
-     'odict': lambda v: v if isinstance(v, dict) else {}, 'route': lambda *a, **k: (lambda f: f)}
+     'odict': lambda v: v if isinstance(v, dict) else {}, 'route': lambda *a, **k: (lambda f: f),
+     # the per-person and per-address limit of codes sent (1.0.308): tested in r308 over the whole module
+     'code_send_allowed': lambda store, name: True}
 exec(src_of('50g_guard.py'), g)
 
 store_src = pick('50_storage.py', ['session_new', 'session_get', 'session_take', 'session_merge',

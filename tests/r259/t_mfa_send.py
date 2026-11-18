@@ -111,6 +111,7 @@ class Store:
 g = {'time': FakeTime, 'math': math, 'secrets': secrets, 'json': json, 'threading': threading, 're': re,
      'CONFIG': {'code_ttl_s': 300, 'admin_2fa': 1, 'code_digits': 6}, 'fnum': fnum, 'odict': odict,
      'code_new': lambda: '%06d' % secrets.randbelow(10 ** 6), 'code_hash': lambda salt, code: salt + ':' + code,
+     'code_send_allowed': lambda store, name: True,  # 1.0.308's limit: tested in r308
      'code_send': code_send, 'dest_masked': lambda kind, dest: 'b***@example.cz' if kind == 'mail' else '+420 *** 456',
      'log': lambda *a, **k: None, 'MailError': MailError, 'SmsError': SmsError, 'mfa_lang': lambda h: 'en',
      'MFA_SEND_GAP_S': 30, 'MFA_SEND_MOST': 5, 'MFA_WRONG_MOST': 5, 'MFA_LOCK': threading.Lock(),
