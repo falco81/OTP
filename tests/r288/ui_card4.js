@@ -75,10 +75,14 @@ const HOLD = /:8443\/admin\/\?api=cert-alive/;
   let p = await page(ctx);
   await certIn(p);
   await p.waitForTimeout(7000);
+  /* Two checks answered: the first may come while root still puts the port into nginx - the browser is
+     proven (its 'waiting' counted by the server) only by one that found the card. */
+  for (let i = 0; i < 30 && ctx.looks.length < 2; i++) await p.waitForTimeout(500);
   ok('grace: signed in, checks answered (200)', ctx.looks.length >= 1 && ctx.looks.every(s => s === 200), ctx.looks.join(','));
   /* A window of the card's: the check is held unanswered (Windows' "insert the smart card") */
   let release = [];
-  await ctx.route(HOLD, r => { release.push(r); });
+  const holdIt = r => { release.push(r); };
+  await ctx.route(HOLD, holdIt);
   const t0 = Date.now();
   await p.waitForSelector('#cw-layer', { timeout: 20000 }).catch(() => {});
   const took = Date.now() - t0;
@@ -91,10 +95,11 @@ const HOLD = /:8443\/admin\/\?api=cert-alive/;
   /* F5: the countdown goes on from the server's time */
   await p.waitForTimeout(4000);
   const before = Number(await p.textContent('#cw-n').catch(() => '0'));
-  await ctx.unroute(HOLD);
+  /* The new route first, then the holding one taken off (a check between the two found the card) */
+  await ctx.route(HOLD, r => r.abort('failed'));
+  await ctx.unroute(HOLD, holdIt);
   for (const r of release) { try { await r.abort('failed'); } catch (e) {} }
   release = [];
-  await ctx.route(HOLD, r => r.abort('failed'));
   await p.reload();
   await p.waitForSelector('#cw-layer', { timeout: 15000 }).catch(() => {});
   const after = Number(await p.textContent('#cw-n').catch(() => '0'));

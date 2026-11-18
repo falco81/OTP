@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.306'
+__version__ = '1.0.307'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -23026,8 +23026,13 @@ def mailq_tick(store):
             # it runs out, and was given up here before it was made - with no word.
             if state in ('waiting', 'sending') and \
                     now > fnum(rec.get('expires')) + (120 if state != 'sending' else 600):
-                _, raw = mailq_read(store, qid)
-                if raw:
+                # Decided on the mail as it is now (1.0.307): the list was read when the tick began,
+                # and a slow tick (the server away) gave up a mail sent again meanwhile.
+                fresh, raw = mailq_read(store, qid)
+                t2 = time.time()
+                if raw and fresh and fresh.get('state') in ('waiting', 'sending') and \
+                        t2 > fnum(fresh.get('expires')) + (120 if fresh.get('state') != 'sending' else 600):
+                    rec = fresh
                     rec.pop('qid', None)
                     rec.update(state='expired', next_at=0, said=rec.get('said') or 'not sent in time')
                     if mailq_cas(store, qid, raw, rec):
@@ -23051,9 +23056,11 @@ def mailq_tick(store):
                 4 * int(CONFIG.get('smtp_timeout_s') or 20) + 90
             if state == 'sending' and now - fnum(rec.get('last_try')) > stuck and \
                     (mine or rec.get('node') not in alive):
-                # Left half way by a node that stopped: tried again.
-                _, raw = mailq_read(store, qid)
-                if raw:
+                # Left half way by a node that stopped: tried again - as it is now (1.0.307).
+                fresh, raw = mailq_read(store, qid)
+                if raw and fresh and fresh.get('state') == 'sending' and \
+                        time.time() - fnum(fresh.get('last_try')) > stuck:
+                    rec = fresh
                     rec.pop('qid', None)
                     rec.update(state='waiting', next_at=now, node=me)
                     mailq_cas(store, qid, raw, rec)
@@ -25056,7 +25063,9 @@ def rb_retain(tr, keep, days, now=None, just=''):
     for i, (when, name) in enumerate(ours):
         if i == 0 or name == just:
             continue
-        if (keep and i >= keep) or (days and now - when > days * 86400):
+        # Never the newest three by age (1.0.307): a clock stepped ahead, or backups that failed
+        # longer than the days kept, took every older backup away at once - one left.
+        if (keep and i >= keep) or (days and i >= RB_AGE_KEEP_MIN and now - when > days * 86400):
             failed = None
             for n in [name] + [c for c in rb_companions(name) if c in names]:
                 try:
@@ -25074,6 +25083,9 @@ def rb_retain(tr, keep, days, now=None, just=''):
         raise RbError('not taken away: ' + '; '.join(kept[:5]) + (
             ' - and taken away: ' + ', '.join(gone) if gone else ''))
     return gone
+
+
+RB_AGE_KEEP_MIN = 3
 
 
 def rb_room(store, times=2):
@@ -26004,6 +26016,12 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
                 ok = n > 0
                 said = '%s, %d MB read' % (d['name'], n >> 20)
             res['checks'].append({'what': what, 'ok': ok, 'said': said})
+        elif CONFIG.get('backup_daily') and CONFIG.get('ha_mode') != 'replicated' and in_cluster(store):
+            # One database for the cluster (1.0.307): the night's copy is made by the node that took
+            # the night's turn - none here is no fault of this node's backup.
+            res['checks'].append({'what': what, 'ok': True,
+                                  'said': 'none here - one database for the cluster: the night\'s copy is made by '
+                                          'the node that takes the night\'s turn'})
         elif CONFIG.get('backup_daily'):
             res['checks'].append({'what': what, 'ok': False,
                                   'said': 'there is no nightly copy in %s' % DUMP_DIR})

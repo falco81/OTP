@@ -1376,7 +1376,9 @@ def rb_retain(tr, keep, days, now=None, just=''):
     for i, (when, name) in enumerate(ours):
         if i == 0 or name == just:
             continue
-        if (keep and i >= keep) or (days and now - when > days * 86400):
+        # Never the newest three by age (1.0.307): a clock stepped ahead, or backups that failed
+        # longer than the days kept, took every older backup away at once - one left.
+        if (keep and i >= keep) or (days and i >= RB_AGE_KEEP_MIN and now - when > days * 86400):
             failed = None
             for n in [name] + [c for c in rb_companions(name) if c in names]:
                 try:
@@ -1394,6 +1396,9 @@ def rb_retain(tr, keep, days, now=None, just=''):
         raise RbError('not taken away: ' + '; '.join(kept[:5]) + (
             ' - and taken away: ' + ', '.join(gone) if gone else ''))
     return gone
+
+
+RB_AGE_KEEP_MIN = 3
 
 
 def rb_room(store, times=2):

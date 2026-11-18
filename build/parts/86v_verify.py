@@ -210,6 +210,12 @@ def rb_verify(store, by, tid=None, name=None, progress=None):
                 ok = n > 0
                 said = '%s, %d MB read' % (d['name'], n >> 20)
             res['checks'].append({'what': what, 'ok': ok, 'said': said})
+        elif CONFIG.get('backup_daily') and CONFIG.get('ha_mode') != 'replicated' and in_cluster(store):
+            # One database for the cluster (1.0.307): the night's copy is made by the node that took
+            # the night's turn - none here is no fault of this node's backup.
+            res['checks'].append({'what': what, 'ok': True,
+                                  'said': 'none here - one database for the cluster: the night\'s copy is made by '
+                                          'the node that takes the night\'s turn'})
         elif CONFIG.get('backup_daily'):
             res['checks'].append({'what': what, 'ok': False,
                                   'said': 'there is no nightly copy in %s' % DUMP_DIR})

@@ -1275,8 +1275,13 @@ def mailq_tick(store):
             # it runs out, and was given up here before it was made - with no word.
             if state in ('waiting', 'sending') and \
                     now > fnum(rec.get('expires')) + (120 if state != 'sending' else 600):
-                _, raw = mailq_read(store, qid)
-                if raw:
+                # Decided on the mail as it is now (1.0.307): the list was read when the tick began,
+                # and a slow tick (the server away) gave up a mail sent again meanwhile.
+                fresh, raw = mailq_read(store, qid)
+                t2 = time.time()
+                if raw and fresh and fresh.get('state') in ('waiting', 'sending') and \
+                        t2 > fnum(fresh.get('expires')) + (120 if fresh.get('state') != 'sending' else 600):
+                    rec = fresh
                     rec.pop('qid', None)
                     rec.update(state='expired', next_at=0, said=rec.get('said') or 'not sent in time')
                     if mailq_cas(store, qid, raw, rec):
@@ -1300,9 +1305,11 @@ def mailq_tick(store):
                 4 * int(CONFIG.get('smtp_timeout_s') or 20) + 90
             if state == 'sending' and now - fnum(rec.get('last_try')) > stuck and \
                     (mine or rec.get('node') not in alive):
-                # Left half way by a node that stopped: tried again.
-                _, raw = mailq_read(store, qid)
-                if raw:
+                # Left half way by a node that stopped: tried again - as it is now (1.0.307).
+                fresh, raw = mailq_read(store, qid)
+                if raw and fresh and fresh.get('state') == 'sending' and \
+                        time.time() - fnum(fresh.get('last_try')) > stuck:
+                    rec = fresh
                     rec.pop('qid', None)
                     rec.update(state='waiting', next_at=now, node=me)
                     mailq_cas(store, qid, raw, rec)
