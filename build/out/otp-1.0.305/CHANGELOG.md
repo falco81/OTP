@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.305 — 18 November 2026
+
+**Bug fixes** (the hunt, round 4): SELinux.
+
+- **Two refusals of one event each get audit2why's word** (a folder searched and its file read): the second wrote over the first, which then was never "allowed now", never got its boolean - and still counted against enforcing.
+- **A rule the same as one in otp_local already is not put in twice** (two programs of otp's refused the same): taking one away left the other allowing it.
+- **A boolean, a folder, a port done once a batch**: each `setsebool -P` builds the whole policy again - a batch of many took longer than the pages wait.
+
 ## 1.0.304 — 17 November 2026
 
 **Bug fixes** (the hunt, round 3): the pages during an upgrade.

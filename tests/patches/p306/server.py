@@ -61,4 +61,31 @@ def _sn_i32(v):
     except (TypeError, ValueError, OverflowError):
         return 0"""),
 ])
+edit('70_radius_server.py', [
+("""                    def remember(b, key=key):
+                        # The answer kept for a repeat the moment it is sent
+                        # (1.0.101), not after it is written down: a repeat
+                        # coming meanwhile got nothing.
+                        with self.seen_lock:
+                            if key in seen:
+                                seen[key] = (arrived, b)""",
+ """                    def remember(b, until=0, key=key):
+                        # The answer kept for a repeat the moment it is sent
+                        # (1.0.101), not after it is written down: a repeat
+                        # coming meanwhile got nothing.
+                        with self.seen_lock:
+                            if key in seen:
+                                seen[key] = (arrived, b, until)"""),
+("""            reply.late = True
+            reply.late_until = time.time() + min(delay, 10000) / 1000.0
+            self.later(min(delay, 10000) / 1000.0, sock, bytes(reply), peer)""",
+ """            reply.late = True
+            reply.late_until = time.time() + min(delay, 10000) / 1000.0
+            # Kept for a repeat now, with when it may go (1.0.306): kept only after it was written
+            # down, a repeat coming once the late refusal went - the database slower than the
+            # delay - found nothing and was swallowed as "repeated": the NAS got no answer.
+            if remember is not None:
+                remember(bytes(reply), reply.late_until)
+            self.later(min(delay, 10000) / 1000.0, sock, bytes(reply), peer)"""),
+])
 print('ok')

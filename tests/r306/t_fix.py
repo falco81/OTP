@@ -129,5 +129,13 @@ vals = [v for o, k, v in rows if k == 'int']
 ok('3 a clock 90 days, a year off: within an Integer32', all(-2 ** 31 <= v <= 2 ** 31 - 1 for v in vals) and 2 ** 31 - 1 in vals and -2 ** 31 in vals, vals)
 ok('3 ...small values as before (ms)', m._sn_i32(1.234 * 1000) == 1234)
 ok('3 the last backup\'s time after 2038: within an Integer32', m._sn_i32(2 ** 31 + 5) == 2 ** 31 - 1)
+# ==== 4 RADIUS: a late refusal kept for a repeat when it is scheduled
+import inspect
+src = inspect.getsource(m.RadiusServer.access) if hasattr(m, 'RadiusServer') else ''
+if not src:
+    src = open(m.__file__).read()
+i = src.find('reply.late_until = time.time()')
+j = src.find('self.later(min(delay, 10000)', i)
+ok('4 the late refusal is remembered (with its time) before it is put off', i > 0 and 'remember(bytes(reply), reply.late_until)' in src[i:j], src[i:j][:300])
 print('ALL %d / %d' % (sum(R), len(R)))
 sys.exit(0 if all(R) else 1)
