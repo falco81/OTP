@@ -392,6 +392,10 @@ def clock_peer_row(store, now=None):
 
 def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
     """One look. `ref`, `skew`, `dir_ok`, `peer` given only by the tests."""
+    # Its own work timed by a clock that is not stepped (1.0.309): the wall clock is what it watches -
+    # stepped back 5 min, nothing was written nor the directory asked for 5 min, and the last row
+    # ("aside", dated ahead) was read as fresh by the other node all that while.
+    mark = time.monotonic() if now is None else now
     now = time.time() if now is None else now
     if not clock_engaged():
         if CLOCK['role'] != 'serve':
@@ -435,9 +439,10 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
             CLOCK.update(skew_err=str(e).split('\n')[0][:160])
     if dir_ok is not None:
         CLOCK.update(dir_ok=None if dir_ok == 'none' else dir_ok, dir_at=now)
-    elif CONFIG.get('health_dir') and now - CLOCK['dir_at'] > CLOCK_DIR_EVERY_S:
+    elif CONFIG.get('health_dir') and (mark - CLOCK.get('dir_mark', -1e12) > CLOCK_DIR_EVERY_S or
+                                       mark < CLOCK.get('dir_mark', -1e12)):
         ok, dirs = clock_dir_check(store)
-        CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now)
+        CLOCK.update(dir_ok=ok, dirs=dirs, dir_at=now, dir_mark=mark)
     p = clock_peer_row(store, now) if peer is None else (None if peer == 'none' else peer)
     # No longer kept aside for as long as the nodes are apart (1.0.227): with the other node
     # dead that was for ever, and nobody answered. Its row goes stale and this node answers -
@@ -463,8 +468,9 @@ def clock_step(store, now=None, ref=None, skew=None, dir_ok=None, peer=None):
             _clock_event(store, 'good', 'this node answers again%s' % (' - ' + why if why else ''))
     else:
         CLOCK['why'] = why
-    if now - CLOCK['written'] > 10:
+    if mark - CLOCK.get('written_mark', -1e12) > 10 or mark < CLOCK.get('written_mark', -1e12):
         CLOCK['written'] = now
+        CLOCK['written_mark'] = mark
         try:
             store.set_meta('clock:state:' + node_name(), json.dumps(clock_state_here(now)))
         except Exception:                               # noqa: BLE001

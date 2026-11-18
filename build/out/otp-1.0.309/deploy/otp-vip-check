@@ -18,6 +18,9 @@ case "$1" in
     case "$p" in ''|*[!0-9]*) ;; *) kill -0 "$p" 2>/dev/null || [ -d "/proc/$p" ] || exit 1 ;; esac
     now=$(date +%s); at=$(stat -c %Y "$f" 2>/dev/null) || exit 1
     [ $((now - at)) -le 10 ] || exit 1
+    # Not dated ahead (1.0.309): after the clock was stepped back, a daemon hung but alive kept the
+    # address for as long as the step.
+    [ $((now - at)) -ge -2 ] || exit 1
     head -c 2 "$f" | grep -q '^ok' ;;
   prefer)
     [ -f "$f" ] || exit 1

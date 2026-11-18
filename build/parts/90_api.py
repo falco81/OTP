@@ -492,16 +492,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # Kept for the longest wait of any kind (1.0.61), not this
                 # kind's: a 5 min kind tidied away 15 min lockouts.
                 keep_s = max(span, 6 * 3600)
-                for k in [k for k, v in fl.items() if not v or t - v[-1] > keep_s]:
+                info = self.d.login_info
+                # Never a place still blocked (1.0.309): RADIUS's guard keeps its blocks in the same
+                # maps, for up to a week - tidied after 6 h of quiet, a block ended early.
+                held = lambda k: fnum((info.get(k) or {}).get('blocked_until')) > t
+                for k in [k for k, v in fl.items() if (not v or t - v[-1] > keep_s) and not held(k)]:
                     fl.pop(k, None)
-                    self.d.login_info.pop(k, None)
+                    info.pop(k, None)
                 if len(fl) > 50000:
                     # Addresses go before names (1.0.61): many addresses must
                     # not flush the count of the one name being guessed.
                     order = sorted(fl, key=lambda k: (str(k[0]).endswith('-name'),
                                                       fl[k][-1] if fl[k] else 0))
                     for k in order[:len(fl) // 2]:
-                        if k not in keys:
+                        if k not in keys and not held(k):
                             fl.pop(k, None)
                             self.d.login_info.pop(k, None)
         # Each place held on its own (1.0.234): a second count in the same request (the code

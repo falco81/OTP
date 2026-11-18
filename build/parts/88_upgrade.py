@@ -633,14 +633,28 @@ def _peer_alive_there(name):
             at = (beat or {}).get('at')
             # No heartbeat there, or none that reads, is not alive (1.0.271): it was taken as
             # beating just now, and while node1 was rebuilt nobody led (no alerts, no claims).
+            # Judged by that machine's own clock (1.0.309): the heartbeat is written there, and the
+            # database answering is there too - this node's clock 2 min ahead took it for gone.
+            there = peer_db_now(far)
             alive = isinstance(at, (int, float)) and not isinstance(at, bool) and \
-                now_minus(at) < 120
+                ((there - float(at)) if there else now_minus(at)) < 120
         finally:
             far.close()
     except Exception:                                   # noqa: BLE001
         alive = False
     PEER_THERE[name] = (time.time(), alive)
     return alive
+
+
+def peer_db_now(far):
+    """The time by the clock of the machine the other node's database is on (1.0.309), or None."""
+    try:
+        if getattr(far, 'engine', '') == 'postgres':
+            v = far.value('SELECT EXTRACT(EPOCH FROM now())')
+            return float(v) if v is not None else None
+    except Exception:                                   # noqa: BLE001
+        return None
+    return None
 
 
 def _peer_still_at_it(turn):
