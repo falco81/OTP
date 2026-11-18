@@ -368,6 +368,14 @@ def ha_forget(store, name):
         alive = any(n['name'] == name and n.get('alive') for n in ha_nodes(store))
     except Exception:                                   # noqa: BLE001
         alive = True
+    # Asked in its own database too (1.0.310): a node on a newer version, or with the replication
+    # towards this one stopped, looks gone here while it answers - forgotten, its maintenance (kept
+    # on purpose) went, and its upgrade row with it: the upgrade waited for it for good.
+    if not alive:
+        try:
+            alive = bool(_peer_alive_there(name))
+        except Exception:                               # noqa: BLE001
+            pass
     store.drop_meta('node:' + name)
     store.drop_meta('cluster:with:' + name)
     # Its maintenance and its upgrade too, from the pages as on the command line (1.0.252): put in

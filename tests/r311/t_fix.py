@@ -132,5 +132,21 @@ srv.find_person = lambda ad, user, how, realm: (calls.append(user), {'dn': 'CN=f
 gone = []
 got = srv.same_person('falco@corp.loc', {'directory': 'ad1', 'lookup': 'upn'}, gone)
 ok('2 the directory said no: no token, nothing said as away - as before', got == '' and gone == [], (got, gone))
+# ==== 3 the balancer's guides and the certificate sign-in's own port
+m.CONFIG['admin_cert'], m.CONFIG['admin_cert_port'] = 1, 8443
+lf = m.lb_facts(st)
+ok('3 the certificate sign-in on: its port told to the guides', lf.get('cert_port') == 8443, lf.get('cert_port'))
+m.CONFIG['admin_cert'] = 0
+ok('3 ...off: none', m.lb_facts(st).get('cert_port') == 0)
+m.CONFIG['admin_cert'], m.CONFIG['admin_cert_port'] = 1, 8443
+why = m.cert_port_problem({'web_proxy_port': '8443', 'web_proxy': '1'}, probe=False)
+ok('3 the nodes refuse the same port for the balancer (as before)', 'admin_cert_port' in why and '9443' in why, why)
+m.CONFIG['admin_cert'] = 0
+JS = open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])) if False else '/home/claude/build/out/otp-%s/web/assets/admin.js' % _OUTV).read()
+fn = JS[JS.index('function lbPortSay'):JS.index('\n', JS.index('function lbPortSay'))]
+out = subprocess.run(['node', '-e', fn + ';console.log([lbPortSay({cert_port: 8443}), lbPortSay({cert_port: 0}), lbPortSay({cert_port: 9443}), lbPortSay(null)].join(","))'],
+                     capture_output=True, text=True).stdout.strip()
+ok('3 the port offered: 9443 when the sign-in has 8443, else 8443', out == '9443,8443,8443,8443', out)
+ok('3 the port typed the same as the sign-in\'s: said in red', "lb.cert_port && v.pp === lb.cert_port" in JS and "note('bad', 'Port ' + v.pp + ' is the certificate sign-in" in JS)
 print('ALL %d / %d' % (sum(R), len(R)))
 sys.exit(0 if all(R) else 1)

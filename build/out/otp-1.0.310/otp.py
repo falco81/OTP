@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.309'
+__version__ = '1.0.310'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -26485,6 +26485,14 @@ def ha_forget(store, name):
         alive = any(n['name'] == name and n.get('alive') for n in ha_nodes(store))
     except Exception:                                   # noqa: BLE001
         alive = True
+    # Asked in its own database too (1.0.310): a node on a newer version, or with the replication
+    # towards this one stopped, looks gone here while it answers - forgotten, its maintenance (kept
+    # on purpose) went, and its upgrade row with it: the upgrade waited for it for good.
+    if not alive:
+        try:
+            alive = bool(_peer_alive_there(name))
+        except Exception:                               # noqa: BLE001
+            pass
     store.drop_meta('node:' + name)
     store.drop_meta('cluster:with:' + name)
     # Its maintenance and its upgrade too, from the pages as on the command line (1.0.252): put in
@@ -28600,6 +28608,7 @@ def upgrade_tick(daemon):
     if HA_REBUILDING.is_set():
         return
     plan = upgrade_plan(store)
+    upgrade_resend_mine(store, plan)
     # A cancelled plan is still finished where a node has begun (1.0.44):
     # one that drains goes back into service, one that installs is checked
     # and comes back - it never stays in maintenance for good.
@@ -28770,6 +28779,29 @@ def upgrade_tick(daemon):
         if all((s.get('state') == 'done') or s['name'] == me for s in steps):
             store.add_event('starting and stopping', 'the upgrade to %s is done on every node'
                             % plan['version'])
+
+
+UPG_RESENT = [0.0]
+
+
+def upgrade_resend_mine(store, plan):
+    """This node's own rows of the upgrade written to the other node's database again (1.0.310),
+    every 30 s while a plan is not finished: a node on the newer version reaches the older one only
+    so - one write lost (its database restarting, the network a moment away) and the other node
+    waited for this one for good, the upgrade held until somebody stopped it."""
+    if not plan or plan.get('state') == 'done' or CONFIG.get('ha_mode') != 'replicated':
+        return
+    if time.monotonic() - UPG_RESENT[0] < 30:
+        return
+    UPG_RESENT[0] = time.monotonic()
+    me = node_name()
+    for k in ('upgrade:node:' + me, 'maint:' + me):
+        try:
+            v = store.get_meta(k)
+            if v:
+                _peer_update(k, v)
+        except Exception:                               # noqa: BLE001
+            pass
 
 
 PEER_THERE = {}                   # name: (when asked, alive)
