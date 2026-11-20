@@ -4,6 +4,12 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.313 — 20 November 2026
+
+**Bug fix**: what *Wrong passwords before a pause* says.
+
+- **Settings → Accounts and The enrolment pages, *Wrong passwords before a pause***: the help said it was the count of one address. Since 1.0.265 (an office behind one address was locked out by a few typos) one address waits after ten times the number, at least 50, and one name after four times it - with 5: 20 for a name, 50 for an address, which is what *Locked out* has shown. The help and operations.md now say so, and that the wrong codes of the second step count with the passwords. How it is counted is as before.
+
 ## 1.0.312 — 18 November 2026
 
 **Bug fix**: Settings → Sign-in protection, the cap of wrong directory passwords.
