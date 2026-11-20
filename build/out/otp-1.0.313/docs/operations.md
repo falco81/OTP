@@ -821,7 +821,11 @@ lockout still runs - and clears one (*Clear*) or all of them (*Clear them all*),
 written into Events. The counts live in each node's memory, so
 `systemctl restart otp` forgets them as well. How many tries and how long the
 wait are: *Settings → Accounts* (`login_tries`, `login_wait_min`) and *The
-enrolment pages* (`portal_tries`, `portal_wait_min`). Behind a load balancer
+enrolment pages* (`portal_tries`, `portal_wait_min`). The number set is not
+the count of one address: one name waits after four times that many wrong
+passwords, one address after ten times that many and at least 50 (with 5:
+20 for a name, 50 for an address) - a whole office may come from one address.
+Behind a load balancer
 or proxy that hides the people's addresses, everybody shares one - see
 load-balancers.md.
 

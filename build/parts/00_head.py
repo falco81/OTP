@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.312'
+__version__ = '1.0.313'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -1439,13 +1439,19 @@ SAYS = {
     'portal_help': 'Words shown on the enrolment pages under the title: where to get the '
                    'application, whom to ring. Plain text; an empty line starts a new '
                    'paragraph.',
-    'portal_tries': 'Wrong passwords from one address on the enrolment pages before it has '
-                    'to wait.',
+    # Said as it is counted (1.0.313): since 1.0.265 one address waits after ten times this many
+    # (at least 50) and one name after four times - "from one address" was no longer so.
+    'portal_tries': 'Wrong passwords on the enrolment pages before a pause: one name waits after '
+                    'four times this many, one address after ten times this many and at least 50 '
+                    '(a whole office may come from one address).',
     'portal_wait_min': 'How long it waits.',
     'session_hours': 'How long an administrator stays signed in, however busy.',
     'session_idle_min': 'How long a sign-in may sit without anything being asked before it '
                         'has to be done again.',
-    'login_tries': 'Wrong passwords from one address before it has to wait.',
+    'login_tries': 'Wrong passwords (and wrong codes of the second step) before a pause: one name '
+                   'waits after four times this many, one address after ten times this many and '
+                   'at least 50 (a whole office may come from one address). Locked out shows '
+                   'each count as it stands.',
     'login_wait_min': 'How long it waits.',
     'admin_directory': 'The directory (by its name under <i>Active Directory</i>) the '
                        'administration pages sign people in against. Empty: only the '
