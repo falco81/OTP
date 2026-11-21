@@ -281,7 +281,7 @@ ga = dict(g)
 ga.update(CONFIG={'alerts_upgrade': 1}, DEFAULTS={}, human_bytes=str, ha_repl_state=lambda s: {},
           upgrade_plan=lambda s: {}, hisec_findings=lambda s: {}, selinux_problems=lambda s, n: [],
           acme_care=lambda s, t: True, _al_when=str)
-exec(defs('88z_alerts.py', ['_al', 'alert_problems_more']), ga)
+exec(defs('88z_alerts.py', ['_al', '_al_cut', 'alert_problems_more']), ga)
 probs = {}
 
 

@@ -2825,6 +2825,48 @@ class Console(object):
                                                   'working now.' % which, 'Take it away', danger=True):
                 self.act('--ssh-token-del', which, '--yes')
 
+        def mailq():
+            # The outgoing mail (1.0.315): as Settings - Mail - Outgoing mail.
+            which = self.choose('Outgoing mail', [
+                ('open', 'What waits or failed'), ('all', 'All of it'),
+                ('retry-all', 'Send what waits or failed again now'),
+                ('drop-sent', 'Take the mail sent out of the list'),
+                ('drop-failed', 'Take the mail that failed or expired out of the list')])
+            if which in ('open', 'all'):
+                self.act('--mailq', which)
+            elif which == 'retry-all':
+                self.act('--mailq', which)
+            elif which and self.confirm('Outgoing mail', {
+                    'drop-sent': 'The mail sent is taken out of the list.',
+                    'drop-failed': 'The mail that failed or expired is taken out of the list; '
+                                   'it is not sent.'}[which], 'Take it out', danger=True):
+                self.act('--mailq', which, '--yes')
+
+        def web_open():
+            # The way back in (1.0.315): the pages shut the one who set them out.
+            if self.confirm('Let everybody reach the administration pages', 'On every node, from '
+                            'any address - the sign-in still asked. On trial as on the pages: keep '
+                            'it with otp --change-keep fw.', 'Let them in', danger=True):
+                self.act('--web-access', 'admin=any', '--yes')
+
+        def fw_off():
+            if self.confirm('Take otp\'s firewall rules away', 'On every node; the rest of the '
+                            'machine\'s firewall stays as it was.', 'Take them away', danger=True):
+                self.act('--firewall', 'off', '--yes')
+
+        def session_end():
+            rows = [r for r in (self.out('--sessions') or []) if isinstance(r, dict)]
+            if not rows:
+                self.note('Sign-ins', 'Nobody is signed in to the pages.')
+                return
+            which = self.choose('End a sign-in to the pages', [
+                (str(r.get('id')), '%s (%s, %s) from %s' % (r.get('name') or '?', r.get('kind') or '',
+                                                            r.get('role') or '-', r.get('ip') or '?'))
+                for r in rows])
+            if which is not None and self.confirm('End the sign-in', 'Whoever it is must sign in '
+                                                  'again.', 'End it', danger=True):
+                self.act('--session-end', which, '--yes')
+
         def lockout_clear():
             rows = [r for r in (self.out('--lockouts') or []) if isinstance(r, dict)]
             if not rows:
@@ -2976,6 +3018,14 @@ class Console(object):
             ('19', 'Lock, unlock, sudo or take away a local user', osu_change),
             ('20', 'The password policy of local users: how it stands', lambda: self.act('--local-policy')),
             ('21', 'Set the password policy of local users', pwp_set),
+            ('22', 'Alerts: what is wrong now', lambda: self.act('--alerts')),
+            ('23', 'Send a test alert', lambda: self.act('--alerts', 'test')),
+            ('24', 'Outgoing mail', mailq),
+            ('25', 'Who is signed in to the pages', lambda: self.act('--sessions')),
+            ('26', 'End a sign-in to the pages', session_end),
+            ('27', 'Firewall and who may reach the pages', lambda: self.act('--firewall')),
+            ('28', 'Let everybody reach the administration pages', web_open),
+            ('29', 'Take otp\'s firewall rules away', fw_off),
         ])
 
     def m_more(self):

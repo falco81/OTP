@@ -17,6 +17,18 @@ REPL_ERRS = {'n': None, 'at': 0.0, 'by': ''}
 REPL_ERRS_FOR_S = 1800
 
 
+def _al_cut(text, most):
+    """Words no longer than most, cut where a word ends and said so (1.0.315): what an update left
+    to be done by hand went out cut in the middle of a word - '... Firewall and ac'."""
+    text = str(text or '')
+    if len(text) <= most:
+        return text
+    cut = text[:most - 1]
+    if ' ' in cut[most // 2:]:
+        cut = cut[:cut.rindex(' ')]
+    return cut.rstrip(' ,;:-') + '…'
+
+
 def repl_errors_seen(rs, now=None):
     """The errors of this node's subscriptions as ha_repl_state gives them: REPL_ERRS moved on -
     'at' is when their count last went up (never at the first look, nor when it went down: the
@@ -724,7 +736,7 @@ def alert_problems_more(store, lang, add, names, health, beats, cluster, quiet, 
                 words = odict(it.get('cs')) if lang == 'cs' else it
                 add('after:%s:%s' % (it['id'], it['node']), 'bad' if it['level'] == 'bad' else 'warn',
                     it['node'], str(words.get('title') or it.get('title') or it['id']),
-                    str(words.get('why') or it.get('why') or '')[:300], 'upgrade')
+                    _al_cut(str(words.get('why') or it.get('why') or ''), 600), 'upgrade')
         except Exception as e:                          # noqa: BLE001
             log_sparing('alerts-after', 'the alerts, after the update: %s' % e, 'warn', every=3600)
     # Rows of the database not written by otp.

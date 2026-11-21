@@ -81,6 +81,11 @@ otp --restarts              # how the restarts went
 otp --mail-test a@b.cz      # a test mail, every step said;  --sms-test +420...
 otp --ssh-tokens            # SSH tokens;  --ssh-token-add NAME [--by mail|sms --to ...]  /  --ssh-token-del NAME
 otp --lockouts              # who is locked out, on every node;  --lockouts-clear all|KIND:WHO
+otp --alerts                # what is wrong now (exit 1 when anything is bad);  check / test / report / forget
+otp --mailq                 # the outgoing mail;  open|failed|...  /  retry-all / drop-sent / drop-failed --yes
+otp --mailq-one ID          # one mail and every try of it;  --mailq-retry ID,ID  /  --mailq-drop ID,ID --yes
+otp --sessions              # who is signed in to the pages;  --session-end ID --yes
+otp --firewall              # otp's firewall and who may reach the pages;  on / off --yes;  --web-access admin=any --yes
 otp --set smtp_password=-   # a secret: asked for (or one line of stdin, or OTP_VALUE_SMTP_PASSWORD)
 otp --get db_guard          # one setting's value alone, for a script: 0
 otp --get logs_keep smtp_password --json   # several: KEY=VALUE a line, or an object; a secret: set / not set
