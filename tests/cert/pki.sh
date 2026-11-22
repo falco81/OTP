@@ -15,7 +15,14 @@ set -e
 D=${1:?dir}
 mkdir -p "$D"
 cd "$D"
-if [ -f done ]; then echo "pki ready in $D"; exit 0; fi
+if [ -f done ]; then
+  # The CRL anew at each run: it lasts default_crl_days (7), and a PKI made a week before had every
+  # certificate sign-in refused as "cannot be checked for revocation".
+  export UPN=falco@corpnet.cz SID=S-1-5-21-1111-2222-3333-1105
+  openssl ca -config ca.cnf -gencrl -out issuing.crl.pem >/dev/null 2>&1
+  openssl crl -in issuing.crl.pem -outform DER -out www/issuing.crl
+  echo "pki ready in $D"; exit 0
+fi
 SID_FALCO=S-1-5-21-1111-2222-3333-1105
 SID_NESTED=S-1-5-21-1111-2222-3333-1106
 cat > ca.cnf <<EOF
