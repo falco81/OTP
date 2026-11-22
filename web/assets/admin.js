@@ -19227,7 +19227,13 @@ function drawLogs() {
         ['otp’s data', n.state == null ? '' : bytes(n.state)],
         ['Asked', n.at ? ago(n.at) : '']
       ]));
-      if (n.said && !n.ok) c.appendChild(noI18n(el('div', 'si-said small', n.said)));
+      if (n.said && !n.ok) {
+        /* otp's own sentence (the root helper did not answer...) in the page's language (1.0.316);
+           what only a tool says matches nothing and stays as it is. */
+        var lsaid = noI18n(el('div', 'si-said small', n.said));
+        if (/\s/.test(n.said)) lsaid.removeAttribute('data-no-i18n');
+        c.appendChild(lsaid);
+      }
       var row2 = el('div', 'btnrow');
       var again = cmdButton('Put in and look again', 'refresh', 'small');
       explain(again, 'Every node puts the settings below in again and says how much its journal and logs take - the one this page is on at once, the other within a minute.');

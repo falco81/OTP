@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.315'
+__version__ = '1.0.316'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -51738,6 +51738,9 @@ def _mail_do(h):
     if act == 'sms_ca_fetch':
         # What the gateway shows, for the administrator to look at and trust.
         h.me('fulladmin')
+        if not str(CONFIG.get('sms_tel_host') or '').strip().rstrip('/'):
+            # Nothing to ask (1.0.316): the administrator's to put in, not the gateway failing.
+            raise ApiError(400, 'no address of the Teltonika gateway is set')
         try:
             pem = tel_peer_chain()
         except SmsError as e:
