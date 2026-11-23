@@ -1663,6 +1663,12 @@ class RadiusServer(object):
                       '(the shape of a BlastRADIUS forgery)', pkt=pkt, client=client,
                       sparing=True)
             return False
+        # EAP-Message and no Message-Authenticator (1.0.317): RFC 3579 3.2 - silently discarded,
+        # not refused (EAP is not taken here either way).
+        if pkt.code == ACCESS_REQUEST and pkt.all(79):
+            self.drop(ip, port, pkt.text(1), 'EAP-Message without a Message-Authenticator '
+                      '(RFC 3579: discarded)', pkt=pkt, client=client, sparing=True)
+            return False
         if client.get('require_ma') or pkt.code == STATUS_SERVER or sticky:
             self.drop(ip, port, pkt.text(1), 'there is no Message-Authenticator, and this '
                       'client must send one%s' % (' - it has sent one before' if sticky and

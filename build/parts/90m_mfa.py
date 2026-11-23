@@ -239,8 +239,13 @@ def _mfa_send(h, s, kind, dest, field):
     # sign-in only, and signing in again (or setting the step up: any address typed in) sent more
     # without end - a mailbox flooded, SMS paid for to any number.
     dkey = 'to:%s:%s' % (kind, str(dest or '').strip().lower())
-    if not code_send_allowed(h.store, 'adm:' + str(s['name']).lower()) or \
-            not code_send_allowed(h.store, dkey):
+    akey = 'adm:' + str(s['name']).lower()
+    a_ok = code_send_allowed(h.store, akey)
+    d_ok = a_ok and code_send_allowed(h.store, dkey)
+    if not d_ok:
+        if a_ok:
+            # The account's place given back (1.0.317): the address refused it, nothing went.
+            portal_sends_back(h.store, akey)
         try:
             h.store.session_merge(s['id'], was, expect={'mfa_sent_at': t, 'mfa_sent': n + 1})
         except Exception:                               # noqa: BLE001
@@ -261,6 +266,9 @@ def _mfa_send(h, s, kind, dest, field):
             h.store.session_merge(s['id'], was, expect={'mfa_sent_at': t, 'mfa_sent': n + 1})
         except Exception:                               # noqa: BLE001
             pass
+        # ...the account's and the address's too (1.0.317): five tries in a mail outage had the
+        # administrator unable to sign in for the window after it was over.
+        portal_sends_back(h.store, akey, dkey)
         h.store.add_event('sign-ins', 'the code of the second step for %s could not be sent '
                           '(%s): %s' % (s['name'], kind, e), 'warn', who=s['name'])
         raise ApiError(502, 'the code could not be sent: %s' % e)

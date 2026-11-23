@@ -152,6 +152,7 @@ g.update(MailError=MailError, SmsError=SmsError, code_send=code_send,
          wa_host_ok=lambda h: True, ha_nodes=lambda s: [], _ver_tuple=lambda v: (1, 0, 255),
          CODE_TEXTS={'en': 1, 'cs': 1})
 exec(src_of('90m_mfa.py'), g)
+exec(pick('90_api.py', ['portal_sends_back']), g)   # 1.0.317: _mfa_send gives a refused send back
 Store = g['Store']
 
 

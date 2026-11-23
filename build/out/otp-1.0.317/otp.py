@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.316'
+__version__ = '1.0.317'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -5306,22 +5306,24 @@ def _load_tables_held(db, src, keep_logs, say, gzip):
             except Exception:                           # noqa: BLE001
                 pass
             raise
-    if db.engine == 'postgres':
-        for table in TABLES:
-            if table in ('meta', 'settings'):
-                continue
-            try:
-                db.run("SELECT setval(pg_get_serial_sequence('%s', 'id'), "
-                       "COALESCE((SELECT MAX(id) FROM %s), 0) + 1, false)" % (table, table))
-            except Exception:
-                pass
-        # Odd or even again at once (1.0.94): MAX+1 can be the other node's
-        # parity, and a row written before the caller set it collided there.
-        if CONFIG.get('ha_mode') == 'replicated':
-            try:
-                ha_sequences(db, int(CONFIG.get('ha_slot') or 1))
-            except Exception as e:                      # noqa: BLE001
-                log('the numbering could not be set after loading: %s' % e, 'warn')
+        # Still under the lock (1.0.317): RADIUS, the pages and the events waiting on it wrote
+        # with the old numbers first - a duplicate key, the line or the sign-in lost.
+        if db.engine == 'postgres':
+            for table in TABLES:
+                if table in ('meta', 'settings'):
+                    continue
+                try:
+                    db.run("SELECT setval(pg_get_serial_sequence('%s', 'id'), "
+                           "COALESCE((SELECT MAX(id) FROM %s), 0) + 1, false)" % (table, table))
+                except Exception:
+                    pass
+            # Odd or even again at once (1.0.94): MAX+1 can be the other node's
+            # parity, and a row written before the caller set it collided there.
+            if CONFIG.get('ha_mode') == 'replicated':
+                try:
+                    ha_sequences(db, int(CONFIG.get('ha_slot') or 1))
+                except Exception as e:                      # noqa: BLE001
+                    log('the numbering could not be set after loading: %s' % e, 'warn')
     return counts
 
 
@@ -9149,6 +9151,11 @@ class Storage(object):
         with self.lock:
             self.db.run('UPDATE directories SET ca = ? WHERE id = ?', (pem, int(ident)))
             self._dirs = None
+            # Signed again (1.0.317): its authorities are signed, and a change left the directory
+            # of the administrators refused by the guard - nobody of it signed in.
+            name = self.db.value('SELECT name FROM directories WHERE id = ?', (int(ident),))
+            if name:
+                dbguard_directory_sign(self.db, name)
 
     def directory_save(self, data, by=''):
         for k in ('name', 'hosts', 'base', 'bind_dn', 'bind_pw', 'note', 'ca', 'user_attr', 'tls',
@@ -9267,6 +9274,8 @@ class Storage(object):
         self._dirs = None
         if one:
             self._dirpw_move(one['name'], None)         # its own cap gone with it (1.0.234)
+            # Its removal signed (1.0.317), as an account's: the row put back as it was is refused.
+            dbguard_directory_sign(self.db, one['name'])
 
     def _dirpw_move(self, old, new):
         """A directory's own cap of wrong passwords (meta 'dirpw:conf') under its new name,
@@ -16387,6 +16396,12 @@ class RadiusServer(object):
                       '(the shape of a BlastRADIUS forgery)', pkt=pkt, client=client,
                       sparing=True)
             return False
+        # EAP-Message and no Message-Authenticator (1.0.317): RFC 3579 3.2 - silently discarded,
+        # not refused (EAP is not taken here either way).
+        if pkt.code == ACCESS_REQUEST and pkt.all(79):
+            self.drop(ip, port, pkt.text(1), 'EAP-Message without a Message-Authenticator '
+                      '(RFC 3579: discarded)', pkt=pkt, client=client, sparing=True)
+            return False
         if client.get('require_ma') or pkt.code == STATUS_SERVER or sticky:
             self.drop(ip, port, pkt.text(1), 'there is no Message-Authenticator, and this '
                       'client must send one%s' % (' - it has sent one before' if sticky and
@@ -22414,6 +22429,12 @@ def smtp_talk(store, host, port, security, auth, msg, to, steps, helo='', verify
     except (smtplib.SMTPException, OSError) as e:
         if not isinstance(e, MailError):
             step('talking to it', False, e)
+            if isinstance(e, smtplib.SMTPNotSupportedError) and 'SMTPUTF8' in str(e):
+                # An address with letters past ASCII before the @ (1.0.317), a server without
+                # SMTPUTF8: it never goes - said at once, not tried again for a day.
+                raise MailError('%s does not take an address with letters such as á or ř before '
+                                'the @ (no SMTPUTF8): write it in plain letters' % host, steps,
+                                permanent=True)
             raise MailError('the conversation with %s broke off: %s' % (host, e), steps,
                             permanent=int(getattr(e, 'smtp_code', 0) or 0) >= 500)
         raise
@@ -56616,8 +56637,13 @@ def _mfa_send(h, s, kind, dest, field):
     # sign-in only, and signing in again (or setting the step up: any address typed in) sent more
     # without end - a mailbox flooded, SMS paid for to any number.
     dkey = 'to:%s:%s' % (kind, str(dest or '').strip().lower())
-    if not code_send_allowed(h.store, 'adm:' + str(s['name']).lower()) or \
-            not code_send_allowed(h.store, dkey):
+    akey = 'adm:' + str(s['name']).lower()
+    a_ok = code_send_allowed(h.store, akey)
+    d_ok = a_ok and code_send_allowed(h.store, dkey)
+    if not d_ok:
+        if a_ok:
+            # The account's place given back (1.0.317): the address refused it, nothing went.
+            portal_sends_back(h.store, akey)
         try:
             h.store.session_merge(s['id'], was, expect={'mfa_sent_at': t, 'mfa_sent': n + 1})
         except Exception:                               # noqa: BLE001
@@ -56638,6 +56664,9 @@ def _mfa_send(h, s, kind, dest, field):
             h.store.session_merge(s['id'], was, expect={'mfa_sent_at': t, 'mfa_sent': n + 1})
         except Exception:                               # noqa: BLE001
             pass
+        # ...the account's and the address's too (1.0.317): five tries in a mail outage had the
+        # administrator unable to sign in for the window after it was over.
+        portal_sends_back(h.store, akey, dkey)
         h.store.add_event('sign-ins', 'the code of the second step for %s could not be sent '
                           '(%s): %s' % (s['name'], kind, e), 'warn', who=s['name'])
         raise ApiError(502, 'the code could not be sent: %s' % e)

@@ -126,6 +126,7 @@ REC = {'kind': 'mail', 'dest': 'boss@example.cz'}
 STAGE = ['check']
 g.update(mfa_get=lambda st, name: dict(REC), mfa_pending=lambda s, st=None: STAGE[0], mfa_stage=lambda st, n: STAGE[0])
 exec(defs('90m_mfa.py', ['mfa_send_state', 'mfa_wait_words', '_mfa_send', '_mfa', '_mfa_do']), g)
+exec(defs('90_api.py', ['portal_sends_back']), g)   # 1.0.317: _mfa_send gives a refused send back
 st_of, send = g['mfa_send_state'], g['_mfa_send']
 
 # ---- the state alone ---------------------------------------------------------------------------

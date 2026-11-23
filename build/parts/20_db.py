@@ -1427,22 +1427,24 @@ def _load_tables_held(db, src, keep_logs, say, gzip):
             except Exception:                           # noqa: BLE001
                 pass
             raise
-    if db.engine == 'postgres':
-        for table in TABLES:
-            if table in ('meta', 'settings'):
-                continue
-            try:
-                db.run("SELECT setval(pg_get_serial_sequence('%s', 'id'), "
-                       "COALESCE((SELECT MAX(id) FROM %s), 0) + 1, false)" % (table, table))
-            except Exception:
-                pass
-        # Odd or even again at once (1.0.94): MAX+1 can be the other node's
-        # parity, and a row written before the caller set it collided there.
-        if CONFIG.get('ha_mode') == 'replicated':
-            try:
-                ha_sequences(db, int(CONFIG.get('ha_slot') or 1))
-            except Exception as e:                      # noqa: BLE001
-                log('the numbering could not be set after loading: %s' % e, 'warn')
+        # Still under the lock (1.0.317): RADIUS, the pages and the events waiting on it wrote
+        # with the old numbers first - a duplicate key, the line or the sign-in lost.
+        if db.engine == 'postgres':
+            for table in TABLES:
+                if table in ('meta', 'settings'):
+                    continue
+                try:
+                    db.run("SELECT setval(pg_get_serial_sequence('%s', 'id'), "
+                           "COALESCE((SELECT MAX(id) FROM %s), 0) + 1, false)" % (table, table))
+                except Exception:
+                    pass
+            # Odd or even again at once (1.0.94): MAX+1 can be the other node's
+            # parity, and a row written before the caller set it collided there.
+            if CONFIG.get('ha_mode') == 'replicated':
+                try:
+                    ha_sequences(db, int(CONFIG.get('ha_slot') or 1))
+                except Exception as e:                      # noqa: BLE001
+                    log('the numbering could not be set after loading: %s' % e, 'warn')
     return counts
 
 

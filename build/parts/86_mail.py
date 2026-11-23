@@ -624,6 +624,12 @@ def smtp_talk(store, host, port, security, auth, msg, to, steps, helo='', verify
     except (smtplib.SMTPException, OSError) as e:
         if not isinstance(e, MailError):
             step('talking to it', False, e)
+            if isinstance(e, smtplib.SMTPNotSupportedError) and 'SMTPUTF8' in str(e):
+                # An address with letters past ASCII before the @ (1.0.317), a server without
+                # SMTPUTF8: it never goes - said at once, not tried again for a day.
+                raise MailError('%s does not take an address with letters such as á or ř before '
+                                'the @ (no SMTPUTF8): write it in plain letters' % host, steps,
+                                permanent=True)
             raise MailError('the conversation with %s broke off: %s' % (host, e), steps,
                             permanent=int(getattr(e, 'smtp_code', 0) or 0) >= 500)
         raise

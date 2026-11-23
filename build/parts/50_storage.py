@@ -1817,6 +1817,11 @@ class Storage(object):
         with self.lock:
             self.db.run('UPDATE directories SET ca = ? WHERE id = ?', (pem, int(ident)))
             self._dirs = None
+            # Signed again (1.0.317): its authorities are signed, and a change left the directory
+            # of the administrators refused by the guard - nobody of it signed in.
+            name = self.db.value('SELECT name FROM directories WHERE id = ?', (int(ident),))
+            if name:
+                dbguard_directory_sign(self.db, name)
 
     def directory_save(self, data, by=''):
         for k in ('name', 'hosts', 'base', 'bind_dn', 'bind_pw', 'note', 'ca', 'user_attr', 'tls',
@@ -1935,6 +1940,8 @@ class Storage(object):
         self._dirs = None
         if one:
             self._dirpw_move(one['name'], None)         # its own cap gone with it (1.0.234)
+            # Its removal signed (1.0.317), as an account's: the row put back as it was is refused.
+            dbguard_directory_sign(self.db, one['name'])
 
     def _dirpw_move(self, old, new):
         """A directory's own cap of wrong passwords (meta 'dirpw:conf') under its new name,
