@@ -31,7 +31,9 @@ def _sshkeys_do(h):
         raise ApiError(400, 'nodes is a list')
     # Whose keys (1.0.240): root's as until now, or a normal user's of the nodes.
     user = str(b.get('user') or 'root')
-    if act in ('add', 'drop', 'rk_make', 'rk_given', 'rk_again') and user == 'root':
+    # Root's whoever is named (1.0.320): rk_* work on root's keys alone, and "user": "alice"
+    # had a key put into /root/.ssh/authorized_keys from the pages.
+    if act in ('rk_make', 'rk_given', 'rk_again') or (act in ('add', 'drop') and user == 'root'):
         # Root's keys are only shown here (1.0.280): a way in as root is put on, or taken away, by
         # root on the node itself - never from the pages.
         raise ApiError(403, 'root\'s SSH keys are only shown on these pages - put on and taken away by root on '

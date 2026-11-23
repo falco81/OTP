@@ -1531,7 +1531,11 @@ def report_send(store, since=None, until=None, to=None, by='', reader=None):
     if not to:
         raise ValueError('no address to send the report to - Report to, or Alerts to')
     subject, page, text = report_build(reader or store, since, until, lang)
-    msg = _al_msg(subject, page, text, to)
+    try:
+        msg = _al_msg(subject, page, text, to)
+    except MailError as e:
+        # Not sent at all (1.0.320): no sender set - the period was kept as sent, never tried again.
+        raise ValueError(str(e))
     entry = alert_send(store, msg, to, 'report', [])
     if by:
         store.add_event('settings', '%s sent the report (%s) to %s%s' % (
@@ -1588,6 +1592,9 @@ def alerts_tick(daemon):
                     except Exception as e:      # noqa: BLE001
                         # The period given back (1.0.207): claimed before it was
                         # made, a report that failed to be made was never tried again.
+                        # In 30 min, not each minute (1.0.320): a report too big for the reader's
+                        # time, or no address, was made again every minute.
+                        ALERT_WORK['report_fail'] = time.monotonic()
                         if not isinstance(e, MailError):
                             try:
                                 if store.get_meta('report:sent') == pid:
@@ -1607,7 +1614,8 @@ def alerts_view(store):
     lang = CONFIG.get('ui_lang') or 'en'
     st = _alert_state(store)
     now = alert_problems(store, 'en')
-    nodes = [n['name'] for n in ha_nodes(store)] if CONFIG.get('ha_mode') else [node_name()]
+    # Both nodes of one shared database too (1.0.320), as the mails say them.
+    nodes = [n['name'] for n in ha_nodes(store)] if in_cluster(store) else [node_name()]
     since, until, pid = report_period()
     return {'problems': [dict(p, key=k, since=(st['problems'].get(k) or {}).get('since'),
                               sent=bool((st['problems'].get(k) or {}).get('sent')))

@@ -394,8 +394,10 @@ def hisec_guard_settings(store, checked):
         for key in HISEC_SETTINGS:
             if key in hisec_waived(store):
                 continue
+            # isemon's too (1.0.320): its targets or isemon itself saved alone were never looked at.
             if key in checked or any(k in checked for k in ('mail_mode', 'sms_mode', 'siem',
-                                                            'admin_2fa', 'portal', 'proxy')):
+                                                            'admin_2fa', 'portal', 'proxy',
+                                                            'isemon', 'isemon_targets')):
                 why = hisec_setting_refused(key, after.get(key), after)
                 if why:
                     raise BadSetting('%s: not while high security is on - %s'
@@ -449,7 +451,9 @@ def hisec_sshd(c):
         return
     if c.get('password'):
         hisec_refuse('SSH with passwords - keys only', 'sshd:password')
-    if c.get('permit_root') == 'yes':
+    # With the code from otp and no password to fall back on, root comes in with a key and the
+    # code - as the findings take it (1.0.320): high security went on, then refused every save.
+    if c.get('permit_root') == 'yes' and not (c.get('radius') and not c.get('radius_fallback')):
         hisec_refuse('root over SSH with a password', 'sshd:root')
     if int(c.get('tries') or 4) > 4:
         hisec_refuse('more than 4 SSH tries a connection', 'sshd:tries')

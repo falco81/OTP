@@ -106,7 +106,7 @@ def _after_do(h):
 
 # ---- syslog / SIEM, the proxy, the disks and the logs (1.0.166) -------------------------
 def _siem_view(h):
-    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    nodes = [n['name'] for n in ha_nodes(h.store)] if in_cluster(h.store) else [node_name()]
     me = h.d.siem.state() if getattr(h.d, 'siem', None) else {}
     out = []
     for n in nodes:

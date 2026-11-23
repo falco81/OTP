@@ -114,7 +114,7 @@ st.set_meta('net:job:n2', json.dumps({'state': 'kept', 'at': time.time()}))
 ok('busy: kept - free', m.cluster_busy(st, skip=('osup', 'upgrade', 'power')) == '')
 
 # ==== 7 the report: no sender - given back as not made
-m._alerts_to = lambda k: ['a@example.cz']
+m._alerts_to = lambda k='alerts_to': ['a@example.cz']
 m.report_build = lambda r, s, u, l: ('s', '<p>p</p>', 't')
 
 
@@ -134,7 +134,8 @@ ok('report: tried in 30 min after any failure', srct.count("ALERT_WORK['report_f
 
 # ==== 8 both nodes of one database on the panes
 m.in_cluster = lambda store=None: True
-m.ha_nodes = lambda store: [{'name': 'fx320'}, {'name': 'n2'}]
+import time as _t
+m.ha_nodes = lambda store: [{'name': 'fx320', 'alive': True, 'age': _t.time()}, {'name': 'n2', 'alive': True, 'age': _t.time()}]
 v = m.alerts_view(st)
 ok('alerts: both nodes', set(v.get('health') or {}) == {'fx320', 'n2'}, list(v.get('health') or {}))
 ok('siem / isemon: in_cluster', 'if in_cluster(h.store)' in inspect.getsource(m._siem_view) and

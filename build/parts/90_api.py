@@ -3933,7 +3933,7 @@ def _isemon(h):
     """What each node sends to isemon (1.0.169): this one as it is now, the
     other as its own row of the last minute says."""
     h.me()
-    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    nodes = [n['name'] for n in ha_nodes(h.store)] if in_cluster(h.store) else [node_name()]
     out = []
     for n in sorted(set(nodes) | {node_name()}):
         row = _meta_json(h.store, 'host:health:' + n) or {}

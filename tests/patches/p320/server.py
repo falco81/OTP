@@ -75,7 +75,7 @@ edit('87n_net.py', [
 def _net_file_differs(undo):
     now = _net_file_now()
     return {k: v for k, v in odict(undo.get('file')).items()
-            if str(now.get(k, DEFAULTS.get(k)) or '') != str(v or '')}
+            if str(now.get(k) or '') != str(v or '')}
 
 
 def cluster_busy(store, skip=()):
@@ -89,6 +89,10 @@ def cluster_busy(store, skip=()):
                 # the trial ran out and went back with a restart - both nodes down.
                 if 'trial' not in skip and net_job_on_trial(_meta_json(store, 'net:job:' + n)):
                     return '%s has a new network on trial - keep it or put it back first' % n
+"""),
+("""    busy = cluster_busy(store, skip=('power',) + (('osup',) if from_osup else ()))
+""",
+ """    busy = cluster_busy(store, skip=('power', 'trial') + (('osup',) if from_osup else ()))  # its own words below
 """),
 ("""    if not rollback:
         busy = cluster_busy(store, skip=('power',))

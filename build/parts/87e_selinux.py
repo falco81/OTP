@@ -44,10 +44,12 @@ def selinux_want(store):
         pass
     try:
         now = _meta_json(store, 'host:sshd:now:' + node_name()) or {}
-        sp = int(odict(now.get('values')).get('port') or 22)
-        if sp != 22:
-            ports.append({'port': sp, 'proto': 'tcp', 'type': 'ssh_port_t',
-                          'why': 'the SSH server listens on it'})
+        # Each port (1.0.320): sshd on 22 and 2222 reads "22 2222" - no number, none labelled.
+        for one in str(odict(now.get('values')).get('port') or '22').replace(',', ' ').split():
+            sp = int(one)
+            if sp != 22 and 0 < sp < 65536:
+                ports.append({'port': sp, 'proto': 'tcp', 'type': 'ssh_port_t',
+                              'why': 'the SSH server listens on it'})
     except (TypeError, ValueError):
         pass
     eng = CONFIG.get('db_engine')

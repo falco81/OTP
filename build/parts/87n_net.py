@@ -331,6 +331,22 @@ def net_job_on_trial(job):
                              fnum(job.get('moved') or job.get('at'))) + NET_JOB_LIVE_S
 
 
+def _net_file_now():
+    """config.json as it is on disk (1.0.320): write_file_settings leaves FILE_CONFIG as it was
+    loaded, and a job that failed compared with that - db_host it had written stayed."""
+    try:
+        got = json.loads(Path(CONFIG_FILE).read_text(encoding='utf-8'))
+        return got if isinstance(got, dict) else dict(FILE_CONFIG)
+    except Exception:                                   # noqa: BLE001
+        return dict(FILE_CONFIG)
+
+
+def _net_file_differs(undo):
+    now = _net_file_now()
+    return {k: v for k, v in odict(undo.get('file')).items()
+            if str(now.get(k) or '') != str(v or '')}
+
+
 def cluster_busy(store, skip=()):
     """What takes a node out of service and is going on anywhere in the cluster
     now, or '' (1.0.211): a new network on one node, a restart, a system update
@@ -341,6 +357,10 @@ def cluster_busy(store, skip=()):
             for n in host_nodes(store):
                 if net_job_active(_meta_json(store, 'net:job:' + n)):
                     return '%s is changing its network' % n
+                # A network on trial too (1.0.320): an update drained the other node meanwhile,
+                # the trial ran out and went back with a restart - both nodes down.
+                if 'trial' not in skip and net_job_on_trial(_meta_json(store, 'net:job:' + n)):
+                    return '%s has a new network on trial - keep it or put it back first' % n
         if 'osup' not in skip and (osup_plan(store) or {}).get('state') == 'running':
             return 'the system is being updated'
         if 'upgrade' not in skip and (upgrade_plan(store) or {}).get('state') == 'running':
@@ -411,7 +431,7 @@ def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     if not rollback and power_busy(store):
         raise ValueError('a restart or a power-off is under way')
     if not rollback:
-        busy = cluster_busy(store, skip=('power',))
+        busy = cluster_busy(store, skip=('power', 'trial'))
         if busy:
             raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     if not rollback and in_cluster(store):
@@ -529,7 +549,10 @@ def net_cert_again(store, w, by):
         swap[w['old_ip']] = w['new_ip']
     if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
         swap[w['old_hostname']] = w['hostname']
-        swap[w['old_hostname'].split('.')[0]] = w['hostname'].split('.')[0]
+        # The short names only of full ones (1.0.320): otp1 to otp2.example.cz swapped otp1 for
+        # otp2 over the full name just set - the certificate never named the full one.
+        if '.' in w['old_hostname'] and w['old_hostname'].split('.')[0] not in swap:
+            swap[w['old_hostname'].split('.')[0]] = w['hostname'].split('.')[0]
     # The IPv6 address set by hand changed too (1.0.261): the old one swapped for the new - left,
     # the certificate named an address the machine no longer has; IPv6 off, it goes.
     new6 = w['ipv6'].get('addr', '').split('/')[0] if w['ipv6'].get('on') else ''
@@ -554,6 +577,8 @@ def net_cert_again(store, w, by):
     new_names = _cert_names_swap(names, swap)
     if new6 and _cert_name_key(new6) not in set(_cert_name_key(x) for x in new_names):
         new_names.append(new6)
+    if w['hostname'] and _cert_name_key(w['hostname']) not in set(_cert_name_key(x) for x in new_names):
+        new_names.append(w['hostname'])
     new_cn = {_cert_name_key(k): v for k, v in swap.items()}.get(_cert_name_key(cn), cn) or \
         w['hostname']
     key, crt = make_selfsigned(new_cn, [x for x in new_names if x != new_cn], 825, kind)
@@ -596,8 +621,7 @@ def net_undo_put_back(daemon, undo, by):
     if changes:
         daemon.save_settings(changes, by=by, node=me)
         said.append(', '.join('%s = %s' % kv for kv in sorted(changes.items())))
-    files = {k: v for k, v in odict(undo.get('file')).items()
-             if str(FILE_CONFIG.get(k) or '') != str(v or '')}
+    files = _net_file_differs(undo)
     if files:
         write_file_settings(files)
         CONFIG.update(files)
@@ -786,8 +810,7 @@ def net_job_run(daemon, ask):
             _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
                 '%s = %s' % kv for kv in sorted(changes.items())), 35)
         if undo:
-            files = {k: v for k, v in odict(undo.get('file')).items()
-                     if str(FILE_CONFIG.get(k) or '') != str(v or '')}
+            files = _net_file_differs(undo)
             if files:
                 write_file_settings(files)
                 CONFIG.update(files)
@@ -1360,7 +1383,7 @@ def power_ask(store, how, targets, order, by, keep_service=False, from_osup=Fals
         raise ValueError('which node?')
     if order not in ('one', 'rolling', 'together'):
         order = 'one' if len(targets) == 1 else 'rolling'
-    busy = cluster_busy(store, skip=('power',) + (('osup',) if from_osup else ()))
+    busy = cluster_busy(store, skip=('power', 'trial') + (('osup',) if from_osup else ()))  # its own words below
     if busy:
         raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     if how == 'poweroff' and order == 'rolling':

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.319'
+__version__ = '1.0.320'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -30160,8 +30160,10 @@ def hisec_guard_settings(store, checked):
         for key in HISEC_SETTINGS:
             if key in hisec_waived(store):
                 continue
+            # isemon's too (1.0.320): its targets or isemon itself saved alone were never looked at.
             if key in checked or any(k in checked for k in ('mail_mode', 'sms_mode', 'siem',
-                                                            'admin_2fa', 'portal', 'proxy')):
+                                                            'admin_2fa', 'portal', 'proxy',
+                                                            'isemon', 'isemon_targets')):
                 why = hisec_setting_refused(key, after.get(key), after)
                 if why:
                     raise BadSetting('%s: not while high security is on - %s'
@@ -30215,7 +30217,9 @@ def hisec_sshd(c):
         return
     if c.get('password'):
         hisec_refuse('SSH with passwords - keys only', 'sshd:password')
-    if c.get('permit_root') == 'yes':
+    # With the code from otp and no password to fall back on, root comes in with a key and the
+    # code - as the findings take it (1.0.320): high security went on, then refused every save.
+    if c.get('permit_root') == 'yes' and not (c.get('radius') and not c.get('radius_fallback')):
         hisec_refuse('root over SSH with a password', 'sshd:root')
     if int(c.get('tries') or 4) > 4:
         hisec_refuse('more than 4 SSH tries a connection', 'sshd:tries')
@@ -36184,6 +36188,22 @@ def net_job_on_trial(job):
                              fnum(job.get('moved') or job.get('at'))) + NET_JOB_LIVE_S
 
 
+def _net_file_now():
+    """config.json as it is on disk (1.0.320): write_file_settings leaves FILE_CONFIG as it was
+    loaded, and a job that failed compared with that - db_host it had written stayed."""
+    try:
+        got = json.loads(Path(CONFIG_FILE).read_text(encoding='utf-8'))
+        return got if isinstance(got, dict) else dict(FILE_CONFIG)
+    except Exception:                                   # noqa: BLE001
+        return dict(FILE_CONFIG)
+
+
+def _net_file_differs(undo):
+    now = _net_file_now()
+    return {k: v for k, v in odict(undo.get('file')).items()
+            if str(now.get(k) or '') != str(v or '')}
+
+
 def cluster_busy(store, skip=()):
     """What takes a node out of service and is going on anywhere in the cluster
     now, or '' (1.0.211): a new network on one node, a restart, a system update
@@ -36194,6 +36214,10 @@ def cluster_busy(store, skip=()):
             for n in host_nodes(store):
                 if net_job_active(_meta_json(store, 'net:job:' + n)):
                     return '%s is changing its network' % n
+                # A network on trial too (1.0.320): an update drained the other node meanwhile,
+                # the trial ran out and went back with a restart - both nodes down.
+                if 'trial' not in skip and net_job_on_trial(_meta_json(store, 'net:job:' + n)):
+                    return '%s has a new network on trial - keep it or put it back first' % n
         if 'osup' not in skip and (osup_plan(store) or {}).get('state') == 'running':
             return 'the system is being updated'
         if 'upgrade' not in skip and (upgrade_plan(store) or {}).get('state') == 'running':
@@ -36264,7 +36288,7 @@ def net_ask(store, node, want, by, rollback=False, maint=False, snap=''):
     if not rollback and power_busy(store):
         raise ValueError('a restart or a power-off is under way')
     if not rollback:
-        busy = cluster_busy(store, skip=('power',))
+        busy = cluster_busy(store, skip=('power', 'trial'))
         if busy:
             raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     if not rollback and in_cluster(store):
@@ -36382,7 +36406,10 @@ def net_cert_again(store, w, by):
         swap[w['old_ip']] = w['new_ip']
     if w['hostname'] and w['old_hostname'] and w['hostname'] != w['old_hostname']:
         swap[w['old_hostname']] = w['hostname']
-        swap[w['old_hostname'].split('.')[0]] = w['hostname'].split('.')[0]
+        # The short names only of full ones (1.0.320): otp1 to otp2.example.cz swapped otp1 for
+        # otp2 over the full name just set - the certificate never named the full one.
+        if '.' in w['old_hostname'] and w['old_hostname'].split('.')[0] not in swap:
+            swap[w['old_hostname'].split('.')[0]] = w['hostname'].split('.')[0]
     # The IPv6 address set by hand changed too (1.0.261): the old one swapped for the new - left,
     # the certificate named an address the machine no longer has; IPv6 off, it goes.
     new6 = w['ipv6'].get('addr', '').split('/')[0] if w['ipv6'].get('on') else ''
@@ -36407,6 +36434,8 @@ def net_cert_again(store, w, by):
     new_names = _cert_names_swap(names, swap)
     if new6 and _cert_name_key(new6) not in set(_cert_name_key(x) for x in new_names):
         new_names.append(new6)
+    if w['hostname'] and _cert_name_key(w['hostname']) not in set(_cert_name_key(x) for x in new_names):
+        new_names.append(w['hostname'])
     new_cn = {_cert_name_key(k): v for k, v in swap.items()}.get(_cert_name_key(cn), cn) or \
         w['hostname']
     key, crt = make_selfsigned(new_cn, [x for x in new_names if x != new_cn], 825, kind)
@@ -36449,8 +36478,7 @@ def net_undo_put_back(daemon, undo, by):
     if changes:
         daemon.save_settings(changes, by=by, node=me)
         said.append(', '.join('%s = %s' % kv for kv in sorted(changes.items())))
-    files = {k: v for k, v in odict(undo.get('file')).items()
-             if str(FILE_CONFIG.get(k) or '') != str(v or '')}
+    files = _net_file_differs(undo)
     if files:
         write_file_settings(files)
         CONFIG.update(files)
@@ -36639,8 +36667,7 @@ def net_job_run(daemon, ask):
             _job_put(store, job, 'this node\'s settings: %s' % ', '.join(
                 '%s = %s' % kv for kv in sorted(changes.items())), 35)
         if undo:
-            files = {k: v for k, v in odict(undo.get('file')).items()
-                     if str(FILE_CONFIG.get(k) or '') != str(v or '')}
+            files = _net_file_differs(undo)
             if files:
                 write_file_settings(files)
                 CONFIG.update(files)
@@ -37213,7 +37240,7 @@ def power_ask(store, how, targets, order, by, keep_service=False, from_osup=Fals
         raise ValueError('which node?')
     if order not in ('one', 'rolling', 'together'):
         order = 'one' if len(targets) == 1 else 'rolling'
-    busy = cluster_busy(store, skip=('power',) + (('osup',) if from_osup else ()))
+    busy = cluster_busy(store, skip=('power', 'trial') + (('osup',) if from_osup else ()))  # its own words below
     if busy:
         raise ValueError('%s - one thing at a time, so that a node always answers' % busy)
     if how == 'poweroff' and order == 'rolling':
@@ -42503,10 +42530,12 @@ def selinux_want(store):
         pass
     try:
         now = _meta_json(store, 'host:sshd:now:' + node_name()) or {}
-        sp = int(odict(now.get('values')).get('port') or 22)
-        if sp != 22:
-            ports.append({'port': sp, 'proto': 'tcp', 'type': 'ssh_port_t',
-                          'why': 'the SSH server listens on it'})
+        # Each port (1.0.320): sshd on 22 and 2222 reads "22 2222" - no number, none labelled.
+        for one in str(odict(now.get('values')).get('port') or '22').replace(',', ' ').split():
+            sp = int(one)
+            if sp != 22 and 0 < sp < 65536:
+                ports.append({'port': sp, 'proto': 'tcp', 'type': 'ssh_port_t',
+                              'why': 'the SSH server listens on it'})
     except (TypeError, ValueError):
         pass
     eng = CONFIG.get('db_engine')
@@ -46381,7 +46410,11 @@ def report_send(store, since=None, until=None, to=None, by='', reader=None):
     if not to:
         raise ValueError('no address to send the report to - Report to, or Alerts to')
     subject, page, text = report_build(reader or store, since, until, lang)
-    msg = _al_msg(subject, page, text, to)
+    try:
+        msg = _al_msg(subject, page, text, to)
+    except MailError as e:
+        # Not sent at all (1.0.320): no sender set - the period was kept as sent, never tried again.
+        raise ValueError(str(e))
     entry = alert_send(store, msg, to, 'report', [])
     if by:
         store.add_event('settings', '%s sent the report (%s) to %s%s' % (
@@ -46438,6 +46471,9 @@ def alerts_tick(daemon):
                     except Exception as e:      # noqa: BLE001
                         # The period given back (1.0.207): claimed before it was
                         # made, a report that failed to be made was never tried again.
+                        # In 30 min, not each minute (1.0.320): a report too big for the reader's
+                        # time, or no address, was made again every minute.
+                        ALERT_WORK['report_fail'] = time.monotonic()
                         if not isinstance(e, MailError):
                             try:
                                 if store.get_meta('report:sent') == pid:
@@ -46457,7 +46493,8 @@ def alerts_view(store):
     lang = CONFIG.get('ui_lang') or 'en'
     st = _alert_state(store)
     now = alert_problems(store, 'en')
-    nodes = [n['name'] for n in ha_nodes(store)] if CONFIG.get('ha_mode') else [node_name()]
+    # Both nodes of one shared database too (1.0.320), as the mails say them.
+    nodes = [n['name'] for n in ha_nodes(store)] if in_cluster(store) else [node_name()]
     since, until, pid = report_period()
     return {'problems': [dict(p, key=k, since=(st['problems'].get(k) or {}).get('since'),
                               sent=bool((st['problems'].get(k) or {}).get('sent')))
@@ -51550,7 +51587,7 @@ def _isemon(h):
     """What each node sends to isemon (1.0.169): this one as it is now, the
     other as its own row of the last minute says."""
     h.me()
-    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    nodes = [n['name'] for n in ha_nodes(h.store)] if in_cluster(h.store) else [node_name()]
     out = []
     for n in sorted(set(nodes) | {node_name()}):
         row = _meta_json(h.store, 'host:health:' + n) or {}
@@ -58093,7 +58130,9 @@ def _sshkeys_do(h):
         raise ApiError(400, 'nodes is a list')
     # Whose keys (1.0.240): root's as until now, or a normal user's of the nodes.
     user = str(b.get('user') or 'root')
-    if act in ('add', 'drop', 'rk_make', 'rk_given', 'rk_again') and user == 'root':
+    # Root's whoever is named (1.0.320): rk_* work on root's keys alone, and "user": "alice"
+    # had a key put into /root/.ssh/authorized_keys from the pages.
+    if act in ('rk_make', 'rk_given', 'rk_again') or (act in ('add', 'drop') and user == 'root'):
         # Root's keys are only shown here (1.0.280): a way in as root is put on, or taken away, by
         # root on the node itself - never from the pages.
         raise ApiError(403, 'root\'s SSH keys are only shown on these pages - put on and taken away by root on '
@@ -59662,7 +59701,7 @@ def _after_do(h):
 
 # ---- syslog / SIEM, the proxy, the disks and the logs (1.0.166) -------------------------
 def _siem_view(h):
-    nodes = [n['name'] for n in ha_nodes(h.store)] if CONFIG.get('ha_mode') else [node_name()]
+    nodes = [n['name'] for n in ha_nodes(h.store)] if in_cluster(h.store) else [node_name()]
     me = h.d.siem.state() if getattr(h.d, 'siem', None) else {}
     out = []
     for n in nodes:
