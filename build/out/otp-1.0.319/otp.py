@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.318'
+__version__ = '1.0.319'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -39273,7 +39273,8 @@ def sshotp_remove(store, name, by):
     name = sshotp_name(name)
     if not sshotp_get(store, name):
         raise ValueError('%s has no SSH token' % name)
-    store.drop_meta(sshotp_key(name))
+    with SSHOTP_LOCK:       # a sign-in at that moment wrote it back (1.0.319)
+        store.drop_meta(sshotp_key(name))
     store.add_event('settings', '%s removed the SSH token of %s' % (by, name), 'warn', who=by)
 
 
@@ -39299,14 +39300,16 @@ def _sshotp_fails(name, now):
 
 
 def _sshotp_used(store, name, ok):
-    """The token's own row: when it was last used, or last failed."""
-    rec = sshotp_get(store, name)
-    if rec:
-        if ok:
-            rec.update(used_at=time.time(), used_on=node_name())
-        else:
-            rec['failed_at'] = time.time()
-        store.set_meta(sshotp_key(name), json.dumps(rec))
+    """The token's own row: when it was last used, or last failed - under the lock (1.0.319):
+    a token removed or made again at that moment came back as it was."""
+    with SSHOTP_LOCK:
+        rec = sshotp_get(store, name)
+        if rec:
+            if ok:
+                rec.update(used_at=time.time(), used_on=node_name())
+            else:
+                rec['failed_at'] = time.time()
+            store.set_meta(sshotp_key(name), json.dumps(rec))
 
 
 def sshotp_check(store, name, code):
@@ -39806,13 +39809,20 @@ class SshGate(object):
         if p.code != 1:
             return None
         secret = ssh_gate_secret(self.d.store).encode()
-        if not secret or p.message_authenticator_ok(secret) is False:
+        ma = p.message_authenticator_ok(secret) if secret else False
+        if not secret or ma is False:
             return None
         user = p.text(1)
         try:
-            code = p.password(secret) or ''
+            code = p.password(secret)
         except RadiusError:
             return None
+        if ma is None and (code is None or '\ufffd' in code or not code.isprintable()):
+            # Without a Message-Authenticator (an older pam_radius) only a password the secret
+            # undid into text (1.0.319): anybody on the host could send names without it - wrong
+            # codes counted against them until they were held, codes sent by SMS to them.
+            return None
+        code = code or ''
         store = self.d.store
         who = re.sub(r'[^\w.@-]', '?', user)[:64]
         state = (p.get(24) or b'').decode('ascii', 'replace')
@@ -41808,13 +41818,23 @@ def dbtls_apply(daemon, args):
         if by != DBTLS_FOLLOW_BY:
             # The wizard at work here (1.0.270): the follow waits two minutes.
             DBTLS_WORK['wizard_at'] = time.time()
+        was_want = None
         if not mode and kind in ('replicated', 'local'):
             # The wish of none written before the switch (1.0.270): after it, the follow saw the
             # node without TLS and the wish still with it - and encrypted it again at once.
+            # Not when high security refuses it, and put back when the switch did not go
+            # (1.0.319): the nodes stayed on TLS and the wish said none for good.
+            _dbtls_hisec(mode, store)
+            was_want = _dbtls_want(store, derive=False)
             _dbtls_want_set(store, mode, by)
         try:
             got = dbtls_switch(daemon, mode, ca, by)
         except Exception:
+            if isinstance(was_want, dict) and str(was_want.get('mode') or ''):
+                try:
+                    store.set_meta(DBTLS_WANT_KEY, json.dumps(was_want))
+                except Exception:                       # noqa: BLE001
+                    pass
             if ca.endswith('db-ca.next.pem'):
                 try:
                     os.unlink(ca)
@@ -41919,7 +41939,9 @@ def _dbtls_rescue(daemon):
     if now - DBTLS_WORK['rescue'] < 10:
         return
     DBTLS_WORK['rescue'] = now
-    if dbtls_kind() not in ('local', 'replicated') or not CONFIG.get('db_tls'):
+    if dbtls_kind() not in ('local', 'replicated') or not CONFIG.get('db_tls') or db_agent_here():
+        # Never for a server of an agent's (1.0.319): it is across a network - anybody between
+        # could have the TLS fail and the node then sent all of it in the clear.
         DBTLS_WORK['fails'] = 0
         return
     try:
@@ -42820,6 +42842,7 @@ KRB_META = 'kerberos:keytab'
 KRB_KEYTAB_MAX = 65536
 KRB_TOKEN_MAX = 65536
 KRB5_MECH = bytes.fromhex('2a864886f712010202')          # 1.2.840.113554.1.2.2
+KRB5_MECH_MS = bytes.fromhex('2a864882f712010202')       # 1.2.840.48018.1.2.2 - Windows' (1.0.319)
 KRB_LIB = {'lib': None, 'tried': False, 'err': '', 'lock': threading.Lock()}
 KRB_NODE = {'sha': None, 'said': None, 'at': 0.0, 'err': '', 'v': None}
 KRB_ENCTYPES = {1: 'des-cbc-crc', 3: 'des-cbc-md5', 16: 'des3-cbc-sha1', 17: 'aes128-cts-hmac-sha1-96',
@@ -42940,7 +42963,7 @@ def krb_accept(token):
         if major != GSS_S_COMPLETE:
             raise KrbError('the ticket was not taken: %s' % _gss_words(lib, major, minor.value))
         got = ctypes.string_at(mech.contents.elements, mech.contents.length) if mech else b''
-        if got != KRB5_MECH:
+        if got not in (KRB5_MECH, KRB5_MECH_MS):
             raise KrbError('the browser used a mechanism that is not Kerberos 5')
         name = _GssBuf()
         m2 = ctypes.c_uint32()
@@ -58750,6 +58773,7 @@ def _osroots_do(h):
 # its hash (SHA-512 crypt, made by openssl from standard input) is what is asked, sealed with
 # the cluster's key, taken out of the asking row once the node said it is done.
 OSU_WORK = {'busy': False, 'since': 0.0, 'seen': 0.0}
+OSU_ASK_LOCK = threading.Lock()     # this node's asks, read and written back (1.0.319)
 OSU_KEEP = ('root', 'otp', 'otp-web', 'postgres', 'nginx', 'apache', 'nobody', 'keepalived',
             'chrony', 'sshd', 'polkitd', 'dbus', 'systemd-network', 'tss')
 OSU_DOS = ('list', 'add', 'password', 'lock', 'unlock', 'sudo', 'set', 'drop', 'aging')
@@ -59081,14 +59105,15 @@ def osu_ask(store, nodes, do, by, **f):
                 ask[k] = v
     for n in nodes:
         k = node_key('host:users:want', n)
-        try:
-            had = json.loads(store.get_meta(k) or '[]')
-        except ValueError:
-            had = []
-        had = [x for x in (had if isinstance(had, list) else [had])
-               if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
-        had.append(dict(ask, id=secrets.token_hex(6)))
-        store.set_meta(k, json.dumps(had[-20:]))
+        with OSU_ASK_LOCK:  # two asks at once, or the hashes' clean-up: one was lost (1.0.319)
+            try:
+                had = json.loads(store.get_meta(k) or '[]')
+            except ValueError:
+                had = []
+            had = [x for x in (had if isinstance(had, list) else [had])
+                   if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
+            had.append(dict(ask, id=secrets.token_hex(6)))
+            store.set_meta(k, json.dumps(had[-20:]))
     if do != 'list':
         words = {'add': 'made the local user %s' % name,
                  'password': 'set a new password for the local user %s' % name,
@@ -59112,22 +59137,23 @@ def osu_forget_hashes(store):
     me = node_name()
     for n in host_nodes(store):
         k = node_key('host:users:want', n)
-        try:
-            had = json.loads(store.get_meta(k) or '[]')
-        except ValueError:
-            continue
-        if not isinstance(had, list) or not any(isinstance(a, dict) and a.get('hash') for a in had):
-            continue
         done = set(osu_now(store, n).get('done') or [])
-        changed = False
-        for a in had:
-            if isinstance(a, dict) and a.get('hash') and (
-                    a.get('id') in done or time.time() - fnum(a.get('at')) > 900):
-                a.pop('hash', None)
-                a['hash_gone'] = True
-                changed = True
-        if changed:
-            store.set_meta(k, json.dumps(had))
+        with OSU_ASK_LOCK:
+            try:
+                had = json.loads(store.get_meta(k) or '[]')
+            except ValueError:
+                continue
+            if not isinstance(had, list) or not any(isinstance(a, dict) and a.get('hash') for a in had):
+                continue
+            changed = False
+            for a in had:
+                if isinstance(a, dict) and a.get('hash') and (
+                        a.get('id') in done or time.time() - fnum(a.get('at')) > 900):
+                    a.pop('hash', None)
+                    a['hash_gone'] = True
+                    changed = True
+            if changed:
+                store.set_meta(k, json.dumps(had))
 
 
 def osu_keep(row, got):
@@ -60694,6 +60720,7 @@ def snmp_mib_logs(daemon, store, db_ok):
 
 # -- the agent -------------------------------------------------------------------------------
 class SnmpAgent(object):
+    salt_lock = threading.Lock()    # answers and traps from two threads (1.0.319)
     def __init__(self, daemon):
         self.d = daemon
         self.sock = None
@@ -60992,8 +61019,9 @@ class SnmpAgent(object):
         priv = b''
         data = scoped
         if c and level & 2:
-            self.salt = (self.salt + 1) & 0xFFFFFFFFFFFFFFFF
-            priv = self.salt.to_bytes(8, 'big')
+            with self.salt_lock:                # one IV never twice under one key (1.0.319)
+                self.salt = (self.salt + 1) & 0xFFFFFFFFFFFFFFFF
+                priv = self.salt.to_bytes(8, 'big')
             iv = boots.to_bytes(4, 'big') + etime.to_bytes(4, 'big') + priv
             data = ber_str(snmp_cfb((self.keys or snmp_keys(c, self.engine))[1], iv, scoped, False))
         name = (c['user'] if c else (user or '')).encode('utf-8')
@@ -64902,7 +64930,9 @@ def _db_agent_alerts(store, lang='en'):
         return out
     now = time.time()
     cs = lang == 'cs'
-    for v in db_agent_servers(store) if db_agent_on() else []:
+    # Every node's (1.0.319): a node without an agent of its own leading the alerts said none
+    # of the other node's server.
+    for v in db_agent_servers(store):
         n = v['node']
         where = '%s:%s' % (v.get('host'), v.get('port'))
         if v.get('ok') is False and now - float(v.get('down_since') or now) >= DBAGENT_DOWN_S:

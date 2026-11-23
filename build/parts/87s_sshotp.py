@@ -96,7 +96,8 @@ def sshotp_remove(store, name, by):
     name = sshotp_name(name)
     if not sshotp_get(store, name):
         raise ValueError('%s has no SSH token' % name)
-    store.drop_meta(sshotp_key(name))
+    with SSHOTP_LOCK:       # a sign-in at that moment wrote it back (1.0.319)
+        store.drop_meta(sshotp_key(name))
     store.add_event('settings', '%s removed the SSH token of %s' % (by, name), 'warn', who=by)
 
 
@@ -122,14 +123,16 @@ def _sshotp_fails(name, now):
 
 
 def _sshotp_used(store, name, ok):
-    """The token's own row: when it was last used, or last failed."""
-    rec = sshotp_get(store, name)
-    if rec:
-        if ok:
-            rec.update(used_at=time.time(), used_on=node_name())
-        else:
-            rec['failed_at'] = time.time()
-        store.set_meta(sshotp_key(name), json.dumps(rec))
+    """The token's own row: when it was last used, or last failed - under the lock (1.0.319):
+    a token removed or made again at that moment came back as it was."""
+    with SSHOTP_LOCK:
+        rec = sshotp_get(store, name)
+        if rec:
+            if ok:
+                rec.update(used_at=time.time(), used_on=node_name())
+            else:
+                rec['failed_at'] = time.time()
+            store.set_meta(sshotp_key(name), json.dumps(rec))
 
 
 def sshotp_check(store, name, code):
@@ -629,13 +632,20 @@ class SshGate(object):
         if p.code != 1:
             return None
         secret = ssh_gate_secret(self.d.store).encode()
-        if not secret or p.message_authenticator_ok(secret) is False:
+        ma = p.message_authenticator_ok(secret) if secret else False
+        if not secret or ma is False:
             return None
         user = p.text(1)
         try:
-            code = p.password(secret) or ''
+            code = p.password(secret)
         except RadiusError:
             return None
+        if ma is None and (code is None or '\ufffd' in code or not code.isprintable()):
+            # Without a Message-Authenticator (an older pam_radius) only a password the secret
+            # undid into text (1.0.319): anybody on the host could send names without it - wrong
+            # codes counted against them until they were held, codes sent by SMS to them.
+            return None
+        code = code or ''
         store = self.d.store
         who = re.sub(r'[^\w.@-]', '?', user)[:64]
         state = (p.get(24) or b'').decode('ascii', 'replace')

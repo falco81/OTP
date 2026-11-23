@@ -28,6 +28,7 @@ KRB_META = 'kerberos:keytab'
 KRB_KEYTAB_MAX = 65536
 KRB_TOKEN_MAX = 65536
 KRB5_MECH = bytes.fromhex('2a864886f712010202')          # 1.2.840.113554.1.2.2
+KRB5_MECH_MS = bytes.fromhex('2a864882f712010202')       # 1.2.840.48018.1.2.2 - Windows' (1.0.319)
 KRB_LIB = {'lib': None, 'tried': False, 'err': '', 'lock': threading.Lock()}
 KRB_NODE = {'sha': None, 'said': None, 'at': 0.0, 'err': '', 'v': None}
 KRB_ENCTYPES = {1: 'des-cbc-crc', 3: 'des-cbc-md5', 16: 'des3-cbc-sha1', 17: 'aes128-cts-hmac-sha1-96',
@@ -148,7 +149,7 @@ def krb_accept(token):
         if major != GSS_S_COMPLETE:
             raise KrbError('the ticket was not taken: %s' % _gss_words(lib, major, minor.value))
         got = ctypes.string_at(mech.contents.elements, mech.contents.length) if mech else b''
-        if got != KRB5_MECH:
+        if got not in (KRB5_MECH, KRB5_MECH_MS):
             raise KrbError('the browser used a mechanism that is not Kerberos 5')
         name = _GssBuf()
         m2 = ctypes.c_uint32()

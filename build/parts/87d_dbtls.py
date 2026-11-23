@@ -515,13 +515,23 @@ def dbtls_apply(daemon, args):
         if by != DBTLS_FOLLOW_BY:
             # The wizard at work here (1.0.270): the follow waits two minutes.
             DBTLS_WORK['wizard_at'] = time.time()
+        was_want = None
         if not mode and kind in ('replicated', 'local'):
             # The wish of none written before the switch (1.0.270): after it, the follow saw the
             # node without TLS and the wish still with it - and encrypted it again at once.
+            # Not when high security refuses it, and put back when the switch did not go
+            # (1.0.319): the nodes stayed on TLS and the wish said none for good.
+            _dbtls_hisec(mode, store)
+            was_want = _dbtls_want(store, derive=False)
             _dbtls_want_set(store, mode, by)
         try:
             got = dbtls_switch(daemon, mode, ca, by)
         except Exception:
+            if isinstance(was_want, dict) and str(was_want.get('mode') or ''):
+                try:
+                    store.set_meta(DBTLS_WANT_KEY, json.dumps(was_want))
+                except Exception:                       # noqa: BLE001
+                    pass
             if ca.endswith('db-ca.next.pem'):
                 try:
                     os.unlink(ca)
@@ -626,7 +636,9 @@ def _dbtls_rescue(daemon):
     if now - DBTLS_WORK['rescue'] < 10:
         return
     DBTLS_WORK['rescue'] = now
-    if dbtls_kind() not in ('local', 'replicated') or not CONFIG.get('db_tls'):
+    if dbtls_kind() not in ('local', 'replicated') or not CONFIG.get('db_tls') or db_agent_here():
+        # Never for a server of an agent's (1.0.319): it is across a network - anybody between
+        # could have the TLS fail and the node then sent all of it in the clear.
         DBTLS_WORK['fails'] = 0
         return
     try:

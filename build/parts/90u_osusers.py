@@ -9,6 +9,7 @@
 # its hash (SHA-512 crypt, made by openssl from standard input) is what is asked, sealed with
 # the cluster's key, taken out of the asking row once the node said it is done.
 OSU_WORK = {'busy': False, 'since': 0.0, 'seen': 0.0}
+OSU_ASK_LOCK = threading.Lock()     # this node's asks, read and written back (1.0.319)
 OSU_KEEP = ('root', 'otp', 'otp-web', 'postgres', 'nginx', 'apache', 'nobody', 'keepalived',
             'chrony', 'sshd', 'polkitd', 'dbus', 'systemd-network', 'tss')
 OSU_DOS = ('list', 'add', 'password', 'lock', 'unlock', 'sudo', 'set', 'drop', 'aging')
@@ -340,14 +341,15 @@ def osu_ask(store, nodes, do, by, **f):
                 ask[k] = v
     for n in nodes:
         k = node_key('host:users:want', n)
-        try:
-            had = json.loads(store.get_meta(k) or '[]')
-        except ValueError:
-            had = []
-        had = [x for x in (had if isinstance(had, list) else [had])
-               if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
-        had.append(dict(ask, id=secrets.token_hex(6)))
-        store.set_meta(k, json.dumps(had[-20:]))
+        with OSU_ASK_LOCK:  # two asks at once, or the hashes' clean-up: one was lost (1.0.319)
+            try:
+                had = json.loads(store.get_meta(k) or '[]')
+            except ValueError:
+                had = []
+            had = [x for x in (had if isinstance(had, list) else [had])
+                   if isinstance(x, dict) and time.time() - fnum(x.get('at')) < 3600]
+            had.append(dict(ask, id=secrets.token_hex(6)))
+            store.set_meta(k, json.dumps(had[-20:]))
     if do != 'list':
         words = {'add': 'made the local user %s' % name,
                  'password': 'set a new password for the local user %s' % name,
@@ -371,22 +373,23 @@ def osu_forget_hashes(store):
     me = node_name()
     for n in host_nodes(store):
         k = node_key('host:users:want', n)
-        try:
-            had = json.loads(store.get_meta(k) or '[]')
-        except ValueError:
-            continue
-        if not isinstance(had, list) or not any(isinstance(a, dict) and a.get('hash') for a in had):
-            continue
         done = set(osu_now(store, n).get('done') or [])
-        changed = False
-        for a in had:
-            if isinstance(a, dict) and a.get('hash') and (
-                    a.get('id') in done or time.time() - fnum(a.get('at')) > 900):
-                a.pop('hash', None)
-                a['hash_gone'] = True
-                changed = True
-        if changed:
-            store.set_meta(k, json.dumps(had))
+        with OSU_ASK_LOCK:
+            try:
+                had = json.loads(store.get_meta(k) or '[]')
+            except ValueError:
+                continue
+            if not isinstance(had, list) or not any(isinstance(a, dict) and a.get('hash') for a in had):
+                continue
+            changed = False
+            for a in had:
+                if isinstance(a, dict) and a.get('hash') and (
+                        a.get('id') in done or time.time() - fnum(a.get('at')) > 900):
+                    a.pop('hash', None)
+                    a['hash_gone'] = True
+                    changed = True
+            if changed:
+                store.set_meta(k, json.dumps(had))
 
 
 def osu_keep(row, got):

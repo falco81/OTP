@@ -582,6 +582,7 @@ def snmp_mib_logs(daemon, store, db_ok):
 
 # -- the agent -------------------------------------------------------------------------------
 class SnmpAgent(object):
+    salt_lock = threading.Lock()    # answers and traps from two threads (1.0.319)
     def __init__(self, daemon):
         self.d = daemon
         self.sock = None
@@ -880,8 +881,9 @@ class SnmpAgent(object):
         priv = b''
         data = scoped
         if c and level & 2:
-            self.salt = (self.salt + 1) & 0xFFFFFFFFFFFFFFFF
-            priv = self.salt.to_bytes(8, 'big')
+            with self.salt_lock:                # one IV never twice under one key (1.0.319)
+                self.salt = (self.salt + 1) & 0xFFFFFFFFFFFFFFFF
+                priv = self.salt.to_bytes(8, 'big')
             iv = boots.to_bytes(4, 'big') + etime.to_bytes(4, 'big') + priv
             data = ber_str(snmp_cfb((self.keys or snmp_keys(c, self.engine))[1], iv, scoped, False))
         name = (c['user'] if c else (user or '')).encode('utf-8')

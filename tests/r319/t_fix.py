@@ -145,7 +145,7 @@ ok('dbtls: wish checked against high security first and put back',
 # ==== 8 SNMP salt: never twice from two threads
 a = m.SnmpAgent.__new__(m.SnmpAgent); a.salt = 0
 ok('snmp: a lock of the class', isinstance(m.SnmpAgent.salt_lock, type(threading.Lock())))
-c = {'auth': 'sha', 'priv': 'aes', 'user': 'u', 'auth_key': 'x' * 12, 'priv_key': 'y' * 12}
+c = {'auth': 'SHA-1', 'priv': 'AES-128', 'user': 'u', 'auth_key': 'x' * 12, 'priv_key': 'y' * 12}
 seen = []
 a.engine = b'\x80\x00\x1f\x88\x04test'; a.boots = 1; a.now_time = lambda: 5
 a.keys = (b'k' * 20, b'p' * 16)

@@ -1755,7 +1755,9 @@ def _db_agent_alerts(store, lang='en'):
         return out
     now = time.time()
     cs = lang == 'cs'
-    for v in db_agent_servers(store) if db_agent_on() else []:
+    # Every node's (1.0.319): a node without an agent of its own leading the alerts said none
+    # of the other node's server.
+    for v in db_agent_servers(store):
         n = v['node']
         where = '%s:%s' % (v.get('host'), v.get('port'))
         if v.get('ok') is False and now - float(v.get('down_since') or now) >= DBAGENT_DOWN_S:
