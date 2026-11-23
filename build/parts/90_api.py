@@ -983,7 +983,7 @@ def lockouts_shared(store):
                      'until': (times[-1] + pspan) if locked else None,
                      'forgets': times[-1] + pspan, 'first': times[0], 'last': times[-1],
                      'others': []})
-    after = int(CONFIG.get('lockout_after') or 0)
+    after = split_limit('lockout_after')            # as in force, halved while apart (1.0.318)
     for r in store.db.rows('SELECT name, locked_until, failures, fail_times, last_from FROM '
                            'tokens WHERE locked_until > ?', (t,)):
         try:

@@ -696,8 +696,17 @@ class RbFtp(object):
                 self.ftp.cwd(part)
 
     def put(self, local, name):
-        with open(local, 'rb') as f:
-            self.ftp.storbinary('STOR .%s.part' % name, f, blocksize=262144)
+        try:
+            with open(local, 'rb') as f:
+                self.ftp.storbinary('STOR .%s.part' % name, f, blocksize=262144)
+        except BaseException:
+            # The half file taken away (1.0.318): under a name no clean-up knows, each one left
+            # filled the destination until every backup failed.
+            try:
+                self.ftp.delete('.%s.part' % name)
+            except Exception:                           # noqa: BLE001
+                pass
+            raise
         try:
             self.ftp.delete(name)
         except ftplib.error_perm:
@@ -849,7 +858,10 @@ class RbSsh(object):
                                                         shlex_quote(self.dir)))
 
     def _run(self, args, what, stdin=None, timeout=3600):
+        # Not UTF-8 read as such (1.0.318): one file of another encoding in the folder had ls fail
+        # every backup there, after it was sent and before the clean-up.
         got = subprocess.run(rb_capped_argv(args), input=stdin, capture_output=True, text=True,
+                             encoding='utf-8', errors='replace',
                              timeout=timeout, env=self.env, start_new_session=True)
         if got.returncode != 0:
             said = (got.stderr or got.stdout or '').strip().splitlines()
@@ -876,15 +888,26 @@ class RbSsh(object):
 
     def put(self, local, name):
         name = rb_safe_name(name)
-        if self.t['kind'] == 'sftp':
-            self._sftp(['cd "%s"' % self.dir, 'put "%s" ".%s.part"' % (local, name),
-                        '-rm "%s"' % name, 'rename ".%s.part" "%s"' % (name, name)])
-        else:
-            self._run(['scp'] + self.opts + ['-P', str(int(self.t['port'])), '-q', local,
-                                             '%s:%s/.%s.part' % (self.rdest, self.dir, name)],
-                      'scp')
-            self._ssh('mv -f -- %s %s' % (shlex_quote('%s/.%s.part' % (self.dir, name)),
-                                          shlex_quote('%s/%s' % (self.dir, name))))
+        try:
+            if self.t['kind'] == 'sftp':
+                self._sftp(['cd "%s"' % self.dir, 'put "%s" ".%s.part"' % (local, name),
+                            '-rm "%s"' % name, 'rename ".%s.part" "%s"' % (name, name)])
+            else:
+                self._run(['scp'] + self.opts + ['-P', str(int(self.t['port'])), '-q', local,
+                                                 '%s:%s/.%s.part' % (self.rdest, self.dir, name)],
+                          'scp')
+                self._ssh('mv -f -- %s %s' % (shlex_quote('%s/.%s.part' % (self.dir, name)),
+                                              shlex_quote('%s/%s' % (self.dir, name))))
+        except BaseException:
+            # The half file taken away (1.0.318), as the folder's is.
+            try:
+                if self.t['kind'] == 'sftp':
+                    self._sftp(['cd "%s"' % self.dir, '-rm ".%s.part"' % name], timeout=120)
+                else:
+                    self._ssh('rm -f -- %s' % shlex_quote('%s/.%s.part' % (self.dir, name)))
+            except Exception:                           # noqa: BLE001
+                pass
+            raise
 
     def get(self, name, local):
         name = rb_safe_name(name)
@@ -957,7 +980,8 @@ class RbSmb(object):
 
     def _run(self, cmds, ignore=(), timeout=3600):
         got = subprocess.run(rb_capped_argv(self.args + ['-c', '; '.join(cmds)]), capture_output=True,
-                             text=True, timeout=timeout, cwd=self.d, start_new_session=True)
+                             text=True, encoding='utf-8', errors='replace',
+                             timeout=timeout, cwd=self.d, start_new_session=True)
         text = (got.stdout or '') + (got.stderr or '')
         if 'Could not determine network interfaces' in text and \
                 not any(a.startswith('--option=interfaces=') for a in self.args):
@@ -986,9 +1010,19 @@ class RbSmb(object):
 
     def put(self, local, name):
         name = rb_safe_name(name)
-        self._run([self._cd(), 'put "%s" ".%s.part"' % (local, name), 'del "%s"' % name,
-                   'rename ".%s.part" "%s"' % (name, name)], ignore=('NT_STATUS_NO_SUCH_FILE',
-                                                                   'NT_STATUS_OBJECT_NAME_NOT_FOUND'))
+        # The put by itself first (1.0.318): smbclient goes on after a command that failed, and a
+        # copy cut off by a full share was renamed to a backup's name - kept, offered to put back.
+        try:
+            self._run([self._cd(), 'put "%s" ".%s.part"' % (local, name)])
+        except BaseException:
+            try:
+                self._run([self._cd(), 'del ".%s.part"' % name], timeout=120,
+                          ignore=('NT_STATUS_NO_SUCH_FILE', 'NT_STATUS_OBJECT_NAME_NOT_FOUND'))
+            except Exception:                           # noqa: BLE001
+                pass
+            raise
+        self._run([self._cd(), 'del "%s"' % name, 'rename ".%s.part" "%s"' % (name, name)],
+                  ignore=('NT_STATUS_NO_SUCH_FILE', 'NT_STATUS_OBJECT_NAME_NOT_FOUND'))
 
     def get(self, name, local):
         self._run([self._cd(), 'get "%s" "%s"' % (rb_safe_name(name), local)])

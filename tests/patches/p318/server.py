@@ -177,3 +177,14 @@ edit('88w_web.py', [
             raise ValueError('%r is not the name of a network interface' % val)
 """),
 ])
+
+# SMB: names past UTF-8 in the share, as over SSH
+edit('86b_rbackup.py', [
+("""        got = subprocess.run(rb_capped_argv(self.args + ['-c', '; '.join(cmds)]), capture_output=True,
+                             text=True, timeout=timeout, cwd=self.d, start_new_session=True)
+""",
+ """        got = subprocess.run(rb_capped_argv(self.args + ['-c', '; '.join(cmds)]), capture_output=True,
+                             text=True, encoding='utf-8', errors='replace',
+                             timeout=timeout, cwd=self.d, start_new_session=True)
+"""),
+])

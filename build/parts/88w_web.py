@@ -1326,7 +1326,10 @@ def web_tick(store):
     st = web_status()
     if not st and not desired['vip']['on'] and not desired['tls']['node'] and \
             'fw' not in desired and 'access' not in desired and 'acme' not in desired and \
-            'lbport' not in desired and 'certlogin' not in desired:
+            'lbport' not in desired and 'certlogin' not in desired and \
+            'realip' not in desired and 'sso_peer' not in desired:
+        # The balancer's address and its sign-in too (1.0.318): switched on alone, on a node never
+        # asked anything before, they never reached nginx.
         return
     h = web_hash(desired)
     drifted = False
@@ -1730,7 +1733,8 @@ def vip_checked(b, store):
     ifaces = {}
     for k, val in odict(b.get('ifaces')).items():
         val = str(val or '').strip()
-        if val and not re.match(r'^[A-Za-z0-9_.:-]{1,15}\Z', val):
+        # As root takes it (1.0.318): one it refused (-x, a dot alone) held back the node's whole part.
+        if val and not re.match(r'^(?!\.+\Z)[A-Za-z0-9_][A-Za-z0-9_.:-]{0,14}\Z', val):
             raise ValueError('%r is not the name of a network interface' % val)
         if val:
             ifaces[str(k)] = val

@@ -187,8 +187,11 @@ def readdress_dropold_tick(store):
             said = _readdress_hba(ask['old'], ask['new'], False, drop_old=True)
             log('the other node kept its new address %s: %s' % (ask['new'], said), 'info')
         except Exception as e:                          # noqa: BLE001
-            log('the old address of the other node could not be taken out of pg_hba.conf: %s'
-                % e, 'warn')
+            # Asked again at the next look (1.0.318): written down as done, a root helper away at
+            # that moment left the old address let in to the database for good.
+            log_sparing('readdress-dropold', 'the old address of the other node could not be taken '
+                        'out of pg_hba.conf (asked again): %s' % e, 'warn')
+            continue
         store.set_meta(done_key, str(ask.get('id')))
 
 
@@ -281,8 +284,10 @@ def fw_trial_tick(store):
     trial = _meta_json(store, 'fw:trial') or {}
     if not trial or trial.get('done') or time.time() <= fnum(trial.get('until')):
         return
-    # One node puts it back (both would write the same rows at once).
-    if claim_once(store, 'fw_trial_back', trial.get('id')):
+    # One node puts it back (both would write the same rows at once) - claimed by its id and its
+    # end (1.0.318): by the id alone, a trial put back once and kept open again (a change on the
+    # other node at that moment, a put-back that failed) was never claimed again, never put back.
+    if claim_once(store, 'fw_trial_back', '%s:%s' % (trial.get('id'), fnum(trial.get('until')))):
         fw_put_back(store, trial, 'not kept within %d min' % int(trial.get('min') or 0))
 
 
