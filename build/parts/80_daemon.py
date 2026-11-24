@@ -1190,8 +1190,12 @@ class Daemon(object):
         done = {'filled': 0, 'not_found': 0, 'no_directory': 0, 'trouble': 0}
         dead = set()
         if names is None:
-            rows = self.store.db.rows("SELECT name FROM tokens WHERE COALESCE(display, '') = '' "
-                                      "ORDER BY id LIMIT %d" % int(limit))
+            # On from where the last look stopped (1.0.324): the first hundred that no directory
+            # knows were looked at every hour, and the tokens after them never.
+            after = int(getattr(self, '_fill_after', 0) or 0)
+            rows = self.store.db.rows("SELECT id, name FROM tokens WHERE COALESCE(display, '') = '' "
+                                      "AND id > ? ORDER BY id LIMIT %d" % int(limit), (after,))
+            self._fill_after = rows[-1]['id'] if len(rows) >= int(limit) else 0
             names = [r['name'] for r in rows]
         for name in names:
             realm = self.store.realm_for(name)

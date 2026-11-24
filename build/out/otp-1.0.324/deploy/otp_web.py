@@ -560,7 +560,11 @@ def realip_checked(rp):
     if not isinstance(rp, dict):
         raise Refused('realip: not an object')
     nets = []
-    for w in (rp.get('from') or [])[:64]:
+    # All of them, or refused (1.0.324): the 65th and on were left out without a word - each
+    # balancer past them was taken for the client, and its clients passed the lists as it.
+    if len(rp.get('from') or []) > 256:
+        raise Refused('realip: %d networks of balancers - 256 at most' % len(rp.get('from') or []))
+    for w in (rp.get('from') or []):
         try:
             nets.append(str(plain(w, 'network')))    # no scope id: a line of its own (1.0.248)
         except ValueError:

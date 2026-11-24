@@ -1510,15 +1510,18 @@ class Storage(object):
         """The realm a name belongs to: by what follows its @, else the realm
         for names with none, else the one that takes everything (`*`)."""
         suffix = user.rsplit('@', 1)[1].lower() if '@' in user else ''
-        realms = [r for r in self.realms() if r.get('enabled')]
-        for r in realms:
+        every = self.realms()
+        realms = [r for r in every if r.get('enabled')]
+        # A realm of its own switched off is none (1.0.324), as a client's narrowest range is:
+        # its people were taken by the realm of everything else - a code alone, no password.
+        for r in every:
             if str(r.get('suffix') or '').lower() == suffix and r.get('suffix') != '*':
-                return r
+                return r if r.get('enabled') else None
         if suffix:
             # Taken as one of a realm's other suffixes (1.0.117).
-            for r in realms:
+            for r in every:
                 if suffix in (r.get('aliases') or []):
-                    return r
+                    return r if r.get('enabled') else None
         for r in realms:
             if r.get('suffix') == '*':
                 return r

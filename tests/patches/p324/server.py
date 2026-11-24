@@ -69,3 +69,10 @@ edit('80_daemon.py', [
             names = [r['name'] for r in rows]
 """),
 ])
+
+
+# 256 networks need more than 500 letters.
+edit('00_head.py', [
+("        most = 64 if key in ('totp_issuer', 'totp_label') else (20000 if tall else 500)\n",
+ "        most = 64 if key in ('totp_issuer', 'totp_label') else (20000 if tall else 500)\n        # 256 networks of balancers (1.0.324) take more than 500 letters: some 40 went in.\n        if key == 'web_proxy_from':\n            most = 256 * 50\n"),
+])

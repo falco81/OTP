@@ -67,4 +67,9 @@ m.Daemon.fill_names(d, limit=3); m.Daemon.fill_names(d, limit=3); m.Daemon.fill_
 ok('fill_names: on from where it stopped', seen[:7] == ['svc%d' % i for i in range(7)], seen)
 st.realm_for = real
 
+try:
+    m.check_setting('web_proxy_from', ' '.join('2001:db8:aaaa:bbbb:cccc:dddd:eeee:%x/128' % i for i in range(256))); _v6 = True
+except Exception as e:                                  # noqa: BLE001
+    _v6 = e
+ok('web_proxy_from: 256 IPv6 networks taken', _v6 is True, _v6)
 print('ALL %d / %d' % (sum(R), len(R)))

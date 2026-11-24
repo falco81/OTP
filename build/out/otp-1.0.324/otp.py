@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.323'
+__version__ = '1.0.324'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2326,6 +2326,9 @@ def check_setting(key, value):
         # was replaced, and a name held a NUL and new lines.
         tall = key in SETTING_TALL
         most = 64 if key in ('totp_issuer', 'totp_label') else (20000 if tall else 500)
+        # 256 networks of balancers (1.0.324) take more than 500 letters: some 40 went in.
+        if key == 'web_proxy_from':
+            most = 256 * 50
         if len(got) > most:
             raise BadSetting('%s: %d characters at most' % (key, most))
         if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' if tall else r'[\x00-\x1f\x7f]', got):
@@ -2364,6 +2367,9 @@ def check_setting(key, value):
         except ValueError:
             raise BadSetting('radius_bind: %r is not an address' % got)
     if key == 'web_proxy_from':
+        if len([w for w in re.split(r'[\s,;]+', str(got)) if w]) > 256:
+            # As root's helper takes them (1.0.324): it cut them at 64 without a word.
+            raise BadSetting('web_proxy_from: 256 networks at most')
         for one in [w for w in re.split(r'[\s,;]+', str(got)) if w]:
             try:
                 plain_net(one)                  # no scope id (1.0.287): root's helper refuses one
@@ -8844,15 +8850,18 @@ class Storage(object):
         """The realm a name belongs to: by what follows its @, else the realm
         for names with none, else the one that takes everything (`*`)."""
         suffix = user.rsplit('@', 1)[1].lower() if '@' in user else ''
-        realms = [r for r in self.realms() if r.get('enabled')]
-        for r in realms:
+        every = self.realms()
+        realms = [r for r in every if r.get('enabled')]
+        # A realm of its own switched off is none (1.0.324), as a client's narrowest range is:
+        # its people were taken by the realm of everything else - a code alone, no password.
+        for r in every:
             if str(r.get('suffix') or '').lower() == suffix and r.get('suffix') != '*':
-                return r
+                return r if r.get('enabled') else None
         if suffix:
             # Taken as one of a realm's other suffixes (1.0.117).
-            for r in realms:
+            for r in every:
                 if suffix in (r.get('aliases') or []):
-                    return r
+                    return r if r.get('enabled') else None
         for r in realms:
             if r.get('suffix') == '*':
                 return r
@@ -18221,8 +18230,12 @@ class Daemon(object):
         done = {'filled': 0, 'not_found': 0, 'no_directory': 0, 'trouble': 0}
         dead = set()
         if names is None:
-            rows = self.store.db.rows("SELECT name FROM tokens WHERE COALESCE(display, '') = '' "
-                                      "ORDER BY id LIMIT %d" % int(limit))
+            # On from where the last look stopped (1.0.324): the first hundred that no directory
+            # knows were looked at every hour, and the tokens after them never.
+            after = int(getattr(self, '_fill_after', 0) or 0)
+            rows = self.store.db.rows("SELECT id, name FROM tokens WHERE COALESCE(display, '') = '' "
+                                      "AND id > ? ORDER BY id LIMIT %d" % int(limit), (after,))
+            self._fill_after = rows[-1]['id'] if len(rows) >= int(limit) else 0
             names = [r['name'] for r in rows]
         for name in names:
             realm = self.store.realm_for(name)
