@@ -195,6 +195,13 @@ def op_pg_prepare(args, conf):
                     'rolcreaterole OR rolcreatedb OR rolbypassrls)' % W.pg_lit(user)) == '1':
         raise Refused('the account %s is there with rights over the whole server - not taken '
                       'over; choose another name' % user)
+    # Nor one given the rights of another role (1.0.326): pg_execute_server_program, the
+    # reading of files or of every database - a node would run programs as postgres.
+    if have and sql(conf, "SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member "
+                    "JOIN pg_roles g ON g.oid = m.roleid WHERE r.rolname = %s AND "
+                    "g.rolname <> 'pg_create_subscription' LIMIT 1" % W.pg_lit(user)) == '1':
+        raise Refused('the account %s is there as a member of other roles - not taken over; '
+                      'choose another name' % user)
     sql(conf, quiet + '%s ROLE "%s" WITH LOGIN PASSWORD %s' % ('ALTER' if have else 'CREATE', user,
                                                                 W.pg_lit(pw)))
     said.append('the account %s %s' % (user, 'has the password given' if have else 'was made'))

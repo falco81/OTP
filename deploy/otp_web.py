@@ -2681,6 +2681,10 @@ def net_checked(r):
     if host and (not NAME_RE.match(host) or ('.' not in host and not r.get('rollback') and
                                              host != net_static_hostname())):
         raise Refused('the host name is the whole name: otp1.example.cz')
+    if host and len(host) > 64 and host != net_static_hostname():
+        # As hostnamectl takes it (1.0.326): refused by it after nmcli had changed the profile -
+        # the new address came at the next restart, whatever it was for.
+        raise Refused('the host name is the whole name, 64 characters at most')
     out['hostname'] = host
     snap = str(r.get('snapshot') or '')
     out['snapshot'] = snap if re.match(r'^[0-9a-f]{8,40}\Z', snap) else ''
@@ -5683,9 +5687,12 @@ def reboot_now(pm, env, say=None):
     if pm == 'dnf':
         nr = subprocess.run(['dnf', 'needs-restarting', '-r'], capture_output=True,
                             text=True, env=env, timeout=300)
-        if nr.returncode == 1 and say:
+        # Said by dnf (1.0.326): without dnf-plugins-core the command is not there, exits 1 - and
+        # every node was restarted after every update.
+        needed = nr.returncode == 1 and 'reboot' in (nr.stdout or '').lower()
+        if needed and say:
             say(nr.stdout.strip().splitlines()[0] if nr.stdout.strip() else 'a restart is needed')
-        return nr.returncode == 1
+        return needed
     return os.path.exists('/var/run/reboot-required')
 
 
@@ -6612,7 +6619,13 @@ def se_local_load(rules, said):
     is written only once the policy took it (1.0.302): a semodule that failed (its store locked by
     dnf) left a rule in the policy that the card no longer listed, nor could take away."""
     if not rules:
-        if se_local_in():
+        loaded = se_local_in()
+        if loaded is None:
+            # Not known (1.0.326): its store held by dnf, semodule -l failed - taken as not loaded,
+            # the list was emptied and the rule stayed in the policy, never to be taken out.
+            raise Refused('semodule -l did not answer (its store busy - an update?): nothing was '
+                          'taken out - try again in a moment')
+        if loaded:
             got = _se_run(['semodule', '-r', SE_LOCAL], 300)
             if got is None or got.returncode != 0:
                 raise Refused('semodule -r %s: %s' % (SE_LOCAL, ((got.stderr or '') if got else '').strip()[-200:]))
