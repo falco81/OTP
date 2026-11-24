@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.322'
+__version__ = '1.0.323'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -7549,6 +7549,15 @@ LIST_TOKEN = re.compile(r'\s*(\(|\)|[-!]?(?:[A-Za-z_][\w.]*(?:!=|>=|<=|[:~=<>]))
 LIST_TERM = re.compile(r'^([-!]?)([A-Za-z_][\w]*)(!=|>=|<=|[:~=<>])(.*)\Z', re.S)
 
 
+def _mem_value(v):
+    if v is None or isinstance(v, (str, int, float)):
+        return v
+    try:
+        return json.dumps(v, ensure_ascii=False, default=str)
+    except Exception:                                   # noqa: BLE001
+        return str(v)
+
+
 def memory_search(listname, create, cols, rows, text):
     """Rows that live nowhere a query can reach - the outgoing mail, a
     backup being read - searched with the very words every list takes
@@ -7561,7 +7570,9 @@ def memory_search(listname, create, cols, rows, text):
         conn.execute(create)
         conn.executemany('INSERT INTO t (%s) VALUES (%s)' % (', '.join(['i'] + list(cols)),
                                                           ', '.join('?' * (len(cols) + 1))),
-                         [[i] + [r.get(c) for c in cols] for i, r in enumerate(rows)])
+                         # A list or an object in a file (1.0.323) as its text: sqlite took no
+                         # such value, and the search ended in a 500.
+                         [[i] + [_mem_value(r.get(c)) for c in cols] for i, r in enumerate(rows)])
         where, args = [], []
         if lq.sql:
             where.append(lq.sql)
@@ -48419,7 +48430,12 @@ def lockouts_tick(d):
     key = 'lockouts:ask:' + node_name()
     raw = d.store.get_meta(key)
     if raw:
-        d.store.drop_meta(key)
+        # Only the asks read (1.0.323): one added by the other node between the read and the
+        # delete was deleted unread - said cleared "within five seconds", never cleared.
+        if dbguard_meta_signed(key):
+            d.store.drop_meta(key)
+        else:
+            d.store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (key, raw))
         try:
             asks = json.loads(raw)
         except ValueError:
@@ -56780,8 +56796,10 @@ def _mfa_send(h, s, kind, dest, field):
             h.store.session_merge(s['id'], was, expect={'mfa_sent_at': t, 'mfa_sent': n + 1})
         except Exception:                               # noqa: BLE001
             pass
+        # The wait of the count that refused (1.0.323): the address's, said as the account's -
+        # "in 1 min", refused for 15.
         raise ApiError(429, 'too many codes sent lately - try again in %d min'
-                       % code_send_wait_min(h.store, 'adm:' + str(s['name']).lower()), extra={'send': st})
+                       % code_send_wait_min(h.store, dkey if a_ok else akey), extra={'send': st})
     code, salt = code_new(), secrets.token_hex(8)
     saved = {'hash': code_hash(salt, code), 'salt': salt,
              't': t, 'exp': t + int(CONFIG.get('code_ttl_s') or 300)}
