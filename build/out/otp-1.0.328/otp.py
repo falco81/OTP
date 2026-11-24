@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.327'
+__version__ = '1.0.328'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2113,6 +2113,7 @@ def _coerce(current, value):
 
 
 # Settings of several lines (1.0.103): the rest are one line each.
+FULLADMIN_LOCK = threading.Lock()        # the last full administrator (1.0.328)
 SETTING_TALL = ('portal_help', 'portal_groups', 'sms_body', 'sms_headers', 'isemon_targets', 'isemon_ca', 'siem_ca', 'acme_ca_pem',
                 'admin_group_full', 'admin_group_token', 'admin_group_readonly', 'mail_ca')
 
@@ -5225,6 +5226,49 @@ def dump_tables(db, out, tables=None, child=False):
     import gzip
     # A file already open may be given (1.0.101): root writing into a
     # folder the service's account can write opens it itself, never by name.
+    # One moment (1.0.328): each table, and each 2000 rows of one, was read by a statement of
+    # its own, minutes apart on a big database while RADIUS and the pages wrote - a token
+    # renamed meanwhile was missing from the copy, or its rows in meta did not match it. In
+    # the process of its own that makes the copy (child): one transaction that reads alone -
+    # its own connection, so it holds nothing against RADIUS.
+    snap = child and _dump_snapshot_begin(db)
+    try:
+        _dump_tables_into(db, out, tables, gzip)
+    except BaseException:
+        if snap:
+            _dump_snapshot_end(db, ok=False)
+        raise
+    if snap:
+        _dump_snapshot_end(db, ok=True)
+    return out
+
+
+def _dump_snapshot_begin(db):
+    """The copy's transaction begun: True, or False where it could not be (as before)."""
+    try:
+        if db.engine == 'postgres':
+            db.run('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+        elif db.engine == 'mariadb':
+            db.run('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+            db.run('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
+        else:
+            db.run('BEGIN')         # WAL: the writers go on, the copy reads one moment
+        db.in_tx = True             # a connection lost meanwhile: an error, not a new one
+        return True
+    except Exception as e:                              # noqa: BLE001
+        log('the copy is read without one transaction: %s' % e, 'warn')
+        return False
+
+
+def _dump_snapshot_end(db, ok):
+    db.in_tx = False
+    try:
+        db.run('COMMIT' if ok else 'ROLLBACK')
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def _dump_tables_into(db, out, tables, gzip):
     with gzip.open(out if hasattr(out, 'write') else str(out), 'wt', encoding='utf-8') as f:
         f.write(json.dumps({'otp': __version__, 'schema': SCHEMA_VERSION,
                             'made': time.time(), 'engine': db.engine,
@@ -5249,7 +5293,6 @@ def dump_tables(db, out, tables=None, child=False):
                     f.write(json.dumps(r, default=str) + '\n')
                 if not rows or table in ('meta', 'settings'):
                     break
-    return out
 
 
 def _dump_tables_child(out):
@@ -8452,6 +8495,18 @@ class Storage(object):
         kept.update(self.clean_prefs(prefs))
         self.db.update('accounts', one['id'], {'prefs': json.dumps(kept)})
         return kept
+
+    def fulladmin_change(self, apply, undo, dirs=None):
+        """A full administrator taken away - `apply` done, and undone by `undo` when then nobody
+        is left who can sign in (1.0.328): two full administrators each taking the other away at
+        once (two tabs, two nodes of one database) each counted the other as left - both went,
+        and only root's command line got anybody in again. One at a time on this node; counted
+        again after the change, so another node's change at the same moment is seen too."""
+        with FULLADMIN_LOCK:
+            apply()
+            if not self.fulladmins_left(dirs=dirs):
+                undo()
+                raise ValueError('that is the last full administrator who can sign in')
 
     def fulladmins_left(self, but='', dirs=None):
         """Full administrators other than `but` who can still sign in. One from the directory
@@ -31961,8 +32016,9 @@ def web_desired(store):
         out['access'] = access
     # ACME (1.0.169): port 80 answers the CA for the names ordered - the web
     # address's on every node, wherever it is now.
-    if CONFIG.get('acme'):
-        out['acme'] = acme_http_names(store)
+    # Off (1.0.328): the names it had put on port 80 taken back - none, said as none. Root's
+    # helper leaves a port 80 it never put names on as it is.
+    out['acme'] = acme_http_names(store) if CONFIG.get('acme') else []
     return out
 
 
@@ -51756,6 +51812,18 @@ def _users_do(h):
         if acc['role'] == 'fulladmin' and not h.store.fulladmins_left(
                 but=name, dirs=getattr(h.d, 'dirs', None)):
             raise ApiError(400, 'that is the last full administrator who can sign in')
+        # Counted again after the change (1.0.328): another one taking the last other away
+        # at the same moment. Taken away as switched off first, so it can be put back.
+        role_was, off_was = acc['role'], int(acc.get('disabled') or 0)
+        try:
+            h.store.fulladmin_change(
+                (lambda: h.store.set_account(name, role=b.get('role'))) if act == 'role' else
+                (lambda: h.store.set_account(name, disabled=1)),
+                (lambda: h.store.set_account(name, role=role_was)) if act == 'role' else
+                (lambda: h.store.set_account(name, disabled=off_was)),
+                dirs=getattr(h.d, 'dirs', None))
+        except ValueError as e:
+            raise ApiError(400, str(e))
     if act == 'delete':
         h.store.drop_account(name)
         h.store.add_event('accounts', '%s removed the account %s' % (who, name), 'warn', who=who)
@@ -63623,7 +63691,10 @@ def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True, retry=True):
         # Which of the agent's certificates this node pins: once every node took the next one
         # in, the agent puts it in use.
         args['pins'] = list(a.get('pins') or [])
-    body = json.dumps({'op': op, 'args': args}).encode()
+    # How long this node waits (1.0.328): an agent busy with another node's long operation
+    # did this one after the node had given up and said it failed. A newer agent does not
+    # begin it once that is over; an older one reads no more than op and args.
+    body = json.dumps({'op': op, 'args': args, 'wait_s': max(5, int(timeout) - 5)}).encode()
     node = str(a.get('node') or node_name())
     last = None
     for attempt in (0, 1):
@@ -73363,6 +73434,15 @@ def cli_main(argv=None):
             if (flag in ('del_user', 'disable_user') or (flag == 'set_role' and args.role != 'fulladmin')) \
                     and acc.get('role') == 'fulladmin' and not store.fulladmins_left(but=name):
                 raise ValueError('that is the last full administrator who can sign in')
+            if (flag in ('del_user', 'disable_user') or (flag == 'set_role' and args.role != 'fulladmin')) \
+                    and acc.get('role') == 'fulladmin' and not (flag == 'set_role' and acc.get('source') == 'directory'):
+                # Counted again after the change, as the pages do (1.0.328).
+                role_was, off_was = acc['role'], int(acc.get('disabled') or 0)
+                store.fulladmin_change(
+                    (lambda: store.set_account(name, role=args.role)) if flag == 'set_role' else
+                    (lambda: store.set_account(name, disabled=1)),
+                    (lambda: store.set_account(name, role=role_was)) if flag == 'set_role' else
+                    (lambda: store.set_account(name, disabled=off_was)))
             if flag == 'set_role':
                 if acc.get('source') == 'directory':
                     raise ValueError('%s is an account of the directory - its groups there give its role '

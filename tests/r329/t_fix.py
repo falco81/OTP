@@ -188,4 +188,67 @@ ok('pg_prepare checks before ALTER ROLE', pgsrc.index('pg_owns_only(conf, user, 
 cs = json.load(open(V + '/web/lang/cs.json'))
 ok('its words in Czech', any(v['source'].startswith('the {0} {1} on this server is') and v['text']
                              for v in cs['patterns'].values()))
+
+# 1.0.329: otp --del-user asks before switching a full administrator off.
+import subprocess as _sp, json as _js, secrets as _se
+def _otp(*a, inp=''):
+    env = dict(os.environ); env.pop('OTP_STATE', None); env['OTP_PASSWORD'] = 'R329-' + _se.token_hex(12)
+    return _sp.run(['otp'] + list(a), input=inp, capture_output=True, text=True, env=env, timeout=120)
+def _users():
+    r = _otp('--json', '--users')
+    try:
+        return {u['name']: u for u in _js.loads(r.stdout)['users']}
+    except Exception:
+        return {}
+for _n in ('r329fa1', 'r329fa2'):
+    _otp('--del-user', _n, '--yes')
+    _otp('--add-user', _n, '--role', 'fulladmin')
+r = _otp('--del-user', 'r329fa1')            # no --yes, no terminal: refused
+u = _users()
+ok('del-user without --yes refused', r.returncode != 0 and 'r329fa1' in u, r.stderr[-200:])
+ok('del-user refused leaves the full administrator on', not (u.get('r329fa1') or {}).get('disabled'), str(u.get('r329fa1')))
+r = _otp('--del-user', 'r329fa1', '--yes')
+ok('del-user --yes removes it', 'r329fa1' not in _users(), r.stderr[-200:])
+_otp('--del-user', 'r329fa2', '--yes')
+SRC_CLI = open(V + '/otp.py').read()
+ok('cli source asks first', SRC_CLI.index("cli_sure(args, 'the account %s is removed'") < SRC_CLI.index('store.fulladmin_change('))
+ok('cs: plural on the mail/SMS status line', any(v['source'] == 'To {0} · {1} · {2} recovery code(s) left' and '{2:zbývá|zbývají|zbývá}' in v['text'] for v in cs['patterns'].values()))
+ok('cs: the enrolment 409 in Czech', any(v.get('source') == 'that was done already - load the page again' and v.get('text') for v in (cs['strings'].values() if isinstance(cs['strings'], dict) else cs['strings'])))
+
+# 1.0.329 deploy round fixes
+_unit = open(V + '/deploy/otp-db-agent.service').read()
+ok('agent unit may write the MariaDB TLS folder', 'ReadWritePaths=-/etc/otp-db-agent-mariadb' in _unit)
+_dbs = open(V + '/deploy/db-server.sh').read()
+ok('db-server.sh makes the MariaDB TLS folder', 'install -d -m 0750 /etc/otp-db-agent-mariadb' in _dbs)
+ok('db-server.sh still parses', subprocess.run(['bash', '-n', V + '/deploy/db-server.sh']).returncode == 0)
+_pgo = open(V + '/deploy/otp_pg_ops.py').read()
+ok('my_tls folder error said', 'cannot be made or written by the agent' in _pgo)
+_ow = open(V + '/deploy/otp_web.py').read()
+ok('nginx_part snapshot holds the sysctl file', 'CERT_CA_PATH, SYSCTL_FILE]' in _ow)
+# write_here takes its temporary file away on a failed write
+import types as _ty
+_wsrc = _ow[_ow.index('def write_here(name, text):'):_ow.index('def write_here_bytes')]
+_d = tempfile.mkdtemp(dir=TOP)
+_g = {'os': os, 'web_fd': lambda: os.open(_d, os.O_RDONLY)}
+exec(_wsrc, _g)
+class _Bad(str):
+    pass
+try:
+    _g['write_here']('x.json', 123)            # not text: the write fails
+except Exception:
+    pass
+_left = os.listdir(_d)
+_g['write_here']('x.json', '{}')
+ok('write_here leaves no temporary file after a failure, and writes again', _left == [] and os.listdir(_d) == ['x.json'], (_left, os.listdir(_d)))
+# install.sh keeps rotate/maxsize
+_ins = open(V + '/install.sh').read()
+ok('install.sh parses', subprocess.run(['bash', '-n', V + '/install.sh']).returncode == 0)
+_blk = _ins[_ins.index('    LR_ROT=""; LR_MAX=""'):]
+_blk = _blk[:_blk.index('maxsize $LR_MAX/" "$LOGROTATE_FILE"; fi') + len('maxsize $LR_MAX/" "$LOGROTATE_FILE"; fi')]
+_lr = TOP + '/lr'
+open(_lr, 'w').write(open(V + '/deploy/otp.logrotate').read().replace('rotate 30', 'rotate 7').replace('maxsize 200M', 'maxsize 50M'))
+_sh = 'LOGROTATE_FILE=%s; SOURCE_DIR=%s; run(){ "$@"; }\n' % (_lr, V) + _blk.replace('install -D -m 0644', 'cp')
+subprocess.run(['bash', '-c', _sh], check=True)
+_t = open(_lr).read()
+ok('an upgrade keeps rotate 7 / maxsize 50M', '    rotate 7\n' in _t and '    maxsize 50M\n' in _t and 'postrotate' in _t, _t[:300])
 print('ALL %d / %d' % (sum(R), len(R)))

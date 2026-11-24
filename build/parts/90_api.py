@@ -3989,6 +3989,18 @@ def _users_do(h):
         if acc['role'] == 'fulladmin' and not h.store.fulladmins_left(
                 but=name, dirs=getattr(h.d, 'dirs', None)):
             raise ApiError(400, 'that is the last full administrator who can sign in')
+        # Counted again after the change (1.0.328): another one taking the last other away
+        # at the same moment. Taken away as switched off first, so it can be put back.
+        role_was, off_was = acc['role'], int(acc.get('disabled') or 0)
+        try:
+            h.store.fulladmin_change(
+                (lambda: h.store.set_account(name, role=b.get('role'))) if act == 'role' else
+                (lambda: h.store.set_account(name, disabled=1)),
+                (lambda: h.store.set_account(name, role=role_was)) if act == 'role' else
+                (lambda: h.store.set_account(name, disabled=off_was)),
+                dirs=getattr(h.d, 'dirs', None))
+        except ValueError as e:
+            raise ApiError(400, str(e))
     if act == 'delete':
         h.store.drop_account(name)
         h.store.add_event('accounts', '%s removed the account %s' % (who, name), 'warn', who=who)

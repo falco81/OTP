@@ -1110,6 +1110,18 @@ class Storage(object):
         self.db.update('accounts', one['id'], {'prefs': json.dumps(kept)})
         return kept
 
+    def fulladmin_change(self, apply, undo, dirs=None):
+        """A full administrator taken away - `apply` done, and undone by `undo` when then nobody
+        is left who can sign in (1.0.328): two full administrators each taking the other away at
+        once (two tabs, two nodes of one database) each counted the other as left - both went,
+        and only root's command line got anybody in again. One at a time on this node; counted
+        again after the change, so another node's change at the same moment is seen too."""
+        with FULLADMIN_LOCK:
+            apply()
+            if not self.fulladmins_left(dirs=dirs):
+                undo()
+                raise ValueError('that is the last full administrator who can sign in')
+
     def fulladmins_left(self, but='', dirs=None):
         """Full administrators other than `but` who can still sign in. One from the directory
         only while `admin_directory` names a directory there is (1.0.262) - as the sign-in

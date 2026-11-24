@@ -285,7 +285,10 @@ def db_agent_call(op, args=None, timeout=90, conf=None, _ack=True, retry=True):
         # Which of the agent's certificates this node pins: once every node took the next one
         # in, the agent puts it in use.
         args['pins'] = list(a.get('pins') or [])
-    body = json.dumps({'op': op, 'args': args}).encode()
+    # How long this node waits (1.0.328): an agent busy with another node's long operation
+    # did this one after the node had given up and said it failed. A newer agent does not
+    # begin it once that is over; an older one reads no more than op and args.
+    body = json.dumps({'op': op, 'args': args, 'wait_s': max(5, int(timeout) - 5)}).encode()
     node = str(a.get('node') or node_name())
     last = None
     for attempt in (0, 1):

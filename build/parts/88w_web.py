@@ -1295,8 +1295,9 @@ def web_desired(store):
         out['access'] = access
     # ACME (1.0.169): port 80 answers the CA for the names ordered - the web
     # address's on every node, wherever it is now.
-    if CONFIG.get('acme'):
-        out['acme'] = acme_http_names(store)
+    # Off (1.0.328): the names it had put on port 80 taken back - none, said as none. Root's
+    # helper leaves a port 80 it never put names on as it is.
+    out['acme'] = acme_http_names(store) if CONFIG.get('acme') else []
     return out
 
 

@@ -224,3 +224,100 @@ def my_owns_only(conf, user, db):
 def my_prog():
 """),
 ])
+
+
+# ---- 1.0.329 round fixes (deploy)
+edit(OUT / 'deploy/otp-db-agent.service', [
+("""ReadWritePaths=-/etc/my.cnf.d -/etc/mysql -/run/postgresql -/var/run/postgresql
+""",
+ """ReadWritePaths=-/etc/my.cnf.d -/etc/mysql -/run/postgresql -/var/run/postgresql
+# MariaDB's certificate files (1.0.329): a folder of their own, which MariaDB may read.
+ReadWritePaths=-/etc/otp-db-agent-mariadb
+"""),
+])
+
+edit(OUT / 'deploy/db-server.sh', [
+("""    run install -d -m 0700 "$AGENT_ETC" "$AGENT_STATE"
+    run install -d -m 0750 "$AGENT_LOG"
+""",
+ """    run install -d -m 0700 "$AGENT_ETC" "$AGENT_STATE"
+    run install -d -m 0750 "$AGENT_LOG"
+    # MariaDB's certificate files (1.0.329): made here - a folder not there when the agent starts
+    # is not writable to it, and TLS was refused with "Read-only file system".
+    if [[ "$eng" != postgres ]]; then
+        run install -d -m 0750 /etc/otp-db-agent-mariadb
+        getent group mysql >/dev/null 2>&1 && run chgrp mysql /etc/otp-db-agent-mariadb
+    fi
+"""),
+])
+
+edit(OUT / 'deploy/otp_pg_ops.py', [
+("""    os.makedirs(folder, mode=0o750, exist_ok=True)
+    os.chmod(folder, 0o750)
+""",
+ """    try:
+        os.makedirs(folder, mode=0o750, exist_ok=True)
+        os.chmod(folder, 0o750)
+    except OSError as e:
+        # Said, not "it went wrong" (1.0.329): an agent installed before 1.0.329 may not write there.
+        raise Refused('the folder %s cannot be made or written by the agent (%s) - run db-server.sh '
+                      'of this release again on the database server, it makes it' % (folder, e.strerror or e))
+"""),
+])
+
+edit(OUT / 'deploy/otp_web.py', [
+("""    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=d)
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+        try:
+            import grp
+            os.fchown(f.fileno(), 0, grp.getgrnam('otp').gr_gid)
+        except (KeyError, OSError):
+            pass
+    os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
+""",
+ """    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=d)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+            try:
+                import grp
+                os.fchown(f.fileno(), 0, grp.getgrnam('otp').gr_gid)
+            except (KeyError, OSError):
+                pass
+        os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
+    except BaseException:
+        # Taken away (1.0.329): one full disk left it, and every later write of the same process
+        # found it there - an OS update said running for an hour, then failed.
+        try:
+            os.unlink(tmp, dir_fd=d)
+        except OSError:
+            pass
+        raise
+"""),
+("""    paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB, NGINX_CERT, CERT_CA_PATH] + list(NODE_FILES.values()) + \\
+        list(VIP_FILES.values())
+    snap = snapshot(paths)
+""",
+ """    # The VIP's sysctl file too (1.0.329): taken away with the VIP off, not put back when nginx
+    # refused - after a restart nginx could not listen on the VIP.
+    paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB, NGINX_CERT, CERT_CA_PATH, SYSCTL_FILE] + \\
+        list(NODE_FILES.values()) + list(VIP_FILES.values())
+    snap = snapshot(paths)
+"""),
+])
+
+edit(OUT / 'install.sh', [
+("""    run install -D -m 0644 "$SOURCE_DIR/deploy/otp.logrotate" "$LOGROTATE_FILE"
+""",
+ """    # What the pages set kept (1.0.329): every upgrade put 30 files of 200 MB back.
+    LR_ROT=""; LR_MAX=""
+    if [[ -f "$LOGROTATE_FILE" ]]; then
+        LR_ROT="$(sed -n 's/^[[:space:]]*rotate[[:space:]]\\+\\([0-9]\\+\\)[[:space:]]*$/\\1/p' "$LOGROTATE_FILE" | head -1)"
+        LR_MAX="$(sed -n 's/^[[:space:]]*maxsize[[:space:]]\\+\\([0-9]\\+[kMG]\\?\\)[[:space:]]*$/\\1/p' "$LOGROTATE_FILE" | head -1)"
+    fi
+    run install -D -m 0644 "$SOURCE_DIR/deploy/otp.logrotate" "$LOGROTATE_FILE"
+    if [[ -n "$LR_ROT" ]]; then run sed -i "s/^\\([[:space:]]*\\)rotate[[:space:]]\\+[0-9]\\+[[:space:]]*\\$/\\1rotate $LR_ROT/" "$LOGROTATE_FILE"; fi
+    if [[ -n "$LR_MAX" ]]; then run sed -i "s/^\\([[:space:]]*\\)maxsize[[:space:]]\\+[0-9]\\+[kMG]\\?[[:space:]]*\\$/\\1maxsize $LR_MAX/" "$LOGROTATE_FILE"; fi
+"""),
+])

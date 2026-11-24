@@ -1340,6 +1340,49 @@ def dump_tables(db, out, tables=None, child=False):
     import gzip
     # A file already open may be given (1.0.101): root writing into a
     # folder the service's account can write opens it itself, never by name.
+    # One moment (1.0.328): each table, and each 2000 rows of one, was read by a statement of
+    # its own, minutes apart on a big database while RADIUS and the pages wrote - a token
+    # renamed meanwhile was missing from the copy, or its rows in meta did not match it. In
+    # the process of its own that makes the copy (child): one transaction that reads alone -
+    # its own connection, so it holds nothing against RADIUS.
+    snap = child and _dump_snapshot_begin(db)
+    try:
+        _dump_tables_into(db, out, tables, gzip)
+    except BaseException:
+        if snap:
+            _dump_snapshot_end(db, ok=False)
+        raise
+    if snap:
+        _dump_snapshot_end(db, ok=True)
+    return out
+
+
+def _dump_snapshot_begin(db):
+    """The copy's transaction begun: True, or False where it could not be (as before)."""
+    try:
+        if db.engine == 'postgres':
+            db.run('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+        elif db.engine == 'mariadb':
+            db.run('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+            db.run('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
+        else:
+            db.run('BEGIN')         # WAL: the writers go on, the copy reads one moment
+        db.in_tx = True             # a connection lost meanwhile: an error, not a new one
+        return True
+    except Exception as e:                              # noqa: BLE001
+        log('the copy is read without one transaction: %s' % e, 'warn')
+        return False
+
+
+def _dump_snapshot_end(db, ok):
+    db.in_tx = False
+    try:
+        db.run('COMMIT' if ok else 'ROLLBACK')
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def _dump_tables_into(db, out, tables, gzip):
     with gzip.open(out if hasattr(out, 'write') else str(out), 'wt', encoding='utf-8') as f:
         f.write(json.dumps({'otp': __version__, 'schema': SCHEMA_VERSION,
                             'made': time.time(), 'engine': db.engine,
@@ -1364,7 +1407,6 @@ def dump_tables(db, out, tables=None, child=False):
                     f.write(json.dumps(r, default=str) + '\n')
                 if not rows or table in ('meta', 'settings'):
                     break
-    return out
 
 
 def _dump_tables_child(out):

@@ -4400,6 +4400,15 @@ def cli_main(argv=None):
             if (flag in ('del_user', 'disable_user') or (flag == 'set_role' and args.role != 'fulladmin')) \
                     and acc.get('role') == 'fulladmin' and not store.fulladmins_left(but=name):
                 raise ValueError('that is the last full administrator who can sign in')
+            if (flag in ('del_user', 'disable_user') or (flag == 'set_role' and args.role != 'fulladmin')) \
+                    and acc.get('role') == 'fulladmin' and not (flag == 'set_role' and acc.get('source') == 'directory'):
+                # Counted again after the change, as the pages do (1.0.328).
+                role_was, off_was = acc['role'], int(acc.get('disabled') or 0)
+                store.fulladmin_change(
+                    (lambda: store.set_account(name, role=args.role)) if flag == 'set_role' else
+                    (lambda: store.set_account(name, disabled=1)),
+                    (lambda: store.set_account(name, role=role_was)) if flag == 'set_role' else
+                    (lambda: store.set_account(name, disabled=off_was)))
             if flag == 'set_role':
                 if acc.get('source') == 'directory':
                     raise ValueError('%s is an account of the directory - its groups there give its role '

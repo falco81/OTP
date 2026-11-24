@@ -4,6 +4,15 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.328 — 24 November 2026
+
+**Bug fix (backups)**: on PostgreSQL and MariaDB a copy of the database read each table - and each 2000 rows of one - by a statement of its own, minutes apart on a big database while RADIUS and the pages wrote: a token renamed or enrolled meanwhile was missing from the copy, or its rows did not match it. The copy - the nightly one, the remote ones, the download and the one made before a restore - is read in one transaction that only reads (on SQLite too), in the process of its own that makes it: RADIUS waits for nothing.
+
+**Bug fix (administrators)**: two full administrators each taking the other away at the same moment (switched off, made something else, removed - in two tabs, or on two nodes of one database) each counted the other as left: both went, and only root's command line let anybody in again. The change is counted again after it is made and put back when nobody would be left; a removal is a switch-off first, so it can be put back.
+
+**Bug fix (ACME)**: every name a certificate was ever ordered for stayed in port 80's `server_name` for good - after the VIP address's name changed, the old one took another site's requests on port 80 of the same nginx. otp's names there are written down beside them and replaced as a set each time; switching ACME off takes them away. A port 80 otp never put a name on is left as it is; in a file from before, the first name (install.sh's) and the names of the HTTPS server stay.
+
+**Bug fix (database agent)**: with two nodes on one agent, a request of one waiting behind the other's long operation (a restart of the database server, minutes) was done after its node had given up and said it failed - pg_hba or the certificate changed behind its back. The node says how long it waits; the agent does not begin a request once that is over (an agent or a node of an earlier version: as before).
 ## 1.0.327 — 24 November 2026
 
 **Bug fix (HA)**: in a replicated pair each node tidied the other's counts of codes sent and of wrong directory passwords too - a row deleted here while the other node added to it there lost its newest count: one code, or one directory password, more than the limit. Each node tidies only its own now; one written before 1.0.146 is the lead's.

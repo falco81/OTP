@@ -114,7 +114,7 @@ P139 = {
 "We sent a code to {0}. Type it here - then you are set up.": "Poslali jsme kód na {0}. Zadejte ho sem – a máte hotovo.",
 "Sign in to the VPN with your name and password; it then asks for the code we send by SMS to {0}.": "Do VPN se přihlaste jménem a heslem; pak se zeptá na kód, který vám pošleme přes SMS na {0}.",
 "Sign in to the VPN with your name and password; it then asks for the code we send by e-mail to {0}.": "Do VPN se přihlaste jménem a heslem; pak se zeptá na kód, který vám pošleme e-mailem na {0}.",
-"To {0} · {1} · {2} recovery code(s) left": "Na {0} · {1} · zbývá {2} záložních kódů",
+"To {0} · {1} · {2} recovery code(s) left": "Na {0} · {1} · {2:zbývá|zbývají|zbývá} {2} {2:záložní kód|záložní kódy|záložních kódů}",
 "A code was sent to {0}.": "Kód byl poslán na {0}.",
 "the code could not be sent: {0}": "kód se nepodařilo poslat: {0}",
 "too many codes were sent - wait {0} min and try again": "bylo posláno příliš mnoho kódů – počkejte {0} min a zkuste to znovu",
