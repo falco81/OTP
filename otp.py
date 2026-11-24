@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.328'
+__version__ = '1.0.329'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -73434,6 +73434,10 @@ def cli_main(argv=None):
             if (flag in ('del_user', 'disable_user') or (flag == 'set_role' and args.role != 'fulladmin')) \
                     and acc.get('role') == 'fulladmin' and not store.fulladmins_left(but=name):
                 raise ValueError('that is the last full administrator who can sign in')
+            if flag == 'del_user':
+                # Asked before anything is changed (1.0.329): a full administrator was switched off
+                # by the recount below, then the answer was no - "nothing was changed" said.
+                cli_sure(args, 'the account %s is removed' % acc['name'])
             if (flag in ('del_user', 'disable_user') or (flag == 'set_role' and args.role != 'fulladmin')) \
                     and acc.get('role') == 'fulladmin' and not (flag == 'set_role' and acc.get('source') == 'directory'):
                 # Counted again after the change, as the pages do (1.0.328).
@@ -73449,7 +73453,6 @@ def cli_main(argv=None):
                                      '(1.0.287)' % name)
                 store.set_account(name, role=args.role)
             elif flag == 'del_user':
-                cli_sure(args, 'the account %s is removed' % acc['name'])
                 store.drop_account(name)
             else:
                 store.set_account(name, disabled=1 if flag == 'disable_user' else 0)

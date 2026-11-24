@@ -397,6 +397,12 @@ agent_install() {
     [[ -d /etc/pki/otp ]] || run install -d -m 0755 /etc/pki/otp
     run install -d -m 0700 "$AGENT_ETC" "$AGENT_STATE"
     run install -d -m 0750 "$AGENT_LOG"
+    # MariaDB's certificate files (1.0.329): made here - a folder not there when the agent starts
+    # is not writable to it, and TLS was refused with "Read-only file system".
+    if [[ "$eng" != postgres ]]; then
+        run install -d -m 0750 /etc/otp-db-agent-mariadb
+        getent group mysql >/dev/null 2>&1 && run chgrp mysql /etc/otp-db-agent-mariadb
+    fi
     for f in otp_db_agent.py otp_pg_ops.py otp_web.py; do
         run install -m 0644 "$SOURCE_DIR/deploy/$f" "$AGENT_LIB/$f"
     done

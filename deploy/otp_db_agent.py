@@ -612,8 +612,14 @@ class Root(object):
                 if owner:
                     mine = self.issuers_now(node, der)
                     self.owner_check(node, mine)
+                names = self.names_of(op, args)
+                if names:
+                    mine = mine or self.issuers_now(node, der)
+                    self.names_check(node, mine, names)
                 out = self.ops.run_op(op, args, self.c)
                 out.pop('agent_restart', None)          # the agent's own word only
+                if names:
+                    self.names_put(node, names, mine)
                 if owner == 'put':
                     self.owner_put(node, args, mine)
                 elif owner == 'off':
@@ -761,6 +767,87 @@ class Root(object):
             '(verify-full). One database server answers with one cluster\'s certificate - give '
             '%s a database server of its own, or take %s away here first (otp_db_agent.py '
             '--forget %s)' % (rec['node'], node, rec['node'], node, rec['node'], rec['node']))
+
+    # -- each database and account one cluster's (1.0.329) ----------------------------------
+    # A node could name any database or account: on MariaDB it was given every right on another
+    # application's database, or an account there had its password reset; on PostgreSQL a role
+    # of the server's was given the node's password and let in from the network. Several
+    # clusters may share one server (the certificate above is one cluster's already); now each
+    # database and account is the cluster's whose node made it, known by its authority as the
+    # certificate is. One there before (an agent before 1.0.329, or made by hand) is taken
+    # over by the first cluster that asks for it - only when it is otp's kind, which the
+    # operation itself checks on the server.
+    NAME_FIELDS = {'pg_prepare': (('db', 'db'), ('user', 'user')),
+                   'dbmake': (('db', 'name'), ('user', 'user')),
+                   'pg_allow': (('db', 'db'), ('user', 'user')),
+                   'my_allow': (('db', 'db'), ('user', 'user')),
+                   'pg_publication': (('db', 'db'),),
+                   'pgtls': (('db', 'db'), ('user', 'user'))}
+
+    def names_of(self, op, args):
+        if not isinstance(args, dict):
+            return []
+        out = []
+        for kind, field in self.NAME_FIELDS.get(op, ()):
+            v = str(args.get(field) or '').strip()
+            if v:
+                out.append((kind, v.lower()))
+        return out
+
+    def _names_path(self):
+        return os.path.join(self.c['state'], 'names.json')
+
+    def _same_cluster(self, rec, node, mine):
+        """Whether `node` (signed by `mine`) is of the cluster a record is of - as owner_check
+        decides it for the server's certificate. A record whose node is gone (left, forgotten,
+        not heard from for 30 days) is anybody's."""
+        if not rec.get('node') or rec.get('node') == node:
+            return True
+        with self.lock:
+            cl = clients(self.c)
+        owner = next((x for x in cl if x.get('name') == rec['node']), None)
+        if owner is None or stale(owner):
+            return True
+        theirs = set(rec.get('issuers') or []) | set(rec.get('cas') or []) | \
+            set(owner.get('issuers') or []) | set(self._cas_of(owner.get('ca')))
+        if theirs & set(mine or []):
+            return True
+        verified = set(rec.get('issuers') or []) | set(owner.get('issuers') or [])
+        asking = next((x for x in cl if x.get('name') == node), None) or {}
+        return bool(verified & set(issuers_seen(asking)))
+
+    def names_check(self, node, mine, names):
+        rec = _json(self._names_path(), {})
+        rec = rec if isinstance(rec, dict) else {}
+        for kind, name in names:
+            one = (rec.get(kind) or {}).get(name)
+            if isinstance(one, dict) and not self._same_cluster(one, node, mine):
+                raise self.ops.Refused(
+                    'the %s %s on this server is %s\'s, of another authority (another cluster) - '
+                    'not given to %s; choose another name, or take %s away here first '
+                    '(otp_db_agent.py --forget %s)' % ('database' if kind == 'db' else 'account', name,
+                                                       one['node'], node, one['node'], one['node']))
+
+    def names_put(self, node, names, mine):
+        with self.lock:
+            one = next((x for x in clients(self.c) if x.get('name') == node), None) or {}
+        try:
+            rec = _json(self._names_path(), {})
+            rec = rec if isinstance(rec, dict) else {}
+            changed = False
+            for kind, name in names:
+                had = (rec.setdefault(kind, {})).get(name)
+                if isinstance(had, dict) and had.get('node') == node and \
+                        set(had.get('issuers') or []) >= set(mine or []):
+                    continue
+                rec[kind][name] = {'node': node, 'issuers': list(mine or []),
+                                   'cas': self._cas_of(one.get('ca')), 'at': time.time()}
+                changed = True
+            if changed:
+                os.makedirs(self.c['state'], mode=0o700, exist_ok=True)
+                _write(self._names_path(), json.dumps(rec))
+        except OSError:
+            pass
 
     def owner_put(self, node, args, mine=()):
         with self.lock:

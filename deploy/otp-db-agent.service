@@ -35,6 +35,8 @@ ProtectSystem=strict
 ReadWritePaths=/etc/otp-db-agent /var/lib/otp-db-agent /var/log/otp-db-agent
 ReadWritePaths=-/etc/pki/otp -/var/lib/pgsql -/var/lib/postgresql -/etc/postgresql -/var/log/postgresql
 ReadWritePaths=-/etc/my.cnf.d -/etc/mysql -/run/postgresql -/var/run/postgresql
+# MariaDB's certificate files (1.0.329): a folder of their own, which MariaDB may read.
+ReadWritePaths=-/etc/otp-db-agent-mariadb
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

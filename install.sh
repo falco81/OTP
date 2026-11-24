@@ -1313,7 +1313,15 @@ install_program() {
     # folder is its group's - and nothing else in it is anybody's but root's.
     run install -d -m 2770 -o root -g "$SERVICE_USER" "$CONFIG_DIR"
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp.service" "$UNIT_FILE"
+    # What the pages set kept (1.0.329): every upgrade put 30 files of 200 MB back.
+    LR_ROT=""; LR_MAX=""
+    if [[ -f "$LOGROTATE_FILE" ]]; then
+        LR_ROT="$(sed -n 's/^[[:space:]]*rotate[[:space:]]\+\([0-9]\+\)[[:space:]]*$/\1/p' "$LOGROTATE_FILE" | head -1)"
+        LR_MAX="$(sed -n 's/^[[:space:]]*maxsize[[:space:]]\+\([0-9]\+[kMG]\?\)[[:space:]]*$/\1/p' "$LOGROTATE_FILE" | head -1)"
+    fi
     run install -D -m 0644 "$SOURCE_DIR/deploy/otp.logrotate" "$LOGROTATE_FILE"
+    if [[ -n "$LR_ROT" ]]; then run sed -i "s/^\([[:space:]]*\)rotate[[:space:]]\+[0-9]\+[[:space:]]*\$/\1rotate $LR_ROT/" "$LOGROTATE_FILE"; fi
+    if [[ -n "$LR_MAX" ]]; then run sed -i "s/^\([[:space:]]*\)maxsize[[:space:]]\+[0-9]\+[kMG]\?[[:space:]]*\$/\1maxsize $LR_MAX/" "$LOGROTATE_FILE"; fi
     console_quiet
     rcvbuf_max
     install_upgrader

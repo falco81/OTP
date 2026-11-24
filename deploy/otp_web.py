@@ -126,14 +126,23 @@ def write_here(name, text):
     d = web_fd()
     tmp = '.%s.%d' % (name, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=d)
-    with os.fdopen(fd, 'w') as f:
-        f.write(text)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+            try:
+                import grp
+                os.fchown(f.fileno(), 0, grp.getgrnam('otp').gr_gid)
+            except (KeyError, OSError):
+                pass
+        os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
+    except BaseException:
+        # Taken away (1.0.329): one full disk left it, and every later write of the same process
+        # found it there - an OS update said running for an hour, then failed.
         try:
-            import grp
-            os.fchown(f.fileno(), 0, grp.getgrnam('otp').gr_gid)
-        except (KeyError, OSError):
+            os.unlink(tmp, dir_fd=d)
+        except OSError:
             pass
-    os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
+        raise
 
 
 def write_here_bytes(name, data):
@@ -1317,8 +1326,10 @@ def nginx_part(r, last):
             DH_READY[files['dh']] = files['dh']
             continue
         DH_READY[files['dh']] = dh_file(t['dh'], files['dh'], (last.get('dh') or {}).get(which))
-    paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB, NGINX_CERT, CERT_CA_PATH] + list(NODE_FILES.values()) + \
-        list(VIP_FILES.values())
+    # The VIP's sysctl file too (1.0.329): taken away with the VIP off, not put back when nginx
+    # refused - after a restart nginx could not listen on the VIP.
+    paths = [NGINX_MAIN, NGINX_VIP, NGINX_LB, NGINX_CERT, CERT_CA_PATH, SYSCTL_FILE] + \
+        list(NODE_FILES.values()) + list(VIP_FILES.values())
     snap = snapshot(paths)
     changed = False
     TLS_FILES_NEW[0] = False
