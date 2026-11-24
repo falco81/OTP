@@ -9970,7 +9970,7 @@ function drawSso() {
     d.last.forEach(function (x) {
       var tr = el('tr', '');
       tr.appendChild(noI18n(el('td', 'mono small', x.node || '')));
-      tr.appendChild(el('td', 'small', x.at ? new Date(x.at * 1000).toLocaleString() : ''));
+      tr.appendChild(el('td', 'small', x.at ? new Date(x.at * 1000).toLocaleString(numLang()) : ''));
       var st = el('td', '');
       st.appendChild(el('span', 'tag ' + (x.ok ? 'good' : 'bad'), x.ok ? 'signed in' : 'refused'));
       tr.appendChild(st);
@@ -15266,7 +15266,7 @@ function drawRbRuns() {
     if (r.error) w.appendChild(el('span', 'small bad', r.error));
     (r.targets || []).forEach(function (x) {
       var s = el('span', 'tag namepill ' + (x.ok ? 'ok' : 'crit'), (x.ok ? '✓ ' : '✗ ') + x.name);
-      s.title = x.ok ? (x.secs + ' s' + ((x.taken_away || []).length ? ' · taken away: ' + x.taken_away.join(', ') : '')) : (x.error || '');
+      s.title = x.ok ? (numFixed(x.secs || 0, 1) + ' s' + ((x.taken_away || []).length ? ' · taken away: ' + x.taken_away.join(', ') : '')) : (x.error || '');
       noI18n(s);
       w.appendChild(s);
       w.appendChild(document.createTextNode(' '));
@@ -15715,7 +15715,7 @@ function rbTry(t, data, button, inEditor) {
         return;
       }
       var box = el('div', 'note ' + (x.ok ? 'good' : 'bad'));
-      box.appendChild(el('b', '', x.ok ? 'It works (' + x.secs + ' s)' : 'It does not work'));
+      box.appendChild(el('b', '', x.ok ? 'It works (' + numFixed(x.secs || 0, 1) + ' s)' : 'It does not work'));
       var ul = el('ul', 'rb-steps');
       (x.steps || []).forEach(function (s) { ul.appendChild(el('li', '', '✓ ' + s)); });
       if (x.error) ul.appendChild(el('li', 'bad', '✗ ' + x.error));
@@ -15903,7 +15903,10 @@ function netPollFor() {
 }
 function netPoll() {
   if (TAB !== 'settings' || PANE !== 'network') { clearInterval(NET.poll); NET.poll = null; return; }
-  api('net').then(function (d) {
+  if (NET.asking) return;   /* one at a time (1.0.321) */
+  NET.asking = true;
+  api('net', undefined, 8).then(function (d) {
+    NET.asking = false;
     NET.d = d; NET.fails = 0; NET.failSince = 0;
     var n = d.nodes.filter(function (x) { return x.name === NET.watch; })[0];
     if (NET.watch && n && n.job && ['done', 'failed'].indexOf(n.job.state) >= 0) {
@@ -15913,6 +15916,7 @@ function netPoll() {
     drawNet(true);
     netPollFor();
   }).catch(function () {
+    NET.asking = false;
     /* The page's own node restarting: it does not answer for a while. */
     NET.fails += 1;
     if (!NET.failSince) NET.failSince = Date.now();
@@ -16245,7 +16249,10 @@ function pwPollFor() {
 }
 function pwPoll() {
   if (TAB !== 'settings' || PANE !== 'power') { clearInterval(PW.poll); PW.poll = null; return; }
-  api('power').then(function (d) {
+  if (PW.asking) return;    /* one at a time (1.0.321) */
+  PW.asking = true;
+  api('power', undefined, 8).then(function (d) {
+    PW.asking = false;
     var wasAway = !!PW.failSince;
     PW.d = d; PW.failSince = 0;
     drawPower(true);
@@ -16254,7 +16261,7 @@ function pwPoll() {
       toast(d.plan.how === 'reboot' ? 'every node is up again' : 'switched off', 'good');
       if (wasAway || PW.reload) setTimeout(function () { location.reload(); }, 2500);
     }
-  }).catch(function () { if (!PW.failSince) PW.failSince = Date.now(); drawPowerAway(); });
+  }).catch(function () { PW.asking = false; if (!PW.failSince) PW.failSince = Date.now(); drawPowerAway(); });
 }
 function pwStateOf(d, n) {
   var r = n.row || {};
@@ -16507,7 +16514,7 @@ function clockTry(btn) {
 function clockOff(ref) {
   if (ref === null || ref === undefined || isNaN(ref)) return null;
   var a = Math.abs(ref);
-  var n = a >= 100 ? a.toFixed(0) + ' s' : a >= 1 ? a.toFixed(1) + ' s' : (a * 1000).toFixed(0) + ' ms';
+  var n = a >= 100 ? a.toFixed(0) + ' s' : a >= 1 ? numFixed(a, 1) + ' s' : (a * 1000).toFixed(0) + ' ms';
   return {w: ref > 0 ? 'behind by' : 'ahead by', n: n, a: a};
 }
 /* Each kind of trouble, with what each node does and what it costs - from the choices. */
@@ -16812,7 +16819,7 @@ function ntpMs(s) {
   if (s === undefined || s === null || isNaN(s)) return '–';
   var ms = s * 1000;
   var a = Math.abs(ms);
-  return (ms >= 0 ? '+' : '−') + (a >= 1000 ? (a / 1000).toFixed(2) + ' s' : (a >= 10 ? a.toFixed(1) : a.toFixed(3)) + ' ms');
+  return (ms >= 0 ? '+' : '−') + (a >= 1000 ? numFixed(a / 1000, 2) + ' s' : numFixed(a, a >= 10 ? 1 : 3) + ' ms');
 }
 function ntpHealth(n) {
   var d = (n.now || {}).data || {};
@@ -16859,7 +16866,7 @@ function drawNtp(quiet) {
       ['Follows', t.ref || t.ref_id || '', true],
       ['Stratum', t.stratum !== undefined ? String(t.stratum) : '', true],
       ['Last correction', ntpMs(t.last_offset), true],
-      ['Frequency', t.freq !== undefined ? t.freq.toFixed(3) + ' ppm' : '', true],
+      ['Frequency', t.freq !== undefined ? numFixed(t.freq, 3) + ' ppm' : '', true],
       ['Root delay / dispersion', t.root_delay !== undefined ? ntpMs(t.root_delay).replace('+', '') + ' / ' + ntpMs(t.root_disp).replace('+', '') : '', true],
       ['Leap status', t.leap || ''],
       ['Time zone', nd.timezone || '', true],
@@ -18455,7 +18462,7 @@ function drawAlerts() {
   });
   alLog();
 }
-function alDay(t) { return t ? new Date(t * 1000).toLocaleDateString() : '–'; }
+function alDay(t) { return t ? new Date(t * 1000).toLocaleDateString(numLang()) : '–'; }
 function alPreview(period) {
   api('alerts', {action: 'preview', period: period}).then(function (x) {
     modal(x.subject, function (body) {
@@ -19103,8 +19110,17 @@ function drawProxy() {
       });
       said.appendChild(grid);
       var began = Date.now();
+      var asking = false, over = false, mine = null;
+      var pxEnd = function () {
+        over = true; clearInterval(mine);
+        if (PX.poll === mine) { PX.poll = null; busy(go, false); }
+      };
       var look = function () {
+        if (asking || over) return;
+        asking = true;
         api('proxy', {action: 'result', id: x.id}).then(function (r) {
+          asking = false;
+          if (over) return;
           var left = 0;
           nodes.forEach(function (n) {
             var got = (r.nodes || {})[n];
@@ -19121,22 +19137,24 @@ function drawProxy() {
             cards[n].body.appendChild(pxSteps(got));
           });
           if (!left || Date.now() - began > 60000) {
-            clearInterval(PX.poll); PX.poll = null; busy(go, false);
+            pxEnd();
             nodes.forEach(function (n) {
               if (!cards[n].done) { clear(cards[n].body); cards[n].body.appendChild(el('p', 'note warn', 'This node did not answer in a minute - is it running?')); }
             });
           }
         }).catch(function () {
+          asking = false;
+          if (over) return;
           /* Every answer failing: the minute ends it too (1.0.208). */
           if (Date.now() - began > 60000) {
-            clearInterval(PX.poll); PX.poll = null; busy(go, false);
+            pxEnd();
             nodes.forEach(function (n) {
               if (!cards[n].done) { clear(cards[n].body); cards[n].body.appendChild(el('p', 'note warn', 'This node did not answer in a minute - is it running?')); }
             });
           }
         });
       };
-      PX.poll = setInterval(look, 1000);
+      PX.poll = mine = setInterval(look, 1000);
       setTimeout(look, 300);
     }).catch(function (e) { busy(go, false); oops(e); });
   };
@@ -20280,8 +20298,13 @@ function isemonTlsWizard(was) {
         grid.appendChild(c); cards[n] = c;
       });
       var left = (x.nodes || []).slice(), began = Date.now();
+      var asking = false, over = false;
       var timer = setInterval(function () {
+        if (asking || over) return;
+        asking = true;
         api('isemon', {action: 'tls_result', id: x.id}).then(function (r) {
+          asking = false;
+          if (over) return;
           left = left.filter(function (n) {
             var g = (r.nodes || {})[n];
             if (!g) return true;
@@ -20302,9 +20325,11 @@ function isemonTlsWizard(was) {
             grid.replaceChild(c, cards[n]);
             return false;
           });
-          if (!left.length || Date.now() - began > 60000) { clearInterval(timer); busy(b, false); }
+          if (!left.length || Date.now() - began > 60000) { over = true; clearInterval(timer); busy(b, false); }
         }).catch(function () {
-          if (Date.now() - began > 60000) { clearInterval(timer); busy(b, false); }   /* (1.0.208) */
+          asking = false;
+          if (over) return;
+          if (Date.now() - began > 60000) { over = true; clearInterval(timer); busy(b, false); }   /* (1.0.208) */
         });
       }, 1000);
     }).catch(function (e) { busy(b, false); oops(e); });
@@ -20737,7 +20762,7 @@ function seFindings(box, n, s) {
       t.appendChild(noI18n(el('code', 'se-rule-t', x.rule)));
       var said = el('div', 'small muted');
       said.appendChild(noI18n(el('span', '', (x.why || '') + ' ')));
-      said.appendChild(el('span', '', '- put in ' + (x.at ? new Date(x.at * 1000).toLocaleString() : '?') + ' by ' + (x.by || '?')));
+      said.appendChild(el('span', '', '- put in ' + (x.at ? new Date(x.at * 1000).toLocaleString(numLang()) : '?') + ' by ' + (x.by || '?')));
       t.appendChild(said);
       row.appendChild(t);
       if (ADMIN) {
@@ -20883,7 +20908,7 @@ function seNode(n) {
     n.said.forEach(function (x) { sd.appendChild(el('li', '', x)); });
     box.appendChild(sd);
   }
-  if (n.at) box.appendChild(el('p', 'muted small', 'Looked at ' + new Date(n.at * 1000).toLocaleString()));
+  if (n.at) box.appendChild(el('p', 'muted small', 'Looked at ' + new Date(n.at * 1000).toLocaleString(numLang())));
   var row = el('div', 'btnrow se-btns');
   if ((m === 'Disabled' && !made) || m === 'Permissive') {
     var prep = cmdButton(m === 'Disabled' ? 'Make it ready (permissive)' : 'Put in what otp needs', 'shield', m === 'Disabled' ? 'primary' : '');
@@ -21063,7 +21088,7 @@ function drawKrbInto(host) {
   if (kt.there) {
     var p = el('p', 'note');
     p.appendChild(document.createTextNode('Put in '));
-    p.appendChild(noI18n(el('span', '', kt.at ? new Date(kt.at * 1000).toLocaleString() : '')));
+    p.appendChild(noI18n(el('span', '', kt.at ? new Date(kt.at * 1000).toLocaleString(numLang()) : '')));
     p.appendChild(document.createTextNode(' by '));
     p.appendChild(noI18n(el('b', '', kt.by || '?')));
     p.appendChild(document.createTextNode(' - kept sealed in the database; its keys are never shown.'));

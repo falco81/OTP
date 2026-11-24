@@ -2,7 +2,7 @@
 
 **Bug fix (command line)**:
 - `otp --local-user drop|drop-home NAME` run from a script or cron took the user (and the home folder) away on every node without being asked, and at a terminal asked even with `--yes`. It now goes as every other step that takes something away: `--yes`, or *yes* typed at a terminal - refused otherwise. `--sso-key` the same: from a script without `--yes` it shut the balancer out unasked.
-- `otp --api` on a route that sends or takes a file (the database's download, a backup's) ended in a traceback. It says so in words.
+- `otp --api` on a route that sends or takes a file (the database's download, a backup's) ended in a traceback. It says so in words, before the route runs - a download no longer makes a copy of the database for nothing.
 - `otp --api GET '/api/...?q=a%20b'` passed *a%20b* as it was; the query is read as the pages read it.
 - A directory's certificate check, once off (`--no-verify`), could not be put back on from the command line or the console. `--dir-cert-check on|off`, and a field of the console's form.
 - `--local-user`'s help left out *aging*.

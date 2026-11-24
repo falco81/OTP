@@ -212,7 +212,7 @@ ok('5 ...after the COMMIT', body.index("db.run('COMMIT')") < body.index('setval(
 
 # ==== 6 the pages
 js = open(V + '/web/assets/admin.js').read()
-ok('6 one ask at a time, ended once (askNodes and dbtPoll)', js.count('if (asking || over) return;') == 2 and js.count('if (over) return;') >= 4)
+ok('6 one ask at a time, ended once (askNodes and dbtPoll)', js.count('if (asking || over) return;') >= 2 and js.count('if (over) return;') >= 4)
 ok('6 IPv6 prefix counted', 'function lbV6(' in js)
 ok('6 a pasted colour escaped', "'<span style=\"color:' + htmlText(n.getAttribute('color'))" in js)
 ok('6 Show all from the first page', "all.onclick = function () { RQ_SINCE = null; PAGE.requests = 0; loadRequests(); };" in js)

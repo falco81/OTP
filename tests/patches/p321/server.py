@@ -57,7 +57,10 @@ def cli_api(daemon, who, method, path, body=None, args=None):
 ("""        qs = dict(x.split('=', 1) if '=' in x else (x, '') for x in query.split('&') if x)
 """,
  """        # As the pages read it (1.0.321): %20 and + undone, empty values left out.
-        qs = {k: v[-1] for k, v in urllib.parse.parse_qs(query).items()}
+        # parse_qs by its own name: cli_main imports urllib.request further down, urllib is a
+        # local of it and unset here.
+        from urllib.parse import parse_qs as _parse_qs
+        qs = {k: v[-1] for k, v in _parse_qs(query).items()}
 """),
 ("""                'verify': 0 if args.no_verify else old.get('verify', 1),
 """,
@@ -101,5 +104,22 @@ edit('96_console.py', [
         args = ['--add-directory', got.get('name') or r['name'], '--hosts', got['hosts'], '--base', got['base'],
                 '--bind-dn', got['bind_dn'], '--tls', got['tls']] + (['--port', port] if port else []) + \\
             ['--dir-cert-check', got.get('verify') or 'on']
+"""),
+])
+
+# A route that sends or takes a file refused before it runs: the download made a copy first.
+edit('95_cli.py', [
+("""    h = CliApiHandler(daemon, who, body, args, path)
+    try:
+        return fn(h)
+""",
+ """    # Refused before it runs (1.0.321): a download made a copy of the database first, then
+    # found no socket to send it to.
+    if {'send_file', 'send_bytes', '_send_open_file', 'body_to_file'} & set(
+            getattr(getattr(fn, '__code__', None), 'co_names', ()) or ()):
+        raise SystemExit('otp: that one sends or takes a file - from the pages only')
+    h = CliApiHandler(daemon, who, body, args, path)
+    try:
+        return fn(h)
 """),
 ])

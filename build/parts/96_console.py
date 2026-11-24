@@ -1538,11 +1538,20 @@ class Console(object):
              'help': 'Empty: the one it has is kept.' if r.get('name') else ''},
             {'key': 'tls', 'label': 'reached by', 'kind': 'choice', 'value': r.get('tls') or 'ldaps',
              'options': [('ldaps', 'LDAPS (636)'), ('starttls', 'StartTLS (389)'), ('none', 'plain (389) - not encrypted')]},
-            {'key': 'port', 'label': 'port', 'value': str(r.get('port') or ''), 'help': 'Empty: as reached by says.'}])
+            {'key': 'port', 'label': 'port', 'value': str(r.get('port') or ''), 'help': 'Empty: as reached by says.'},
+            {'key': 'verify', 'label': 'its certificate', 'kind': 'choice',
+             'value': 'on' if r.get('verify', 1) else 'off',
+             'options': [('on', 'checked'), ('off', 'not checked')]}])
         if not got:
             return
+        port = got['port']
+        was_tls = r.get('tls') or 'ldaps'
+        if r.get('name') and got['tls'] != was_tls and \
+                port == {'ldaps': '636'}.get(was_tls, '389'):
+            port = ''       # the old way's own port left as it was: the new way's (1.0.321)
         args = ['--add-directory', got.get('name') or r['name'], '--hosts', got['hosts'], '--base', got['base'],
-                '--bind-dn', got['bind_dn'], '--tls', got['tls']] + (['--port', got['port']] if got['port'] else [])
+                '--bind-dn', got['bind_dn'], '--tls', got['tls']] + (['--port', port] if port else []) + \
+            ['--dir-cert-check', got.get('verify') or 'on']
         env = None
         if got.get('bind_pw'):
             args += ['--bind-pw', '-']

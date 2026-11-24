@@ -13,8 +13,8 @@ var HLOAD = {timer: null, busy: false};
 function hloadRate(n) {
   if (n === null || n === undefined) return '–';
   if (n < 1024) return Math.round(n) + ' B/s';
-  if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' kB/s';
-  return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB/s';
+  if (n < 1024 * 1024) return numFixed(n / 1024, n < 10240 ? 1 : 0) + ' kB/s';
+  return numFixed(n / 1048576, n < 10485760 ? 1 : 0) + ' MB/s';
 }
 /* Four looks to choose from (1.0.72): pills with a bar, one plain line,
    small graphs of the last two minutes, rings. */
@@ -176,7 +176,7 @@ function hloadRing(pct) {
 function hloadChips(host, d, hist, look, preview, peer, keep) {
   var mp = d.mem_total ? 100 * d.mem_used / d.mem_total : null;
   var tips = {
-    cpu: 'The processor, busy over the last ' + (d.over_s || 3) + ' s, all ' + d.cores + ' core(s) together' + (d.load ? ' · load ' + d.load.join(' / ') : ''),
+    cpu: 'The processor, busy over the last ' + (d.over_s || 3) + ' s, all ' + d.cores + ' core(s) together' + (d.load ? ' · load ' + d.load.map(function (v) { return numFixed(v, 2); }).join(' / ') : ''),
     mem: 'Memory in use (without what the kernel keeps as cache and gives back)' + (d.swap_used ? ' · swap in use ' + bytes(d.swap_used) : ''),
     disk: 'The disks: read ↓ and written ↑, every disk together',
     net: 'The network cards: down ↓ (in) and up ↑ (out), every card together - not the loopback nor the bridges of containers'
@@ -534,7 +534,7 @@ function hpRing(pct, label, cls, size) {
 function hpTempCls(t) { return t >= 85 ? 'hot' : (t >= 70 ? 'warm' : 'ok'); }
 function hpSec(p, title) { var s = el('div', 'hp-sec'); if (title) s.appendChild(el('div', 'hp-h', title)); p.appendChild(s); return s; }
 function hpTd(tr, v, cls) { var td = el('td', cls || ''); if (v && v.nodeType) td.appendChild(v); else if (v !== null && v !== undefined) td.appendChild(noI18n(el('span', '', String(v)))); tr.appendChild(td); return td; }
-function hpGHz(m) { return m ? (m >= 1000 ? (m / 1000).toFixed(1) + ' GHz' : m + ' MHz') : ''; }
+function hpGHz(m) { return m ? (m >= 1000 ? numFixed(m / 1000, 1) + ' GHz' : m + ' MHz') : ''; }
 function hpPct(v) { return v === null || v === undefined ? '…' : Math.round(v) + ' %'; }
 function hpCpuTemp(x) { var t = ((x.temps || {}).cpu || [])[0]; return t ? t[1] : null; }
 function hpNoTemp(host, x) {
@@ -906,7 +906,7 @@ function hpTiles(p, k) {
       one.appendChild(top);
       one.appendChild(hlBar(c.busy));
       var bot = el('div', 'hp-core-bot muted small');
-      bot.appendChild(noI18n(el('span', '', c.mhz ? (c.mhz >= 1000 ? (c.mhz / 1000).toFixed(1) + ' GHz' : c.mhz + ' MHz') : '')));
+      bot.appendChild(noI18n(el('span', '', c.mhz ? hpGHz(c.mhz) : '')));
       var t = hlTemp(c.temp);
       if (t) bot.appendChild(t);
       one.appendChild(bot);

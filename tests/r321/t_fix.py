@@ -39,7 +39,7 @@ sys.stdin = open(os.devnull)
 try:
     m.cli_sure(A(), 'take x away'); ok('cli_sure: no terminal, no --yes - refused', False)
 except SystemExit as e:
-    ok('cli_sure: no terminal, no --yes - refused', 'nothing was changed' in str(e), e)
+    ok('cli_sure: no terminal, no --yes - refused', 'again with --yes' in str(e), e)
 a = A(); a.yes = True
 m.cli_sure(a, 'take x away'); ok('cli_sure: --yes goes', True)
 src = inspect.getsource(m)
@@ -52,7 +52,10 @@ class Dm:
     store = st
 
 
-for meth, path in [(k[0], k[1]) for k in m.ROUTES if k[1] in ('/api/db/download',)]:
+made = []
+_log = m.log
+m.log = lambda *a, **k: (made.append(a) if 'downloaded' in ' '.join(map(str, a)) else None) or _log(*a, **k)
+for meth, path in [(k[0], k[1]) for k in m.ROUTES if k[1] in ('/api/db/download', '/api/db/restore', '/api/upgrade/package', '/api/rbackup/upload', '/api/rbackup/download')]:
     try:
         m.cli_api(Dm(), 'command line', meth, path, None, {})
         ok('--api %s %s refused in words' % (meth, path), False)
@@ -66,7 +69,12 @@ for f in ('send_file', 'send_bytes', '_send_open_file', 'body_to_file'):
         getattr(h, f)('a', 'b'); ok('handler %s refuses' % f, False)
     except m.ApiError as e:
         ok('handler %s refuses' % f, e.status == 400)
-ok('--api reads the query with parse_qs', 'qs = {k: v[-1] for k, v in urllib.parse.parse_qs(query).items()}' in src)
+ok('--api reads the query with parse_qs', 'qs = {k: v[-1] for k, v in _parse_qs(query).items()}' in src)
+import re, symtable
+_cm = [c for c in symtable.symtable(open(V + '/otp.py').read(), 'otp', 'exec').get_children() if c.get_name() == 'cli_main'][0]
+_loc = {n.get_name() for n in _cm.get_symbols() if n.is_local()}
+_used = set(re.findall(r'(?<![\w.])(urllib)\.parse\.\w+\(', '\n'.join(l.split('#')[0] for l in inspect.getsource(m.cli_main).splitlines() if 'import' not in l)))
+ok('cli_main: no module used that it makes a local of', not (_loc & _used), _loc & _used)
 
 # ==== 3 a directory's certificate check back on
 p = m.build_parser() if hasattr(m, 'build_parser') else None
@@ -106,4 +114,6 @@ for f in ('core.js', 'hload.js', 'admin.js'):
     r = subprocess.run(['node', '--check', W + f], capture_output=True, text=True)
     ok('node --check ' + f, r.returncode == 0, r.stderr)
 
+m.log = _log
+ok('--api: nothing made before the refusal', not made, made)
 print('ALL %d / %d' % (sum(R), len(R)))

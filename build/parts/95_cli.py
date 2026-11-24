@@ -347,12 +347,23 @@ class CliApiHandler(ApiHandler):
     def session(self, kind='admin'):
         return self.me()
 
+    # A file sent or taken (1.0.321): no socket here - a traceback, not words.
+    def _no_file(self, *a, **k):
+        raise ApiError(400, 'that one sends or takes a file - from the pages only')
+
+    send_file = send_bytes = _send_open_file = body_to_file = _no_file
+
 
 def cli_api(daemon, who, method, path, body=None, args=None):
     """One route of the pages, run here: its answer, or SystemExit with its words."""
     fn = ROUTES.get((method, path))
     if not fn:
         raise SystemExit('otp: the pages have no %s %s' % (method, path))
+    # Refused before it runs (1.0.321): a download made a copy of the database first, then
+    # found no socket to send it to.
+    if {'send_file', 'send_bytes', '_send_open_file', 'body_to_file'} & set(
+            getattr(getattr(fn, '__code__', None), 'co_names', ()) or ()):
+        raise SystemExit('otp: that one sends or takes a file - from the pages only')
     h = CliApiHandler(daemon, who, body, args, path)
     try:
         return fn(h)
@@ -707,6 +718,8 @@ def build_parser():
     g.add_argument('--tls', choices=('ldaps', 'starttls', 'none'), help='how it is reached')
     g.add_argument('--port', type=int, metavar='N', help='its port')
     g.add_argument('--no-verify', action='store_true', help='do not check its certificate')
+    g.add_argument('--dir-cert-check', choices=('on', 'off'),
+                   help='check its certificate (on, as when added) or not (off, as --no-verify)')
     g.add_argument('--weak-certs', choices=('on', 'off'), help='take old, weak certificates '
                    '(a 1024-bit key, SHA-1, TLS 1.0) - still checked against the authority')
     g.add_argument('--ca', metavar='FILE', help='the certificate authority (PEM) that signed it')
@@ -782,7 +795,8 @@ def build_parser():
                         'there, sudo, locked, the password')
     g.add_argument('--local-user', nargs=2, metavar=('WHAT', 'NAME'),
                    help='change a local user on the nodes (never root): add, password, lock, unlock, '
-                        'sudo-on, sudo-off, drop or drop-home - a password is asked, never given on '
+                        'sudo-on, sudo-off, drop, drop-home or aging (with --local-max-days, '
+                        '--local-min-days, --local-warn-days) - a password is asked, never given on '
                         'the command line')
     g.add_argument('--local-policy', action='store_true',
                    help='the password policy of the local users: as set, and as in effect on each node')
@@ -3969,7 +3983,9 @@ def cli_main(argv=None):
                 'bind_pw': pw if pw is not None else (None if old else ''),
                 'tls': args.tls or old.get('tls') or 'ldaps',
                 'port': args.port or (old.get('port') if not args.tls else None),
-                'verify': 0 if args.no_verify else old.get('verify', 1),
+                # Back on too (1.0.321): --no-verify once, and nothing here put it back.
+                'verify': 0 if args.no_verify else (int(args.dir_cert_check == 'on') if args.dir_cert_check
+                                                     else old.get('verify', 1)),
                 'weak': (args.weak_certs == 'on') if args.weak_certs else old.get('weak', 0),
                 'nested': old.get('nested', 1), 'enabled': old.get('enabled', 1),
                 'timeout_s': old.get('timeout_s') or 10,
@@ -5188,7 +5204,11 @@ def cli_main(argv=None):
                 raise SystemExit('otp: %s - a secret is not taken written out on the command '
                                  'line: give the body through stdin (--api POST PATH -)'
                                  % ', '.join(sorted(set(secretish))))
-        qs = dict(x.split('=', 1) if '=' in x else (x, '') for x in query.split('&') if x)
+        # As the pages read it (1.0.321): %20 and + undone, empty values left out.
+        # parse_qs by its own name: cli_main imports urllib.request further down, urllib is a
+        # local of it and unset here.
+        from urllib.parse import parse_qs as _parse_qs
+        qs = {k: v[-1] for k, v in _parse_qs(query).items()}
         got = cli_api(Daemon(store, serve=False), who, method, path,
                       body if method == 'POST' else None, qs)
         print(json.dumps(got, indent=1, ensure_ascii=False, default=str))
@@ -5580,10 +5600,10 @@ def cli_osusers(args, pal):
             f['on'] = what == 'sudo-on'
         if do == 'drop':
             f['home'] = what == 'drop-home'
-            if sys.stdin.isatty() and input('take %s away on %s%s? type yes: ' % (
-                    name, ', '.join(nodes), ' with the home folder' if f['home'] else '')).strip() != 'yes':
-                print('nothing done')
-                return 1
+            # As every step that takes something away (1.0.321): from a script without --yes it
+            # went ahead unasked, and at a terminal --yes was asked all the same.
+            cli_sure(args, 'take %s away on %s%s' % (name, ', '.join(nodes),
+                                                      ' with the home folder' if f['home'] else ''))
         try:
             t0 = time.time()
             osu_ask(store, nodes, 'list', who)
@@ -5643,11 +5663,8 @@ def cli_sso(args, pal):
     """otp --sso-status, --sso-key (1.0.239): the sign-in by a load balancer or WAF."""
     store = cli_store()
     if args.sso_key:
-        if not args.yes and sys.stdin.isatty():
-            got = input('a new key: the one the balancer sends now is no longer taken. Go on? [y/N] ')
-            if got.strip().lower() not in ('y', 'yes'):
-                print('nothing changed')
-                return 1
+        # Not from a script without --yes (1.0.321): the balancer was shut out unasked.
+        cli_sure(args, 'a new key: the one the balancer sends now is no longer taken')
         tok = secrets.token_urlsafe(32)
         d = Daemon(store, serve=False)
         try:
