@@ -1167,7 +1167,8 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
     who = ', '.join(rec.get('to') or [])
     if err is None:
         rec.update(state='sent', sent_at=now, said=rec['history'][-1]['said'], next_at=0)
-        store.set_meta(MAILQ_PREFIX + qid, json.dumps(rec))
+        # Over what it read only (1.0.325): a mail taken out of the queue meanwhile came back.
+        mailq_cas(store, qid, raw, rec)
         mailq_body_drop(store, qid)
         if rec['tries'] > 1:
             store.add_event('mail', 'the mail to %s (%s) went on try %d' % (
@@ -1195,9 +1196,8 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
                             'the outgoing mail: %s' % (
                                 who, MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'),
                                 str(err)[:300]), 'warn')
-    store.set_meta(MAILQ_PREFIX + qid, json.dumps(rec))
-    if rec['state'] in ('expired',):
-        mailq_body_drop(store, qid)
+    if not mailq_cas(store, qid, raw, rec) or rec['state'] in ('expired',):
+        mailq_body_drop(store, qid)     # taken out meanwhile (1.0.325): stays out
     err.queued = rec['state']
     err.next_at = rec.get('next_at')
     err.qid = qid

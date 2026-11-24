@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.324'
+__version__ = '1.0.325'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -5128,10 +5128,13 @@ END $f$""")
         for name, ddl in SCHEMA:
             have = set(c.lower() for c in self.columns(name))
             body = ddl.format(**types).split('(', 1)[1].rsplit(')', 1)[0]
-            for piece in re.split(r',\s*(?=[a-z_]+ )', body):
+            # A constraint of the table a piece of its own (1.0.325): "ts REAL, UNIQUE (k, node)"
+            # was one, and its ALTER failed every ten minutes for good.
+            for piece in re.split(r',\s*(?=[a-z_]+ |UNIQUE\b|PRIMARY\b|CHECK\b|FOREIGN\b|CONSTRAINT\b)', body):
                 piece = piece.strip()
                 col = piece.split(' ', 1)[0].lower()
-                if not col or col in have or col == 'id':
+                if not col or col in have or col == 'id' or \
+                        col.split('(')[0] in ('unique', 'primary', 'check', 'foreign', 'constraint'):
                     continue
                 kind = piece.split(' ', 2)[1] if ' ' in piece else 'TEXT'
                 kind = re.sub(r'\s*(NOT NULL|UNIQUE|PRIMARY KEY).*$', '', piece.split(' ', 1)[1])
@@ -23017,7 +23020,8 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
     who = ', '.join(rec.get('to') or [])
     if err is None:
         rec.update(state='sent', sent_at=now, said=rec['history'][-1]['said'], next_at=0)
-        store.set_meta(MAILQ_PREFIX + qid, json.dumps(rec))
+        # Over what it read only (1.0.325): a mail taken out of the queue meanwhile came back.
+        mailq_cas(store, qid, raw, rec)
         mailq_body_drop(store, qid)
         if rec['tries'] > 1:
             store.add_event('mail', 'the mail to %s (%s) went on try %d' % (
@@ -23045,9 +23049,8 @@ def mailq_attempt(store, qid, msg=None, raise_err=False, claimed=False):
                             'the outgoing mail: %s' % (
                                 who, MAILQ_KIND_WORDS.get(rec.get('kind'), 'a mail'),
                                 str(err)[:300]), 'warn')
-    store.set_meta(MAILQ_PREFIX + qid, json.dumps(rec))
-    if rec['state'] in ('expired',):
-        mailq_body_drop(store, qid)
+    if not mailq_cas(store, qid, raw, rec) or rec['state'] in ('expired',):
+        mailq_body_drop(store, qid)     # taken out meanwhile (1.0.325): stays out
     err.queued = rec['state']
     err.next_at = rec.get('next_at')
     err.qid = qid
@@ -57861,6 +57864,7 @@ def _rb_restore_job(h, b, by):
         if not t or not RB_NAME_RE.match(name):
             raise ValueError('which backup?')
     store, daemon = h.store, h.d
+    went = [False]
 
     def work(progress):
         tmp = None
@@ -57885,11 +57889,14 @@ def _rb_restore_job(h, b, by):
             BIND_STRICT['tokens'] = False
             bind_tokens(store, trusted=True)
             names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
+            went[0] = True
             return got
         finally:
             if tmp:
                 shutil.rmtree(str(tmp), ignore_errors=True)
-            if src is not None:
+            # Kept for another try when it did not go (1.0.325): a passphrase mistyped, and the
+            # upload of up to 4 GB was gone - sent again. The hour's clean-up takes it otherwise.
+            if src is not None and went[0]:
                 try:
                     src.unlink()
                 except OSError:

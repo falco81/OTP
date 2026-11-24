@@ -1243,10 +1243,13 @@ END $f$""")
         for name, ddl in SCHEMA:
             have = set(c.lower() for c in self.columns(name))
             body = ddl.format(**types).split('(', 1)[1].rsplit(')', 1)[0]
-            for piece in re.split(r',\s*(?=[a-z_]+ )', body):
+            # A constraint of the table a piece of its own (1.0.325): "ts REAL, UNIQUE (k, node)"
+            # was one, and its ALTER failed every ten minutes for good.
+            for piece in re.split(r',\s*(?=[a-z_]+ |UNIQUE\b|PRIMARY\b|CHECK\b|FOREIGN\b|CONSTRAINT\b)', body):
                 piece = piece.strip()
                 col = piece.split(' ', 1)[0].lower()
-                if not col or col in have or col == 'id':
+                if not col or col in have or col == 'id' or \
+                        col.split('(')[0] in ('unique', 'primary', 'check', 'foreign', 'constraint'):
                     continue
                 kind = piece.split(' ', 2)[1] if ' ' in piece else 'TEXT'
                 kind = re.sub(r'\s*(NOT NULL|UNIQUE|PRIMARY KEY).*$', '', piece.split(' ', 1)[1])

@@ -295,6 +295,7 @@ def _rb_restore_job(h, b, by):
         if not t or not RB_NAME_RE.match(name):
             raise ValueError('which backup?')
     store, daemon = h.store, h.d
+    went = [False]
 
     def work(progress):
         tmp = None
@@ -319,11 +320,14 @@ def _rb_restore_job(h, b, by):
             BIND_STRICT['tokens'] = False
             bind_tokens(store, trusted=True)
             names_nfc_kept(store)       # an old copy's names, in one form (1.0.226)
+            went[0] = True
             return got
         finally:
             if tmp:
                 shutil.rmtree(str(tmp), ignore_errors=True)
-            if src is not None:
+            # Kept for another try when it did not go (1.0.325): a passphrase mistyped, and the
+            # upload of up to 4 GB was gone - sent again. The hour's clean-up takes it otherwise.
+            if src is not None and went[0]:
                 try:
                     src.unlink()
                 except OSError:
