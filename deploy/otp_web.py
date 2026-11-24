@@ -1169,7 +1169,7 @@ def acme_into(main, names):
         return main
     block = main[where[0]:where[1]]
     new = block
-    if 'acme-challenge' not in new:
+    if names and 'acme-challenge' not in new:
         # The pool's socket as the file's own server blocks have it (1.0.252): Debian's is
         # /run/php/otp.sock, and the location put in answered 502 there.
         sock = re.search(r'(?m)^\s*fastcgi_pass\s+(unix:[^;\s]+);', main)
@@ -1177,12 +1177,36 @@ def acme_into(main, names):
         new = re.sub(r'(?m)^[ \t]*return[ \t]+301[ \t]+https://\$host\$request_uri;[ \t]*$',
                      lambda m: loc, new, count=1)
     m = re.search(r'(?m)^(\s*server_name\s+)([^;#]*);', new)
-    if m and names:
+    if m:
         have = m.group(2).split()
-        base = [x for x in have if not x.startswith('otp-acme:')]
-        want = base + [n for n in names if n not in base]
-        if want != have:
-            new = new[:m.start()] + m.group(1) + ' '.join(want) + ';' + new[m.end():]
+        # otp's own names, written down beside them (1.0.328): each name ever ordered stayed
+        # for good - an old VIP name on port 80 took another site's requests there. Replaced
+        # as a set each time, taken away when ACME is off (names empty).
+        mk = re.search(r'(?m)^[ \t]*# otp-acme-names:([^\n]*)\n', new)
+        if mk:
+            mine = mk.group(1).split()
+        elif not names:
+            mine = None             # never put any here: left as it is
+        else:
+            # Written before 1.0.328: the first name (install.sh's) and those of the HTTPS
+            # server stay; the others are otp's.
+            tls = set()
+            for t in re.finditer(r'(?m)^\s*server_name\s+([^;#]*);', main[:where[0]] + main[where[1]:]):
+                tls.update(t.group(1).split())
+            mine = [x for x in have[1:] if x not in tls]
+        if mine is not None:
+            base = [x for x in have if x not in mine and not x.startswith('otp-acme:')]
+            add = [n for n in names if n not in base]
+            want = base + add
+            line = m.group(1) + ' '.join(want) + ';'
+            note = ('%s# otp-acme-names: %s\n' % (re.match(r'\s*', m.group(1)).group(0).lstrip('\n'),
+                                                   ' '.join(add))) if add else ''
+            new2 = new[:m.start()] + line + new[m.end():]
+            if mk:
+                new2 = re.sub(r'(?m)^[ \t]*# otp-acme-names:[^\n]*\n', lambda _x: '', new2, count=1)
+            m2 = re.search(r'(?m)^(\s*server_name\s+)([^;#]*);[^\n]*\n', new2)
+            new2 = new2[:m2.end()] + note + new2[m2.end():]
+            new = new2
     return main[:where[0]] + new + main[where[1]:] if new != block else main
 
 

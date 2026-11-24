@@ -567,7 +567,12 @@ class Root(object):
                 out = self.ops.run_op(op, args, self.c)
                 out.pop('agent_restart', None)
             else:
-                out = self.long_op(op, args, node, base64.b64decode(msg.get('der') or ''))
+                try:
+                    wait = float(req.get('wait_s') or 0)
+                except (TypeError, ValueError):
+                    wait = 0
+                out = self.long_op(op, args, node, base64.b64decode(msg.get('der') or ''),
+                                   until=(time.monotonic() + wait) if wait > 0 else None)
             if op == 'status':
                 with self.lock:
                     cl = clients(self.c)
@@ -585,7 +590,7 @@ class Root(object):
             out['agent_restart'] = True
         return self.reply(200, dict(out, ok=True), key, nonce, restart=restart)
 
-    def long_op(self, op, args, node, der=b''):
+    def long_op(self, op, args, node, der=b'', until=None):
         """An operation that changes the server: one at a time (said as `busy` meanwhile), the
         server's certificate only by the cluster that put it in - known by the authority that
         signed the client certificate the request came with (`der`)."""
@@ -594,6 +599,11 @@ class Root(object):
         with self.work:
             if self.stopping:
                 raise self.ops.Refused('the agent is stopping: again once it is started again')
+            if until is not None and time.monotonic() > until:
+                # Waited behind another operation longer than the node waits (1.0.328): it said
+                # failed already - done now, it changed pg_hba or the certificate behind its back.
+                raise self.ops.Refused('%s waited for another operation longer than the node '
+                                       'waits - not done; ask again' % op)
             self.busy = {'op': op, 'node': node, 'since': time.time(),
                          'do': str(args.get('do') or '')[:20] if isinstance(args, dict) else ''}
             try:
