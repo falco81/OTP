@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.325'
+__version__ = '1.0.326'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -36153,6 +36153,8 @@ def net_check(store, node, want, rollback=False):
     if not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
                     r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)%s$' % ('*' if same else '+'), host):
         raise ValueError('the host name is the whole name: otp1.example.cz')
+    if len(host) > 64 and not same:
+        raise ValueError('the host name is the whole name, 64 characters at most')   # (1.0.326)
     old_ip = net_current_ip(now).split('/')[0]
     new_ip = str(a4.ip)
     many = in_cluster(store)                    # a shared database's cluster too (1.0.211)

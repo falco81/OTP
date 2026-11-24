@@ -243,6 +243,8 @@ def net_check(store, node, want, rollback=False):
     if not re.match(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
                     r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)%s$' % ('*' if same else '+'), host):
         raise ValueError('the host name is the whole name: otp1.example.cz')
+    if len(host) > 64 and not same:
+        raise ValueError('the host name is the whole name, 64 characters at most')   # (1.0.326)
     old_ip = net_current_ip(now).split('/')[0]
     new_ip = str(a4.ip)
     many = in_cluster(store)                    # a shared database's cluster too (1.0.211)
