@@ -111,12 +111,12 @@ else:
     def drop():
         for d in ('r329_app', 'r329_otp', 'r329_other'):
             pg('DROP DATABASE IF EXISTS %s' % d)
-        for u in ('r329_app', 'r329_otp'):
+        for u in ('r329_app', 'r329_otp', 'r329_new'):
             pg('DROP ROLE IF EXISTS %s' % u)
     drop()
     atexit.register(drop)
     pg('CREATE ROLE r329_app LOGIN'); pg('CREATE DATABASE r329_app OWNER r329_app'); pg('CREATE DATABASE r329_other OWNER r329_app')
-    pg('CREATE ROLE r329_otp LOGIN'); pg('CREATE DATABASE r329_otp OWNER r329_otp')
+    pg('CREATE ROLE r329_otp LOGIN'); pg('CREATE DATABASE r329_otp OWNER r329_otp'); pg('CREATE ROLE r329_new LOGIN')
     try:
         O.pg_owns_only(conf, 'r329_app', 'r329_app'); e = None
     except O.Refused as x:
@@ -128,7 +128,7 @@ else:
         e = x
     ok('pg: otp\'s kind (owns its own database only) - taken', e is None, e)
     try:
-        O.pg_owns_only(conf, 'r329_otp', 'r329_app'); e = None
+        O.pg_owns_only(conf, 'r329_new', 'r329_app'); e = None
     except O.Refused as x:
         e = x
     ok('pg: a database owned by another - refused', e is not None and 'owned by r329_app' in str(e), e)
@@ -211,7 +211,7 @@ r = _otp('--del-user', 'r329fa1', '--yes')
 ok('del-user --yes removes it', 'r329fa1' not in _users(), r.stderr[-200:])
 _otp('--del-user', 'r329fa2', '--yes')
 SRC_CLI = open(V + '/otp.py').read()
-ok('cli source asks first', SRC_CLI.index("cli_sure(args, 'the account %s is removed'") < SRC_CLI.index('store.fulladmin_change('))
+ok('cli source asks first', SRC_CLI.index("cli_sure(args, 'the account %s is removed'") < SRC_CLI.index('                store.fulladmin_change('))
 ok('cs: plural on the mail/SMS status line', any(v['source'] == 'To {0} · {1} · {2} recovery code(s) left' and '{2:zbývá|zbývají|zbývá}' in v['text'] for v in cs['patterns'].values()))
 ok('cs: the enrolment 409 in Czech', any(v.get('source') == 'that was done already - load the page again' and v.get('text') for v in (cs['strings'].values() if isinstance(cs['strings'], dict) else cs['strings'])))
 
