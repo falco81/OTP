@@ -1378,9 +1378,27 @@ def listen_socket(c):
     it, so connections wait in its queue while one side ends and the next starts (they were
     refused then)."""
     fam = socket.AF_INET6 if ':' in c['listen'] else socket.AF_INET
-    s = socket.socket(fam, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind((c['listen'], int(c['port'])))
+    s = None
+    try:
+        s = socket.socket(fam, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if fam == socket.AF_INET6 and c['listen'] == '::':
+            # IPv4 and IPv6 both (1.0.327): an otp node on IPv6 was taken but got no answer.
+            try:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except OSError:
+                pass
+        s.bind((c['listen'], int(c['port'])))
+    except OSError:
+        if c['listen'] != '::':
+            raise
+        # A machine without IPv6 (no AF_INET6 at all, or no address): IPv4 alone, as before.
+        if s is not None:
+            s.close()
+        c['listen'] = '0.0.0.0'
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((c['listen'], int(c['port'])))
     s.listen(128)
     return s
 

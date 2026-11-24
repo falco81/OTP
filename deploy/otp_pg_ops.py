@@ -453,8 +453,20 @@ def op_my_tls(args, conf):
                 f.write(v)
         W.openssl(['verify', '-CAfile', os.path.join(t, 'ca.pem'), os.path.join(t, 'c.pem')],
                   'the certificate is not from these authorities')
-    folder = str(conf.get('my_tls_dir') or '/etc/otp-db-agent/mariadb')
+    cnf_dir = _my_cnf_dir(conf)
+    cnf = os.path.join(cnf_dir, MY_CNF_NAME)
+    try:
+        cnf_was = W.pg_file_read(cnf)
+    except (OSError, Refused):
+        cnf_was = None
+    # A folder MariaDB reaches (1.0.327): /etc/otp-db-agent is root's alone (0700), and the one
+    # in it was made 0700 by the agent's umask - MariaDB started without TLS, every try put it
+    # back with one restart more. One a hand made work with the old folder keeps it.
+    old = '/etc/otp-db-agent/mariadb'
+    folder = str(conf.get('my_tls_dir') or (old if cnf_was and (old + '/') in cnf_was
+                                            else '/etc/otp-db-agent-mariadb'))
     os.makedirs(folder, mode=0o750, exist_ok=True)
+    os.chmod(folder, 0o750)
     try:
         import pwd
         pw = pwd.getpwnam(str(conf.get('my_user') or 'mysql'))
@@ -473,23 +485,19 @@ def op_my_tls(args, conf):
             was[n] = None
     for n, (text, mode) in files.items():
         W.pg_file_put(os.path.join(folder, n), text, mode, 0 if uid is not None else None, gid)
-    cnf_dir = _my_cnf_dir(conf)
-    cnf = os.path.join(cnf_dir, MY_CNF_NAME)
     body = ('# written by otp-db-agent - otp renews these; take this file away to stop it\n'
             '[mariadb]\nssl_cert = %s\nssl_key = %s\nssl_ca = %s\n' % (
                 os.path.join(folder, 'server.crt'), os.path.join(folder, 'server.key'),
                 os.path.join(folder, 'ca.pem')))
-    try:
-        cnf_was = W.pg_file_read(cnf)
-    except (OSError, Refused):
-        cnf_was = None
     how = ''
+    restarted = []
     try:
         if cnf_was == body and my_sql(conf, "SELECT @@have_ssl") == 'YES':
             my_sql(conf, 'FLUSH SSL')
             how = 'FLUSH SSL - no restart'
         else:
             W.write_root(cnf, body, 0o644)
+            restarted.append(1)
             how = op_my_restart({}, conf)['said']
         if my_sql(conf, 'SELECT @@have_ssl') != 'YES':
             raise Refused('MariaDB does not have TLS on with it')
@@ -510,6 +518,12 @@ def op_my_tls(args, conf):
                 pass
         else:
             W.write_root(cnf, cnf_was, 0o644)
+        if restarted:
+            # Started again with what it had (1.0.327): left as the failed start left it.
+            try:
+                op_my_restart({}, conf)
+            except Exception:                           # noqa: BLE001
+                pass
         raise
     end = W.openssl(['x509', '-noout', '-enddate'], 'the certificate', pem['cert'])
     import ssl as _ssl
