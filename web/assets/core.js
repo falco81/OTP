@@ -109,6 +109,11 @@ function numDecimal() {
   }
   return NUM_FMT.dec;
 }
+/** n.toFixed(k) with the page's decimal mark (1.0.321). */
+function numFixed(n, k) {
+  var t = Number(n).toFixed(k);
+  return numDecimal() === ',' ? t.replace('.', ',') : t;
+}
 /** A number read back off the page, written either way. */
 function shownNumber(text) {
   var t = String(text === null || text === undefined ? '' : text);
@@ -2467,7 +2472,7 @@ function pkDevice() {
   var ua = navigator.userAgent || '';
   var n = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'iPad' : /iPhone/.test(ua) ? 'iPhone'
     : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : 'a device';
-  return n + ' · ' + new Date().toLocaleDateString();
+  return n + ' · ' + new Date().toLocaleDateString(numLang());
 }
 function pkWhy() {
   if (location.protocol !== 'https:' || /^[0-9.]+$|^\[/.test(location.hostname))
