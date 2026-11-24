@@ -2028,7 +2028,7 @@ def rb_open(path, password, work):
     return top, m
 
 
-def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True):
+def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True, allow_newer=False):
     """Everything in a backup put back on this machine: the database, the key
     of the tokens, the node's name. The connection to the database in
     config.json stays this machine's."""
@@ -2036,6 +2036,8 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
     os.chmod(work, 0o700)
     try:
         top, m = rb_open(path, password, work)
+        if m.get('otp') and _ver_tuple(m['otp']) > _ver_tuple(__version__) and not allow_newer:
+            raise ValueError(newer_copy_words(m['otp']))      # (1.0.322)
         # A machine installed anew holds no token yet (1.0.248): only there is what the backup
         # kept of the machine put back. A backup put back on a machine in use left its users and
         # keys as they are - a key taken away since the backup came back otherwise.
@@ -2045,7 +2047,8 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
             fresh = False
         got = db_file_restore(store, os.path.join(top, 'otp-copy.json.gz'), by,
                               key_file=os.path.join(top, 'secrets.key'),
-                              from_name=os.path.basename(str(path)), need_admin=need_admin)
+                              from_name=os.path.basename(str(path)), need_admin=need_admin,
+                              allow_newer=allow_newer)
         said = [got.get('key') or '']
         # The guard of root's actions as the backup's machine had it (1.0.247): it is a setting of
         # config.json, which the restore does not take whole - the connection stays this machine's.
@@ -2061,8 +2064,10 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
         # A machine new to this node: what it put in is put in again, and what the backup kept
         # of the machine (local users, SSH keys, SELinux's booleans) put back, at the next start.
         old_name = node_name()
+        # Not on a node of a cluster of one shared database either (1.0.322): ha_mode is empty
+        # there, and node2 became node1 - both nodes with one name.
         if m.get('node') and not keep_node_name and m['node'] != old_name and \
-                not CONFIG.get('ha_mode'):
+                not in_cluster(store):
             write_file_settings({'node_name': m['node']})
             CONFIG['node_name'] = m['node']
             try:

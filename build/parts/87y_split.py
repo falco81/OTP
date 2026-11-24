@@ -274,6 +274,7 @@ def _split_peer_probe():
     got = {}
 
     def ask():
+        db = None
         try:
             db = SPLIT['peer_db']
             if db is None or SPLIT.get('peer_gen') != ONCE_PEER.get('gen'):
@@ -288,12 +289,14 @@ def _split_peer_probe():
             got['ok'] = True
         except Exception as e:                          # noqa: BLE001
             got['e'] = str(e).split('\n')[0][:200]
+            # Its own connection only (1.0.322): a probe late past its 3.5 s closed the next one's.
             try:
-                if SPLIT['peer_db'] is not None:
-                    SPLIT['peer_db'].close()
+                if db is not None:
+                    db.close()
             except Exception:                           # noqa: BLE001
                 pass
-            SPLIT['peer_db'] = None
+            if SPLIT['peer_db'] is db:
+                SPLIT['peer_db'] = None
     t = threading.Thread(target=ask, name='otp-split-peer', daemon=True)
     t.start()
     t.join(3.5)

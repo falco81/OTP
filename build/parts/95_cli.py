@@ -883,6 +883,9 @@ def build_parser():
     g.add_argument('--restore-bundle', metavar='FILE', help='put back a backup sent to a '
                    'destination (otp-backup-....tar.gz.enc): everything - the database, the key '
                    'of the tokens, the node\'s name; without --yes, what is in it')
+    g.add_argument('--allow-newer', action='store_true', help='with --restore or --restore-bundle: '
+                   'put back a copy made by a newer otp all the same (what this version does not '
+                   'know of it is lost)')
     g.add_argument('--passphrase-file', metavar='FILE', help='with --restore-bundle: the '
                    'password of the backups, one line (else OTP_BACKUP_PASSWORD, else asked)')
     g.add_argument('--keep-node-name', action='store_true', help='with --restore-bundle: this '
@@ -4566,7 +4569,8 @@ def cli_main(argv=None):
             return 0
         try:
             got = rb_restore(store, path, password, cli_who(),
-                             keep_node_name=args.keep_node_name, need_admin=False)
+                             keep_node_name=args.keep_node_name, need_admin=False,
+                             allow_newer=args.allow_newer)
         except (RbError, ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False
@@ -4591,7 +4595,8 @@ def cli_main(argv=None):
             raise SystemExit('otp: there is no file %s' % args.restore)
         try:
             got = db_file_restore(store, args.restore, cli_who(),
-                                  key_file=_key_beside(args.restore), need_admin=False)
+                                  key_file=_key_beside(args.restore), need_admin=False,
+                                  allow_newer=args.allow_newer)
         except (ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False

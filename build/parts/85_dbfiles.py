@@ -367,11 +367,17 @@ def _peek_sqlite(path):
                   for t in TABLES if t in names}
         admins = con.execute("SELECT COUNT(*) FROM accounts WHERE role = 'fulladmin' AND "
                              "COALESCE(disabled, 0) = 0").fetchone()[0]
+        # The version that made its tables last (1.0.322): what a newer one wrote is told apart.
+        made = ''
+        if 'meta' in names:
+            for (v,) in con.execute("SELECT v FROM meta WHERE k LIKE 'schema:%'"):
+                if _ver_tuple(v) > _ver_tuple(made or '0'):
+                    made = str(v)
     except sqlite3.Error as e:
         return None, 'that database could not be read: %s' % e
     finally:
         con.close()
-    return {'kind': 'sqlite', 'counts': counts, 'admins': admins,
+    return {'kind': 'sqlite', 'counts': counts, 'admins': admins, 'version': made or None,
             'tables': len([t for t in TABLES if t in names])}, ''
 
 
@@ -519,7 +525,19 @@ def db_file_peek(path, engine, need_admin=True):
                           'it can be put back, and an account made after it)')
         said['no_admin'] = True
     said['bytes'] = Path(path).stat().st_size
+    # Made by a newer otp (1.0.322): its tables, columns and settings this version does not know
+    # were left out or misread without a word - and every guard of a downgrade went round.
+    v = said.get('version')
+    if v and _ver_tuple(v) > _ver_tuple(__version__):
+        said['newer'] = str(v)
     return said, ''
+
+
+def newer_copy_words(v):
+    return ('that copy was made by otp %s, newer than %s here: what this version does not know of '
+            'it (tables, columns, settings) would be lost or misread - install otp %s or newer '
+            'here first, or put it back anyway on the command line with --allow-newer'
+            % (v, __version__, v))
 
 
 def _sqlite_to_copy(path, out):
@@ -533,13 +551,16 @@ def _sqlite_to_copy(path, out):
     return out
 
 
-def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=True):
+def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=True,
+                    allow_newer=False):
     """Put a copy or a dump back over everything. A copy of what is replaced
     is made first and kept with the others."""
     engine = store.db.engine
     said, why = db_file_peek(path, engine, need_admin)
     if said is None:
         raise ValueError(why)
+    if said.get('newer') and not allow_newer:
+        raise ValueError(newer_copy_words(said['newer']))
     kind = said['kind']
     other = db_job_elsewhere()
     if other:

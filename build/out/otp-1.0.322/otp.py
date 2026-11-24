@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.321'
+__version__ = '1.0.322'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -20955,11 +20955,17 @@ def _peek_sqlite(path):
                   for t in TABLES if t in names}
         admins = con.execute("SELECT COUNT(*) FROM accounts WHERE role = 'fulladmin' AND "
                              "COALESCE(disabled, 0) = 0").fetchone()[0]
+        # The version that made its tables last (1.0.322): what a newer one wrote is told apart.
+        made = ''
+        if 'meta' in names:
+            for (v,) in con.execute("SELECT v FROM meta WHERE k LIKE 'schema:%'"):
+                if _ver_tuple(v) > _ver_tuple(made or '0'):
+                    made = str(v)
     except sqlite3.Error as e:
         return None, 'that database could not be read: %s' % e
     finally:
         con.close()
-    return {'kind': 'sqlite', 'counts': counts, 'admins': admins,
+    return {'kind': 'sqlite', 'counts': counts, 'admins': admins, 'version': made or None,
             'tables': len([t for t in TABLES if t in names])}, ''
 
 
@@ -21107,7 +21113,19 @@ def db_file_peek(path, engine, need_admin=True):
                           'it can be put back, and an account made after it)')
         said['no_admin'] = True
     said['bytes'] = Path(path).stat().st_size
+    # Made by a newer otp (1.0.322): its tables, columns and settings this version does not know
+    # were left out or misread without a word - and every guard of a downgrade went round.
+    v = said.get('version')
+    if v and _ver_tuple(v) > _ver_tuple(__version__):
+        said['newer'] = str(v)
     return said, ''
+
+
+def newer_copy_words(v):
+    return ('that copy was made by otp %s, newer than %s here: what this version does not know of '
+            'it (tables, columns, settings) would be lost or misread - install otp %s or newer '
+            'here first, or put it back anyway on the command line with --allow-newer'
+            % (v, __version__, v))
 
 
 def _sqlite_to_copy(path, out):
@@ -21121,13 +21139,16 @@ def _sqlite_to_copy(path, out):
     return out
 
 
-def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=True):
+def db_file_restore(store, path, by, key_file=None, from_name='', need_admin=True,
+                    allow_newer=False):
     """Put a copy or a dump back over everything. A copy of what is replaced
     is made first and kept with the others."""
     engine = store.db.engine
     said, why = db_file_peek(path, engine, need_admin)
     if said is None:
         raise ValueError(why)
+    if said.get('newer') and not allow_newer:
+        raise ValueError(newer_copy_words(said['newer']))
     kind = said['kind']
     other = db_job_elsewhere()
     if other:
@@ -25775,7 +25796,7 @@ def rb_open(path, password, work):
     return top, m
 
 
-def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True):
+def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True, allow_newer=False):
     """Everything in a backup put back on this machine: the database, the key
     of the tokens, the node's name. The connection to the database in
     config.json stays this machine's."""
@@ -25783,6 +25804,8 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
     os.chmod(work, 0o700)
     try:
         top, m = rb_open(path, password, work)
+        if m.get('otp') and _ver_tuple(m['otp']) > _ver_tuple(__version__) and not allow_newer:
+            raise ValueError(newer_copy_words(m['otp']))      # (1.0.322)
         # A machine installed anew holds no token yet (1.0.248): only there is what the backup
         # kept of the machine put back. A backup put back on a machine in use left its users and
         # keys as they are - a key taken away since the backup came back otherwise.
@@ -25792,7 +25815,8 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
             fresh = False
         got = db_file_restore(store, os.path.join(top, 'otp-copy.json.gz'), by,
                               key_file=os.path.join(top, 'secrets.key'),
-                              from_name=os.path.basename(str(path)), need_admin=need_admin)
+                              from_name=os.path.basename(str(path)), need_admin=need_admin,
+                              allow_newer=allow_newer)
         said = [got.get('key') or '']
         # The guard of root's actions as the backup's machine had it (1.0.247): it is a setting of
         # config.json, which the restore does not take whole - the connection stays this machine's.
@@ -25808,8 +25832,10 @@ def rb_restore(store, path, password, by, keep_node_name=False, need_admin=True)
         # A machine new to this node: what it put in is put in again, and what the backup kept
         # of the machine (local users, SSH keys, SELinux's booleans) put back, at the next start.
         old_name = node_name()
+        # Not on a node of a cluster of one shared database either (1.0.322): ha_mode is empty
+        # there, and node2 became node1 - both nodes with one name.
         if m.get('node') and not keep_node_name and m['node'] != old_name and \
-                not CONFIG.get('ha_mode'):
+                not in_cluster(store):
             write_file_settings({'node_name': m['node']})
             CONFIG['node_name'] = m['node']
             try:
@@ -40296,6 +40322,7 @@ def _split_peer_probe():
     got = {}
 
     def ask():
+        db = None
         try:
             db = SPLIT['peer_db']
             if db is None or SPLIT.get('peer_gen') != ONCE_PEER.get('gen'):
@@ -40310,12 +40337,14 @@ def _split_peer_probe():
             got['ok'] = True
         except Exception as e:                          # noqa: BLE001
             got['e'] = str(e).split('\n')[0][:200]
+            # Its own connection only (1.0.322): a probe late past its 3.5 s closed the next one's.
             try:
-                if SPLIT['peer_db'] is not None:
-                    SPLIT['peer_db'].close()
+                if db is not None:
+                    db.close()
             except Exception:                           # noqa: BLE001
                 pass
-            SPLIT['peer_db'] = None
+            if SPLIT['peer_db'] is db:
+                SPLIT['peer_db'] = None
     t = threading.Thread(target=ask, name='otp-split-peer', daemon=True)
     t.start()
     t.join(3.5)
@@ -69722,6 +69751,9 @@ def build_parser():
     g.add_argument('--restore-bundle', metavar='FILE', help='put back a backup sent to a '
                    'destination (otp-backup-....tar.gz.enc): everything - the database, the key '
                    'of the tokens, the node\'s name; without --yes, what is in it')
+    g.add_argument('--allow-newer', action='store_true', help='with --restore or --restore-bundle: '
+                   'put back a copy made by a newer otp all the same (what this version does not '
+                   'know of it is lost)')
     g.add_argument('--passphrase-file', metavar='FILE', help='with --restore-bundle: the '
                    'password of the backups, one line (else OTP_BACKUP_PASSWORD, else asked)')
     g.add_argument('--keep-node-name', action='store_true', help='with --restore-bundle: this '
@@ -73405,7 +73437,8 @@ def cli_main(argv=None):
             return 0
         try:
             got = rb_restore(store, path, password, cli_who(),
-                             keep_node_name=args.keep_node_name, need_admin=False)
+                             keep_node_name=args.keep_node_name, need_admin=False,
+                             allow_newer=args.allow_newer)
         except (RbError, ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False
@@ -73430,7 +73463,8 @@ def cli_main(argv=None):
             raise SystemExit('otp: there is no file %s' % args.restore)
         try:
             got = db_file_restore(store, args.restore, cli_who(),
-                                  key_file=_key_beside(args.restore), need_admin=False)
+                                  key_file=_key_beside(args.restore), need_admin=False,
+                                  allow_newer=args.allow_newer)
         except (ValueError, OSError) as e:
             raise SystemExit('otp: %s' % e)
         BIND_STRICT['tokens'] = False
