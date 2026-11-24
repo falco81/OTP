@@ -332,6 +332,19 @@ def seal_fp_check(store):
         store.drop_meta(k)
 
 
+def names_nfc_asked(store):
+    """The lead: names put in one form when the other node asked (1.0.327) - it put an old
+    copy back. Each ask taken away only as it was read: one made again meanwhile stays."""
+    if CONFIG.get('ha_mode') != 'replicated' or not ha_lead(store):
+        return
+    asks = store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'names:nfc:ask%'")
+    if not asks:
+        return
+    names_nfc_kept(store)
+    for r in asks:
+        store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (r['k'], r['v']))
+
+
 def names_nfc_kept(store):
     """Once (1.0.224): a token whose name was written with its letters decomposed (Z + ˇ,
     sent so by a client before 1.0.222) is renamed to the composed form every name is looked
@@ -345,6 +358,12 @@ def names_nfc_kept(store):
     # database since, or an old copy put back, brought decomposed names again. Only the names
     # that are not ASCII are looked at - cheap.
     if not ha_lead(store):
+        # A copy put back here, the node that is not the lead (1.0.327): its names stayed as
+        # they were until the lead started again - nobody found those tokens meanwhile. The
+        # lead is asked: a key of this node's own, the lead does it on its next look.
+        if any(not str(n.get('name') or '').isascii() and norm_name(n['name']) != n['name']
+               for n in store.db.rows('SELECT name FROM tokens')):
+            store.set_meta('names:nfc:ask' + NODE_KEY_SEP + node_name(), str(time.time()))
         return
     if not sealing_key():
         # Not without the key that opens the tokens (1.0.225): their keys would stay sealed
@@ -2190,6 +2209,10 @@ class Daemon(object):
                     net_tick(self)              # the network, restart, power off (1.0.119)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('net-tick', 'the network: %s' % e, 'warn', every=600)
+                try:
+                    names_nfc_asked(self.store)  # the other node put a copy back (1.0.327)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('names-nfc-asked', 'the names of tokens: %s' % e, 'warn', every=600)
                 try:
                     lockouts_tick(self)         # who is locked out, for the pages (1.0.112)
                 except Exception as e:          # noqa: BLE001

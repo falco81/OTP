@@ -329,7 +329,10 @@ my_configure() {
     for cnf_dir in /etc/my.cnf.d /etc/mysql/mariadb.conf.d; do [[ -d "$cnf_dir" ]] && break; done
     cnf="$cnf_dir/zz-otp-listen.cnf"
     if [[ -n "$OTP_NODES" && ! -f "$cnf" ]]; then
-        printf '# written by install.sh --db-server mariadb (otp)\n[mariadb]\nbind-address = 0.0.0.0\n' | write_file "$cnf" 0644
+        # IPv6 too where the machine has it (1.0.327): an otp node on IPv6 got no answer.
+        bind=0.0.0.0
+        python3 -I -c 'import socket; s = socket.socket(socket.AF_INET6); s.bind(("::", 0))' 2>/dev/null && bind=::
+        printf '# written by install.sh --db-server mariadb (otp)\n[mariadb]\nbind-address = %s\n' "$bind" | write_file "$cnf" 0644
         if dbs_systemd; then run systemctl restart mariadb; else warn "start MariaDB again for $cnf (bind-address)"; fi
         good "MariaDB listens on the network ($cnf)"
     fi
@@ -422,7 +425,12 @@ PY
         python3 -I - "$eng" "$port" "$DB_AGENT_PORT" <<'PY' | write_file "$cfg" 0600
 import json, sys
 eng, port, aport = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-c = {'listen': '0.0.0.0', 'port': aport, 'engine': eng, 'user': 'otp-db-agent',
+import socket
+try:                                    # IPv6 too where the machine has it (1.0.327)
+    _s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); _s.bind(('::', 0)); _s.close(); lis = '::'
+except OSError:
+    lis = '0.0.0.0'
+c = {'listen': lis, 'port': aport, 'engine': eng, 'user': 'otp-db-agent',
      'state': '/var/lib/otp-db-agent', 'log': '/var/log/otp-db-agent/audit.log',
      'ha_ca': '/etc/pki/otp/ha-ca.pem'}
 c['pg_port' if eng == 'postgres' else 'my_port'] = port

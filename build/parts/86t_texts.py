@@ -333,6 +333,24 @@ class _RichClean(_html_parser.HTMLParser):
         return re.sub(r'\A(<br>)+', '', text).strip()
 
 
+def fill_html(t, fmt, plain):
+    """A text of a mail filled in (1.0.327): {account} inside a link's address took the HTML
+    that keeps a name from turning into a link - its quote closed the address, and every
+    mail's link was broken. Inside href="..." each {word} is the plain value, as an address
+    takes it; everywhere else as before."""
+    import urllib.parse as _up
+
+    def one(n):
+        k = n.group(1)
+        if k not in plain:
+            return n.group(0)
+        return html.escape(_up.quote(str(plain[k] if plain[k] is not None else ''), safe="@:/+-._~=&?#,;!$'()*"),
+                           quote=True)
+    t = re.sub(r'(<a href=")([^"]*)(")', lambda m: m.group(1) + re.sub(
+        r'(?<!\{)\{(\w+)\}(?!\})', one, m.group(2)) + m.group(3), str(t))
+    return t.format(**fmt)
+
+
 def text_rich_clean(value):
     p = _RichClean()
     p.feed(str(value or ''))

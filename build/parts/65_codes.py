@@ -1302,7 +1302,7 @@ def code_mail_html(code, purpose, lang, name='', display='', w=None):
              else w['h_%shello_anon' % v].format())
     if hello.strip():
         rows.append('<p style="margin:0 0 6px;font-size:16px;color:#111827">%s</p>' % hello)
-    lede = (w['h_%slede' % v].format(account=acc) if name
+    lede = (fill_html(w['h_%slede' % v], {'account': acc}, {'account': name}) if name
             else w['h_%slede_anon' % v].format())
     facts, note, warn = w['h_%sfacts' % v], w[cp['note']], cp['warn']
     if lede.strip():
@@ -1617,6 +1617,18 @@ def chal_drop(store, state):
     store.drop_meta(chal_key(state))
 
 
+def _tidy_mine(store, k):
+    """Whether this node tidies count `k` (1.0.327): in a replicated pair only its own
+    ('...@@<this node>') - the other node's row deleted here while it added to it there, its
+    newest count was lost: one code or one directory password more. One written before 1.0.146
+    (no node in it): the lead's. Every other way (one node, one database for both): all."""
+    if CONFIG.get('ha_mode') != 'replicated':
+        return True
+    if NODE_KEY_SEP not in k:
+        return ha_lead(store)
+    return k.rsplit(NODE_KEY_SEP, 1)[1] == node_name()
+
+
 def chal_tidy(store):
     """Challenges past their time, and the counts of sent codes."""
     t = clock_now('locks')
@@ -1628,6 +1640,8 @@ def chal_tidy(store):
             v = None
         if r['k'].startswith('chal:'):
             gone = not isinstance(v, dict) or fnum(v.get('exp')) < t - 60
+        elif not _tidy_mine(store, r['k']):
+            continue
         else:
             span = 60 * int(CONFIG.get('code_send_window_min') or 15)
             if r['k'].startswith('adpw:'):              # wrong directory passwords (1.0.230)

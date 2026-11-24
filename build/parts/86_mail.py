@@ -867,9 +867,9 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
         rows.append('<p style="margin:0 0 6px;font-size:16px;color:#111827">%s</p>' % hello)
     if w['lede'].strip():
         rows.append('<p style="margin:0 0 24px;font-size:15px;line-height:1.55;color:#374151">'
-                    '%s</p>' % w['lede'].format(**fmt))
-    rows.append(step(1, w['step1'].format(**fmt)))
-    rows.append(step(2, w['step2'].format(**fmt)))
+                    '%s</p>' % fill_html(w['lede'], fmt, plain_fmt_h))
+    rows.append(step(1, fill_html(w['step1'], fmt, plain_fmt_h)))
+    rows.append(step(2, fill_html(w['step2'], fmt, plain_fmt_h)))
     rows.append('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
                 'border="0" style="margin:4px 0 20px"><tr><td align="center">'
                 '<table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr>'
@@ -879,7 +879,7 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
                 '<div style="margin-top:8px;font-size:13px;color:#6b7280;%s">%s · %s</div>'
                 '</td></tr></table>'
                 % (cid, font, _h(issuer), nobreak_link(picture.get('label') or name)))
-    rows.append(step(3, w['step3'].format(**fmt)))
+    rows.append(step(3, fill_html(w['step3'], fmt, plain_fmt_h)))
     rows.append('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
                 'border="0" style="margin:0 0 6px"><tr><td style="padding-left:40px">'
                 '<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
@@ -888,14 +888,14 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
                 'monospace;font-size:15px;font-weight:700;letter-spacing:1px;color:#111827;white-space:nowrap">%s'
                 '</td></tr></table>'
                 '<div style="margin:6px 0 0;font-size:12.5px;color:#6b7280;text-align:center;%s">'
-                '%s</div></td></tr></table>' % (_h(key), font, w['facts'].format(**fmt) + _algo_said(picture)))
+                '%s</div></td></tr></table>' % (_h(key), font, fill_html(w['facts'], fmt, plain_fmt_h) + _algo_said(picture)))
     rows.append('<div style="height:18px;line-height:18px;font-size:1px">&nbsp;</div>')
     if pending and w['pending'].strip():
         rows.append('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
                     'border="0" style="margin:0 0 20px"><tr><td bgcolor="#eff6ff" '
                     'style="padding:12px 16px;background:#eff6ff;border-left:4px solid #2563eb;'
                     'font-size:14px;line-height:1.5;color:#1e3a8a;%s">%s%s</td></tr></table>'
-                    % (font, w['pending'].format(**fmt), (' <a href="%s" style="color:#1d4ed8">%s</a>'
+                    % (font, fill_html(w['pending'], fmt, plain_fmt_h), (' <a href="%s" style="color:#1d4ed8">%s</a>'
                                             % (_h(portal_url), _h(portal_url)))
                        if portal_url else ''))
     if codes:
@@ -925,14 +925,14 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
                     '%s">%s</div>'
                     '<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
                     'border="0">%s</table></td></tr></table>'
-                    % (font, _h(w['codes_h'].format(**plain_fmt_h)), font, w['codes_p'].format(**fmt),
+                    % (font, _h(w['codes_h'].format(**plain_fmt_h)), font, fill_html(w['codes_p'], fmt, plain_fmt_h),
                        ''.join(lines)))
     if w['warn'].strip():
         rows.append('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
                     'border="0"><tr><td bgcolor="#fff7ed" style="padding:12px 16px;'
                     'background:#fff7ed;border-left:4px solid #f59e0b;font-size:13px;'
                     'line-height:1.5;color:#7c2d12;%s">%s</td></tr></table>'
-                    % (font, w['warn'].format(**fmt)))
+                    % (font, fill_html(w['warn'], fmt, plain_fmt_h)))
     body = ''.join(rows)
     page = ('<!doctype html><html lang="%s" xmlns:v="urn:schemas-microsoft-com:vml" '
             'xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8">'
@@ -955,7 +955,7 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
             '<tr><td style="padding:14px 28px 22px;font-size:12px;color:#9ca3af;%s;'
             'border-top:1px solid #f3f4f6">%s</td></tr></table></td></tr></table></body></html>'
             % (lang, _h(w['subject'].format(site=site)), font, font, _h(issuer),
-               _h(w['title'].format(site=site)), font, body, font, w['foot'].format(**fmt)))
+               _h(w['title'].format(site=site)), font, body, font, fill_html(w['foot'], fmt, plain_fmt_h)))
     # The text version (1.0.103): the words' tags taken out and their
     # entities read first, then the values put in as they are - the name of
     # the account plain, not with the HTML that keeps it from becoming a link.

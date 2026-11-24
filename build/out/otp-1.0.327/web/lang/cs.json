@@ -3,7 +3,7 @@
   "code": "cs",
   "name": "Čeština",
   "english": "Czech",
-  "version": "1.0.326",
+  "version": "1.0.327",
   "made": "2026-10-23",
   "about": "Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen \"text\", nikdy \"source\". Prázdný text znamená: zobrazit anglicky."
  },
@@ -26665,1210 +26665,1214 @@
    "text": "autoritami systému"
   },
   "s6665": {
+   "source": "the system's list was not made again the last time - made now",
+   "text": "seznam systému se minule znovu nesestavil – sestaven teď"
+  },
+  "s6666": {
    "source": "the system's own",
    "text": "systémové"
   },
-  "s6666": {
+  "s6667": {
    "source": "the system’s authorities (a public CA)",
    "text": "autority systému (veřejná CA)"
   },
-  "s6667": {
+  "s6668": {
    "source": "the tables of the package could not be read in 2 minutes",
    "text": "tabulky balíčku se nepodařilo přečíst do 2 minut"
   },
-  "s6668": {
+  "s6669": {
    "source": "the telephone gateway is asked over plain HTTP",
    "text": "telefonní brána se volá přes prosté HTTP"
   },
-  "s6669": {
+  "s6670": {
    "source": "the telephone gateway's certificate is not checked",
    "text": "certifikát telefonní brány se neověřuje"
   },
-  "s6670": {
+  "s6671": {
    "source": "the ticket has no name that can be read",
    "text": "tiket nemá čitelné jméno"
   },
-  "s6671": {
+  "s6672": {
    "source": "the ticket is larger than any Kerberos ticket",
    "text": "tiket je větší než jakýkoli tiket Kerbera"
   },
-  "s6672": {
+  "s6673": {
    "source": "the ticket is not base64",
    "text": "tiket není v base64"
   },
-  "s6673": {
+  "s6674": {
    "source": "the time servers above",
    "text": "časové servery výše"
   },
-  "s6674": {
+  "s6675": {
    "source": "the time to keep it is over - it is being put back; make the change again if it is wanted",
    "text": "čas na potvrzení vypršel – vrací se zpět; je-li změna potřeba, proveďte ji znovu"
   },
-  "s6675": {
+  "s6676": {
    "source": "the token changed since the code was asked for - sign in again",
    "text": "token se změnil od chvíle, kdy byl kód vyžádán – přihlaste se znovu"
   },
-  "s6676": {
+  "s6677": {
    "source": "the token changed since the code was sent - sign in again",
    "text": "token se změnil od odeslání kódu – přihlaste se znovu"
   },
-  "s6677": {
+  "s6678": {
    "source": "the token is on the clipboard",
    "text": "token je ve schránce"
   },
-  "s6678": {
+  "s6679": {
    "source": "the token it is about",
    "text": "token, kterého se týká"
   },
-  "s6679": {
+  "s6680": {
    "source": "the token, after wrong codes",
    "text": "token po chybných kódech"
   },
-  "s6680": {
+  "s6681": {
    "source": "the tokens open with the key in it",
    "text": "tokeny se otevřou klíčem v ní"
   },
-  "s6681": {
+  "s6682": {
    "source": "the tunnel group",
    "text": "tunnel group"
   },
-  "s6682": {
+  "s6683": {
    "source": "the two are not the same",
    "text": "hesla se neshodují"
   },
-  "s6683": {
+  "s6684": {
    "source": "the two new ones are not the same",
    "text": "obě nová hesla nejsou stejná"
   },
-  "s6684": {
+  "s6685": {
    "source": "the two nodes cannot have one address",
    "text": "dva uzly nemůžou mít jednu adresu"
   },
-  "s6685": {
+  "s6686": {
    "source": "the two passphrases are not the same",
    "text": "obě hesla nejsou stejná"
   },
-  "s6686": {
+  "s6687": {
    "source": "the two passwords are not the same",
    "text": "obě hesla nejsou stejná"
   },
-  "s6687": {
+  "s6688": {
    "source": "the update was stopped before it began here",
    "text": "aktualizace byla zastavena dřív, než tu začala"
   },
-  "s6688": {
+  "s6689": {
    "source": "the upgrade has begun",
    "text": "aktualizace začala"
   },
-  "s6689": {
+  "s6690": {
    "source": "the upgrade is going on",
    "text": "aktualizace právě probíhá"
   },
-  "s6690": {
+  "s6691": {
    "source": "the upgrade is stopped",
    "text": "aktualizace je zastavena"
   },
-  "s6691": {
+  "s6692": {
    "source": "the user or a passphrase is missing; Settings → Monitoring",
    "text": "chybí uživatel nebo heslo; Nastavení → Monitoring"
   },
-  "s6692": {
+  "s6693": {
    "source": "the waiting replacement is gone; the old token stays",
    "text": "čekající náhrada je zrušena; starý token zůstává"
   },
-  "s6693": {
+  "s6694": {
    "source": "the web address",
    "text": "webová adresa"
   },
-  "s6694": {
+  "s6695": {
    "source": "the web address (or this node, where there is none)",
    "text": "webová adresa (nebo tento uzel, kde žádná není)"
   },
-  "s6695": {
+  "s6696": {
    "source": "the web address and each node",
    "text": "webová adresa i každý uzel"
   },
-  "s6696": {
+  "s6697": {
    "source": "the web address did not move to the other node in 90 s - not restarted",
    "text": "webová adresa se do 90 s nepřesunula na druhý uzel – nerestartováno"
   },
-  "s6697": {
+  "s6698": {
    "source": "the web address is an address with its prefix, e.g. 192.0.2.10/24",
    "text": "webová adresa je adresa s prefixem, např. 192.0.2.10/24"
   },
-  "s6698": {
+  "s6699": {
    "source": "the web address is for a cluster: make this node one of two first (Settings - High availability)",
    "text": "webová adresa je pro cluster: nejdřív z tohoto uzlu udělejte jeden ze dvou (Nastavení – Vysoká dostupnost)"
   },
-  "s6699": {
+  "s6700": {
    "source": "the web address is kept - turn it on when ready",
    "text": "webová adresa je uložená – zapněte ji, až budete připraveni"
   },
-  "s6700": {
+  "s6701": {
    "source": "the web address is kept; each node puts it in within a few seconds",
    "text": "webová adresa je uložená; každý uzel ji během několika sekund nasadí"
   },
-  "s6701": {
+  "s6702": {
    "source": "the web address is off",
    "text": "webová adresa je vypnutá"
   },
-  "s6702": {
+  "s6703": {
    "source": "the web address is off: keepalived stops on both nodes",
    "text": "webová adresa je vypnutá: keepalived se na obou uzlech zastaví"
   },
-  "s6703": {
+  "s6704": {
    "source": "the web address is on",
    "text": "webová adresa je zapnutá"
   },
-  "s6704": {
+  "s6705": {
    "source": "the web address must be a third address, not one of the nodes'",
    "text": "webová adresa musí být třetí adresa, ne adresa některého z uzlů"
   },
-  "s6705": {
+  "s6706": {
    "source": "the whole DN",
    "text": "celé DN"
   },
-  "s6706": {
+  "s6707": {
    "source": "the whole name, as userPrincipalName",
    "text": "celé jméno, jako userPrincipalName"
   },
-  "s6707": {
+  "s6708": {
    "source": "the window is -1 (the setting) or 0 to 20 steps",
    "text": "okno je -1 (podle nastavení) nebo 0 až 20 kroků"
   },
-  "s6708": {
+  "s6709": {
    "source": "the window is empty",
    "text": "výpis je prázdný"
   },
-  "s6709": {
+  "s6710": {
    "source": "the write-ahead log’s buffer",
    "text": "buffer write-ahead logu"
   },
-  "s6710": {
+  "s6711": {
    "source": "the wrong codes are forgotten",
    "text": "chybné kódy jsou zapomenuty"
   },
-  "s6711": {
+  "s6712": {
    "source": "their page stopped checking the card they signed in with",
    "text": "jeho stránka přestala kontrolovat kartu, kterou se přihlásil"
   },
-  "s6712": {
+  "s6713": {
    "source": "then the second step, as after a password",
    "text": "pak druhý krok, jako po hesle"
   },
-  "s6713": {
+  "s6714": {
    "source": "there",
    "text": "je tam"
   },
-  "s6714": {
+  "s6715": {
    "source": "there already",
    "text": "už tam je"
   },
-  "s6715": {
+  "s6716": {
    "source": "there is a token already; it can be replaced with a code from it",
    "text": "token už existuje; lze ho nahradit kódem z něj"
   },
-  "s6716": {
+  "s6717": {
    "source": "there is no RADIUS client yet: nobody can ask this server",
    "text": "zatím tu není žádný RADIUS klient: tento server se nemá kdo ptát"
   },
-  "s6717": {
+  "s6718": {
    "source": "there is no SELinux on this machine",
    "text": "na tomto stroji SELinux není"
   },
-  "s6718": {
+  "s6719": {
    "source": "there is no client for 127.0.0.1 to send the test from: add one (the installer makes \"localhost\"), or give the secret",
    "text": "není klient pro 127.0.0.1, ze kterého poslat test: přidejte ho (installer vytváří „localhost“), nebo zadejte heslo"
   },
-  "s6719": {
+  "s6720": {
    "source": "there is no directory to look in: Settings → Active Directory",
    "text": "není v jakém adresáři hledat: Nastavení → Active Directory"
   },
-  "s6720": {
+  "s6721": {
    "source": "there is no full administrator who can sign in in that file: putting it back would lock everybody out of these pages (on the command line it can be put back, and an account made after it)",
    "text": "v tom souboru není žádný plný administrátor, který se může přihlásit: obnova by všem zamkla tyto stránky (na příkazové řádce ji lze obnovit a účet založit potom)"
   },
-  "s6721": {
+  "s6722": {
    "source": "there is no key made or given for that",
    "text": "pro to tu žádný klíč nebyl vytvořen ani zadán"
   },
-  "s6722": {
+  "s6723": {
    "source": "there is no picture of your own yet - upload one first",
    "text": "vlastní obrázek zatím není – nejdřív ho nahrajte"
   },
-  "s6723": {
+  "s6724": {
    "source": "there is no realm yet: every request is refused",
    "text": "zatím tu není žádný realm: každý požadavek se odmítne"
   },
-  "s6724": {
+  "s6725": {
    "source": "there is no second (ECDSA) certificate beside this one",
    "text": "vedle tohoto certifikátu není druhý (ECDSA)"
   },
-  "s6725": {
+  "s6726": {
    "source": "there is no such account",
    "text": "takový účet není"
   },
-  "s6726": {
+  "s6727": {
    "source": "there is no such authority",
    "text": "taková autorita neexistuje"
   },
-  "s6727": {
+  "s6728": {
    "source": "there is no such client",
    "text": "takový klient není"
   },
-  "s6728": {
+  "s6729": {
    "source": "there is no such directory",
    "text": "takový adresář není"
   },
-  "s6729": {
+  "s6730": {
    "source": "there is no such file",
    "text": "takový soubor není"
   },
-  "s6730": {
+  "s6731": {
    "source": "there is no such object under that base",
    "text": "pod touto základnou žádný takový objekt není"
   },
-  "s6731": {
+  "s6732": {
    "source": "there is no such realm",
    "text": "takový realm není"
   },
-  "s6732": {
+  "s6733": {
    "source": "there is no such request",
    "text": "takový požadavek neexistuje"
   },
-  "s6733": {
+  "s6734": {
    "source": "there is no token in use yet",
    "text": "zatím nemáte token v provozu"
   },
-  "s6734": {
+  "s6735": {
    "source": "there is nothing in this file to import - is it an export of otp?",
    "text": "v tomto souboru není nic k importu – je to export z otp?"
   },
-  "s6735": {
+  "s6736": {
    "source": "these pages",
    "text": "tyto stránky"
   },
-  "s6736": {
+  "s6737": {
    "source": "these…",
    "text": "tito…"
   },
-  "s6737": {
+  "s6738": {
    "source": "this account has its second step set up already",
    "text": "tento účet už druhý krok nastavený má"
   },
-  "s6738": {
+  "s6739": {
    "source": "this account may not have a token here - ask the administrator",
    "text": "tento účet tu nesmí mít token – obraťte se na administrátora"
   },
-  "s6739": {
+  "s6740": {
    "source": "this account signs in with its directory password, which is changed in the directory",
    "text": "tento účet se přihlašuje heslem z adresáře, které se mění v adresáři"
   },
-  "s6740": {
+  "s6741": {
    "source": "this bundle makes this node replicate with its own PostgreSQL, which takes root on this machine (installing and setting up PostgreSQL): copy it here and run  otp --ha-join FILE  as root",
    "text": "tento balíček nastaví uzel na replikaci s vlastním PostgreSQL, což na tomto stroji vyžaduje root (instalace a nastavení PostgreSQL): zkopírujte ho sem a spusťte  otp --ha-join SOUBOR  jako root"
   },
-  "s6741": {
+  "s6742": {
    "source": "this client certificate is not one enrolled here",
    "text": "tento klientský certifikát tu není zaregistrovaný"
   },
-  "s6742": {
+  "s6743": {
    "source": "this column",
    "text": "tento sloupec"
   },
-  "s6743": {
+  "s6744": {
    "source": "this daemon sends nothing",
    "text": "tento démon nic neposílá"
   },
-  "s6744": {
+  "s6745": {
    "source": "this device has a passkey for this account already",
    "text": "toto zařízení už passkey pro tento účet má"
   },
-  "s6745": {
+  "s6746": {
    "source": "this is the database in use",
    "text": "tohle je používaná databáze"
   },
-  "s6746": {
+  "s6747": {
    "source": "this is the node answering: it would write itself back at once",
    "text": "tohle je uzel, který odpovídá: zapsal by se hned zpět"
   },
-  "s6747": {
+  "s6748": {
    "source": "this machine cannot go back yet",
    "text": "tento stroj se zatím vrátit neumí"
   },
-  "s6748": {
+  "s6749": {
    "source": "this month",
    "text": "tento měsíc"
   },
-  "s6749": {
+  "s6750": {
    "source": "this name is another account's under the realm's main suffix - ask the administrator",
    "text": "toto jméno patří pod hlavní příponou realmu jinému účtu – obraťte se na správce"
   },
-  "s6750": {
+  "s6751": {
    "source": "this node",
    "text": "tento uzel"
   },
-  "s6751": {
+  "s6752": {
    "source": "this node acts on rows of the database whoever wrote them, as before 1.0.231",
    "text": "tento uzel jedná podle řádků databáze, ať je zapsal kdokoli, jako před 1.0.231"
   },
-  "s6752": {
+  "s6753": {
    "source": "this node answers again",
    "text": "tento uzel opět odpovídá"
   },
-  "s6753": {
+  "s6754": {
    "source": "this node cannot reach the directory - the other node answers",
    "text": "tento uzel nedosáhne na adresář – obsluhuje druhý uzel"
   },
-  "s6754": {
+  "s6755": {
    "source": "this node does not replicate",
    "text": "tento uzel nereplikuje"
   },
-  "s6755": {
+  "s6756": {
    "source": "this node has no keytab yet",
    "text": "tento uzel ještě nemá keytab"
   },
-  "s6756": {
+  "s6757": {
    "source": "this node has not been through the steps",
    "text": "tento uzel kroky neprošel"
   },
-  "s6757": {
+  "s6758": {
    "source": "this node is being rebuilt from the other one; try again in a few minutes",
    "text": "tento uzel se právě obnovuje z druhého; zkuste to za pár minut"
   },
-  "s6758": {
+  "s6759": {
    "source": "this node is on its way; the other node's database could not be reached just now - it starts when replication carries it over, or press the button there",
    "text": "tento uzel začal; databáze druhého uzlu teď není dosažitelná – začne, až to replikace přenese, nebo stiskněte tlačítko tam"
   },
-  "s6759": {
+  "s6760": {
    "source": "this node is one of a cluster (replicated - each node's database on a server of its own, looked after by its agent, the two replicating): its database is the cluster's. Moving it - to another engine, another server or back onto this machine - would break the replication and leave the other node on its own.",
    "text": "tento uzel je součástí clusteru (replikovaný – databáze každého uzlu na vlastním serveru, o který se stará jeho agent, a obě se replikují): jeho databáze patří clusteru. Přesun – na jiný databázový stroj, jiný server nebo zpět na tento počítač – by replikaci rozbil a druhý uzel by zůstal sám."
   },
-  "s6760": {
+  "s6761": {
    "source": "this node is one of a cluster (replicated - each node's database on a server of its own, looked after by its agent, the two replicating): its database is the cluster's. Moving it - to another engine, another server or back onto this machine - would break the replication and leave the other node on its own. Switch the replication off first (Settings → High availability), then otp --ha-standalone --yes on both nodes; move it; build the cluster again.",
    "text": "tento uzel je součástí clusteru (replikovaný – databáze každého uzlu na vlastním serveru, o který se stará jeho agent, a oba servery se replikují): jeho databáze patří clusteru. Přesunout ji – na jiný typ databáze, na jiný server nebo zpět na tento stroj – by přerušilo replikaci a druhý uzel by zůstal sám. Nejdřív vypněte replikaci (Nastavení → Vysoká dostupnost), pak otp --ha-standalone --yes na obou uzlech; přesuňte ji; cluster znovu sestavte."
   },
-  "s6761": {
+  "s6762": {
    "source": "this node is one of a cluster: its database is not moved from here (switch the replication off first - Settings → High availability)",
    "text": "tento uzel je součástí clusteru: jeho databáze se odsud nepřesouvá (nejdřív vypněte replikaci – Nastavení → Vysoká dostupnost)"
   },
-  "s6762": {
+  "s6763": {
    "source": "this node is one of a cluster: the database and its account are not set up from here - the other node uses that account too",
    "text": "tento uzel je součástí clusteru: databáze a její účet se odsud nenastavují - druhý uzel ten účet používá také"
   },
-  "s6763": {
+  "s6764": {
    "source": "this node is one of two already: each has its own PostgreSQL and they replicate to each other",
    "text": "tento uzel už je jeden ze dvou: každý má vlastní PostgreSQL a navzájem se replikují"
   },
-  "s6764": {
+  "s6765": {
    "source": "this node is the first of a cluster of one shared database (ha_mode = shared)",
    "text": "tento uzel je první v clusteru nad jednou sdílenou databází (ha_mode = shared)"
   },
-  "s6765": {
+  "s6766": {
    "source": "this node takes nothing from the other for now",
    "text": "tento uzel zatím nic nepřebírá od druhého"
   },
-  "s6766": {
+  "s6767": {
    "source": "this node takes the other's rows again, from where it stopped",
    "text": "tento uzel znovu přebírá řádky druhého, od místa, kde přestal"
   },
-  "s6767": {
+  "s6768": {
    "source": "this node takes the other's rows as before (Database → TLS)",
    "text": "tento uzel bere řádky druhého jako dřív (Databáze → TLS)"
   },
-  "s6768": {
+  "s6769": {
    "source": "this node takes the other's rows over TLS, its certificate checked (verify-full)",
    "text": "tento uzel bere řádky druhého přes TLS s ověřeným certifikátem (verify-full)"
   },
-  "s6769": {
+  "s6770": {
    "source": "this node's PostgreSQL does not speak TLS",
    "text": "PostgreSQL tohoto uzlu neumí TLS"
   },
-  "s6770": {
+  "s6771": {
    "source": "this node's PostgreSQL has no certificate from otp yet",
    "text": "PostgreSQL tohoto uzlu ještě nemá certifikát od otp"
   },
-  "s6771": {
+  "s6772": {
    "source": "this node's PostgreSQL is being given its certificate (root helper)",
    "text": "PostgreSQL tohoto uzlu dostává certifikát (root helper)"
   },
-  "s6772": {
+  "s6773": {
    "source": "this node's PostgreSQL is told to take the other node over TLS only",
    "text": "PostgreSQL tohoto uzlu má pouštět druhý uzel už jen přes TLS"
   },
-  "s6773": {
+  "s6774": {
    "source": "this node's PostgreSQL lets the other node in without TLS too",
    "text": "PostgreSQL tohoto uzlu pouští druhý uzel i bez TLS"
   },
-  "s6774": {
+  "s6775": {
    "source": "this node's certificate",
    "text": "certifikát tohoto uzlu"
   },
-  "s6775": {
+  "s6776": {
    "source": "this node's certificate as it was before",
    "text": "certifikát tohoto uzlu jako před změnou"
   },
-  "s6776": {
+  "s6777": {
    "source": "this node's client certificate",
    "text": "klientský certifikát tohoto uzlu"
   },
-  "s6777": {
+  "s6778": {
    "source": "this node's clock is off, but the other node cannot take over - it answers",
    "text": "hodiny tohoto uzlu jdou špatně, ale druhý uzel nemůže převzít – obsluhuje dál"
   },
-  "s6778": {
+  "s6779": {
    "source": "this node's connection still uses TLS - it moves back first",
    "text": "spojení tohoto uzlu ještě používá TLS – nejdřív se musí vrátit"
   },
-  "s6779": {
+  "s6780": {
    "source": "this node’s",
    "text": "tohoto uzlu"
   },
-  "s6780": {
+  "s6781": {
    "source": "this node’s address is not on this machine",
    "text": "adresa tohoto uzlu na tomto stroji není"
   },
-  "s6781": {
+  "s6782": {
    "source": "this node’s own - every node of the cluster has one of its own; the others’ are in Settings → High availability",
    "text": "vlastní nastavení tohoto uzlu – každý uzel clusteru má svoje; ta ostatních jsou v Nastavení → Vysoká dostupnost"
   },
-  "s6782": {
+  "s6783": {
    "source": "this one",
    "text": "tento"
   },
-  "s6783": {
+  "s6784": {
    "source": "this page",
    "text": "tato stránka"
   },
-  "s6784": {
+  "s6785": {
    "source": "this program only ever READS a directory, and something tried to send it an extended operation that is not StartTLS. Nothing was sent.",
    "text": "tento program adresář jen ČTE a něco se pokusilo poslat rozšířenou operaci, která není StartTLS. Nic nebylo odesláno."
   },
-  "s6785": {
+  "s6786": {
    "source": "this server",
    "text": "tento server"
   },
-  "s6786": {
+  "s6787": {
    "source": "this server is upgraded: for a minute nobody can sign in to the VPN.",
    "text": "server se aktualizuje: asi minutu se nikdo nepřihlásí do VPN."
   },
-  "s6787": {
+  "s6788": {
    "source": "this sign-in has no second step to give",
    "text": "toto přihlášení nemá žádný druhý krok"
   },
-  "s6788": {
+  "s6789": {
    "source": "this text cannot have it",
    "text": "tento text to mít nemůže"
   },
-  "s6789": {
+  "s6790": {
    "source": "this text is one plain line",
    "text": "tento text je jeden řádek bez formátování"
   },
-  "s6790": {
+  "s6791": {
    "source": "this ticket was used already (a replay?)",
    "text": "tento tiket už byl použit (přehrání?)"
   },
-  "s6791": {
+  "s6792": {
    "source": "this token gets no codes sent",
    "text": "na tento token se kódy neposílají"
   },
-  "s6792": {
+  "s6793": {
    "source": "this week",
    "text": "tento týden"
   },
-  "s6793": {
+  "s6794": {
    "source": "through a mail server",
    "text": "přes poštovní server"
   },
-  "s6794": {
+  "s6795": {
    "source": "through a mail server (SMTP relay)",
    "text": "přes poštovní server (SMTP relay)"
   },
-  "s6795": {
+  "s6796": {
    "source": "through the outgoing mail",
    "text": "přes frontu odchozí pošty"
   },
-  "s6796": {
+  "s6797": {
    "source": "through the proxy",
    "text": "přes proxy"
   },
-  "s6797": {
+  "s6798": {
    "source": "tiles - a card for each core",
    "text": "dlaždice – karta pro každé jádro"
   },
-  "s6798": {
+  "s6799": {
    "source": "tls is none, ldaps or starttls",
    "text": "tls je none, ldaps nebo starttls"
   },
-  "s6799": {
+  "s6800": {
    "source": "tlsserver - 90 days, for TLS servers only",
    "text": "tlsserver – 90 dní, jen pro TLS servery"
   },
-  "s6800": {
+  "s6801": {
    "source": "tmsh - TLS passed through, no client address",
    "text": "tmsh – TLS projde, bez adresy klienta"
   },
-  "s6801": {
+  "s6802": {
    "source": "tmsh - TLS passed through, the client's address in the PROXY protocol (v1, an iRule)",
    "text": "tmsh – TLS projde, adresa klienta v protokolu PROXY (v1, iRule)"
   },
-  "s6802": {
+  "s6803": {
    "source": "tmsh - a monitor that reads /healthz, the pool, the virtual server (SSL offload, X-Forwarded-For)",
    "text": "tmsh – monitor čtoucí /healthz, pool, virtuální server (SSL offload, X-Forwarded-For)"
   },
-  "s6803": {
+  "s6804": {
    "source": "tmsh - the monitors (asked on 443 whatever the pool's port), the pool, TLS 1.2 and 1.3, an iRule that lets the enrolment pages alone through",
    "text": "tmsh – monitory (ptají se na 443, ať je port poolu jakýkoli), pool, TLS 1.2 a 1.3, iRule, který propustí jen stránky registrace"
   },
-  "s6804": {
+  "s6805": {
    "source": "to be downloaded",
    "text": "ke stažení"
   },
-  "s6805": {
+  "s6806": {
    "source": "to change at sign-in",
    "text": "změnit při přihlášení"
   },
-  "s6806": {
+  "s6807": {
    "source": "to manage the machine - turned off, take care to keep a rule of your own for it",
    "text": "pro správu stroje – když ho vypnete, nechte si na něj vlastní pravidlo"
   },
-  "s6807": {
+  "s6808": {
    "source": "today",
    "text": "dnes"
   },
-  "s6808": {
+  "s6809": {
    "source": "together",
    "text": "spolu"
   },
-  "s6809": {
+  "s6810": {
    "source": "token admin",
    "text": "správce tokenů"
   },
-  "s6810": {
+  "s6811": {
    "source": "token, code, verify or test",
    "text": "token, code, verify nebo test"
   },
-  "s6811": {
+  "s6812": {
    "source": "token_name is whole or bare",
    "text": "token_name je whole nebo bare"
   },
-  "s6812": {
+  "s6813": {
    "source": "tokens",
    "text": "tokeny"
   },
-  "s6813": {
+  "s6814": {
    "source": "tokens exported not locked - the backup, the .totp files, one token",
    "text": "nezamčený export tokenů – záloha, soubory .totp, jeden token"
   },
-  "s6814": {
+  "s6815": {
    "source": "too many attempts - wait a minute and try again",
    "text": "příliš mnoho pokusů – počkejte minutu a zkuste to znovu"
   },
-  "s6815": {
+  "s6816": {
    "source": "too many wrong codes - sign in again",
    "text": "příliš mnoho chybných kódů – přihlaste se znovu"
   },
-  "s6816": {
+  "s6817": {
    "source": "too many wrong codes of the second step for this account today - another full administrator resets the second step (Accounts), or try again tomorrow",
    "text": "dnes příliš mnoho špatných kódů druhého kroku pro tento účet – druhý krok resetuje jiný plný administrátor (Účty), nebo to zkuste zítra"
   },
-  "s6817": {
+  "s6818": {
    "source": "too many wrong join codes from %s - wait an hour",
    "text": "příliš mnoho chybných připojovacích kódů z %s - počkejte hodinu"
   },
-  "s6818": {
+  "s6819": {
    "source": "too variable",
    "text": "příliš kolísá"
   },
-  "s6819": {
+  "s6820": {
    "source": "totp_issuer: no colon in it - the apps take what follows one as the account's name",
    "text": "totp_issuer: bez dvojtečky - aplikace berou to, co následuje za ní, jako název účtu"
   },
-  "s6820": {
+  "s6821": {
    "source": "totp_label needs {user} or {name} in it, or every token on a phone has the same name",
    "text": "totp_label musí obsahovat {user} nebo {name}, jinak má každý token v telefonu stejné jméno"
   },
-  "s6821": {
+  "s6822": {
    "source": "tried by itself when the page opens",
    "text": "zkusí se sám při otevření stránky"
   },
-  "s6822": {
+  "s6823": {
    "source": "trouble",
    "text": "potíže"
   },
-  "s6823": {
+  "s6824": {
    "source": "trusted",
    "text": "důvěryhodný"
   },
-  "s6824": {
+  "s6825": {
    "source": "trusted - the saved password was taken away with the old key: type it again",
    "text": "ověřeno – uložené heslo bylo odebráno spolu se starým klíčem: zadejte ho znovu"
   },
-  "s6825": {
+  "s6826": {
    "source": "trying a code (Tokens)",
    "text": "zkouška kódu (Tokeny)"
   },
-  "s6826": {
+  "s6827": {
    "source": "twice the wrong tries",
    "text": "dvojnásobek špatných pokusů"
   },
-  "s6827": {
+  "s6828": {
    "source": "two PFX / PKCS#12 files at most - an RSA and an ECDSA one",
    "text": "nejvýš dva soubory PFX / PKCS#12 – jeden RSA a jeden ECDSA"
   },
-  "s6828": {
+  "s6829": {
    "source": "two hundred rules at most",
    "text": "nejvýš dvě stě pravidel"
   },
-  "s6829": {
+  "s6830": {
    "source": "type a name first",
    "text": "nejdřív zadejte jméno"
   },
-  "s6830": {
+  "s6831": {
    "source": "type the code that was sent to you first",
    "text": "nejdřív zadejte kód, který vám přišel"
   },
-  "s6831": {
+  "s6832": {
    "source": "type the name of somebody in the directory",
    "text": "zadejte jméno někoho z adresáře"
   },
-  "s6832": {
+  "s6833": {
    "source": "type the password you have now first",
    "text": "nejdřív napište současné heslo"
   },
-  "s6833": {
+  "s6834": {
    "source": "unknown",
    "text": "neznámý"
   },
-  "s6834": {
+  "s6835": {
    "source": "unless told otherwise, so",
    "text": ", pokud mu není řečeno jinak, takže"
   },
-  "s6835": {
+  "s6836": {
    "source": "unnamed",
    "text": "bez názvu"
   },
-  "s6836": {
+  "s6837": {
    "source": "unreachable",
    "text": "nedostupný"
   },
-  "s6837": {
+  "s6838": {
    "source": "until an administrator unlocks it",
    "text": "dokud ho správce neodemkne"
   },
-  "s6838": {
+  "s6839": {
    "source": "up",
    "text": "odesílání"
   },
-  "s6839": {
+  "s6840": {
    "source": "up again",
    "text": "znovu běží"
   },
-  "s6840": {
+  "s6841": {
    "source": "up again after the restart",
    "text": "po restartu opět běží"
   },
-  "s6841": {
+  "s6842": {
    "source": "up to date",
    "text": "aktuální"
   },
-  "s6842": {
+  "s6843": {
    "source": "updated",
    "text": "aktualizováno"
   },
-  "s6843": {
+  "s6844": {
    "source": "updated - it needs a restart",
    "text": "aktualizováno – potřebuje restart"
   },
-  "s6844": {
+  "s6845": {
    "source": "updated - restarting, as it needs",
    "text": "aktualizováno – restartuje se, protože to potřebuje"
   },
-  "s6845": {
+  "s6846": {
    "source": "updating",
    "text": "aktualizuje se"
   },
-  "s6846": {
+  "s6847": {
    "source": "upgrading",
    "text": "aktualizuje se"
   },
-  "s6847": {
+  "s6848": {
    "source": "used",
    "text": "použitý"
   },
-  "s6848": {
+  "s6849": {
    "source": "valid",
    "text": "platný"
   },
-  "s6849": {
+  "s6850": {
    "source": "verify-ca - encrypted, the certificate checked, not its name",
    "text": "verify-ca – šifrováno, certifikát ověřen, jméno ne"
   },
-  "s6850": {
+  "s6851": {
    "source": "verify-full - encrypted, the certificate and its name checked",
    "text": "verify-full – šifrováno, ověřen certifikát i jméno"
   },
-  "s6851": {
+  "s6852": {
    "source": "verify-full needs a certificate that names the address the nodes reach the server by.",
    "text": "verify-full potřebuje certifikát, který jmenuje adresu, přes kterou uzly server dosáhnou."
   },
-  "s6852": {
+  "s6853": {
    "source": "versions differ",
    "text": "verze se liší"
   },
-  "s6853": {
+  "s6854": {
    "source": "view only",
    "text": "jen zobrazit"
   },
-  "s6854": {
+  "s6855": {
    "source": "waiting",
    "text": "čeká"
   },
-  "s6855": {
+  "s6856": {
    "source": "waiting for a code",
    "text": "čeká na kód"
   },
-  "s6856": {
+  "s6857": {
    "source": "waiting for a start",
    "text": "čeká na start"
   },
-  "s6857": {
+  "s6858": {
    "source": "waiting for another try",
    "text": "čeká na další pokus"
   },
-  "s6858": {
+  "s6859": {
    "source": "waiting for root",
    "text": "čeká na root"
   },
-  "s6859": {
+  "s6860": {
    "source": "waiting for the daemon to come back…",
    "text": "čekám, až se démon vrátí…"
   },
-  "s6860": {
+  "s6861": {
    "source": "waiting for the other node",
    "text": "čeká na druhý uzel"
   },
-  "s6861": {
+  "s6862": {
    "source": "waiting for the other node's database to pass verify-full again",
    "text": "čeká se, až databáze druhého nodu znovu projde verify-full"
   },
-  "s6862": {
+  "s6863": {
    "source": "waiting or failed",
    "text": "čekající nebo selhané"
   },
-  "s6863": {
+  "s6864": {
    "source": "waiting, sending, sent, failed or expired",
    "text": "waiting, sending, sent, failed nebo expired"
   },
-  "s6864": {
+  "s6865": {
    "source": "waits its turn",
    "text": "čeká, až na něj přijde řada"
   },
-  "s6865": {
+  "s6866": {
    "source": "wal_level, listen_addresses, the account, the publication",
    "text": "wal_level, listen_addresses, účet, publikace"
   },
-  "s6866": {
+  "s6867": {
    "source": "warning",
    "text": "varování"
   },
-  "s6867": {
+  "s6868": {
    "source": "weak",
    "text": "slabý"
   },
-  "s6868": {
+  "s6869": {
    "source": "weak certificates taken",
    "text": "přijímá slabé certifikáty"
   },
-  "s6869": {
+  "s6870": {
    "source": "web address",
    "text": "webová adresa"
   },
-  "s6870": {
+  "s6871": {
    "source": "web_proxy_from: 256 networks at most",
    "text": "web_proxy_from: nejvýš 256 sítí"
   },
-  "s6871": {
+  "s6872": {
    "source": "web_proxy_header: the name of a header, as X-Forwarded-For or X-Real-IP, or proxy_protocol",
    "text": "web_proxy_header: název hlavičky, třeba X-Forwarded-For nebo X-Real-IP, nebo proxy_protocol"
   },
-  "s6872": {
+  "s6873": {
    "source": "web_proxy_port: 0, or a free TCP port from 1024 up (not a database's usual one) - 8443, say",
    "text": "web_proxy_port: 0, nebo volný port TCP od 1024 výš (ne obvyklý port databáze) – třeba 8443"
   },
-  "s6873": {
+  "s6874": {
    "source": "web_proxy_port: 0, or a free TCP port from 1024 up (not the API's own, not the SSH gate's) - 8443, say",
    "text": "web_proxy_port: 0, nebo volný port TCP od 1024 výš (ne port API, ne port brány SSH) – třeba 8443"
   },
-  "s6874": {
+  "s6875": {
    "source": "weekly",
    "text": "týdně"
   },
-  "s6875": {
+  "s6876": {
    "source": "weeks",
    "text": "týdnů"
   },
-  "s6876": {
+  "s6877": {
    "source": "went back",
    "text": "vráceno"
   },
-  "s6877": {
+  "s6878": {
    "source": "went everywhere",
    "text": "odešla všude"
   },
-  "s6878": {
+  "s6879": {
    "source": "what follows the @",
    "text": "co následuje za @"
   },
-  "s6879": {
+  "s6880": {
    "source": "what happened",
    "text": "co se stalo"
   },
-  "s6880": {
+  "s6881": {
    "source": "what install.sh said",
    "text": "co řekl install.sh"
   },
-  "s6881": {
+  "s6882": {
    "source": "what is in it is counted",
    "text": "počítá se obsah"
   },
-  "s6882": {
+  "s6883": {
    "source": "what is waiting",
    "text": "co čeká"
   },
-  "s6883": {
+  "s6884": {
    "source": "what is written, not yet folded in",
    "text": "zapsané, ještě nezačleněné"
   },
-  "s6884": {
+  "s6885": {
    "source": "what it says",
    "text": "co říká"
   },
-  "s6885": {
+  "s6886": {
    "source": "what otp needs",
    "text": "co potřebuje otp"
   },
-  "s6886": {
+  "s6887": {
    "source": "what the VPN shows cannot be sent",
    "text": "to, co ukazuje VPN, se poslat nedá"
   },
-  "s6887": {
+  "s6888": {
    "source": "what the disk takes per second",
    "text": "co disk zvládne za sekundu"
   },
-  "s6888": {
+  "s6889": {
    "source": "what the mail held is gone - it cannot be sent",
    "text": "obsah mailu už není – nelze ho odeslat"
   },
-  "s6889": {
+  "s6890": {
    "source": "what the nodes see: its own address, the SNIP, the self IP",
    "text": "co vidí uzly: jeho vlastní adresu, SNIP, self IP"
   },
-  "s6890": {
+  "s6891": {
    "source": "what the receiving server said",
    "text": "co řekl přijímající server"
   },
-  "s6891": {
+  "s6892": {
    "source": "what this program noted about itself: sign-ins, changes, copies, starts and stops.",
    "text": "co si tento program zapsal o sobě: přihlášení, změny, kopie, spuštění a zastavení."
   },
-  "s6892": {
+  "s6893": {
    "source": "whatever the server offers best (PLAIN, LOGIN, CRAM-MD5)",
    "text": "co server nabízí nejlepšího (PLAIN, LOGIN, CRAM-MD5)"
   },
-  "s6893": {
+  "s6894": {
    "source": "where",
    "text": "kde"
   },
-  "s6894": {
+  "s6895": {
    "source": "where a code was checked besides RADIUS",
    "text": "kde byl kód zkontrolován mimo RADIUS"
   },
-  "s6895": {
+  "s6896": {
    "source": "where it was sent",
    "text": "kam odešel"
   },
-  "s6896": {
+  "s6897": {
    "source": "where the codes are sent",
    "text": "kam se kódy posílají"
   },
-  "s6897": {
+  "s6898": {
    "source": "where the codes are sent: a mail address, or a phone number however written",
    "text": "kam se kódy posílají: e-mail, nebo telefonní číslo zapsané jakkoli"
   },
-  "s6898": {
+  "s6899": {
    "source": "whether a restart is needed",
    "text": "zjišťuje se, zda je potřeba restart"
   },
-  "s6899": {
+  "s6900": {
    "source": "which account?",
    "text": "který účet?"
   },
-  "s6900": {
+  "s6901": {
    "source": "which account? its sAMAccountName, DOMAIN\\name or its UPN",
    "text": "který účet? jeho sAMAccountName, DOMÉNA\\jméno nebo UPN"
   },
-  "s6901": {
+  "s6902": {
    "source": "which node?",
    "text": "který uzel?"
   },
-  "s6902": {
+  "s6903": {
    "source": "which one?",
    "text": "které?"
   },
-  "s6903": {
+  "s6904": {
    "source": "which ones - empty: all (realm:example.cz, name:novak*, kind:mail…)",
    "text": "které – prázdné: všechny (realm:example.cz, name:novak*, kind:mail…)"
   },
-  "s6904": {
+  "s6905": {
    "source": "which ones - empty: all (realm:example.cz, name:novak*…)",
    "text": "které – prázdné: všechny (realm:example.cz, name:novak*…)"
   },
-  "s6905": {
+  "s6906": {
    "source": "which token?",
    "text": "který token?"
   },
-  "s6906": {
+  "s6907": {
    "source": "while paused",
    "text": "během pauzy"
   },
-  "s6907": {
+  "s6908": {
    "source": "who did it",
    "text": "kdo to udělal"
   },
-  "s6908": {
+  "s6909": {
    "source": "who had it sent",
    "text": "kdo ho nechal poslat"
   },
-  "s6909": {
+  "s6910": {
    "source": "who made it",
    "text": "kdo ho vytvořil"
   },
-  "s6910": {
+  "s6911": {
    "source": "who or what made it",
    "text": "kdo nebo co ho vytvořil"
   },
-  "s6911": {
+  "s6912": {
    "source": "who?",
    "text": "kdo?"
   },
-  "s6912": {
+  "s6913": {
    "source": "whoever passes the realm’s group filter",
    "text": "kdokoli, kdo projde skupinovým filtrem realmu"
   },
-  "s6913": {
+  "s6914": {
    "source": "whom it goes to",
    "text": "komu jde"
   },
-  "s6914": {
+  "s6915": {
    "source": "why - for the events",
    "text": "proč – pro události"
   },
-  "s6915": {
+  "s6916": {
    "source": "why - what the token said",
    "text": "proč – co řekl token"
   },
-  "s6916": {
+  "s6917": {
    "source": "with a graph of the last two minutes",
    "text": "s grafem posledních dvou minut"
   },
-  "s6917": {
+  "s6918": {
    "source": "with a key only",
    "text": "jen klíčem"
   },
-  "s6918": {
+  "s6919": {
    "source": "with a password kept here",
    "text": "s heslem uloženým zde"
   },
-  "s6919": {
+  "s6920": {
    "source": "with colours and the code large (HTML)",
    "text": "barevný, s velkým kódem (HTML)"
   },
-  "s6920": {
+  "s6921": {
    "source": "with no password at all, nobody could sign in after this: Windows needs its keytab, a certificate an authority - put one in, or switch No password at all off (nothing saved)",
    "text": "úplně bez hesla by se po této změně nikdo nepřihlásil: Windows potřebuje keytab, certifikát autoritu – jedno vložte, nebo vypněte Úplně bez hesla (nic se neuložilo)"
   },
-  "s6921": {
+  "s6922": {
    "source": "with options",
    "text": "s volbami"
   },
-  "s6922": {
+  "s6923": {
    "source": "with rings",
    "text": "s kroužky"
   },
-  "s6923": {
+  "s6924": {
    "source": "with the password (AES-256)",
    "text": "heslem (AES-256)"
   },
-  "s6924": {
+  "s6925": {
    "source": "within a day",
    "text": "do jednoho dne"
   },
-  "s6925": {
+  "s6926": {
    "source": "without TLS too",
    "text": "i bez TLS"
   },
-  "s6926": {
+  "s6927": {
    "source": "without a realm",
    "text": "bez realmu"
   },
-  "s6927": {
+  "s6928": {
    "source": "working",
    "text": "pracuje se"
   },
-  "s6928": {
+  "s6929": {
    "source": "working…  looking at what is to be done by hand",
    "text": "pracuji…  zjišťuji, co je třeba udělat ručně"
   },
-  "s6929": {
+  "s6930": {
    "source": "would not sign in",
    "text": "nepřihlásil by"
   },
-  "s6930": {
+  "s6931": {
    "source": "would sign in",
    "text": "přihlásil by"
   },
-  "s6931": {
+  "s6932": {
    "source": "write it as Name = value",
    "text": "pište to jako Název = hodnota"
   },
-  "s6932": {
+  "s6933": {
    "source": "write the number with its country code: +420 603 123 456",
    "text": "zadejte číslo i s předvolbou: +420 603 123 456"
   },
-  "s6933": {
+  "s6934": {
    "source": "writing the certificate and the TLS settings",
    "text": "zapisuje se certifikát a nastavení TLS"
   },
-  "s6934": {
+  "s6935": {
    "source": "written",
    "text": "zápis"
   },
-  "s6935": {
+  "s6936": {
    "source": "wrong",
    "text": "chybně"
   },
-  "s6936": {
+  "s6937": {
    "source": "wrong code",
    "text": "chybný kód"
   },
-  "s6937": {
+  "s6938": {
    "source": "wrong codes",
    "text": "špatných kódů"
   },
-  "s6938": {
+  "s6939": {
    "source": "wrong codes in a row",
    "text": "chybné kódy za sebou"
   },
-  "s6939": {
+  "s6940": {
    "source": "wrong directory passwords",
    "text": "špatná hesla z adresáře"
   },
-  "s6940": {
+  "s6941": {
    "source": "wrong passwords before the lock",
    "text": "počet chybných hesel před zamčením"
   },
-  "s6941": {
+  "s6942": {
    "source": "wrong passwords lock it",
    "text": "špatných hesel ho zamkne"
   },
-  "s6942": {
+  "s6943": {
    "source": "wrong sign-ins",
    "text": "chybná přihlášení"
   },
-  "s6943": {
+  "s6944": {
    "source": "yes",
    "text": "ano"
   },
-  "s6944": {
+  "s6945": {
    "source": "yes - at once, the form if it did not work",
    "text": "ano – hned, formulář, když to nevyjde"
   },
-  "s6945": {
+  "s6946": {
    "source": "yes - switched off",
    "text": "ano – vypnutý"
   },
-  "s6946": {
+  "s6947": {
    "source": "yes - tried at once, the form if it did not work",
    "text": "ano – zkusí se hned, formulář, když to nevyjde"
   },
-  "s6947": {
+  "s6948": {
    "source": "yes, by SMS",
    "text": "ano, SMS"
   },
-  "s6948": {
+  "s6949": {
    "source": "yes, by SMS - by e-mail when the directory has no mobile number",
    "text": "ano, SMS – e-mailem, když adresář nemá mobilní číslo"
   },
-  "s6949": {
+  "s6950": {
    "source": "yes, by e-mail",
    "text": "ano, e-mailem"
   },
-  "s6950": {
+  "s6951": {
    "source": "yes, by e-mail - by SMS when the directory has no address",
    "text": "ano, e-mailem – SMS, když adresář nemá adresu"
   },
-  "s6951": {
+  "s6952": {
    "source": "yesterday",
    "text": "včera"
   },
-  "s6952": {
+  "s6953": {
    "source": "you signed in with Windows, which would not sign anybody in after this (switched off, or no keytab) - nothing saved",
    "text": "přihlásili jste se přes Windows, které by po této změně nikoho nepřihlásilo (vypnuté nebo bez keytabu) – nic se neuložilo"
   },
-  "s6953": {
+  "s6954": {
    "source": "you signed in with a certificate, which would not sign anybody in after this (switched off, or no authority) - nothing saved",
    "text": "přihlásili jste se certifikátem, který by po této změně nikoho nepřihlásil (vypnutý nebo bez autority) – nic se neuložilo"
   },
-  "s6954": {
+  "s6955": {
    "source": "your rules",
    "text": "vaše pravidla"
   },
-  "s6955": {
+  "s6956": {
    "source": "á č ď é ě í ľ ň ó ř š ť ú ů ý ž in sign-in names. Off: letters without accents only.",
    "text": "á č ď é ě í ľ ň ó ř š ť ú ů ý ž v přihlašovacích jménech. Vypnuto: jen písmena bez diakritiky."
   },
-  "s6956": {
+  "s6957": {
    "source": "– (cleared)",
    "text": "– (vynulováno)"
   },
-  "s6957": {
+  "s6958": {
    "source": "– no replication",
    "text": "– bez replikace"
   },
-  "s6958": {
+  "s6959": {
    "source": "… in (minutes)",
    "text": "… za (minut)"
   },
-  "s6959": {
+  "s6960": {
    "source": "…and also the names ending in @",
    "text": "…a také jména končící na @"
   },
-  "s6960": {
+  "s6961": {
    "source": "…and its IPv6 address (optional)",
    "text": "…a její IPv6 adresa (volitelně)"
   },
-  "s6961": {
+  "s6962": {
    "source": "…in the first updates",
    "text": "…v prvních aktualizacích"
   },
-  "s6962": {
+  "s6963": {
    "source": "…or Internet Options → Security → Local intranet → Sites: ",
    "text": "…nebo Možnosti Internetu → Zabezpečení → Místní intranet → Weby: "
   },
-  "s6963": {
+  "s6964": {
    "source": "↑ ↓ and Tab or Enter take one · Esc closes",
    "text": "↑ ↓ a Tab nebo Enter vybere · Esc zavře"
   },
-  "s6964": {
+  "s6965": {
    "source": "✓ RIGHT",
    "text": "✓ SPRÁVNĚ"
   },
-  "s6965": {
+  "s6966": {
    "source": "✗ WRONG",
    "text": "✗ ŠPATNĚ"
   },
-  "s6966": {
+  "s6967": {
    "source": "✗: a token is there under that name already - left as it is; take one of the two away by hand.",
    "text": "✗: pod tím jménem už token je – zůstává, jak je; jeden z nich odeberte ručně."
   }

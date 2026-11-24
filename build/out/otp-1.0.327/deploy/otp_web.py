@@ -7656,6 +7656,9 @@ def _osroots_put(d, name, pem):
         raise
 
 
+OSROOTS_PENDING = 'osroots-pending'
+
+
 def osroots_sync(w, certs, force=False):
     """The folder made to hold exactly the certificates wanted of otp's - the others' left as they
     are - and the system's tool run when anything changed. (said, refused [(fp, why)])."""
@@ -7700,6 +7703,12 @@ def osroots_sync(w, certs, force=False):
             said.append('removed %s' % name)
             changed = True
     tool_said = ''
+    # The tool's run before did not end well (1.0.327): a certificate taken away stayed in the
+    # system's list - the files as wanted, nothing "changed", and the pages said it was done.
+    pending = os.path.join(ROOT_STATE_DIR, OSROOTS_PENDING)
+    if not changed and os.path.exists(pending):
+        said.append('the system\'s list was not made again the last time - made now')
+        changed = True
     if not changed and not force and want:
         # The files as wanted but the system's list without one of them (1.0.270): the tool's run
         # before failed or timed out after they were written - run again, not "applied" for good.
@@ -7712,10 +7721,15 @@ def osroots_sync(w, certs, force=False):
         if not shutil.which(w['tool'][0]):
             raise Refused('%s is not on this machine - the files are in %s, the system\'s list is '
                           'not made again until it runs' % (w['tool'][0], w['dir']))
+        root_state_write(OSROOTS_PENDING, '%d\n' % int(time.time()))
         got = subprocess.run(w['tool'], capture_output=True, text=True, timeout=300)
         if got.returncode != 0:
             raise Refused('%s ended with %d: %s' % (' '.join(w['tool']), got.returncode,
                                                     ((got.stderr or got.stdout).strip() or '-')[-300:]))
+        try:
+            os.unlink(pending)
+        except OSError:
+            pass
         tool_said = ' '.join(w['tool'])
         said.append('%s run' % tool_said)
     return said, refused
