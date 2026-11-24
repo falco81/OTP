@@ -52,12 +52,14 @@ m.lockouts_publish = lambda *a, **k: None
 m.lockouts_tick(Dm())
 ok('lockouts: the ask added meanwhile kept', st.get_meta(key) is not None and 'b' in st.get_meta(key), st.get_meta(key))
 m.lockouts_tick(Dm())
-ok('lockouts: read and cleared at the next look', st.get_meta(key) is None and len(cleared) == 2, (st.get_meta(key), cleared))
+ok('lockouts: read and cleared at the next look', st.get_meta(key) is None and cleared == [None, None, [['ip', '192.0.2.1']]], (st.get_meta(key), cleared))
 
 # ==== 2 memory_search: a list or an object as text
-rows = [{'name': 'a', 'note': ['x', 'y']}, {'name': 'b', 'note': {'k': 1}}, {'name': 'c', 'note': 'plain'}]
+cols = list(m.MAILQ_SEARCH_COLS)
+rows = [dict({c: 'plain' for c in cols}, **{cols[0]: ['x', 'y']}), dict({c: 'plain' for c in cols}, **{cols[0]: {'k': 1}}),
+        {c: 'plain' for c in cols}]
 try:
-    got = m.memory_search('tokens', 'CREATE TABLE t (i INTEGER, name TEXT, note TEXT)', ['name', 'note'], rows, 'a')
+    got = m.memory_search('mailq', m.MAILQ_SEARCH_TABLE, cols, rows, 'plain')
     ok('memory_search: odd values searched', isinstance(got, list), got)
 except Exception as e:                                  # noqa: BLE001
     ok('memory_search: odd values searched', False, repr(e))

@@ -250,8 +250,10 @@ def _mfa_send(h, s, kind, dest, field):
             h.store.session_merge(s['id'], was, expect={'mfa_sent_at': t, 'mfa_sent': n + 1})
         except Exception:                               # noqa: BLE001
             pass
+        # The wait of the count that refused (1.0.323): the address's, said as the account's -
+        # "in 1 min", refused for 15.
         raise ApiError(429, 'too many codes sent lately - try again in %d min'
-                       % code_send_wait_min(h.store, 'adm:' + str(s['name']).lower()), extra={'send': st})
+                       % code_send_wait_min(h.store, dkey if a_ok else akey), extra={'send': st})
     code, salt = code_new(), secrets.token_hex(8)
     saved = {'hash': code_hash(salt, code), 'salt': salt,
              't': t, 'exp': t + int(CONFIG.get('code_ttl_s') or 300)}

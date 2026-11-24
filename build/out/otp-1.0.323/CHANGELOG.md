@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.323 — 23 November 2026
+
+**Bug fix (two nodes)**: a lockout cleared on the pages for the other node, asked at the moment that node read the earlier asks, was deleted unread: said cleared "within five seconds", the address or the name stayed locked out there. Only the asks read are taken away.
+
+**Bug fix**: searching a backup of tokens before it is put back, with a value of a list or an object in it (a file edited by hand or made elsewhere), ended in an error 500. Such values are searched as their text.
+
+**Bug fix**: an administrator's second step by mail or SMS refused because the address had too many codes lately (from the enrolment pages too) said the wait of the account - *try again in 1 min* - and was refused for up to 15. It says the address's wait.
+
 ## 1.0.322 — 23 November 2026
 
 **Bug fix (restore)**: a copy or a backup made by a newer otp went back onto an older one without a word: tables, columns and settings this version does not know were left out or misread, and every guard of a downgrade (passkeys, the floor a node may not go below) went round. It is refused now, saying which version made it - from the pages always, on the command line unless `--allow-newer` is given (`otp --restore FILE --yes --allow-newer`, `otp --restore-bundle ...`).

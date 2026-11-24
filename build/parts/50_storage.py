@@ -215,6 +215,15 @@ LIST_TOKEN = re.compile(r'\s*(\(|\)|[-!]?(?:[A-Za-z_][\w.]*(?:!=|>=|<=|[:~=<>]))
 LIST_TERM = re.compile(r'^([-!]?)([A-Za-z_][\w]*)(!=|>=|<=|[:~=<>])(.*)\Z', re.S)
 
 
+def _mem_value(v):
+    if v is None or isinstance(v, (str, int, float)):
+        return v
+    try:
+        return json.dumps(v, ensure_ascii=False, default=str)
+    except Exception:                                   # noqa: BLE001
+        return str(v)
+
+
 def memory_search(listname, create, cols, rows, text):
     """Rows that live nowhere a query can reach - the outgoing mail, a
     backup being read - searched with the very words every list takes
@@ -227,7 +236,9 @@ def memory_search(listname, create, cols, rows, text):
         conn.execute(create)
         conn.executemany('INSERT INTO t (%s) VALUES (%s)' % (', '.join(['i'] + list(cols)),
                                                           ', '.join('?' * (len(cols) + 1))),
-                         [[i] + [r.get(c) for c in cols] for i, r in enumerate(rows)])
+                         # A list or an object in a file (1.0.323) as its text: sqlite took no
+                         # such value, and the search ended in a 500.
+                         [[i] + [_mem_value(r.get(c)) for c in cols] for i, r in enumerate(rows)])
         where, args = [], []
         if lq.sql:
             where.append(lq.sql)

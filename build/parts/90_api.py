@@ -736,7 +736,12 @@ def lockouts_tick(d):
     key = 'lockouts:ask:' + node_name()
     raw = d.store.get_meta(key)
     if raw:
-        d.store.drop_meta(key)
+        # Only the asks read (1.0.323): one added by the other node between the read and the
+        # delete was deleted unread - said cleared "within five seconds", never cleared.
+        if dbguard_meta_signed(key):
+            d.store.drop_meta(key)
+        else:
+            d.store.db.run('DELETE FROM meta WHERE k = ? AND v = ?', (key, raw))
         try:
             asks = json.loads(raw)
         except ValueError:
