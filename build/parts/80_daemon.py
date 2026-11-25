@@ -646,10 +646,16 @@ def parse_clients_conf(text):
                 b = b[1:-1].replace('\\' + b[0], b[0])
             vals[a.strip().lower()] = b
         addr = vals.get('ipaddr') or vals.get('ipv4addr') or vals.get('ipv6addr') or key
+        # FreeRADIUS 2's netmask (1.0.337): the network, not its first address alone.
+        mask = str(vals.get('netmask') or '').strip()
+        if mask.isdigit() and '/' not in addr:
+            addr = '%s/%s' % (addr, mask)
         out.append({'name': vals.get('shortname') or key, 'address': addr,
                     'secret': vals.get('secret', ''),
-                    'require_ma': 1 if vals.get('require_message_authenticator') == 'yes'
-                    else 0})
+                    # As FreeRADIUS takes it (1.0.337): true, on, Yes - the client lost the rule
+                    # that it must sign (BlastRADIUS) on import.
+                    'require_ma': 1 if str(vals.get('require_message_authenticator') or '').strip()
+                    .lower() in ('yes', 'true', 'on', '1') else 0})
     return out
 
 
@@ -804,9 +810,13 @@ def import_legacy(store, root, by='import', replace=False, say=print):
                                                           y.get('userAttribute') or '') \
                 else 'sam'
             for suffix in sorted(realms_seen) or ['*']:
-                if any(str(r.get('suffix')) == suffix for r in store.realms()) and not replace:
+                # Of any letters (1.0.337): CORP.CZ in the hints, corp.cz kept - imported again,
+                # the realm was made twice, refused, and nothing after it imported.
+                if any(str(r.get('suffix')).lower() == suffix.lower() for r in store.realms()) and \
+                        not replace:
                     continue
-                old = next((r for r in store.realms() if r.get('suffix') == suffix), None)
+                old = next((r for r in store.realms()
+                            if str(r.get('suffix') or '').lower() == suffix.lower()), None)
                 store.realm_save({
                     'id': old['id'] if old else None, 'name': suffix if suffix != '*'
                     else 'default', 'suffix': suffix, 'directory': directory,

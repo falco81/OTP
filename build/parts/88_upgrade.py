@@ -337,6 +337,12 @@ def upgrade_start(store, by, pages=False):
     # longest, and the first node is the one somebody can look at while it
     # is done.
     order = sorted(n for n in names if n != me) + ([me] if me in names else [])
+    # One in maintenance first (1.0.337): the node whose turn it was waited for it to be in
+    # service again, it waited for its turn - "waiting" for good, no new upgrade taken.
+    try:
+        order.sort(key=lambda n: not bool(maintenance_row(store, n).get('on')))
+    except Exception:                                   # noqa: BLE001
+        pass
     ident = '%d-%s' % (int(time.time()), secrets.token_hex(4))
     for name in order:
         k = 'upgrade:node:' + name

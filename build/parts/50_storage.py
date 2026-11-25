@@ -1649,6 +1649,10 @@ class Storage(object):
             # shared the token "novak", and the second could enrol it, or
             # sign in to the first realm with it.
             for r in self.realms():
+                # Not itself (1.0.337): renamed and given another directory in one save, the row as
+                # it was was taken for another realm.
+                if data.get('id') and str(r.get('id')) == str(data.get('id')):
+                    continue
                 if plain_names(r.get('token_name'), r.get('suffix')) and \
                         str(r.get('name')).lower() != \
                         str(data.get('name') or '').strip().lower() and \

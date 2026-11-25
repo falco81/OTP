@@ -2787,7 +2787,9 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                 if len(data) > 64 * 1024:
                     out.append({'name': base, 'said': 'not imported: too big for a .totp file'})
                     continue
-                got.append({'name': base, 'text': data.decode('utf-8', 'replace'),
+                # Its BOM left out (1.0.337), as the browser leaves it out of one file dropped
+                # alone: one saved by Notepad was "not a base32 key" in a ZIP.
+                got.append({'name': base, 'text': data.decode('utf-8-sig', 'replace'),
                             'locked_in': label if info.flag_bits & 1 else ''})
     except (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError, struct.error,
             zlib.error) as e:

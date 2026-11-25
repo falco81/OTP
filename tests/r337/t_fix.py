@@ -67,9 +67,8 @@ try:
 except ValueError as x:
     e = x
 ok('renamed with another directory: saved', e is None and [r['name'] for r in st.realms()] == ['B'], e)
-st.realm_save({'name': 'C', 'suffix': 'c.cz', 'directory': 'AD1', 'token_name': 'bare'}, 'test')
 try:
-    st.realm_save({'name': 'D', 'suffix': 'd.cz', 'directory': 'AD2', 'token_name': 'bare'}, 'test')
+    st.realm_save({'name': 'C', 'suffix': 'c.cz', 'directory': 'AD1', 'token_name': 'bare'}, 'test')
     e = None
 except ValueError as x:
     e = x
