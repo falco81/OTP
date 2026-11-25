@@ -260,7 +260,9 @@ def net_check(store, node, want, rollback=False):
             vnet = None
         if vnet and vnet.ip == a4.ip:
             raise ValueError('%s is the VIP address of the cluster' % new_ip)
-        if vnet and vnet.ip not in a4.network and not want.get('vip_elsewhere'):
+        # An IPv4 VIP against the IPv4 network (1.0.335): an IPv6 one is in no IPv4 network, and
+        # every change of the network of every node was refused.
+        if vnet and vnet.version == 4 and vnet.ip not in a4.network and not want.get('vip_elsewhere'):
             raise ValueError('the VIP address %s is not in %s: the node could not hold it. '
                              'Change the VIP address first (High availability), or tick that '
                              'it is meant to be so' % (vnet.ip, a4.network))

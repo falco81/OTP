@@ -87,7 +87,7 @@ fw = []
 
 class P(object):
     def __init__(self, rc=0, err=''):
-        self.returncode, self.stderr, self.stdout = rc, err, ''
+        self.returncode, self.stderr, self.stdout, self.args = rc, err, "", []
 
 
 def fake_run(args, **kw):
