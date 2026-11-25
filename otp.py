@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.335'
+__version__ = '1.0.336'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2308,7 +2308,14 @@ def check_setting(key, value):
     """The value as it will be kept, or BadSetting saying why not."""
     if key not in DEFAULTS:
         raise BadSetting('%s is not a setting this version knows' % key)
-    got = _coerce(DEFAULTS[key], value)
+    try:
+        got = _coerce(DEFAULTS[key], value)
+    except BadSetting as e:
+        # By its name (1.0.336): "a number is needed, and nothing was given" named no setting,
+        # and the page could not show which of the changed ones it was.
+        if str(e).startswith(key + ':'):
+            raise
+        raise BadSetting('%s: %s' % (key, e))
     shape = TUNABLE.get(key)
     if isinstance(shape, tuple) and shape and isinstance(shape[0], str):
         if str(got) not in shape:
@@ -17532,6 +17539,18 @@ def seal_fp_check(store):
         store.drop_meta(k)
 
 
+def node_file_has(store, node, k):
+    """Whether node `node` has setting `k` from its own config.json (1.0.336): this one's own
+    file, another's as its heartbeat says."""
+    if node == node_name():
+        return k in (FILE_KEYS or ())
+    try:
+        beat = json.loads(store.get_meta('node:' + node) or '{}')
+    except ValueError:
+        return False
+    return isinstance(beat, dict) and k in (beat.get('own_file') or [])
+
+
 CLI_EVENTS_FILE = RUN_DIR / 'cli-events.jsonl'
 CLI_EVENTS_MOST = 256 * 1024
 
@@ -18828,7 +18847,10 @@ class Daemon(object):
         for k, v in db_side.items():
             if k in NODE_KEYS and many and not cluster_wide:
                 shared = saved_now.get(k, FILE_CONFIG.get(k, DEFAULTS[k]))
-                if v == shared:
+                # Not dropped where the node has it from its own config.json (1.0.336): the
+                # cluster's value asked for there dropped nothing, "saved" was said, and the node
+                # went on with its file's.
+                if v == shared and not node_file_has(self.store, node, k):
                     self.store.drop_setting(k + '@' + node)
                 else:
                     self.store.save_setting(k + '@' + node, v, by)
