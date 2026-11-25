@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.338'
+__version__ = '1.0.339'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -12893,6 +12893,9 @@ class Shipper(object):
                 until, wait = self.down.get(key, (0.0, 0.0))
                 if time.time() < until:
                     self.missed[key] += 1
+                    # Counted as dropped too (1.0.339), as the SIEM counts them (1.0.206): the
+                    # metrics, SNMP and the alert said 0 through a whole outage.
+                    self.dropped += 1
                     return
                 sock = self.tcp.get(target)
                 if sock is not None and not _conn_alive(sock):
@@ -12938,6 +12941,7 @@ class Shipper(object):
                 wait = min(300.0, max(15.0, wait * 2))
                 self.down[key] = (time.time() + wait, wait)
                 self.missed[key] += 1
+                self.dropped += 1
                 e = '%s - tried again in %d s, %d line(s) not sent to it' % (
                     e, int(wait), self.missed[key])
             self.trouble[key] = '%s (%s)' % (e, datetime.now().strftime('%H:%M:%S'))
@@ -18028,14 +18032,20 @@ def import_legacy(store, root, by='import', replace=False, say=print):
                     continue
                 old = next((r for r in store.realms()
                             if str(r.get('suffix') or '').lower() == suffix.lower()), None)
-                store.realm_save({
-                    'id': old['id'] if old else None, 'name': suffix if suffix != '*'
-                    else 'default', 'suffix': suffix, 'directory': directory,
-                    'lookup': lookup, 'auth_mode': 'otp', 'check_disabled': 1, 'nested': 0,
-                    'groups': [{'group': g, 'reply': ''} for g in y['groups']],
-                    'token_name': 'whole',
-                    'note': 'brought over: the code alone, then the user filter and the '
-                            'group filter the old handler applied'}, by)
+                # One that cannot be made said, the rest imported (1.0.339), as a client is: it
+                # stopped the import, and the clients, settings and tokens never came.
+                try:
+                    store.realm_save({
+                        'id': old['id'] if old else None, 'name': suffix if suffix != '*'
+                        else 'default', 'suffix': suffix, 'directory': directory,
+                        'lookup': lookup, 'auth_mode': 'otp', 'check_disabled': 1, 'nested': 0,
+                        'groups': [{'group': g, 'reply': ''} for g in y['groups']],
+                        'token_name': 'whole',
+                        'note': 'brought over: the code alone, then the user filter and the '
+                                'group filter the old handler applied'}, by)
+                except ValueError as e:
+                    say('realm %s: not imported - %s' % (suffix, e))
+                    continue
                 done['realms'] += 1
                 say('realm %s: %d group(s), looked up by %s' % (suffix, len(y['groups']),
                                                                 lookup))
@@ -23024,7 +23034,9 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
                 '<div style="margin:6px 0 0;font-size:12.5px;color:#6b7280;text-align:center;%s">'
                 '%s</div></td></tr></table>' % (_h(key), font, fill_html(w['facts'], fmt, plain_fmt_h) + _algo_said(picture)))
     rows.append('<div style="height:18px;line-height:18px;font-size:1px">&nbsp;</div>')
-    if pending and w['pending'].strip():
+    # The link even with its words left empty (1.0.339): without it a token to be confirmed went
+    # with nothing saying where - its QR code never started working.
+    if pending and (w['pending'].strip() or portal_url):
         rows.append('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
                     'border="0" style="margin:0 0 20px"><tr><td bgcolor="#eff6ff" '
                     'style="padding:12px 16px;background:#eff6ff;border-left:4px solid #2563eb;'
@@ -23109,8 +23121,8 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
             text += [part, '']
     text += ['1. ' + plain('step1'), '2. ' + plain('step2') + ' (QR)', '3. ' + plain('step3'),
              '', '   ' + key, '', plain('facts') + html.unescape(_algo_said(picture)), '']
-    if pending and w['pending'].strip():
-        text += [plain('pending') + (' ' + portal_url if portal_url else ''), '']
+    if pending and (w['pending'].strip() or portal_url):
+        text += [(plain('pending') + (' ' + portal_url if portal_url else '')).strip(), '']
     if codes:
         text += [plain('codes_h') + ':', '   ' + '   '.join(codes), '']
         if w['codes_p'].strip():
