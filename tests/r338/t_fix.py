@@ -54,7 +54,7 @@ ok('an SMS with {code} taken', m.text_check(f, 'Kód {code}') == 'Kód {code}')
 
 pr = [f for msg in m.TEXT_MESSAGES for f in msg['fields'] if f[4] == 'prompt' and 'dest' in f[3]]
 if pr:
-    long_ = 'ž' * 90 + ' {dest}'                           # 180 bytes + a real address
+    long_ = 'ž' * 100 + ' {dest}'                          # 200 bytes: fits with the sample, not a real address
     try:
         m.text_check(pr[0], long_)
         e = None

@@ -398,10 +398,19 @@ def text_check(field, value):
         value.format(**text_samples())
     except (ValueError, IndexError, KeyError) as e:
         raise ValueError('%s: a { or } on its own - write it twice, {{ or }} (%s)' % (label, e))
-    if field[4] == 'prompt' and len(value.format(**text_samples()).encode('utf-8')) > 253:
-        raise ValueError('%s: longer than RADIUS carries (253 bytes)' % label)
+    # With an address as long as a real one is (1.0.338): the sample's short one passed a prompt
+    # that was cut at run time - and on the SSH gate in the middle of a letter.
+    if field[4] == 'prompt' and len(value.format(**dict(
+            text_samples(), dest='j******@' + 'x' * 52)).encode('utf-8')) > 251:
+        raise ValueError('%s: longer than RADIUS carries (253 bytes, with an address as long as '
+                         'a real one)' % label)
     if field[4] in ('subject', 'sms', 'prompt') and not value.strip():
         raise ValueError('%s cannot be empty' % label)
+    # The code in an SMS that is there for it (1.0.338): left out, every SMS of a sign-in went
+    # with no code in it.
+    if field[4] == 'sms' and 'code' in allowed and \
+            not any(name == 'code' for _lit, name, _s, _c in parts):
+        raise ValueError('%s: the code is what this SMS is for - put it in' % label)
     return value
 
 
