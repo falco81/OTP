@@ -4,6 +4,10 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.330 — 24 November 2026
+
+**Fixed (Active Directory)**: an account's primary group was not among its groups. AD keeps it in the account's `primaryGroupID` alone - not in `memberOf`, nor in the group's `member` - so a realm, an administrator's role or anything else given to "Domain Users", or to a group made the users' primary one, refused every account with "does not pass LDAP group filter(s)"; a group with "Domain Users" in it was not found either. The primary group is now looked up by its SID, and the groups it is in are found with it. Directories other than AD (no `primaryGroupID`) are asked as before.
+
 ## 1.0.329 — 24 November 2026
 
 **Security (database agent)**: a node joined to a database agent could name any database or account on that server. On MariaDB it was given every right on another application's database, or an account there (a backup's, a monitoring one's) had its password reset; on PostgreSQL a role of the server's was given the node's password and let in from the network. Several clusters may share one database server, so one node taken over reached everything else on it. Now:
