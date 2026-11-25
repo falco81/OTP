@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.331'
+__version__ = '1.0.332'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -31778,6 +31778,21 @@ def tls_alt(prof):
     return None
 
 
+def tls_alt_ran_out(alt, now=None):
+    """Whether the second certificate has run out (1.0.332)."""
+    info = (alt or {}).get('info') or {}
+    end = info.get('not_after')
+    if not end:
+        try:
+            end = (cert_info(PEM_CERT.search(alt.get('cert') or '').group(0)) or {}).get('not_after')
+        except (AttributeError, ValueError, TypeError):
+            end = None
+    try:
+        return bool(end) and float(end) < (time.time() if now is None else now)
+    except (TypeError, ValueError):
+        return False
+
+
 def tls_resolved(prof):
     """What root is handed for a profile: the parts and the lines."""
     if not prof:
@@ -31794,6 +31809,10 @@ def tls_resolved(prof):
         # A second certificate of the same names (1.0.196, ACME's "both"): ECDSA
         # beside the RSA one - nginx gives each client the one it takes.
         alt = tls_alt(prof)
+        if alt and tls_alt_ran_out(alt):
+            # Not given to nginx once run out (1.0.332): it went on offering it to every client
+            # that takes ECDSA - most browsers - while the RSA one was good.
+            alt = None
         if alt:
             out['alt'] = {'cert': alt['cert'], 'chain': alt.get('chain') or '',
                           'key': unseal_secret(alt['key'], 'web:tls')}
@@ -32253,6 +32272,9 @@ WEB_DRIFT = {'at': 0.0}
 # test machine looked at the machine's own nginx and said after every certificate made again that
 # nginx held another one. /etc/nginx/certs unless set, as before.
 _NGINX_CERT_DIR = os.environ.get('OTP_VIP_CERT_DIR') or '/etc/nginx/certs'
+# The second (ECDSA) ones too (1.0.332): what root writes beside them.
+NGINX_ALT_FILES = {'node': os.path.join(_NGINX_CERT_DIR, 'otp-ecdsa.pem'),
+                   'vip': os.path.join(_NGINX_CERT_DIR, 'otp-vip-ecdsa.pem')}
 NGINX_CERT_FILES = {'node': os.path.join(_NGINX_CERT_DIR, 'otp.pem'),
                     'vip': os.path.join(_NGINX_CERT_DIR, 'otp-vip.pem')}
 
@@ -32320,7 +32342,18 @@ def web_state(store):
             return str((tls_profile(store, target) or {}).get('root') or '')
         except Exception:                               # noqa: BLE001
             return ''
-    return {'cert_now': cert_now(NGINX_CERT_FILES['node'], _root(node_name())),
+    # The second certificate, where the profile has one (1.0.332): the file stays when it is
+    # taken away, so read only while it is the profile's.
+    def _alt(target):
+        try:
+            prof = tls_profile(store, target) or {}
+            if not tls_alt(prof):
+                return None
+            return cert_now(NGINX_ALT_FILES[target if target == 'vip' else 'node'], _root(target))
+        except Exception:                               # noqa: BLE001
+            return None
+    return {'alt_cert_now': _alt(node_name()), 'vip_alt_cert_now': _alt('vip'),
+            'cert_now': cert_now(NGINX_CERT_FILES['node'], _root(node_name())),
             'vip_cert_now': cert_now(NGINX_CERT_FILES['vip'], _root('vip')),
             'self_check': _json_meta(store, 'web:selfcheck:' + node_name()),
             'self_check_vip': _json_meta(store, 'web:selfcheck:vip'),
@@ -45683,18 +45716,33 @@ def alert_problems(store, lang='en'):
         seen = set()
         for n, b in sorted(beats.items()):
             web = b.get('web') or {}
-            for what, c in (('node', web.get('cert_now')), ('vip', web.get('vip_cert_now'))):
+            for what, c in (('node', web.get('cert_now')), ('vip', web.get('vip_cert_now')),
+                            ('node-ecdsa', web.get('alt_cert_now')),
+                            ('vip-ecdsa', web.get('vip_alt_cert_now'))):
                 if not isinstance(c, dict) or not c.get('not_after'):
                     continue
                 fp = c.get('fingerprint') or ''
-                if what == 'vip' and fp in seen:
+                if what.startswith('vip') and fp in seen:
                     continue
                 seen.add(fp)
                 left = (float(c['not_after']) - now) / 86400
-                if left < days:
-                    who = _al(lang, 'VIP adresy', 'the VIP address') if what == 'vip' else n
-                    add('cert:%s:%s' % (what, n if what == 'node' else 'vip'),
-                        'bad' if left < 7 else 'warn', n if what == 'node' else '',
+                # By its life (1.0.332): a certificate of 6 days (ACME's "shortlived") has fewer
+                # than 21 left all its life - the alert was raised, and "bad", for good. A quarter
+                # of its life, past where ACME renews it (a third).
+                want, worst = days, 7
+                try:
+                    life = (float(c['not_after']) - float(c.get('not_before') or 0)) / 86400
+                except (TypeError, ValueError):
+                    life = 0
+                if c.get('not_before') and 0 < life < 4 * days:
+                    want = life / 4
+                    worst = min(7, life / 8)
+                if left < want:
+                    who = _al(lang, 'VIP adresy', 'the VIP address') if what.startswith('vip') else n
+                    if what.endswith('-ecdsa'):
+                        who += ' (ECDSA)'
+                    add('cert:%s:%s' % (what, n if not what.startswith('vip') else 'vip'),
+                        'bad' if left < worst else 'warn', n if not what.startswith('vip') else '',
                         _al(lang, 'Certifikát %s %s' % (who, 'vypršel' if left < 0 else
                                                        'brzy vyprší'),
                             'The certificate of %s %s' % (who, 'ran out' if left < 0 else

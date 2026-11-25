@@ -933,6 +933,21 @@ def tls_alt(prof):
     return None
 
 
+def tls_alt_ran_out(alt, now=None):
+    """Whether the second certificate has run out (1.0.332)."""
+    info = (alt or {}).get('info') or {}
+    end = info.get('not_after')
+    if not end:
+        try:
+            end = (cert_info(PEM_CERT.search(alt.get('cert') or '').group(0)) or {}).get('not_after')
+        except (AttributeError, ValueError, TypeError):
+            end = None
+    try:
+        return bool(end) and float(end) < (time.time() if now is None else now)
+    except (TypeError, ValueError):
+        return False
+
+
 def tls_resolved(prof):
     """What root is handed for a profile: the parts and the lines."""
     if not prof:
@@ -949,6 +964,10 @@ def tls_resolved(prof):
         # A second certificate of the same names (1.0.196, ACME's "both"): ECDSA
         # beside the RSA one - nginx gives each client the one it takes.
         alt = tls_alt(prof)
+        if alt and tls_alt_ran_out(alt):
+            # Not given to nginx once run out (1.0.332): it went on offering it to every client
+            # that takes ECDSA - most browsers - while the RSA one was good.
+            alt = None
         if alt:
             out['alt'] = {'cert': alt['cert'], 'chain': alt.get('chain') or '',
                           'key': unseal_secret(alt['key'], 'web:tls')}
@@ -1408,6 +1427,9 @@ WEB_DRIFT = {'at': 0.0}
 # test machine looked at the machine's own nginx and said after every certificate made again that
 # nginx held another one. /etc/nginx/certs unless set, as before.
 _NGINX_CERT_DIR = os.environ.get('OTP_VIP_CERT_DIR') or '/etc/nginx/certs'
+# The second (ECDSA) ones too (1.0.332): what root writes beside them.
+NGINX_ALT_FILES = {'node': os.path.join(_NGINX_CERT_DIR, 'otp-ecdsa.pem'),
+                   'vip': os.path.join(_NGINX_CERT_DIR, 'otp-vip-ecdsa.pem')}
 NGINX_CERT_FILES = {'node': os.path.join(_NGINX_CERT_DIR, 'otp.pem'),
                     'vip': os.path.join(_NGINX_CERT_DIR, 'otp-vip.pem')}
 
@@ -1475,7 +1497,18 @@ def web_state(store):
             return str((tls_profile(store, target) or {}).get('root') or '')
         except Exception:                               # noqa: BLE001
             return ''
-    return {'cert_now': cert_now(NGINX_CERT_FILES['node'], _root(node_name())),
+    # The second certificate, where the profile has one (1.0.332): the file stays when it is
+    # taken away, so read only while it is the profile's.
+    def _alt(target):
+        try:
+            prof = tls_profile(store, target) or {}
+            if not tls_alt(prof):
+                return None
+            return cert_now(NGINX_ALT_FILES[target if target == 'vip' else 'node'], _root(target))
+        except Exception:                               # noqa: BLE001
+            return None
+    return {'alt_cert_now': _alt(node_name()), 'vip_alt_cert_now': _alt('vip'),
+            'cert_now': cert_now(NGINX_CERT_FILES['node'], _root(node_name())),
             'vip_cert_now': cert_now(NGINX_CERT_FILES['vip'], _root('vip')),
             'self_check': _json_meta(store, 'web:selfcheck:' + node_name()),
             'self_check_vip': _json_meta(store, 'web:selfcheck:vip'),

@@ -511,18 +511,33 @@ def alert_problems(store, lang='en'):
         seen = set()
         for n, b in sorted(beats.items()):
             web = b.get('web') or {}
-            for what, c in (('node', web.get('cert_now')), ('vip', web.get('vip_cert_now'))):
+            for what, c in (('node', web.get('cert_now')), ('vip', web.get('vip_cert_now')),
+                            ('node-ecdsa', web.get('alt_cert_now')),
+                            ('vip-ecdsa', web.get('vip_alt_cert_now'))):
                 if not isinstance(c, dict) or not c.get('not_after'):
                     continue
                 fp = c.get('fingerprint') or ''
-                if what == 'vip' and fp in seen:
+                if what.startswith('vip') and fp in seen:
                     continue
                 seen.add(fp)
                 left = (float(c['not_after']) - now) / 86400
-                if left < days:
-                    who = _al(lang, 'VIP adresy', 'the VIP address') if what == 'vip' else n
-                    add('cert:%s:%s' % (what, n if what == 'node' else 'vip'),
-                        'bad' if left < 7 else 'warn', n if what == 'node' else '',
+                # By its life (1.0.332): a certificate of 6 days (ACME's "shortlived") has fewer
+                # than 21 left all its life - the alert was raised, and "bad", for good. A quarter
+                # of its life, past where ACME renews it (a third).
+                want, worst = days, 7
+                try:
+                    life = (float(c['not_after']) - float(c.get('not_before') or 0)) / 86400
+                except (TypeError, ValueError):
+                    life = 0
+                if c.get('not_before') and 0 < life < 4 * days:
+                    want = life / 4
+                    worst = min(7, life / 8)
+                if left < want:
+                    who = _al(lang, 'VIP adresy', 'the VIP address') if what.startswith('vip') else n
+                    if what.endswith('-ecdsa'):
+                        who += ' (ECDSA)'
+                    add('cert:%s:%s' % (what, n if not what.startswith('vip') else 'vip'),
+                        'bad' if left < worst else 'warn', n if not what.startswith('vip') else '',
                         _al(lang, 'Certifikát %s %s' % (who, 'vypršel' if left < 0 else
                                                        'brzy vyprší'),
                             'The certificate of %s %s' % (who, 'ran out' if left < 0 else
