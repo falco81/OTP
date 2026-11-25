@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.334'
+__version__ = '1.0.335'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -36471,7 +36471,9 @@ def net_check(store, node, want, rollback=False):
             vnet = None
         if vnet and vnet.ip == a4.ip:
             raise ValueError('%s is the VIP address of the cluster' % new_ip)
-        if vnet and vnet.ip not in a4.network and not want.get('vip_elsewhere'):
+        # An IPv4 VIP against the IPv4 network (1.0.335): an IPv6 one is in no IPv4 network, and
+        # every change of the network of every node was refused.
+        if vnet and vnet.version == 4 and vnet.ip not in a4.network and not want.get('vip_elsewhere'):
             raise ValueError('the VIP address %s is not in %s: the node could not hold it. '
                              'Change the VIP address first (High availability), or tick that '
                              'it is meant to be so' % (vnet.ip, a4.network))

@@ -545,10 +545,15 @@ def firewall(peer, family, on):
         return 'firewalld is not running: let VRRP (IP protocol 112) from %s in yourself' % peer
     rule = 'rule family="%s" source address="%s" protocol value="vrrp" accept' % (
         'ipv6' if family == 6 else 'ipv4', peer)
+    # Kept and in force, each said - no reload (1.0.335): a reload on every change of the pages
+    # while the VIP is on threw away what others hold only in force (fail2ban's bans).
     got = subprocess.run(['firewall-cmd', '--permanent',
                           ('--add-rich-rule=' if on else '--remove-rich-rule=') + rule],
                          capture_output=True, text=True)
-    rl = subprocess.run(['firewall-cmd', '--reload'], capture_output=True, text=True)
+    rl = subprocess.run(['firewall-cmd', ('--add-rich-rule=' if on else '--remove-rich-rule=') + rule],
+                        capture_output=True, text=True)
+    if rl.returncode != 0 and ('ALREADY_ENABLED' in (rl.stderr or '') or 'NOT_ENABLED' in (rl.stderr or '')):
+        rl = subprocess.CompletedProcess(rl.args, 0, rl.stdout, '')
     # Said when it did not work (1.0.57): VRRP not let in is both nodes
     # holding the address.
     if on and (got.returncode not in (0,) and 'ALREADY_ENABLED' not in (got.stderr or '')
@@ -2863,6 +2868,35 @@ def net_apply(n):
                  ','.join(net_addrs6_after(before, n['addr6'])),
                  'ipv6.gateway', n['gw6'], 'ipv6.dns', ','.join(n['dns6'])]
     run(args, 'nmcli connection modify')
+    try:
+        return _net_apply_rest(n, said, before, host_was)
+    except BaseException:
+        # Put back what was changed (1.0.335): /etc/hosts not writable, the reboot not asked -
+        # the profile kept the new address with no trial and no reboot, and the next restart (an
+        # update) brought the node up where the cluster did not look for it.
+        undo = [NMCLI, 'connection', 'modify', n['con']]
+        for k in ('ipv4.addresses', 'ipv4.gateway', 'ipv4.dns', 'ipv4.dns-search', 'ipv4.method',
+                  'ipv6.addresses', 'ipv6.gateway', 'ipv6.dns', 'ipv6.method'):
+            v = before.get(k)
+            undo += [k, '' if v in ('--', None) else v]
+        try:
+            run(undo, 'nmcli connection modify')
+        except Exception:                               # noqa: BLE001
+            pass
+        if n['hostname'] and host_was:
+            try:
+                run([HOSTNAMECTL, 'set-hostname', host_was], 'hostnamectl set-hostname')
+            except Exception:                           # noqa: BLE001
+                pass
+        if n.get('_hosts_had') is not None:
+            try:
+                write_root(HOSTS_FILE, n['_hosts_had'], 0o644)
+            except Exception:                           # noqa: BLE001
+                pass
+        raise
+
+
+def _net_apply_rest(n, said, before, host_was):
     said.append('NetworkManager: %s - %s via %s, DNS %s%s' % (
         n['con'], n['addr4'], n['gw4'] or 'no gateway', ', '.join(n['dns4']) or 'none',
         {'off': ', IPv6 off', 'auto': ', IPv6 automatic',
@@ -2886,6 +2920,7 @@ def net_apply(n):
             write_root(HOSTS_FILE + '.otp-before', had, 0o644)
         except OSError:
             pass
+        n['_hosts_had'] = had
         write_root(HOSTS_FILE, new, 0o644)
         said.append('%s: this machine\'s lines' % HOSTS_FILE)
     if n['reboot_in']:
