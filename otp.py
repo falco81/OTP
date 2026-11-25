@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.333'
+__version__ = '1.0.334'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -8087,7 +8087,17 @@ class Storage(object):
                 for r in self.db.rows('SELECT k, at, by_who FROM settings')}
 
     def save_setting(self, k, v, by=''):
-        row = {'k': k, 'v': json.dumps(v), 'at': time.time(), 'by_who': str(by or '')[:190]}
+        # Later than the one it replaces (1.0.334), as a token's times are (1.0.214): saved on a
+        # node whose clock is behind the other's, the other kept its own as the newer - the two
+        # held different values until the next change.
+        at = time.time()
+        try:
+            was = self.db.value('SELECT at FROM settings WHERE k = ?', (k,))
+            if was is not None and float(was) >= at:
+                at = float(was) + 0.001
+        except (TypeError, ValueError, DbError):
+            pass
+        row = {'k': k, 'v': json.dumps(v), 'at': at, 'by_who': str(by or '')[:190]}
         if not dbguard_setting_kept(k):
             self.db.upsert('settings', 'k', row)
             return
@@ -28414,6 +28424,10 @@ def once_tidy(store):
     """Rows no longer needed: a time step or a question long past."""
     t = time.time()
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'scratchguard:%'"):
+        # Each node its own rows (1.0.334), as the codes' and the questions' (1.0.327): the other's
+        # deleted here as it added a time to it lost that count.
+        if not _tidy_mine(store, r['k']):
+            continue
         try:
             last = max([float(x) for x in json.loads(r['v'] or '[]')] or [0])
         except (ValueError, TypeError):
@@ -48898,6 +48912,13 @@ def db_fingerprint(db):
 def db_fingerprint_diff(here, far):
     """The tables that differ between this database and the one carried into."""
     a, b = db_fingerprint(here), db_fingerprint(far)
+    # The times of a token's key, state and recovery codes are written by PostgreSQL's trigger
+    # alone (1.0.334): carried from SQLite or MariaDB, where they are empty, PostgreSQL wrote the
+    # time of the carry into every row - "an older copy: the tokens", however often carried.
+    # Compared only where this one has them.
+    if a.get('tokens') and b.get('tokens'):
+        b['tokens'] = tuple(y if x is not None or i < 2 else None
+                            for i, (x, y) in enumerate(zip(a['tokens'], b['tokens'])))
     words = {'tokens': 'the tokens', 'settings': 'the settings', 'clients': 'the clients',
              'realms': 'the realms', 'directories': 'the directories', 'accounts': 'the accounts'}
     return [words[k] for k in a if a[k] != b.get(k)]
