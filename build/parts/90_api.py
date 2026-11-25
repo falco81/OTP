@@ -864,6 +864,13 @@ def db_fingerprint(db):
 def db_fingerprint_diff(here, far):
     """The tables that differ between this database and the one carried into."""
     a, b = db_fingerprint(here), db_fingerprint(far)
+    # The times of a token's key, state and recovery codes are written by PostgreSQL's trigger
+    # alone (1.0.334): carried from SQLite or MariaDB, where they are empty, PostgreSQL wrote the
+    # time of the carry into every row - "an older copy: the tokens", however often carried.
+    # Compared only where this one has them.
+    if a.get('tokens') and b.get('tokens'):
+        b['tokens'] = tuple(y if x is not None or i < 2 else None
+                            for i, (x, y) in enumerate(zip(a['tokens'], b['tokens'])))
     words = {'tokens': 'the tokens', 'settings': 'the settings', 'clients': 'the clients',
              'realms': 'the realms', 'directories': 'the directories', 'accounts': 'the accounts'}
     return [words[k] for k in a if a[k] != b.get(k)]

@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.334 — 24 November 2026
+
+**Fixed**: moving the database from SQLite or MariaDB to PostgreSQL - the step before a replicated pair - could not be finished once there was a token: "Start using it" said "it holds an older copy: the tokens changed here since it was carried", however often everything was carried again. The times of a token's key, state and recovery codes are written by PostgreSQL alone, and were compared with the empty ones of SQLite and MariaDB. They are now compared only where the database in use has them.
+
+**Fixed (HA)**: a setting saved on a node whose clock was behind the other's was kept as the older one by the other node - the two held different values until the next change. A setting is now saved as later than the one it replaces, as a token's times are (1.0.214).
+
+**Fixed (HA)**: the other node's rows of the guard on recovery codes were tidied here as well; a count it added at that moment was lost. Each node tidies its own, as the codes' and the questions' (1.0.327).
+
 ## 1.0.333 — 24 November 2026
 
 **Fixed (HA)**: a code checked against an SSH token, or an administrator's second step, wrote the whole row it had read back - right or wrong code. An SSH token replaced or removed on the other node at that moment (a phone lost) came back as it was, the old phone's codes good again; a passkey taken away, or a second step reset, the same. Wrong codes on both nodes at once were counted as one. The row is now changed only where it is as it was read, and only while it is the same token; a token replaced meanwhile refuses the old code, one removed is not made again.

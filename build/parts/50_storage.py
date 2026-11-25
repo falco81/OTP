@@ -701,7 +701,17 @@ class Storage(object):
                 for r in self.db.rows('SELECT k, at, by_who FROM settings')}
 
     def save_setting(self, k, v, by=''):
-        row = {'k': k, 'v': json.dumps(v), 'at': time.time(), 'by_who': str(by or '')[:190]}
+        # Later than the one it replaces (1.0.334), as a token's times are (1.0.214): saved on a
+        # node whose clock is behind the other's, the other kept its own as the newer - the two
+        # held different values until the next change.
+        at = time.time()
+        try:
+            was = self.db.value('SELECT at FROM settings WHERE k = ?', (k,))
+            if was is not None and float(was) >= at:
+                at = float(was) + 0.001
+        except (TypeError, ValueError, DbError):
+            pass
+        row = {'k': k, 'v': json.dumps(v), 'at': at, 'by_who': str(by or '')[:190]}
         if not dbguard_setting_kept(k):
             self.db.upsert('settings', 'k', row)
             return

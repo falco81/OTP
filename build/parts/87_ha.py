@@ -1897,6 +1897,10 @@ def once_tidy(store):
     """Rows no longer needed: a time step or a question long past."""
     t = time.time()
     for r in store.db.rows("SELECT k, v FROM meta WHERE k LIKE 'scratchguard:%'"):
+        # Each node its own rows (1.0.334), as the codes' and the questions' (1.0.327): the other's
+        # deleted here as it added a time to it lost that count.
+        if not _tidy_mine(store, r['k']):
+            continue
         try:
             last = max([float(x) for x in json.loads(r['v'] or '[]')] or [0])
         except (ValueError, TypeError):
