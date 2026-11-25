@@ -3,7 +3,7 @@
   "code": "cs",
   "name": "Čeština",
   "english": "Czech",
-  "version": "1.0.337",
+  "version": "1.0.338",
   "made": "2026-10-23",
   "about": "Texty stránek otp v češtině. Stejná ID jako en.json; měňte jen \"text\", nikdy \"source\". Prázdný text znamená: zobrazit anglicky."
  },
@@ -36355,198 +36355,206 @@
    "text": "{0}: delší, než RADIUS přenese (253 bajtů)"
   },
   "p2116": {
+   "source": "{0}: longer than RADIUS carries (253 bytes, with an address as long as a real one)",
+   "text": "{0}: delší, než RADIUS unese (253 bajtů, s adresou tak dlouhou jako skutečná)"
+  },
+  "p2117": {
    "source": "{0}: maintenance off",
    "text": "{0}: údržba vypnuta"
   },
-  "p2117": {
+  "p2118": {
    "source": "{0}: maintenance on",
    "text": "{0}: údržba zapnuta"
   },
-  "p2118": {
+  "p2119": {
    "source": "{0}: no driver — install {1}",
    "text": "{0}: chybí ovladač – nainstalujte {1}"
   },
-  "p2119": {
+  "p2120": {
    "source": "{0}: no line breaks or other control characters",
    "text": "{0}: bez zalomení řádků a jiných řídicích znaků"
   },
-  "p2120": {
+  "p2121": {
    "source": "{0}: not heard from - what it said last",
    "text": "{0}: neozývá se – co řekl naposledy"
   },
-  "p2121": {
+  "p2122": {
    "source": "{0}: not while high security is on - {1}",
    "text": "{0}: ne při zapnuté vysoké bezpečnosti – {1}"
   },
-  "p2122": {
+  "p2123": {
    "source": "{0}: off now",
    "text": "{0}: teď vypnuto"
   },
-  "p2123": {
+  "p2124": {
    "source": "{0}: off, as its last heartbeat says",
    "text": "{0}: vypnuto, podle jeho posledního heartbeatu"
   },
-  "p2124": {
+  "p2125": {
    "source": "{0}: on now",
    "text": "{0}: teď zapnuto"
   },
-  "p2125": {
+  "p2126": {
    "source": "{0}: on, as its last heartbeat says",
    "text": "{0}: zapnuto, podle jeho posledního heartbeatu"
   },
-  "p2126": {
+  "p2127": {
    "source": "{0}: pam_faillock is not in its PAM, and authselect does not manage it - the lockout is not in use there.",
    "text": "{0}: pam_faillock není v jeho PAM a authselect ho nespravuje – zamykání se tam nepoužívá."
   },
-  "p2127": {
+  "p2128": {
    "source": "{0}: pam_pwquality is not in its PAM - the rules of the password are not kept there by passwd.",
    "text": "{0}: pam_pwquality není v jeho PAM – passwd tam pravidla hesla nedodrží."
   },
-  "p2128": {
+  "p2129": {
    "source": "{0}: replication - {1}",
    "text": "{0}: replikace – {1}"
   },
-  "p2129": {
+  "p2130": {
    "source": "{0}: signed out everywhere",
    "text": "{0}: odhlášen všude"
   },
-  "p2130": {
+  "p2131": {
    "source": "{0}: sshd does not let root sign in at all (PermitRootLogin no) - the keys below are not used there until it does.",
    "text": "{0}: sshd rootovi přihlášení vůbec nepovoluje (PermitRootLogin no) – klíče níže se tam nepoužijí, dokud to nepovolí."
   },
-  "p2131": {
+  "p2132": {
    "source": "{0}: sshd takes no keys (PubkeyAuthentication no).",
    "text": "{0}: sshd nepřijímá klíče (PubkeyAuthentication no)."
   },
-  "p2132": {
+  "p2133": {
    "source": "{0}: the addresses of the cluster changed on {1} - {2}",
    "text": "{0}: adresy clusteru se na {1} změnily – {2}"
   },
-  "p2133": {
+  "p2134": {
    "source": "{0}: the backup destination {1} - {2}",
    "text": "{0}: úložiště záloh {1} – {2}"
   },
-  "p2134": {
+  "p2135": {
    "source": "{0}: the cap and its time are whole numbers",
    "text": "{0}: strop i jeho čas jsou celá čísla"
   },
-  "p2135": {
+  "p2136": {
    "source": "{0}: the cap is 0 to 100 wrong passwords",
    "text": "{0}: strop je 0 až 100 špatných hesel"
   },
-  "p2136": {
+  "p2137": {
    "source": "{0}: the card they signed in with is back",
    "text": "{0}: karta, kterou se přihlásil, je zpět"
   },
-  "p2137": {
+  "p2138": {
    "source": "{0}: the card they signed in with is out - the session waits {1} s for it",
    "text": "{0}: karta, kterou se přihlásil, je vytažená – session na ni čeká {1} s"
   },
-  "p2138": {
+  "p2139": {
+   "source": "{0}: the code is what this SMS is for - put it in",
+   "text": "{0}: kód je to, kvůli čemu se tato SMS posílá – doplňte ho"
+  },
+  "p2140": {
    "source": "{0}: the connection to its database is encrypted again as the cluster has it ({1})",
    "text": "{0}: spojení s jeho databází je znovu šifrované, jak to má cluster ({1})"
   },
-  "p2139": {
+  "p2141": {
    "source": "{0}: the connection to its database is not encrypted as the cluster has it ({1}) - tried again every {2} minutes: {3}",
    "text": "{0}: spojení s jeho databází není šifrované, jak to má cluster ({1}) – zkouší se znovu každých {2} minut: {3}"
   },
-  "p2140": {
+  "p2142": {
    "source": "{0}: the driver is installed",
    "text": "{0}: ovladač je nainstalovaný"
   },
-  "p2141": {
+  "p2143": {
    "source": "{0}: the link between the databases is being encrypted and checked (verify-full) on both nodes",
    "text": "{0}: spojení mezi databázemi se na obou uzlech šifruje a ověřuje (verify-full)"
   },
-  "p2142": {
+  "p2144": {
    "source": "{0}: the time is 1 to 1440 min",
    "text": "{0}: čas je 1 až 1440 min"
   },
-  "p2143": {
+  "p2145": {
    "source": "{0}: there is no such account",
    "text": "{0}: takový účet neexistuje"
   },
-  "p2144": {
+  "p2146": {
    "source": "{0}: write {{1}} with nothing after its name",
    "text": "{0}: pište {{1}} bez ničeho za jménem"
   },
-  "p2145": {
+  "p2147": {
    "source": "{0}: {1} attributes are not laid out as one byte of type and one of length - this server cannot send them by number",
    "text": "{0}: atributy {1} nemají jeden bajt typu a jeden bajt délky – tento server je podle čísla poslat neumí"
   },
-  "p2146": {
+  "p2148": {
    "source": "{0}: {1} characters at most",
    "text": "{0}: nejvýš {1} znaků"
   },
-  "p2147": {
+  "p2149": {
    "source": "{0}: {1} is not one of {2}",
    "text": "{0}: {1} není jedno z {2}"
   },
-  "p2148": {
+  "p2150": {
    "source": "{0}: {1} line(s) sent",
    "text": "{0}: {1:odeslán|odeslány|odesláno} {1} {1:řádek|řádky|řádků}"
   },
-  "p2149": {
+  "p2151": {
    "source": "{0}: {1} row(s) read",
    "text": "{0}: {1:přečten|přečteny|přečteno} {1} {1:řádek|řádky|řádků}"
   },
-  "p2150": {
+  "p2152": {
    "source": "{0}: {1} wrong codes of the second step - the sign-in was ended, the password is asked again",
    "text": "{0}: {1} chybných kódů druhého kroku – přihlášení bylo ukončeno, heslo se zadá znovu"
   },
-  "p2151": {
+  "p2153": {
    "source": "{0}: {1} — install {2}",
    "text": "{0}: {1} – nainstalujte {2}"
   },
-  "p2152": {
+  "p2154": {
    "source": "{0}:{1} could not be reached: {2}",
    "text": "{0}:{1} není dosažitelný: {2}"
   },
-  "p2153": {
+  "p2155": {
    "source": "{0}:{1} left",
    "text": "zbývá {0}:{1}"
   },
-  "p2154": {
+  "p2156": {
    "source": "{0}:{1} refused it: {2}",
    "text": "{0}:{1} to odmítl: {2}"
   },
-  "p2155": {
+  "p2157": {
    "source": "{0}{1} right now.",
    "text": "{0}{1} právě teď."
   },
-  "p2156": {
+  "p2158": {
    "source": "{0}’s clock is 5 min off",
    "text": "hodiny {0} jdou o 5 min špatně"
   },
-  "p2157": {
+  "p2159": {
    "source": "{0}’s heartbeat looks dead or alive for ever",
    "text": "heartbeat {0} vypadá mrtvý nebo věčně živý"
   },
-  "p2158": {
+  "p2160": {
    "source": "· running: {0}",
    "text": "· běží: {0}"
   },
-  "p2159": {
+  "p2161": {
    "source": "· {0} not read",
    "text": "· {0} nenačteno"
   },
-  "p2160": {
+  "p2162": {
    "source": "· {0} refused",
    "text": "· {0} odmítnuto"
   },
-  "p2161": {
+  "p2163": {
    "source": "· {0}s later",
    "text": "· o {0} s později"
   },
-  "p2162": {
+  "p2164": {
    "source": "— {0}% is in use",
    "text": "– {0} % je obsazeno"
   },
-  "p2163": {
+  "p2165": {
    "source": "… and {0} more",
    "text": "… a dalších {0}"
   },
-  "p2164": {
+  "p2166": {
    "source": "✓ last sent {0} · {1}",
    "text": "✓ naposledy odesláno {0} · {1}"
   }

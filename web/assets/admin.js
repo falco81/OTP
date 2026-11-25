@@ -14335,7 +14335,10 @@ function txSmsCount(text) {
 }
 function txPlainSms(t) {
   if (!TX.data.sms_plain || !t.normalize) return t;
-  return t.normalize('NFKD').replace(/[̀-ͯ]/g, '');
+  /* As the server sends it (1.0.338): its dashes and quotes too - one "–" counted the SMS as
+     Unicode, 70 a part, while it went as one plain SMS. */
+  return t.normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[–—]/g, '-')
+    .replace(/[„“]/g, '"');
 }
 function txDrawSms(host, m) {
   var f = m.fields[0];

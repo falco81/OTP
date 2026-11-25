@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.337'
+__version__ = '1.0.338'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -23944,10 +23944,19 @@ def text_check(field, value):
         value.format(**text_samples())
     except (ValueError, IndexError, KeyError) as e:
         raise ValueError('%s: a { or } on its own - write it twice, {{ or }} (%s)' % (label, e))
-    if field[4] == 'prompt' and len(value.format(**text_samples()).encode('utf-8')) > 253:
-        raise ValueError('%s: longer than RADIUS carries (253 bytes)' % label)
+    # With an address as long as a real one is (1.0.338): the sample's short one passed a prompt
+    # that was cut at run time - and on the SSH gate in the middle of a letter.
+    if field[4] == 'prompt' and len(value.format(**dict(
+            text_samples(), dest='j******@' + 'x' * 52)).encode('utf-8')) > 251:
+        raise ValueError('%s: longer than RADIUS carries (253 bytes, with an address as long as '
+                         'a real one)' % label)
     if field[4] in ('subject', 'sms', 'prompt') and not value.strip():
         raise ValueError('%s cannot be empty' % label)
+    # The code in an SMS that is there for it (1.0.338): left out, every SMS of a sign-in went
+    # with no code in it.
+    if field[4] == 'sms' and 'code' in allowed and \
+            not any(name == 'code' for _lit, name, _s, _c in parts):
+        raise ValueError('%s: the code is what this SMS is for - put it in' % label)
     return value
 
 
@@ -40039,7 +40048,12 @@ def ssh_prompt_attr(words, hide=False):
     """Reply-Message with the prompt as it is - attr_bytes strips the space after
     the ":" (1.0.191), and the code was typed right against it - and Prompt
     (76): 0 where the code is hidden as it is typed (pam_radius prompt_attribute)."""
-    raw = ssh_prompt(words).encode('utf-8')[:253]
+    raw = ssh_prompt(words).encode('utf-8')
+    if len(raw) > 253:
+        # The words cut, on a letter, before ": " is added (1.0.338): cut after, the ": " went and
+        # half a letter could be left - not UTF-8, for pam_radius to show.
+        w = str(words or '').rstrip().encode('utf-8')[:251].decode('utf-8', 'ignore').rstrip()
+        raw = ssh_prompt(w).encode('utf-8')[:253]
     return bytes([18, len(raw) + 2]) + raw + bytes([76, 6]) + struct.pack('!I', 0 if hide else 1)
 
 
