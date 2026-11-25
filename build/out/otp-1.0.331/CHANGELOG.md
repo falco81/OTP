@@ -4,6 +4,14 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.331 — 24 November 2026
+
+**Fixed (HA, console)**: the live view of the RADIUS requests on the text console hid the other node's requests - the two nodes number their rows each on its own (odd, even), and one place in the log for both passed over the quieter node's. A place for each node now, as the alerts have (1.0.262).
+
+**Fixed (SIEM, isemon)**: events written on the command line or on the console - a password set, an account switched off or removed, the cluster paused, the configuration exported with its secrets - were on the Events page but never sent to the SIEM or isemon: only the daemon sends, and it was told of its own events alone. The command line now puts its events by for the daemon (`/run/otp/cli-events.jsonl`, 256 KB at most), which sends them within seconds.
+
+**Fixed (console)**: keys of the text screen that are not letters were typed as letters - Shift+Tab as "š", Insert as "ŋ", F1 as "ĉ" - into a field, a shared secret entered once among them (every request of that client then refused). Shift+Tab now goes back a field; the others do nothing.
+
 ## 1.0.330 — 24 November 2026
 
 **Fixed (Active Directory)**: an account's primary group was not among its groups. AD keeps it in the account's `primaryGroupID` alone - not in `memberOf`, nor in the group's `member` - so a realm, an administrator's role or anything else given to "Domain Users", or to a group made the users' primary one, refused every account with "does not pass LDAP group filter(s)"; a group with "Domain Users" in it was not found either. The primary group is now looked up by its SID, and the groups it is in are found with it. Directories other than AD (no `primaryGroupID`) are asked as before.

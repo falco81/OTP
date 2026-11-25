@@ -833,6 +833,8 @@ class Console(object):
     def live_radius(self, what=''):
         p = self.pal
         q = collections.deque()
+        # A place in the log for each node (1.0.331): each node numbers its rows on its own (odd,
+        # even) - one place for both hid the quieter node's requests, as the alerts did (1.0.262).
         state = {'seen': None, 'stop': False}
 
         def one(r):
@@ -849,13 +851,15 @@ class Console(object):
                 got = self.out('--log', '--hours', '24' if state['seen'] is None else '1',
                                '--limit', '500' if state['seen'] is None else '1000') or {}
                 rows = sorted(got.get('rows') or [], key=lambda r: r.get('id') or 0)
+                first = state['seen'] is None
+                seen = state['seen'] if not first else {}
                 for r in rows:
-                    if state['seen'] is not None and (r.get('id') or 0) <= state['seen']:
+                    node = str(r.get('node') or '')
+                    if not first and (r.get('id') or 0) <= seen.get(node, 0):
                         continue
                     q.append(one(r))
-                    state['seen'] = max(state['seen'] or 0, r.get('id') or 0)
-                if state['seen'] is None:
-                    state['seen'] = 0
+                    seen[node] = max(seen.get(node, 0), r.get('id') or 0)
+                state['seen'] = seen
                 for _ in range(12):
                     if state['stop']:
                         break
@@ -1872,7 +1876,7 @@ class Console(object):
                  c.KEY_PPAGE: 'pgup', c.KEY_NPAGE: 'pgdn', c.KEY_HOME: 'home', c.KEY_END: 'end',
                  c.KEY_ENTER: 'enter', 10: 'enter', 13: 'enter', c.KEY_BACKSPACE: 'bs',
                  127: 'bs', 8: 'bs', c.KEY_DC: 'del', c.KEY_RESIZE: 'resize', 21: 'ctrl-u',
-                 9: 'tab'}
+                 9: 'tab', getattr(c, 'KEY_BTAB', 353): 'up'}
         if k in named:
             if k == c.KEY_RESIZE:
                 try:
@@ -1897,11 +1901,10 @@ class Console(object):
                 return raw.decode('utf-8')
             except UnicodeDecodeError:
                 return None
-        if 32 <= k < 0x110000:
-            try:
-                return chr(k)
-            except ValueError:
-                return None
+        # A byte, never a key of curses (1.0.331): Shift+Tab (353) was typed as "š", Insert as
+        # "ŋ" - into a shared secret entered once, every request of that client then refused.
+        if 32 <= k < 256:
+            return chr(k)
         return None
 
     def _line_in(self, y, prompt, text, secret=False, win=None, x=1, width=None):

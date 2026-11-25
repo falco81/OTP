@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.330'
+__version__ = '1.0.331'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -17503,6 +17503,64 @@ def seal_fp_check(store):
         store.drop_meta(k)
 
 
+CLI_EVENTS_FILE = RUN_DIR / 'cli-events.jsonl'
+CLI_EVENTS_MOST = 256 * 1024
+
+
+def cli_event_spool(kind, words, level='info', who=''):
+    """An event written on the command line (the console too) put by for the daemon to send to
+    the SIEM and isemon (1.0.331): only the daemon sends, and it was told of its own events
+    alone - a password set, an account removed, the cluster paused on the console went nowhere."""
+    import fcntl
+    line = (json.dumps({'kind': str(kind), 'words': str(words), 'level': str(level or 'info'),
+                        'who': str(who or '')}, ensure_ascii=False) + '\n').encode('utf-8')
+    try:
+        fd = os.open(str(CLI_EVENTS_FILE), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                     0o660)
+    except OSError:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.fstat(fd).st_size + len(line) <= CLI_EVENTS_MOST:
+            os.write(fd, line)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def cli_events_take():
+    """[(kind, words, level, who)] put by on the command line, the file emptied (1.0.331)."""
+    import fcntl
+    try:
+        fd = os.open(str(CLI_EVENTS_FILE), os.O_RDWR | os.O_NOFOLLOW)
+    except OSError:
+        return []
+    data = b''
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        while True:
+            got = os.read(fd, 65536)
+            if not got:
+                break
+            data += got
+        if data:
+            os.ftruncate(fd, 0)
+    except OSError:
+        return []
+    finally:
+        os.close(fd)
+    out = []
+    for raw in data.splitlines():
+        try:
+            e = json.loads(raw.decode('utf-8'))
+            out.append((str(e['kind']), str(e['words']), str(e.get('level') or 'info'),
+                        str(e.get('who') or '')))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return out
+
+
 def names_nfc_asked(store):
     """The lead: names put in one form when the other node asked (1.0.327) - it put an old
     copy back. Each ask taken away only as it was read: one made again meanwhile stays."""
@@ -19380,6 +19438,13 @@ class Daemon(object):
                     net_tick(self)              # the network, restart, power off (1.0.119)
                 except Exception as e:          # noqa: BLE001
                     log_sparing('net-tick', 'the network: %s' % e, 'warn', every=600)
+                try:
+                    hook = getattr(self.store, 'on_event', None)
+                    if hook and getattr(self, 'siem', None) is not None:
+                        for one in cli_events_take():   # the command line's events (1.0.331)
+                            hook(*one)
+                except Exception as e:          # noqa: BLE001
+                    log_sparing('cli-events', 'the command line\'s events: %s' % e, 'warn', every=600)
                 try:
                     names_nfc_asked(self.store)  # the other node put a copy back (1.0.327)
                 except Exception as e:          # noqa: BLE001
@@ -66328,6 +66393,8 @@ class Console(object):
     def live_radius(self, what=''):
         p = self.pal
         q = collections.deque()
+        # A place in the log for each node (1.0.331): each node numbers its rows on its own (odd,
+        # even) - one place for both hid the quieter node's requests, as the alerts did (1.0.262).
         state = {'seen': None, 'stop': False}
 
         def one(r):
@@ -66344,13 +66411,15 @@ class Console(object):
                 got = self.out('--log', '--hours', '24' if state['seen'] is None else '1',
                                '--limit', '500' if state['seen'] is None else '1000') or {}
                 rows = sorted(got.get('rows') or [], key=lambda r: r.get('id') or 0)
+                first = state['seen'] is None
+                seen = state['seen'] if not first else {}
                 for r in rows:
-                    if state['seen'] is not None and (r.get('id') or 0) <= state['seen']:
+                    node = str(r.get('node') or '')
+                    if not first and (r.get('id') or 0) <= seen.get(node, 0):
                         continue
                     q.append(one(r))
-                    state['seen'] = max(state['seen'] or 0, r.get('id') or 0)
-                if state['seen'] is None:
-                    state['seen'] = 0
+                    seen[node] = max(seen.get(node, 0), r.get('id') or 0)
+                state['seen'] = seen
                 for _ in range(12):
                     if state['stop']:
                         break
@@ -67367,7 +67436,7 @@ class Console(object):
                  c.KEY_PPAGE: 'pgup', c.KEY_NPAGE: 'pgdn', c.KEY_HOME: 'home', c.KEY_END: 'end',
                  c.KEY_ENTER: 'enter', 10: 'enter', 13: 'enter', c.KEY_BACKSPACE: 'bs',
                  127: 'bs', 8: 'bs', c.KEY_DC: 'del', c.KEY_RESIZE: 'resize', 21: 'ctrl-u',
-                 9: 'tab'}
+                 9: 'tab', getattr(c, 'KEY_BTAB', 353): 'up'}
         if k in named:
             if k == c.KEY_RESIZE:
                 try:
@@ -67392,11 +67461,10 @@ class Console(object):
                 return raw.decode('utf-8')
             except UnicodeDecodeError:
                 return None
-        if 32 <= k < 0x110000:
-            try:
-                return chr(k)
-            except ValueError:
-                return None
+        # A byte, never a key of curses (1.0.331): Shift+Tab (353) was typed as "š", Insert as
+        # "ŋ" - into a shared secret entered once, every request of that client then refused.
+        if 32 <= k < 256:
+            return chr(k)
         return None
 
     def _line_in(self, y, prompt, text, secret=False, win=None, x=1, width=None):
@@ -71749,6 +71817,8 @@ def cli_store():
     except DbError as e:
         raise SystemExit('otp: %s%s' % (e, half_joined_words(e)))
     store = Storage(db, quick=True)
+    # Its events to the SIEM and isemon too, through the daemon (1.0.331).
+    store.on_event = cli_event_spool
     _cli_name_held()
     load_config(saved=dbguard_settings(store.settings_saved(), store))
     return store

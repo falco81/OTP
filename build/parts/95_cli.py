@@ -2656,6 +2656,8 @@ def cli_store():
     except DbError as e:
         raise SystemExit('otp: %s%s' % (e, half_joined_words(e)))
     store = Storage(db, quick=True)
+    # Its events to the SIEM and isemon too, through the daemon (1.0.331).
+    store.on_event = cli_event_spool
     _cli_name_held()
     load_config(saved=dbguard_settings(store.settings_saved(), store))
     return store
