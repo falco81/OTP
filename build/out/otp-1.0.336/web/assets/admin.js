@@ -8739,12 +8739,16 @@ function nodeValEl(s, v, cls) {
     return el('span', String(cls).replace(/\bmono\b/, 'node-empty'), words);
   return noI18n(el('span', cls, words));
 }
+/* When each node's setting was last saved here (1.0.336): the heartbeat read before it says the
+   value it had then - the switch flipped back after a save, until the pane was opened again. */
+var NODE_SAVED = {};
 function nodeSave(s, node, value, then) {
   var want = {};
   want[s.key] = typeof s.default === 'number' ? Number(value)
     : (typeof s.default === 'boolean' ? (value === true || value === 'true' || value === '1' || value === 1) : value);
   /* Refused, drawn again as it is (1.0.278): the node's switch stayed flipped as if saved. */
-  return api('settings', {settings: want, node: node}).then(function (r) { toast(r.message, 'good'); then(); })
+  return api('settings', {settings: want, node: node}).then(function (r) {
+    NODE_SAVED[s.key] = Date.now() / 1000; toast(r.message, 'good'); then(); })
     .catch(function (e) { oops(e); if (then) then(); });
 }
 function nodeEdit(s, node, current, then) {
@@ -8823,7 +8827,8 @@ function drawNodeSettings(nodes, live) {
           /* What the node itself says is in effect (1.0.67), its config.json
              among it; the saved values where it has not said yet. */
           var nd = (nodes || []).filter(function (x) { return x.name === n; })[0] || {};
-          var said = nd.own && Object.prototype.hasOwnProperty.call(nd.own, k);
+          var said = nd.own && Object.prototype.hasOwnProperty.call(nd.own, k) &&
+                     !(NODE_SAVED[k] && Number(nd.at || 0) < NODE_SAVED[k]);
           var fromFile = !has && said && (nd.own_file || []).indexOf(k) >= 0 &&
                          String(nd.own[k]) !== String(s.shared);
           var val = said ? nd.own[k] : (has ? s.per_node[n] : s.shared);

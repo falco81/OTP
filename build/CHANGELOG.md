@@ -4,6 +4,16 @@ Every change is a new version: the number is in `otp.py` (`otp --version`),
 on the pages (bottom of the enrolment page, Settings → About), in the name of
 the folder and of the archive.
 
+## 1.0.336 — 24 November 2026
+
+**Fixed (HA pane)**: a node's own setting it has from its `config.json` could not be set back to the cluster's value on the pages - the save dropped a row that was not there, said "1 setting(s) saved.", and the node went on with its file's value. It is now saved as the node's own.
+
+**Fixed (HA pane)**: after a node's own setting was saved, the table of each node's settings was drawn again from the heartbeat read before - a switch flipped back as if not saved, until the pane was opened again. What was just saved is shown until the node says otherwise.
+
+**Fixed (Settings)**: a number setting left empty was refused with "a number is needed, and nothing was given", naming no setting - with several changed, which one was not marked. The setting is named, and marked on the page.
+
+**Fixed (Czech)**: "1 setting(s) saved." after every save, and the refusals of a token's test sent too often, are in Czech.
+
 ## 1.0.335 — 24 November 2026
 
 **Fixed (network)**: a change of a node's network that failed half way on the root side - `/etc/hosts` made unchangeable (`chattr +i`), the reboot not asked - left NetworkManager's profile with the new address and the new host name, with no trial and no reboot: the next restart (an update of the system) brought the node up at an address the cluster did not know. What was changed is now put back before the failure is said.

@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.335'
+__version__ = '1.0.336'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -2308,7 +2308,14 @@ def check_setting(key, value):
     """The value as it will be kept, or BadSetting saying why not."""
     if key not in DEFAULTS:
         raise BadSetting('%s is not a setting this version knows' % key)
-    got = _coerce(DEFAULTS[key], value)
+    try:
+        got = _coerce(DEFAULTS[key], value)
+    except BadSetting as e:
+        # By its name (1.0.336): "a number is needed, and nothing was given" named no setting,
+        # and the page could not show which of the changed ones it was.
+        if str(e).startswith(key + ':'):
+            raise
+        raise BadSetting('%s: %s' % (key, e))
     shape = TUNABLE.get(key)
     if isinstance(shape, tuple) and shape and isinstance(shape[0], str):
         if str(got) not in shape:
