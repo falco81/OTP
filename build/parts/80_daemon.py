@@ -817,14 +817,20 @@ def import_legacy(store, root, by='import', replace=False, say=print):
                     continue
                 old = next((r for r in store.realms()
                             if str(r.get('suffix') or '').lower() == suffix.lower()), None)
-                store.realm_save({
-                    'id': old['id'] if old else None, 'name': suffix if suffix != '*'
-                    else 'default', 'suffix': suffix, 'directory': directory,
-                    'lookup': lookup, 'auth_mode': 'otp', 'check_disabled': 1, 'nested': 0,
-                    'groups': [{'group': g, 'reply': ''} for g in y['groups']],
-                    'token_name': 'whole',
-                    'note': 'brought over: the code alone, then the user filter and the '
-                            'group filter the old handler applied'}, by)
+                # One that cannot be made said, the rest imported (1.0.339), as a client is: it
+                # stopped the import, and the clients, settings and tokens never came.
+                try:
+                    store.realm_save({
+                        'id': old['id'] if old else None, 'name': suffix if suffix != '*'
+                        else 'default', 'suffix': suffix, 'directory': directory,
+                        'lookup': lookup, 'auth_mode': 'otp', 'check_disabled': 1, 'nested': 0,
+                        'groups': [{'group': g, 'reply': ''} for g in y['groups']],
+                        'token_name': 'whole',
+                        'note': 'brought over: the code alone, then the user filter and the '
+                                'group filter the old handler applied'}, by)
+                except ValueError as e:
+                    say('realm %s: not imported - %s' % (suffix, e))
+                    continue
                 done['realms'] += 1
                 say('realm %s: %d group(s), looked up by %s' % (suffix, len(y['groups']),
                                                                 lookup))

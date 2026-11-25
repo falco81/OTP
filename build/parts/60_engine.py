@@ -2294,6 +2294,9 @@ class Shipper(object):
                 until, wait = self.down.get(key, (0.0, 0.0))
                 if time.time() < until:
                     self.missed[key] += 1
+                    # Counted as dropped too (1.0.339), as the SIEM counts them (1.0.206): the
+                    # metrics, SNMP and the alert said 0 through a whole outage.
+                    self.dropped += 1
                     return
                 sock = self.tcp.get(target)
                 if sock is not None and not _conn_alive(sock):
@@ -2339,6 +2342,7 @@ class Shipper(object):
                 wait = min(300.0, max(15.0, wait * 2))
                 self.down[key] = (time.time() + wait, wait)
                 self.missed[key] += 1
+                self.dropped += 1
                 e = '%s - tried again in %d s, %d line(s) not sent to it' % (
                     e, int(wait), self.missed[key])
             self.trouble[key] = '%s (%s)' % (e, datetime.now().strftime('%H:%M:%S'))

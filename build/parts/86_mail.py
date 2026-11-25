@@ -890,7 +890,9 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
                 '<div style="margin:6px 0 0;font-size:12.5px;color:#6b7280;text-align:center;%s">'
                 '%s</div></td></tr></table>' % (_h(key), font, fill_html(w['facts'], fmt, plain_fmt_h) + _algo_said(picture)))
     rows.append('<div style="height:18px;line-height:18px;font-size:1px">&nbsp;</div>')
-    if pending and w['pending'].strip():
+    # The link even with its words left empty (1.0.339): without it a token to be confirmed went
+    # with nothing saying where - its QR code never started working.
+    if pending and (w['pending'].strip() or portal_url):
         rows.append('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" '
                     'border="0" style="margin:0 0 20px"><tr><td bgcolor="#eff6ff" '
                     'style="padding:12px 16px;background:#eff6ff;border-left:4px solid #2563eb;'
@@ -975,8 +977,8 @@ def token_mail(to, name, picture, codes=None, lang='cs', display='', by='', pend
             text += [part, '']
     text += ['1. ' + plain('step1'), '2. ' + plain('step2') + ' (QR)', '3. ' + plain('step3'),
              '', '   ' + key, '', plain('facts') + html.unescape(_algo_said(picture)), '']
-    if pending and w['pending'].strip():
-        text += [plain('pending') + (' ' + portal_url if portal_url else ''), '']
+    if pending and (w['pending'].strip() or portal_url):
+        text += [(plain('pending') + (' ' + portal_url if portal_url else '')).strip(), '']
     if codes:
         text += [plain('codes_h') + ':', '   ' + '   '.join(codes), '']
         if w['codes_p'].strip():
