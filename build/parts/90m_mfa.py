@@ -296,8 +296,12 @@ def _mfa_done(h, s, how):
     data['mfa_ok'] = 1
     data['mfa_at'] = int(time.time())       # 1.0.262: a passkey is added only soon after this
     hours = max(0.05, (fnum(s.get('expires')) - time.time()) / 3600.0)
+    # This sign-in still there, and taken by this request alone (1.0.333): one ended at the fifth
+    # wrong code gave a session to a right code that waited behind them - a burst of guesses
+    # was not held to five.
+    if not h.store.db.run('DELETE FROM sessions WHERE id = ?', (int(s['id']),)):
+        raise ApiError(401, 'this sign-in was ended - sign in again')
     token = h.store.session_new('admin', s['name'], s['role'], h.client_ip(), hours, data=data)
-    h.store.session_drop(s['id'])
     h.store.add_event('sign-ins', '%s gave the second step (%s) from %s' % (
         s['name'], how, h.client_ip()), who=s['name'])
     return token
@@ -486,8 +490,17 @@ def _mfa_do(h):
                     h.store.add_event('sign-ins', '%s: the passkey was refused - %s' % (name, e),
                                       'warn', who=name)
                     _mfa_wrong(h, s, key, str(e))
-                rec['keys'] = [used if k.get('id') == used['id'] else k for k in rec.get('keys') or []]
-                h.store.set_meta(mfa_key(name), json.dumps(rec))
+                def counted(r):
+                    # Only while it is the same passkey (1.0.333): one taken away, or the second
+                    # step reset, on the other node meanwhile was put back.
+                    if r.get('kind') != 'passkey' or not any(k.get('id') == used['id']
+                                                             for k in r.get('keys') or []):
+                        return None
+                    r['keys'] = [used if k.get('id') == used['id'] else k for k in r.get('keys') or []]
+                    return r
+                if not h.store.meta_json_update(mfa_key(name), counted):
+                    raise ApiError(409, 'the second step of this account was changed meanwhile - '
+                                        'sign in again')
             token = _mfa_done(h, s, 'a passkey (%s)' % (used.get('name') or 'a device'))
             return {'message': 'signed in', 'done': True, 'token': token}
         if rec.get('kind') == 'app':
@@ -508,8 +521,18 @@ def _mfa_do(h):
                 if step is None or step <= int(rec.get('step') or 0):
                     _mfa_wrong(h, s, key, 'that code is not right' if step is None else
                                'that code was used already - wait for the next one')
-                rec['step'] = step
-                h.store.set_meta(mfa_key(name), json.dumps(rec))
+                same = rec.get('secret')
+
+                def stepped(r):
+                    # Only while it is the same key (1.0.333), as for an SSH token.
+                    if r.get('kind') != 'app' or r.get('secret') != same or \
+                            step <= int(r.get('step') or 0):
+                        return None
+                    r['step'] = step
+                    return r
+                if not h.store.meta_json_update(mfa_key(name), stepped):
+                    raise ApiError(409, 'the second step of this account was changed meanwhile - '
+                                        'sign in again')
         else:
             saved = data.get('mfa_code') or {}
             if not _mfa_code_ok(saved, code) or \

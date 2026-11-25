@@ -126,13 +126,15 @@ def _sshotp_used(store, name, ok):
     """The token's own row: when it was last used, or last failed - under the lock (1.0.319):
     a token removed or made again at that moment came back as it was."""
     with SSHOTP_LOCK:
-        rec = sshotp_get(store, name)
-        if rec:
+        def change(rec):
             if ok:
                 rec.update(used_at=time.time(), used_on=node_name())
             else:
                 rec['failed_at'] = time.time()
-            store.set_meta(sshotp_key(name), json.dumps(rec))
+            return rec
+        # As it is in the database (1.0.333): a lock of this process alone did not keep the other
+        # node's change out - a token removed there came back.
+        store.meta_json_update(sshotp_key(name), change)
 
 
 def sshotp_check(store, name, code):
@@ -167,17 +169,35 @@ def sshotp_check(store, name, code):
         if step is not None and step > int(rec.get('step') or 0) and \
                 not once_take(store, 'step', 'sshotp:' + name.lower(), once_v):
             step = int(rec.get('step') or 0)
+        same = rec.get('secret')
+
+        # Written over the row as it is now, only while it is the same token (1.0.333): the whole
+        # row read before written back put a token removed or made again on the other node meanwhile
+        # back as it was - the old phone's codes good again; and wrong codes on both nodes at once
+        # were counted as one.
         if step is None or step <= int(rec.get('step') or 0):
             fails.append(now)
-            rec['failed_at'] = now
-            if step is None:
-                rec['fails'] = int(rec.get('fails') or 0) + 1
-            store.set_meta(sshotp_key(name), json.dumps(rec))
+
+            def failed(r):
+                if r.get('secret') != same:
+                    return None
+                r['failed_at'] = now
+                if step is None:
+                    r['fails'] = int(r.get('fails') or 0) + 1
+                return r
+            store.meta_json_update(sshotp_key(name), failed)
             return False, ('the code is not right' if step is None
                            else 'the code was used already - wait for the next one')
-        rec.update(step=step, used_at=now, used_on=node_name())
-        rec.pop('fails', None)
-        store.set_meta(sshotp_key(name), json.dumps(rec))
+
+        def used(r):
+            if r.get('secret') != same or step <= int(r.get('step') or 0):
+                return None
+            r.update(step=step, used_at=now, used_on=node_name())
+            r.pop('fails', None)
+            return r
+        if not store.meta_json_update(sshotp_key(name), used):
+            fails.append(now)
+            return False, 'the SSH token was changed meanwhile - try again'
         SSHOTP_FAILS.pop(name.lower(), None)
         return True, 'signed in'
 

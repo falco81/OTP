@@ -86,20 +86,25 @@ st.set_meta(m.sshotp_key('bob') + ':x', '1')
 new_secret = {}
 
 
-def replace_then(store, *a, **kw):
+real_match = m.totp_match
+
+
+def replace_then(*a, **kw):
+    store = st
     rec = m.sshotp_get(store, 'bob')
     rec['secret'] = m.seal_secret(m.b32_new(20), m.sshotp_key('bob'))
     rec['step'] = 0
     new_secret['v'] = rec['secret']
     store.db.run('UPDATE meta SET v = ? WHERE k = ?', (json.dumps(rec), m.sshotp_key('bob')))
-    return real_once(store, *a, **kw)
+    return real_match(*a, **kw)
 
 
-m.once_take = replace_then
-good, said = m.sshotp_check(st, 'bob', code_of(s3, 2))
-m.once_take = real_once
+m.totp_match = replace_then
+good, said = m.sshotp_check(st, 'bob', code_of(s3, 5))
+m.totp_match = real_match
 ok('replaced meanwhile: the old code refused', not good, said)
 ok('replaced meanwhile: the new key kept', m.sshotp_get(st, 'bob')['secret'] == new_secret['v'])
+ok('replaced meanwhile: the wrong code not counted on the new key', not m.sshotp_get(st, 'bob').get('fails'))
 
 # wrong codes counted on the row
 m.sshotp_make(st, 'carl', 'admin')

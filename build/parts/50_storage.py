@@ -1305,6 +1305,25 @@ class Storage(object):
                 return n
         return 0
 
+    def meta_json_update(self, k, change, rounds=8):
+        """A row of meta holding a JSON object changed where it is as it was read (1.0.333): the
+        new value written only over the one `change` was given. `change(rec)` returns the new
+        object, or None to leave it. The new object; None where the row is not there (never
+        made again); False where `change` declined or it kept changing. Not for signed rows."""
+        for _round in range(rounds):
+            raw = self.db.value('SELECT v FROM meta WHERE k = ?', (k,))
+            if raw is None:
+                return None
+            rec = json_obj(raw)
+            if rec is None:
+                return None
+            new = change(dict(rec))
+            if new is None:
+                return False
+            if self.db.run('UPDATE meta SET v = ? WHERE k = ? AND v = ?', (json.dumps(new), k, raw)):
+                return new
+        return False
+
     def session_drop(self, ident):
         self.db.run('DELETE FROM sessions WHERE id = ?', (int(ident),))
 
