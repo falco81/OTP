@@ -94,7 +94,7 @@ for _pk in ('http_proxy', 'https_proxy', 'ftp_proxy', 'all_proxy', 'no_proxy',
             'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
     os.environ.pop(_pk, None)
 
-__version__ = '1.0.336'
+__version__ = '1.0.337'
 # The oldest version this one may go back to (1.0.143): one that reads what
 # this one writes into the database and config.json the same, and has every
 # security fix that matters. Raised whenever a version writes something an
@@ -9042,6 +9042,10 @@ class Storage(object):
             # shared the token "novak", and the second could enrol it, or
             # sign in to the first realm with it.
             for r in self.realms():
+                # Not itself (1.0.337): renamed and given another directory in one save, the row as
+                # it was was taken for another realm.
+                if data.get('id') and str(r.get('id')) == str(data.get('id')):
+                    continue
                 if plain_names(r.get('token_name'), r.get('suffix')) and \
                         str(r.get('name')).lower() != \
                         str(data.get('name') or '').strip().lower() and \
@@ -17853,10 +17857,16 @@ def parse_clients_conf(text):
                 b = b[1:-1].replace('\\' + b[0], b[0])
             vals[a.strip().lower()] = b
         addr = vals.get('ipaddr') or vals.get('ipv4addr') or vals.get('ipv6addr') or key
+        # FreeRADIUS 2's netmask (1.0.337): the network, not its first address alone.
+        mask = str(vals.get('netmask') or '').strip()
+        if mask.isdigit() and '/' not in addr:
+            addr = '%s/%s' % (addr, mask)
         out.append({'name': vals.get('shortname') or key, 'address': addr,
                     'secret': vals.get('secret', ''),
-                    'require_ma': 1 if vals.get('require_message_authenticator') == 'yes'
-                    else 0})
+                    # As FreeRADIUS takes it (1.0.337): true, on, Yes - the client lost the rule
+                    # that it must sign (BlastRADIUS) on import.
+                    'require_ma': 1 if str(vals.get('require_message_authenticator') or '').strip()
+                    .lower() in ('yes', 'true', 'on', '1') else 0})
     return out
 
 
@@ -18011,9 +18021,13 @@ def import_legacy(store, root, by='import', replace=False, say=print):
                                                           y.get('userAttribute') or '') \
                 else 'sam'
             for suffix in sorted(realms_seen) or ['*']:
-                if any(str(r.get('suffix')) == suffix for r in store.realms()) and not replace:
+                # Of any letters (1.0.337): CORP.CZ in the hints, corp.cz kept - imported again,
+                # the realm was made twice, refused, and nothing after it imported.
+                if any(str(r.get('suffix')).lower() == suffix.lower() for r in store.realms()) and \
+                        not replace:
                     continue
-                old = next((r for r in store.realms() if r.get('suffix') == suffix), None)
+                old = next((r for r in store.realms()
+                            if str(r.get('suffix') or '').lower() == suffix.lower()), None)
                 store.realm_save({
                     'id': old['id'] if old else None, 'name': suffix if suffix != '*'
                     else 'default', 'suffix': suffix, 'directory': directory,
@@ -28939,6 +28953,12 @@ def upgrade_start(store, by, pages=False):
     # longest, and the first node is the one somebody can look at while it
     # is done.
     order = sorted(n for n in names if n != me) + ([me] if me in names else [])
+    # One in maintenance first (1.0.337): the node whose turn it was waited for it to be in
+    # service again, it waited for its turn - "waiting" for good, no new upgrade taken.
+    try:
+        order.sort(key=lambda n: not bool(maintenance_row(store, n).get('on')))
+    except Exception:                                   # noqa: BLE001
+        pass
     ident = '%d-%s' % (int(time.time()), secrets.token_hex(4))
     for name in order:
         k = 'upgrade:node:' + name
@@ -50859,7 +50879,9 @@ def totp_files_in_zip(b64, label, out, phrase=''):
                 if len(data) > 64 * 1024:
                     out.append({'name': base, 'said': 'not imported: too big for a .totp file'})
                     continue
-                got.append({'name': base, 'text': data.decode('utf-8', 'replace'),
+                # Its BOM left out (1.0.337), as the browser leaves it out of one file dropped
+                # alone: one saved by Notepad was "not a base32 key" in a ZIP.
+                got.append({'name': base, 'text': data.decode('utf-8-sig', 'replace'),
                             'locked_in': label if info.flag_bits & 1 else ''})
     except (zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError, struct.error,
             zlib.error) as e:
